@@ -21,7 +21,7 @@ export const settingsToggleYolo: ActionMeta = {
   label: 'toggle yolo mode',
   description: 'skip permission checks',
   category: 'settings',
-  icon: '⚡',
+  icon: '!',
 };
 
 export const settingsCheckUpdates: ActionMeta = {
