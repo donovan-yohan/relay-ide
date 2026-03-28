@@ -1021,7 +1021,7 @@ async function main(): Promise<void> {
     const {
       workspacePath, worktreePath, type = 'agent', agent, yolo, useTmux,
       claudeArgs, cols, rows, branchName: requestBranchName, needsBranchRename, branchRenamePrompt,
-      initialPrompt, continue: explicitContinue, ticketContext,
+      initialPrompt, continue: explicitContinue, continuePolicy: explicitContinuePolicy, ticketContext,
     } = req.body as {
       workspacePath?: string;
       worktreePath?: string | null;
@@ -1037,6 +1037,7 @@ async function main(): Promise<void> {
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
+      continuePolicy?: 'always' | 'never';
       ticketContext?: { ticketId: string; title: string; description?: string; url: string; source: 'github' | 'jira'; repoPath: string; repoName: string };
     };
 
@@ -1091,7 +1092,15 @@ async function main(): Promise<void> {
     }
 
     // Agent session
-    const resolved = resolveSessionSettings(freshConfig, workspacePath, { agent, yolo, useTmux, claudeArgs });
+    // Map legacy boolean continue → continuePolicy for backward compat
+    const policyOverride = explicitContinuePolicy
+      ?? (explicitContinue !== undefined ? (explicitContinue ? 'always' as const : 'never' as const) : undefined);
+    // For new worktrees, always use 'never' regardless of config
+    const effectivePolicy = needsBranchRename ? 'never' as const : policyOverride;
+
+    const resolved = resolveSessionSettings(freshConfig, workspacePath, {
+      agent, yolo, useTmux, claudeArgs, continuePolicy: effectivePolicy,
+    });
     const resolvedAgent = resolved.agent;
 
     const baseArgs = [
@@ -1099,15 +1108,8 @@ async function main(): Promise<void> {
       ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
     ];
 
-    // Determine --continue behavior
-    let useContinue = false;
-    if (explicitContinue !== undefined) {
-      useContinue = explicitContinue;
-    } else if (needsBranchRename) {
-      useContinue = false; // brand-new worktree
-    } else {
-      useContinue = resolved.continue && fs.existsSync(path.join(cwd, '.claude'));
-    }
+    // Determine --continue from policy (no .claude directory heuristic)
+    const useContinue = resolved.continuePolicy === 'always';
 
     const args = useContinue
       ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
@@ -1161,6 +1163,7 @@ async function main(): Promise<void> {
       useTmux: resolved.useTmux,
       yolo: resolved.yolo,
       claudeArgs: resolved.claudeArgs,
+      continuePolicy: resolved.continuePolicy,
       ...(safeCols != null && { cols: safeCols }),
       ...(safeRows != null && { rows: safeRows }),
       needsBranchRename: needsBranchRename ?? false,

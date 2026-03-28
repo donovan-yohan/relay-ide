@@ -67,6 +67,7 @@ export interface PtySession extends BaseSession {
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
   claudeArgs: string[];
+  continuePolicy: 'always' | 'never';
 }
 
 export type Session = PtySession;

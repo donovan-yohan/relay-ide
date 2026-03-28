@@ -86,6 +86,7 @@ export type CreatePtyParams = {
   claudeArgs?: string[] | undefined;
   hookToken?: string | undefined;
   hooksActive?: boolean | undefined;
+  continuePolicy?: 'always' | 'never' | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -209,6 +210,7 @@ export function createPtySession(
     cleanedUp: false,
     yolo: paramYolo ?? false,
     claudeArgs: paramClaudeArgs ?? [],
+    continuePolicy: params.continuePolicy ?? 'never',
     _lastHookTime: undefined,
   };
   sessionsMap.set(id, session);

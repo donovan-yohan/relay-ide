@@ -34,6 +34,7 @@ interface SerializedPtySession {
   hooksActive?: boolean;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
+  continuePolicy?: 'always' | 'never';
 }
 
 interface PendingSessionsFile {
@@ -327,6 +328,7 @@ function serializeAll(configDir: string): void {
       claudeArgs: session.claudeArgs,
       hookToken: session.hookToken,
       hooksActive: session.hooksActive,
+      continuePolicy: session.continuePolicy,
       ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
       ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
     });
