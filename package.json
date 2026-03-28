@@ -19,7 +19,7 @@
     "dev": "CLAUDE_REMOTE_CONFIG=./config.dev.json NO_PIN=1 CLAUDE_REMOTE_PORT=3457 node dist/server/index.js",
     "dev:vite": "vite --config frontend/vite.config.ts",
     "start": "tsc && svelte-check --workspace frontend && vite build --config frontend/vite.config.ts && node dist/server/index.js",
-    "test": "svelte-check --workspace frontend && tsc -p tsconfig.test.json && node --test --test-force-exit dist/test/*.test.js",
+    "test": "svelte-check --workspace frontend && tsc -p tsconfig.test.json && node --test --test-force-exit dist/test/*.test.js dist/test/**/*.test.js",
     "prepublishOnly": "npm run build",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true"
   },
