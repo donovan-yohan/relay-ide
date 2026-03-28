@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -540,4 +540,35 @@ export async function updateConfigAutoProvision(autoProvision: boolean): Promise
     body: JSON.stringify({ autoProvision }),
   });
   if (!res.ok) throw new Error('Failed to update auto-provision setting');
+}
+
+// ── Workspace groups ──────────────────────────────────────────────────────────
+
+export async function fetchWorkspaceGroups(): Promise<Workspace[]> {
+  return json<Workspace[]>(await fetch('/workspace-groups'));
+}
+
+export async function createWorkspaceGroup(data: { name: string; repos: string[]; themeColor?: string }): Promise<Workspace> {
+  const res = await fetch('/workspace-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to create workspace'));
+  return res.json() as Promise<Workspace>;
+}
+
+export async function updateWorkspaceGroup(id: string, data: Partial<Workspace>): Promise<Workspace> {
+  const res = await fetch(`/workspace-groups/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to update workspace'));
+  return res.json() as Promise<Workspace>;
+}
+
+export async function deleteWorkspaceGroup(id: string): Promise<void> {
+  const res = await fetch(`/workspace-groups/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to delete workspace'));
 }
