@@ -6,7 +6,7 @@ Testing patterns and quality standards for claude-remote-cli.
 
 - Node.js built-in `node:test` + `node:assert` — no external test framework
 - TypeScript test files in `test/`, compiled via `tsc -p tsconfig.test.json`
-- Thirty-six test files covering all server modules
+- Thirty-seven test files covering all server modules
 - `svelte-check` runs in `build`, `test`, and standalone `check` — catches type errors in `.svelte` files
 - E2E tests (Playwright) planned but not yet implemented
 
@@ -71,6 +71,7 @@ Both `build` and `test` fail on type errors. CI runs both via `npm run build && 
 | `test/ticket-transitions.test.ts` | Ticket transition state machine: GitHub label add/remove, Jira transitions via `acli`, idempotency guard |
 | `test/webhook-manager.test.ts` | Webhook manager router: GitHub webhook CRUD, smee client lifecycle, health state, mock fetch integration |
 | `test/webhooks.test.ts` | GitHub webhook receiver: HMAC signature verification, event routing, broadcast to frontend |
+| `test/server-startup.test.ts` | Server startup: non-TTY launch without PIN, /auth/status endpoint availability |
 
 ## Test Isolation Patterns
 

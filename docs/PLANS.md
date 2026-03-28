@@ -6,29 +6,15 @@ Execution plans for active and completed work.
 
 | Plan | Created | Topic |
 |------|---------|-------|
-| `tui-design-system-overhaul` | 2026-03-26 | TUI-native component library: 9 new primitives, micro-interactions, alignment architecture |
-| `branch-lifecycle-fix` | 2026-03-19 | Unique branch names on worktree reuse, auto-rename on first message, display names |
-| `session-persistence-fix` | 2026-03-17 | Fix sessions lost after auto-update restart |
-| `mobile-input-redesign` | 2026-02-25 | Event-intent architecture replacing value-diffing for mobile input |
-| `enriched-sidebar-sessions` | 2026-03-19 | Two-line sidebar rows with relative time, worktree name, PR#, diff stats |
-| `filesystem-browser-api` | 2026-03-19 | File system browser API + tree UI for workspace selection with bulk import |
-| `first-enter-duplicate-content` | 2026-03-19 | Fix branch rename interception sending chars to PTY twice |
-| `pr-dashboard-usability` | 2026-03-19 | PR dashboard: scroll, links, per-PR session button, search |
-| `repo-root-click-dashboard` | 2026-03-19 | Fix clicking inactive repo root going to dashboard instead of creating session |
-| `sidebar-session-model-mismatch` | 2026-03-19 | Fix sidebar showing 1 row per session instead of 1 row per folder |
-| `workspace-reorder` | 2026-03-19 | Drag-and-drop workspace reordering, sidebar header simplification |
-| `org-dashboard-phase4` | 2026-03-21 | Jira + Linear integrations + status mapping UI (Phase 4 of org dashboard) |
-| `codex-review-fixes` | 2026-03-22 | Codex review fixes — org dashboard cleanup (premature idempotency, BranchLink source, etc.) |
-| `jira-acli-rewrite-plan` | 2026-03-22 | Rewrite Jira integration to use acli CLI, remove Linear integration |
-| `relay-phase1-data-tables` | 2026-03-23 | Shared DataTable component, filter chips, sortable columns, keyboard nav, row grouping, saved presets |
-| `session-worktree-separation` | 2026-03-23 | Separate session and worktree concerns — unified POST /sessions, collision retry, v2→v3 migration |
-| `github-device-flow` | 2026-03-24 | Replace OAuth web flow with GitHub Device Flow for zero-config auth |
-| `desktop-drag-broken-reorder-mode-jarring` | 2026-03-25 | Remove reorderMode, restore always-on desktop drag-and-drop, add mobile-only long-press gating |
-| `workspace-theme-color` | 2026-03-27 | Color picker in workspace settings, sidebar initial block theming, Claude Code session color matching |
-| `tooltip-and-keyboard-shortcuts` | 2026-03-27 | Reusable tooltip component, centralized keyboard shortcut registry, icon hover context + shortcut display |
-| `open-from-picker` | 2026-03-27 | Unified branch/PR/issue picker modal, inline workspace action icons, reusable BranchPrIssuePicker component, duplicate session handling |
-| `pin-unlock-json-parse-error` | 2026-03-27 | Fix PIN unlock error, add PIN setup via web UI, CLI `pin reset`, defensive error handling |
 | `bg-pin-setup-blocked` | 2026-03-28 | Fix --bg first-run crash loop: remove non-TTY exit, trust web-based PIN setup flow |
+
+## Stalled Plans
+
+| Plan | Created | Topic | Status |
+|------|---------|-------|--------|
+| `mobile-input-redesign` | 2026-02-25 | Event-intent architecture replacing value-diffing for mobile input | 5/6 tasks done — pending on-device manual testing |
+| `filesystem-browser-api` | 2026-03-19 | File system browser API + tree UI for workspace selection with bulk import | 4/8 tasks done — backend complete, frontend integration incomplete |
+| `repo-root-click-dashboard` | 2026-03-19 | Fix clicking inactive repo root going to dashboard instead of creating session | 0/2 tasks — never started, trivial fix |
 
 ## Tech Debt
 
@@ -36,23 +22,39 @@ No tech debt tracked yet.
 
 ## Completed Plans
 
-See `docs/exec-plans/completed/` for historical plans (48 completed).
+See `docs/exec-plans/completed/` for historical plans (77 completed).
 
 | Plan | Completed | Topic |
 |------|-----------|-------|
 | `command-center-phase2` | 2026-03-28 | Action registry + 15 HIGH-priority actions, Spotlight migration to registry |
+| `hooks-403-after-restart` | 2026-03-28 | Fix hookToken lost during serialization causing 403 on all hooks after restart + TMUX_PREFIX env pollution |
+| `pin-unlock-json-parse-error` | 2026-03-27 | Fix PIN unlock error, add PIN setup via web UI, CLI `pin reset`, defensive error handling |
+| `tui-design-system-overhaul` | 2026-03-26 | TUI-native component library: 9 new primitives, micro-interactions, alignment architecture |
+| `desktop-drag-broken-reorder-mode-jarring` | 2026-03-25 | Remove reorderMode, restore always-on desktop drag-and-drop, add mobile-only long-press gating |
 | `push-notification-permission-fix` | 2026-03-25 | Fix push notifications — wire permission request, show state, chain subscription |
+| `github-device-flow` | 2026-03-24 | Replace OAuth web flow with GitHub Device Flow for zero-config auth |
+| `session-worktree-separation` | 2026-03-23 | Separate session and worktree concerns — unified POST /sessions, collision retry, v2→v3 migration |
+| `relay-phase1-data-tables` | 2026-03-23 | Shared DataTable component, filter chips, sortable columns, keyboard nav, row grouping, saved presets |
 | `settings-webhooks` | 2026-03-25 | Full-screen Settings modal, DialogShell + SettingRow + SettingsToc components, webhook self-service backend (webhook-manager.ts), GitHub/Webhook/Jira integration panels |
 | `relay-phase2-github-api` | 2026-03-23 | GitHub App OAuth, GraphQL API, smee.io webhooks, real-time updates, CI status, sidebar PR enrichment |
+| `jira-acli-rewrite` | 2026-03-22 | Rewrite Jira integration to use acli CLI, remove Linear integration |
+| `codex-review-fixes` | 2026-03-22 | Codex review fixes — org dashboard cleanup (premature idempotency, BranchLink source, etc.) |
 | `session-flags-lost-on-restart` | 2026-03-22 | Preserve yolo/claudeArgs flags across auto-update restart |
+| `org-dashboard-phase4` | 2026-03-21 | Jira + Linear integrations + status mapping UI (Phase 4 of org dashboard) |
 | `hooks-state-detection` | 2026-03-20 | Replace output parser with Claude Code hooks for state detection + branch rename |
 | `local-analytics` | 2026-03-20 | SQLite-backed local analytics and user behavior tracking |
+| `enriched-sidebar-sessions` | 2026-03-19 | Two-line sidebar rows with relative time, worktree name, PR#, diff stats |
+| `sidebar-session-model-mismatch` | 2026-03-19 | Fix sidebar showing 1 row per session instead of 1 row per folder |
+| `workspace-reorder` | 2026-03-19 | Drag-and-drop workspace reordering, sidebar header simplification |
+| `pr-dashboard-usability` | 2026-03-19 | PR dashboard: scroll, links, per-PR session button, search |
+| `branch-lifecycle-fix` | 2026-03-19 | Unique branch names on worktree reuse, auto-rename on first message, display names |
 | `settings-centralization` | 2026-03-19 | Centralize settings resolution server-side; fix sidebar ignoring yolo/agent/tmux defaults |
 | `sidebar-ux-and-branch-pr-bugs` | 2026-03-19 | 7 sidebar fixes: menu readability, triple-dots UX, branch listener, PR filter, grip dots, footer layout, repo branch name |
 | `output-parser-sideband-rename` | 2026-03-19 | Vendor-extensible output parser + sideband branch rename (replaces PTY injection) |
 | `default-repo-session-sidebar-fix` | 2026-03-19 | Fix 6 sidebar bugs: hidden repo root, wrong name, wrong click, missing 2nd row, item order, dots alignment |
 | `sdk-chat-ui-remnant` | 2026-03-19 | Remove dead SDK chat UI code — PTY-only architecture (2,814 lines removed) |
 | `workspace-redesign` | 2026-03-18 | v3 rearchitecture — workspace-first sidebar, PR top bar, multi-tab sessions, terminal aesthetic |
+| `session-persistence-fix` | 2026-03-17 | Fix sessions lost after auto-update restart |
 | `mobile-keyboard-testing` | 2026-03-16 | Fixture-based testing for mobile input event-intent pipeline |
 | `continue-retry-exit-code-fix` | 2026-03-14 | Fix --continue retry to fire regardless of exit code (tmux masks to 0) |
 | `osc52-clipboard-utf8-fix` | 2026-03-13 | Fix OSC 52 clipboard handler to properly decode UTF-8 from base64 |

@@ -12,22 +12,10 @@ Double-clicking a sidenav item (anywhere on the row) should toggle expand/collap
 
 **Scope:** Add click handler to the full row element, distinguish single-click (navigate) from double-click (toggle). **Files:** Sidebar workspace/repo row component.
 
-### Settings page: always-visible sidenav, not hamburger
-The settings modal still renders a hamburger menu toggle even though the left nav IS visible. Remove the hamburger — the ToC sidebar should always be open. Pure CSS/layout fix.
-
-**Scope:** Remove hamburger toggle, make ToC permanently visible within the settings modal. **Files:** Settings modal component, DialogShell.
-
 ### Existing worktrees not detected — duplicate checkout fails
 Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree. The app used to detect existing worktrees and show them in the sidebar, but this is broken — only `everest-9436` shows, not the `rainier` worktree that has `tui-outline-aesthetic` checked out. Should detect all existing worktrees on load, show them in the sidebar, and redirect to the existing worktree instead of trying to create a duplicate.
 
 **Scope:** Fix worktree discovery (likely `git worktree list` parsing is broken or filtered), and fix the "open PR session" flow to check for existing checkouts before `git worktree add`. **Files:** `server/worktree-manager.ts`, sidebar worktree listing, session creation flow.
-
-**Added:** 2026-03-26
-
-### Table scroll fade shows on non-scrollable tables
-The PR table (and likely other DataTable instances) shows a bottom fade/gradient even when there's only 1 row and nothing to scroll. The fade should only appear when the content overflows.
-
-**Scope:** Check whether the table container is actually scrollable before applying the fade CSS. **Files:** DataTable component or table wrapper.
 
 **Added:** 2026-03-26
 

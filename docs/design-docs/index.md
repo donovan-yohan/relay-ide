@@ -12,8 +12,12 @@
 - [2026-03-23-relay-phase2-github-api-design.md](2026-03-23-relay-phase2-github-api-design.md) — GitHub App, GraphQL API, and webhooks integration (Relay Phase 2 of 3)
 - [2026-03-23-relay-phase3-spotlight-identity-design.md](2026-03-23-relay-phase3-spotlight-identity-design.md) — Spotlight command palette, sidebar header, and product identity (Relay Phase 3 of 3)
 - [2026-03-23-relay-review-fixes-design.md](2026-03-23-relay-review-fixes-design.md) — Address 21 review findings from 6-agent PR review of Relay Phases 1-3
+- [2026-03-27-workspace-theme-color-design.md](2026-03-27-workspace-theme-color-design.md) — Color picker in workspace settings, sidebar initial block theming, Claude Code session color matching
+- [2026-03-27-tooltip-and-keyboard-shortcuts-design.md](2026-03-27-tooltip-and-keyboard-shortcuts-design.md) — Reusable tooltip component, centralized keyboard shortcut registry, icon hover context + shortcut display
+- [2026-03-27-open-from-picker-design.md](2026-03-27-open-from-picker-design.md) — Unified branch/PR/issue picker modal, inline workspace action icons, duplicate session handling
 
 ## Archived — Implemented
+- [2026-03-25-tui-design-system-overhaul-design.md](2026-03-25-tui-design-system-overhaul-design.md) — TUI-native component library: 9 new primitives, micro-interactions, alignment architecture
 - [2026-02-21-background-service-design.md](2026-02-21-background-service-design.md) — Background service (launchd/systemd) design
 - [2026-02-21-mobile-toolbar-redesign.md](2026-02-21-mobile-toolbar-redesign.md) — Mobile toolbar redesign
 - [2026-02-21-realtime-worktree-watching.md](2026-02-21-realtime-worktree-watching.md) — Real-time worktree watching design

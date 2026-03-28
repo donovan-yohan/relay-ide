@@ -1,5 +1,6 @@
 # Bug Analyses
 
+- [2026-03-28-hooks-403-after-restart-bug-analysis](2026-03-28-hooks-403-after-restart-bug-analysis.md) — Hook 403 errors after restart — hookToken not serialized, surviving tmux sessions lose auth + TMUX_PREFIX env pollution (2026-03-28)
 - [2026-03-28-bg-pin-setup-blocked-bug-analysis](2026-03-28-bg-pin-setup-blocked-bug-analysis.md) — --bg first-run exits with "No PIN configured" — non-TTY gate blocks server before web setup UI can load (2026-03-28)
 - [2026-03-27-pin-unlock-json-parse-error-bug-analysis](2026-03-27-pin-unlock-json-parse-error-bug-analysis.md) — PIN unlock shows cryptic "Unexpected end of JSON input" — fragile `.json()` on error responses + Express 4 async error gap (2026-03-27)
 - [2026-03-26-worktree-discovery-missing-bug-analysis.md](2026-03-26-worktree-discovery-missing-bug-analysis.md) — Inactive worktrees invisible in sidebar — GET /worktrees only scans rootDirs, not config.workspaces (2026-03-26)

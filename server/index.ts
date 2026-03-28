@@ -14,7 +14,7 @@ import { loadConfig, saveConfig, DEFAULTS, readMeta, writeMeta, deleteMeta, ensu
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
-import { TMUX_PREFIX } from './pty-handler.js';
+import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import { WorktreeWatcher, BranchWatcher, RefWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
@@ -1301,7 +1301,8 @@ async function main(): Promise<void> {
   } else try {
     const adoptedNames = activeTmuxSessionNames();
     const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}']);
-    const orphanedSessions = stdout.trim().split('\n').filter(name => name.startsWith(TMUX_PREFIX) && !adoptedNames.has(name));
+    const tmuxPrefix = getTmuxPrefix();
+    const orphanedSessions = stdout.trim().split('\n').filter(name => name.startsWith(tmuxPrefix) && !adoptedNames.has(name));
     for (const name of orphanedSessions) {
       execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
     }
