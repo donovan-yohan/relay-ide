@@ -94,6 +94,24 @@ describe('getFileDiff', () => {
     assert.equal(diff, 'branch diff output');
   });
 
+  it('falls back to --no-index for untracked files when first diff is empty', async () => {
+    let callCount = 0;
+    const diff = await getFileDiff('/tmp/repo', 'new-file.ts', undefined, async (_file, args) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: git diff returns empty (untracked file)
+        return { stdout: '', stderr: '' };
+      }
+      // Second call: git diff --no-index exits with code 1 but has stdout
+      assert.ok(args.includes('--no-index'));
+      const err = new Error('exit code 1') as Error & { stdout: string };
+      err.stdout = 'diff --git a/dev/null b/new-file.ts\n+++ b/new-file.ts\n+content\n';
+      throw err;
+    });
+    assert.ok(diff.includes('+content'));
+    assert.equal(callCount, 2);
+  });
+
   it('returns empty string on git failure', async () => {
     const diff = await getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
       throw new Error('git failed');

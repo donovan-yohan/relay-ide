@@ -982,10 +982,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
+    // Validate path against configured workspaces
+    const resolvedRepo = path.resolve(repoPath);
+    const allowedPaths = getConfig().workspaces ?? [];
+    if (!allowedPaths.some(p => resolvedRepo === p || resolvedRepo.startsWith(p + path.sep))) {
+      res.status(403).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path not in configured workspaces' });
+      return;
+    }
+
     const base = req.query.base as string | undefined;
 
     try {
-      const files = await getChangedFiles(repoPath, base, exec);
+      const files = await getChangedFiles(resolvedRepo, base, exec);
       const aggregate = {
         additions: files.reduce((sum, f) => sum + f.additions, 0),
         deletions: files.reduce((sum, f) => sum + f.deletions, 0),
@@ -1006,10 +1014,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
+    // Validate path against configured workspaces
+    const resolvedRepo = path.resolve(repoPath);
+    const allowedPaths = getConfig().workspaces ?? [];
+    if (!allowedPaths.some(p => resolvedRepo === p || resolvedRepo.startsWith(p + path.sep))) {
+      res.status(403).json({ diff: '', error: 'path not in configured workspaces' });
+      return;
+    }
+
     const base = req.query.base as string | undefined;
 
     try {
-      const diff = await getFileDiff(repoPath, filePath, base, exec);
+      const diff = await getFileDiff(resolvedRepo, filePath, base, exec);
       res.json({ diff });
     } catch {
       res.status(500).json({ diff: '', error: 'Failed to get file diff' });

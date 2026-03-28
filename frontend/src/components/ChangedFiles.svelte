@@ -22,6 +22,7 @@
   let expandedFile = $state<string | null>(null);
   let fileDiff = $state<string>('');
   let diffLoading = $state(false);
+  let diffError = $state<string | undefined>(undefined);
   let sortBy = $state('path');
   let sortDir = $state<'asc' | 'desc'>('asc');
 
@@ -72,7 +73,8 @@
       files = data.files;
       aggregate = data.aggregate;
       error = data.error;
-    } catch {
+    } catch (err: unknown) {
+      console.error('[ChangedFiles] refresh failed:', err instanceof Error ? err.message : String(err));
       error = 'Failed to fetch changed files';
       files = [];
     } finally {
@@ -104,13 +106,21 @@
     }
     expandedFile = file.path;
     diffLoading = true;
+    diffError = undefined;
     try {
       const data = await fetchFileDiff(workspacePath, file.path, base);
-      fileDiff = data.diff;
-      if (!file.summary && fileDiff) {
-        file.summary = generateFileSummary(fileDiff, file.path, file.status);
+      if (data.error) {
+        diffError = data.error;
+        fileDiff = '';
+      } else {
+        fileDiff = data.diff;
+        if (!file.summary && fileDiff) {
+          file.summary = generateFileSummary(fileDiff, file.path, file.status);
+        }
       }
-    } catch {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'unknown error';
+      diffError = `failed to load diff: ${message}`;
       fileDiff = '';
     } finally {
       diffLoading = false;
@@ -173,7 +183,11 @@
           </div>
           {#if expandedFile === file.path}
             <div class="inline-diff">
-              <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+              {#if diffError}
+                <div class="diff-error">{diffError}</div>
+              {:else}
+                <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+              {/if}
             </div>
           {/if}
         {/snippet}
@@ -193,7 +207,11 @@
             {/if}
             {#if expandedFile === file.path}
               <div class="inline-diff">
-                <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+                {#if diffError}
+                  <div class="diff-error">{diffError}</div>
+                {:else}
+                  <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+                {/if}
               </div>
             {/if}
           </button>
@@ -245,6 +263,13 @@
 
   .stat-add { color: var(--status-success, #4ade80); }
   .stat-del { color: var(--status-error, #f87171); }
+
+  .diff-error {
+    padding: 8px 12px;
+    color: var(--status-error, #f87171);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+  }
 
   .expand-indicator {
     flex-shrink: 0;

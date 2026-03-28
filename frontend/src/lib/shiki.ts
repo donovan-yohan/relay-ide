@@ -3,7 +3,8 @@ import type { ThemedToken } from 'shiki';
 
 export type { ThemedToken };
 
-// Custom TUI theme matching DESIGN.md colors
+// Custom TUI syntax highlighting theme. Background is transparent to inherit the terminal surface.
+// Token colors complement the DESIGN.md palette but are not formally defined there.
 const tuiTheme = {
   name: 'tui',
   type: 'dark' as const,

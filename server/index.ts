@@ -437,6 +437,10 @@ async function main(): Promise<void> {
   const restoredCount = await restoreFromDisk(configDir, getConfig().workspaces ?? []);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
+    // Start git watching for restored sessions
+    for (const session of sessions.list()) {
+      gitWatcher.watch(session.cwd);
+    }
   }
 
   // Populate session metadata cache in background (non-blocking)
@@ -1328,6 +1332,7 @@ async function main(): Promise<void> {
     closeAnalytics();
     branchWatcher.close();
     refWatcher.close();
+    gitWatcher.close();
     server.close();
     // Serialize sessions to disk BEFORE killing them
     const configDir = path.dirname(CONFIG_PATH);

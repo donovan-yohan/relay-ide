@@ -27,15 +27,16 @@
   interface ParsedDiff {
     rawLines: RawLine[];
     hunkHeaders: Array<{ index: number; content: string }>;
+    hunkHeaderMap: Map<number, string>;
     lang: string;
   }
 
   // Synchronous parse — safe for $derived.by (async result handled in $effect below)
   const parsed = $derived.by<ParsedDiff>(() => {
-    if (!diff) return { rawLines: [], hunkHeaders: [], lang: 'javascript' };
+    if (!diff) return { rawLines: [], hunkHeaders: [], hunkHeaderMap: new Map(), lang: 'javascript' };
 
     const files: DiffFile[] = parse(diff);
-    if (files.length === 0) return { rawLines: [], hunkHeaders: [], lang: 'javascript' };
+    if (files.length === 0) return { rawLines: [], hunkHeaders: [], hunkHeaderMap: new Map(), lang: 'javascript' };
 
     const file = files[0]!;
     const lang = detectLanguage(filePath);
@@ -58,7 +59,9 @@
       }
     }
 
-    return { rawLines, hunkHeaders, lang };
+    const hunkHeaderMap = new Map<number, string>();
+    for (const h of hunkHeaders) hunkHeaderMap.set(h.index, h.content);
+    return { rawLines, hunkHeaders, hunkHeaderMap, lang };
   });
 
   // Highlighted lines — starts as plain, updated asynchronously by $effect
@@ -79,8 +82,8 @@
         ...line,
         tokens: tokenLines[i] ?? null,
       }));
-    }).catch(() => {
-      // keep plain text on failure — lines already set above
+    }).catch((err: unknown) => {
+      console.warn('[DiffViewer] Shiki tokenization failed:', err);
     });
   });
 </script>
@@ -93,8 +96,8 @@
   {:else}
     <div class="diff-content">
       {#each lines as line, i (i)}
-        {#if parsed.hunkHeaders.find(h => h.index === i)}
-          <div class="hunk-header">{parsed.hunkHeaders.find(h => h.index === i)?.content ?? ''}</div>
+        {#if parsed.hunkHeaderMap.has(i)}
+          <div class="hunk-header">{parsed.hunkHeaderMap.get(i) ?? ''}</div>
         {/if}
         <div
           class="diff-line {line.type}"

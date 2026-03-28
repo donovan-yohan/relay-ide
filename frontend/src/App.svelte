@@ -63,6 +63,14 @@
   // Component refs — must be $state() so $effect can track bind:this assignments
   let terminalRef = $state<Terminal | undefined>();
   let changedFilesRef = $state<ChangedFiles | undefined>();
+  let changedFilesThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  function throttledChangedFilesRefresh() {
+    if (changedFilesThrottleTimer) return;
+    changedFilesThrottleTimer = setTimeout(() => {
+      changedFilesThrottleTimer = null;
+      changedFilesRef?.refresh();
+    }, 2000);
+  }
   let imageToastRef = $state<ImageToast | undefined>();
   let customizeDialogRef = $state<CustomizeSessionDialog | undefined>();
   let settingsDialogRef = $state<SettingsDialog | undefined>();
@@ -322,7 +330,7 @@
       } else if (msg.type === 'files-changed') {
         changedFilesRef?.refresh();
       } else if (msg.type === 'session-activity-changed') {
-        changedFilesRef?.refresh();
+        throttledChangedFilesRefresh();
       }
     });
 

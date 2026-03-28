@@ -720,8 +720,10 @@ async function getChangedFiles(
         const code = entry.slice(0, 2);
         const filePath = entry.slice(3);
         if (code.startsWith('R')) {
-          const newPath = parts[++i] ?? filePath;
-          statusEntries.push({ path: newPath, oldPath: filePath, status: 'renamed' });
+          // porcelain=v1 -z: rename record is XY <newname>\0<origname>\0
+          // filePath (entry.slice(3)) is the new name, parts[i+1] is the old name
+          const oldPath = parts[++i] ?? filePath;
+          statusEntries.push({ path: filePath, oldPath, status: 'renamed' });
         } else {
           statusEntries.push({ path: filePath, status: parseStatus(code) });
         }
@@ -746,8 +748,8 @@ async function getChangedFiles(
           deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
         });
       }
-    } catch {
-      // numstat failed — proceed with zeros
+    } catch (err: unknown) {
+      console.warn('[git] numstat failed for', repoPath, err instanceof Error ? err.message : String(err));
     }
 
     const files: ChangedFile[] = [];
@@ -778,7 +780,8 @@ async function getChangedFiles(
     }
 
     return files;
-  } catch {
+  } catch (err: unknown) {
+    console.warn('[git] getChangedFiles failed for', repoPath, err instanceof Error ? err.message : String(err));
     return [];
   }
 }
@@ -814,7 +817,8 @@ async function getFileDiff(
     }
 
     return stdout;
-  } catch {
+  } catch (err: unknown) {
+    console.warn('[git] getFileDiff failed for', repoPath, filePath, err instanceof Error ? err.message : String(err));
     return '';
   }
 }
