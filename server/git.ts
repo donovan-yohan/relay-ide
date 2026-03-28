@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ActivityEntry, BranchInfo, ChangedFile, CiStatus, FileChangeStatus, PrInfo } from './types.js';
+import type { ActivityEntry, BranchInfo, BranchLifecycleState, ChangedFile, CiStatus, FileChangeStatus, PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -284,6 +284,72 @@ async function getPrForBranch(
   } catch {
     return null;
   }
+}
+
+/**
+ * Batch-fetch all PRs for a repo in a single `gh pr list` call.
+ * Returns a Map of headRefName → PrInfo for quick branch lookup.
+ * Includes both open and closed/merged PRs (up to 100 most recent).
+ */
+async function batchGetPrsForRepo(
+  repoPath: string,
+  options: { exec?: ExecFileAsyncLike } = {},
+): Promise<Map<string, PrInfo>> {
+  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const prMap = new Map<string, PrInfo>();
+
+  try {
+    const { stdout } = await run(
+      'gh',
+      [
+        'pr', 'list',
+        '--state', 'all',
+        '--limit', '100',
+        '--json',
+        'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
+      ],
+      { cwd: repoPath, timeout: 10000 },
+    );
+
+    if (!stdout.trim()) return prMap;
+
+    const prs = JSON.parse(stdout) as Array<{
+      number: number;
+      title: string;
+      url: string;
+      state: string;
+      headRefName: string;
+      baseRefName: string;
+      isDraft: boolean;
+      reviewDecision: string | null;
+      additions: number;
+      deletions: number;
+      mergeable: string;
+      updatedAt: string;
+    }>;
+
+    for (const data of prs) {
+      prMap.set(data.headRefName, {
+        number: data.number,
+        title: data.title,
+        url: data.url,
+        state: data.state as PrInfo['state'],
+        headRefName: data.headRefName,
+        baseRefName: data.baseRefName,
+        isDraft: data.isDraft,
+        reviewDecision: data.reviewDecision ?? null,
+        additions: data.additions ?? 0,
+        deletions: data.deletions ?? 0,
+        mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
+        unresolvedCommentCount: 0,
+        updatedAt: data.updatedAt ?? '',
+      });
+    }
+  } catch (err) {
+    console.warn('[git] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
+  }
+
+  return prMap;
 }
 
 async function switchBranch(
@@ -846,6 +912,105 @@ function isStalePr(pr: PrInfo): boolean {
   return elapsed > ONE_DAY_MS;
 }
 
+interface EnsureBranchResult {
+  found: boolean;
+  reason?: 'not_found' | 'fetch_failed';
+}
+
+function isGitRefNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const stderr = (error as { stderr?: string }).stderr ?? '';
+  const message = (error as { message?: string }).message ?? '';
+  const text = stderr || message;
+  return (
+    text.includes('Needed a single revision') ||
+    text.includes('unknown revision or path not in the working tree') ||
+    text.includes('ambiguous argument') ||
+    text.includes("couldn't find remote ref") ||
+    text.includes('could not find remote ref') ||
+    text.includes('not something we can merge') ||
+    text.includes('fatal: bad revision')
+  );
+}
+
+/**
+ * Ensure a branch ref exists locally. If not, fetch it from origin.
+ * Returns { found: true } if the branch is now available locally,
+ * { found: false, reason: 'not_found' } if it doesn't exist anywhere,
+ * or { found: false, reason: 'fetch_failed' } if the fetch failed unexpectedly.
+ * Rethrows non-git errors (permissions, timeouts, corrupt repo) so callers
+ * can distinguish "branch doesn't exist" from "git is broken".
+ */
+async function ensureBranchLocal(
+  repoPath: string,
+  branch: string,
+  options: { exec?: ExecFileAsyncLike } = {},
+): Promise<EnsureBranchResult> {
+  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+
+  // Check if branch exists locally
+  try {
+    await run('git', ['rev-parse', '--verify', '--', branch], { cwd: repoPath, timeout: 5000 });
+    return { found: true };
+  } catch (error) {
+    if (!isGitRefNotFoundError(error)) {
+      throw error; // permissions, timeout, corrupt repo — surface to caller
+    }
+    // Not found locally — try fetching
+  }
+
+  // Fetch from origin
+  try {
+    await run('git', ['fetch', 'origin', '--', `${branch}:${branch}`], { cwd: repoPath, timeout: 30000 });
+    return { found: true };
+  } catch (error) {
+    if (isGitRefNotFoundError(error)) {
+      return { found: false, reason: 'not_found' };
+    }
+    // Network failures, auth errors, DNS issues — distinct from "branch doesn't exist"
+    return { found: false, reason: 'fetch_failed' };
+  }
+}
+
+/** Check if a PR is in MERGED state (immediate check, no 24h delay like isStalePr). */
+function isPrMerged(pr: PrInfo): boolean {
+  return pr.state === 'MERGED';
+}
+
+interface BranchLifecycleInput {
+  pr: PrInfo | null;
+  isBranchStale: boolean;
+  hasActiveSessions: boolean;
+  isMainBranch: boolean;
+}
+
+interface BranchLifecycleResult {
+  state: BranchLifecycleState;
+  prNumber?: number;
+  prTitle?: string;
+}
+
+/**
+ * Compute branch lifecycle state from authoritative sources.
+ * Main branch can be active/stale but never merged.
+ */
+function computeBranchLifecycleState(input: BranchLifecycleInput): BranchLifecycleResult {
+  const { pr, isBranchStale: stale, hasActiveSessions, isMainBranch } = input;
+
+  // Merged: PR is merged AND not the main branch
+  if (pr && isPrMerged(pr) && !isMainBranch) {
+    return { state: 'merged', prNumber: pr.number, prTitle: pr.title };
+  }
+
+  // Active: has sessions OR branch is not stale
+  if (hasActiveSessions || !stale) {
+    return { state: 'active' };
+  }
+
+  // Stale: no sessions AND branch is stale (0 commits ahead of main)
+  return { state: 'stale' };
+}
+
 export {
   listBranches,
   listBranchesEnriched,
@@ -869,4 +1034,9 @@ export {
   pushBranch,
   getChangedFiles,
   getFileDiff,
+  ensureBranchLocal,
+  isPrMerged,
+  computeBranchLifecycleState,
+  batchGetPrsForRepo,
 };
+export type { EnsureBranchResult };

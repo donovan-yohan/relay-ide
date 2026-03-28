@@ -24,7 +24,7 @@ Twenty-seven TypeScript modules compiled to `dist/server/` via `tsc`. Modules co
 | `workspaces.ts` | Workspace CRUD (replaces roots), Express Router: dashboard, settings, CI status, branch switch, path autocomplete |
 | `sessions.ts` | Session registry: routes `create()` to pty-handler, lifecycle ops, idle sweep |
 | `pty-handler.ts` | PTY session creation via node-pty, scrollback buffering (256KB), tmux wrapping, continue-retry |
-| `git.ts` | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch; exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
+| `git.ts` | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
 | `ws.ts` | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input; unit-tested via JSON fixtures |
 | `utils.ts` | Shared server utilities |

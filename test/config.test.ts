@@ -144,7 +144,7 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   const result = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(result.agent, 'claude');
   assert.equal(result.yolo, false);
-  assert.equal(result.continue, true);
+  assert.equal(result.continuePolicy, 'always');
   assert.equal(result.useTmux, false);
   assert.deepEqual(result.claudeArgs, []);
 });
@@ -165,7 +165,7 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
   const result = resolveSessionSettings(config, '/my/repo', {});
   assert.equal(result.agent, 'codex');
   assert.equal(result.yolo, true);
-  assert.equal(result.continue, true);
+  assert.equal(result.continuePolicy, 'always');
 });
 
 test('resolveSessionSettings explicit overrides beat workspace settings', () => {
@@ -212,7 +212,7 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   const result = resolveSessionSettings(config, '/nonexistent/repo', {});
   assert.equal(result.agent, 'codex');
   assert.equal(result.yolo, true);
-  assert.equal(result.continue, false);
+  assert.equal(result.continuePolicy, 'never');
   assert.equal(result.useTmux, true);
   assert.deepEqual(result.claudeArgs, ['--verbose']);
 });
@@ -311,4 +311,37 @@ test('workspaceGroups with all-invalid paths removes empty group', () => {
   }), 'utf8');
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups!['Ghost Group'], undefined);
+});
+
+test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: true }), 'utf8');
+  const config = loadConfig(configPath);
+  const resolved = resolveSessionSettings(config, '/some/repo', {});
+  assert.equal(resolved.continuePolicy, 'always');
+});
+
+test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: false }), 'utf8');
+  const config = loadConfig(configPath);
+  const resolved = resolveSessionSettings(config, '/some/repo', {});
+  assert.equal(resolved.continuePolicy, 'never');
+});
+
+test('resolveSessionSettings respects explicit continuePolicy override', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: true }), 'utf8');
+  const config = loadConfig(configPath);
+  const resolved = resolveSessionSettings(config, '/some/repo', { continuePolicy: 'never' });
+  assert.equal(resolved.continuePolicy, 'never');
+});
+
+test('resolveSessionSettings defaults continuePolicy to always when defaultContinue is missing', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+  const config = loadConfig(configPath);
+  const resolved = resolveSessionSettings(config, '/some/repo', {});
+  // defaultContinue defaults to true via DEFAULTS, so maps to 'always'
+  assert.equal(resolved.continuePolicy, 'always');
 });

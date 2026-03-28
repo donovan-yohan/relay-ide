@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentType, AgentState, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
+import type { AgentType, AgentState, ContinuePolicy, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
@@ -78,6 +78,7 @@ export type CreatePtyParams = {
   configPath?: string | undefined;
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
+  tmuxDisplayName?: string | undefined;
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;
@@ -86,6 +87,7 @@ export type CreatePtyParams = {
   claudeArgs?: string[] | undefined;
   hookToken?: string | undefined;
   hooksActive?: boolean | undefined;
+  continuePolicy?: ContinuePolicy | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -157,7 +159,7 @@ export function createPtySession(
   const useTmux = !command && !!paramUseTmux;
   let spawnCommand = resolvedCommand;
   let spawnArgs = args;
-  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(displayName || repoName || path.basename(cwd) || 'session', id) : '');
+  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(params.tmuxDisplayName || displayName || repoName || path.basename(cwd) || 'session', id) : '');
 
   if (useTmux) {
     const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);
@@ -209,6 +211,7 @@ export function createPtySession(
     cleanedUp: false,
     yolo: paramYolo ?? false,
     claudeArgs: paramClaudeArgs ?? [],
+    continuePolicy: params.continuePolicy ?? 'never',
     _lastHookTime: undefined,
   };
   sessionsMap.set(id, session);
