@@ -9,7 +9,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { loadConfig, saveConfig, getWorkspaceSettings, setWorkspaceSettings, deleteWorkspaceSettingKeys, writeMeta, readMeta } from './config.js';
-import { findOrCreateWorktreeForBranch } from './watcher.js';
+import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, ensureBranchLocal } from './git.js';
 import type { Config, PrInfo, PullRequest, PullRequestsResponse, Workspace } from './types.js';
@@ -673,8 +673,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     if (existingBranch) {
       // Ensure branch exists locally (fetch from remote if needed)
-      const branchResult = await ensureBranchLocal(resolved, existingBranch, { exec });
+      let branchResult: { found: boolean; reason?: 'not_found' | 'fetch_failed' };
+      try {
+        branchResult = await ensureBranchLocal(resolved, existingBranch, { exec });
+      } catch (err) {
+        console.error('[workspaces] ensureBranchLocal failed unexpectedly:', err instanceof Error ? err.message : err);
+        res.status(500).json({ error: 'Git operation failed' });
+        return;
+      }
       if (!branchResult.found) {
+        if (branchResult.reason === 'fetch_failed') {
+          res.status(502).json({
+            error: 'fetch_failed',
+            branch: existingBranch,
+            remote: 'origin',
+          });
+          return;
+        }
         res.status(404).json({
           error: 'branch_not_found',
           branch: existingBranch,
@@ -701,13 +716,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           worktreePath: result.worktreePath,
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.startsWith('branch_checked_out_in_main:')) {
+        if (err instanceof BranchCheckedOutInMainError) {
           res.status(409).json({
             error: 'branch_checked_out_in_main',
-            repoPath: resolved,
+            repoPath: err.repoPath,
           });
         } else {
+          const msg = err instanceof Error ? err.message : String(err);
           res.status(500).json({ error: `Failed to create worktree: ${msg}` });
         }
       }

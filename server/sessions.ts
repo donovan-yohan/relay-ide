@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AgentType, AgentState, BackendDisplayState, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
+import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { createPtySession } from './pty-handler.js';
@@ -34,7 +34,7 @@ interface SerializedPtySession {
   hooksActive?: boolean;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  continuePolicy?: 'always' | 'never';
+  continuePolicy?: ContinuePolicy;
 }
 
 interface PendingSessionsFile {
@@ -469,6 +469,7 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         claudeArgs: s.claudeArgs ?? [],
         hookToken: s.hookToken,
         hooksActive: s.hooksActive,
+        continuePolicy: s.continuePolicy ?? 'never',
         ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
         ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
       };

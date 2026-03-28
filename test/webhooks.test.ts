@@ -161,59 +161,37 @@ describe('webhook handler', () => {
 });
 
 describe('webhook merge detection', () => {
-  it('pull_request.closed with merged:true broadcasts worktrees-changed', () => {
-    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
-    const broadcastEvent = (type: string, data?: Record<string, unknown>) => {
-      if (data !== undefined) {
-        events.push({ type, data });
-      } else {
-        events.push({ type });
-      }
-    };
+  before(() => startServer());
+  after(() => stopServer());
 
-    // Simulate the behavior: merged PR should produce both events
-    const event = 'pull_request';
-    const payload = {
-      action: 'closed',
-      pull_request: { merged: true, head: { ref: 'fix/auth' } },
-      repository: { full_name: 'owner/repo' },
-    };
-
-    // Replicate the webhook handler logic
-    broadcastEvent('pr-updated', { repo: payload.repository.full_name });
-    if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged) {
-      broadcastEvent('worktrees-changed');
-    }
-
-    assert.equal(events.length, 2);
-    assert.equal(events[0]!.type, 'pr-updated');
-    assert.equal(events[1]!.type, 'worktrees-changed');
+  it('pull_request.closed with merged:true broadcasts pr-updated and worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: true, head: { ref: 'fix/auth' } },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    assert.equal(res.status, 200);
+    const types = broadcasts.map(b => b.type);
+    assert.deepEqual(types, ['pr-updated', 'worktrees-changed']);
   });
 
-  it('pull_request.closed without merge does not broadcast worktrees-changed', () => {
-    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
-    const broadcastEvent = (type: string, data?: Record<string, unknown>) => {
-      if (data !== undefined) {
-        events.push({ type, data });
-      } else {
-        events.push({ type });
-      }
-    };
-
-    const event = 'pull_request';
-    const payload = {
-      action: 'closed',
-      pull_request: { merged: false },
-      repository: { full_name: 'owner/repo' },
-    };
-
-    broadcastEvent('pr-updated', { repo: payload.repository.full_name });
-    if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged) {
-      broadcastEvent('worktrees-changed');
-    }
-
-    assert.equal(events.length, 1);
-    assert.equal(events[0]!.type, 'pr-updated');
+  it('pull_request.closed without merge does not broadcast worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: false },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    assert.equal(res.status, 200);
+    const types = broadcasts.map(b => b.type);
+    assert.deepEqual(types, ['pr-updated']);
   });
 });
 

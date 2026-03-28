@@ -19,7 +19,7 @@ import { setupWebSocket } from './ws.js';
 import { WorktreeWatcher, BranchWatcher, RefWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
-import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState } from './git.js';
+import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState, batchGetPrsForRepo } from './git.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
@@ -34,7 +34,7 @@ import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
 import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
-import type { AgentType, AutomationSettings, Config } from './types.js';
+import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -783,7 +783,19 @@ async function main(): Promise<void> {
     });
 
     // Compute branch lifecycle state for each worktree
+    // Batch PR lookups per repo to avoid N subprocess spawns
     const activeSessions = sessions.list();
+    const uniqueRepos = [...new Set(unique.map(wt => wt.repoPath))];
+    const prMaps = new Map<string, Map<string, import('./types.js').PrInfo>>();
+    await Promise.all(uniqueRepos.map(async (repoPath) => {
+      try {
+        prMaps.set(repoPath, await batchGetPrsForRepo(repoPath));
+      } catch (err) {
+        console.warn('[worktrees] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
+        prMaps.set(repoPath, new Map());
+      }
+    }));
+
     await Promise.all(unique.map(async (wt) => {
       try {
         const hasActiveSessions = activeSessions.some(s => s.worktreePath === wt.path || s.cwd === wt.path);
@@ -796,11 +808,14 @@ async function main(): Promise<void> {
           console.warn('[worktrees] isBranchStale failed for', wt.branchName, err instanceof Error ? err.message : err);
         }
 
-        let pr: import('./types.js').PrInfo | null = null;
-        try {
-          pr = await getPrForBranch(wt.repoPath, wt.branchName);
-        } catch (err) {
-          console.warn('[worktrees] getPrForBranch failed for', wt.branchName, err instanceof Error ? err.message : err);
+        // Look up PR from batched result; fall back to per-branch call on cache miss
+        let pr = prMaps.get(wt.repoPath)?.get(wt.branchName) ?? null;
+        if (!pr) {
+          try {
+            pr = await getPrForBranch(wt.repoPath, wt.branchName);
+          } catch (err) {
+            console.warn('[worktrees] getPrForBranch failed for', wt.branchName, err instanceof Error ? err.message : err);
+          }
         }
 
         const lifecycle = computeBranchLifecycleState({
@@ -811,8 +826,8 @@ async function main(): Promise<void> {
         });
 
         wt.branchState = lifecycle.state;
-        if (lifecycle.prNumber) wt.prNumber = lifecycle.prNumber;
-        if (lifecycle.prTitle) wt.prTitle = lifecycle.prTitle;
+        if (lifecycle.prNumber != null) wt.prNumber = lifecycle.prNumber;
+        if (lifecycle.prTitle != null) wt.prTitle = lifecycle.prTitle;
       } catch (err) {
         console.error('[worktrees] lifecycle computation failed for', wt.path, err);
         wt.branchState = 'active';
@@ -831,6 +846,17 @@ async function main(): Promise<void> {
     }
 
     const resolved = path.resolve(worktreePath);
+
+    // Validate the path is a recognized worktree — don't allow arbitrary filesystem probing
+    if (!isValidWorktreePath(resolved)) {
+      res.status(400).json({ error: 'Path is not inside a worktree directory' });
+      return;
+    }
+
+    if (!fs.existsSync(resolved)) {
+      res.status(404).json({ error: 'Worktree not found' });
+      return;
+    }
 
     // Check for active sessions in this worktree
     const allSessions = sessions.list();
@@ -1051,17 +1077,27 @@ async function main(): Promise<void> {
       }
     }
 
-    // If force: kill active sessions in this worktree first
+    // Check for active sessions in this worktree
+    const allSessions = sessions.list();
+    const resolvedPath = path.resolve(worktreePath);
+    const worktreeSessions = allSessions.filter(s => s.worktreePath === resolvedPath || s.cwd === resolvedPath);
+
+    if (worktreeSessions.length > 0 && !force) {
+      // Non-force delete with active sessions: reject to prevent killing PTYs unexpectedly
+      res.status(409).json({
+        error: 'active_sessions',
+        sessionIds: worktreeSessions.map(s => s.id),
+      });
+      return;
+    }
+
+    // Force: kill active sessions in this worktree first
     if (force) {
-      const allSessions = sessions.list();
-      const resolvedPath = path.resolve(worktreePath);
-      for (const s of allSessions) {
-        if (s.worktreePath === resolvedPath || s.cwd === resolvedPath) {
-          try {
-            sessions.kill(s.id);
-          } catch (err) {
-            console.warn(`[worktrees] failed to kill session ${s.id}:`, err instanceof Error ? err.message : err);
-          }
+      for (const s of worktreeSessions) {
+        try {
+          sessions.kill(s.id);
+        } catch (err) {
+          console.warn(`[worktrees] failed to kill session ${s.id}:`, err instanceof Error ? err.message : err);
         }
       }
     }
@@ -1136,7 +1172,7 @@ async function main(): Promise<void> {
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
-      continuePolicy?: 'always' | 'never';
+      continuePolicy?: ContinuePolicy;
       ticketContext?: { ticketId: string; title: string; description?: string; url: string; source: 'github' | 'jira'; repoPath: string; repoName: string };
     };
 
@@ -1251,8 +1287,8 @@ async function main(): Promise<void> {
 
     // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
     // UI displayName stays as "Agent N" — tmux name and UI name are independent
-    const branchForTmux = (requestBranchName || '').replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
-    const tmuxDisplayName = branchForTmux ? `${name}-${branchForTmux}` : name;
+    // generateTmuxSessionName handles all sanitization and truncation
+    const tmuxDisplayName = requestBranchName ? `${name}-${requestBranchName}` : name;
 
     const session = sessions.create({
       type: 'agent',

@@ -8,6 +8,15 @@ const execFileAsync = promisify(execFile);
 
 export const WORKTREE_DIRS = ['.worktrees', '.claude/worktrees'];
 
+export class BranchCheckedOutInMainError extends Error {
+  readonly repoPath: string;
+  constructor(repoPath: string) {
+    super(`Branch is checked out in main worktree: ${repoPath}`);
+    this.name = 'BranchCheckedOutInMainError';
+    this.repoPath = repoPath;
+  }
+}
+
 function closeWatchers(watchers: fs.FSWatcher[]): void {
   for (const w of watchers) {
     try { w.close(); } catch (_) {}
@@ -100,7 +109,7 @@ export async function findOrCreateWorktreeForBranch(
       if (entry.branch === branch) {
         if (entry.isMain) {
           // Branch is checked out in the main repo — caller should open a repo-root session
-          throw new Error(`branch_checked_out_in_main:${repoPath}`);
+          throw new BranchCheckedOutInMainError(repoPath);
         }
         // Branch is in an existing sub-worktree — reuse it
         return {
@@ -113,7 +122,7 @@ export async function findOrCreateWorktreeForBranch(
     }
   } catch (err) {
     // Re-throw our own error
-    if (err instanceof Error && err.message.startsWith('branch_checked_out_in_main:')) {
+    if (err instanceof BranchCheckedOutInMainError) {
       throw err;
     }
     // git worktree list failed — proceed with creation attempt

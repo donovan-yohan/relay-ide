@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch } from '../server/watcher.js';
+import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch, BranchCheckedOutInMainError } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 import { generateTmuxSessionName } from '../server/pty-handler.js';
 
@@ -500,8 +500,8 @@ describe('findOrCreateWorktreeForBranch', () => {
       await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
       assert.fail('Expected error to be thrown');
     } catch (err) {
-      assert.ok(err instanceof Error);
-      assert.ok(err.message.includes('branch_checked_out_in_main'));
+      assert.ok(err instanceof BranchCheckedOutInMainError);
+      assert.equal(err.repoPath, repoPath);
     }
   });
 

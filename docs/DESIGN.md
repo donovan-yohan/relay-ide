@@ -61,7 +61,7 @@ Sessions are typed as `'agent' | 'terminal'`. All sessions carry a `workspacePat
 - **Terminal sessions** — A bare shell spawned in either the workspace root or a worktree. Useful for running commands alongside agent sessions.
 - **Worktree creation** — `POST /workspaces/worktree` creates a new git worktree with the next mountain name (everest, kilimanjaro, denali, ...) tracked per-config via `nextMountainIndex`. The frontend then calls `POST /sessions` with the returned `worktreePath` to start a session in the new worktree. `POST /sessions` does not create worktrees itself.
 - **Branch auto-rename** — New worktrees with mountain names get `needsBranchRename: true`. The rename instruction is delivered via a sideband `claude -p` invocation (a one-shot non-interactive Claude process) rather than PTY injection, keeping the main session's input stream clean. The `BranchWatcher` (`server/watcher.ts`) uses `fs.watch` on `.git/HEAD` files to detect branch changes reactively and broadcasts `session-renamed` when a branch changes. Additionally, `GET /sessions` enriches session data with live branch names (rate-limited to 10s intervals).
-- **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted.
+- **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted. Returns 409 if active sessions exist in the worktree (use `force: true` to kill sessions first). `GET /worktrees/status` provides pre-cleanup checks (active sessions, uncommitted changes) and validates that the path is a recognized worktree directory.
 
 ## Session State Detection
 
