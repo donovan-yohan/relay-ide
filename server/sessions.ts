@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AgentType, AgentState, BackendDisplayState, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
+import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { createPtySession } from './pty-handler.js';
@@ -30,6 +30,11 @@ interface SerializedPtySession {
   customCommand: string | null;
   yolo?: boolean;
   claudeArgs?: string[];
+  hookToken?: string;
+  hooksActive?: boolean;
+  needsBranchRename?: boolean;
+  branchRenamePrompt?: string;
+  continuePolicy?: ContinuePolicy;
 }
 
 interface PendingSessionsFile {
@@ -44,7 +49,7 @@ type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  initialPrompt?: string | undefined;
+  initialPrompt?: string;
 };
 
 type CreateResult = SessionSummary & { pid: number | undefined };
@@ -321,6 +326,11 @@ function serializeAll(configDir: string): void {
       customCommand: session.customCommand,
       yolo: session.yolo,
       claudeArgs: session.claudeArgs,
+      hookToken: session.hookToken,
+      hooksActive: session.hooksActive,
+      continuePolicy: session.continuePolicy,
+      ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
+      ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
     });
   }
 
@@ -472,6 +482,11 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         restored: true,
         yolo: s.yolo ?? false,
         claudeArgs: s.claudeArgs ?? [],
+        hookToken: s.hookToken,
+        hooksActive: s.hooksActive,
+        continuePolicy: s.continuePolicy ?? 'never',
+        ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
+        ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;

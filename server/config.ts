@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, FilterPreset, Workspace, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type { AgentType, Config, ContinuePolicy, FilterPreset, Workspace, WorkspaceSettings, WorktreeMetadata } from './types.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
@@ -186,7 +186,7 @@ export function getRepoSettings(config: Config, repoPath: string): WorkspaceSett
 export interface ResolvedSessionSettings {
   agent: AgentType;
   yolo: boolean;
-  continue: boolean;
+  continuePolicy: ContinuePolicy;
   useTmux: boolean;
   claudeArgs: string[];
 }
@@ -194,7 +194,7 @@ export interface ResolvedSessionSettings {
 export interface SessionSettingsOverrides {
   agent?: AgentType | undefined;
   yolo?: boolean | undefined;
-  continue?: boolean | undefined;
+  continuePolicy?: ContinuePolicy | undefined;
   useTmux?: boolean | undefined;
   claudeArgs?: string[] | undefined;
 }
@@ -224,10 +224,14 @@ export function resolveSessionSettings(
   // Merge: repo overrides workspace overrides global
   const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
 
+  // Map boolean defaultContinue → ContinuePolicy for backward compat
+  const configPolicy: ContinuePolicy = merged.defaultContinuePolicy
+    ?? (merged.defaultContinue ? 'always' : 'never');
+
   return {
     agent: overrides.agent ?? merged.defaultAgent ?? 'claude' as AgentType,
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
-    continue: overrides.continue ?? merged.defaultContinue ?? true,
+    continuePolicy: overrides.continuePolicy ?? configPolicy,
     useTmux: overrides.useTmux ?? merged.launchInTmux ?? false,
     claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };

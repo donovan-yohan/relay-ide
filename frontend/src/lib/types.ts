@@ -261,3 +261,28 @@ export interface SidebarItem {
   lastKnownBackendState: BackendDisplayState | null;
   sessions: SessionSummary[];
 }
+
+// Changed files panel types
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+
+export interface ChangedFile {
+  path: string;
+  oldPath?: string;
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  directory: string;
+  summary?: string;
+}
+
+export interface ChangedFilesResponse {
+  files: ChangedFile[];
+  aggregate: { additions: number; deletions: number; fileCount: number };
+  error?: string;
+}
+
+export interface FileDiffResponse {
+  diff: string;
+  summary?: string;
+  error?: string;
+}

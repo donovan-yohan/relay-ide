@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -571,4 +571,24 @@ export async function updateWorkspaceGroup(id: string, data: Partial<Workspace>)
 export async function deleteWorkspaceGroup(id: string): Promise<void> {
   const res = await fetch(`/workspace-groups/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to delete workspace'));
+}
+
+export async function fetchChangedFiles(repoPath: string, base?: string): Promise<ChangedFilesResponse> {
+  const params = new URLSearchParams({ path: repoPath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/changed-files?' + params.toString());
+  if (!res.ok) {
+    return { files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: `HTTP ${res.status}` };
+  }
+  return res.json() as Promise<ChangedFilesResponse>;
+}
+
+export async function fetchFileDiff(repoPath: string, filePath: string, base?: string): Promise<FileDiffResponse> {
+  const params = new URLSearchParams({ path: repoPath, file: filePath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/file-diff?' + params.toString());
+  if (!res.ok) {
+    return { diff: '', error: `HTTP ${res.status}` };
+  }
+  return res.json() as Promise<FileDiffResponse>;
 }

@@ -14,12 +14,12 @@ import { loadConfig, saveConfig, DEFAULTS, readMeta, writeMeta, deleteMeta, ensu
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
-import { TMUX_PREFIX } from './pty-handler.js';
+import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
-import { WorktreeWatcher, BranchWatcher, RefWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
+import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
-import { listBranches, listBranchesEnriched } from './git.js';
+import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState, batchGetPrsForRepo } from './git.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
@@ -35,7 +35,7 @@ import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
 import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
-import type { AgentType, AutomationSettings, Config } from './types.js';
+import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -282,6 +282,8 @@ async function main(): Promise<void> {
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
 
+  const gitWatcher = new GitWatcher();
+
   const server = http.createServer(app);
   const { broadcastEvent } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
 
@@ -291,6 +293,10 @@ async function main(): Promise<void> {
     if (type === 'pr-updated') clearPrCache();
     broadcastEvent(type, data);
   };
+
+  gitWatcher.on('files-changed', (data: { workspacePath: string }) => {
+    broadcastEvent('files-changed', { workspacePath: data.workspacePath });
+  });
 
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
@@ -435,6 +441,10 @@ async function main(): Promise<void> {
   const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
+    // Start git watching for restored sessions
+    for (const session of sessions.list()) {
+      gitWatcher.watch(session.cwd);
+    }
   }
 
   // Populate session metadata cache in background (non-blocking)
@@ -685,7 +695,13 @@ async function main(): Promise<void> {
   app.get('/worktrees', requireAuth, async (req, res) => {
     const repoParam = typeof req.query.repo === 'string' ? req.query.repo : undefined;
     const roots = getConfig().rootDirs || [];
-    const worktrees: Array<{ name: string; path: string; repoName: string; repoPath: string; root: string; displayName: string; lastActivity: string; branchName: string }> = [];
+    const worktrees: Array<{
+      name: string; path: string; repoName: string; repoPath: string;
+      root: string; displayName: string; lastActivity: string; branchName: string;
+      branchState?: 'active' | 'stale' | 'merged';
+      prNumber?: number;
+      prTitle?: string;
+    }> = [];
 
     let reposToScan: RepoEntry[];
     if (repoParam) {
@@ -780,7 +796,98 @@ async function main(): Promise<void> {
       return true;
     });
 
+    // Compute branch lifecycle state for each worktree
+    // Batch PR lookups per repo to avoid N subprocess spawns
+    const activeSessions = sessions.list();
+    const uniqueRepos = [...new Set(unique.map(wt => wt.repoPath))];
+    const prMaps = new Map<string, Map<string, import('./types.js').PrInfo>>();
+    await Promise.all(uniqueRepos.map(async (repoPath) => {
+      try {
+        prMaps.set(repoPath, await batchGetPrsForRepo(repoPath));
+      } catch (err) {
+        console.warn('[worktrees] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
+        prMaps.set(repoPath, new Map());
+      }
+    }));
+
+    await Promise.all(unique.map(async (wt) => {
+      try {
+        const hasActiveSessions = activeSessions.some(s => s.worktreePath === wt.path || s.cwd === wt.path);
+        const isMainBranch = wt.path === wt.repoPath;
+
+        let stale = false;
+        try {
+          stale = await isBranchStale(wt.repoPath, wt.branchName);
+        } catch (err) {
+          console.warn('[worktrees] isBranchStale failed for', wt.branchName, err instanceof Error ? err.message : err);
+        }
+
+        // Look up PR from batched result; fall back to per-branch call on cache miss
+        let pr = prMaps.get(wt.repoPath)?.get(wt.branchName) ?? null;
+        if (!pr) {
+          try {
+            pr = await getPrForBranch(wt.repoPath, wt.branchName);
+          } catch (err) {
+            console.warn('[worktrees] getPrForBranch failed for', wt.branchName, err instanceof Error ? err.message : err);
+          }
+        }
+
+        const lifecycle = computeBranchLifecycleState({
+          pr,
+          isBranchStale: stale,
+          hasActiveSessions,
+          isMainBranch,
+        });
+
+        wt.branchState = lifecycle.state;
+        if (lifecycle.prNumber != null) wt.prNumber = lifecycle.prNumber;
+        if (lifecycle.prTitle != null) wt.prTitle = lifecycle.prTitle;
+      } catch (err) {
+        console.error('[worktrees] lifecycle computation failed for', wt.path, err);
+        wt.branchState = 'active';
+      }
+    }));
+
     res.json(unique);
+  });
+
+  // GET /worktrees/status — pre-cleanup checks for a worktree
+  app.get('/worktrees/status', requireAuth, async (req, res) => {
+    const worktreePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    if (!worktreePath) {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+
+    const resolved = path.resolve(worktreePath);
+
+    // Validate the path is a recognized worktree — don't allow arbitrary filesystem probing
+    if (!isValidWorktreePath(resolved)) {
+      res.status(400).json({ error: 'Path is not inside a worktree directory' });
+      return;
+    }
+
+    if (!fs.existsSync(resolved)) {
+      res.status(404).json({ error: 'Worktree not found' });
+      return;
+    }
+
+    // Check for active sessions in this worktree
+    const allSessions = sessions.list();
+    const activeSessions = allSessions
+      .filter(s => s.worktreePath === resolved || s.cwd === resolved)
+      .map(s => s.id);
+
+    // Check for uncommitted changes — default to true (safe: assume changes exist if check fails)
+    let hasUncommittedChanges = true;
+    try {
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: resolved, timeout: 5000 });
+      hasUncommittedChanges = stdout.trim().length > 0;
+    } catch (err) {
+      console.warn('[worktrees/status] git status failed for', resolved, err instanceof Error ? err.message : err);
+    }
+
+    res.json({ activeSessions, hasUncommittedChanges });
   });
 
   // GET /config/defaultAgent — get default coding agent
@@ -952,7 +1059,11 @@ async function main(): Promise<void> {
 
   // DELETE /worktrees — remove a worktree, prune, and delete its branch
   app.delete('/worktrees', requireAuth, async (req, res) => {
-    const { worktreePath, repoPath } = req.body as { worktreePath?: string; repoPath?: string };
+    const { worktreePath, repoPath, force } = req.body as {
+      worktreePath?: string;
+      repoPath?: string;
+      force?: boolean;
+    };
     if (!worktreePath || !repoPath) {
       res.status(400).json({ error: 'worktreePath and repoPath are required' });
       return;
@@ -964,6 +1075,11 @@ async function main(): Promise<void> {
       const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
       const isKnownWorktree = allWorktrees.some(wt => wt.path === path.resolve(worktreePath) && !wt.isMain);
       if (!isKnownWorktree) {
+        // Check if the path simply doesn't exist anymore (already cleaned up)
+        if (!fs.existsSync(worktreePath)) {
+          res.status(404).json({ error: 'Worktree not found — may have been already cleaned up' });
+          return;
+        }
         res.status(400).json({ error: 'Path is not a recognized git worktree' });
         return;
       }
@@ -975,15 +1091,41 @@ async function main(): Promise<void> {
       }
     }
 
-    // Multiple sessions per worktree allowed (multi-tab support)
+    // Check for active sessions in this worktree
+    const allSessions = sessions.list();
+    const resolvedPath = path.resolve(worktreePath);
+    const worktreeSessions = allSessions.filter(s => s.worktreePath === resolvedPath || s.cwd === resolvedPath);
+
+    if (worktreeSessions.length > 0 && !force) {
+      // Non-force delete with active sessions: reject to prevent killing PTYs unexpectedly
+      res.status(409).json({
+        error: 'active_sessions',
+        sessionIds: worktreeSessions.map(s => s.id),
+      });
+      return;
+    }
+
+    // Force: kill active sessions in this worktree first
+    if (force) {
+      for (const s of worktreeSessions) {
+        try {
+          sessions.kill(s.id);
+        } catch (err) {
+          console.warn(`[worktrees] failed to kill session ${s.id}:`, err instanceof Error ? err.message : err);
+        }
+      }
+    }
 
     // Derive branch name from metadata or worktree directory name
     const meta = readMeta(CONFIG_PATH, worktreePath);
     const branchName = (meta && meta.branchName) || worktreePath.split('/').pop() || '';
 
     try {
-      // Will fail if uncommitted changes -- no --force
-      await execFileAsync('git', ['worktree', 'remove', worktreePath], { cwd: repoPath });
+      // Use --force when the user has confirmed via the cascade dialog
+      const removeArgs = force
+        ? ['worktree', 'remove', '--force', worktreePath]
+        : ['worktree', 'remove', worktreePath];
+      await execFileAsync('git', removeArgs, { cwd: repoPath });
     } catch (err: unknown) {
       // If git worktree remove fails, the directory may be an orphaned worktree
       // that git no longer tracks. Try to remove the directory directly.
@@ -1017,6 +1159,9 @@ async function main(): Promise<void> {
     // Clean up metadata file
     deleteMeta(CONFIG_PATH, worktreePath);
 
+    // Broadcast worktrees-changed so all clients refresh
+    broadcastEvent('worktrees-changed');
+
     res.json({ ok: true });
   });
 
@@ -1025,7 +1170,7 @@ async function main(): Promise<void> {
     const {
       repoPath, worktreePath, type = 'agent', agent, yolo, useTmux,
       claudeArgs, cols, rows, branchName: requestBranchName, needsBranchRename, branchRenamePrompt,
-      initialPrompt, continue: explicitContinue, ticketContext,
+      initialPrompt, continue: explicitContinue, continuePolicy: explicitContinuePolicy, ticketContext,
     } = req.body as {
       repoPath?: string;
       worktreePath?: string | null;
@@ -1041,6 +1186,7 @@ async function main(): Promise<void> {
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
+      continuePolicy?: ContinuePolicy;
       ticketContext?: { ticketId: string; title: string; description?: string; url: string; source: 'github' | 'jira'; repoPath: string; repoName: string };
     };
 
@@ -1090,12 +1236,21 @@ async function main(): Promise<void> {
         ...(safeCols != null && { cols: safeCols }),
         ...(safeRows != null && { rows: safeRows }),
       });
+      gitWatcher.watch(session.cwd);
       res.status(201).json(session);
       return;
     }
 
     // Agent session
-    const resolved = resolveSessionSettings(freshConfig, repoPath, { agent, yolo, useTmux, claudeArgs });
+    // Map legacy boolean continue → continuePolicy for backward compat
+    const policyOverride = explicitContinuePolicy
+      ?? (explicitContinue !== undefined ? (explicitContinue ? 'always' as const : 'never' as const) : undefined);
+    // For new worktrees, always use 'never' regardless of config
+    const effectivePolicy = needsBranchRename ? 'never' as const : policyOverride;
+
+    const resolved = resolveSessionSettings(freshConfig, repoPath, {
+      agent, yolo, useTmux, claudeArgs, continuePolicy: effectivePolicy,
+    });
     const resolvedAgent = resolved.agent;
 
     const baseArgs = [
@@ -1103,15 +1258,8 @@ async function main(): Promise<void> {
       ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
     ];
 
-    // Determine --continue behavior
-    let useContinue = false;
-    if (explicitContinue !== undefined) {
-      useContinue = explicitContinue;
-    } else if (needsBranchRename) {
-      useContinue = false; // brand-new worktree
-    } else {
-      useContinue = resolved.continue && fs.existsSync(path.join(cwd, '.claude'));
-    }
+    // Determine --continue from policy (no .claude directory heuristic)
+    const useContinue = resolved.continuePolicy === 'always';
 
     const args = useContinue
       ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
@@ -1151,6 +1299,12 @@ async function main(): Promise<void> {
     }
 
     const displayName = sessions.nextAgentName();
+
+    // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
+    // UI displayName stays as "Agent N" — tmux name and UI name are independent
+    // generateTmuxSessionName handles all sanitization and truncation
+    const tmuxDisplayName = requestBranchName ? `${name}-${requestBranchName}` : name;
+
     const session = sessions.create({
       type: 'agent',
       agent: resolvedAgent,
@@ -1160,11 +1314,13 @@ async function main(): Promise<void> {
       cwd,
       branchName: requestBranchName || '',  // caller may provide; branch watcher enriches later
       displayName,
+      tmuxDisplayName,
       args,
       configPath: CONFIG_PATH,
       useTmux: resolved.useTmux,
       yolo: resolved.yolo,
       claudeArgs: resolved.claudeArgs,
+      continuePolicy: resolved.continuePolicy,
       ...(safeCols != null && { cols: safeCols }),
       ...(safeRows != null && { rows: safeRows }),
       needsBranchRename: needsBranchRename ?? false,
@@ -1182,6 +1338,8 @@ async function main(): Promise<void> {
       });
     }
 
+    gitWatcher.watch(session.cwd);
+
     if (ticketContext) {
       transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
         console.error('[index] transition on session create failed:', err);
@@ -1195,8 +1353,10 @@ async function main(): Promise<void> {
   app.delete('/sessions/:id', requireAuth, (req, res) => {
     const id = req.params['id'] as string;
     try {
+      const sessionToDelete = sessions.get(id);
       sessions.kill(id);
       push.removeSession(id);
+      if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
       res.json({ ok: true });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
@@ -1305,7 +1465,8 @@ async function main(): Promise<void> {
   } else try {
     const adoptedNames = activeTmuxSessionNames();
     const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}']);
-    const orphanedSessions = stdout.trim().split('\n').filter(name => name.startsWith(TMUX_PREFIX) && !adoptedNames.has(name));
+    const tmuxPrefix = getTmuxPrefix();
+    const orphanedSessions = stdout.trim().split('\n').filter(name => name.startsWith(tmuxPrefix) && !adoptedNames.has(name));
     for (const name of orphanedSessions) {
       execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
     }
@@ -1321,6 +1482,7 @@ async function main(): Promise<void> {
     closeAnalytics();
     branchWatcher.close();
     refWatcher.close();
+    gitWatcher.close();
     server.close();
     // Serialize sessions to disk BEFORE killing them
     const configDir = path.dirname(CONFIG_PATH);

@@ -6,6 +6,8 @@ export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permiss
 
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = 'claude' | 'codex';
+export type ContinuePolicy = 'always' | 'never';
+export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty';
 
@@ -66,6 +68,7 @@ export interface PtySession extends BaseSession {
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
   claudeArgs: string[];
+  continuePolicy: ContinuePolicy;
 }
 
 export type Session = PtySession;
@@ -105,6 +108,7 @@ export interface WorkspaceSettings {
   // Session defaults
   defaultAgent?: AgentType;
   defaultContinue?: boolean;
+  defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
   claudeArgs?: string[];
@@ -395,4 +399,29 @@ export interface InstallOpts {
   configPath?: string | undefined;
   port?: string | undefined;
   host?: string | undefined;
+}
+
+// Changed file status from git status/diff
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+
+export interface ChangedFile {
+  path: string;
+  oldPath?: string;          // only for renames
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  directory: string;         // parent directory for DataTable groupBy
+  summary?: string;          // rule-based summary (v1)
+}
+
+export interface ChangedFilesResponse {
+  files: ChangedFile[];
+  aggregate: { additions: number; deletions: number; fileCount: number };
+  error?: string;
+}
+
+export interface FileDiffResponse {
+  diff: string;
+  summary?: string;
+  error?: string;
 }

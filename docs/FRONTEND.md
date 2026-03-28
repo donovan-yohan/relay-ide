@@ -35,6 +35,9 @@ Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vit
 | `SearchableSelect.svelte` | Searchable dropdown filter replacing native selects |
 | `SessionItem.svelte` | Session list item with status dot, context menu, metadata row |
 | `MobileInput.svelte` | Event-intent mobile keyboard input handler |
+| `ChangedFiles.svelte` | Collapsible changed files panel below terminal with inline diff expansion, DataTable integration, mobile card layout |
+| `DiffViewer.svelte` | Unified diff renderer with diff2html parsing and Shiki syntax highlighting |
+| `CodeBlock.svelte` | Shared Shiki syntax highlighting wrapper component |
 | `OrgDashboard.svelte` | Cross-repo PR list and tickets panel with tab navigation |
 | `TicketsPanel.svelte` | Multi-provider ticket list: GitHub Issues, Jira, Linear tabs with skeleton loading and branch link indicators |
 | `TicketCard.svelte` | Individual ticket row: status dot, provider-native metadata (labels/sprint/cycle/priority), branch link, Start Work button |
@@ -62,6 +65,8 @@ State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting re
 | `config.svelte.ts` | Global session defaults (continue, yolo, tmux, agent, notifications); shared by SettingsDialog, SessionList, NewSessionDialog |
 | `auth.svelte.ts` | Authentication state (PIN check, cookie token) |
 | `ui.svelte.ts` | UI state (active tab, sidebar, filters) |
+| `shiki.ts` | Shiki highlighter singleton, custom TUI theme, language detection, lazy grammar loading |
+| `diff-summary.ts` | Rule-based smart diff summaries (v1): function detection, hunk analysis, fallback +N/-N |
 
 ## Conventions
 

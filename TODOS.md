@@ -12,22 +12,10 @@ Double-clicking a sidenav item (anywhere on the row) should toggle expand/collap
 
 **Scope:** Add click handler to the full row element, distinguish single-click (navigate) from double-click (toggle). **Files:** Sidebar workspace/repo row component.
 
-### Settings page: always-visible sidenav, not hamburger
-The settings modal still renders a hamburger menu toggle even though the left nav IS visible. Remove the hamburger — the ToC sidebar should always be open. Pure CSS/layout fix.
-
-**Scope:** Remove hamburger toggle, make ToC permanently visible within the settings modal. **Files:** Settings modal component, DialogShell.
-
 ### Existing worktrees not detected — duplicate checkout fails
 Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree. The app used to detect existing worktrees and show them in the sidebar, but this is broken — only `everest-9436` shows, not the `rainier` worktree that has `tui-outline-aesthetic` checked out. Should detect all existing worktrees on load, show them in the sidebar, and redirect to the existing worktree instead of trying to create a duplicate.
 
 **Scope:** Fix worktree discovery (likely `git worktree list` parsing is broken or filtered), and fix the "open PR session" flow to check for existing checkouts before `git worktree add`. **Files:** `server/worktree-manager.ts`, sidebar worktree listing, session creation flow.
-
-**Added:** 2026-03-26
-
-### Table scroll fade shows on non-scrollable tables
-The PR table (and likely other DataTable instances) shows a bottom fade/gradient even when there's only 1 row and nothing to scroll. The fade should only appear when the content overflows.
-
-**Scope:** Check whether the table container is actually scrollable before applying the fade CSS. **Files:** DataTable component or table wrapper.
 
 **Added:** 2026-03-26
 
@@ -101,6 +89,50 @@ Tmux sessions are named `crc-<displayName>-<id>` which is opaque in `tmux ls` ou
 > Entry: `/harness:brainstorm` → `/harness:plan` → `/harness:orchestrate`
 > Need design decisions before implementation.
 
+### UI preview mode for worktree QA testing
+`node-pty` can't spawn PTY processes from git worktrees (`posix_spawnp failed`), which means the server crashes when creating sessions from a worktree. This blocks browser QA of any UI feature developed in a worktree.
+
+Add a `--preview` flag to the server that starts everything except PTY spawning:
+- Express, static frontend, WebSocket, all workspace/git/PR endpoints work normally
+- `POST /sessions` returns a mock session ID with a stub terminal (no PTY)
+- The frontend renders the full session view layout (PrTopBar, SessionTabBar, ChangedFiles panel, Toolbar) with the mock session
+- All non-terminal UI (changed files, diffs, PR bar, sidebar, dashboard) is fully interactive and testable
+
+This also enables Playwright/headless browser tests to run in CI without needing a real PTY:
+```bash
+# Start preview server in CI
+claude-remote-cli --preview --port 7778 &
+# Run Playwright tests against it
+npx playwright test
+```
+
+**Scope:** Add `--preview` CLI flag, stub the `createPtySession` call in preview mode to return a fake session object, serve a "preview mode" banner in the terminal area. ~30-50 lines of server code + CLI flag wiring. **Files:** `bin/claude-remote-cli.ts` (flag), `server/index.ts` (session creation stub), `server/pty-handler.ts` (mock).
+
+**Added:** 2026-03-28
+
+### Playwright UI test suite
+Add end-to-end browser tests using Playwright for UI components that can't be unit tested (Svelte components, WebSocket integration, real browser rendering). Run against the `--preview` mode server so no PTY is needed.
+
+**Priority tests:**
+1. Changed files panel: collapsible stats bar, file list rendering, inline diff expansion, mobile card layout
+2. Session view layout: PrTopBar, SessionTabBar, terminal area, ChangedFiles ordering
+3. Sidebar: workspace list, session items, context menus, search
+4. Dashboard: PR table, activity feed, automation checkboxes
+5. Dialogs: AddWorkspace (FileBrowser), Settings, CustomizeSession
+
+**Depends on:** UI preview mode (above).
+**Scope:** Add `playwright` as devDependency, create `e2e/` directory with test files, add `npm run test:e2e` script, CI workflow in `.github/workflows/test-e2e.yml`. **Files:** `package.json`, `playwright.config.ts`, `e2e/*.spec.ts`.
+
+**Added:** 2026-03-28
+
+### LLM-powered file change summaries
+Opt-in feature: generate one-line summaries for each changed file in the Code & File Tools panel by piping the diff through `claude -p --bare` with Haiku (or the user's configured agent). Batch all changed files into one call, cache until next `files-changed` event. The +N -N fallback stats tell you HOW MUCH changed; LLM summaries tell you WHAT changed.
+
+**Depends on:** Phase 2 changed files panel (needs the file list and diff infrastructure to exist first).
+**Design doc:** `docs/design-docs/2026-03-28-code-file-tools-design.md` (see "Future Extensions: v2 LLM-Powered Summaries").
+
+**Added:** 2026-03-28
+
 ### Sidenav status indicators redesign
 **Combines:** "session count → meaningful indicators" + "clarify idle vs inactive dots"
 
@@ -149,10 +181,10 @@ Current "workspaces" are really just repos. True workspaces should be an arbitra
 Add Warp/VS Code-style file utilities to the remote web UI.
 
 **Phases:**
-1. **File browser:** File tree panel — navigate filesystem, preview files, open folders
-2. **Changed file previews:** List changed files (git status/diff) with inline previews — see what an agent changed
-3. **Diff viewer:** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs
-4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center
+1. ~~**File browser:** File tree panel — navigate filesystem, preview files, open folders~~ *(done — PR #X, filesystem-browser-api)*
+2. ~~**Changed file previews:** List changed files (git status/diff) with inline previews — see what an agent changed~~ *(done — PR #69, code-file-tools)* **Note:** browser QA blocked by worktree PTY issue; needs `--preview` mode (see Small Features above) or manual QA from the main repo
+3. **Diff viewer (full-page):** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs. Phase 2's inline DiffViewer handles 90% — Phase 3 adds full-page mode, side-by-side toggle, keyboard nav, URL-addressable `/diff` route
+4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center *(low priority)*
 
 ### Command Center Audit
 The command palette needs a full overhaul.

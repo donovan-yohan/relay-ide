@@ -16,9 +16,9 @@ Replace the `gh` CLI search API with GitHub GraphQL API for rich PR data (isDraf
 ## Problem
 
 The current GitHub integration uses `gh api search/issues` which has documented limitations:
-- **L-007**: `requested_reviewers` not returned — reviewer detection is best-effort
-- **L-008**: `reviewDecision` not returned — every open PR dot defaults to green (lies)
-- **L-009**: "All" filter operates on `is:open` backend data — can't show closed/merged
+- **L-20260321-github-search-reviewers**: `requested_reviewers` not returned — reviewer detection is best-effort
+- **L-20260321-github-search-review-decision**: `reviewDecision` not returned — every open PR dot defaults to green (lies)
+- **L-20260321-github-search-open-only**: "All" filter operates on `is:open` backend data — can't show closed/merged
 - No `isDraft` on the `PullRequest` type used by dashboards
 - No CI status per PR row
 - Polling with 60s stale window — no real-time updates for remote changes
@@ -53,7 +53,7 @@ Single authentication mechanism replacing `gh` CLI dependency for GitHub data.
 
 **Token refresh:** GitHub OAuth tokens don't expire by default. If a 401 is received, prompt re-auth.
 
-**Identity resolution:** The OAuth token is a user token, so GraphQL `viewer` field returns the authenticated user's data. This enables accurate "my PRs" vs "PRs awaiting my review" detection — solving L-007.
+**Identity resolution:** The OAuth token is a user token, so GraphQL `viewer` field returns the authenticated user's data. This enables accurate "my PRs" vs "PRs awaiting my review" detection — solving L-20260321-github-search-reviewers.
 
 ### GraphQL Queries
 
@@ -104,7 +104,7 @@ query {
 }
 ```
 
-This single query returns everything Phase 1's DataTable needs: isDraft, reviewDecision, review requests, CI status, mergeability — solving L-007, L-008, and L-009 in one call.
+This single query returns everything Phase 1's DataTable needs: isDraft, reviewDecision, review requests, CI status, mergeability — solving L-20260321-github-search-reviewers, L-20260321-github-search-review-decision, and L-20260321-github-search-open-only in one call.
 
 **Caching:** svelte-query manages caching (60s stale). Webhook events trigger `queryClient.invalidateQueries()` for instant refresh.
 

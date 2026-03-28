@@ -1,3 +1,12 @@
+---
+status: current
+created: 2026-03-27
+branch:
+supersedes:
+implemented-by:
+consulted-learnings: []
+---
+
 # Tooltip & Keyboard Shortcut Architecture
 
 ## Problem

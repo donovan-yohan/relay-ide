@@ -1,8 +1,13 @@
-# TUI Design System Overhaul
+---
+status: implemented
+created: 2026-03-25
+branch: tui-outline-aesthetic
+supersedes:
+implemented-by:
+consulted-learnings: []
+---
 
-> **Status:** current
-> **Branch:** tui-outline-aesthetic
-> **Created:** 2026-03-25
+# TUI Design System Overhaul
 
 ## Goal
 
