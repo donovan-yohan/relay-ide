@@ -7,6 +7,7 @@ export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permiss
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = 'claude' | 'codex';
 export type ContinuePolicy = 'always' | 'never';
+export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty';
 

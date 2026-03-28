@@ -714,6 +714,45 @@ async function ensureBranchLocal(
   }
 }
 
+/** Check if a PR is in MERGED state (immediate check, no 24h delay like isStalePr). */
+function isPrMerged(pr: PrInfo): boolean {
+  return pr.state === 'MERGED';
+}
+
+interface BranchLifecycleInput {
+  pr: PrInfo | null;
+  isBranchStale: boolean;
+  hasActiveSessions: boolean;
+  isMainBranch: boolean;
+}
+
+interface BranchLifecycleResult {
+  state: 'active' | 'stale' | 'merged';
+  prNumber?: number;
+  prTitle?: string;
+}
+
+/**
+ * Compute branch lifecycle state from authoritative sources.
+ * Main branch can be active/stale but never merged.
+ */
+function computeBranchLifecycleState(input: BranchLifecycleInput): BranchLifecycleResult {
+  const { pr, isBranchStale: stale, hasActiveSessions, isMainBranch } = input;
+
+  // Merged: PR is merged AND not the main branch
+  if (pr && isPrMerged(pr) && !isMainBranch) {
+    return { state: 'merged', prNumber: pr.number, prTitle: pr.title };
+  }
+
+  // Active: has sessions OR branch is not stale
+  if (hasActiveSessions || !stale) {
+    return { state: 'active' };
+  }
+
+  // Stale: no sessions AND branch is stale (0 commits ahead of main)
+  return { state: 'stale' };
+}
+
 export {
   listBranches,
   listBranchesEnriched,
@@ -736,4 +775,6 @@ export {
   changePrBase,
   pushBranch,
   ensureBranchLocal,
+  isPrMerged,
+  computeBranchLifecycleState,
 };
