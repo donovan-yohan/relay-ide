@@ -63,6 +63,7 @@ Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 | `frontend/src/lib/ws.ts` | WebSocket connection management (PTY relay + event channel) |
 | `frontend/src/lib/types.ts` | Frontend TypeScript interfaces |
 | `frontend/src/lib/actions.ts` | Shared Svelte actions (scroll-on-hover, longpress-click) |
+| `frontend/src/lib/actions/` | Command center action registry: types, pure registry logic (`registry.ts`), reactive wrapper (`registry.svelte.ts`), and co-located action definitions in `definitions/` |
 | `frontend/src/lib/notifications.ts` | Browser Notification API wrapper, service worker registration, Web Push subscription |
 | `frontend/src/lib/utils.ts` | Shared utilities (path display, relative time formatting, device detection) |
 | `frontend/src/lib/pr-state.ts` | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments |

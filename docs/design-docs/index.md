@@ -2,6 +2,7 @@
 
 ## Current
 - [core-beliefs.md](core-beliefs.md) — Agent-first operating principles
+- [2026-03-28-command-center-design.md](2026-03-28-command-center-design.md) — Command Center: action registry, command palette, keyboard shortcuts, discoverability (absorbs tooltip-and-keyboard-shortcuts)
 - [2026-03-23-github-device-flow-design.md](2026-03-23-github-device-flow-design.md) — Replace OAuth web flow with device flow for zero-config GitHub auth
 - [2026-03-24-webhook-self-service-design.md](2026-03-24-webhook-self-service-design.md) — GitHub webhook self-service: CRUD UI, smee proxy lifecycle, health state, auto-provision backfill
 - [2026-03-24-xterm-separate-zoom-design.md](2026-03-24-xterm-separate-zoom-design.md) — Independent terminal font size zoom separate from browser page zoom

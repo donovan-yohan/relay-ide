@@ -62,6 +62,20 @@ State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting re
 | `auth.svelte.ts` | Authentication state (PIN check, cookie token) |
 | `ui.svelte.ts` | UI state (active tab, sidebar, filters) |
 
+### Action Registry (`frontend/src/lib/actions/`)
+
+Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.svelte` via `registerGlobal()`. Spotlight reads commands from the registry via `getAllActions()`.
+
+| Module | Role |
+|--------|------|
+| `types.ts` | `Action`, `ActionMeta`, `ActionContext`, `ActionCategory` type definitions |
+| `registry.ts` | Pure Map-based registry — `registerGlobal`, `registerContextual`, `getAction`, `getAllActions`, `getActionsByCategory`. Testable with node:test |
+| `registry.svelte.ts` | Thin Svelte 5 wrapper — `$state` version counter for reactive invalidation |
+| `definitions/session.ts` | Session actions (new-agent, new-terminal, close, kill, start-on-repo, start-on-ticket) |
+| `definitions/workspace.ts` | Workspace actions (add, new-worktree) |
+| `definitions/pr.ts` | PR/branch actions (create, push-branch, switch-branch) |
+| `definitions/settings.ts` | Settings actions (open, connect-github, toggle-yolo, check-updates) |
+
 ## Conventions
 
 - Scoped `<style>` blocks in each component; global CSS variables in `frontend/src/app.css`

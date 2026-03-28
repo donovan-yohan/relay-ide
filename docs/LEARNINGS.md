@@ -321,3 +321,13 @@ When a server startup gate (hard exit if precondition not met) is the only way t
 When a CLI command installs a background service (launchd, systemd) that starts a separate process, the install path must verify all preconditions that the service process needs but cannot interactively satisfy. Background service processes have no TTY, no user interaction, and limited environment. If the server requires a configured PIN to start, the `--bg` / `install` command must either (a) ensure the PIN exists before installing, or (b) the server must be able to start without it and offer a non-interactive setup path. Never assume the background-started process will have the same capabilities as the interactive CLI session.
 
 ---
+
+### L-20260328-svelte-runes-testability: Split .svelte.ts modules into pure .ts logic + thin .svelte.ts wrapper for node:test compatibility
+- status: active
+- category: testing
+- source: /harness:reflect 2026-03-28
+- branch: design/command-center
+
+Svelte 5 runes (`$state`, `$derived`) are compiler macros that only work when processed by the Svelte compiler. Files with `.svelte.ts` extension cannot be compiled by `tsc` alone, so they cannot be included in `tsconfig.test.json` for `node --test` execution. When a reactive module needs unit tests, split it: put all pure logic in a plain `.ts` file (Map operations, validation, filtering), then create a thin `.svelte.ts` wrapper that imports the pure functions and adds reactivity via `$state`. Tests import from the `.ts` file; components import from the `.svelte.ts` file. This pattern was used for `registry.ts` + `registry.svelte.ts` in the action system.
+
+---
