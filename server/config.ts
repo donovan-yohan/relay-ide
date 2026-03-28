@@ -131,7 +131,6 @@ export function getWorkspaceSettings(config: Config, workspacePath: string): Wor
 export interface ResolvedSessionSettings {
   agent: AgentType;
   yolo: boolean;
-  continue: boolean;
   continuePolicy: ContinuePolicy;
   useTmux: boolean;
   claudeArgs: string[];
@@ -140,7 +139,6 @@ export interface ResolvedSessionSettings {
 export interface SessionSettingsOverrides {
   agent?: AgentType | undefined;
   yolo?: boolean | undefined;
-  continue?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
   useTmux?: boolean | undefined;
   claudeArgs?: string[] | undefined;
@@ -160,7 +158,6 @@ export function resolveSessionSettings(
   return {
     agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
     yolo: overrides.yolo ?? ws.defaultYolo ?? false,
-    continue: overrides.continue ?? ws.defaultContinue ?? true,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
     useTmux: overrides.useTmux ?? ws.launchInTmux ?? false,
     claudeArgs: overrides.claudeArgs ?? ws.claudeArgs ?? [],

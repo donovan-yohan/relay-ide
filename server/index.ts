@@ -792,15 +792,15 @@ async function main(): Promise<void> {
         let stale = false;
         try {
           stale = await isBranchStale(wt.repoPath, wt.branchName);
-        } catch {
-          // If check fails, assume not stale (safe fallback)
+        } catch (err) {
+          console.warn('[worktrees] isBranchStale failed for', wt.branchName, err instanceof Error ? err.message : err);
         }
 
         let pr: import('./types.js').PrInfo | null = null;
         try {
           pr = await getPrForBranch(wt.repoPath, wt.branchName);
-        } catch {
-          // If PR check fails, no PR data
+        } catch (err) {
+          console.warn('[worktrees] getPrForBranch failed for', wt.branchName, err instanceof Error ? err.message : err);
         }
 
         const lifecycle = computeBranchLifecycleState({
@@ -813,7 +813,8 @@ async function main(): Promise<void> {
         wt.branchState = lifecycle.state;
         if (lifecycle.prNumber) wt.prNumber = lifecycle.prNumber;
         if (lifecycle.prTitle) wt.prTitle = lifecycle.prTitle;
-      } catch {
+      } catch (err) {
+        console.error('[worktrees] lifecycle computation failed for', wt.path, err);
         wt.branchState = 'active';
       }
     }));
@@ -837,13 +838,13 @@ async function main(): Promise<void> {
       .filter(s => s.worktreePath === resolved || s.cwd === resolved)
       .map(s => s.id);
 
-    // Check for uncommitted changes
-    let hasUncommittedChanges = false;
+    // Check for uncommitted changes — default to true (safe: assume changes exist if check fails)
+    let hasUncommittedChanges = true;
     try {
       const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: resolved, timeout: 5000 });
       hasUncommittedChanges = stdout.trim().length > 0;
-    } catch {
-      // If git status fails, assume no changes (worktree may be gone)
+    } catch (err) {
+      console.warn('[worktrees/status] git status failed for', resolved, err instanceof Error ? err.message : err);
     }
 
     res.json({ activeSessions, hasUncommittedChanges });
@@ -1058,8 +1059,8 @@ async function main(): Promise<void> {
         if (s.worktreePath === resolvedPath || s.cwd === resolvedPath) {
           try {
             sessions.kill(s.id);
-          } catch {
-            // Session may have already ended
+          } catch (err) {
+            console.warn(`[worktrees] failed to kill session ${s.id}:`, err instanceof Error ? err.message : err);
           }
         }
       }

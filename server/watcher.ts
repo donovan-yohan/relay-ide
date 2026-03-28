@@ -117,6 +117,7 @@ export async function findOrCreateWorktreeForBranch(
       throw err;
     }
     // git worktree list failed — proceed with creation attempt
+    console.warn('[watcher] git worktree list failed, proceeding with creation attempt:', err instanceof Error ? err.message : err);
   }
 
   // Sanitize branch name for directory
