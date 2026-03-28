@@ -13,6 +13,7 @@ interface EventMessage {
   cwdPath?: string;
   branch?: string;
   repo?: string;
+  workspacePath?: string;
 }
 
 type EventCallback = (msg: EventMessage) => void;
