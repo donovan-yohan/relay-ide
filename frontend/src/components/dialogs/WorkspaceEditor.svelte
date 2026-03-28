@@ -24,11 +24,16 @@
   let themeColor = $state('');
   let expanded = $state(false);
 
-  // Sync local editable state when the workspace prop changes (e.g. after a save/reload)
+  // Sync local state only when a different workspace is rendered (id change).
+  // Without tracking id, any parent re-render after save would overwrite in-flight edits.
+  let lastSyncedId = $state('');
   $effect(() => {
-    name = workspace.name;
-    selectedRepos = workspace.repos ?? [];
-    themeColor = workspace.themeColor ?? '';
+    if (workspace.id !== lastSyncedId) {
+      lastSyncedId = workspace.id;
+      name = workspace.name;
+      selectedRepos = workspace.repos ?? [];
+      themeColor = workspace.themeColor ?? '';
+    }
   });
 
   function handleNameBlur() {

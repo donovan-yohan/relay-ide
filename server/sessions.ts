@@ -387,6 +387,9 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
   }
 
   // v3 → v4 migration: workspacePath → repoPath
+  // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
+  // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
+  // guard is false. Correctness depends on sequential execution order.
   if (pending.version <= 3) {
     for (const s of pending.sessions) {
       const legacy = s as SerializedPtySession & { workspacePath?: string };
