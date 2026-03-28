@@ -83,26 +83,39 @@ export interface FindOrCreateResult {
  * Find an existing worktree for a branch, or create a new one.
  * Prevents "fatal: branch is already used by worktree" errors by
  * checking `git worktree list` before attempting `git worktree add`.
+ * Throws branch_checked_out_in_main error if the branch is checked out
+ * in the main worktree (caller should open a repo-root session instead).
  */
 export async function findOrCreateWorktreeForBranch(
   repoPath: string,
   branch: string,
   execFn: (cmd: string, args: string[], opts: { cwd: string; timeout?: number }) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<FindOrCreateResult> {
-  // Check if branch is already checked out in an existing worktree
+  // Check ALL worktrees including main repo
   try {
     const { stdout } = await execFn('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
-    const existing = parseWorktreeListPorcelain(stdout, repoPath);
-    const match = existing.find(wt => wt.branch === branch);
-    if (match) {
-      return {
-        worktreePath: match.path,
-        branchName: match.branch,
-        dirName: match.path.split('/').pop() || '',
-        existing: true,
-      };
+    const allEntries = parseAllWorktrees(stdout, repoPath);
+
+    for (const entry of allEntries) {
+      if (entry.branch === branch) {
+        if (entry.isMain) {
+          // Branch is checked out in the main repo — caller should open a repo-root session
+          throw new Error(`branch_checked_out_in_main:${repoPath}`);
+        }
+        // Branch is in an existing sub-worktree — reuse it
+        return {
+          worktreePath: entry.path,
+          branchName: entry.branch,
+          dirName: entry.path.split('/').pop() || '',
+          existing: true,
+        };
+      }
     }
-  } catch {
+  } catch (err) {
+    // Re-throw our own error
+    if (err instanceof Error && err.message.startsWith('branch_checked_out_in_main:')) {
+      throw err;
+    }
     // git worktree list failed — proceed with creation attempt
   }
 
@@ -122,7 +135,7 @@ export async function findOrCreateWorktreeForBranch(
       fs.writeFileSync(gitignorePath, '.worktrees/\n');
     }
   } catch {
-    // Directory may not exist in test environments — skip
+    // Directory may not exist in test environments
   }
 
   await execFn('git', ['worktree', 'add', worktreePath, branch], { cwd: repoPath });

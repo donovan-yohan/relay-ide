@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from '../server/watcher.js';
+import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 
 describe('worktree directories constant', () => {
@@ -450,5 +450,75 @@ describe('mountain name collision retry', () => {
     for (const name of MOUNTAIN_NAMES) {
       assert.ok(/^[a-z0-9-]+$/.test(name), `mountain name "${name}" should only contain lowercase letters, digits, and hyphens`);
     }
+  });
+});
+
+describe('findOrCreateWorktreeForBranch', () => {
+  it('returns branch_checked_out_in_main when branch is in main worktree', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const stdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/nightly',
+      '',
+    ].join('\n');
+
+    const exec = async (_cmd: string, args: string[], _opts: { cwd: string; timeout?: number }) => {
+      if (args[0] === 'worktree') return { stdout, stderr: '' };
+      throw new Error('unexpected call');
+    };
+
+    try {
+      await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
+      assert.fail('Expected error to be thrown');
+    } catch (err) {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes('branch_checked_out_in_main'));
+    }
+  });
+
+  it('returns existing worktree when branch is in a sub-worktree', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const stdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+      'worktree /Users/me/code/my-repo/.worktrees/fix-auth',
+      'HEAD def456',
+      'branch refs/heads/fix/auth',
+      '',
+    ].join('\n');
+
+    const exec = async (_cmd: string, args: string[], _opts: { cwd: string; timeout?: number }) => {
+      if (args[0] === 'worktree') return { stdout, stderr: '' };
+      throw new Error('unexpected call');
+    };
+
+    const result = await findOrCreateWorktreeForBranch(repoPath, 'fix/auth', exec);
+    assert.equal(result.existing, true);
+    assert.equal(result.worktreePath, '/Users/me/code/my-repo/.worktrees/fix-auth');
+  });
+
+  it('creates worktree when branch is not checked out anywhere', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const listStdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+    ].join('\n');
+
+    const calls: string[][] = [];
+    const exec = async (_cmd: string, args: string[], _opts: { cwd: string; timeout?: number }) => {
+      calls.push(args);
+      if (args[0] === 'worktree' && args[1] === 'list') return { stdout: listStdout, stderr: '' };
+      if (args[0] === 'worktree' && args[1] === 'add') return { stdout: '', stderr: '' };
+      throw new Error(`unexpected: ${args.join(' ')}`);
+    };
+
+    const result = await findOrCreateWorktreeForBranch(repoPath, 'feat/new', exec);
+    assert.equal(result.existing, false);
+    assert.equal(result.branchName, 'feat/new');
   });
 });
