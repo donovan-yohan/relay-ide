@@ -78,6 +78,7 @@ export type CreatePtyParams = {
   configPath?: string | undefined;
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
+  tmuxDisplayName?: string | undefined;
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;
@@ -158,7 +159,7 @@ export function createPtySession(
   const useTmux = !command && !!paramUseTmux;
   let spawnCommand = resolvedCommand;
   let spawnArgs = args;
-  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(displayName || repoName || path.basename(cwd) || 'session', id) : '');
+  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(params.tmuxDisplayName || displayName || repoName || path.basename(cwd) || 'session', id) : '');
 
   if (useTmux) {
     const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);

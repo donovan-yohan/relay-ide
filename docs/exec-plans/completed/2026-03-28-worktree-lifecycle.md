@@ -1,6 +1,6 @@
 # Worktree & Session Lifecycle — Branch Lifecycle Layer
 
-> **Status**: Active | **Created**: 2026-03-28 | **Last Updated**: 2026-03-28
+> **Status**: Completed | **Created**: 2026-03-28 | **Completed**: 2026-03-28
 > **Design Doc**: `docs/design-docs/2026-03-28-worktree-lifecycle-design.md`
 > **Consulted Learnings**: L-20260322-session-creation-params, L-20260328-serialization-whitelist-audit, L-20260326-repo-source-unification, L-20260324-config-stale-read, L-20260325-resource-name-uniqueness, L-20260327-express4-async-errors, L-20260322-session-state-refresh
 > **For Claude:** Use /harness:orchestrate to execute this plan.

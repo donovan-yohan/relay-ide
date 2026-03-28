@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
+import { generateTmuxSessionName } from '../server/pty-handler.js';
 
 describe('worktree directories constant', () => {
   it('should include both .worktrees and .claude/worktrees', () => {
@@ -450,6 +451,33 @@ describe('mountain name collision retry', () => {
     for (const name of MOUNTAIN_NAMES) {
       assert.ok(/^[a-z0-9-]+$/.test(name), `mountain name "${name}" should only contain lowercase letters, digits, and hyphens`);
     }
+  });
+});
+
+describe('repo-scoped tmux naming', () => {
+  it('produces readable tmux names from repo-branch slugs', () => {
+    const name = generateTmuxSessionName('claude-remote-cli-nightly', 'a3b4c5d6-1234-5678');
+    assert.ok(name.includes('claude-remote-cli-nightly'));
+    assert.ok(name.includes('a3b4c5d6'));
+  });
+
+  it('sanitizes branch names with special characters', () => {
+    const name = generateTmuxSessionName('myapp-fix-auth-flow', 'b4c5d6e7-1234-5678');
+    assert.ok(name.includes('myapp-fix-auth-flow'));
+    assert.ok(!/[^a-zA-Z0-9-]/.test(name));
+  });
+
+  it('truncates long names to 30 chars before appending id', () => {
+    const longName = 'a-very-long-repository-name-with-a-very-long-branch-name';
+    const name = generateTmuxSessionName(longName, 'c5d6e7f8-1234-5678');
+    // Extract the sanitized middle portion: after "crc-" prefix and before "-{8-char-id}"
+    const prefix = name.replace(/^(?:crcd?-)/, '').replace(/-[a-zA-Z0-9]{8}$/, '');
+    assert.ok(prefix.length <= 30, `prefix "${prefix}" (${prefix.length} chars) exceeds 30 chars`);
+  });
+
+  it('produces no special characters in output', () => {
+    const name = generateTmuxSessionName('repo/with/slashes and spaces', 'deadbeef-0000-1111');
+    assert.ok(!/[^a-zA-Z0-9-]/.test(name), `tmux name "${name}" contains invalid characters`);
   });
 });
 
