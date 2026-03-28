@@ -57,11 +57,13 @@ describe('getChangedFiles', () => {
     assert.equal(renamed.oldPath, 'old-name.ts');
   });
 
-  it('returns empty array on git failure', async () => {
-    const files = await getChangedFiles('/tmp/repo', undefined, async () => {
-      throw new Error('not a git repo');
-    });
-    assert.deepEqual(files, []);
+  it('throws on git failure', async () => {
+    await assert.rejects(
+      () => getChangedFiles('/tmp/repo', undefined, async () => {
+        throw new Error('not a git repo');
+      }),
+      { message: 'not a git repo' },
+    );
   });
 });
 
@@ -112,10 +114,12 @@ describe('getFileDiff', () => {
     assert.equal(callCount, 2);
   });
 
-  it('returns empty string on git failure', async () => {
-    const diff = await getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
-      throw new Error('git failed');
-    });
-    assert.equal(diff, '');
+  it('throws on git failure', async () => {
+    await assert.rejects(
+      () => getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
+        throw new Error('git failed');
+      }),
+      { message: 'git failed' },
+    );
   });
 });

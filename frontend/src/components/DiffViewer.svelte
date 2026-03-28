@@ -26,25 +26,24 @@
 
   interface ParsedDiff {
     rawLines: RawLine[];
-    hunkHeaders: Array<{ index: number; content: string }>;
     hunkHeaderMap: Map<number, string>;
     lang: string;
   }
 
   // Synchronous parse — safe for $derived.by (async result handled in $effect below)
   const parsed = $derived.by<ParsedDiff>(() => {
-    if (!diff) return { rawLines: [], hunkHeaders: [], hunkHeaderMap: new Map(), lang: 'javascript' };
+    if (!diff) return { rawLines: [], hunkHeaderMap: new Map(), lang: 'javascript' };
 
     const files: DiffFile[] = parse(diff);
-    if (files.length === 0) return { rawLines: [], hunkHeaders: [], hunkHeaderMap: new Map(), lang: 'javascript' };
+    if (files.length === 0) return { rawLines: [], hunkHeaderMap: new Map(), lang: 'javascript' };
 
     const file = files[0]!;
     const lang = detectLanguage(filePath);
     const rawLines: RawLine[] = [];
-    const hunkHeaders: Array<{ index: number; content: string }> = [];
+    const hunkHeaderMap = new Map<number, string>();
 
     for (const block of file.blocks) {
-      hunkHeaders.push({ index: rawLines.length, content: block.header });
+      hunkHeaderMap.set(rawLines.length, block.header);
       for (const line of block.lines) {
         const type = line.type === 'insert' ? 'add' as const
           : line.type === 'delete' ? 'delete' as const
@@ -59,25 +58,26 @@
       }
     }
 
-    const hunkHeaderMap = new Map<number, string>();
-    for (const h of hunkHeaders) hunkHeaderMap.set(h.index, h.content);
-    return { rawLines, hunkHeaders, hunkHeaderMap, lang };
+    return { rawLines, hunkHeaderMap, lang };
   });
 
   // Highlighted lines — starts as plain, updated asynchronously by $effect
   let lines = $state<HighlightedLine[]>([]);
+  let tokenGeneration = 0;
 
   $effect(() => {
     const { rawLines, lang } = parsed;
+    const gen = ++tokenGeneration;
 
     // Immediately render without syntax highlighting
     lines = rawLines.map(l => ({ ...l, tokens: null }));
 
     if (rawLines.length === 0) return;
 
-    // Asynchronously apply Shiki tokens
+    // Asynchronously apply Shiki tokens — guard against stale resolutions
     const codeStr = rawLines.map(l => l.content).join('\n');
     tokenizeCode(codeStr, lang).then((tokenLines) => {
+      if (gen !== tokenGeneration) return; // stale — newer parse already in flight
       lines = rawLines.map((line, i) => ({
         ...line,
         tokens: tokenLines[i] ?? null,

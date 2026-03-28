@@ -691,99 +691,116 @@ function fileDirectory(filePath: string): string {
   return dir === -1 ? '.' : filePath.slice(0, dir);
 }
 
+function normalizeNumstatPath(filePath: string): string {
+  if (!filePath.includes(' => ')) return filePath;
+  const arrow = ' => ';
+  // Handle brace-style paths like "{old/dir => new/dir}/file.ts"
+  if (filePath.startsWith('{')) {
+    const braceMatch = filePath.match(/^\{([^{}]+)\}(.*)$/);
+    if (braceMatch) {
+      const inner = braceMatch[1]!;
+      const suffix = braceMatch[2] ?? '';
+      const idx = inner.lastIndexOf(arrow);
+      if (idx !== -1) {
+        const newPart = inner.slice(idx + arrow.length) || inner.slice(0, idx);
+        return newPart + suffix;
+      }
+    }
+  }
+  // Simple "old => new" form
+  const idx = filePath.lastIndexOf(arrow);
+  if (idx !== -1) return filePath.slice(idx + arrow.length);
+  return filePath;
+}
+
 async function getChangedFiles(
   repoPath: string,
   base?: string,
   exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
 ): Promise<ChangedFile[]> {
-  try {
-    let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
+  let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
 
-    if (base) {
-      // Branch comparison
-      const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
-      statusEntries = stdout.split('\n').filter(Boolean).map(line => {
-        const parts = line.split('\t');
-        const code = parts[0] ?? '';
-        if (code.startsWith('R')) {
-          return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
-        }
-        return { path: parts[1] ?? '', status: parseStatus(code) };
-      });
-    } else {
-      // Working tree: git status --porcelain=v1 -z
-      const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoPath, timeout: 10000 });
-      statusEntries = [];
-      const parts = stdout.split('\0').filter(Boolean);
-      for (let i = 0; i < parts.length; i++) {
-        const entry = parts[i]!;
-        const code = entry.slice(0, 2);
-        const filePath = entry.slice(3);
-        if (code.startsWith('R')) {
-          // porcelain=v1 -z: rename record is XY <newname>\0<origname>\0
-          // filePath (entry.slice(3)) is the new name, parts[i+1] is the old name
-          const oldPath = parts[++i] ?? filePath;
-          statusEntries.push({ path: filePath, oldPath, status: 'renamed' });
-        } else {
-          statusEntries.push({ path: filePath, status: parseStatus(code) });
-        }
+  if (base) {
+    // Branch comparison
+    const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
+    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      const code = parts[0] ?? '';
+      if (code.startsWith('R')) {
+        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
+      }
+      return { path: parts[1] ?? '', status: parseStatus(code) };
+    });
+  } else {
+    // Working tree: git status --porcelain=v1 -z
+    const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoPath, timeout: 10000 });
+    statusEntries = [];
+    const parts = stdout.split('\0').filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const entry = parts[i]!;
+      const code = entry.slice(0, 2);
+      const filePath = entry.slice(3);
+      if (code.startsWith('R')) {
+        // porcelain=v1 -z: rename record is XY <newname>\0<origname>\0
+        // filePath (entry.slice(3)) is the new name, parts[i+1] is the old name
+        const oldPath = parts[++i] ?? filePath;
+        statusEntries.push({ path: filePath, oldPath, status: 'renamed' });
+      } else {
+        statusEntries.push({ path: filePath, status: parseStatus(code) });
       }
     }
-
-    if (statusEntries.length === 0) return [];
-
-    // Get per-file stats via numstat
-    const numstatArgs = base
-      ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
-      : ['diff', '--numstat', '--find-renames'];
-    let numstatMap = new Map<string, { additions: number; deletions: number }>();
-    try {
-      const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });
-      for (const line of numstat.split('\n').filter(Boolean)) {
-        const [add, del, ...pathParts] = line.split('\t');
-        const filePath = pathParts.join('\t');
-        const actualPath = filePath.includes(' => ') ? filePath.split(' => ').pop()!.replace(/}$/, '') : filePath;
-        numstatMap.set(actualPath, {
-          additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
-          deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
-        });
-      }
-    } catch (err: unknown) {
-      console.warn('[git] numstat failed for', repoPath, err instanceof Error ? err.message : String(err));
-    }
-
-    const files: ChangedFile[] = [];
-    for (const entry of statusEntries) {
-      if (!entry.path) continue;
-      const stats = numstatMap.get(entry.path);
-      let additions = stats?.additions ?? 0;
-      let deletions = stats?.deletions ?? 0;
-
-      if (entry.status === 'untracked' && additions === 0) {
-        try {
-          const { stdout: wcOut } = await exec('wc', ['-l', entry.path], { cwd: repoPath, timeout: 5000 });
-          const match = wcOut.trim().match(/^\s*(\d+)/);
-          if (match) additions = parseInt(match[1]!, 10);
-        } catch {
-          // best effort
-        }
-      }
-
-      files.push({
-        path: entry.path,
-        status: entry.status,
-        additions,
-        deletions,
-        directory: fileDirectory(entry.path),
-        ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
-      });
-    }
-
-    return files;
-  } catch (err: unknown) {
-    console.warn('[git] getChangedFiles failed for', repoPath, err instanceof Error ? err.message : String(err));
-    return [];
   }
+
+  if (statusEntries.length === 0) return [];
+
+  // Get per-file stats via numstat
+  const numstatArgs = base
+    ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
+    : ['diff', '--numstat', '--find-renames'];
+  const numstatMap = new Map<string, { additions: number; deletions: number }>();
+  try {
+    const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });
+    for (const line of numstat.split('\n').filter(Boolean)) {
+      const [add, del, ...pathParts] = line.split('\t');
+      const filePath = pathParts.join('\t');
+      const actualPath = normalizeNumstatPath(filePath);
+      numstatMap.set(actualPath, {
+        additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
+        deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
+      });
+    }
+  } catch (err: unknown) {
+    console.warn('[git] numstat failed for', repoPath, err instanceof Error ? err.message : String(err));
+  }
+
+  const files: ChangedFile[] = [];
+  for (const entry of statusEntries) {
+    if (!entry.path) continue;
+    const stats = numstatMap.get(entry.path);
+    let additions = stats?.additions ?? 0;
+    let deletions = stats?.deletions ?? 0;
+
+    if (entry.status === 'untracked' && additions === 0) {
+      try {
+        const { stdout: wcOut } = await exec('wc', ['-l', '--', entry.path], { cwd: repoPath, timeout: 5000 });
+        const match = wcOut.trim().match(/^\s*(\d+)/);
+        if (match) additions = parseInt(match[1]!, 10);
+      } catch {
+        // best effort
+      }
+    }
+
+    files.push({
+      path: entry.path,
+      status: entry.status,
+      additions,
+      deletions,
+      directory: fileDirectory(entry.path),
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+    });
+  }
+
+  return files;
 }
 
 async function getFileDiff(
@@ -792,35 +809,30 @@ async function getFileDiff(
   base?: string,
   exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
 ): Promise<string> {
-  try {
-    let args: string[];
-    if (!base) {
-      args = ['diff', '--unified=3', '--find-renames', '--', filePath];
-    } else if (base === 'cached') {
-      args = ['diff', '--cached', '--unified=3', '--', filePath];
-    } else {
-      args = ['diff', `${base}...HEAD`, '--unified=3', '--find-renames', '--', filePath];
-    }
-
-    const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
-
-    // If empty (no changes or untracked), try --no-index for new files
-    if (!stdout.trim()) {
-      try {
-        const { stdout: noIndexOut } = await exec('git', ['diff', '--no-index', '/dev/null', filePath], { cwd: repoPath, timeout: 10000 });
-        return noIndexOut;
-      } catch (err: unknown) {
-        // git diff --no-index exits with code 1 when there ARE differences
-        const e = err as { stdout?: string };
-        if (e.stdout) return e.stdout;
-      }
-    }
-
-    return stdout;
-  } catch (err: unknown) {
-    console.warn('[git] getFileDiff failed for', repoPath, filePath, err instanceof Error ? err.message : String(err));
-    return '';
+  let args: string[];
+  if (!base) {
+    args = ['diff', '--unified=3', '--find-renames', '--', filePath];
+  } else if (base === 'cached') {
+    args = ['diff', '--cached', '--unified=3', '--', filePath];
+  } else {
+    args = ['diff', `${base}...HEAD`, '--unified=3', '--find-renames', '--', filePath];
   }
+
+  const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
+
+  // If empty (no changes or untracked), try --no-index for new files
+  if (!stdout.trim()) {
+    try {
+      const { stdout: noIndexOut } = await exec('git', ['diff', '--no-index', '--', '/dev/null', filePath], { cwd: repoPath, timeout: 10000 });
+      return noIndexOut;
+    } catch (err: unknown) {
+      // git diff --no-index exits with code 1 when there ARE differences
+      const e = err as { stdout?: string };
+      if (e.stdout) return e.stdout;
+    }
+  }
+
+  return stdout;
 }
 
 const ONE_DAY_MS = 86_400_000;

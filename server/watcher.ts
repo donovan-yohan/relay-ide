@@ -498,7 +498,7 @@ export class RefWatcher {
 }
 
 export class GitWatcher extends EventEmitter {
-  private _watchers = new Map<string, { watcher: fs.FSWatcher; refCount: number }>();
+  private _watchers = new Map<string, { watcher: fs.FSWatcher; extraWatchers?: fs.FSWatcher[]; refCount: number }>();
   private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   watch(workspacePath: string): void {
@@ -513,6 +513,7 @@ export class GitWatcher extends EventEmitter {
 
     // For worktrees, .git is a file — resolve to actual git dir
     let watchTarget: string;
+    let commonDir: string | null = null;
     try {
       const stat = fs.statSync(gitDir);
       if (stat.isFile()) {
@@ -520,6 +521,14 @@ export class GitWatcher extends EventEmitter {
         const match = content.match(/^gitdir:\s*(.+)$/);
         if (!match) return;
         watchTarget = path.resolve(workspacePath, match[1]!);
+        // Check for commondir (shared refs in the main repo git dir)
+        const commonDirFile = path.join(watchTarget, 'commondir');
+        try {
+          const commonDirContent = fs.readFileSync(commonDirFile, 'utf-8').trim();
+          commonDir = path.resolve(watchTarget, commonDirContent);
+        } catch {
+          // No commondir — standalone worktree git dir
+        }
       } else {
         watchTarget = gitDir;
       }
@@ -527,14 +536,30 @@ export class GitWatcher extends EventEmitter {
       return;
     }
 
+    const onChange = () => this._debouncedEmit(workspacePath);
+    const watchers: fs.FSWatcher[] = [];
+
     try {
-      const watcher = fs.watch(watchTarget, { persistent: false }, () => {
-        this._debouncedEmit(workspacePath);
+      const watcher = fs.watch(watchTarget, { persistent: false }, onChange);
+      watcher.on('error', (err) => {
+        console.warn('[GitWatcher] fs.watch error for', workspacePath, err.message);
+        this._watchers.delete(workspacePath);
       });
-      watcher.on('error', () => {});
-      this._watchers.set(workspacePath, { watcher, refCount: 1 });
+      watchers.push(watcher);
+
+      // Also watch commondir if it exists (shared refs for worktrees)
+      if (commonDir && fs.existsSync(commonDir)) {
+        const commonWatcher = fs.watch(commonDir, { persistent: false }, onChange);
+        commonWatcher.on('error', (err) => {
+          console.warn('[GitWatcher] commondir watch error for', workspacePath, err.message);
+        });
+        watchers.push(commonWatcher);
+      }
+
+      this._watchers.set(workspacePath, { watcher: watchers[0]!, extraWatchers: watchers.slice(1), refCount: 1 });
     } catch {
       // Cannot watch — directory may not exist
+      for (const w of watchers) try { w.close(); } catch {}
     }
   }
 
@@ -544,6 +569,9 @@ export class GitWatcher extends EventEmitter {
     entry.refCount--;
     if (entry.refCount <= 0) {
       try { entry.watcher.close(); } catch {}
+      if (entry.extraWatchers) {
+        for (const w of entry.extraWatchers) try { w.close(); } catch {}
+      }
       this._watchers.delete(workspacePath);
       const timer = this._debounceTimers.get(workspacePath);
       if (timer) {
@@ -565,6 +593,9 @@ export class GitWatcher extends EventEmitter {
   close(): void {
     for (const entry of this._watchers.values()) {
       try { entry.watcher.close(); } catch {}
+      if (entry.extraWatchers) {
+        for (const w of entry.extraWatchers) try { w.close(); } catch {}
+      }
     }
     this._watchers.clear();
     for (const timer of this._debounceTimers.values()) {

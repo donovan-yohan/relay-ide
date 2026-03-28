@@ -25,6 +25,7 @@
   let diffError = $state<string | undefined>(undefined);
   let sortBy = $state('path');
   let sortDir = $state<'asc' | 'desc'>('asc');
+  let summaries = $state(new Map<string, string>());
 
   const columns: Column[] = [
     { key: 'status', label: '', width: '24px' },
@@ -104,26 +105,30 @@
       fileDiff = '';
       return;
     }
-    expandedFile = file.path;
+    const targetPath = file.path;
+    expandedFile = targetPath;
     diffLoading = true;
     diffError = undefined;
     try {
       const data = await fetchFileDiff(workspacePath, file.path, base);
+      if (expandedFile !== targetPath) return; // stale — user clicked a different file
       if (data.error) {
         diffError = data.error;
         fileDiff = '';
       } else {
         fileDiff = data.diff;
-        if (!file.summary && fileDiff) {
-          file.summary = generateFileSummary(fileDiff, file.path, file.status);
+        if (!summaries.get(file.path) && fileDiff) {
+          summaries.set(file.path, generateFileSummary(fileDiff, file.path, file.status));
+          summaries = new Map(summaries); // trigger reactivity
         }
       }
     } catch (err: unknown) {
+      if (expandedFile !== targetPath) return; // stale
       const message = err instanceof Error ? err.message : 'unknown error';
       diffError = `failed to load diff: ${message}`;
       fileDiff = '';
     } finally {
-      diffLoading = false;
+      if (expandedFile === targetPath) diffLoading = false;
     }
   }
 
@@ -174,8 +179,8 @@
             <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
             <span class="file-name" title={file.path}>
               {fileName(file.path)}
-              {#if file.summary}
-                <span class="file-summary">{file.summary}</span>
+              {#if summaries.get(file.path)}
+                <span class="file-summary">{summaries.get(file.path)}</span>
               {/if}
             </span>
             <span class="stat stat-add">+{file.additions}</span>

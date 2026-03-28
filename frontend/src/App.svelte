@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
   import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForWorkspace, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
@@ -71,6 +71,10 @@
       changedFilesRef?.refresh();
     }, 2000);
   }
+  onDestroy(() => {
+    if (changedFilesThrottleTimer) clearTimeout(changedFilesThrottleTimer);
+  });
+
   let imageToastRef = $state<ImageToast | undefined>();
   let customizeDialogRef = $state<CustomizeSessionDialog | undefined>();
   let settingsDialogRef = $state<SettingsDialog | undefined>();
@@ -328,7 +332,10 @@
       } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
         throttledPollInvalidate();
       } else if (msg.type === 'files-changed') {
-        changedFilesRef?.refresh();
+        const activeWs = activeSession?.cwd ?? activeSession?.workspacePath;
+        if (!msg.workspacePath || activeWs === msg.workspacePath) {
+          changedFilesRef?.refresh();
+        }
       } else if (msg.type === 'session-activity-changed') {
         throttledChangedFilesRefresh();
       }

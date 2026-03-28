@@ -33,6 +33,9 @@ export function getHighlighter(): Promise<Highlighter> {
     highlighterPromise = createHighlighter({
       themes: [tuiTheme],
       langs: PRELOAD_LANGS,
+    }).catch((err) => {
+      highlighterPromise = null; // allow retry on next call
+      throw err;
     });
   }
   return highlighterPromise;
@@ -70,7 +73,8 @@ export async function tokenizeCode(code: string, lang: string): Promise<ThemedTo
   if (!loadedLangs.includes(resolvedLang)) {
     try {
       await highlighter.loadLanguage(resolvedLang);
-    } catch {
+    } catch (err: unknown) {
+      console.warn(`[shiki] Failed to load "${resolvedLang}", falling back to javascript:`, err);
       resolvedLang = 'javascript';
     }
   }
