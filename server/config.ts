@@ -68,7 +68,7 @@ function migrateToV4(config: Config, configPath: string): void {
   }
 
   // Set workspaces to promoted entities (or empty array if nothing was promoted)
-  (config as any).workspaces = promoted;
+  config.workspaces = promoted;
 
   // Step 4: Set version
   config.configVersion = 4;
@@ -98,7 +98,6 @@ export function loadConfig(configPath: string): Config {
       ? legacyWs
       : [];
     const validPaths = new Set([...(config.repos ?? []), ...legacyWsPaths]);
-    const seenPaths = new Set<string>();
     const cleaned: Record<string, string[]> = {};
 
     for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
@@ -109,14 +108,9 @@ export function loadConfig(configPath: string): Config {
       const filteredPaths: string[] = [];
       for (const p of paths) {
         if (!validPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in workspaces[], skipping`);
+          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in repos[], skipping`);
           continue;
         }
-        if (seenPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is already assigned to another group, skipping`);
-          continue;
-        }
-        seenPaths.add(p);
         filteredPaths.push(p);
       }
       if (filteredPaths.length > 0) {
@@ -221,7 +215,7 @@ export function resolveSessionSettings(
 
   let wsDefaults: Partial<WorkspaceSettings> = {};
   if (workspaceId) {
-    const workspace = (config.workspaces as Workspace[] | undefined)?.find(w => w.id === workspaceId);
+    const workspace = config.workspaces?.find(w => w.id === workspaceId);
     if (workspace?.settings) wsDefaults = workspace.settings;
   }
 

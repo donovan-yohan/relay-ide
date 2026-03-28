@@ -154,7 +154,7 @@ export interface Config {
   defaultNotifications: boolean;
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
-  workspaces?: string[] | undefined; // transitioning from string[] of repo paths to Workspace[] entities
+  workspaces?: Workspace[] | undefined;
   workspaceSettings?: Record<string, WorkspaceSettings> | undefined;
   repoSettings?: Record<string, WorkspaceSettings> | undefined;
   vapidPublicKey?: string | undefined;

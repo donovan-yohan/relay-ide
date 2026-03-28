@@ -118,7 +118,7 @@
           {#if themeColor}
             <button
               class="color-clear"
-              onclick={() => { themeColor = ''; onsave({ themeColor: '' }); }}
+              onclick={() => { themeColor = ''; onsave({ themeColor: null as any }); }}
               title="clear color"
             >[x]</button>
           {/if}

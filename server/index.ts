@@ -280,7 +280,7 @@ async function main(): Promise<void> {
   }
 
   const watcher = new WorktreeWatcher();
-  watcher.rebuild(getConfig().workspaces || []);
+  watcher.rebuild(getConfig().repos || []);
 
   const server = http.createServer(app);
   const { broadcastEvent } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
@@ -310,9 +310,9 @@ async function main(): Promise<void> {
     // Rebuild ref watchers when branches change (new upstream to watch)
     rebuildRefWatcher();
   });
-  branchWatcher.rebuild(getConfig().workspaces || []);
+  branchWatcher.rebuild(getConfig().repos || []);
   watcher.on('worktrees-changed', () => {
-    branchWatcher.rebuild(getConfig().workspaces || []);
+    branchWatcher.rebuild(getConfig().repos || []);
   });
 
   // Watch upstream tracking refs for push/fetch and broadcast ref-changed events
@@ -363,9 +363,9 @@ async function main(): Promise<void> {
     onWorkspacesChanged: () => {
       setImmediate(() => {
         try {
-          const workspaces = getConfig().workspaces || [];
-          watcher.rebuild(workspaces);
-          branchWatcher.rebuild(workspaces);
+          const repoPaths = getConfig().repos || [];
+          watcher.rebuild(repoPaths);
+          branchWatcher.rebuild(repoPaths);
         } catch (err) {
           console.error('Failed to rebuild workspace watchers:', err);
         }
@@ -432,7 +432,7 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
 
   // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(configDir, getConfig().workspaces ?? []);
+  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
   }
@@ -444,7 +444,7 @@ async function main(): Promise<void> {
   function buildPollerDeps() {
     return {
       configPath: CONFIG_PATH,
-      getWorkspacePaths: () => getConfig().workspaces ?? [],
+      getWorkspacePaths: () => getConfig().repos ?? [],
       getRepoSettings: (wsPath: string) => getConfig().repoSettings?.[wsPath],
       createSession: async (opts: { repoPath: string; worktreePath: string; branchName: string; initialPrompt?: string }) => {
         const resolved = resolveSessionSettings(getConfig(), opts.repoPath, {});
@@ -714,10 +714,10 @@ async function main(): Promise<void> {
         }
       }
 
-      // Also include directly-configured workspaces (may not be under any rootDir)
-      const configWorkspaces = getConfig().workspaces ?? [];
+      // Also include directly-configured repos (may not be under any rootDir)
+      const configRepos = getConfig().repos ?? [];
       const scannedPaths = new Set(reposToScan.map(r => r.path));
-      for (const wp of configWorkspaces) {
+      for (const wp of configRepos) {
         if (scannedPaths.has(wp)) continue;
         const root = roots.find(r => wp.startsWith(r)) || '';
         reposToScan.push({ path: wp, name: wp.split('/').filter(Boolean).pop() || '', root });
@@ -857,7 +857,7 @@ async function main(): Promise<void> {
 
   // GET /config/workspace-groups — return workspace group configuration
   app.get('/config/workspace-groups', requireAuth, (_req, res) => {
-    res.json({ groups: getConfig().workspaces ?? [] });
+    res.json({ groups: getConfig().workspaceGroups ?? {} });
   });
 
   // GET /presets — return all filter presets (built-in merged with user presets)
@@ -1053,7 +1053,7 @@ async function main(): Promise<void> {
     const freshConfig = getConfig();
 
     // Validate repoPath is a configured workspace
-    const configuredWorkspaces = freshConfig.workspaces ?? [];
+    const configuredWorkspaces = freshConfig.repos ?? [];
     if (!configuredWorkspaces.includes(repoPath)) {
       res.status(400).json({ error: 'repoPath is not a configured workspace' });
       return;

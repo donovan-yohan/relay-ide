@@ -4,7 +4,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { loadConfig, saveConfig } from './config.js';
-import type { Workspace } from './types.js';
+import type { Config, Workspace } from './types.js';
 
 export function createWorkspaceGroupsRouter(
   configPath: string,
@@ -14,8 +14,14 @@ export function createWorkspaceGroupsRouter(
 
   // GET /workspace-groups — list all workspaces sorted by order
   router.get('/', requireAuth, (_req: Request, res: Response) => {
-    const config = loadConfig(configPath);
-    const workspaces = ((config as any).workspaces as Workspace[] | undefined) ?? [];
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read config' });
+      return;
+    }
+    const workspaces = config.workspaces ?? [];
     const sorted = [...workspaces].sort((a, b) => a.order - b.order);
     res.json(sorted);
   });
@@ -35,14 +41,20 @@ export function createWorkspaceGroupsRouter(
       return;
     }
 
-    const config = loadConfig(configPath);
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read config' });
+      return;
+    }
     const validRepoPaths = new Set<string>(config.repos ?? []);
 
     const repoList: string[] = Array.isArray(repos)
       ? (repos as unknown[]).filter((r): r is string => typeof r === 'string' && validRepoPaths.has(r))
       : [];
 
-    const workspaces = ((config as any).workspaces as Workspace[] | undefined) ?? [];
+    const workspaces = config.workspaces ?? [];
     const maxOrder = workspaces.reduce((max, w) => Math.max(max, w.order), -1);
 
     const workspace: Workspace = {
@@ -52,7 +64,7 @@ export function createWorkspaceGroupsRouter(
       order: maxOrder + 1,
     };
 
-    if (themeColor !== undefined && typeof themeColor === 'string') {
+    if (themeColor !== undefined && typeof themeColor === 'string' && themeColor.trim()) {
       workspace.themeColor = themeColor;
     }
     if (settings !== undefined && typeof settings === 'object' && settings !== null) {
@@ -62,7 +74,7 @@ export function createWorkspaceGroupsRouter(
       (workspace as any).template = template;
     }
 
-    (config as any).workspaces = [...workspaces, workspace];
+    config.workspaces = [...workspaces, workspace];
     saveConfig(configPath, config);
 
     res.status(201).json(workspace);
@@ -78,8 +90,14 @@ export function createWorkspaceGroupsRouter(
       return;
     }
 
-    const config = loadConfig(configPath);
-    const workspaces = ((config as any).workspaces as Workspace[] | undefined) ?? [];
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read config' });
+      return;
+    }
+    const workspaces = config.workspaces ?? [];
     const workspaceMap = new Map(workspaces.map(w => [w.id, w]));
 
     // Validate all provided ids exist
@@ -99,7 +117,7 @@ export function createWorkspaceGroupsRouter(
       ...missing.map((w, idx) => ({ ...w, order: ids.length + idx })),
     ];
 
-    (config as any).workspaces = reordered;
+    config.workspaces = reordered;
     saveConfig(configPath, config);
 
     res.json(reordered.sort((a, b) => a.order - b.order));
@@ -116,8 +134,14 @@ export function createWorkspaceGroupsRouter(
       template?: unknown;
     };
 
-    const config = loadConfig(configPath);
-    const workspaces = ((config as any).workspaces as Workspace[] | undefined) ?? [];
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read config' });
+      return;
+    }
+    const workspaces = config.workspaces ?? [];
     const idx = workspaces.findIndex(w => w.id === id);
 
     if (idx === -1) {
@@ -142,7 +166,7 @@ export function createWorkspaceGroupsRouter(
         : existing.repos;
     }
     if (themeColor !== undefined) {
-      if (typeof themeColor === 'string') {
+      if (typeof themeColor === 'string' && themeColor.trim()) {
         updated.themeColor = themeColor;
       } else {
         delete updated.themeColor;
@@ -164,7 +188,7 @@ export function createWorkspaceGroupsRouter(
     }
 
     workspaces[idx] = updated;
-    (config as any).workspaces = workspaces;
+    config.workspaces = workspaces;
     saveConfig(configPath, config);
 
     res.json(updated);
@@ -174,8 +198,14 @@ export function createWorkspaceGroupsRouter(
   router.delete('/:id', requireAuth, (req: Request, res: Response) => {
     const { id } = req.params as { id: string };
 
-    const config = loadConfig(configPath);
-    const workspaces = ((config as any).workspaces as Workspace[] | undefined) ?? [];
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read config' });
+      return;
+    }
+    const workspaces = config.workspaces ?? [];
     const idx = workspaces.findIndex(w => w.id === id);
 
     if (idx === -1) {
@@ -188,7 +218,7 @@ export function createWorkspaceGroupsRouter(
       .sort((a, b) => a.order - b.order)
       .map((w, i) => ({ ...w, order: i }));
 
-    (config as any).workspaces = remaining;
+    config.workspaces = remaining;
     saveConfig(configPath, config);
 
     res.status(204).end();

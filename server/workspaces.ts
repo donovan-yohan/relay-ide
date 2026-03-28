@@ -168,7 +168,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
   // GET /workspaces — list all workspaces with git info
   router.get('/', async (_req: Request, res: Response) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
@@ -200,7 +200,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const workspaces = config.workspaces ?? [];
+    const workspaces = config.repos ?? [];
 
     if (workspaces.includes(resolved)) {
       res.status(409).json({ error: 'Workspace already exists' });
@@ -209,7 +209,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const { isGitRepo, defaultBranch } = await detectGitRepo(resolved, exec);
 
-    config.workspaces = [...workspaces, resolved];
+    config.repos = [...workspaces, resolved];
 
     // Store detected default branch in per-repo settings
     if (isGitRepo && defaultBranch) {
@@ -246,7 +246,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const resolved = path.resolve(rawPath);
     const config = getConfig();
-    const workspaces = config.workspaces ?? [];
+    const workspaces = config.repos ?? [];
     const idx = workspaces.indexOf(resolved);
 
     if (idx === -1) {
@@ -283,7 +283,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       delete config.repoSettings[resolved].webhookError;
     }
 
-    config.workspaces = workspaces.filter((p) => p !== resolved);
+    config.repos = workspaces.filter((p) => p !== resolved);
     saveConfig(configPath, config);
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     trackEvent({ category: 'workspace', action: 'removed', target: resolved });
@@ -302,7 +302,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const current = config.workspaces ?? [];
+    const current = config.repos ?? [];
 
     // Validate that the submitted paths are the same set as the current workspaces
     if (rawPaths.length !== current.length) {
@@ -318,7 +318,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       }
     }
 
-    config.workspaces = rawPaths as string[];
+    config.repos = rawPaths as string[];
     saveConfig(configPath, config);
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
 
@@ -349,7 +349,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const existing = new Set(config.workspaces ?? []);
+    const existing = new Set(config.repos ?? []);
     const added: Array<{ path: string; name: string; isGitRepo: boolean; defaultBranch: string | null }> = [];
     const errors: Array<{ path: string; error: string }> = [];
 
@@ -388,7 +388,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     if (added.length > 0) {
-      config.workspaces = [...(config.workspaces ?? []), ...added.map((a) => a.path)];
+      config.repos = [...(config.repos ?? []), ...added.map((a) => a.path)];
       saveConfig(configPath, config);
       try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     }

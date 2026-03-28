@@ -284,7 +284,7 @@ test('workspaceGroups with invalid path filters it out', () => {
   assert.deepEqual(myGroup?.repos, ['/valid/repo']);
 });
 
-test('workspaceGroups with duplicate path keeps first-group winner', () => {
+test('workspaceGroups with duplicate path allows many-to-many', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({
     workspaces: ['/shared/repo'],
@@ -298,8 +298,9 @@ test('workspaceGroups with duplicate path keeps first-group winner', () => {
   const workspaces = config.workspaces as any[];
   const first = workspaces?.find((w: any) => w.name === 'First');
   const second = workspaces?.find((w: any) => w.name === 'Second');
+  // Many-to-many: both groups can contain the same repo
   assert.deepEqual(first?.repos, ['/shared/repo']);
-  assert.equal(second, undefined);
+  assert.deepEqual(second?.repos, ['/shared/repo']);
 });
 
 test('workspaceGroups undefined produces no errors', () => {
