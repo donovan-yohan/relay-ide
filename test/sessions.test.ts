@@ -946,6 +946,66 @@ describe('session persistence', () => {
     assert.strictEqual(session.worktreePath, null, 'worktreePath should be null for main repo sessions');
   });
 
+  it('restoreFromDisk handles v3 pending files (v3→v4 migration: workspacePath→repoPath)', async () => {
+    const configDir = createTmpDir();
+
+    const v3Timestamp = new Date().toISOString();
+    const pending = {
+      version: 3,
+      timestamp: v3Timestamp,
+      sessions: [{
+        id: 'v3-migration-test',
+        type: 'agent' as const,
+        agent: 'claude' as const,
+        workspacePath: '/tmp/my-v3-repo',
+        worktreePath: null,
+        cwd: '/tmp/my-v3-repo',
+        repoName: 'v3-repo',
+        branchName: 'main',
+        displayName: 'v3-session',
+        createdAt: v3Timestamp,
+        lastActivity: v3Timestamp,
+        useTmux: false,
+        tmuxSessionName: '',
+        customCommand: '/bin/cat',
+      }],
+    };
+    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+
+    const restored = await restoreFromDisk(configDir);
+    assert.strictEqual(restored, 1);
+
+    const session = sessions.get('v3-migration-test');
+    assert.ok(session, 'restored session should exist');
+    // repoPath should be migrated from v3 workspacePath
+    assert.strictEqual(session.repoPath, '/tmp/my-v3-repo', 'repoPath should be set from v3 workspacePath');
+    assert.strictEqual(session.cwd, '/tmp/my-v3-repo', 'cwd should be preserved');
+    createdIds.push('v3-migration-test');
+  });
+
+  it('serializeAll writes version 4 in pending-sessions.json', () => {
+    const configDir = createTmpDir();
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(s.id);
+
+    serializeAll(configDir);
+
+    const pendingPath = path.join(configDir, 'pending-sessions.json');
+    assert.ok(fs.existsSync(pendingPath), 'pending-sessions.json should exist');
+    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
+    assert.strictEqual(pending.version, 4, 'serializeAll should write version 4');
+    assert.strictEqual(pending.sessions[0].repoPath, '/tmp', 'repoPath field should be present');
+    assert.ok(!('workspacePath' in pending.sessions[0]), 'workspacePath field should not be present in v4');
+  });
+
   it('serializeAll captures session state before kill', () => {
     const configDir = createTmpDir();
 

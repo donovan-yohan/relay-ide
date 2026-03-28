@@ -33,7 +33,7 @@ interface SerializedPtySession {
 }
 
 interface PendingSessionsFile {
-  version: number;  // now 3
+  version: number;  // now 4
   timestamp: string;
   sessions: SerializedPtySession[];
 }
@@ -325,7 +325,7 @@ function serializeAll(configDir: string): void {
   }
 
   const pending: PendingSessionsFile = {
-    version: 3,
+    version: 4,
     timestamp: new Date().toISOString(),
     sessions: serializedPty,
   };
@@ -383,6 +383,17 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
       // Clean up legacy fields (repoPath is now kept as it's our real field)
       delete legacy.root;
       delete legacy.worktreeName;
+    }
+  }
+
+  // v3 → v4 migration: workspacePath → repoPath
+  if (pending.version <= 3) {
+    for (const s of pending.sessions) {
+      const legacy = s as SerializedPtySession & { workspacePath?: string };
+      if ('workspacePath' in legacy && !('repoPath' in s)) {
+        (s as any).repoPath = legacy.workspacePath;
+        delete (legacy as any).workspacePath;
+      }
     }
   }
 
