@@ -28,7 +28,7 @@ Twenty-seven TypeScript modules compiled to `dist/server/` via `tsc`. Modules co
 | `ws.ts` | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input; unit-tested via JSON fixtures |
 | `utils.ts` | Shared server utilities |
-| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh) |
+| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh), GitWatcher (.git/ dirs for changed-files events) |
 | `auth.ts` | PIN hashing (scrypt), rate limiting (5 fails = 15-min lockout), cookie tokens |
 | `config.ts` | Config loading/saving with defaults, per-workspace settings, worktree metadata |
 | `clipboard.ts` | System clipboard detection and image-set operations (osascript/xclip) |
@@ -150,11 +150,13 @@ PTY flow:
 | `POST` | `/webhooks/manage/repos` | Add a repo to the webhook-managed set (body: `{path}`) |
 | `POST` | `/webhooks/manage/repos/remove` | Remove a repo from the webhook-managed set (body: `{path}`) |
 | `POST` | `/webhooks/manage/backfill` | Auto-provision webhooks for all repos that don't have one |
+| `GET` | `/workspaces/changed-files` | List changed files in a repo (`?path=X&base=ref`) |
+| `GET` | `/workspaces/file-diff` | Get unified diff for a single file (`?path=X&file=Y&base=ref`) |
 
 ## WebSocket Channels
 
 - `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
-- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`).
+- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed`).
 
 Both channels require authentication via `token` cookie verified during HTTP upgrade.
 
