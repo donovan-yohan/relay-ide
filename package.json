@@ -65,6 +65,7 @@
     "@types/node": "^22.0.0",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
+    "happy-dom": "^20.8.9",
     "playwright": "^1.58.2",
     "svelte-check": "^4.4.3",
     "typescript": "^5.7.0",
