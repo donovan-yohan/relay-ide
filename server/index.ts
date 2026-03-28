@@ -23,6 +23,7 @@ import { listBranches, listBranchesEnriched } from './git.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
+import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
 import { createBranchLinkerRouter, invalidateBranchLinkerCache } from './branch-linker.js';
@@ -372,6 +373,9 @@ async function main(): Promise<void> {
     },
   });
   app.use('/workspaces', requireAuth, workspaceRouter);
+
+  // Mount workspace-groups CRUD router
+  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth));
 
   // Mount GitHub integration router
   const integrationGitHubRouter = createIntegrationGitHubRouter({ configPath: CONFIG_PATH });
@@ -853,7 +857,7 @@ async function main(): Promise<void> {
 
   // GET /config/workspace-groups — return workspace group configuration
   app.get('/config/workspace-groups', requireAuth, (_req, res) => {
-    res.json({ groups: getConfig().workspaceGroups ?? {} });
+    res.json({ groups: getConfig().workspaces ?? [] });
   });
 
   // GET /presets — return all filter presets (built-in merged with user presets)

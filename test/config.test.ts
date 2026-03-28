@@ -423,6 +423,142 @@ test('migrateToV4: workspaceGroups promotion validates against repos[]', () => {
   assert.deepEqual(mixed.repos, ['/valid']);
 });
 
+// ── resolveSessionSettings workspace cascade ──
+
+test('resolveSessionSettings with workspaceId applies workspace settings between global and repo', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const wsId = 'ws-cascade-1';
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    defaultYolo: false,
+    defaultContinue: true,
+    launchInTmux: false,
+    claudeArgs: [],
+    repos: ['/my/repo'],
+    workspaces: [
+      {
+        id: wsId,
+        name: 'My Workspace',
+        repos: ['/my/repo'],
+        order: 0,
+        settings: { defaultYolo: true, defaultAgent: 'codex', launchInTmux: true },
+      },
+    ],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
+  // Workspace settings should override global
+  assert.equal(result.yolo, true);
+  assert.equal(result.agent, 'codex');
+  assert.equal(result.useTmux, true);
+});
+
+test('resolveSessionSettings: repo settings override workspace settings', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const wsId = 'ws-cascade-2';
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    defaultYolo: false,
+    defaultContinue: true,
+    launchInTmux: false,
+    claudeArgs: [],
+    repos: ['/my/repo'],
+    workspaces: [
+      {
+        id: wsId,
+        name: 'My Workspace',
+        repos: ['/my/repo'],
+        order: 0,
+        settings: { defaultYolo: true, defaultAgent: 'codex' },
+      },
+    ],
+    repoSettings: {
+      '/my/repo': { defaultYolo: false, defaultAgent: 'claude' },
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
+  // Repo settings beat workspace settings
+  assert.equal(result.yolo, false);
+  assert.equal(result.agent, 'claude');
+});
+
+test('resolveSessionSettings: overrides beat workspace and repo settings', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const wsId = 'ws-cascade-3';
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    defaultYolo: false,
+    defaultContinue: true,
+    launchInTmux: false,
+    claudeArgs: [],
+    repos: ['/my/repo'],
+    workspaces: [
+      {
+        id: wsId,
+        name: 'My Workspace',
+        repos: ['/my/repo'],
+        order: 0,
+        settings: { defaultYolo: true },
+      },
+    ],
+    repoSettings: {
+      '/my/repo': { defaultYolo: true },
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/my/repo', { yolo: false }, wsId);
+  assert.equal(result.yolo, false);
+});
+
+test('resolveSessionSettings without workspaceId skips workspace cascade', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    defaultYolo: false,
+    defaultContinue: true,
+    launchInTmux: false,
+    claudeArgs: [],
+    repos: ['/my/repo'],
+    workspaces: [
+      {
+        id: 'ws-x',
+        name: 'My Workspace',
+        repos: ['/my/repo'],
+        order: 0,
+        settings: { defaultYolo: true, defaultAgent: 'codex' },
+      },
+    ],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  // No workspaceId passed — workspace settings should NOT apply
+  const result = resolveSessionSettings(config, '/my/repo', {});
+  assert.equal(result.yolo, false);
+  assert.equal(result.agent, 'claude');
+});
+
+test('resolveSessionSettings with unknown workspaceId falls through to global', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    defaultYolo: false,
+    defaultContinue: true,
+    launchInTmux: false,
+    claudeArgs: [],
+    repos: ['/my/repo'],
+    workspaces: [],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/my/repo', {}, 'no-such-workspace');
+  assert.equal(result.yolo, false);
+  assert.equal(result.agent, 'claude');
+});
+
 test('migrateToV4: empty config gets configVersion 4', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');

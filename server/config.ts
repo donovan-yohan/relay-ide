@@ -209,14 +209,33 @@ export function resolveSessionSettings(
   config: Config,
   repoPath: string,
   overrides: SessionSettingsOverrides,
+  workspaceId?: string,
 ): ResolvedSessionSettings {
-  const ws = getRepoSettings(config, repoPath);
+  const globalDefaults: Partial<WorkspaceSettings> = {
+    defaultAgent: config.defaultAgent,
+    defaultContinue: config.defaultContinue,
+    defaultYolo: config.defaultYolo,
+    launchInTmux: config.launchInTmux,
+    claudeArgs: config.claudeArgs,
+  };
+
+  let wsDefaults: Partial<WorkspaceSettings> = {};
+  if (workspaceId) {
+    const workspace = (config.workspaces as Workspace[] | undefined)?.find(w => w.id === workspaceId);
+    if (workspace?.settings) wsDefaults = workspace.settings;
+  }
+
+  const repoSpecific = config.repoSettings?.[repoPath] ?? {};
+
+  // Merge: repo overrides workspace overrides global
+  const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
+
   return {
-    agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
-    yolo: overrides.yolo ?? ws.defaultYolo ?? false,
-    continue: overrides.continue ?? ws.defaultContinue ?? true,
-    useTmux: overrides.useTmux ?? ws.launchInTmux ?? false,
-    claudeArgs: overrides.claudeArgs ?? ws.claudeArgs ?? [],
+    agent: overrides.agent ?? merged.defaultAgent ?? 'claude' as AgentType,
+    yolo: overrides.yolo ?? merged.defaultYolo ?? false,
+    continue: overrides.continue ?? merged.defaultContinue ?? true,
+    useTmux: overrides.useTmux ?? merged.launchInTmux ?? false,
+    claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };
 }
 
