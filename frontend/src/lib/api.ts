@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Workspace, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -81,8 +81,8 @@ export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
   return json<WorktreeInfo[]>(await fetch('/worktrees'));
 }
 
-export async function fetchWorkspaces(): Promise<Workspace[]> {
-  const data = await json<{ workspaces: Workspace[] }>(await fetch('/workspaces'));
+export async function fetchWorkspaces(): Promise<Repo[]> {
+  const data = await json<{ workspaces: Repo[] }>(await fetch('/workspaces'));
   return data.workspaces;
 }
 
@@ -96,8 +96,8 @@ export async function removeWorkspace(path: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to remove workspace');
 }
 
-export async function reorderWorkspaces(paths: string[]): Promise<Workspace[]> {
-  const data = await json<{ workspaces: Workspace[] }>(
+export async function reorderWorkspaces(paths: string[]): Promise<Repo[]> {
+  const data = await json<{ workspaces: Repo[] }>(
     await fetch('/workspaces/reorder', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -133,13 +133,13 @@ export async function addWorkspacesBulk(paths: string[]): Promise<BulkAddResult>
   );
 }
 
-export async function fetchDashboard(workspacePath: string): Promise<DashboardData> {
+export async function fetchDashboard(repoPath: string): Promise<DashboardData> {
   interface RawDashboard {
     pullRequests: { prs: PullRequest[]; error?: string };
     branches: string[];
     activity: ActivityEntry[];
   }
-  const raw = await json<RawDashboard>(await fetch('/workspaces/dashboard?path=' + encodeURIComponent(workspacePath)));
+  const raw = await json<RawDashboard>(await fetch('/workspaces/dashboard?path=' + encodeURIComponent(repoPath)));
   return {
     prs: raw.pullRequests?.prs ?? [],
     activity: raw.activity ?? [],
@@ -149,21 +149,21 @@ export async function fetchDashboard(workspacePath: string): Promise<DashboardDa
   };
 }
 
-export async function fetchCiStatusOrNull(workspacePath: string, branch: string): Promise<CiStatus | null> {
-  const res = await fetch('/workspaces/ci-status?path=' + encodeURIComponent(workspacePath) + '&branch=' + encodeURIComponent(branch));
+export async function fetchCiStatusOrNull(repoPath: string, branch: string): Promise<CiStatus | null> {
+  const res = await fetch('/workspaces/ci-status?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
   if (!res.ok) return null;
   return res.json() as Promise<CiStatus>;
 }
 
-export async function fetchPrForBranchOrNull(workspacePath: string, branch: string): Promise<PrInfo | null> {
-  const res = await fetch('/workspaces/pr?path=' + encodeURIComponent(workspacePath) + '&branch=' + encodeURIComponent(branch));
+export async function fetchPrForBranchOrNull(repoPath: string, branch: string): Promise<PrInfo | null> {
+  const res = await fetch('/workspaces/pr?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
   if (!res.ok) return null;
   const data = await res.json() as { pr: PrInfo | null };
   return data.pr;
 }
 
-export async function fetchCurrentBranch(workspacePath: string): Promise<string | null> {
-  const data = await json<{ branch: string | null }>(await fetch('/workspaces/current-branch?path=' + encodeURIComponent(workspacePath)));
+export async function fetchCurrentBranch(repoPath: string): Promise<string | null> {
+  const data = await json<{ branch: string | null }>(await fetch('/workspaces/current-branch?path=' + encodeURIComponent(repoPath)));
   return data.branch;
 }
 
@@ -172,8 +172,8 @@ export async function autocompletePath(prefix: string): Promise<string[]> {
   return data.suggestions;
 }
 
-export async function createWorktree(workspacePath: string, branch?: string): Promise<{ branchName: string; mountainName: string; worktreePath: string }> {
-  const res = await fetch('/workspaces/worktree?path=' + encodeURIComponent(workspacePath), {
+export async function createWorktree(repoPath: string, branch?: string): Promise<{ branchName: string; mountainName: string; worktreePath: string }> {
+  const res = await fetch('/workspaces/worktree?path=' + encodeURIComponent(repoPath), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ branch }),
@@ -184,8 +184,8 @@ export async function createWorktree(workspacePath: string, branch?: string): Pr
   return res.json() as Promise<{ branchName: string; mountainName: string; worktreePath: string }>;
 }
 
-export async function switchBranch(workspacePath: string, branch: string): Promise<{ success: boolean; error?: string }> {
-  const res = await fetch('/workspaces/branch?path=' + encodeURIComponent(workspacePath), {
+export async function switchBranch(repoPath: string, branch: string): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch('/workspaces/branch?path=' + encodeURIComponent(repoPath), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch })
   });
   return res.json() as Promise<{ success: boolean; error?: string }>;
@@ -198,7 +198,7 @@ export async function fetchBranches(repoPath: string, options: { refresh?: boole
 }
 
 export async function createSession(body: {
-  workspacePath: string;
+  repoPath: string;
   worktreePath?: string | null | undefined;
   type?: 'agent' | 'terminal' | undefined;
   continue?: boolean | undefined;
@@ -346,8 +346,8 @@ export async function pushUnsubscribe(endpoint: string): Promise<void> {
   });
 }
 
-export async function fetchWorkspaceSettings(workspacePath: string): Promise<WorkspaceSettings> {
-  return json<WorkspaceSettings>(await fetch('/workspaces/settings?path=' + encodeURIComponent(workspacePath)));
+export async function fetchWorkspaceSettings(repoPath: string): Promise<WorkspaceSettings> {
+  return json<WorkspaceSettings>(await fetch('/workspaces/settings?path=' + encodeURIComponent(repoPath)));
 }
 
 export interface MergedWorkspaceSettings {
@@ -355,14 +355,14 @@ export interface MergedWorkspaceSettings {
   overridden: string[];
 }
 
-export async function fetchMergedWorkspaceSettings(workspacePath: string): Promise<MergedWorkspaceSettings> {
+export async function fetchMergedWorkspaceSettings(repoPath: string): Promise<MergedWorkspaceSettings> {
   return json<MergedWorkspaceSettings>(
-    await fetch('/workspaces/settings/merged?path=' + encodeURIComponent(workspacePath))
+    await fetch('/workspaces/settings/merged?path=' + encodeURIComponent(repoPath))
   );
 }
 
-export async function updateWorkspaceSettings(workspacePath: string, settings: WorkspaceSettings): Promise<void> {
-  const res = await fetch('/workspaces/settings?path=' + encodeURIComponent(workspacePath), {
+export async function updateWorkspaceSettings(repoPath: string, settings: WorkspaceSettings): Promise<void> {
+  const res = await fetch('/workspaces/settings?path=' + encodeURIComponent(repoPath), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),

@@ -26,7 +26,7 @@ function loadSidebarCollapsed(): boolean {
   catch { return false; }
 }
 
-function loadActiveWorkspacePath(): string | null {
+function loadActiveRepoPath(): string | null {
   try { return localStorage.getItem(ACTIVE_WORKSPACE_KEY); }
   catch { return null; }
 }
@@ -46,7 +46,7 @@ let sidebarOpen = $state(false);
 let sidebarWidth = $state(loadSidebarWidth());
 let sidebarCollapsed = $state(loadSidebarCollapsed());
 let searchQuery = $state('');
-let activeWorkspacePath = $state<string | null>(loadActiveWorkspacePath());
+let activeRepoPath = $state<string | null>(loadActiveRepoPath());
 let terminalFontSize = $state(loadTerminalFontSize());
 
 export function getUi() {
@@ -59,9 +59,9 @@ export function getUi() {
     set sidebarCollapsed(v: boolean) { sidebarCollapsed = v; },
     get searchQuery() { return searchQuery; },
     set searchQuery(v: string) { searchQuery = v; },
-    get activeWorkspacePath() { return activeWorkspacePath; },
-    set activeWorkspacePath(v: string | null) {
-      activeWorkspacePath = v;
+    get activeRepoPath() { return activeRepoPath; },
+    set activeRepoPath(v: string | null) {
+      activeRepoPath = v;
       try {
         if (v === null) localStorage.removeItem(ACTIVE_WORKSPACE_KEY);
         else localStorage.setItem(ACTIVE_WORKSPACE_KEY, v);

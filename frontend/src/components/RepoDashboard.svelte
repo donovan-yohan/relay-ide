@@ -11,7 +11,7 @@
   import { derivePrDotStatus } from '../lib/pr-status.js';
 
   let {
-    workspacePath,
+    repoPath,
     workspaceName,
     creatingWorktree = false,
     onNewSession,
@@ -20,7 +20,7 @@
     onPrAction,
     onOpenPrSession,
   }: {
-    workspacePath: string;
+    repoPath: string;
     workspaceName: string;
     creatingWorktree?: boolean;
     onNewSession: () => void;
@@ -31,8 +31,8 @@
   } = $props();
 
   const dashQuery = createQuery<DashboardData>(() => ({
-    queryKey: ['dashboard', workspacePath],
-    queryFn: () => fetchDashboard(workspacePath),
+    queryKey: ['dashboard', repoPath],
+    queryFn: () => fetchDashboard(repoPath),
     staleTime: 60_000,
     refetchOnWindowFocus: true,
   }));

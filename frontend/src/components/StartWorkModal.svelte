@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { GitHubIssue, JiraIssue, AnyIssue, Workspace } from '../lib/types.js';
+  import type { GitHubIssue, JiraIssue, AnyIssue, Repo } from '../lib/types.js';
   import { createSession, ConflictError, fetchWorkspaces } from '../lib/api.js';
   import TuiButton from './TuiButton.svelte';
 
@@ -33,7 +33,7 @@
   );
 
   // For Jira, user selects a workspace since issues are cross-repo
-  let workspaces = $state<Workspace[]>([]);
+  let workspaces = $state<Repo[]>([]);
   let selectedWorkspacePath = $state('');
 
   let repoPath = $derived(
@@ -106,7 +106,7 @@
 
     try {
       const session = await createSession({
-        workspacePath: repoPath,
+        repoPath: repoPath,
         worktreePath: null,
         type: 'agent',
         branchName,

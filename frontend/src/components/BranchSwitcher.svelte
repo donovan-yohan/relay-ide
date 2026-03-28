@@ -7,7 +7,7 @@
   import TuiMenuPanel from './TuiMenuPanel.svelte';
 
   let {
-    workspacePath,
+    repoPath,
     currentBranch,
     onSwitch,
     disabled = false,
@@ -16,7 +16,7 @@
     onStartSession,
     onCreateBranch,
   }: {
-    workspacePath: string;
+    repoPath: string;
     currentBranch: string;
     onSwitch: (branch: string) => void;
     disabled?: boolean;
@@ -34,8 +34,8 @@
   let switchError = $state<string | null>(null);
 
   const branchQuery = createQuery<BranchInfo[]>(() => ({
-    queryKey: ['branches', workspacePath],
-    queryFn: () => fetchBranches(workspacePath),
+    queryKey: ['branches', repoPath],
+    queryFn: () => fetchBranches(repoPath),
     staleTime: 30_000,
     enabled: open,
   }));
@@ -74,7 +74,7 @@
     switching = branchName;
     switchError = null;
     try {
-      const result = await switchBranch(workspacePath, branchName);
+      const result = await switchBranch(repoPath, branchName);
       if (result.success) {
         closeDropdown();
         onSwitch(branchName);

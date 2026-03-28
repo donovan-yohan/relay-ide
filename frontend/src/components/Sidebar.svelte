@@ -9,8 +9,8 @@
     DEFAULT_SIDEBAR_WIDTH,
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
-  import { getSessionState, getSessionsForWorkspace, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
-  import type { Workspace, WorktreeInfo, OrgPrsResponse } from '../lib/types.js';
+  import { getSessionState, getSessionsForRepo, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
+  import type { Repo, WorktreeInfo, OrgPrsResponse } from '../lib/types.js';
   import { fetchOrgPrs } from '../lib/api.js';
   import { createQuery } from '@tanstack/svelte-query';
   import { dndzone } from 'svelte-dnd-action';
@@ -29,8 +29,8 @@
     onDeleteWorktree,
   }: {
     onSelectSession: (id: string) => void;
-    onOpenSettings: (workspace?: Workspace) => void;
-    onNewWorktree: (workspace: Workspace) => void;
+    onOpenSettings: (workspace?: Repo) => void;
+    onNewWorktree: (workspace: Repo) => void;
     onAddWorkspace: () => void;
     onDeleteSession?: (id: string) => void;
     onDeleteWorktree?: (wt: WorktreeInfo) => void;
@@ -41,7 +41,7 @@
   );
 
   function handleSelectWorkspace(path: string) {
-    ui.activeWorkspacePath = path;
+    ui.activeRepoPath = path;
     // Clear active session so the main area shows the dashboard
     sessionState.activeSessionId = null;
   }
@@ -89,11 +89,11 @@
 
   // svelte-dnd-action requires items with `id` property
   let dndItems = $derived(
-    sessionState.workspaces.map(w => ({ id: w.path, workspace: w }))
+    sessionState.repos.map(w => ({ id: w.path, workspace: w }))
   );
 
   // Local mutable copy for DnD updates
-  let localDndItems = $state<Array<{ id: string; workspace: Workspace }>>([]);
+  let localDndItems = $state<Array<{ id: string; workspace: Repo }>>([]);
   $effect(() => { localDndItems = dndItems; });
 
   function handleDndConsider(e: CustomEvent<{ items: typeof localDndItems }>) {
@@ -158,7 +158,7 @@
         class="sidebar-brand"
         data-track="sidebar.home"
         onclick={() => {
-          ui.activeWorkspacePath = null;
+          ui.activeRepoPath = null;
           sessionState.activeSessionId = null;
           closeSidebar();
         }}
@@ -182,7 +182,7 @@
     >
       {#each localDndItems as item (item.id)}
         {@const workspace = item.workspace}
-        {@const activeSessions = getSessionsForWorkspace(workspace.path)}
+        {@const activeSessions = getSessionsForRepo(workspace.path)}
         {@const activeWorktreePaths = new Set(activeSessions.map(s => s.worktreePath).filter(Boolean) as string[])}
         {@const inactiveWorktrees = sessionState.worktrees.filter(wt =>
           wt.repoPath === workspace.path &&
@@ -193,7 +193,7 @@
           const groups = new Map<string, typeof activeSessions>();
           groups.set(workspace.path, []);
           for (const s of activeSessions) {
-            const groupKey = s.worktreePath ?? s.workspacePath;
+            const groupKey = s.worktreePath ?? s.repoPath;
             const existing = groups.get(groupKey);
             if (existing) existing.push(s);
             else groups.set(groupKey, [s]);
@@ -205,7 +205,7 @@
             {workspace}
             sessionGroups={groupedByPath}
             {inactiveWorktrees}
-            isActive={ui.activeWorkspacePath === workspace.path && !sessionState.activeSessionId}
+            isActive={ui.activeRepoPath === workspace.path && !sessionState.activeSessionId}
             onSelectWorkspace={handleSelectWorkspace}
             {onSelectSession}
             onNewWorktree={onNewWorktree}
@@ -217,7 +217,7 @@
         </div>
       {/each}
 
-      {#if sessionState.workspaces.length === 0}
+      {#if sessionState.repos.length === 0}
         <div class="empty-state">
           <span>No workspaces</span>
         </div>
