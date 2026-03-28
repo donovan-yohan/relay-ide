@@ -1,4 +1,3 @@
-// frontend/src/lib/actions/registry.svelte.ts
 import {
   registerGlobal as _registerGlobal,
   registerContextual as _registerContextual,
