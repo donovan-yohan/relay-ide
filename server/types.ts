@@ -365,3 +365,28 @@ export interface InstallOpts {
   port?: string | undefined;
   host?: string | undefined;
 }
+
+// Changed file status from git status/diff
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+
+export interface ChangedFile {
+  path: string;
+  oldPath?: string;          // only for renames
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  directory: string;         // parent directory for DataTable groupBy
+  summary?: string;          // rule-based summary (v1)
+}
+
+export interface ChangedFilesResponse {
+  files: ChangedFile[];
+  aggregate: { additions: number; deletions: number; fileCount: number };
+  error?: string;
+}
+
+export interface FileDiffResponse {
+  diff: string;
+  summary?: string;
+  error?: string;
+}

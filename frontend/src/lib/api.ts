@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Workspace, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo } from './types.js';
+import type { SessionSummary, WorktreeInfo, Workspace, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, ChangedFilesResponse, FileDiffResponse } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -540,4 +540,24 @@ export async function updateConfigAutoProvision(autoProvision: boolean): Promise
     body: JSON.stringify({ autoProvision }),
   });
   if (!res.ok) throw new Error('Failed to update auto-provision setting');
+}
+
+export async function fetchChangedFiles(workspacePath: string, base?: string): Promise<ChangedFilesResponse> {
+  const params = new URLSearchParams({ path: workspacePath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/changed-files?' + params.toString());
+  if (!res.ok) {
+    return { files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: `HTTP ${res.status}` };
+  }
+  return res.json() as Promise<ChangedFilesResponse>;
+}
+
+export async function fetchFileDiff(workspacePath: string, filePath: string, base?: string): Promise<FileDiffResponse> {
+  const params = new URLSearchParams({ path: workspacePath, file: filePath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/file-diff?' + params.toString());
+  if (!res.ok) {
+    return { diff: '', error: `HTTP ${res.status}` };
+  }
+  return res.json() as Promise<FileDiffResponse>;
 }

@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import { loadConfig, saveConfig, getWorkspaceSettings, setWorkspaceSettings, deleteWorkspaceSettingKeys, writeMeta, readMeta } from './config.js';
 import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
-import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, ensureBranchLocal } from './git.js';
+import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, ensureBranchLocal } from './git.js';
 import type { Config, PrInfo, PullRequest, PullRequestsResponse, Workspace } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
@@ -1005,6 +1005,79 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       res.json(result);
     } else {
       res.status(400).json({ error: result.error });
+    }
+  });
+
+  function validateWorkspaceAccess(repoPath: string): string | null {
+    const resolved = path.resolve(repoPath);
+    const allowed = getConfig().workspaces ?? [];
+    return allowed.some(p => resolved === p || resolved.startsWith(p + path.sep)) ? resolved : null;
+  }
+
+  // GET /workspaces/changed-files — list changed files in a repo
+  router.get('/changed-files', async (req: Request, res: Response) => {
+    if (typeof req.query.path !== 'string') {
+      res.status(400).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path parameter required' });
+      return;
+    }
+    const base = typeof req.query.base === 'string' ? req.query.base : undefined;
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path not in configured workspaces' });
+      return;
+    }
+
+    if (base && base.startsWith('-')) {
+      res.status(400).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'invalid base ref' });
+      return;
+    }
+
+    try {
+      const files = await getChangedFiles(resolvedRepo, base, exec);
+      const aggregate = {
+        additions: files.reduce((sum, f) => sum + f.additions, 0),
+        deletions: files.reduce((sum, f) => sum + f.deletions, 0),
+        fileCount: files.length,
+      };
+      res.json({ files, aggregate });
+    } catch (err: unknown) {
+      console.warn('[workspaces] /changed-files failed for', resolvedRepo, err instanceof Error ? err.message : String(err));
+      res.status(500).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'Failed to get changed files' });
+    }
+  });
+
+  // GET /workspaces/file-diff — get diff for a specific file
+  router.get('/file-diff', async (req: Request, res: Response) => {
+    if (typeof req.query.path !== 'string' || typeof req.query.file !== 'string') {
+      res.status(400).json({ diff: '', error: 'path and file parameters required' });
+      return;
+    }
+    const filePath = req.query.file;
+    const base = typeof req.query.base === 'string' ? req.query.base : undefined;
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({ diff: '', error: 'path not in configured workspaces' });
+      return;
+    }
+
+    if (filePath.includes('..') || path.isAbsolute(filePath)) {
+      res.status(400).json({ diff: '', error: 'invalid file path' });
+      return;
+    }
+
+    if (base && base.startsWith('-')) {
+      res.status(400).json({ diff: '', error: 'invalid base ref' });
+      return;
+    }
+
+    try {
+      const diff = await getFileDiff(resolvedRepo, filePath, base, exec);
+      res.json({ diff });
+    } catch (err: unknown) {
+      console.warn('[workspaces] /file-diff failed for', resolvedRepo, filePath, err instanceof Error ? err.message : String(err));
+      res.status(500).json({ diff: '', error: 'Failed to get file diff' });
     }
   });
 

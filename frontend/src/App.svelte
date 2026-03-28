@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
   import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForWorkspace, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
@@ -30,6 +30,7 @@
   import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.svelte';
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+  import ChangedFiles from './components/ChangedFiles.svelte';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -61,6 +62,19 @@
 
   // Component refs — must be $state() so $effect can track bind:this assignments
   let terminalRef = $state<Terminal | undefined>();
+  let changedFilesRef = $state<ChangedFiles | undefined>();
+  let changedFilesThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  function throttledChangedFilesRefresh() {
+    if (changedFilesThrottleTimer) return;
+    changedFilesThrottleTimer = setTimeout(() => {
+      changedFilesThrottleTimer = null;
+      changedFilesRef?.refresh();
+    }, 2000);
+  }
+  onDestroy(() => {
+    if (changedFilesThrottleTimer) clearTimeout(changedFilesThrottleTimer);
+  });
+
   let imageToastRef = $state<ImageToast | undefined>();
   let customizeDialogRef = $state<CustomizeSessionDialog | undefined>();
   let settingsDialogRef = $state<SettingsDialog | undefined>();
@@ -317,6 +331,13 @@
         }, 5000));
       } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
         throttledPollInvalidate();
+      } else if (msg.type === 'files-changed') {
+        const activeWs = activeSession?.cwd ?? activeSession?.workspacePath;
+        if (!msg.workspacePath || activeWs === msg.workspacePath) {
+          changedFilesRef?.refresh();
+        }
+      } else if (msg.type === 'session-activity-changed') {
+        throttledChangedFilesRefresh();
       }
     });
 
@@ -815,6 +836,11 @@
           onImageUpload={handleImageUpload}
           useTmux={activeSessionUseTmux}
           onCopyModeChange={handleCopyModeChange}
+        />
+
+        <ChangedFiles
+          bind:this={changedFilesRef}
+          workspacePath={activeSession?.cwd ?? activeSession?.workspacePath ?? ''}
         />
 
         <Toolbar
