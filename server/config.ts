@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, FilterPreset, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type { AgentType, Config, ContinuePolicy, FilterPreset, WorkspaceSettings, WorktreeMetadata } from './types.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
@@ -132,6 +132,7 @@ export interface ResolvedSessionSettings {
   agent: AgentType;
   yolo: boolean;
   continue: boolean;
+  continuePolicy: ContinuePolicy;
   useTmux: boolean;
   claudeArgs: string[];
 }
@@ -140,6 +141,7 @@ export interface SessionSettingsOverrides {
   agent?: AgentType | undefined;
   yolo?: boolean | undefined;
   continue?: boolean | undefined;
+  continuePolicy?: ContinuePolicy | undefined;
   useTmux?: boolean | undefined;
   claudeArgs?: string[] | undefined;
 }
@@ -150,10 +152,16 @@ export function resolveSessionSettings(
   overrides: SessionSettingsOverrides,
 ): ResolvedSessionSettings {
   const ws = getWorkspaceSettings(config, repoPath);
+
+  // Map boolean defaultContinue → ContinuePolicy for backward compat
+  const configPolicy: ContinuePolicy = ws.defaultContinuePolicy
+    ?? (ws.defaultContinue ? 'always' : 'never');
+
   return {
     agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
     yolo: overrides.yolo ?? ws.defaultYolo ?? false,
     continue: overrides.continue ?? ws.defaultContinue ?? true,
+    continuePolicy: overrides.continuePolicy ?? configPolicy,
     useTmux: overrides.useTmux ?? ws.launchInTmux ?? false,
     claudeArgs: overrides.claudeArgs ?? ws.claudeArgs ?? [],
   };
