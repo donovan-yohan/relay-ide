@@ -496,3 +496,80 @@ export class RefWatcher {
     this._closeAll();
   }
 }
+
+export class GitWatcher extends EventEmitter {
+  private _watchers = new Map<string, { watcher: fs.FSWatcher; refCount: number }>();
+  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  watch(workspacePath: string): void {
+    const existing = this._watchers.get(workspacePath);
+    if (existing) {
+      existing.refCount++;
+      return;
+    }
+
+    const gitDir = path.join(workspacePath, '.git');
+    if (!fs.existsSync(gitDir)) return;
+
+    // For worktrees, .git is a file — resolve to actual git dir
+    let watchTarget: string;
+    try {
+      const stat = fs.statSync(gitDir);
+      if (stat.isFile()) {
+        const content = fs.readFileSync(gitDir, 'utf-8').trim();
+        const match = content.match(/^gitdir:\s*(.+)$/);
+        if (!match) return;
+        watchTarget = path.resolve(workspacePath, match[1]!);
+      } else {
+        watchTarget = gitDir;
+      }
+    } catch {
+      return;
+    }
+
+    try {
+      const watcher = fs.watch(watchTarget, { persistent: false }, () => {
+        this._debouncedEmit(workspacePath);
+      });
+      watcher.on('error', () => {});
+      this._watchers.set(workspacePath, { watcher, refCount: 1 });
+    } catch {
+      // Cannot watch — directory may not exist
+    }
+  }
+
+  unwatch(workspacePath: string): void {
+    const entry = this._watchers.get(workspacePath);
+    if (!entry) return;
+    entry.refCount--;
+    if (entry.refCount <= 0) {
+      try { entry.watcher.close(); } catch {}
+      this._watchers.delete(workspacePath);
+      const timer = this._debounceTimers.get(workspacePath);
+      if (timer) {
+        clearTimeout(timer);
+        this._debounceTimers.delete(workspacePath);
+      }
+    }
+  }
+
+  private _debouncedEmit(workspacePath: string): void {
+    const existing = this._debounceTimers.get(workspacePath);
+    if (existing) clearTimeout(existing);
+    this._debounceTimers.set(workspacePath, setTimeout(() => {
+      this._debounceTimers.delete(workspacePath);
+      this.emit('files-changed', { workspacePath });
+    }, 500));
+  }
+
+  close(): void {
+    for (const entry of this._watchers.values()) {
+      try { entry.watcher.close(); } catch {}
+    }
+    this._watchers.clear();
+    for (const timer of this._debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._debounceTimers.clear();
+  }
+}

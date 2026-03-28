@@ -16,7 +16,7 @@ import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
 import { TMUX_PREFIX } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
-import { WorktreeWatcher, BranchWatcher, RefWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
+import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { listBranches, listBranchesEnriched } from './git.js';
@@ -281,6 +281,8 @@ async function main(): Promise<void> {
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().workspaces || []);
 
+  const gitWatcher = new GitWatcher();
+
   const server = http.createServer(app);
   const { broadcastEvent } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
 
@@ -290,6 +292,10 @@ async function main(): Promise<void> {
     if (type === 'pr-updated') clearPrCache();
     broadcastEvent(type, data);
   };
+
+  gitWatcher.on('files-changed', (data: { workspacePath: string }) => {
+    broadcastEvent('files-changed', { workspacePath: data.workspacePath });
+  });
 
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
@@ -1086,6 +1092,7 @@ async function main(): Promise<void> {
         ...(safeCols != null && { cols: safeCols }),
         ...(safeRows != null && { rows: safeRows }),
       });
+      gitWatcher.watch(session.cwd);
       res.status(201).json(session);
       return;
     }
@@ -1178,6 +1185,8 @@ async function main(): Promise<void> {
       });
     }
 
+    gitWatcher.watch(session.cwd);
+
     if (ticketContext) {
       transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
         console.error('[index] transition on session create failed:', err);
@@ -1191,8 +1200,10 @@ async function main(): Promise<void> {
   app.delete('/sessions/:id', requireAuth, (req, res) => {
     const id = req.params['id'] as string;
     try {
+      const sessionToDelete = sessions.get(id);
       sessions.kill(id);
       push.removeSession(id);
+      if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
       res.json({ ok: true });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
