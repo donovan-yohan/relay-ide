@@ -821,6 +821,34 @@ async function main(): Promise<void> {
     res.json(unique);
   });
 
+  // GET /worktrees/status — pre-cleanup checks for a worktree
+  app.get('/worktrees/status', requireAuth, async (req, res) => {
+    const worktreePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    if (!worktreePath) {
+      res.status(400).json({ error: 'path query parameter is required' });
+      return;
+    }
+
+    const resolved = path.resolve(worktreePath);
+
+    // Check for active sessions in this worktree
+    const allSessions = sessions.list();
+    const activeSessions = allSessions
+      .filter(s => s.worktreePath === resolved || s.cwd === resolved)
+      .map(s => s.id);
+
+    // Check for uncommitted changes
+    let hasUncommittedChanges = false;
+    try {
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: resolved, timeout: 5000 });
+      hasUncommittedChanges = stdout.trim().length > 0;
+    } catch {
+      // If git status fails, assume no changes (worktree may be gone)
+    }
+
+    res.json({ activeSessions, hasUncommittedChanges });
+  });
+
   // GET /config/defaultAgent — get default coding agent
   app.get('/config/defaultAgent', requireAuth, (_req, res) => {
     res.json({ defaultAgent: getConfig().defaultAgent || 'claude' });
