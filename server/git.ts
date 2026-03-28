@@ -685,6 +685,35 @@ function isStalePr(pr: PrInfo): boolean {
   return elapsed > ONE_DAY_MS;
 }
 
+/**
+ * Ensure a branch ref exists locally. If not, fetch it from origin.
+ * Returns { found: true } if the branch is now available locally,
+ * or { found: false } if it doesn't exist anywhere.
+ */
+async function ensureBranchLocal(
+  repoPath: string,
+  branch: string,
+  options: { exec?: ExecFileAsyncLike } = {},
+): Promise<{ found: boolean }> {
+  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+
+  // Check if branch exists locally
+  try {
+    await run('git', ['rev-parse', '--verify', branch], { cwd: repoPath, timeout: 5000 });
+    return { found: true };
+  } catch {
+    // Not found locally — try fetching
+  }
+
+  // Fetch from origin
+  try {
+    await run('git', ['fetch', 'origin', `${branch}:${branch}`], { cwd: repoPath, timeout: 30000 });
+    return { found: true };
+  } catch {
+    return { found: false };
+  }
+}
+
 export {
   listBranches,
   listBranchesEnriched,
@@ -706,4 +735,5 @@ export {
   createBranch,
   changePrBase,
   pushBranch,
+  ensureBranchLocal,
 };
