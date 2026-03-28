@@ -22,6 +22,61 @@ export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings'
   defaultNotifications: true,
 };
 
+function migrateToV4(config: Config, configPath: string): void {
+  if (config.configVersion != null && config.configVersion >= 4) return;
+
+  // Step 1: Reconcile repo arrays
+  const legacyWorkspaces = config.workspaces as unknown as string[] | undefined;
+  const isLegacyStringArray = Array.isArray(legacyWorkspaces) &&
+    (legacyWorkspaces.length === 0 || typeof legacyWorkspaces[0] === 'string');
+
+  if (isLegacyStringArray && legacyWorkspaces!.length > 0) {
+    if (!config.repos) config.repos = [];
+    const repoSet = new Set(config.repos);
+    for (const w of legacyWorkspaces!) {
+      if (!repoSet.has(w)) {
+        config.repos.push(w);
+        repoSet.add(w);
+      }
+    }
+  }
+
+  // Step 2: Rename workspaceSettings → repoSettings
+  if (config.workspaceSettings != null && config.repoSettings == null) {
+    config.repoSettings = config.workspaceSettings;
+    delete config.workspaceSettings;
+  }
+
+  // Step 3: Promote workspaceGroups → workspaces (Workspace[])
+  const promoted: Workspace[] = [];
+  if (config.workspaceGroups != null) {
+    const validPaths = new Set(config.repos ?? []);
+    let order = 0;
+    for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
+      if (!Array.isArray(paths)) continue;
+      const validRepos = paths.filter(p => validPaths.has(p));
+      if (validRepos.length > 0) {
+        promoted.push({
+          id: crypto.randomUUID(),
+          name: groupName,
+          repos: validRepos,
+          order: order++,
+        });
+      }
+    }
+    delete config.workspaceGroups;
+  }
+
+  // Set workspaces to promoted entities (or empty array if nothing was promoted)
+  (config as any).workspaces = promoted;
+
+  // Step 4: Set version
+  config.configVersion = 4;
+
+  // Persist migrated config
+  saveConfig(configPath, config);
+}
+
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -37,7 +92,12 @@ export function loadConfig(configPath: string): Config {
 
   // Validate and clean workspaceGroups
   if (config.workspaceGroups != null) {
-    const validPaths = new Set(config.workspaces ?? []);
+    // Valid paths come from repos[] and legacy workspaces[] (string array, pre-v4)
+    const legacyWs = config.workspaces as unknown as string[] | undefined;
+    const legacyWsPaths = Array.isArray(legacyWs) && (legacyWs.length === 0 || typeof legacyWs[0] === 'string')
+      ? legacyWs
+      : [];
+    const validPaths = new Set([...(config.repos ?? []), ...legacyWsPaths]);
     const seenPaths = new Set<string>();
     const cleaned: Record<string, string[]> = {};
 
@@ -66,6 +126,8 @@ export function loadConfig(configPath: string): Config {
 
     config.workspaceGroups = cleaned;
   }
+
+  migrateToV4(config, configPath);
 
   return config;
 }
@@ -122,7 +184,7 @@ export function getWorkspaceSettings(config: Config, workspacePath: string): Wor
     launchInTmux: config.launchInTmux,
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = config.workspaceSettings?.[workspacePath] || {};
+  const perWorkspace = config.repoSettings?.[workspacePath] ?? config.workspaceSettings?.[workspacePath] ?? {};
   // Per-workspace settings override global — only for defined keys
   return { ...globalDefaults, ...perWorkspace };
 }

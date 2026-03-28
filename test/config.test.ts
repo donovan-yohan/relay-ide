@@ -262,8 +262,12 @@ test('workspaceGroups with valid paths loads cleanly', () => {
     },
   }), 'utf8');
   const config = loadConfig(configPath);
-  assert.deepEqual(config.workspaceGroups!['Group A'], ['/a/repo']);
-  assert.deepEqual(config.workspaceGroups!['Group B'], ['/b/repo']);
+  assert.equal(config.workspaceGroups, undefined);
+  const workspaces = config.workspaces as any[];
+  const groupA = workspaces?.find((w: any) => w.name === 'Group A');
+  const groupB = workspaces?.find((w: any) => w.name === 'Group B');
+  assert.deepEqual(groupA?.repos, ['/a/repo']);
+  assert.deepEqual(groupB?.repos, ['/b/repo']);
 });
 
 test('workspaceGroups with invalid path filters it out', () => {
@@ -275,7 +279,9 @@ test('workspaceGroups with invalid path filters it out', () => {
     },
   }), 'utf8');
   const config = loadConfig(configPath);
-  assert.deepEqual(config.workspaceGroups!['My Group'], ['/valid/repo']);
+  assert.equal(config.workspaceGroups, undefined);
+  const myGroup = (config.workspaces as any[])?.find((w: any) => w.name === 'My Group');
+  assert.deepEqual(myGroup?.repos, ['/valid/repo']);
 });
 
 test('workspaceGroups with duplicate path keeps first-group winner', () => {
@@ -288,8 +294,12 @@ test('workspaceGroups with duplicate path keeps first-group winner', () => {
     },
   }), 'utf8');
   const config = loadConfig(configPath);
-  assert.deepEqual(config.workspaceGroups!['First'], ['/shared/repo']);
-  assert.equal(config.workspaceGroups!['Second'], undefined);
+  assert.equal(config.workspaceGroups, undefined);
+  const workspaces = config.workspaces as any[];
+  const first = workspaces?.find((w: any) => w.name === 'First');
+  const second = workspaces?.find((w: any) => w.name === 'Second');
+  assert.deepEqual(first?.repos, ['/shared/repo']);
+  assert.equal(second, undefined);
 });
 
 test('workspaceGroups undefined produces no errors', () => {
@@ -299,6 +309,7 @@ test('workspaceGroups undefined produces no errors', () => {
   }), 'utf8');
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
+  assert.deepEqual(config.workspaces as any[], []);
 });
 
 test('workspaceGroups with all-invalid paths removes empty group', () => {
@@ -310,5 +321,126 @@ test('workspaceGroups with all-invalid paths removes empty group', () => {
     },
   }), 'utf8');
   const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups!['Ghost Group'], undefined);
+  assert.equal(config.workspaceGroups, undefined);
+  const workspaces = config.workspaces as any[];
+  assert.ok(!workspaces?.find((w: any) => w.name === 'Ghost Group'));
+});
+
+// ── Config v4 migration ──
+
+test('migrateToV4: sets configVersion to 4', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ repos: ['/a'] }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 4);
+});
+
+test('migrateToV4: already v4 config is unchanged', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const v4Config = {
+    configVersion: 4,
+    repos: ['/a', '/b'],
+    repoSettings: { '/a': { defaultYolo: true } },
+    workspaces: [{ id: 'ws-1', name: 'My App', repos: ['/a', '/b'], order: 0 }],
+  };
+  fs.writeFileSync(configPath, JSON.stringify(v4Config), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 4);
+  assert.deepEqual(config.repos, ['/a', '/b']);
+  assert.ok(config.repoSettings?.['/a']?.defaultYolo);
+  assert.equal((config.workspaces as any[])?.length, 1);
+  assert.equal((config.workspaces as any[])?.[0]?.name, 'My App');
+});
+
+test('migrateToV4: reconciles legacy workspaces string[] into repos', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    workspaces: ['/old/repo1', '/old/repo2'],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 4);
+  assert.ok(config.repos.includes('/old/repo1'));
+  assert.ok(config.repos.includes('/old/repo2'));
+});
+
+test('migrateToV4: merges workspaces and repos arrays with dedup', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/a', '/b'],
+    workspaces: ['/b', '/c'],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.deepEqual(config.repos, ['/a', '/b', '/c']);
+});
+
+test('migrateToV4: renames workspaceSettings to repoSettings', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/my/repo'],
+    workspaceSettings: { '/my/repo': { defaultYolo: true, branchPrefix: 'dy/' } },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.ok(config.repoSettings?.['/my/repo']?.defaultYolo);
+  assert.equal(config.repoSettings?.['/my/repo']?.branchPrefix, 'dy/');
+  assert.equal(config.workspaceSettings, undefined);
+});
+
+test('migrateToV4: promotes workspaceGroups to Workspace entities', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/frontend', '/backend', '/shared'],
+    workspaceGroups: {
+      'My App': ['/frontend', '/backend'],
+      'Infra': ['/shared'],
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const workspaces = config.workspaces as any[];
+  assert.equal(workspaces?.length, 2);
+  const myApp = workspaces?.find((w: any) => w.name === 'My App');
+  assert.ok(myApp);
+  assert.ok(myApp.id);
+  assert.deepEqual(myApp.repos, ['/frontend', '/backend']);
+  assert.equal(myApp.order, 0);
+  const infra = workspaces?.find((w: any) => w.name === 'Infra');
+  assert.ok(infra);
+  assert.deepEqual(infra.repos, ['/shared']);
+  assert.equal(infra.order, 1);
+  assert.equal(config.workspaceGroups, undefined);
+});
+
+test('migrateToV4: workspaceGroups promotion validates against repos[]', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/valid'],
+    workspaceGroups: {
+      'Mixed': ['/valid', '/not-in-repos'],
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const mixed = (config.workspaces as any[])?.find((w: any) => w.name === 'Mixed');
+  assert.ok(mixed);
+  assert.deepEqual(mixed.repos, ['/valid']);
+});
+
+test('migrateToV4: empty config gets configVersion 4', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 4);
+});
+
+test('migrateToV4: persists migrated config to disk', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/a'],
+    workspaceSettings: { '/a': { defaultYolo: true } },
+    workspaceGroups: { 'G': ['/a'] },
+  }), 'utf8');
+  loadConfig(configPath);
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(raw.configVersion, 4);
+  assert.ok(raw.repoSettings);
+  assert.equal(raw.workspaceSettings, undefined);
+  assert.equal(raw.workspaceGroups, undefined);
 });
