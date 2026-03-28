@@ -1,0 +1,345 @@
+<script lang="ts">
+  import type { Column } from './DataTable.svelte';
+  import DataTable from './DataTable.svelte';
+  import DiffViewer from './DiffViewer.svelte';
+  import { fetchChangedFiles, fetchFileDiff } from '../lib/api.js';
+  import { generateFileSummary } from '../lib/diff-summary.js';
+  import type { ChangedFile } from '../lib/types.js';
+
+  let {
+    workspacePath,
+    base,
+  }: {
+    workspacePath: string;
+    base?: string;
+  } = $props();
+
+  let files = $state<ChangedFile[]>([]);
+  let aggregate = $state({ additions: 0, deletions: 0, fileCount: 0 });
+  let loading = $state(false);
+  let error = $state<string | undefined>(undefined);
+  let expanded = $state(false);
+  let expandedFile = $state<string | null>(null);
+  let fileDiff = $state<string>('');
+  let diffLoading = $state(false);
+  let sortBy = $state('path');
+  let sortDir = $state<'asc' | 'desc'>('asc');
+
+  const columns: Column[] = [
+    { key: 'status', label: '', width: '24px' },
+    { key: 'path', label: 'file', sortable: true },
+    { key: 'additions', label: '+', sortable: true, width: '50px' },
+    { key: 'deletions', label: '-', sortable: true, width: '50px' },
+  ];
+
+  let sortedFiles = $derived.by(() => {
+    const sorted = [...files];
+    sorted.sort((a, b) => {
+      const aVal = (a as unknown as Record<string, unknown>)[sortBy];
+      const bVal = (b as unknown as Record<string, unknown>)[sortBy];
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+      }
+      const aStr = String(aVal ?? '');
+      const bStr = String(bVal ?? '');
+      return sortDir === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+    });
+    return sorted;
+  });
+
+  const statusIcon: Record<string, string> = {
+    added: '+',
+    modified: '~',
+    deleted: '-',
+    renamed: '→',
+    untracked: '?',
+  };
+
+  const statusColor: Record<string, string> = {
+    added: 'var(--status-success)',
+    modified: 'var(--status-warning)',
+    deleted: 'var(--status-error)',
+    renamed: 'var(--status-info)',
+    untracked: 'var(--text-muted)',
+  };
+
+  export async function refresh() {
+    if (!workspacePath) return;
+    loading = true;
+    error = undefined;
+    try {
+      const data = await fetchChangedFiles(workspacePath, base);
+      files = data.files;
+      aggregate = data.aggregate;
+      error = data.error;
+    } catch {
+      error = 'Failed to fetch changed files';
+      files = [];
+    } finally {
+      loading = false;
+    }
+  }
+
+  // $effect is intentional here: refresh() is async and writes to $state — cannot be $derived.
+  $effect(() => {
+    void workspacePath;
+    void base;
+    if (workspacePath) void refresh();
+  });
+
+  function handleSort(col: string) {
+    if (sortBy === col) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortBy = col;
+      sortDir = 'asc';
+    }
+  }
+
+  async function handleRowAction(file: ChangedFile) {
+    if (expandedFile === file.path) {
+      expandedFile = null;
+      fileDiff = '';
+      return;
+    }
+    expandedFile = file.path;
+    diffLoading = true;
+    try {
+      const data = await fetchFileDiff(workspacePath, file.path, base);
+      fileDiff = data.diff;
+      if (!file.summary && fileDiff) {
+        file.summary = generateFileSummary(fileDiff, file.path, file.status);
+      }
+    } catch {
+      fileDiff = '';
+    } finally {
+      diffLoading = false;
+    }
+  }
+
+  function fileName(filePath: string): string {
+    const idx = filePath.lastIndexOf('/');
+    return idx === -1 ? filePath : filePath.slice(idx + 1);
+  }
+</script>
+
+<div class="changed-files-panel">
+  <button
+    class="summary-bar"
+    onclick={() => { expanded = !expanded; if (expanded && files.length === 0) refresh(); }}
+    aria-expanded={expanded}
+  >
+    <span class="summary-label">changed files</span>
+    {#if aggregate.fileCount > 0}
+      <span class="summary-stats">
+        {aggregate.fileCount} file{aggregate.fileCount !== 1 ? 's' : ''}
+        <span class="stat-add">+{aggregate.additions}</span>
+        <span class="stat-del">-{aggregate.deletions}</span>
+      </span>
+    {:else if loading}
+      <span class="summary-stats loading-text">scanning...</span>
+    {:else}
+      <span class="summary-stats muted">no changes</span>
+    {/if}
+    <span class="expand-indicator">{expanded ? '▾' : '▸'}</span>
+  </button>
+
+  {#if expanded}
+    <div class="files-content">
+      <DataTable
+        {columns}
+        rows={sortedFiles}
+        groupBy="directory"
+        {sortBy}
+        {sortDir}
+        onSort={handleSort}
+        {loading}
+        {error}
+        emptyMessage="no changes detected"
+        onRowAction={handleRowAction}
+        maxHeight="300px"
+      >
+        {#snippet row(file: ChangedFile, _index: number)}
+          <div class="file-row" class:expanded-row={expandedFile === file.path}>
+            <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
+            <span class="file-name" title={file.path}>
+              {fileName(file.path)}
+              {#if file.summary}
+                <span class="file-summary">{file.summary}</span>
+              {/if}
+            </span>
+            <span class="stat stat-add">+{file.additions}</span>
+            <span class="stat stat-del">-{file.deletions}</span>
+          </div>
+          {#if expandedFile === file.path}
+            <div class="inline-diff">
+              <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+            </div>
+          {/if}
+        {/snippet}
+
+        {#snippet mobileCard(file: ChangedFile, _index: number)}
+          <button class="mobile-file-card" onclick={() => handleRowAction(file)}>
+            <div class="card-header">
+              <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
+              <span class="file-name">{fileName(file.path)}</span>
+              <span class="card-stats">
+                <span class="stat-add">+{file.additions}</span>
+                <span class="stat-del">-{file.deletions}</span>
+              </span>
+            </div>
+            {#if file.summary}
+              <div class="card-summary">{file.summary}</div>
+            {/if}
+            {#if expandedFile === file.path}
+              <div class="inline-diff">
+                <DiffViewer diff={fileDiff} filePath={file.path} loading={diffLoading} />
+              </div>
+            {/if}
+          </button>
+        {/snippet}
+      </DataTable>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .changed-files-panel {
+    border-top: 1px solid var(--border, #333);
+  }
+
+  .summary-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    color: var(--text-muted, #888);
+    text-align: left;
+  }
+
+  .summary-bar:hover {
+    background: var(--surface-hover, #141414);
+  }
+
+  .summary-label {
+    color: var(--text, #e0e0e0);
+  }
+
+  .summary-stats {
+    flex: 1;
+  }
+
+  .loading-text {
+    opacity: 0.6;
+  }
+
+  .muted {
+    opacity: 0.5;
+  }
+
+  .stat-add { color: var(--status-success, #4ade80); }
+  .stat-del { color: var(--status-error, #f87171); }
+
+  .expand-indicator {
+    flex-shrink: 0;
+    opacity: 0.5;
+  }
+
+  .files-content {
+    border-top: 1px solid var(--border, #333);
+  }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+
+  .file-row:hover {
+    background: var(--surface-hover, #141414);
+  }
+
+  .expanded-row {
+    background: var(--surface-hover, #141414);
+  }
+
+  .status-icon {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    font-weight: bold;
+  }
+
+  .file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    color: var(--text, #e0e0e0);
+  }
+
+  .file-summary {
+    margin-left: 8px;
+    color: var(--text-muted, #888);
+    font-size: var(--font-size-xs, 0.75rem);
+  }
+
+  .stat {
+    flex-shrink: 0;
+    width: 40px;
+    text-align: right;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+  }
+
+  .inline-diff {
+    margin: 4px 0 4px 24px;
+  }
+
+  .mobile-file-card {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 1px solid var(--border, #333);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    color: var(--text, #e0e0e0);
+  }
+
+  .mobile-file-card:active {
+    background: var(--surface-hover, #141414);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  .card-summary {
+    margin-top: 4px;
+    padding-left: 24px;
+    color: var(--text-muted, #888);
+  }
+</style>
