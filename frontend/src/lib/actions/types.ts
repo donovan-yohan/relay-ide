@@ -1,16 +1,17 @@
-export type ActionCategory = 'session' | 'workspace' | 'pr' | 'settings' | 'navigation' | 'terminal';
+export type ActionCategory = 'session' | 'workspace' | 'pr' | 'settings';
 
 export type ActionContext = {
   view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';
-  workspaceId?: string;
+  workspacePath?: string;
   sessionId?: string;
   agentRunning?: boolean;
   isMobile?: boolean;
+  // TODO Phase 4: populate prState from workspace PR data
   prState?: 'none' | 'draft' | 'open' | 'merged' | 'closed';
 };
 
 export type Action = {
-  id: string;
+  id: `${ActionCategory}.${string}`;
   label: string;
   description?: string;
   aliases?: string[];

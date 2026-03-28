@@ -14,7 +14,7 @@ export const workspaceNewWorktree: ActionMeta = {
   description: 'create a branch and start coding',
   category: 'workspace',
   icon: '+',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const workspaceActions: ActionMeta[] = [

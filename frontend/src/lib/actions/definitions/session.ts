@@ -7,7 +7,7 @@ export const sessionNewAgent: ActionMeta = {
   category: 'session',
   icon: '+',
   shortcut: { key: 'mod+t', global: true },
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const sessionNewTerminal: ActionMeta = {
@@ -16,7 +16,7 @@ export const sessionNewTerminal: ActionMeta = {
   description: 'open a bare shell',
   category: 'session',
   icon: '+',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const sessionCloseActive: ActionMeta = {
@@ -44,7 +44,7 @@ export const sessionStartOnRepo: ActionMeta = {
   description: 'open agent on current workspace',
   category: 'session',
   icon: '▸',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const sessionStartOnTicket: ActionMeta = {
@@ -53,7 +53,7 @@ export const sessionStartOnTicket: ActionMeta = {
   description: 'pick a ticket and start coding',
   category: 'session',
   icon: '◆',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const sessionActions: ActionMeta[] = [

@@ -7,7 +7,8 @@ export const prCreate: ActionMeta = {
   aliases: ['pr', 'pull request', 'open pr'],
   category: 'pr',
   icon: '⇗',
-  when: (ctx) => !!ctx.workspaceId && ctx.prState !== 'open' && ctx.prState !== 'draft',
+  // TODO Phase 4: add prState gating once actionContext populates it
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const prPushBranch: ActionMeta = {
@@ -17,7 +18,7 @@ export const prPushBranch: ActionMeta = {
   aliases: ['push', 'git push'],
   category: 'pr',
   icon: '↑',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const prSwitchBranch: ActionMeta = {
@@ -27,7 +28,7 @@ export const prSwitchBranch: ActionMeta = {
   aliases: ['checkout', 'branch'],
   category: 'pr',
   icon: '⇄',
-  when: (ctx) => !!ctx.workspaceId,
+  when: (ctx) => !!ctx.workspacePath,
 };
 
 export const prActions: ActionMeta[] = [

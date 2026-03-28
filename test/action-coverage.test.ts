@@ -52,11 +52,17 @@ describe('Action Coverage', () => {
     assert.deepStrictEqual(missing, [], `Missing action definitions: ${missing.join(', ')}`);
   });
 
+  it('all defined actions are in the Phase 2 allowlist', () => {
+    const allowedIds = new Set<string>(PHASE2_ALLOWLIST);
+    const extra = ALL_META.filter(a => !allowedIds.has(a.id)).map(a => a.id);
+    assert.deepStrictEqual(extra, [], `Defined actions not in allowlist: ${extra.join(', ')}`);
+  });
+
   it('all registered action IDs are unique', () => {
     registerGlobal(ALL_META.map(toAction));
     const all = getAllActions();
     const ids = all.map((a: Action) => a.id);
-    const dupes = ids.filter((id: string, i: number) => ids.indexOf(id) !== i);
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
     assert.deepStrictEqual(dupes, [], `Duplicate action IDs: ${dupes.join(', ')}`);
   });
 

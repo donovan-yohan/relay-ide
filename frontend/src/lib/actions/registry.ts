@@ -5,8 +5,8 @@ const contextualActions = new Map<string, Action>();
 
 export function registerGlobal(actions: Action[]): void {
   for (const action of actions) {
-    if (globalActions.has(action.id) || contextualActions.has(action.id)) {
-      throw new Error(`Action "${action.id}" is already registered`);
+    if (contextualActions.has(action.id)) {
+      throw new Error(`Action "${action.id}" is already registered as contextual`);
     }
     globalActions.set(action.id, action);
   }

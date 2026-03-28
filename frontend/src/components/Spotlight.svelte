@@ -4,7 +4,7 @@
   import { derivePrDotStatus } from '../lib/pr-status.js';
   import StatusDot from './StatusDot.svelte';
   import TuiInput from './TuiInput.svelte';
-  import { getAllActions, getRegistryVersion } from '../lib/actions/registry.svelte.js';
+  import { getAllActions } from '../lib/actions/registry.svelte.js';
   import type { ActionContext, Action } from '../lib/actions/types.js';
 
   let {
@@ -65,7 +65,6 @@
 
   // Commands from the action registry, filtered by current context
   let registryCommands = $derived.by(() => {
-    void getRegistryVersion(); // track registry mutations
     return getAllActions().filter(a => !a.when || a.when(actionContext));
   });
 
@@ -304,7 +303,17 @@
     }, 150);
   }
 
-  function selectItem(item: SpotlightResult) {
+  async function selectItem(item: SpotlightResult) {
+    if (item.type === 'command') {
+      try {
+        await item.data.handler(actionContext);
+        onClose();
+      } catch (err) {
+        console.error(`Action "${item.data.id}" failed:`, err);
+        onClose();
+      }
+      return;
+    }
     onClose();
     switch (item.type) {
       case 'workspace':
@@ -318,10 +327,6 @@
         onSelectPr(item.data);
         break;
       case 'ticket':
-        // No direct ticket action from spotlight for now
-        break;
-      case 'command':
-        item.data.handler(actionContext);
         break;
       case 'setting':
         onOpenSettings?.(item.data.section);
@@ -368,15 +373,15 @@
     }
   }
 
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC');
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
 
   function formatShortcut(key: string): string {
-    return key
+    const parts = key
       .replace('mod', isMac ? '⌘' : 'ctrl')
       .replace('shift', '⇧')
       .split('+')
-      .map(k => k.length === 1 ? k.toUpperCase() : k)
-      .join('');
+      .map(k => k.length === 1 ? k.toUpperCase() : k);
+    return isMac ? parts.join('') : parts.join('+');
   }
 
   function categoryIcon(type: SpotlightResult['type']): string {

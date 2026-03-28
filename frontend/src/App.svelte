@@ -52,13 +52,21 @@
   const sessionState = getSessionState();
   const configState = getConfigState();
 
-  let actionContext = $derived<ActionContext>({
-    view: sessionState.activeSessionId ? 'session'
-      : ui.activeWorkspacePath ? 'workspace'
-      : 'dashboard',
-    ...(ui.activeWorkspacePath ? { workspaceId: ui.activeWorkspacePath } : {}),
-    ...(sessionState.activeSessionId ? { sessionId: sessionState.activeSessionId } : {}),
+  let actionContext = $derived.by<ActionContext>(() => {
+    if (sessionState.activeSessionId) {
+      const ctx: ActionContext = { view: 'session', sessionId: sessionState.activeSessionId };
+      if (ui.activeWorkspacePath) ctx.workspacePath = ui.activeWorkspacePath;
+      return ctx;
+    }
+    if (ui.activeWorkspacePath) {
+      return { view: 'workspace', workspacePath: ui.activeWorkspacePath };
+    }
+    return { view: 'dashboard' };
   });
+
+  function navigateToDashboard() {
+    if (sessionState.activeSessionId) sessionState.activeSessionId = null;
+  }
 
   function navigateToSession(sessionId: string, _sessionType: string) {
     sessionState.activeSessionId = sessionId;
@@ -98,33 +106,35 @@
       }},
       { ...sessionKill, handler: async () => {
         if (sessionState.activeSessionId) {
-          await killSession(sessionState.activeSessionId);
+          try {
+            await killSession(sessionState.activeSessionId);
+          } catch (err) {
+            console.error('Failed to kill session', err);
+          }
           await refreshAll();
         }
       }},
       { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
-      { ...sessionStartOnTicket, handler: () => {
-        if (sessionState.activeSessionId) sessionState.activeSessionId = null;
-      }},
+      // PR/ticket stubs: navigate to dashboard. Direct handlers deferred to Phase 3.
+      { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
       { ...workspaceAdd, handler: () => addWorkspaceDialogRef?.open() },
       { ...workspaceNewWorktree, handler: () => {
         if (activeWorkspace) handleNewWorktree(activeWorkspace);
       }},
-      { ...prCreate, handler: () => {
-        if (sessionState.activeSessionId) sessionState.activeSessionId = null;
-      }},
-      { ...prPushBranch, handler: () => {
-        if (sessionState.activeSessionId) sessionState.activeSessionId = null;
-      }},
-      { ...prSwitchBranch, handler: () => {
-        if (sessionState.activeSessionId) sessionState.activeSessionId = null;
-      }},
+      { ...prCreate, handler: () => navigateToDashboard() },
+      { ...prPushBranch, handler: () => navigateToDashboard() },
+      { ...prSwitchBranch, handler: () => navigateToDashboard() },
       { ...settingsOpen, handler: () => handleOpenSettings() },
       { ...settingsConnectGithub, handler: () => settingsDialogRef?.open('section-integrations') },
       { ...settingsToggleYolo, handler: async () => {
-        const newVal = !configState.defaultYolo;
-        configState.defaultYolo = newVal;
-        await setDefaultYolo(newVal);
+        const prev = configState.defaultYolo;
+        configState.defaultYolo = !prev;
+        try {
+          await setDefaultYolo(!prev);
+        } catch (err) {
+          configState.defaultYolo = prev;
+          console.error('Failed to update default YOLO setting', err);
+        }
       }},
       { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
     ] satisfies Action[]);

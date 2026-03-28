@@ -31,21 +31,20 @@ describe('ActionRegistry', () => {
     assert.deepStrictEqual(getAction('session.new-agent'), action);
   });
 
-  it('registerGlobal with duplicate ID throws', () => {
-    const action = makeAction({ id: 'session.new-agent' });
-    registerGlobal([action]);
-    assert.throws(
-      () => registerGlobal([makeAction({ id: 'session.new-agent' })]),
-      /already registered/
-    );
+  it('registerGlobal with duplicate ID overwrites (idempotent for HMR)', () => {
+    const action1 = makeAction({ id: 'session.new-agent', label: 'v1' });
+    registerGlobal([action1]);
+    const action2 = makeAction({ id: 'session.new-agent', label: 'v2' });
+    registerGlobal([action2]);
+    assert.strictEqual(getAction('session.new-agent')?.label, 'v2');
   });
 
   it('registerContextual + unregisterContextual lifecycle', () => {
-    const action = makeAction({ id: 'ctx.temp' });
+    const action = makeAction({ id: 'session.temp' });
     registerContextual([action]);
-    assert.deepStrictEqual(getAction('ctx.temp'), action);
-    unregisterContextual(['ctx.temp']);
-    assert.strictEqual(getAction('ctx.temp'), undefined);
+    assert.deepStrictEqual(getAction('session.temp'), action);
+    unregisterContextual(['session.temp']);
+    assert.strictEqual(getAction('session.temp'), undefined);
   });
 
   it('unregister action that was never registered is a no-op', () => {
@@ -57,12 +56,12 @@ describe('ActionRegistry', () => {
   });
 
   it('getAllActions returns global + contextual', () => {
-    registerGlobal([makeAction({ id: 'a' })]);
-    registerContextual([makeAction({ id: 'b' })]);
+    registerGlobal([makeAction({ id: 'session.a' })]);
+    registerContextual([makeAction({ id: 'session.b' })]);
     const all = getAllActions();
     assert.strictEqual(all.length, 2);
-    assert.ok(all.some((a: Action) => a.id === 'a'));
-    assert.ok(all.some((a: Action) => a.id === 'b'));
+    assert.ok(all.some((a: Action) => a.id === 'session.a'));
+    assert.ok(all.some((a: Action) => a.id === 'session.b'));
   });
 
   it('getActionsByCategory filters correctly', () => {
