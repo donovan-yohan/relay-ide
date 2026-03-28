@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ActivityEntry, BranchInfo, CiStatus, PrInfo } from './types.js';
+import type { ActivityEntry, BranchInfo, ChangedFile, CiStatus, FileChangeStatus, PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -674,6 +674,115 @@ async function pushBranch(
   return { success: true };
 }
 
+function parseStatus(code: string): FileChangeStatus {
+  switch (code.trim()) {
+    case 'M': return 'modified';
+    case 'A': return 'added';
+    case 'D': return 'deleted';
+    case '??': return 'untracked';
+    default:
+      if (code.startsWith('R')) return 'renamed';
+      return 'modified';
+  }
+}
+
+function fileDirectory(filePath: string): string {
+  const dir = filePath.lastIndexOf('/');
+  return dir === -1 ? '.' : filePath.slice(0, dir);
+}
+
+async function getChangedFiles(
+  repoPath: string,
+  base?: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<ChangedFile[]> {
+  try {
+    let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
+
+    if (base) {
+      // Branch comparison
+      const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
+      statusEntries = stdout.split('\n').filter(Boolean).map(line => {
+        const parts = line.split('\t');
+        const code = parts[0] ?? '';
+        if (code.startsWith('R')) {
+          return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
+        }
+        return { path: parts[1] ?? '', status: parseStatus(code) };
+      });
+    } else {
+      // Working tree: git status --porcelain=v1 -z
+      const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoPath, timeout: 10000 });
+      statusEntries = [];
+      const parts = stdout.split('\0').filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        const entry = parts[i]!;
+        const code = entry.slice(0, 2);
+        const filePath = entry.slice(3);
+        if (code.startsWith('R')) {
+          const newPath = parts[++i] ?? filePath;
+          statusEntries.push({ path: newPath, oldPath: filePath, status: 'renamed' });
+        } else {
+          statusEntries.push({ path: filePath, status: parseStatus(code) });
+        }
+      }
+    }
+
+    if (statusEntries.length === 0) return [];
+
+    // Get per-file stats via numstat
+    const numstatArgs = base
+      ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
+      : ['diff', '--numstat', '--find-renames'];
+    let numstatMap = new Map<string, { additions: number; deletions: number }>();
+    try {
+      const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });
+      for (const line of numstat.split('\n').filter(Boolean)) {
+        const [add, del, ...pathParts] = line.split('\t');
+        const filePath = pathParts.join('\t');
+        const actualPath = filePath.includes(' => ') ? filePath.split(' => ').pop()!.replace(/}$/, '') : filePath;
+        numstatMap.set(actualPath, {
+          additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
+          deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
+        });
+      }
+    } catch {
+      // numstat failed — proceed with zeros
+    }
+
+    const files: ChangedFile[] = [];
+    for (const entry of statusEntries) {
+      if (!entry.path) continue;
+      const stats = numstatMap.get(entry.path);
+      let additions = stats?.additions ?? 0;
+      let deletions = stats?.deletions ?? 0;
+
+      if (entry.status === 'untracked' && additions === 0) {
+        try {
+          const { stdout: wcOut } = await exec('wc', ['-l', entry.path], { cwd: repoPath, timeout: 5000 });
+          const match = wcOut.trim().match(/^\s*(\d+)/);
+          if (match) additions = parseInt(match[1]!, 10);
+        } catch {
+          // best effort
+        }
+      }
+
+      files.push({
+        path: entry.path,
+        status: entry.status,
+        additions,
+        deletions,
+        directory: fileDirectory(entry.path),
+        ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+      });
+    }
+
+    return files;
+  } catch {
+    return [];
+  }
+}
+
 const ONE_DAY_MS = 86_400_000;
 
 /** A PR is stale if it's MERGED or CLOSED and was last updated more than 1 day ago (or has no valid timestamp). */
@@ -706,4 +815,5 @@ export {
   createBranch,
   changePrBase,
   pushBranch,
+  getChangedFiles,
 };
