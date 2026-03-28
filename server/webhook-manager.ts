@@ -58,11 +58,11 @@ export function startSmartPolling(
     const workspacePaths = config.workspaces ?? [];
     if (workspacePaths.length === 0) return;
 
-    const workspaceSettings = config.workspaceSettings ?? {};
+    const repoSettings = config.repoSettings ?? {};
 
     // Collect paths that need polling (no webhook or webhook has an error)
     const unwebhookedPaths = workspacePaths.filter((wsPath) => {
-      const ws = workspaceSettings[wsPath];
+      const ws = repoSettings[wsPath];
       return !ws?.webhookEnabled || ws?.webhookError;
     });
 
@@ -292,9 +292,9 @@ function persistWebhookSuccess(
   repoPath: string,
   webhookId: number,
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  if (!config.workspaceSettings[repoPath]) config.workspaceSettings[repoPath] = {};
-  const ws = config.workspaceSettings[repoPath]!;
+  if (!config.repoSettings) config.repoSettings = {};
+  if (!config.repoSettings[repoPath]) config.repoSettings[repoPath] = {};
+  const ws = config.repoSettings[repoPath]!;
   ws.webhookId = webhookId;
   ws.webhookEnabled = true;
   delete ws.webhookError;
@@ -307,9 +307,9 @@ function persistWebhookError(
   repoPath: string,
   errorCode: string,
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  if (!config.workspaceSettings[repoPath]) config.workspaceSettings[repoPath] = {};
-  config.workspaceSettings[repoPath]!.webhookError = errorCode;
+  if (!config.repoSettings) config.repoSettings = {};
+  if (!config.repoSettings[repoPath]) config.repoSettings[repoPath] = {};
+  config.repoSettings[repoPath]!.webhookError = errorCode;
   saveConfig(configPath, config);
 }
 
@@ -383,8 +383,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     const token = config.github?.accessToken;
     let deleted = 0;
 
-    if (token && config.workspaceSettings) {
-      const entries = Object.entries(config.workspaceSettings);
+    if (token && config.repoSettings) {
+      const entries = Object.entries(config.repoSettings);
       for (const [repoPath, ws] of entries) {
         const webhookId = ws.webhookId;
         if (!webhookId) continue;
@@ -405,8 +405,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
         }
       }
 
-      // Clear webhook fields from all workspace settings
-      for (const ws of Object.values(config.workspaceSettings)) {
+      // Clear webhook fields from all repo settings
+      for (const ws of Object.values(config.repoSettings)) {
         delete ws.webhookId;
         delete ws.webhookEnabled;
         delete ws.webhookError;
@@ -473,8 +473,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     let foundOwnerRepo: string | null = null;
     let foundWebhookId: number | null = null;
 
-    if (config.workspaceSettings) {
-      for (const [repoPath, ws] of Object.entries(config.workspaceSettings)) {
+    if (config.repoSettings) {
+      for (const [repoPath, ws] of Object.entries(config.repoSettings)) {
         if (!ws.webhookId) continue;
         const ownerRepo = await getOwnerRepoForPath(repoPath);
         if (ownerRepo) {
@@ -547,7 +547,7 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
 
     const config = getConfig();
     const token = config.github?.accessToken;
-    const ws = config.workspaceSettings?.[repoPath];
+    const ws = config.repoSettings?.[repoPath];
     const webhookId = ws?.webhookId;
 
     if (!webhookId) {
@@ -580,8 +580,8 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     }
 
     // Clear local webhook state regardless of API result
-    if (config.workspaceSettings?.[repoPath]) {
-      const wsEntry = config.workspaceSettings[repoPath]!;
+    if (config.repoSettings?.[repoPath]) {
+      const wsEntry = config.repoSettings[repoPath]!;
       delete wsEntry.webhookId;
       delete wsEntry.webhookEnabled;
       delete wsEntry.webhookError;

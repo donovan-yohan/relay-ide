@@ -17,7 +17,7 @@ interface SerializedPtySession {
   id: string;
   type: SessionType;
   agent: AgentType;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -158,7 +158,7 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     properties: {
       agent,
       type: rest.type ?? 'agent',
-      workspace: rest.workspacePath,
+      workspace: rest.repoPath,
       mode: rest.command ? 'terminal' : 'agent',
     },
     session_id: id,
@@ -204,7 +204,7 @@ function list(): SessionSummary[] {
       type: s.type,
       agent: s.agent,
       mode: s.mode,
-      workspacePath: s.workspacePath,
+      repoPath: s.repoPath,
       worktreePath: s.worktreePath,
       cwd: s.cwd,
       repoName: s.repoName,
@@ -252,7 +252,7 @@ function kill(id: string): void {
     properties: {
       agent: session.agent,
       type: session.type,
-      workspace: session.workspacePath,
+      workspace: session.repoPath,
       duration_s: durationS,
     },
     session_id: id,
@@ -308,7 +308,7 @@ function serializeAll(configDir: string): void {
       id: session.id,
       type: session.type,
       agent: session.agent,
-      workspacePath: session.workspacePath,
+      repoPath: session.repoPath,
       worktreePath: session.worktreePath,
       cwd: session.cwd,
       repoName: session.repoName,
@@ -354,32 +354,33 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
   // v2 → v3 migration
   if (pending.version <= 2) {
     for (const s of pending.sessions) {
-      const legacy = s as SerializedPtySession & { repoPath?: string; root?: string; worktreeName?: string };
-      if (!('cwd' in s) && legacy.repoPath) {
-        (s as any).cwd = legacy.repoPath;
+      const legacy = s as SerializedPtySession & { legacyCwd?: string; root?: string; worktreeName?: string };
+      // In v2 format, the field was called "repoPath" and stored the CWD
+      const v2Cwd: string | undefined = (s as unknown as Record<string, unknown>)['repoPath'] as string | undefined;
+      if (!('cwd' in s) && v2Cwd) {
+        (s as any).cwd = v2Cwd;
       }
-      if (!('workspacePath' in s)) {
-        // Derive workspacePath: find configured workspace that contains this cwd
+      if (!('repoPath' in s) || v2Cwd === (s as any).repoPath) {
+        // Derive repoPath from the configured workspaces (it's different from the old cwd meaning)
         const configuredWorkspaces = workspaces ?? [];
-        const cwd = (s as any).cwd ?? legacy.repoPath ?? '';
+        const cwd = (s as any).cwd ?? v2Cwd ?? '';
         const matchedWorkspace = configuredWorkspaces.find(w => cwd === w || cwd.startsWith(w + '/'));
         if (!matchedWorkspace) {
-          console.warn(`[sessions] v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as workspacePath`);
+          console.warn(`[sessions] v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`);
         }
-        (s as any).workspacePath = matchedWorkspace ?? cwd;
+        (s as any).repoPath = matchedWorkspace ?? cwd;
       }
       if (!('worktreePath' in s)) {
         const cwd = (s as any).cwd ?? '';
-        const workspacePath = (s as any).workspacePath ?? '';
-        // If cwd differs from workspacePath, it's a worktree
-        (s as any).worktreePath = cwd !== workspacePath ? cwd : null;
+        const repoPath = (s as any).repoPath ?? '';
+        // If cwd differs from repoPath, it's a worktree
+        (s as any).worktreePath = cwd !== repoPath ? cwd : null;
       }
       // Map old types to new
       if ((s as any).type === 'repo' || (s as any).type === 'worktree') {
         (s as any).type = 'agent';
       }
-      // Clean up legacy fields
-      delete legacy.repoPath;
+      // Clean up legacy fields (repoPath is now kept as it's our real field)
       delete legacy.root;
       delete legacy.worktreeName;
     }
@@ -446,7 +447,7 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         type: s.type,
         agent: s.agent,
         repoName: s.repoName,
-        workspacePath: s.workspacePath,
+        repoPath: s.repoPath,
         worktreePath: s.worktreePath,
         cwd: s.cwd,
         branchName: s.branchName,

@@ -176,7 +176,7 @@ export function deleteMeta(configPath: string, worktreePath: string): void {
   }
 }
 
-export function getWorkspaceSettings(config: Config, workspacePath: string): WorkspaceSettings {
+export function getRepoSettings(config: Config, repoPath: string): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
     defaultAgent: config.defaultAgent,
     defaultContinue: config.defaultContinue,
@@ -184,8 +184,8 @@ export function getWorkspaceSettings(config: Config, workspacePath: string): Wor
     launchInTmux: config.launchInTmux,
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = config.repoSettings?.[workspacePath] ?? config.workspaceSettings?.[workspacePath] ?? {};
-  // Per-workspace settings override global — only for defined keys
+  const perWorkspace = config.repoSettings?.[repoPath] ?? config.workspaceSettings?.[repoPath] ?? {};
+  // Per-repo settings override global — only for defined keys
   return { ...globalDefaults, ...perWorkspace };
 }
 
@@ -210,7 +210,7 @@ export function resolveSessionSettings(
   repoPath: string,
   overrides: SessionSettingsOverrides,
 ): ResolvedSessionSettings {
-  const ws = getWorkspaceSettings(config, repoPath);
+  const ws = getRepoSettings(config, repoPath);
   return {
     agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
     yolo: overrides.yolo ?? ws.defaultYolo ?? false,
@@ -220,32 +220,32 @@ export function resolveSessionSettings(
   };
 }
 
-export function deleteWorkspaceSettingKeys(
+export function deleteRepoSettingKeys(
   configPath: string,
   config: Config,
-  workspacePath: string,
+  repoPath: string,
   keys: string[],
 ): void {
-  if (!config.workspaceSettings?.[workspacePath]) return;
+  if (!config.repoSettings?.[repoPath]) return;
   for (const key of keys) {
-    delete (config.workspaceSettings[workspacePath] as Record<string, unknown>)[key];
+    delete (config.repoSettings[repoPath] as Record<string, unknown>)[key];
   }
-  // Clean up empty workspace entries
-  if (Object.keys(config.workspaceSettings[workspacePath]!).length === 0) {
-    delete config.workspaceSettings[workspacePath];
+  // Clean up empty repo setting entries
+  if (Object.keys(config.repoSettings[repoPath]!).length === 0) {
+    delete config.repoSettings[repoPath];
   }
   saveConfig(configPath, config);
 }
 
-export function setWorkspaceSettings(
+export function setRepoSettings(
   configPath: string,
   config: Config,
-  workspacePath: string,
+  repoPath: string,
   settings: Partial<WorkspaceSettings>,
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  config.workspaceSettings[workspacePath] = {
-    ...config.workspaceSettings[workspacePath],
+  if (!config.repoSettings) config.repoSettings = {};
+  config.repoSettings[repoPath] = {
+    ...config.repoSettings[repoPath],
     ...settings,
   };
   saveConfig(configPath, config);
