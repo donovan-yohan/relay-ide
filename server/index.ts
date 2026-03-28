@@ -19,7 +19,7 @@ import { setupWebSocket } from './ws.js';
 import { WorktreeWatcher, BranchWatcher, RefWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
-import { listBranches, listBranchesEnriched } from './git.js';
+import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState } from './git.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
@@ -681,7 +681,13 @@ async function main(): Promise<void> {
   app.get('/worktrees', requireAuth, async (req, res) => {
     const repoParam = typeof req.query.repo === 'string' ? req.query.repo : undefined;
     const roots = getConfig().rootDirs || [];
-    const worktrees: Array<{ name: string; path: string; repoName: string; repoPath: string; root: string; displayName: string; lastActivity: string; branchName: string }> = [];
+    const worktrees: Array<{
+      name: string; path: string; repoName: string; repoPath: string;
+      root: string; displayName: string; lastActivity: string; branchName: string;
+      branchState?: 'active' | 'stale' | 'merged';
+      prNumber?: number;
+      prTitle?: string;
+    }> = [];
 
     let reposToScan: RepoEntry[];
     if (repoParam) {
@@ -775,6 +781,42 @@ async function main(): Promise<void> {
       seen.add(wt.path);
       return true;
     });
+
+    // Compute branch lifecycle state for each worktree
+    const activeSessions = sessions.list();
+    await Promise.all(unique.map(async (wt) => {
+      try {
+        const hasActiveSessions = activeSessions.some(s => s.worktreePath === wt.path || s.cwd === wt.path);
+        const isMainBranch = wt.path === wt.repoPath;
+
+        let stale = false;
+        try {
+          stale = await isBranchStale(wt.repoPath, wt.branchName);
+        } catch {
+          // If check fails, assume not stale (safe fallback)
+        }
+
+        let pr: import('./types.js').PrInfo | null = null;
+        try {
+          pr = await getPrForBranch(wt.repoPath, wt.branchName);
+        } catch {
+          // If PR check fails, no PR data
+        }
+
+        const lifecycle = computeBranchLifecycleState({
+          pr,
+          isBranchStale: stale,
+          hasActiveSessions,
+          isMainBranch,
+        });
+
+        wt.branchState = lifecycle.state;
+        if (lifecycle.prNumber) wt.prNumber = lifecycle.prNumber;
+        if (lifecycle.prTitle) wt.prTitle = lifecycle.prTitle;
+      } catch {
+        wt.branchState = 'active';
+      }
+    }));
 
     res.json(unique);
   });
@@ -1149,6 +1191,12 @@ async function main(): Promise<void> {
     }
 
     const displayName = sessions.nextAgentName();
+
+    // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
+    // UI displayName stays as "Agent N" — tmux name and UI name are independent
+    const branchForTmux = (requestBranchName || '').replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
+    const tmuxDisplayName = branchForTmux ? `${name}-${branchForTmux}` : name;
+
     const session = sessions.create({
       type: 'agent',
       agent: resolvedAgent,
@@ -1158,6 +1206,7 @@ async function main(): Promise<void> {
       cwd,
       branchName: requestBranchName || '',  // caller may provide; branch watcher enriches later
       displayName,
+      tmuxDisplayName,
       args,
       configPath: CONFIG_PATH,
       useTmux: resolved.useTmux,
