@@ -76,6 +76,16 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
 
     if (event === 'pull_request' || event === 'pull_request_review') {
       deps.broadcastEvent('pr-updated', repoFullName ? { repo: repoFullName } : undefined);
+
+      // If PR was merged, also broadcast worktrees-changed so sidebar refreshes with branchState: 'merged'
+      if (event === 'pull_request') {
+        const body = req.body as Record<string, unknown>;
+        const action = body.action as string | undefined;
+        const pr = body.pull_request as Record<string, unknown> | undefined;
+        if (action === 'closed' && pr?.merged === true) {
+          deps.broadcastEvent('worktrees-changed');
+        }
+      }
     } else if (event === 'check_suite' || event === 'check_run') {
       deps.broadcastEvent('ci-updated', repoFullName ? { repo: repoFullName } : undefined);
     }
