@@ -13,6 +13,7 @@
 - [2026-03-23-relay-review-fixes-design.md](2026-03-23-relay-review-fixes-design.md) — Address 21 review findings from 6-agent PR review of Relay Phases 1-3
 
 ## Archived — Implemented
+- [2026-03-28-code-file-tools-design.md](2026-03-28-code-file-tools-design.md) — Changed files panel with syntax-highlighted diffs, .git/ watching, smart summaries
 - [2026-02-21-background-service-design.md](2026-02-21-background-service-design.md) — Background service (launchd/systemd) design
 - [2026-02-21-mobile-toolbar-redesign.md](2026-02-21-mobile-toolbar-redesign.md) — Mobile toolbar redesign
 - [2026-02-21-realtime-worktree-watching.md](2026-02-21-realtime-worktree-watching.md) — Real-time worktree watching design

@@ -101,6 +101,14 @@ Tmux sessions are named `crc-<displayName>-<id>` which is opaque in `tmux ls` ou
 > Entry: `/harness:brainstorm` → `/harness:plan` → `/harness:orchestrate`
 > Need design decisions before implementation.
 
+### LLM-powered file change summaries
+Opt-in feature: generate one-line summaries for each changed file in the Code & File Tools panel by piping the diff through `claude -p --bare` with Haiku (or the user's configured agent). Batch all changed files into one call, cache until next `files-changed` event. The +N -N fallback stats tell you HOW MUCH changed; LLM summaries tell you WHAT changed.
+
+**Depends on:** Phase 2 changed files panel (needs the file list and diff infrastructure to exist first).
+**Design doc:** `docs/design-docs/2026-03-28-code-file-tools-design.md` (see "Future Extensions: v2 LLM-Powered Summaries").
+
+**Added:** 2026-03-28
+
 ### Sidenav status indicators redesign
 **Combines:** "session count → meaningful indicators" + "clarify idle vs inactive dots"
 
