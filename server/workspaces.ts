@@ -12,7 +12,7 @@ import { loadConfig, saveConfig, getWorkspaceSettings, setWorkspaceSettings, del
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch } from './git.js';
-import type { Config, PrInfo, PullRequest, PullRequestsResponse, Workspace } from './types.js';
+import type { Config, PrInfo, PullRequest, PullRequestsResponse, Repo } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -170,7 +170,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const config = getConfig();
     const workspacePaths = config.workspaces ?? [];
 
-    const results: Workspace[] = await Promise.all(
+    const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
         const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
@@ -224,7 +224,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     trackEvent({ category: 'workspace', action: 'added', target: resolved, properties: { name: path.basename(resolved) } });
 
-    const workspace: Workspace = {
+    const workspace: Repo = {
       path: resolved,
       name: path.basename(resolved),
       isGitRepo,
@@ -322,7 +322,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     saveConfig(configPath, config);
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
 
-    const results: Workspace[] = await Promise.all(
+    const results: Repo[] = await Promise.all(
       (rawPaths as string[]).map(async (p) => {
         const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);

@@ -31,7 +31,7 @@ interface BaseSession {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -76,7 +76,7 @@ export interface SessionSummary {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -140,6 +140,7 @@ export const MOUNTAIN_NAMES = [
 ] as const;
 
 export interface Config {
+  configVersion?: number | undefined;
   host: string;
   port: number;
   cookieTTL: string;
@@ -153,8 +154,9 @@ export interface Config {
   defaultNotifications: boolean;
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
-  workspaces?: string[] | undefined;
+  workspaces?: string[] | undefined; // transitioning from string[] of repo paths to Workspace[] entities
   workspaceSettings?: Record<string, WorkspaceSettings> | undefined;
+  repoSettings?: Record<string, WorkspaceSettings> | undefined;
   vapidPublicKey?: string | undefined;
   vapidPrivateKey?: string | undefined;
   debugLog?: boolean | undefined;
@@ -347,11 +349,44 @@ export interface DashboardData {
   hasGhCli: boolean;
 }
 
-export interface Workspace {
+export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
+}
+
+export type RepoRole = 'frontend' | 'backend' | 'lib' | 'infra' | 'docs' | 'other';
+
+export interface WorkspaceTemplate {
+  repoRoles?: Record<string, RepoRole>;
+  defaultAgent?: string;
+  customPrompt?: string;
+  claudeArgs?: string[];
+}
+
+export interface WorkspaceLevelSettings {
+  defaultAgent?: AgentType;
+  defaultContinue?: boolean;
+  defaultYolo?: boolean;
+  launchInTmux?: boolean;
+  claudeArgs?: string[];
+  promptCodeReview?: string;
+  promptCreatePr?: string;
+  promptBranchRename?: string;
+  promptGeneral?: string;
+  promptFixConflicts?: string;
+  promptStartWork?: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  repos: string[];
+  themeColor?: string;
+  order: number;
+  template?: WorkspaceTemplate;
+  settings?: WorkspaceLevelSettings;
 }
 
 export type Platform = 'macos' | 'linux';

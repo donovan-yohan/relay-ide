@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, FilterPreset, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type { AgentType, Config, FilterPreset, Workspace, WorkspaceSettings, WorktreeMetadata } from './types.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
   { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
 ];
 
-export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
+export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
   host: '0.0.0.0',
   port: 3456,
   cookieTTL: '24h',
@@ -20,7 +20,6 @@ export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings'
   defaultYolo: false,
   launchInTmux: false,
   defaultNotifications: true,
-  workspaces: [],
 };
 
 export function loadConfig(configPath: string): Config {
