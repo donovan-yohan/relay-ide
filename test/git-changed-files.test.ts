@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getChangedFiles } from '../server/git.js';
+import { getChangedFiles, getFileDiff } from '../server/git.js';
 
 describe('getChangedFiles', () => {
   it('parses working tree changes from git status + numstat', async () => {
@@ -62,5 +62,42 @@ describe('getChangedFiles', () => {
       throw new Error('not a git repo');
     });
     assert.deepEqual(files, []);
+  });
+});
+
+describe('getFileDiff', () => {
+  it('returns working tree diff for a file', async () => {
+    const diff = await getFileDiff('/tmp/repo', 'server/git.ts', undefined, async (_file, args) => {
+      assert.equal(args[0], 'diff');
+      assert.ok(args.includes('--unified=3'));
+      assert.ok(args.includes('--find-renames'));
+      assert.ok(args.includes('--'));
+      assert.ok(args.includes('server/git.ts'));
+      return { stdout: 'diff --git a/server/git.ts b/server/git.ts\n--- a/server/git.ts\n+++ b/server/git.ts\n@@ -1,3 +1,4 @@\n+new line\n old\n', stderr: '' };
+    });
+    assert.ok(diff.includes('new line'));
+  });
+
+  it('returns staged diff when base is "cached"', async () => {
+    const diff = await getFileDiff('/tmp/repo', 'file.ts', 'cached', async (_file, args) => {
+      assert.ok(args.includes('--cached'));
+      return { stdout: 'staged diff output', stderr: '' };
+    });
+    assert.equal(diff, 'staged diff output');
+  });
+
+  it('returns branch comparison diff', async () => {
+    const diff = await getFileDiff('/tmp/repo', 'file.ts', 'main', async (_file, args) => {
+      assert.ok(args.includes('main...HEAD'));
+      return { stdout: 'branch diff output', stderr: '' };
+    });
+    assert.equal(diff, 'branch diff output');
+  });
+
+  it('returns empty string on git failure', async () => {
+    const diff = await getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
+      throw new Error('git failed');
+    });
+    assert.equal(diff, '');
   });
 });

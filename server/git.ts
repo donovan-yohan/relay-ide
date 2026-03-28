@@ -783,6 +783,42 @@ async function getChangedFiles(
   }
 }
 
+async function getFileDiff(
+  repoPath: string,
+  filePath: string,
+  base?: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<string> {
+  try {
+    let args: string[];
+    if (!base) {
+      args = ['diff', '--unified=3', '--find-renames', '--', filePath];
+    } else if (base === 'cached') {
+      args = ['diff', '--cached', '--unified=3', '--', filePath];
+    } else {
+      args = ['diff', `${base}...HEAD`, '--unified=3', '--find-renames', '--', filePath];
+    }
+
+    const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
+
+    // If empty (no changes or untracked), try --no-index for new files
+    if (!stdout.trim()) {
+      try {
+        const { stdout: noIndexOut } = await exec('git', ['diff', '--no-index', '/dev/null', filePath], { cwd: repoPath, timeout: 10000 });
+        return noIndexOut;
+      } catch (err: unknown) {
+        // git diff --no-index exits with code 1 when there ARE differences
+        const e = err as { stdout?: string };
+        if (e.stdout) return e.stdout;
+      }
+    }
+
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
 const ONE_DAY_MS = 86_400_000;
 
 /** A PR is stale if it's MERGED or CLOSED and was last updated more than 1 day ago (or has no valid timestamp). */
@@ -816,4 +852,5 @@ export {
   changePrBase,
   pushBranch,
   getChangedFiles,
+  getFileDiff,
 };
