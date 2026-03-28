@@ -1018,7 +1018,11 @@ async function main(): Promise<void> {
 
   // DELETE /worktrees — remove a worktree, prune, and delete its branch
   app.delete('/worktrees', requireAuth, async (req, res) => {
-    const { worktreePath, repoPath } = req.body as { worktreePath?: string; repoPath?: string };
+    const { worktreePath, repoPath, force } = req.body as {
+      worktreePath?: string;
+      repoPath?: string;
+      force?: boolean;
+    };
     if (!worktreePath || !repoPath) {
       res.status(400).json({ error: 'worktreePath and repoPath are required' });
       return;
@@ -1030,6 +1034,11 @@ async function main(): Promise<void> {
       const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
       const isKnownWorktree = allWorktrees.some(wt => wt.path === path.resolve(worktreePath) && !wt.isMain);
       if (!isKnownWorktree) {
+        // Check if the path simply doesn't exist anymore (already cleaned up)
+        if (!fs.existsSync(worktreePath)) {
+          res.status(404).json({ error: 'Worktree not found — may have been already cleaned up' });
+          return;
+        }
         res.status(400).json({ error: 'Path is not a recognized git worktree' });
         return;
       }
@@ -1041,15 +1050,31 @@ async function main(): Promise<void> {
       }
     }
 
-    // Multiple sessions per worktree allowed (multi-tab support)
+    // If force: kill active sessions in this worktree first
+    if (force) {
+      const allSessions = sessions.list();
+      const resolvedPath = path.resolve(worktreePath);
+      for (const s of allSessions) {
+        if (s.worktreePath === resolvedPath || s.cwd === resolvedPath) {
+          try {
+            sessions.kill(s.id);
+          } catch {
+            // Session may have already ended
+          }
+        }
+      }
+    }
 
     // Derive branch name from metadata or worktree directory name
     const meta = readMeta(CONFIG_PATH, worktreePath);
     const branchName = (meta && meta.branchName) || worktreePath.split('/').pop() || '';
 
     try {
-      // Will fail if uncommitted changes -- no --force
-      await execFileAsync('git', ['worktree', 'remove', worktreePath], { cwd: repoPath });
+      // Use --force when the user has confirmed via the cascade dialog
+      const removeArgs = force
+        ? ['worktree', 'remove', '--force', worktreePath]
+        : ['worktree', 'remove', worktreePath];
+      await execFileAsync('git', removeArgs, { cwd: repoPath });
     } catch (err: unknown) {
       // If git worktree remove fails, the directory may be an orphaned worktree
       // that git no longer tracks. Try to remove the directory directly.
@@ -1082,6 +1107,9 @@ async function main(): Promise<void> {
 
     // Clean up metadata file
     deleteMeta(CONFIG_PATH, worktreePath);
+
+    // Broadcast worktrees-changed so all clients refresh
+    broadcastEvent('worktrees-changed');
 
     res.json({ ok: true });
   });
