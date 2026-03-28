@@ -30,6 +30,7 @@
   import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.svelte';
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+  import ChangedFiles from './components/ChangedFiles.svelte';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -61,6 +62,7 @@
 
   // Component refs — must be $state() so $effect can track bind:this assignments
   let terminalRef = $state<Terminal | undefined>();
+  let changedFilesRef = $state<ChangedFiles | undefined>();
   let imageToastRef = $state<ImageToast | undefined>();
   let customizeDialogRef = $state<CustomizeSessionDialog | undefined>();
   let settingsDialogRef = $state<SettingsDialog | undefined>();
@@ -317,6 +319,10 @@
         }, 5000));
       } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
         throttledPollInvalidate();
+      } else if (msg.type === 'files-changed') {
+        changedFilesRef?.refresh();
+      } else if (msg.type === 'session-activity-changed') {
+        changedFilesRef?.refresh();
       }
     });
 
@@ -815,6 +821,11 @@
           onImageUpload={handleImageUpload}
           useTmux={activeSessionUseTmux}
           onCopyModeChange={handleCopyModeChange}
+        />
+
+        <ChangedFiles
+          bind:this={changedFilesRef}
+          workspacePath={activeSession?.cwd ?? activeSession?.workspacePath ?? ''}
         />
 
         <Toolbar
