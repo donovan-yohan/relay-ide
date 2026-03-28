@@ -4,7 +4,7 @@ created: 2026-03-23
 branch: master
 supersedes:
 implemented-by:
-consulted-learnings: [L-005]
+consulted-learnings: []
 ---
 
 # GitHub Device Flow Authentication

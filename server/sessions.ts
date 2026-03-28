@@ -30,6 +30,10 @@ interface SerializedPtySession {
   customCommand: string | null;
   yolo?: boolean;
   claudeArgs?: string[];
+  hookToken?: string;
+  hooksActive?: boolean;
+  needsBranchRename?: boolean;
+  branchRenamePrompt?: string;
 }
 
 interface PendingSessionsFile {
@@ -44,7 +48,7 @@ type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  initialPrompt?: string | undefined;
+  initialPrompt?: string;
 };
 
 type CreateResult = SessionSummary & { pid: number | undefined };
@@ -321,6 +325,10 @@ function serializeAll(configDir: string): void {
       customCommand: session.customCommand,
       yolo: session.yolo,
       claudeArgs: session.claudeArgs,
+      hookToken: session.hookToken,
+      hooksActive: session.hooksActive,
+      ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
+      ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
     });
   }
 
@@ -457,6 +465,10 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         restored: true,
         yolo: s.yolo ?? false,
         claudeArgs: s.claudeArgs ?? [],
+        hookToken: s.hookToken,
+        hooksActive: s.hooksActive,
+        ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
+        ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;

@@ -12,11 +12,13 @@ import { outputParsers } from './output-parsers/index.js';
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
 
-export const TMUX_PREFIX = process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
+export function getTmuxPrefix(): string {
+  return process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
+}
 
 export function generateTmuxSessionName(displayName: string, id: string): string {
   const sanitized = displayName.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
-  return `${TMUX_PREFIX}${sanitized}-${id.slice(0, 8)}`;
+  return `${getTmuxPrefix()}${sanitized}-${id.slice(0, 8)}`;
 }
 
 export function resolveTmuxSpawn(
@@ -82,6 +84,8 @@ export type CreatePtyParams = {
   forceOutputParser?: boolean | undefined;
   yolo?: boolean | undefined;
   claudeArgs?: string[] | undefined;
+  hookToken?: string | undefined;
+  hooksActive?: boolean | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -116,6 +120,8 @@ export function createPtySession(
     forceOutputParser,
     yolo: paramYolo,
     claudeArgs: paramClaudeArgs,
+    hookToken: paramHookToken,
+    hooksActive: paramHooksActive,
   } = params;
 
   let args = rawArgs;
@@ -124,13 +130,19 @@ export function createPtySession(
 
   const env = cleanEnv();
 
-  // Inject hooks settings when spawning a real claude agent (not custom command, not forceOutputParser)
-  let hookToken = '';
-  let hooksActive = false;
+  // Inject hooks settings when spawning a real claude agent (not custom command, not forceOutputParser).
+  // For restored sessions whose tmux died, reuse the preserved token but re-create the settings
+  // file on disk — the new Claude process needs --settings even though the token is the same.
+  // For surviving tmux sessions (command='tmux'), shouldInjectHooks is false — the old Claude
+  // instance already has its settings file, and we just need the token for server-side validation.
+  let hookToken = paramHookToken ?? '';
+  let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
   const shouldInjectHooks = agent === 'claude' && !command && !forceOutputParser && port !== undefined;
   if (shouldInjectHooks) {
-    hookToken = crypto.randomBytes(32).toString('hex');
+    if (!hookToken) {
+      hookToken = crypto.randomBytes(32).toString('hex');
+    }
     try {
       settingsPath = writeHooksSettingsFile(id, port, hookToken);
       args = ['--settings', settingsPath, ...args];
@@ -138,6 +150,7 @@ export function createPtySession(
     } catch (err) {
       console.warn(`[pty-handler] Failed to generate hooks settings for session ${id}:`, err);
       hooksActive = false;
+      hookToken = '';
     }
   }
 

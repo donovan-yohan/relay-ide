@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as sessions from '../server/sessions.js';
-import { resolveTmuxSpawn, generateTmuxSessionName, TMUX_PREFIX } from '../server/pty-handler.js';
+import { resolveTmuxSpawn, generateTmuxSessionName, getTmuxPrefix } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
 
@@ -303,27 +303,45 @@ describe('sessions', () => {
     });
   });
 
-  it('generateTmuxSessionName has crc- prefix', () => {
-    const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
-    assert.ok(name.startsWith('crc-'), `expected crc- prefix, got: ${name}`);
+  it('generateTmuxSessionName has correct prefix', () => {
+    const original = process.env.NO_PIN;
+    delete process.env.NO_PIN;
+    try {
+      const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
+      assert.ok(name.startsWith('crc-'), `expected crc- prefix, got: ${name}`);
+    } finally {
+      if (original !== undefined) process.env.NO_PIN = original;
+    }
   });
 
   it('generateTmuxSessionName sanitizes special characters', () => {
-    const name = generateTmuxSessionName('feat/auth-flow', 'abcdef1234567890');
-    assert.ok(name.startsWith('crc-feat-auth-flow-'), `expected sanitized name, got: ${name}`);
+    const original = process.env.NO_PIN;
+    delete process.env.NO_PIN;
+    try {
+      const name = generateTmuxSessionName('feat/auth-flow', 'abcdef1234567890');
+      assert.ok(name.startsWith('crc-feat-auth-flow-'), `expected sanitized name, got: ${name}`);
+    } finally {
+      if (original !== undefined) process.env.NO_PIN = original;
+    }
   });
 
   it('generateTmuxSessionName limits display name to 30 chars', () => {
-    const longName = 'a-very-long-display-name-that-exceeds-thirty-characters';
-    const id = 'abcdef1234567890';
-    const name = generateTmuxSessionName(longName, id);
-    // Format is crc-<sanitized up to 30>-<8 char id>
-    // The sanitized portion should be at most 30 chars
-    const withoutPrefix = name.slice('crc-'.length);
-    const parts = withoutPrefix.split('-');
-    const idPart = parts[parts.length - 1];
-    const displayPart = withoutPrefix.slice(0, withoutPrefix.length - idPart!.length - 1);
-    assert.ok(displayPart.length <= 30, `display portion should be <= 30 chars, got: ${displayPart.length}`);
+    const original = process.env.NO_PIN;
+    delete process.env.NO_PIN;
+    try {
+      const longName = 'a-very-long-display-name-that-exceeds-thirty-characters';
+      const id = 'abcdef1234567890';
+      const name = generateTmuxSessionName(longName, id);
+      // Format is crc-<sanitized up to 30>-<8 char id>
+      // The sanitized portion should be at most 30 chars
+      const withoutPrefix = name.slice('crc-'.length);
+      const parts = withoutPrefix.split('-');
+      const idPart = parts[parts.length - 1];
+      const displayPart = withoutPrefix.slice(0, withoutPrefix.length - idPart!.length - 1);
+      assert.ok(displayPart.length <= 30, `display portion should be <= 30 chars, got: ${displayPart.length}`);
+    } finally {
+      if (original !== undefined) process.env.NO_PIN = original;
+    }
   });
 
   it('generateTmuxSessionName uses 8 chars from the provided id', () => {
@@ -332,18 +350,35 @@ describe('sessions', () => {
     assert.ok(name.endsWith(id.slice(0, 8)), `expected name to end with ${id.slice(0, 8)}, got: ${name}`);
   });
 
-  it('prod TMUX_PREFIX (crc-) does not match dev prefix (crcd-)', () => {
-    // Production prefix must not be a prefix of the dev prefix, otherwise
-    // prod orphan cleanup (startsWith('crc-')) would kill dev tmux sessions.
+  it('prod prefix (crc-) does not match dev prefix (crcd-)', () => {
     const prodPrefix = 'crc-';
     const devPrefix = 'crcd-';
     assert.ok(!devPrefix.startsWith(prodPrefix), `dev prefix '${devPrefix}' must not start with prod prefix '${prodPrefix}'`);
     assert.ok(!prodPrefix.startsWith(devPrefix), `prod prefix '${prodPrefix}' must not start with dev prefix '${devPrefix}'`);
   });
 
-  it('TMUX_PREFIX is crc- in normal mode (no NO_PIN)', () => {
-    // Tests run without NO_PIN=1, so prefix should be production
-    assert.strictEqual(TMUX_PREFIX, 'crc-');
+  it('getTmuxPrefix returns crc- when NO_PIN is not set', () => {
+    const original = process.env.NO_PIN;
+    delete process.env.NO_PIN;
+    try {
+      assert.strictEqual(getTmuxPrefix(), 'crc-');
+    } finally {
+      if (original !== undefined) process.env.NO_PIN = original;
+    }
+  });
+
+  it('getTmuxPrefix returns crcd- when NO_PIN is 1', () => {
+    const original = process.env.NO_PIN;
+    process.env.NO_PIN = '1';
+    try {
+      assert.strictEqual(getTmuxPrefix(), 'crcd-');
+    } finally {
+      if (original !== undefined) {
+        process.env.NO_PIN = original;
+      } else {
+        delete process.env.NO_PIN;
+      }
+    }
   });
 
   it('agent defaults to claude when not specified', () => {
@@ -901,6 +936,68 @@ describe('session persistence', () => {
     const restored = sessions.get(s.id);
     assert.ok(restored);
     assert.deepStrictEqual((restored as PtySession).claudeArgs, ['--model', 'opus', '--verbose']);
+  });
+
+  it('serialize/restore preserves hookToken and hooksActive', async () => {
+    const configDir = createTmpDir();
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      workspacePath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+
+    // Manually set hookToken and hooksActive (simulating a session that had hooks injected)
+    const session = sessions.get(s.id);
+    assert.ok(session);
+    (session as PtySession).hookToken = 'abc123deadbeef';
+    (session as PtySession).hooksActive = true;
+
+    serializeAll(configDir);
+
+    // Verify hookToken is in the serialized JSON
+    const pending = JSON.parse(fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8'));
+    assert.strictEqual(pending.sessions[0].hookToken, 'abc123deadbeef');
+    assert.strictEqual(pending.sessions[0].hooksActive, true);
+
+    sessions.kill(s.id);
+
+    await restoreFromDisk(configDir);
+    const restored = sessions.get(s.id);
+    assert.ok(restored);
+    assert.strictEqual((restored as PtySession).hookToken, 'abc123deadbeef');
+    assert.strictEqual((restored as PtySession).hooksActive, true);
+  });
+
+  it('serialize/restore preserves needsBranchRename and branchRenamePrompt', async () => {
+    const configDir = createTmpDir();
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      workspacePath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      needsBranchRename: true,
+      branchRenamePrompt: 'Name this feature branch:',
+    });
+
+    const session = sessions.get(s.id);
+    assert.ok(session);
+    assert.strictEqual(session.needsBranchRename, true);
+
+    serializeAll(configDir);
+    sessions.kill(s.id);
+
+    await restoreFromDisk(configDir);
+    const restored = sessions.get(s.id);
+    assert.ok(restored);
+    assert.strictEqual(restored.needsBranchRename, true);
+    assert.strictEqual((restored as PtySession).branchRenamePrompt, 'Name this feature branch:');
   });
 
   it('restoreFromDisk handles v1/v2 pending files (v2→v3 migration)', async () => {

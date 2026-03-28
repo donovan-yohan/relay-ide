@@ -176,7 +176,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 | ADR | Topic |
 |-----|-------|
-| ADR-001 | Modular server architecture (eighteen modules, composition root, dependency flow) |
+| ADR-001 | Modular server architecture (twenty-seven modules, composition root, dependency flow) |
 | ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping) |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting) |
 | ADR-005 | Built-in test runner (node:test, nine test files, no external framework) |

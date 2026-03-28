@@ -4,7 +4,7 @@ created: 2026-03-25
 branch: branch-switcher
 supersedes:
 implemented-by:
-consulted-learnings: [L-004, L-010, L-012]
+consulted-learnings: []
 ---
 
 # Branch Bar Redesign

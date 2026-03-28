@@ -4,7 +4,7 @@ created: 2026-03-21
 branch: new-agent-quick-open
 supersedes: 2026-03-06-customize-session-flow-design.md
 implemented-by:
-consulted-learnings: [L-001]
+consulted-learnings: []
 ---
 
 # New Tab Quick-Create & Customize Redesign
