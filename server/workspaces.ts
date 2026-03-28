@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import { loadConfig, saveConfig, getWorkspaceSettings, setWorkspaceSettings, deleteWorkspaceSettingKeys, writeMeta, readMeta } from './config.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
-import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch } from './git.js';
+import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff } from './git.js';
 import type { Config, PrInfo, PullRequest, PullRequestsResponse, Workspace } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
@@ -971,6 +971,48 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       res.json(result);
     } else {
       res.status(400).json({ error: result.error });
+    }
+  });
+
+  // GET /workspaces/changed-files — list changed files in a repo
+  router.get('/changed-files', async (req: Request, res: Response) => {
+    const repoPath = req.query.path as string | undefined;
+    if (!repoPath) {
+      res.status(400).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path parameter required' });
+      return;
+    }
+
+    const base = req.query.base as string | undefined;
+
+    try {
+      const files = await getChangedFiles(repoPath, base, exec);
+      const aggregate = {
+        additions: files.reduce((sum, f) => sum + f.additions, 0),
+        deletions: files.reduce((sum, f) => sum + f.deletions, 0),
+        fileCount: files.length,
+      };
+      res.json({ files, aggregate });
+    } catch {
+      res.status(500).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'Failed to get changed files' });
+    }
+  });
+
+  // GET /workspaces/file-diff — get diff for a specific file
+  router.get('/file-diff', async (req: Request, res: Response) => {
+    const repoPath = req.query.path as string | undefined;
+    const filePath = req.query.file as string | undefined;
+    if (!repoPath || !filePath) {
+      res.status(400).json({ diff: '', error: 'path and file parameters required' });
+      return;
+    }
+
+    const base = req.query.base as string | undefined;
+
+    try {
+      const diff = await getFileDiff(repoPath, filePath, base, exec);
+      res.json({ diff });
+    } catch {
+      res.status(500).json({ diff: '', error: 'Failed to get file diff' });
     }
   });
 
