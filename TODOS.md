@@ -101,6 +101,42 @@ Tmux sessions are named `crc-<displayName>-<id>` which is opaque in `tmux ls` ou
 > Entry: `/harness:brainstorm` → `/harness:plan` → `/harness:orchestrate`
 > Need design decisions before implementation.
 
+### UI preview mode for worktree QA testing
+`node-pty` can't spawn PTY processes from git worktrees (`posix_spawnp failed`), which means the server crashes when creating sessions from a worktree. This blocks browser QA of any UI feature developed in a worktree.
+
+Add a `--preview` flag to the server that starts everything except PTY spawning:
+- Express, static frontend, WebSocket, all workspace/git/PR endpoints work normally
+- `POST /sessions` returns a mock session ID with a stub terminal (no PTY)
+- The frontend renders the full session view layout (PrTopBar, SessionTabBar, ChangedFiles panel, Toolbar) with the mock session
+- All non-terminal UI (changed files, diffs, PR bar, sidebar, dashboard) is fully interactive and testable
+
+This also enables Playwright/headless browser tests to run in CI without needing a real PTY:
+```bash
+# Start preview server in CI
+claude-remote-cli --preview --port 7778 &
+# Run Playwright tests against it
+npx playwright test
+```
+
+**Scope:** Add `--preview` CLI flag, stub the `createPtySession` call in preview mode to return a fake session object, serve a "preview mode" banner in the terminal area. ~30-50 lines of server code + CLI flag wiring. **Files:** `bin/claude-remote-cli.ts` (flag), `server/index.ts` (session creation stub), `server/pty-handler.ts` (mock).
+
+**Added:** 2026-03-28
+
+### Playwright UI test suite
+Add end-to-end browser tests using Playwright for UI components that can't be unit tested (Svelte components, WebSocket integration, real browser rendering). Run against the `--preview` mode server so no PTY is needed.
+
+**Priority tests:**
+1. Changed files panel: collapsible stats bar, file list rendering, inline diff expansion, mobile card layout
+2. Session view layout: PrTopBar, SessionTabBar, terminal area, ChangedFiles ordering
+3. Sidebar: workspace list, session items, context menus, search
+4. Dashboard: PR table, activity feed, automation checkboxes
+5. Dialogs: AddWorkspace (FileBrowser), Settings, CustomizeSession
+
+**Depends on:** UI preview mode (above).
+**Scope:** Add `playwright` as devDependency, create `e2e/` directory with test files, add `npm run test:e2e` script, CI workflow in `.github/workflows/test-e2e.yml`. **Files:** `package.json`, `playwright.config.ts`, `e2e/*.spec.ts`.
+
+**Added:** 2026-03-28
+
 ### LLM-powered file change summaries
 Opt-in feature: generate one-line summaries for each changed file in the Code & File Tools panel by piping the diff through `claude -p --bare` with Haiku (or the user's configured agent). Batch all changed files into one call, cache until next `files-changed` event. The +N -N fallback stats tell you HOW MUCH changed; LLM summaries tell you WHAT changed.
 
@@ -157,10 +193,10 @@ Current "workspaces" are really just repos. True workspaces should be an arbitra
 Add Warp/VS Code-style file utilities to the remote web UI.
 
 **Phases:**
-1. **File browser:** File tree panel — navigate filesystem, preview files, open folders
-2. **Changed file previews:** List changed files (git status/diff) with inline previews — see what an agent changed
-3. **Diff viewer:** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs
-4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center
+1. ~~**File browser:** File tree panel — navigate filesystem, preview files, open folders~~ *(done — PR #X, filesystem-browser-api)*
+2. ~~**Changed file previews:** List changed files (git status/diff) with inline previews — see what an agent changed~~ *(done — PR #69, code-file-tools)* **Note:** browser QA blocked by worktree PTY issue; needs `--preview` mode (see Small Features above) or manual QA from the main repo
+3. **Diff viewer (full-page):** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs. Phase 2's inline DiffViewer handles 90% — Phase 3 adds full-page mode, side-by-side toggle, keyboard nav, URL-addressable `/diff` route
+4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center *(low priority)*
 
 ### Command Center Audit
 The command palette needs a full overhaul.
