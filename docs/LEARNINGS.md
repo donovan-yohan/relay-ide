@@ -321,3 +321,13 @@ When a server startup gate (hard exit if precondition not met) is the only way t
 When a CLI command installs a background service (launchd, systemd) that starts a separate process, the install path must verify all preconditions that the service process needs but cannot interactively satisfy. Background service processes have no TTY, no user interaction, and limited environment. If the server requires a configured PIN to start, the `--bg` / `install` command must either (a) ensure the PIN exists before installing, or (b) the server must be able to start without it and offer a non-interactive setup path. Never assume the background-started process will have the same capabilities as the interactive CLI session.
 
 ---
+
+### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: design/true-workspaces
+
+When a config field changes its type (e.g., `Config.workspaces` from `string[]` to `Workspace[]`), using `as any` casts to bypass TypeScript hides runtime breakage. Every consumer that reads the field with the old type assumption will silently receive the wrong shape at runtime — string comparisons against objects, `.startsWith()` on entity objects, `.includes()` on arrays of the wrong type. The fix agent's approach of changing the type declaration and grepping all consumers is correct, but must be verified by running `tsc --noEmit` BEFORE committing. When planning a type rename: (1) grep all files that access the field, (2) update consumers to use the correct accessor (e.g., `config.repos` for paths, `config.workspaces` for entities), (3) verify zero compile errors, THEN commit.
+
+---
