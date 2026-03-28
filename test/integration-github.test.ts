@@ -118,7 +118,7 @@ test('returns issues from all workspace repos merged and sorted', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   const exec = makeMockExec({
@@ -161,7 +161,7 @@ test('returns no_workspaces error when empty', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [],
+    repos: [],
   });
 
   // execAsync should never be called — pass a mock that always throws to verify early-return
@@ -178,7 +178,7 @@ test('returns gh_not_in_path when gh not found', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const err = new Error('spawn gh ENOENT') as NodeJS.ErrnoException;
@@ -197,7 +197,7 @@ test('caches per-repo within TTL — gh called once per repo for two requests', 
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   let ghCallCount = 0;
@@ -236,7 +236,7 @@ test('partial failure: repo that throws still returns others', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   // repo-b will throw a generic error (not ENOENT, so non-fatal)

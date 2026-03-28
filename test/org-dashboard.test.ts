@@ -142,7 +142,7 @@ test('returns prs filtered to workspace repos', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   const exec = makeMockExec({
@@ -177,7 +177,7 @@ test('returns gh_not_in_path error when gh not found', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const notFoundError = Object.assign(
@@ -201,7 +201,7 @@ test('returns gh_not_authenticated error', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const authError = new Error('You are not logged into any GitHub hosts. Run gh auth login to authenticate.');
@@ -222,7 +222,7 @@ test('returns empty prs with no_workspaces error when workspaces is empty', asyn
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [],
+    repos: [],
   });
 
   // execAsync should never be called here — pass a mock that always throws to
@@ -240,7 +240,7 @@ test('detects reviewer role when current user is in requested_reviewers but not 
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   // PR authored by someone else; testuser is a requested reviewer
@@ -274,7 +274,7 @@ test('caches results within TTL — exec called only once for two requests', asy
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   let searchCallCount = 0;
@@ -317,7 +317,7 @@ test('uses GraphQL path when github accessToken is in config', async () => {
 
   saveConfig(gqlConfigPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
     github: { accessToken: 'ghp_test123', username: 'graphqluser' },
   });
 

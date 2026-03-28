@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DEFAULTS, loadConfig, saveConfig, ensureMetaDir, readMeta, writeMeta, deleteMeta, resolveSessionSettings, deleteWorkspaceSettingKeys } from '../server/config.js';
+import { DEFAULTS, loadConfig, saveConfig, ensureMetaDir, readMeta, writeMeta, deleteMeta, resolveSessionSettings, deleteRepoSettingKeys } from '../server/config.js';
 
 let tmpDir!: string;
 
@@ -157,7 +157,7 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
     defaultContinue: true,
     launchInTmux: false,
     claudeArgs: [],
-    workspaceSettings: {
+    repoSettings: {
       '/my/repo': { defaultYolo: true, defaultAgent: 'codex' },
     },
   }), 'utf8');
@@ -176,7 +176,7 @@ test('resolveSessionSettings explicit overrides beat workspace settings', () => 
     defaultContinue: true,
     launchInTmux: false,
     claudeArgs: [],
-    workspaceSettings: {
+    repoSettings: {
       '/my/repo': { defaultYolo: true },
     },
   }), 'utf8');
@@ -217,39 +217,39 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   assert.deepEqual(result.claudeArgs, ['--verbose']);
 });
 
-test('deleteWorkspaceSettingKeys removes specified keys', () => {
+test('deleteRepoSettingKeys removes specified keys', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const config = {
     ...DEFAULTS,
-    workspaceSettings: {
+    repoSettings: {
       '/my/repo': { defaultYolo: true, defaultAgent: 'codex' as const, branchPrefix: 'dy/' },
     },
   };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  deleteWorkspaceSettingKeys(configPath, config, '/my/repo', ['defaultYolo', 'defaultAgent']);
-  assert.equal(config.workspaceSettings!['/my/repo']!.defaultYolo, undefined);
-  assert.equal(config.workspaceSettings!['/my/repo']!.defaultAgent, undefined);
-  assert.equal(config.workspaceSettings!['/my/repo']!.branchPrefix, 'dy/');
+  deleteRepoSettingKeys(configPath, config, '/my/repo', ['defaultYolo', 'defaultAgent']);
+  assert.equal(config.repoSettings!['/my/repo']!.defaultYolo, undefined);
+  assert.equal(config.repoSettings!['/my/repo']!.defaultAgent, undefined);
+  assert.equal(config.repoSettings!['/my/repo']!.branchPrefix, 'dy/');
 });
 
-test('deleteWorkspaceSettingKeys removes entire workspace entry when empty', () => {
+test('deleteRepoSettingKeys removes entire workspace entry when empty', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const config = {
     ...DEFAULTS,
-    workspaceSettings: {
+    repoSettings: {
       '/my/repo': { defaultYolo: true },
     },
   };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  deleteWorkspaceSettingKeys(configPath, config, '/my/repo', ['defaultYolo']);
-  assert.equal(config.workspaceSettings!['/my/repo'], undefined);
+  deleteRepoSettingKeys(configPath, config, '/my/repo', ['defaultYolo']);
+  assert.equal(config.repoSettings!['/my/repo'], undefined);
 });
 
-test('deleteWorkspaceSettingKeys is no-op for nonexistent workspace', () => {
+test('deleteRepoSettingKeys is no-op for nonexistent workspace', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const config = { ...DEFAULTS };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  assert.doesNotThrow(() => deleteWorkspaceSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo']));
+  assert.doesNotThrow(() => deleteRepoSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo']));
 });
 
 test('workspaceGroups with valid paths loads cleanly', () => {

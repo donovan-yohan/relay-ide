@@ -100,7 +100,7 @@ test('extracts Jira ticket IDs from branch names', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const exec = makeMockExec({
@@ -125,7 +125,7 @@ test('extracts GH issue IDs from gh-N branches', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const exec = makeMockExec({
@@ -161,7 +161,7 @@ test('same ticket in two repos yields array of 2 BranchLinks', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   const exec = makeMockExec({
@@ -187,7 +187,7 @@ test('ignores branches without ticket IDs', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const exec = makeMockExec({
@@ -207,7 +207,7 @@ test('hasActiveSession true when branch is in active set', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const activeBranch = 'feature/ACTIVE-1-work';
@@ -241,7 +241,7 @@ test('invalidateBranchLinkerCache forces fresh scan', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   let gitCallCount = 0;
@@ -284,7 +284,7 @@ test('returns empty object when no workspaces', async () => {
   invalidateBranchLinkerCache();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [],
+    repos: [],
   });
 
   // execAsync should never be called here

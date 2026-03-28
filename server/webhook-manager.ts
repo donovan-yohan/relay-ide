@@ -55,7 +55,7 @@ export function startSmartPolling(
 
   const tick = (): void => {
     const config = loadConfig(configPath);
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
     if (workspacePaths.length === 0) return;
 
     const repoSettings = config.repoSettings ?? {};
@@ -595,7 +595,7 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
 
   router.post('/backfill', async (_req: Request, res: ExpressResponse) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       res.json({ total: 0, success: 0, failed: 0, results: [] });

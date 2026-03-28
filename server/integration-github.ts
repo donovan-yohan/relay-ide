@@ -61,7 +61,7 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
   // GET /integrations/github/issues — list open issues assigned to @me across all workspaces
   router.get('/issues', async (_req: Request, res: Response) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       const response: GitHubIssuesResponse = { issues: [], error: 'no_workspaces' };
