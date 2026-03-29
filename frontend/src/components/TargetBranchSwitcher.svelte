@@ -6,13 +6,13 @@
   import TuiMenuPanel from './TuiMenuPanel.svelte';
 
   let {
-    workspacePath,
+    repoPath,
     currentBase,
     prNumber,
     disabled = false,
     onBaseChanged,
   }: {
-    workspacePath: string;
+    repoPath: string;
     currentBase: string;
     prNumber: number;
     disabled?: boolean;
@@ -28,8 +28,8 @@
 
   // Fetch branches (remote only) -- lazy, only when dropdown opens
   const branchQuery = createQuery<BranchInfo[]>(() => ({
-    queryKey: ['branches', workspacePath],
-    queryFn: () => fetchBranches(workspacePath),
+    queryKey: ['branches', repoPath],
+    queryFn: () => fetchBranches(repoPath),
     staleTime: 30_000,
     enabled: open,
   }));
@@ -74,7 +74,7 @@
     switching = branchName;
     switchError = null;
     try {
-      const res = await fetch('/workspaces/pr-base?path=' + encodeURIComponent(workspacePath), {
+      const res = await fetch('/workspaces/pr-base?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prNumber, baseBranch: branchName }),

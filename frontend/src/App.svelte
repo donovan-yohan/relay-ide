@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForWorkspace, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
-  import type { WorktreeInfo, Workspace, PullRequest } from './lib/types.js';
+  import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
@@ -36,6 +36,7 @@
   import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.svelte';
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+  import ChangedFiles from './components/ChangedFiles.svelte';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -70,10 +71,10 @@
 
   function navigateToSession(sessionId: string, _sessionType: string) {
     sessionState.activeSessionId = sessionId;
-    // Set active workspace from session's workspacePath
+    // Set active workspace from session's repoPath
     const session = sessionState.sessions.find(s => s.id === sessionId);
     if (session) {
-      ui.activeWorkspacePath = session.workspacePath;
+      ui.activeRepoPath = session.repoPath;
     }
     handleUserViewed(sessionId);
     closeSidebar();
@@ -83,6 +84,19 @@
 
   // Component refs — must be $state() so $effect can track bind:this assignments
   let terminalRef = $state<Terminal | undefined>();
+  let changedFilesRef = $state<ChangedFiles | undefined>();
+  let changedFilesThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  function throttledChangedFilesRefresh() {
+    if (changedFilesThrottleTimer) return;
+    changedFilesThrottleTimer = setTimeout(() => {
+      changedFilesThrottleTimer = null;
+      changedFilesRef?.refresh();
+    }, 2000);
+  }
+  onDestroy(() => {
+    if (changedFilesThrottleTimer) clearTimeout(changedFilesThrottleTimer);
+  });
+
   let imageToastRef = $state<ImageToast | undefined>();
   let customizeDialogRef = $state<CustomizeSessionDialog | undefined>();
   let settingsDialogRef = $state<SettingsDialog | undefined>();
@@ -305,7 +319,7 @@
     if (id) {
       track('navigation', 'page.view', '/terminal', undefined, id);
     } else {
-      track('navigation', 'page.view', '/dashboard', { workspace: ui.activeWorkspacePath });
+      track('navigation', 'page.view', '/dashboard', { workspace: ui.activeRepoPath });
     }
   });
 
@@ -381,6 +395,13 @@
         }, 5000));
       } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
         throttledPollInvalidate();
+      } else if (msg.type === 'files-changed') {
+        const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
+        if (!msg.workspacePath || activeWs === msg.workspacePath) {
+          changedFilesRef?.refresh();
+        }
+      } else if (msg.type === 'session-activity-changed') {
+        throttledChangedFilesRefresh();
       }
     });
 
@@ -392,15 +413,15 @@
   });
 
   // Derived state
-  let activeWorkspace = $derived<Workspace | undefined>(
-    ui.activeWorkspacePath
-      ? sessionState.workspaces.find(w => w.path === ui.activeWorkspacePath)
+  let activeWorkspace = $derived<Repo | undefined>(
+    ui.activeRepoPath
+      ? sessionState.repos.find(w => w.path === ui.activeRepoPath)
       : undefined
   );
 
   let allWorkspaceSessions = $derived(
-    ui.activeWorkspacePath
-      ? getSessionsForWorkspace(ui.activeWorkspacePath)
+    ui.activeRepoPath
+      ? getSessionsForRepo(ui.activeRepoPath)
       : []
   );
 
@@ -420,8 +441,8 @@
     ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
   );
 
-  let hasActiveSession = $derived(!!activeSession && !!ui.activeWorkspacePath && (
-    activeSession.workspacePath === ui.activeWorkspacePath
+  let hasActiveSession = $derived(!!activeSession && !!ui.activeRepoPath && (
+    activeSession.repoPath === ui.activeRepoPath
   ));
 
   let sessionTitle = $derived(
@@ -433,19 +454,19 @@
 
   // View state: which main area content to show
   let viewMode = $derived<'empty' | 'org' | 'dashboard' | 'session'>(
-    !sessionState.workspaces.length ? 'empty' :
-    !ui.activeWorkspacePath ? 'org' :
+    !sessionState.repos.length ? 'empty' :
+    !ui.activeRepoPath ? 'org' :
     !hasActiveSession ? 'dashboard' :
     'session'
   );
 
   // Handlers
   function handleSelectWorkspace(path: string) {
-    if (ui.activeWorkspacePath === path) {
+    if (ui.activeRepoPath === path) {
       // Already viewing this workspace — return to dashboard
       sessionState.activeSessionId = null;
     } else {
-      ui.activeWorkspacePath = path;
+      ui.activeRepoPath = path;
       sessionState.activeSessionId = null;
     }
     closeSidebar();
@@ -455,7 +476,7 @@
     sessionState.activeSessionId = id;
     const session = sessionState.sessions.find(s => s.id === id);
     if (session) {
-      ui.activeWorkspacePath = session.workspacePath;
+      ui.activeRepoPath = session.repoPath;
     }
     handleUserViewed(id);
     closeSidebar();
@@ -467,7 +488,7 @@
     const { cols, rows } = estimateTerminalDimensions();
     try {
       const session = await createSession({
-        workspacePath: activeWorkspace.path,
+        repoPath: activeWorkspace.path,
         worktreePath: activeSession?.worktreePath ?? null,
         type: 'agent',
         continue: configState.defaultContinue,
@@ -499,7 +520,7 @@
     if (!activeWorkspace) return;
     try {
       const session = await createSession({
-        workspacePath: activeWorkspace.path,
+        repoPath: activeWorkspace.path,
         worktreePath: activeSession?.worktreePath ?? null,
         type: 'terminal',
       });
@@ -519,7 +540,7 @@
     }
   }
 
-  function handleOpenSettings(workspace?: Workspace) {
+  function handleOpenSettings(workspace?: Repo) {
     if (workspace) {
       workspaceSettingsDialogRef?.open(workspace.path, workspace.name);
     } else {
@@ -527,7 +548,7 @@
     }
   }
 
-  async function handleNewWorktree(workspace: Workspace) {
+  async function handleNewWorktree(workspace: Repo) {
     // Instant worktree creation — no dialog.
     // 1. Create git worktree with next mountain name via POST /workspaces/worktree
     // 2. Start a session in the new worktree with workspace default settings
@@ -538,7 +559,7 @@
     try {
       const { branchName, worktreePath } = await createWorktree(workspace.path);
       const session = await createSession({
-        workspacePath: workspace.path,
+        repoPath: workspace.path,
         worktreePath,
         type: 'agent',
         branchName,
@@ -546,7 +567,7 @@
       });
       await refreshAll();
       sessionState.activeSessionId = session.id;
-      ui.activeWorkspacePath = workspace.path;
+      ui.activeRepoPath = workspace.path;
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
       terminalRef?.focusTerm();
@@ -562,14 +583,14 @@
   async function handleFixConflicts(pr: PullRequest) {
     if (!activeWorkspace) return;
 
-    const workspacePath = activeWorkspace.path;
+    const repoPath = activeWorkspace.path;
 
-    const existingSession = sessionState.sessions.find(s => s.branchName === pr.headRefName && s.workspacePath === workspacePath);
-    const existingWorktree = sessionState.worktrees.find(w => w.branchName === pr.headRefName && w.repoPath === workspacePath);
+    const existingSession = sessionState.sessions.find(s => s.branchName === pr.headRefName && s.repoPath === repoPath);
+    const existingWorktree = sessionState.worktrees.find(w => w.branchName === pr.headRefName && w.repoPath === repoPath);
 
     let prompt = `Merge the branch "${pr.baseRefName}" into this branch and resolve all merge conflicts. Use \`git merge ${pr.baseRefName}\` and fix any conflicts in the working tree. After resolving, verify the build passes.`;
     try {
-      const settings = await fetchWorkspaceSettings(workspacePath);
+      const settings = await fetchWorkspaceSettings(repoPath);
       if (settings.promptFixConflicts) {
         prompt = settings.promptFixConflicts
           .replace(/\{baseRefName\}/g, pr.baseRefName)
@@ -593,20 +614,20 @@
         branchName = existingWorktree.branchName;
       } else {
         // No worktree yet — create one from the existing branch
-        const wt = await createWorktree(workspacePath, pr.headRefName);
+        const wt = await createWorktree(repoPath, pr.headRefName);
         worktreePath = wt.worktreePath;
         branchName = wt.branchName;
       }
 
       const session = await createSession({
-        workspacePath,
+        repoPath,
         worktreePath,
         type: 'agent',
         branchName,
       });
       await refreshAll();
       sessionState.activeSessionId = session.id;
-      ui.activeWorkspacePath = workspacePath;
+      ui.activeRepoPath = repoPath;
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
 
@@ -621,10 +642,10 @@
 
   async function handleOpenPrBranch(pr: PullRequest, prompt?: string) {
     if (!activeWorkspace) return;
-    const workspacePath = activeWorkspace.path;
+    const repoPath = activeWorkspace.path;
 
-    const existingSession = sessionState.sessions.find(s => s.branchName === pr.headRefName && s.workspacePath === workspacePath);
-    const existingWorktree = sessionState.worktrees.find(w => w.branchName === pr.headRefName && w.repoPath === workspacePath);
+    const existingSession = sessionState.sessions.find(s => s.branchName === pr.headRefName && s.repoPath === repoPath);
+    const existingWorktree = sessionState.worktrees.find(w => w.branchName === pr.headRefName && w.repoPath === repoPath);
 
     try {
       let worktreePath: string | null;
@@ -637,20 +658,20 @@
         worktreePath = existingWorktree.path;
         branchName = existingWorktree.branchName;
       } else {
-        const wt = await createWorktree(workspacePath, pr.headRefName);
+        const wt = await createWorktree(repoPath, pr.headRefName);
         worktreePath = wt.worktreePath;
         branchName = wt.branchName;
       }
 
       const session = await createSession({
-        workspacePath,
+        repoPath,
         worktreePath,
         type: 'agent',
         branchName,
       });
       await refreshAll();
       sessionState.activeSessionId = session.id;
-      ui.activeWorkspacePath = workspacePath;
+      ui.activeRepoPath = repoPath;
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
 
@@ -742,7 +763,7 @@
   function handleSpotlightSelectPr(pr: import('./lib/types.js').PullRequest) {
     // Navigate to the PR's workspace, then open the PR branch
     if (pr.repoPath) {
-      ui.activeWorkspacePath = pr.repoPath;
+      ui.activeRepoPath = pr.repoPath;
       sessionState.activeSessionId = null;
     }
     handleOpenPrBranch(pr);
@@ -756,7 +777,7 @@
     await refreshAll();
     // Auto-select the first newly added workspace
     if (paths.length > 0) {
-      ui.activeWorkspacePath = paths[0]!;
+      ui.activeRepoPath = paths[0]!;
     }
   }
 
@@ -772,7 +793,7 @@
     // If worktree session, delete the worktree too
     if (session.worktreePath !== null) {
       try {
-        await deleteWorktree(session.worktreePath, session.workspacePath);
+        await deleteWorktree(session.worktreePath, session.repoPath);
       } catch {
         // Best effort — worktree may already be gone
       }
@@ -824,15 +845,15 @@
 
       {:else if viewMode === 'org'}
         <OrgDashboard
-          onOpenWorkspace={(path) => { ui.activeWorkspacePath = path; sessionState.activeSessionId = null; }}
+          onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; }}
           onOpenSession={(id) => { sessionState.activeSessionId = id; }}
         />
 
       {:else if viewMode === 'dashboard'}
         <RepoDashboard
-          workspacePath={ui.activeWorkspacePath ?? ''}
+          repoPath={ui.activeRepoPath ?? ''}
           workspaceName={activeWorkspace?.name ?? ''}
-          creatingWorktree={isItemLoading(`new-worktree:${ui.activeWorkspacePath ?? ''}`)}
+          creatingWorktree={isItemLoading(`new-worktree:${ui.activeRepoPath ?? ''}`)}
           onNewSession={() => handleQuickAgent()}
           onNewWorktree={() => { if (activeWorkspace) handleNewWorktree(activeWorkspace); }}
           onFixConflicts={handleFixConflicts}
@@ -842,7 +863,7 @@
 
       {:else if viewMode === 'session'}
         <PrTopBar
-          workspacePath={ui.activeWorkspacePath ?? ''}
+          repoPath={ui.activeRepoPath ?? ''}
           branchName={activeSession?.branchName ?? ''}
           sessionId={sessionState.activeSessionId}
           agentRunning={activeSession?.agentState === 'processing'}
@@ -865,6 +886,11 @@
           onImageUpload={handleImageUpload}
           useTmux={activeSessionUseTmux}
           onCopyModeChange={handleCopyModeChange}
+        />
+
+        <ChangedFiles
+          bind:this={changedFilesRef}
+          workspacePath={activeSession?.cwd ?? activeSession?.repoPath ?? ''}
         />
 
         <Toolbar
@@ -894,18 +920,18 @@
     onRemoveWorkspace={async (p) => {
       await fetch('/workspaces', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: p }) });
       await refreshAll();
-      if (ui.activeWorkspacePath === p) ui.activeWorkspacePath = null;
+      if (ui.activeRepoPath === p) ui.activeRepoPath = null;
     }}
   />
 
   <!-- Spotlight command palette -->
   <Spotlight
     open={spotlightOpen}
-    workspaces={sessionState.workspaces}
+    workspaces={sessionState.repos}
     sessions={sessionState.sessions}
     {actionContext}
     onClose={() => { spotlightOpen = false; }}
-    onSelectWorkspace={(path) => { ui.activeWorkspacePath = path; sessionState.activeSessionId = null; closeSidebar(); }}
+    onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; closeSidebar(); }}
     onSelectSession={(id) => handleSelectSession(id)}
     onSelectPr={handleSpotlightSelectPr}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}

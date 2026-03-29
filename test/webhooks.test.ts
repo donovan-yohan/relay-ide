@@ -160,6 +160,41 @@ describe('webhook handler', () => {
   });
 });
 
+describe('webhook merge detection', () => {
+  before(() => startServer());
+  after(() => stopServer());
+
+  it('pull_request.closed with merged:true broadcasts pr-updated and worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: true, head: { ref: 'fix/auth' } },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    assert.equal(res.status, 200);
+    const types = broadcasts.map(b => b.type);
+    assert.deepEqual(types, ['pr-updated', 'worktrees-changed']);
+  });
+
+  it('pull_request.closed without merge does not broadcast worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: false },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    assert.equal(res.status, 200);
+    const types = broadcasts.map(b => b.type);
+    assert.deepEqual(types, ['pr-updated']);
+  });
+});
+
 describe('webhook handler — no secret configured', () => {
   let noSecretServer: Server;
   let noSecretBaseUrl: string;

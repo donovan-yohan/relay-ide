@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Workspace, SidebarItem } from '../types.js';
+import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
 import type { BackendDisplayState, DisplayState } from './display-state.js';
 import { transitionDisplayState } from './display-state.js';
 
@@ -75,7 +75,7 @@ function mostRecentActivity(sessions: SessionSummary[]): string {
 export function buildSidebarItems(
   sessions: SessionSummary[],
   worktrees: WorktreeInfo[],
-  workspaces: Workspace[],
+  workspaces: Repo[],
   existingItems: SidebarItem[],
 ): SidebarItem[] {
   // Build lookup from id → existing item for O(1) reconciliation
@@ -84,10 +84,10 @@ export function buildSidebarItems(
     existingById.set(item.id, item);
   }
 
-  // Group sessions by their "group path" (worktreePath ?? workspacePath)
+  // Group sessions by their "group path" (worktreePath ?? repoPath)
   const sessionsByGroup = new Map<string, SessionSummary[]>();
   for (const session of sessions) {
-    const groupPath = session.worktreePath ?? session.workspacePath;
+    const groupPath = session.worktreePath ?? session.repoPath;
     const existing = sessionsByGroup.get(groupPath);
     if (existing) {
       existing.push(session);
@@ -188,7 +188,7 @@ export function buildSidebarItems(
       id: groupPath,
       kind: 'worktree',
       path: groupPath,
-      repoPath: firstSession.workspacePath,
+      repoPath: firstSession.repoPath,
       displayName: firstSession.displayName,
       branchName: firstSession.branchName,
       lastActivity: mostRecentActivity(groupSessions),

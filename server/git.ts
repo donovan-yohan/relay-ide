@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ActivityEntry, BranchInfo, CiStatus, PrInfo } from './types.js';
+import type { ActivityEntry, BranchInfo, BranchLifecycleState, ChangedFile, CiStatus, FileChangeStatus, PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -284,6 +284,72 @@ async function getPrForBranch(
   } catch {
     return null;
   }
+}
+
+/**
+ * Batch-fetch all PRs for a repo in a single `gh pr list` call.
+ * Returns a Map of headRefName → PrInfo for quick branch lookup.
+ * Includes both open and closed/merged PRs (up to 100 most recent).
+ */
+async function batchGetPrsForRepo(
+  repoPath: string,
+  options: { exec?: ExecFileAsyncLike } = {},
+): Promise<Map<string, PrInfo>> {
+  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const prMap = new Map<string, PrInfo>();
+
+  try {
+    const { stdout } = await run(
+      'gh',
+      [
+        'pr', 'list',
+        '--state', 'all',
+        '--limit', '100',
+        '--json',
+        'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
+      ],
+      { cwd: repoPath, timeout: 10000 },
+    );
+
+    if (!stdout.trim()) return prMap;
+
+    const prs = JSON.parse(stdout) as Array<{
+      number: number;
+      title: string;
+      url: string;
+      state: string;
+      headRefName: string;
+      baseRefName: string;
+      isDraft: boolean;
+      reviewDecision: string | null;
+      additions: number;
+      deletions: number;
+      mergeable: string;
+      updatedAt: string;
+    }>;
+
+    for (const data of prs) {
+      prMap.set(data.headRefName, {
+        number: data.number,
+        title: data.title,
+        url: data.url,
+        state: data.state as PrInfo['state'],
+        headRefName: data.headRefName,
+        baseRefName: data.baseRefName,
+        isDraft: data.isDraft,
+        reviewDecision: data.reviewDecision ?? null,
+        additions: data.additions ?? 0,
+        deletions: data.deletions ?? 0,
+        mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
+        unresolvedCommentCount: 0,
+        updatedAt: data.updatedAt ?? '',
+      });
+    }
+  } catch (err) {
+    console.warn('[git] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
+  }
+
+  return prMap;
 }
 
 async function switchBranch(
@@ -674,6 +740,167 @@ async function pushBranch(
   return { success: true };
 }
 
+function parseStatus(code: string): FileChangeStatus {
+  switch (code.trim()) {
+    case 'M': return 'modified';
+    case 'A': return 'added';
+    case 'D': return 'deleted';
+    case '??': return 'untracked';
+    default:
+      if (code.startsWith('R')) return 'renamed';
+      return 'modified';
+  }
+}
+
+function fileDirectory(filePath: string): string {
+  const dir = filePath.lastIndexOf('/');
+  return dir === -1 ? '.' : filePath.slice(0, dir);
+}
+
+function normalizeNumstatPath(filePath: string): string {
+  if (!filePath.includes(' => ')) return filePath;
+  const arrow = ' => ';
+  // Handle brace-style paths like "{old/dir => new/dir}/file.ts"
+  if (filePath.startsWith('{')) {
+    const braceMatch = filePath.match(/^\{([^{}]+)\}(.*)$/);
+    if (braceMatch) {
+      const inner = braceMatch[1]!;
+      const suffix = braceMatch[2] ?? '';
+      const idx = inner.lastIndexOf(arrow);
+      if (idx !== -1) {
+        const newPart = inner.slice(idx + arrow.length) || inner.slice(0, idx);
+        return newPart + suffix;
+      }
+    }
+  }
+  // Simple "old => new" form
+  const idx = filePath.lastIndexOf(arrow);
+  if (idx !== -1) return filePath.slice(idx + arrow.length);
+  return filePath;
+}
+
+async function getChangedFiles(
+  repoPath: string,
+  base?: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<ChangedFile[]> {
+  let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
+
+  if (base) {
+    // Branch comparison
+    const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
+    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      const code = parts[0] ?? '';
+      if (code.startsWith('R')) {
+        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
+      }
+      return { path: parts[1] ?? '', status: parseStatus(code) };
+    });
+  } else {
+    // Working tree: git status --porcelain=v1 -z
+    const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoPath, timeout: 10000 });
+    statusEntries = [];
+    const parts = stdout.split('\0').filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const entry = parts[i]!;
+      const code = entry.slice(0, 2);
+      const filePath = entry.slice(3);
+      if (code.startsWith('R')) {
+        // porcelain=v1 -z: rename record is XY <newname>\0<origname>\0
+        // filePath (entry.slice(3)) is the new name, parts[i+1] is the old name
+        const oldPath = parts[++i] ?? filePath;
+        statusEntries.push({ path: filePath, oldPath, status: 'renamed' });
+      } else {
+        statusEntries.push({ path: filePath, status: parseStatus(code) });
+      }
+    }
+  }
+
+  if (statusEntries.length === 0) return [];
+
+  // Get per-file stats via numstat
+  const numstatArgs = base
+    ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
+    : ['diff', '--numstat', '--find-renames'];
+  const numstatMap = new Map<string, { additions: number; deletions: number }>();
+  try {
+    const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });
+    for (const line of numstat.split('\n').filter(Boolean)) {
+      const [add, del, ...pathParts] = line.split('\t');
+      const filePath = pathParts.join('\t');
+      const actualPath = normalizeNumstatPath(filePath);
+      numstatMap.set(actualPath, {
+        additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
+        deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
+      });
+    }
+  } catch (err: unknown) {
+    console.warn('[git] numstat failed for', repoPath, err instanceof Error ? err.message : String(err));
+  }
+
+  const files: ChangedFile[] = [];
+  for (const entry of statusEntries) {
+    if (!entry.path) continue;
+    const stats = numstatMap.get(entry.path);
+    let additions = stats?.additions ?? 0;
+    let deletions = stats?.deletions ?? 0;
+
+    if (entry.status === 'untracked' && additions === 0) {
+      try {
+        const { stdout: wcOut } = await exec('wc', ['-l', '--', entry.path], { cwd: repoPath, timeout: 5000 });
+        const match = wcOut.trim().match(/^\s*(\d+)/);
+        if (match) additions = parseInt(match[1]!, 10);
+      } catch {
+        // best effort
+      }
+    }
+
+    files.push({
+      path: entry.path,
+      status: entry.status,
+      additions,
+      deletions,
+      directory: fileDirectory(entry.path),
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+    });
+  }
+
+  return files;
+}
+
+async function getFileDiff(
+  repoPath: string,
+  filePath: string,
+  base?: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<string> {
+  let args: string[];
+  if (!base) {
+    args = ['diff', '--unified=3', '--find-renames', '--', filePath];
+  } else if (base === 'cached') {
+    args = ['diff', '--cached', '--unified=3', '--', filePath];
+  } else {
+    args = ['diff', `${base}...HEAD`, '--unified=3', '--find-renames', '--', filePath];
+  }
+
+  const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
+
+  // If empty (no changes or untracked), try --no-index for new files
+  if (!stdout.trim()) {
+    try {
+      const { stdout: noIndexOut } = await exec('git', ['diff', '--no-index', '--', '/dev/null', filePath], { cwd: repoPath, timeout: 10000 });
+      return noIndexOut;
+    } catch (err: unknown) {
+      // git diff --no-index exits with code 1 when there ARE differences
+      const e = err as { stdout?: string };
+      if (e.stdout) return e.stdout;
+    }
+  }
+
+  return stdout;
+}
+
 const ONE_DAY_MS = 86_400_000;
 
 /** A PR is stale if it's MERGED or CLOSED and was last updated more than 1 day ago (or has no valid timestamp). */
@@ -683,6 +910,105 @@ function isStalePr(pr: PrInfo): boolean {
   const elapsed = Date.now() - new Date(pr.updatedAt).getTime();
   if (Number.isNaN(elapsed)) return true; // unparseable date → treat as stale
   return elapsed > ONE_DAY_MS;
+}
+
+interface EnsureBranchResult {
+  found: boolean;
+  reason?: 'not_found' | 'fetch_failed';
+}
+
+function isGitRefNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const stderr = (error as { stderr?: string }).stderr ?? '';
+  const message = (error as { message?: string }).message ?? '';
+  const text = stderr || message;
+  return (
+    text.includes('Needed a single revision') ||
+    text.includes('unknown revision or path not in the working tree') ||
+    text.includes('ambiguous argument') ||
+    text.includes("couldn't find remote ref") ||
+    text.includes('could not find remote ref') ||
+    text.includes('not something we can merge') ||
+    text.includes('fatal: bad revision')
+  );
+}
+
+/**
+ * Ensure a branch ref exists locally. If not, fetch it from origin.
+ * Returns { found: true } if the branch is now available locally,
+ * { found: false, reason: 'not_found' } if it doesn't exist anywhere,
+ * or { found: false, reason: 'fetch_failed' } if the fetch failed unexpectedly.
+ * Rethrows non-git errors (permissions, timeouts, corrupt repo) so callers
+ * can distinguish "branch doesn't exist" from "git is broken".
+ */
+async function ensureBranchLocal(
+  repoPath: string,
+  branch: string,
+  options: { exec?: ExecFileAsyncLike } = {},
+): Promise<EnsureBranchResult> {
+  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+
+  // Check if branch exists locally
+  try {
+    await run('git', ['rev-parse', '--verify', '--', branch], { cwd: repoPath, timeout: 5000 });
+    return { found: true };
+  } catch (error) {
+    if (!isGitRefNotFoundError(error)) {
+      throw error; // permissions, timeout, corrupt repo — surface to caller
+    }
+    // Not found locally — try fetching
+  }
+
+  // Fetch from origin
+  try {
+    await run('git', ['fetch', 'origin', '--', `${branch}:${branch}`], { cwd: repoPath, timeout: 30000 });
+    return { found: true };
+  } catch (error) {
+    if (isGitRefNotFoundError(error)) {
+      return { found: false, reason: 'not_found' };
+    }
+    // Network failures, auth errors, DNS issues — distinct from "branch doesn't exist"
+    return { found: false, reason: 'fetch_failed' };
+  }
+}
+
+/** Check if a PR is in MERGED state (immediate check, no 24h delay like isStalePr). */
+function isPrMerged(pr: PrInfo): boolean {
+  return pr.state === 'MERGED';
+}
+
+interface BranchLifecycleInput {
+  pr: PrInfo | null;
+  isBranchStale: boolean;
+  hasActiveSessions: boolean;
+  isMainBranch: boolean;
+}
+
+interface BranchLifecycleResult {
+  state: BranchLifecycleState;
+  prNumber?: number;
+  prTitle?: string;
+}
+
+/**
+ * Compute branch lifecycle state from authoritative sources.
+ * Main branch can be active/stale but never merged.
+ */
+function computeBranchLifecycleState(input: BranchLifecycleInput): BranchLifecycleResult {
+  const { pr, isBranchStale: stale, hasActiveSessions, isMainBranch } = input;
+
+  // Merged: PR is merged AND not the main branch
+  if (pr && isPrMerged(pr) && !isMainBranch) {
+    return { state: 'merged', prNumber: pr.number, prTitle: pr.title };
+  }
+
+  // Active: has sessions OR branch is not stale
+  if (hasActiveSessions || !stale) {
+    return { state: 'active' };
+  }
+
+  // Stale: no sessions AND branch is stale (0 commits ahead of main)
+  return { state: 'stale' };
 }
 
 export {
@@ -706,4 +1032,11 @@ export {
   createBranch,
   changePrBase,
   pushBranch,
+  getChangedFiles,
+  getFileDiff,
+  ensureBranchLocal,
+  isPrMerged,
+  computeBranchLifecycleState,
+  batchGetPrsForRepo,
 };
+export type { EnsureBranchResult };

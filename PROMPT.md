@@ -1,6 +1,6 @@
-# Implementation: Command Center Overhaul
+# Implementation: True Workspaces — Multi-Repo Workspace Grouping
 
-**Priority: WAVE 0 (Phase 2) — Phase 2 starts immediately. Phases 3-4 absorb actions from other streams.**
+**Priority: WAVE 2-3 — Phase 1 (rename + model) starts in Wave 2. Workspace session launch needs Worktree Lifecycle.**
 
 ## Pre-flight Checks
 
@@ -13,118 +13,108 @@ git log --oneline -3
 git fetch origin nightly
 git rebase origin/nightly
 
-# 3. No blocking dependencies. Verify existing Spotlight:
-ls frontend/src/components/Spotlight.svelte 2>/dev/null || echo "Spotlight not found"
-grep -r "handleQuickAgent\|handleNewWorktree\|handleOpenSettings" frontend/src/ -l || echo "Handler functions not found"
+# 3. CRITICAL: Verify Worktree Lifecycle enhanced endpoint has landed
+#    Workspace session launch creates coordinated worktrees per repo
+grep -r "branch_checked_out_in_main\|branch_not_found" server/ || echo "BLOCKER for session launch: enhanced worktree endpoint not found"
 
-# 4. Design doc exists
-cat docs/design-docs/2026-03-28-command-center-design.md | head -5
+# 4. Check if Sidebar UX indicators have landed (nice-to-have, not blocking)
+grep -r "DisplayState\|attentionScore" frontend/src/ || echo "INFO: Sidebar UX indicators not yet landed (non-blocking)"
+
+# 5. Check current workspace/repo naming in codebase (understand rename scope)
+grep -rc "workspacePath\b" server/ | sort -t: -k2 -rn | head -10
+grep -rc "workspacePath\b" frontend/src/ | sort -t: -k2 -rn | head -10
+
+# 6. Design doc exists
+cat docs/design-docs/2026-03-28-true-workspaces-design.md | head -5
 ```
 
-Phase 2 has no dependencies. Phases 3-4 absorb actions from other streams as they land.
+**Phase 1 (rename + model + migration) can start without worktree lifecycle.** Only the workspace session launch (creating coordinated worktrees) needs the enhanced endpoint.
 
 ## Design Doc
 
-Read fully: `docs/design-docs/2026-03-28-command-center-design.md`
+Read fully: `docs/design-docs/2026-03-28-true-workspaces-design.md`
 
 ## What This Stream CONSUMES
 
-### From other streams (NOT blockers — absorbed incrementally):
-- Sidebar UX: new sidebar actions (kill session, rename, delete worktree) → register when landed
-- PR Integration: SessionIntent actions (review-pr, fix-conflicts) → register when landed
-- True Workspaces: workspace actions (launch workspace session) → register when landed
-- Worktree Lifecycle: worktree actions (cleanup, resume) → register when landed
+### From Worktree Lifecycle (needed for workspace session launch):
+- Enhanced `POST /workspaces/worktree` — called per-repo to create coordinated worktrees
+- `continuePolicy: 'never'` — workspace session worktrees are always fresh
 
-None of these block Phase 2. Phase 2 registers the 15 HIGH-priority actions that ALREADY EXIST in the codebase.
+### From Sidebar UX (nice-to-have, not blocking):
+- Three-axis indicator model — workspace sidebar rows use the same indicators
+- attentionScore — workspace sorting by highest-urgency session
+
+### From Command Center (NOT a blocker):
+- Action registration — "launch workspace session" action registers later
 
 ## What This Stream PRODUCES
 
-### Contract: Action Registration Interface
+### Contract: Config v4 Schema
 
 ```typescript
-// frontend/src/lib/actions/types.ts
-type ActionMeta = Omit<Action, 'handler'>;
+interface Config {
+  configVersion: 4;
+  repos: string[];                           // renamed from workspaces (string[])
+  repoSettings: Record<string, RepoSettings>; // renamed from workspaceSettings
+  workspaces: Workspace[];                    // NEW: grouping entities
+}
 
-type Action = {
-  id: string;           // 'category.verb-noun' e.g. 'session.new-agent'
-  label: string;        // all lowercase per DESIGN.md
-  description?: string;
-  aliases?: string[];
-  category: 'session' | 'workspace' | 'pr' | 'settings' | 'navigation' | 'terminal';
-  icon?: string;
-  shortcut?: { key: string; global?: boolean };
-  when?: (ctx: ActionContext) => boolean;
-  handler: (ctx: ActionContext) => void | Promise<void>;
-  mobile?: { showInSheet?: boolean; label?: string };
-};
-
-type ActionContext = {
-  view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';
-  workspaceId?: string;
-  sessionId?: string;
-  agentRunning?: boolean;
-  isMobile?: boolean;
-  prState?: 'none' | 'draft' | 'open' | 'merged' | 'closed';
-};
-
-// Registry functions
-registerGlobal(actions: Action[]): void;
-registerContextual(actions: Action[]): void;
-unregisterContextual(ids: string[]): void;
+interface Workspace {
+  id: string; name: string; repos: string[]; themeColor?: string;
+  order: number; template?: WorkspaceTemplate; settings?: WorkspaceLevelSettings;
+}
 ```
 
-### Contract: File Structure
+### Contract: Settings Cascade Extension
 
-```
-frontend/src/lib/actions/
-  types.ts              — Action, ActionMeta, ActionContext types
-  registry.svelte.ts    — ActionRegistry (Svelte 5 runes)
-  frecency.ts           — Frecency scoring (localStorage)
-  shortcuts.svelte.ts   — Centralized keyboard shortcut listener
-  context.svelte.ts     — ActionContext provider
-
-frontend/src/lib/actions/definitions/
-  session.ts            — Session action metadata
-  workspace.ts          — Workspace action metadata
-  pr.ts                 — PR/branch action metadata
-  settings.ts           — Settings action metadata
-  navigation.ts         — Navigation action metadata
-  terminal.ts           — Terminal action metadata
+```typescript
+// resolveSessionSettings() gets new optional parameter:
+function resolveSessionSettings(repoPath: string, workspaceId?: string): ResolvedSettings;
+// Cascade: global → workspace.settings (if workspaceId) → repoSettings[path] → session
 ```
 
-## Implementation Order (from design doc)
+### Contract: New API Routes
 
-**Phase 2 — Registry + 15 HIGH-priority actions (start immediately):**
-1. Action type + ActionMeta type in `types.ts`
-2. ActionRegistry in `registry.svelte.ts` (runes-based Map)
-3. Define 15 HIGH-priority ActionMeta objects in definition files
-4. Register all 15 in App.svelte with handler closures
-5. Modify Spotlight.svelte to read from ActionRegistry instead of hardcoded array
-6. Basic context gating: 3 reactive booleans (hasWorkspace, hasSession, hasPr)
-7. Coverage test: `test/action-coverage.test.ts` with allowlist
+```
+GET    /workspace-groups           → Workspace[]
+POST   /workspace-groups           → Workspace
+PUT    /workspace-groups/:id       → Workspace
+DELETE /workspace-groups/:id       → void
+PUT    /workspace-groups/reorder   → void
+POST   /workspace-groups/:id/session → Session (workspace session with --add-dir)
+```
 
-**Phase 3 — CommandPalette + Shortcuts (after Phase 2):**
-1. CommandPalette.svelte (replaces Spotlight): mobile bottom sheet, category tabs, shortcut hints
-2. ShortcutListener — centralized keyboard handler replacing scattered listeners
-3. Register remaining 42 MED/LOW-priority actions
-4. Mobile entrypoint in MobileHeader.svelte
+### Contract: Session Type Extension
 
-**Phase 4 — Discoverability (after Phase 3):**
-1. Frecency ranking (localStorage usage tracking)
-2. Full ActionContext derivation (view priority, agentRunning, prState)
-3. "Needs attention" section in palette
-4. Tooltip shortcut hints across the app
+```typescript
+interface BaseSession {
+  repoPath: string;       // renamed from workspacePath
+  workspaceId?: string;   // NEW: set for workspace sessions
+  additionalDirs?: string[]; // NEW: --add-dir paths
+}
+```
+
+## Implementation Order (vertical slice from design doc)
+
+1. **Rename: workspacePath → repoPath** — Server types, config, sessions, routes. Grep-and-replace with judgment (workspace-group references keep "workspace")
+2. **Config v4 migration** — Reconcile repos[], promote workspaceGroups, rename settings key
+3. **Workspace entity + CRUD** — New type, new routes, settings dialog workspace section
+4. **Sidebar workspace grouping** — WorkspaceGroup.svelte, collapse behavior, colored borders
+5. **Workspace session launch** — POST /workspace-groups/:id/session with coordinated worktrees + --add-dir
+6. **Session persistence** — pending-sessions.json v4 with workspaceId + additionalDirs
 
 ## What NOT to Build
 
-- Natural language commands → north star, not in scope
-- Composable workflows / "save as workflow" → north star, not in scope
-- Per-action telemetry → forward-compatible type field, not implemented
+- View mode toggle (repos/workspaces/sessions) → follow-up
+- Repo role tags display → follow-up
+- Workspace template import/export → follow-up
+- Cross-repo intelligence → future epic
+- Color picker UI → separate design doc exists
 
 ## Process
 
-1. Run `/harness:plan` for Phase 2
-2. Run `/harness:orchestrate` — Phase 2 ships with existing Spotlight UI backed by registry
-3. After Phase 2 lands, run `/harness:plan` for Phase 3
-4. Phase 3 ships the new CommandPalette component
-5. Run `/harness:complete` after Phase 3
+1. Start Step 1-2 immediately (rename + migration, no deps)
+2. Run `/harness:plan` for the full vertical slice
+3. Steps 3-4 can proceed in parallel
+4. Gate Step 5 on worktree lifecycle endpoint landing
+5. Run `/harness:complete`

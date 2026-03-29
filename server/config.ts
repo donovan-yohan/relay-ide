@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, FilterPreset, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type { AgentType, Config, ContinuePolicy, FilterPreset, Workspace, WorkspaceSettings, WorktreeMetadata } from './types.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
   { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
 ];
 
-export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
+export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
   host: '0.0.0.0',
   port: 3456,
   cookieTTL: '24h',
@@ -20,8 +20,62 @@ export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings'
   defaultYolo: false,
   launchInTmux: false,
   defaultNotifications: true,
-  workspaces: [],
 };
+
+function migrateToV4(config: Config, configPath: string): void {
+  if (config.configVersion != null && config.configVersion >= 4) return;
+
+  // Step 1: Reconcile repo arrays
+  const legacyWorkspaces = config.workspaces as unknown as string[] | undefined;
+  const isLegacyStringArray = Array.isArray(legacyWorkspaces) &&
+    (legacyWorkspaces.length === 0 || typeof legacyWorkspaces[0] === 'string');
+
+  if (isLegacyStringArray && legacyWorkspaces!.length > 0) {
+    if (!config.repos) config.repos = [];
+    const repoSet = new Set(config.repos);
+    for (const w of legacyWorkspaces!) {
+      if (!repoSet.has(w)) {
+        config.repos.push(w);
+        repoSet.add(w);
+      }
+    }
+  }
+
+  // Step 2: Rename workspaceSettings → repoSettings
+  if (config.workspaceSettings != null && config.repoSettings == null) {
+    config.repoSettings = config.workspaceSettings;
+    delete config.workspaceSettings;
+  }
+
+  // Step 3: Promote workspaceGroups → workspaces (Workspace[])
+  const promoted: Workspace[] = [];
+  if (config.workspaceGroups != null) {
+    const validPaths = new Set(config.repos ?? []);
+    let order = 0;
+    for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
+      if (!Array.isArray(paths)) continue;
+      const validRepos = paths.filter(p => validPaths.has(p));
+      if (validRepos.length > 0) {
+        promoted.push({
+          id: crypto.randomUUID(),
+          name: groupName,
+          repos: validRepos,
+          order: order++,
+        });
+      }
+    }
+    delete config.workspaceGroups;
+  }
+
+  // Set workspaces to promoted entities (or empty array if nothing was promoted)
+  config.workspaces = promoted;
+
+  // Step 4: Set version
+  config.configVersion = 4;
+
+  // Persist migrated config
+  saveConfig(configPath, config);
+}
 
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
@@ -38,8 +92,12 @@ export function loadConfig(configPath: string): Config {
 
   // Validate and clean workspaceGroups
   if (config.workspaceGroups != null) {
-    const validPaths = new Set(config.workspaces ?? []);
-    const seenPaths = new Set<string>();
+    // Valid paths come from repos[] and legacy workspaces[] (string array, pre-v4)
+    const legacyWs = config.workspaces as unknown as string[] | undefined;
+    const legacyWsPaths = Array.isArray(legacyWs) && (legacyWs.length === 0 || typeof legacyWs[0] === 'string')
+      ? legacyWs
+      : [];
+    const validPaths = new Set([...(config.repos ?? []), ...legacyWsPaths]);
     const cleaned: Record<string, string[]> = {};
 
     for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
@@ -50,14 +108,9 @@ export function loadConfig(configPath: string): Config {
       const filteredPaths: string[] = [];
       for (const p of paths) {
         if (!validPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in workspaces[], skipping`);
+          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in repos[], skipping`);
           continue;
         }
-        if (seenPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is already assigned to another group, skipping`);
-          continue;
-        }
-        seenPaths.add(p);
         filteredPaths.push(p);
       }
       if (filteredPaths.length > 0) {
@@ -67,6 +120,8 @@ export function loadConfig(configPath: string): Config {
 
     config.workspaceGroups = cleaned;
   }
+
+  migrateToV4(config, configPath);
 
   return config;
 }
@@ -115,7 +170,7 @@ export function deleteMeta(configPath: string, worktreePath: string): void {
   }
 }
 
-export function getWorkspaceSettings(config: Config, workspacePath: string): WorkspaceSettings {
+export function getRepoSettings(config: Config, repoPath: string): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
     defaultAgent: config.defaultAgent,
     defaultContinue: config.defaultContinue,
@@ -123,15 +178,15 @@ export function getWorkspaceSettings(config: Config, workspacePath: string): Wor
     launchInTmux: config.launchInTmux,
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = config.workspaceSettings?.[workspacePath] || {};
-  // Per-workspace settings override global — only for defined keys
+  const perWorkspace = config.repoSettings?.[repoPath] ?? config.workspaceSettings?.[repoPath] ?? {};
+  // Per-repo settings override global — only for defined keys
   return { ...globalDefaults, ...perWorkspace };
 }
 
 export interface ResolvedSessionSettings {
   agent: AgentType;
   yolo: boolean;
-  continue: boolean;
+  continuePolicy: ContinuePolicy;
   useTmux: boolean;
   claudeArgs: string[];
 }
@@ -139,7 +194,7 @@ export interface ResolvedSessionSettings {
 export interface SessionSettingsOverrides {
   agent?: AgentType | undefined;
   yolo?: boolean | undefined;
-  continue?: boolean | undefined;
+  continuePolicy?: ContinuePolicy | undefined;
   useTmux?: boolean | undefined;
   claudeArgs?: string[] | undefined;
 }
@@ -148,43 +203,66 @@ export function resolveSessionSettings(
   config: Config,
   repoPath: string,
   overrides: SessionSettingsOverrides,
+  workspaceId?: string,
 ): ResolvedSessionSettings {
-  const ws = getWorkspaceSettings(config, repoPath);
+  const globalDefaults: Partial<WorkspaceSettings> = {
+    defaultAgent: config.defaultAgent,
+    defaultContinue: config.defaultContinue,
+    defaultYolo: config.defaultYolo,
+    launchInTmux: config.launchInTmux,
+    claudeArgs: config.claudeArgs,
+  };
+
+  let wsDefaults: Partial<WorkspaceSettings> = {};
+  if (workspaceId) {
+    const workspace = config.workspaces?.find(w => w.id === workspaceId);
+    if (workspace?.settings) wsDefaults = workspace.settings;
+  }
+
+  const repoSpecific = config.repoSettings?.[repoPath] ?? {};
+
+  // Merge: repo overrides workspace overrides global
+  const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
+
+  // Map boolean defaultContinue → ContinuePolicy for backward compat
+  const configPolicy: ContinuePolicy = merged.defaultContinuePolicy
+    ?? (merged.defaultContinue ? 'always' : 'never');
+
   return {
-    agent: overrides.agent ?? ws.defaultAgent ?? 'claude' as AgentType,
-    yolo: overrides.yolo ?? ws.defaultYolo ?? false,
-    continue: overrides.continue ?? ws.defaultContinue ?? true,
-    useTmux: overrides.useTmux ?? ws.launchInTmux ?? false,
-    claudeArgs: overrides.claudeArgs ?? ws.claudeArgs ?? [],
+    agent: overrides.agent ?? merged.defaultAgent ?? 'claude' as AgentType,
+    yolo: overrides.yolo ?? merged.defaultYolo ?? false,
+    continuePolicy: overrides.continuePolicy ?? configPolicy,
+    useTmux: overrides.useTmux ?? merged.launchInTmux ?? false,
+    claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };
 }
 
-export function deleteWorkspaceSettingKeys(
+export function deleteRepoSettingKeys(
   configPath: string,
   config: Config,
-  workspacePath: string,
+  repoPath: string,
   keys: string[],
 ): void {
-  if (!config.workspaceSettings?.[workspacePath]) return;
+  if (!config.repoSettings?.[repoPath]) return;
   for (const key of keys) {
-    delete (config.workspaceSettings[workspacePath] as Record<string, unknown>)[key];
+    delete (config.repoSettings[repoPath] as Record<string, unknown>)[key];
   }
-  // Clean up empty workspace entries
-  if (Object.keys(config.workspaceSettings[workspacePath]!).length === 0) {
-    delete config.workspaceSettings[workspacePath];
+  // Clean up empty repo setting entries
+  if (Object.keys(config.repoSettings[repoPath]!).length === 0) {
+    delete config.repoSettings[repoPath];
   }
   saveConfig(configPath, config);
 }
 
-export function setWorkspaceSettings(
+export function setRepoSettings(
   configPath: string,
   config: Config,
-  workspacePath: string,
+  repoPath: string,
   settings: Partial<WorkspaceSettings>,
 ): void {
-  if (!config.workspaceSettings) config.workspaceSettings = {};
-  config.workspaceSettings[workspacePath] = {
-    ...config.workspaceSettings[workspacePath],
+  if (!config.repoSettings) config.repoSettings = {};
+  config.repoSettings[repoPath] = {
+    ...config.repoSettings[repoPath],
     ...settings,
   };
   saveConfig(configPath, config);

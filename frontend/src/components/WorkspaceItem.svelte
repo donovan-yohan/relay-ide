@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Workspace, SessionSummary, WorktreeInfo, PullRequest } from '../lib/types.js';
+  import type { Repo, SessionSummary, WorktreeInfo, PullRequest } from '../lib/types.js';
   import { deriveColor } from '../lib/colors.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
   import StatusDot from './StatusDot.svelte';
@@ -26,14 +26,14 @@
     onDeleteWorktree,
     orgPrs,
   }: {
-    workspace: Workspace;
+    workspace: Repo;
     sessionGroups: Map<string, SessionSummary[]>;
     inactiveWorktrees?: WorktreeInfo[];
     isActive: boolean;
     onSelectWorkspace: (path: string) => void;
     onSelectSession: (id: string) => void;
-    onNewWorktree: (workspace: Workspace) => void;
-    onOpenSettings: (workspace: Workspace) => void;
+    onNewWorktree: (workspace: Repo) => void;
+    onOpenSettings: (workspace: Repo) => void;
     onDeleteSession?: (id: string) => void;
     onDeleteWorktree?: (wt: WorktreeInfo) => void;
     orgPrs?: PullRequest[];
@@ -160,7 +160,7 @@
           setLoading(wt.path);
           try {
             const session = await createSession({
-              workspacePath: workspace.path,
+              repoPath: workspace.path,
               worktreePath: wt.path,
               type: 'agent',
               branchName: wt.branchName || wt.name,
@@ -179,7 +179,7 @@
           setLoading(wt.path);
           try {
             const session = await createSession({
-              workspacePath: workspace.path,
+              repoPath: workspace.path,
               worktreePath: wt.path,
               type: 'agent',
               branchName: wt.branchName || wt.name,
@@ -296,7 +296,7 @@
               setLoading(repoLoadingKey);
               try {
                 const session = await createSession({
-                  workspacePath: workspace.path,
+                  repoPath: workspace.path,
                   worktreePath: null,
                   type: 'agent',
                 });
@@ -331,7 +331,7 @@
             setLoading(wt.path);
             try {
               const session = await createSession({
-                workspacePath: workspace.path,
+                repoPath: workspace.path,
                 worktreePath: wt.path,
                 type: 'agent',
                 branchName: wt.branchName || wt.name,

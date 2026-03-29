@@ -17,6 +17,7 @@
 - [2026-03-27-open-from-picker-design.md](2026-03-27-open-from-picker-design.md) — Unified branch/PR/issue picker modal, inline workspace action icons, duplicate session handling
 
 ## Archived — Implemented
+- [2026-03-28-code-file-tools-design.md](2026-03-28-code-file-tools-design.md) — Changed files panel with syntax-highlighted diffs, .git/ watching, smart summaries
 - [2026-03-25-tui-design-system-overhaul-design.md](2026-03-25-tui-design-system-overhaul-design.md) — TUI-native component library: 9 new primitives, micro-interactions, alignment architecture
 - [2026-02-21-background-service-design.md](2026-02-21-background-service-design.md) — Background service (launchd/systemd) design
 - [2026-02-21-mobile-toolbar-redesign.md](2026-02-21-mobile-toolbar-redesign.md) — Mobile toolbar redesign
@@ -64,6 +65,7 @@
 - [2026-03-23-pr-auto-refresh-design.md](2026-03-23-pr-auto-refresh-design.md) — Manual refresh button + automatic PR data sync via git ref watching
 - [2026-03-23-session-worktree-separation-design.md](2026-03-23-session-worktree-separation-design.md) — Separate session and worktree concerns — clean RESTful contracts
 - [2026-03-25-branch-bar-redesign-design.md](2026-03-25-branch-bar-redesign-design.md) — Branch bar redesign: worktree-aware switcher, target branch dropdown, hover icons, rename flow
+- [2026-03-28-worktree-lifecycle-design.md](2026-03-28-worktree-lifecycle-design.md) — Branch lifecycle layer: continuePolicy, worktree detection+fetch, tmux naming, auto-archive merged branches
 
 ## Archived — Superseded
 - [2026-02-21-session-sidebar-redesign.md](2026-02-21-session-sidebar-redesign.md) — Session sidebar redesign

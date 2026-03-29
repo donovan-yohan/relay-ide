@@ -11,7 +11,7 @@
   let { onRemoveWorkspace }: Props = $props();
 
   let dialogEl: HTMLDialogElement;
-  let workspacePath = $state('');
+  let repoPath = $state('');
   let workspaceName = $state('');
   let saving = $state(false);
   let error = $state('');
@@ -42,7 +42,7 @@
   let generalOpen = $state(false);
 
   export async function open(path: string, name: string) {
-    workspacePath = path;
+    repoPath = path;
     workspaceName = name;
     error = '';
     saveSuccess = false;
@@ -121,7 +121,7 @@
       if (promptBranchRename) settings.promptBranchRename = promptBranchRename;
       if (promptGeneral) settings.promptGeneral = promptGeneral;
       if (Object.keys(settings).length > 0) {
-        await updateWorkspaceSettings(workspacePath, settings);
+        await updateWorkspaceSettings(repoPath, settings);
       }
       saveSuccess = true;
       setTimeout(() => { saveSuccess = false; }, 2000);
@@ -136,14 +136,14 @@
     saving = true;
     error = '';
     try {
-      await updateWorkspaceSettings(workspacePath, {
+      await updateWorkspaceSettings(repoPath, {
         defaultAgent: null,
         defaultContinue: null,
         defaultYolo: null,
         launchInTmux: null,
       } as unknown as Record<string, unknown>);
       // Re-fetch merged settings to update UI
-      const merged = await fetchMergedWorkspaceSettings(workspacePath);
+      const merged = await fetchMergedWorkspaceSettings(repoPath);
       applySettings(merged.settings);
       originalSettings = {
         defaultAgent: merged.settings.defaultAgent,
@@ -163,7 +163,7 @@
 
   function handleRemove() {
     dialogEl.close();
-    onRemoveWorkspace(workspacePath);
+    onRemoveWorkspace(repoPath);
   }
 
   function onDialogClick(e: MouseEvent) {

@@ -17,13 +17,13 @@
   import RenameWarningModal from './dialogs/RenameWarningModal.svelte';
 
   let {
-    workspacePath,
+    repoPath,
     branchName,
     sessionId,
     agentRunning = false,
     onArchive,
   }: {
-    workspacePath: string;
+    repoPath: string;
     branchName: string;
     sessionId: string | null;
     agentRunning?: boolean;
@@ -38,23 +38,23 @@
 
   // If branchName is empty (repo sessions), detect the current branch from git
   $effect(() => {
-    if (!branchName && workspacePath) {
-      fetchCurrentBranch(workspacePath).then(branch => {
+    if (!branchName && repoPath) {
+      fetchCurrentBranch(repoPath).then(branch => {
         if (branch) currentBranch = branch;
       });
     }
   });
 
   const prQuery = createQuery<PrInfo | null>(() => ({
-    queryKey: ['pr', workspacePath, currentBranch],
-    queryFn: () => fetchPrForBranchOrNull(workspacePath, currentBranch),
+    queryKey: ['pr', repoPath, currentBranch],
+    queryFn: () => fetchPrForBranchOrNull(repoPath, currentBranch),
     staleTime: 60_000,
     refetchOnWindowFocus: true,
   }));
 
   const ciQuery = createQuery<CiStatus | null>(() => ({
-    queryKey: ['ci-status', workspacePath, currentBranch],
-    queryFn: () => fetchCiStatusOrNull(workspacePath, currentBranch),
+    queryKey: ['ci-status', repoPath, currentBranch],
+    queryFn: () => fetchCiStatusOrNull(repoPath, currentBranch),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     enabled: prQuery.data?.state === 'OPEN',
@@ -164,7 +164,7 @@
 
     renameSubmitting = true;
     try {
-      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(workspacePath), {
+      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newName: trimmed }),
@@ -222,8 +222,8 @@
     {:else}
       <div class="branch-with-actions">
         <BranchSwitcher
-          {workspacePath}
-          currentWorktreePath={workspacePath}
+          {repoPath}
+          currentWorktreePath={repoPath}
           currentBranch={currentBranch}
           disabled={agentRunning}
           onSwitch={handleBranchSwitch}
@@ -271,7 +271,7 @@
           </svg>
         </span>
         <TargetBranchSwitcher
-          {workspacePath}
+          {repoPath}
           currentBase={pr.baseRefName}
           prNumber={pr.number}
           disabled={agentRunning}
@@ -354,7 +354,7 @@
     <RenameWarningModal
       oldName={renameWarning.oldName}
       newName={renameWarning.newName}
-      {workspacePath}
+      {repoPath}
       onClose={() => {
         renameWarning = null;
         prQuery.refetch();

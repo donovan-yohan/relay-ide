@@ -16,26 +16,27 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 
 ### `server/`
 
-Twenty-seven TypeScript modules compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
+Twenty-eight TypeScript modules compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
 
 | Module | Role |
 |--------|------|
 | `index.ts` | Composition root: Express app, REST routes, auth middleware, static serving |
-| `workspaces.ts` | Workspace CRUD (replaces roots), Express Router: dashboard, settings, CI status, branch switch, path autocomplete |
+| `workspaces.ts` | Repo CRUD, Express Router: dashboard, settings, CI status, branch switch, path autocomplete |
+| `workspace-groups.ts` | Workspace grouping entity CRUD: Express Router at `/workspace-groups` for create/read/update/delete/reorder workspace entities |
 | `sessions.ts` | Session registry: routes `create()` to pty-handler, lifecycle ops, idle sweep |
 | `pty-handler.ts` | PTY session creation via node-pty, scrollback buffering (256KB), tmux wrapping, continue-retry |
-| `git.ts` | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch; exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
+| `git.ts` | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
 | `ws.ts` | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input; unit-tested via JSON fixtures |
 | `utils.ts` | Shared server utilities |
-| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh) |
+| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh), GitWatcher (.git/ dirs for changed-files events) |
 | `auth.ts` | PIN hashing (scrypt), rate limiting (5 fails = 15-min lockout), cookie tokens |
-| `config.ts` | Config loading/saving with defaults, per-workspace settings, worktree metadata |
+| `config.ts` | Config loading/saving with defaults, v3→v4 migration (configVersion, repoSettings, workspace promotion), per-repo settings, worktree metadata, settings cascade (global→workspace→repo→session) |
 | `clipboard.ts` | System clipboard detection and image-set operations (osascript/xclip) |
 | `service.ts` | Background service install/uninstall/status (launchd on macOS, systemd on Linux) |
 | `push.ts` | Web Push notification management (VAPID keys, subscription registry, SDK event enrichment) |
 | `hooks.ts` | Claude Code hook HTTP endpoints: state detection (Stop, Notification, UserPromptSubmit), activity tracking (PreToolUse, PostToolUse), session cleanup (SessionEnd), and branch rename. Localhost-only with per-session token auth. |
-| `types.ts` | Shared TypeScript interfaces (Session, Workspace, Config, PR, CI, Activity types) |
+| `types.ts` | Shared TypeScript interfaces (Session, Repo, Workspace entity, Config v4, WorkspaceLevelSettings, PR, CI, Activity types) |
 | `analytics.ts` | Local analytics: SQLite-backed event tracking, `trackEvent()`, batch ingest endpoint, DB size/clear endpoints |
 | `review-poller.ts` | PR review automation: polls GitHub notifications for review requests, creates worktrees, optionally starts review sessions |
 | `output-parsers/` | Vendor-extensible terminal output parsing for semantic agent state detection (AgentState), keyed by AgentType. Contains `index.ts` (registry + dispatch), `claude-parser.ts`, `codex-parser.ts` |
@@ -49,7 +50,7 @@ Twenty-seven TypeScript modules compiled to `dist/server/` via `tsc`. Modules co
 | `org-dashboard.ts` | Org-wide PR dashboard: aggregates open PRs involving the current user across all workspaces via `gh` search API or GraphQL fallback; triggers ticket transitions on PR state changes; 60s cache |
 | `ticket-transitions.ts` | Automated ticket state machine: transitions GitHub Issues (labels) and Jira tickets (acli) through in-progress → code-review → ready-for-qa based on session creation and PR merge events |
 
-**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` consumes `sessions`, `git`, `config`, and `push` via injected dependencies (not direct imports); all other modules are self-contained. **Exception:** `analytics.ts` and `push.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently twenty-seven server modules.
+**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` consumes `sessions`, `git`, `config`, and `push` via injected dependencies (not direct imports); all other modules are self-contained. **Exception:** `analytics.ts` and `push.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently twenty-eight server modules.
 
 ### `frontend/`
 
@@ -151,11 +152,13 @@ PTY flow:
 | `POST` | `/webhooks/manage/repos` | Add a repo to the webhook-managed set (body: `{path}`) |
 | `POST` | `/webhooks/manage/repos/remove` | Remove a repo from the webhook-managed set (body: `{path}`) |
 | `POST` | `/webhooks/manage/backfill` | Auto-provision webhooks for all repos that don't have one |
+| `GET` | `/workspaces/changed-files` | List changed files in a repo (`?path=X&base=ref`) |
+| `GET` | `/workspaces/file-diff` | Get unified diff for a single file (`?path=X&file=Y&base=ref`) |
 
 ## WebSocket Channels
 
 - `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
-- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`).
+- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed`).
 
 Both channels require authentication via `token` cookie verified during HTTP upgrade.
 

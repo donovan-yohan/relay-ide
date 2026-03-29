@@ -6,6 +6,7 @@ Execution plans for active and completed work.
 
 | Plan | Created | Topic |
 |------|---------|-------|
+| `true-workspaces-phase1` | 2026-03-28 | Rename workspacePath→repoPath, config v4 migration, workspace entity CRUD |
 | `bg-pin-setup-blocked` | 2026-03-28 | Fix --bg first-run crash loop: remove non-TTY exit, trust web-based PIN setup flow |
 
 ## Stalled Plans
@@ -27,6 +28,8 @@ See `docs/exec-plans/completed/` for historical plans (77 completed).
 | Plan | Completed | Topic |
 |------|-----------|-------|
 | `command-center-phase2` | 2026-03-28 | Action registry + 15 HIGH-priority actions, Spotlight migration to registry |
+| `code-file-tools` | 2026-03-28 | Changed files panel with syntax-highlighted diffs, .git/ watching, smart summaries |
+| `worktree-lifecycle` | 2026-03-28 | Branch lifecycle layer: continuePolicy, worktree detection+fetch, tmux naming, auto-archive |
 | `hooks-403-after-restart` | 2026-03-28 | Fix hookToken lost during serialization causing 403 on all hooks after restart + TMUX_PREFIX env pollution |
 | `pin-unlock-json-parse-error` | 2026-03-27 | Fix PIN unlock error, add PIN setup via web UI, CLI `pin reset`, defensive error handling |
 | `tui-design-system-overhaul` | 2026-03-26 | TUI-native component library: 9 new primitives, micro-interactions, alignment architecture |

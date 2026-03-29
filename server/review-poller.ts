@@ -16,9 +16,9 @@ const DEFAULT_POLL_INTERVAL_MS = 300_000; // 5 minutes
 export interface ReviewPollerDeps {
   configPath: string;
   getWorkspacePaths: () => string[];
-  getWorkspaceSettings: (workspacePath: string) => WorkspaceSettings | undefined;
+  getRepoSettings: (repoPath: string) => WorkspaceSettings | undefined;
   createSession: (opts: {
-    workspacePath: string;
+    repoPath: string;
     worktreePath: string;
     branchName: string;
     initialPrompt?: string;
@@ -96,21 +96,21 @@ async function findWorkspaceForRepo(
   workspacePaths: string[],
   exec: typeof execFileAsync,
 ): Promise<string | null> {
-  for (const workspacePath of workspacePaths) {
+  for (const repoPath of workspacePaths) {
     try {
       const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], {
-        cwd: workspacePath,
+        cwd: repoPath,
         timeout: GH_TIMEOUT_MS,
       });
       const remoteOwnerRepo = extractOwnerRepo(stdout.trim());
       if (remoteOwnerRepo && remoteOwnerRepo.toLowerCase() === ownerRepo.toLowerCase()) {
-        return workspacePath;
+        return repoPath;
       }
     } catch (err) {
-      // Not a git repo, no remote, or timed out — skip this workspace
+      // Not a git repo, no remote, or timed out — skip this repo
       const error = err as NodeJS.ErrnoException;
       if (error.code && error.code !== 'ENOENT') {
-        console.warn(`[review-poller] Error checking remote for ${workspacePath}:`, error.message);
+        console.warn(`[review-poller] Error checking remote for ${repoPath}:`, error.message);
       }
     }
   }
@@ -210,15 +210,15 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
 
       const ownerRepo = notification.repository.full_name;
 
-      let workspacePath: string | null;
+      let repoPath: string | null;
       try {
-        workspacePath = await findWorkspaceForRepo(ownerRepo, workspacePaths, exec);
+        repoPath = await findWorkspaceForRepo(ownerRepo, workspacePaths, exec);
       } catch (err) {
         console.warn('[review-poller] Error finding workspace for', ownerRepo, ':', err);
         continue;
       }
 
-      if (workspacePath === null) {
+      if (repoPath === null) {
         // No local workspace for this repo — skip silently
         continue;
       }
@@ -230,7 +230,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
         await exec(
           'git',
           ['fetch', 'origin', `pull/${prNumber}/head:${localBranch}`],
-          { cwd: workspacePath, timeout: GH_TIMEOUT_MS },
+          { cwd: repoPath, timeout: GH_TIMEOUT_MS },
         );
       } catch (err) {
         // Branch may already exist from a prior fetch — continue to worktree creation
@@ -244,7 +244,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
       // Find existing worktree for this branch or create a new one
       let result;
       try {
-        result = await findOrCreateWorktreeForBranch(workspacePath, localBranch, exec);
+        result = await findOrCreateWorktreeForBranch(repoPath, localBranch, exec);
       } catch (err) {
         console.warn(`[review-poller] Failed to create worktree for PR #${prNumber}:`, err);
         continue;
@@ -256,11 +256,11 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
       }
 
       // Optionally start a review session
-      const settings = deps.getWorkspaceSettings(workspacePath);
+      const settings = deps.getRepoSettings(repoPath);
       if (config.automations?.autoReviewOnCheckout && settings?.promptCodeReview) {
         try {
           await deps.createSession({
-            workspacePath,
+            repoPath,
             worktreePath: result.worktreePath,
             branchName: localBranch,
             initialPrompt: settings.promptCodeReview,
