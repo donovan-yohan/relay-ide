@@ -23,6 +23,7 @@ import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, comp
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
+import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
 import { createBranchLinkerRouter, invalidateBranchLinkerCache } from './branch-linker.js';
@@ -279,7 +280,7 @@ async function main(): Promise<void> {
   }
 
   const watcher = new WorktreeWatcher();
-  watcher.rebuild(getConfig().workspaces || []);
+  watcher.rebuild(getConfig().repos || []);
 
   const gitWatcher = new GitWatcher();
 
@@ -315,9 +316,9 @@ async function main(): Promise<void> {
     // Rebuild ref watchers when branches change (new upstream to watch)
     rebuildRefWatcher();
   });
-  branchWatcher.rebuild(getConfig().workspaces || []);
+  branchWatcher.rebuild(getConfig().repos || []);
   watcher.on('worktrees-changed', () => {
-    branchWatcher.rebuild(getConfig().workspaces || []);
+    branchWatcher.rebuild(getConfig().repos || []);
   });
 
   // Watch upstream tracking refs for push/fetch and broadcast ref-changed events
@@ -368,9 +369,9 @@ async function main(): Promise<void> {
     onWorkspacesChanged: () => {
       setImmediate(() => {
         try {
-          const workspaces = getConfig().workspaces || [];
-          watcher.rebuild(workspaces);
-          branchWatcher.rebuild(workspaces);
+          const repoPaths = getConfig().repos || [];
+          watcher.rebuild(repoPaths);
+          branchWatcher.rebuild(repoPaths);
         } catch (err) {
           console.error('Failed to rebuild workspace watchers:', err);
         }
@@ -378,6 +379,9 @@ async function main(): Promise<void> {
     },
   });
   app.use('/workspaces', requireAuth, workspaceRouter);
+
+  // Mount workspace-groups CRUD router
+  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth));
 
   // Mount GitHub integration router
   const integrationGitHubRouter = createIntegrationGitHubRouter({ configPath: CONFIG_PATH });
@@ -394,8 +398,8 @@ async function main(): Promise<void> {
       const map = new Map<string, Set<string>>();
       for (const s of sessions.list()) {
         if (!s.branchName) continue;
-        // Use workspacePath so all sessions (main worktree and sub-worktrees) group correctly
-        const wsRoot = s.workspacePath || s.cwd;
+        // Use repoPath so all sessions (main worktree and sub-worktrees) group correctly
+        const wsRoot = s.repoPath || s.cwd;
         const existing = map.get(wsRoot);
         if (existing) {
           existing.add(s.branchName);
@@ -434,7 +438,7 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
 
   // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(configDir, getConfig().workspaces ?? []);
+  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
     // Start git watching for restored sessions
@@ -450,17 +454,17 @@ async function main(): Promise<void> {
   function buildPollerDeps() {
     return {
       configPath: CONFIG_PATH,
-      getWorkspacePaths: () => getConfig().workspaces ?? [],
-      getWorkspaceSettings: (wsPath: string) => getConfig().workspaceSettings?.[wsPath],
-      createSession: async (opts: { workspacePath: string; worktreePath: string; branchName: string; initialPrompt?: string }) => {
-        const resolved = resolveSessionSettings(getConfig(), opts.workspacePath, {});
-        const repoName = opts.workspacePath.split('/').filter(Boolean).pop() || 'session';
+      getWorkspacePaths: () => getConfig().repos ?? [],
+      getRepoSettings: (wsPath: string) => getConfig().repoSettings?.[wsPath],
+      createSession: async (opts: { repoPath: string; worktreePath: string; branchName: string; initialPrompt?: string }) => {
+        const resolved = resolveSessionSettings(getConfig(), opts.repoPath, {});
+        const repoName = opts.repoPath.split('/').filter(Boolean).pop() || 'session';
         const displayName = sessions.nextAgentName();
         sessions.create({
           type: 'agent',
           agent: resolved.agent,
           repoName,
-          workspacePath: opts.workspacePath,
+          repoPath: opts.repoPath,
           worktreePath: opts.worktreePath,
           cwd: opts.worktreePath,
           branchName: opts.branchName,
@@ -683,7 +687,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const sessionList = sessions.list().map((s) => ({ id: s.id, worktreePath: s.worktreePath ?? s.workspacePath }));
+    const sessionList = sessions.list().map((s) => ({ id: s.id, worktreePath: s.worktreePath ?? s.repoPath }));
     res.json(await listBranchesEnriched(repoPath, { refresh, sessions: sessionList }));
   });
 
@@ -726,10 +730,10 @@ async function main(): Promise<void> {
         }
       }
 
-      // Also include directly-configured workspaces (may not be under any rootDir)
-      const configWorkspaces = getConfig().workspaces ?? [];
+      // Also include directly-configured repos (may not be under any rootDir)
+      const configRepos = getConfig().repos ?? [];
       const scannedPaths = new Set(reposToScan.map(r => r.path));
-      for (const wp of configWorkspaces) {
+      for (const wp of configRepos) {
         if (scannedPaths.has(wp)) continue;
         const root = roots.find(r => wp.startsWith(r)) || '';
         reposToScan.push({ path: wp, name: wp.split('/').filter(Boolean).pop() || '', root });
@@ -1164,11 +1168,11 @@ async function main(): Promise<void> {
   // POST /sessions — unified endpoint for agent and terminal sessions
   app.post('/sessions', requireAuth, async (req, res) => {
     const {
-      workspacePath, worktreePath, type = 'agent', agent, yolo, useTmux,
+      repoPath, worktreePath, type = 'agent', agent, yolo, useTmux,
       claudeArgs, cols, rows, branchName: requestBranchName, needsBranchRename, branchRenamePrompt,
       initialPrompt, continue: explicitContinue, continuePolicy: explicitContinuePolicy, ticketContext,
     } = req.body as {
-      workspacePath?: string;
+      repoPath?: string;
       worktreePath?: string | null;
       type?: 'agent' | 'terminal';
       agent?: AgentType;
@@ -1186,22 +1190,22 @@ async function main(): Promise<void> {
       ticketContext?: { ticketId: string; title: string; description?: string; url: string; source: 'github' | 'jira'; repoPath: string; repoName: string };
     };
 
-    if (!workspacePath) {
-      res.status(400).json({ error: 'workspacePath is required' });
+    if (!repoPath) {
+      res.status(400).json({ error: 'repoPath is required' });
       return;
     }
 
     // Read config once for the lifetime of this request
     const freshConfig = getConfig();
 
-    // Validate workspacePath is a configured workspace
-    const configuredWorkspaces = freshConfig.workspaces ?? [];
-    if (!configuredWorkspaces.includes(workspacePath)) {
-      res.status(400).json({ error: 'workspacePath is not a configured workspace' });
+    // Validate repoPath is a configured workspace
+    const configuredWorkspaces = freshConfig.repos ?? [];
+    if (!configuredWorkspaces.includes(repoPath)) {
+      res.status(400).json({ error: 'repoPath is not a configured workspace' });
       return;
     }
 
-    const cwd = worktreePath ?? workspacePath;
+    const cwd = worktreePath ?? repoPath;
 
     // Validate cwd directory exists
     if (!fs.existsSync(cwd)) {
@@ -1212,7 +1216,7 @@ async function main(): Promise<void> {
     const safeCols = typeof cols === 'number' && Number.isFinite(cols) && cols >= 1 && cols <= 500 ? Math.round(cols) : undefined;
     const safeRows = typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 && rows <= 200 ? Math.round(rows) : undefined;
 
-    const name = workspacePath.split('/').filter(Boolean).pop() || 'session';
+    const name = repoPath.split('/').filter(Boolean).pop() || 'session';
 
     if (type === 'terminal') {
       // Terminal session — bare shell
@@ -1222,7 +1226,7 @@ async function main(): Promise<void> {
         type: 'terminal',
         agent: 'claude' as AgentType,
         repoName: name,
-        workspacePath,
+        repoPath,
         worktreePath: worktreePath ?? null,
         cwd,
         displayName,
@@ -1244,7 +1248,7 @@ async function main(): Promise<void> {
     // For new worktrees, always use 'never' regardless of config
     const effectivePolicy = needsBranchRename ? 'never' as const : policyOverride;
 
-    const resolved = resolveSessionSettings(freshConfig, workspacePath, {
+    const resolved = resolveSessionSettings(freshConfig, repoPath, {
       agent, yolo, useTmux, claudeArgs, continuePolicy: effectivePolicy,
     });
     const resolvedAgent = resolved.agent;
@@ -1284,7 +1288,7 @@ async function main(): Promise<void> {
         res.status(400).json({ error: 'ticketContext.ticketId must match <PROJECT>-<number>' });
         return;
       }
-      const settings = freshConfig.workspaceSettings?.[ticketContext.repoPath];
+      const settings = freshConfig.repoSettings?.[ticketContext.repoPath];
       const template = settings?.promptStartWork ??
         'You are working on ticket {ticketId}: {title}\n\nTicket URL: {ticketUrl}\n\nPlease start by understanding the issue and proposing an approach.';
       computedInitialPrompt = template
@@ -1305,7 +1309,7 @@ async function main(): Promise<void> {
       type: 'agent',
       agent: resolvedAgent,
       repoName: name,
-      workspacePath,
+      repoPath,
       worktreePath: worktreePath ?? null,
       cwd,
       branchName: requestBranchName || '',  // caller may provide; branch watcher enriches later

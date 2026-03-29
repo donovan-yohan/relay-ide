@@ -50,6 +50,7 @@ Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vit
 | `dialogs/integrations/WebhookIntegration.svelte` | GitHub webhook CRUD and smee proxy panel within SettingsDialog |
 | `dialogs/integrations/JiraIntegration.svelte` | Jira connection and project config panel within SettingsDialog |
 | `dialogs/RenameWarningModal.svelte` | Rename + PR warning: push renamed branch, ignore, or undo rename |
+| `dialogs/WorkspaceEditor.svelte` | Workspace entity editor: name, repo assignment, theme color palette, delete — used in SettingsDialog workspaces section |
 | `dialogs/` | Session customization, settings, workspace, and worktree deletion dialogs |
 
 ## State Management
@@ -58,7 +59,7 @@ State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting re
 
 | Module | Role |
 |--------|------|
-| `sessions.svelte.ts` | Session list, worktrees, repos, `SidebarItem[]` with display state machine, notification preferences, loading state |
+| `sessions.svelte.ts` | Session list, worktrees, repos (`Repo[]`), `SidebarItem[]` with display state machine, notification preferences, loading state; `getSessionsForRepo()` helper |
 | `display-state.ts` | Pure display state machine: `transitionDisplayState(current, event) → newState`, `shouldNotify(from, to)` — 6 states: `initializing \| running \| unseen-idle \| seen-idle \| permission \| inactive` |
 | `sidebar-items.ts` | Pure `buildSidebarItems()` function: merges sessions + worktrees + workspaces into `SidebarItem[]` with reconciliation |
 | `config.svelte.ts` | Global session defaults (continue, yolo, tmux, agent, notifications); shared by SettingsDialog, SessionList, NewSessionDialog |

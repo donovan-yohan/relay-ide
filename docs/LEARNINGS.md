@@ -322,6 +322,16 @@ When a CLI command installs a background service (launchd, systemd) that starts 
 
 ---
 
+### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: design/true-workspaces
+
+When a config field changes its type (e.g., `Config.workspaces` from `string[]` to `Workspace[]`), using `as any` casts to bypass TypeScript hides runtime breakage. Every consumer that reads the field with the old type assumption will silently receive the wrong shape at runtime — string comparisons against objects, `.startsWith()` on entity objects, `.includes()` on arrays of the wrong type. The fix agent's approach of changing the type declaration and grepping all consumers is correct, but must be verified by running `tsc --noEmit` BEFORE committing. When planning a type rename: (1) grep all files that access the field, (2) update consumers to use the correct accessor (e.g., `config.repos` for paths, `config.workspaces` for entities), (3) verify zero compile errors, THEN commit.
+
+---
+
 ### L-20260328-serialization-whitelist-audit: When adding properties to a long-lived object, check whether it needs serialization — whitelist-based serialization silently drops new fields
 - status: active
 - category: architecture

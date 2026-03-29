@@ -3,11 +3,19 @@ import type { DisplayState, BackendDisplayState } from './state/display-state.js
 export type AgentType = 'claude' | 'codex';
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
 
-export interface Workspace {
+export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  repos: string[];
+  themeColor?: string;
+  order: number;
 }
 
 export interface SessionSummary {
@@ -16,7 +24,7 @@ export interface SessionSummary {
   agent: AgentType;
   mode?: 'pty' | undefined;
   repoName: string;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   branchName: string;

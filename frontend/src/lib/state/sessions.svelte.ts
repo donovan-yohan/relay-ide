@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Workspace, SidebarItem } from '../types.js';
+import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
 import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
@@ -22,7 +22,7 @@ function saveActiveSessionId(id: string | null): void {
 
 let sessions = $state<SessionSummary[]>([]);
 let worktrees = $state<WorktreeInfo[]>([]);
-let workspaces = $state<Workspace[]>([]);
+let repos = $state<Repo[]>([]);
 let activeSessionId = $state<string | null>(loadActiveSessionId());
 let loadingItems = $state<Record<string, boolean>>({});
 let notificationSessions = $state<Record<string, boolean>>({});
@@ -47,7 +47,7 @@ export function getSessionState() {
   return {
     get sessions() { return sessions; },
     get worktrees() { return worktrees; },
-    get workspaces() { return workspaces; },
+    get repos() { return repos; },
     get activeSessionId() { return activeSessionId; },
     set activeSessionId(id: string | null) {
       activeSessionId = id;
@@ -68,7 +68,7 @@ export async function refreshAll(): Promise<void> {
     ]);
     sessions = s;
     worktrees = w;
-    workspaces = ws;
+    repos = ws;
 
     // Validate restored activeSessionId — clear if the session no longer exists
     const activeIds = new Set(sessions.map(sess => sess.id));
@@ -88,13 +88,13 @@ export async function refreshAll(): Promise<void> {
     if (notifPruned) saveNotificationPrefs();
 
     // Rebuild sidebar items, reconciling displayState against existing items
-    sidebarItems = buildSidebarItems(sessions, worktrees, workspaces, sidebarItems);
+    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);
 
   } catch { /* silent */ }
 }
 
-export function getSessionsForWorkspace(workspacePath: string): SessionSummary[] {
-  return sessions.filter(s => s.workspacePath === workspacePath);
+export function getSessionsForRepo(repoPath: string): SessionSummary[] {
+  return sessions.filter(s => s.repoPath === repoPath);
 }
 
 export function renameSession(sessionId: string, branchName: string, displayName: string): void {
@@ -184,5 +184,5 @@ export function isItemLoading(key: string): boolean {
 
 export async function reorderWorkspaces(paths: string[]): Promise<void> {
   const updated = await api.reorderWorkspaces(paths);
-  workspaces = updated;
+  repos = updated;
 }

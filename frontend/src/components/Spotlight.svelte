@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query';
-  import type { Workspace, SessionSummary, PullRequest, OrgPrsResponse, GitHubIssue, GitHubIssuesResponse, JiraIssue, JiraIssuesResponse } from '../lib/types.js';
+  import type { Repo, SessionSummary, PullRequest, OrgPrsResponse, GitHubIssue, GitHubIssuesResponse, JiraIssue, JiraIssuesResponse } from '../lib/types.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
   import StatusDot from './StatusDot.svelte';
   import TuiInput from './TuiInput.svelte';
@@ -17,7 +17,7 @@
     onOpenSettings,
   }: {
     open: boolean;
-    workspaces: Workspace[];
+    workspaces: Repo[];
     sessions: SessionSummary[];
     onClose: () => void;
     onSelectWorkspace: (path: string) => void;
@@ -80,7 +80,7 @@
 
   // Search results
   type SpotlightResult =
-    | { type: 'workspace'; id: string; label: string; sublabel?: string; data: Workspace }
+    | { type: 'workspace'; id: string; label: string; sublabel?: string; data: Repo }
     | { type: 'session'; id: string; label: string; sublabel?: string; data: SessionSummary }
     | { type: 'pr' | 'attention'; id: string; label: string; sublabel?: string; data: PullRequest }
     | { type: 'ticket'; id: string; label: string; sublabel?: string; data: GitHubIssue | JiraIssue }

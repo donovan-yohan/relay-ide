@@ -66,7 +66,7 @@ export type CreatePtyParams = {
   type?: SessionType | undefined;
   agent?: AgentType | undefined;
   repoName?: string | undefined;
-  workspacePath: string;
+  repoPath: string;
   worktreePath?: string | null | undefined;
   cwd: string;
   branchName?: string | undefined;
@@ -104,7 +104,7 @@ export function createPtySession(
     type,
     agent = 'claude',
     repoName,
-    workspacePath,
+    repoPath,
     worktreePath = null,
     cwd,
     branchName,
@@ -186,7 +186,7 @@ export function createPtySession(
     type: type || 'agent',
     agent,
     mode: 'pty' as const,
-    workspacePath: workspacePath || '',
+    repoPath: repoPath || '',
     worktreePath: worktreePath ?? null,
     repoName: repoName || '',
     branchName: branchName || '',
@@ -373,7 +373,7 @@ export function createPtySession(
     type: session.type,
     agent: session.agent,
     mode: 'pty' as const,
-    workspacePath: session.workspacePath,
+    repoPath: session.repoPath,
     worktreePath: session.worktreePath,
     repoName: session.repoName,
     branchName: session.branchName,

@@ -8,11 +8,11 @@ import { promisify } from 'node:util';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { loadConfig, saveConfig, getWorkspaceSettings, setWorkspaceSettings, deleteWorkspaceSettingKeys, writeMeta, readMeta } from './config.js';
+import { loadConfig, saveConfig, getRepoSettings, setRepoSettings, deleteRepoSettingKeys, writeMeta, readMeta } from './config.js';
 import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, ensureBranchLocal } from './git.js';
-import type { Config, PrInfo, PullRequest, PullRequestsResponse, Workspace } from './types.js';
+import type { Config, PrInfo, PullRequest, PullRequestsResponse, Repo } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,12 +39,12 @@ interface PrCacheEntry {
 
 const prCache = new Map<string, PrCacheEntry>();
 
-function prCacheKey(workspacePath: string, branch: string): string {
-  return `${workspacePath}:${branch}`;
+function prCacheKey(repoPath: string, branch: string): string {
+  return `${repoPath}:${branch}`;
 }
 
-function getPrCached(workspacePath: string, branch: string): PrCacheEntry | undefined {
-  const key = prCacheKey(workspacePath, branch);
+function getPrCached(repoPath: string, branch: string): PrCacheEntry | undefined {
+  const key = prCacheKey(repoPath, branch);
   const entry = prCache.get(key);
   if (!entry) return undefined;
   const ttl = entry.result ? PR_CACHE_POSITIVE_TTL_MS : PR_CACHE_NEGATIVE_TTL_MS;
@@ -55,17 +55,17 @@ function getPrCached(workspacePath: string, branch: string): PrCacheEntry | unde
   return entry;
 }
 
-function setPrCached(workspacePath: string, branch: string, result: PrInfo | null): void {
-  prCache.set(prCacheKey(workspacePath, branch), { result, fetchedAt: Date.now() });
+function setPrCached(repoPath: string, branch: string, result: PrInfo | null): void {
+  prCache.set(prCacheKey(repoPath, branch), { result, fetchedAt: Date.now() });
 }
 
-/** Clear PR cache entries. If workspacePath is given, only clears entries for that workspace. */
-export function clearPrCache(workspacePath?: string): void {
-  if (!workspacePath) {
+/** Clear PR cache entries. If repoPath is given, only clears entries for that repo. */
+export function clearPrCache(repoPath?: string): void {
+  if (!repoPath) {
     prCache.clear();
     return;
   }
-  const prefix = `${workspacePath}:`;
+  const prefix = `${repoPath}:`;
   for (const key of prCache.keys()) {
     if (key.startsWith(prefix)) prCache.delete(key);
   }
@@ -168,9 +168,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
   // GET /workspaces — list all workspaces with git info
   router.get('/', async (_req: Request, res: Response) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
-    const results: Workspace[] = await Promise.all(
+    const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
         const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
@@ -200,7 +200,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const workspaces = config.workspaces ?? [];
+    const workspaces = config.repos ?? [];
 
     if (workspaces.includes(resolved)) {
       res.status(409).json({ error: 'Workspace already exists' });
@@ -209,13 +209,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const { isGitRepo, defaultBranch } = await detectGitRepo(resolved, exec);
 
-    config.workspaces = [...workspaces, resolved];
+    config.repos = [...workspaces, resolved];
 
-    // Store detected default branch in per-workspace settings
+    // Store detected default branch in per-repo settings
     if (isGitRepo && defaultBranch) {
-      if (!config.workspaceSettings) config.workspaceSettings = {};
-      config.workspaceSettings[resolved] = {
-        ...config.workspaceSettings[resolved],
+      if (!config.repoSettings) config.repoSettings = {};
+      config.repoSettings[resolved] = {
+        ...config.repoSettings[resolved],
         defaultBranch,
       };
     }
@@ -224,7 +224,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     trackEvent({ category: 'workspace', action: 'added', target: resolved, properties: { name: path.basename(resolved) } });
 
-    const workspace: Workspace = {
+    const workspace: Repo = {
       path: resolved,
       name: path.basename(resolved),
       isGitRepo,
@@ -246,7 +246,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const resolved = path.resolve(rawPath);
     const config = getConfig();
-    const workspaces = config.workspaces ?? [];
+    const workspaces = config.repos ?? [];
     const idx = workspaces.indexOf(resolved);
 
     if (idx === -1) {
@@ -255,7 +255,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     // Clean up GitHub webhook if one exists for this workspace
-    const wsSettings = config.workspaceSettings?.[resolved];
+    const wsSettings = config.repoSettings?.[resolved];
     if (wsSettings?.webhookId && config.github?.accessToken) {
       try {
         const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: resolved, timeout: 5000 });
@@ -276,14 +276,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       }
     }
 
-    // Also clean up webhook-related workspaceSettings
-    if (config.workspaceSettings?.[resolved]) {
-      delete config.workspaceSettings[resolved].webhookId;
-      delete config.workspaceSettings[resolved].webhookEnabled;
-      delete config.workspaceSettings[resolved].webhookError;
+    // Also clean up webhook-related repoSettings
+    if (config.repoSettings?.[resolved]) {
+      delete config.repoSettings[resolved].webhookId;
+      delete config.repoSettings[resolved].webhookEnabled;
+      delete config.repoSettings[resolved].webhookError;
     }
 
-    config.workspaces = workspaces.filter((p) => p !== resolved);
+    config.repos = workspaces.filter((p) => p !== resolved);
     saveConfig(configPath, config);
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     trackEvent({ category: 'workspace', action: 'removed', target: resolved });
@@ -302,7 +302,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const current = config.workspaces ?? [];
+    const current = config.repos ?? [];
 
     // Validate that the submitted paths are the same set as the current workspaces
     if (rawPaths.length !== current.length) {
@@ -318,11 +318,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       }
     }
 
-    config.workspaces = rawPaths as string[];
+    config.repos = rawPaths as string[];
     saveConfig(configPath, config);
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
 
-    const results: Workspace[] = await Promise.all(
+    const results: Repo[] = await Promise.all(
       (rawPaths as string[]).map(async (p) => {
         const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
@@ -349,7 +349,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     const config = getConfig();
-    const existing = new Set(config.workspaces ?? []);
+    const existing = new Set(config.repos ?? []);
     const added: Array<{ path: string; name: string; isGitRepo: boolean; defaultBranch: string | null }> = [];
     const errors: Array<{ path: string; error: string }> = [];
 
@@ -377,18 +377,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       existing.add(resolved);
       added.push({ path: resolved, name: path.basename(resolved), isGitRepo, defaultBranch });
 
-      // Store detected default branch in per-workspace settings
+      // Store detected default branch in per-repo settings
       if (isGitRepo && defaultBranch) {
-        if (!config.workspaceSettings) config.workspaceSettings = {};
-        config.workspaceSettings[resolved] = {
-          ...config.workspaceSettings[resolved],
+        if (!config.repoSettings) config.repoSettings = {};
+        config.repoSettings[resolved] = {
+          ...config.repoSettings[resolved],
           defaultBranch,
         };
       }
     }
 
     if (added.length > 0) {
-      config.workspaces = [...(config.workspaces ?? []), ...added.map((a) => a.path)];
+      config.repos = [...(config.repos ?? []), ...added.map((a) => a.path)];
       saveConfig(configPath, config);
       try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     }
@@ -398,9 +398,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/dashboard — aggregated PR + activity data for a workspace
   router.get('/dashboard', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
 
-    if (!workspacePath) {
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
@@ -410,7 +410,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     // Get current GitHub user
     let currentUser = '';
     try {
-      const { stdout: whoami } = await exec('gh', ['api', 'user', '--jq', '.login'], { cwd: workspacePath });
+      const { stdout: whoami } = await exec('gh', ['api', 'user', '--jq', '.login'], { cwd: repoPath });
       currentUser = whoami.trim();
     } catch {
       const response: PullRequestsResponse = { prs: [], error: 'gh_not_authenticated' };
@@ -446,7 +446,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           const { stdout } = await exec(
             'gh',
             ['pr', 'list', '--author', currentUser, '--state', 'open', '--limit', '30', '--json', fields],
-            { cwd: workspacePath },
+            { cwd: repoPath },
           );
           return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(pr => mapRawPr(pr, 'author', currentUser));
         } catch { return []; }
@@ -456,7 +456,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           const { stdout } = await exec(
             'gh',
             ['pr', 'list', '--search', `review-requested:${currentUser}`, '--state', 'open', '--limit', '30', '--json', fields],
-            { cwd: workspacePath },
+            { cwd: repoPath },
           );
           return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(pr => mapRawPr(pr, 'reviewer', ''));
         } catch { return []; }
@@ -472,16 +472,16 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const pullRequests: PullRequestsResponse = { prs: combined };
 
-    // Fetch branches for the workspace
+    // Fetch branches for the repo
     let branches: string[] = [];
     try {
-      branches = await listBranches(workspacePath);
+      branches = await listBranches(repoPath);
     } catch { /* not a git repo or git unavailable */ }
 
     // Fetch recent activity
     let activity: Awaited<ReturnType<typeof getActivityFeed>> = [];
     try {
-      activity = await getActivityFeed(workspacePath);
+      activity = await getActivityFeed(repoPath);
     } catch { /* git log unavailable */ }
 
     res.json({
@@ -491,10 +491,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     });
   });
 
-  function buildMergedSettings(config: Config, workspacePath: string): { settings: ReturnType<typeof getWorkspaceSettings>; overridden: string[] } {
-    const resolved = path.resolve(workspacePath);
-    const wsOverrides = config.workspaceSettings?.[resolved] ?? {};
-    const effective = getWorkspaceSettings(config, resolved);
+  function buildMergedSettings(config: Config, repoPath: string): { settings: ReturnType<typeof getRepoSettings>; overridden: string[] } {
+    const resolved = path.resolve(repoPath);
+    const wsOverrides = config.repoSettings?.[resolved] ?? {};
+    const effective = getRepoSettings(config, resolved);
     const overridden: string[] = [];
     for (const key of ['defaultAgent', 'defaultContinue', 'defaultYolo', 'launchInTmux'] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
@@ -502,44 +502,44 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     return { settings: effective, overridden };
   }
 
-  // GET /workspaces/settings — per-workspace overrides only
+  // GET /workspaces/settings — per-repo overrides only
   router.get('/settings', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    if (!workspacePath) {
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
     // Backward compat: handle merged=true inline (same logic as /settings/merged)
     if (req.query.merged === 'true') {
-      res.json(buildMergedSettings(getConfig(), workspacePath));
+      res.json(buildMergedSettings(getConfig(), repoPath));
       return;
     }
     const config = getConfig();
-    const resolved = path.resolve(workspacePath);
-    const settings = config.workspaceSettings?.[resolved] ?? {};
+    const resolved = path.resolve(repoPath);
+    const settings = config.repoSettings?.[resolved] ?? {};
     res.json(settings);
   });
 
   // GET /workspaces/settings/merged — effective settings with override tracking
   router.get('/settings/merged', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    if (!workspacePath) {
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
-    res.json(buildMergedSettings(getConfig(), workspacePath));
+    res.json(buildMergedSettings(getConfig(), repoPath));
   });
 
-  // PATCH /workspaces/settings — update per-workspace settings
+  // PATCH /workspaces/settings — update per-repo settings
   router.patch('/settings', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
 
-    if (!workspacePath) {
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
 
-    const resolved = path.resolve(workspacePath);
+    const resolved = path.resolve(repoPath);
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
@@ -557,49 +557,49 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     // Apply deletions first
     if (keysToDelete.length > 0) {
-      deleteWorkspaceSettingKeys(configPath, config, resolved, keysToDelete);
+      deleteRepoSettingKeys(configPath, config, resolved, keysToDelete);
     }
 
     // Apply updates
     if (Object.keys(keysToUpdate).length > 0) {
-      setWorkspaceSettings(configPath, config, resolved, keysToUpdate);
+      setRepoSettings(configPath, config, resolved, keysToUpdate);
     }
 
-    // Return the current raw workspace settings
-    const final = config.workspaceSettings?.[resolved] ?? {};
+    // Return the current raw repo settings
+    const final = config.repoSettings?.[resolved] ?? {};
     res.json(final);
   });
 
   // GET /workspaces/pr — PR info for a specific branch
   router.get('/pr', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
 
-    if (!workspacePath || !branch) {
+    if (!repoPath || !branch) {
       res.status(400).json({ error: 'path and branch query parameters are required' });
       return;
     }
 
-    const cached = getPrCached(workspacePath, branch);
+    const cached = getPrCached(repoPath, branch);
     if (cached) {
       res.json({ pr: cached.result });
       return;
     }
 
     try {
-      const pr = await getPrForBranch(workspacePath, branch);
+      const pr = await getPrForBranch(repoPath, branch);
       if (pr && !isStalePr(pr)) {
         let unresolvedCommentCount = 0;
         if (pr.state === 'OPEN') {
           try {
-            unresolvedCommentCount = await getUnresolvedCommentCount(workspacePath, pr.number);
+            unresolvedCommentCount = await getUnresolvedCommentCount(repoPath, pr.number);
           } catch { /* degrade gracefully — show PR without comment count */ }
         }
         const enriched = { ...pr, unresolvedCommentCount };
-        setPrCached(workspacePath, branch, enriched);
+        setPrCached(repoPath, branch, enriched);
         res.json({ pr: enriched });
       } else {
-        setPrCached(workspacePath, branch, null);
+        setPrCached(repoPath, branch, null);
         res.json({ pr: null });
       }
     } catch {
@@ -608,18 +608,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
-  // GET /workspaces/ci-status — CI check results for a workspace + branch
+  // GET /workspaces/ci-status — CI check results for a repo + branch
   router.get('/ci-status', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
 
-    if (!workspacePath) {
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
 
     try {
-      const status = await getCiStatus(workspacePath, branch ?? 'HEAD');
+      const status = await getCiStatus(repoPath, branch ?? 'HEAD');
       res.json(status);
     } catch {
       res.json({ total: 0, passing: 0, failing: 0, pending: 0 });
@@ -628,9 +628,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/branch — switch branch for a workspace
   router.post('/branch', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
 
-    if (!workspacePath) {
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
@@ -643,9 +643,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    const result = await switchBranch(workspacePath, branch);
+    const result = await switchBranch(repoPath, branch);
     if (result.success) {
-      res.json({ path: workspacePath, branch });
+      res.json({ path: repoPath, branch });
     } else {
       res.status(400).json({ error: result.error ?? `Failed to switch to branch: ${branch}` });
     }
@@ -653,18 +653,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/worktree — create a new worktree with the next mountain name
   router.post('/worktree', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
 
-    if (!workspacePath) {
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
 
     const existingBranch = typeof req.body?.branch === 'string' ? req.body.branch : undefined;
 
-    const resolved = path.resolve(workspacePath);
+    const resolved = path.resolve(repoPath);
     const config = getConfig();
-    const settings = getWorkspaceSettings(config, resolved);
+    const settings = getRepoSettings(config, resolved);
 
     let branchName = '';
     let mountainName = '';
@@ -790,7 +790,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     // Increment mountain counter AFTER successful creation (don't skip names on failure)
     if (nextMountainIndex !== undefined) {
-      setWorkspaceSettings(configPath, config, resolved, { nextMountainIndex });
+      setRepoSettings(configPath, config, resolved, { nextMountainIndex });
     }
 
     // Write metadata so DELETE /worktrees can find the suffixed branch name
@@ -806,12 +806,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/current-branch — current checked-out branch for a path
   router.get('/current-branch', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    if (!workspacePath) {
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
-    const branch = await getCurrentBranch(path.resolve(workspacePath));
+    const branch = await getCurrentBranch(path.resolve(repoPath));
     res.json({ branch });
   });
 
@@ -949,12 +949,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/rename-branch — rename the current branch for a workspace
   router.post('/rename-branch', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const { newName } = req.body as { newName?: string };
-    if (!workspacePath) { res.status(400).json({ error: 'path query parameter required' }); return; }
+    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
     if (!newName || typeof newName !== 'string') { res.status(400).json({ error: 'newName is required' }); return; }
 
-    const result = await renameBranch(workspacePath, newName);
+    const result = await renameBranch(repoPath, newName);
     if (result.success) {
       res.json(result);
     } else {
@@ -964,12 +964,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/create-branch — create and checkout a new branch for a workspace
   router.post('/create-branch', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const { branchName } = req.body as { branchName?: string };
-    if (!workspacePath) { res.status(400).json({ error: 'path query parameter required' }); return; }
+    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
     if (!branchName || typeof branchName !== 'string') { res.status(400).json({ error: 'branchName is required' }); return; }
 
-    const result = await createBranch(workspacePath, branchName);
+    const result = await createBranch(repoPath, branchName);
     if (result.success) {
       res.json(result);
     } else {
@@ -979,13 +979,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/pr-base — change the base branch of a PR for a workspace
   router.post('/pr-base', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const { prNumber, baseBranch } = req.body as { prNumber?: number; baseBranch?: string };
-    if (!workspacePath) { res.status(400).json({ error: 'path query parameter required' }); return; }
+    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
     if (!prNumber || typeof prNumber !== 'number') { res.status(400).json({ error: 'prNumber is required' }); return; }
     if (!baseBranch || typeof baseBranch !== 'string') { res.status(400).json({ error: 'baseBranch is required' }); return; }
 
-    const result = await changePrBase(workspacePath, prNumber, baseBranch);
+    const result = await changePrBase(repoPath, prNumber, baseBranch);
     if (result.success) {
       res.json(result);
     } else {
@@ -995,12 +995,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/push-branch — push a branch to origin for a workspace
   router.post('/push-branch', async (req: Request, res: Response) => {
-    const workspacePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
     const { branch, deleteOldBranch } = req.body as { branch?: string; deleteOldBranch?: string };
-    if (!workspacePath) { res.status(400).json({ error: 'path query parameter required' }); return; }
+    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
     if (!branch || typeof branch !== 'string') { res.status(400).json({ error: 'branch is required' }); return; }
 
-    const result = await pushBranch(workspacePath, branch, deleteOldBranch);
+    const result = await pushBranch(repoPath, branch, deleteOldBranch);
     if (result.success) {
       res.json(result);
     } else {
@@ -1010,7 +1010,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   function validateWorkspaceAccess(repoPath: string): string | null {
     const resolved = path.resolve(repoPath);
-    const allowed = getConfig().workspaces ?? [];
+    const allowed = getConfig().repos ?? [];
     return allowed.some(p => resolved === p || resolved.startsWith(p + path.sep)) ? resolved : null;
   }
 
