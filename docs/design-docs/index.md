@@ -16,10 +16,7 @@
 - [2026-03-27-open-from-picker-design.md](2026-03-27-open-from-picker-design.md) — Unified branch/PR/issue picker modal, inline workspace action icons, duplicate session handling
 
 ## Archived — Implemented
-<<<<<<< Updated upstream
 - [2026-03-28-code-file-tools-design.md](2026-03-28-code-file-tools-design.md) — Changed files panel with syntax-highlighted diffs, .git/ watching, smart summaries
-=======
->>>>>>> Stashed changes
 - [2026-03-25-tui-design-system-overhaul-design.md](2026-03-25-tui-design-system-overhaul-design.md) — TUI-native component library: 9 new primitives, micro-interactions, alignment architecture
 - [2026-02-21-background-service-design.md](2026-02-21-background-service-design.md) — Background service (launchd/systemd) design
 - [2026-02-21-mobile-toolbar-redesign.md](2026-02-21-mobile-toolbar-redesign.md) — Mobile toolbar redesign
