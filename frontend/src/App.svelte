@@ -8,9 +8,15 @@
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
-  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree } from './lib/api.js';
+  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
+  import { registerGlobal } from './lib/actions/registry.svelte.js';
+  import type { Action, ActionContext } from './lib/actions/types.js';
+  import { sessionNewAgent, sessionNewTerminal, sessionCloseActive, sessionKill, sessionStartOnRepo, sessionStartOnTicket } from './lib/actions/definitions/session.js';
+  import { workspaceAdd, workspaceNewWorktree } from './lib/actions/definitions/workspace.js';
+  import { prCreate, prPushBranch, prSwitchBranch } from './lib/actions/definitions/pr.js';
+  import { settingsOpen, settingsConnectGithub, settingsToggleYolo, settingsCheckUpdates } from './lib/actions/definitions/settings.js';
   import PinGate from './components/PinGate.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Terminal from './components/Terminal.svelte';
@@ -46,6 +52,22 @@
   const ui = getUi();
   const sessionState = getSessionState();
   const configState = getConfigState();
+
+  let actionContext = $derived.by<ActionContext>(() => {
+    if (sessionState.activeSessionId) {
+      const ctx: ActionContext = { view: 'session', sessionId: sessionState.activeSessionId };
+      if (ui.activeRepoPath) ctx.workspacePath = ui.activeRepoPath;
+      return ctx;
+    }
+    if (ui.activeRepoPath) {
+      return { view: 'workspace', workspacePath: ui.activeRepoPath };
+    }
+    return { view: 'dashboard' };
+  });
+
+  function navigateToDashboard() {
+    if (sessionState.activeSessionId) sessionState.activeSessionId = null;
+  }
 
   function navigateToSession(sessionId: string, _sessionType: string) {
     sessionState.activeSessionId = sessionId;
@@ -88,6 +110,48 @@
   onMount(() => {
     initAnalytics(() => sessionState.activeSessionId);
     checkExistingAuth();
+
+    // ── Action Registry ──────────────────────────────────
+    registerGlobal([
+      { ...sessionNewAgent, handler: () => handleQuickAgent() },
+      { ...sessionNewTerminal, handler: () => handleQuickTerminal() },
+      { ...sessionCloseActive, handler: () => {
+        if (sessionState.activeSessionId) handleCloseSession(sessionState.activeSessionId);
+      }},
+      { ...sessionKill, handler: async () => {
+        if (sessionState.activeSessionId) {
+          try {
+            await killSession(sessionState.activeSessionId);
+          } catch (err) {
+            console.error('Failed to kill session', err);
+          }
+          await refreshAll();
+        }
+      }},
+      { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
+      // PR/ticket stubs: navigate to dashboard. Direct handlers deferred to Phase 3.
+      { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
+      { ...workspaceAdd, handler: () => addWorkspaceDialogRef?.open() },
+      { ...workspaceNewWorktree, handler: () => {
+        if (activeWorkspace) handleNewWorktree(activeWorkspace);
+      }},
+      { ...prCreate, handler: () => navigateToDashboard() },
+      { ...prPushBranch, handler: () => navigateToDashboard() },
+      { ...prSwitchBranch, handler: () => navigateToDashboard() },
+      { ...settingsOpen, handler: () => handleOpenSettings() },
+      { ...settingsConnectGithub, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsToggleYolo, handler: async () => {
+        const prev = configState.defaultYolo;
+        configState.defaultYolo = !prev;
+        try {
+          await setDefaultYolo(!prev);
+        } catch (err) {
+          configState.defaultYolo = prev;
+          console.error('Failed to update default YOLO setting', err);
+        }
+      }},
+      { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
+    ] satisfies Action[]);
 
     let cleanupViewport: (() => void) | undefined;
     let cleanupSwipe: (() => void) | undefined;
@@ -696,20 +760,6 @@
 
   let addWorkspaceDialogRef = $state<AddWorkspaceDialog | undefined>();
 
-  function handleSpotlightCommand(cmd: string) {
-    switch (cmd) {
-      case 'new-worktree':
-        if (activeWorkspace) handleNewWorktree(activeWorkspace);
-        break;
-      case 'new-agent':
-        handleQuickAgent();
-        break;
-      case 'settings':
-        handleOpenSettings();
-        break;
-    }
-  }
-
   function handleSpotlightSelectPr(pr: import('./lib/types.js').PullRequest) {
     // Navigate to the PR's workspace, then open the PR branch
     if (pr.repoPath) {
@@ -879,11 +929,11 @@
     open={spotlightOpen}
     workspaces={sessionState.repos}
     sessions={sessionState.sessions}
+    {actionContext}
     onClose={() => { spotlightOpen = false; }}
     onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; closeSidebar(); }}
     onSelectSession={(id) => handleSelectSession(id)}
     onSelectPr={handleSpotlightSelectPr}
-    onCommand={handleSpotlightCommand}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}
   />
 

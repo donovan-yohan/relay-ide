@@ -4,26 +4,28 @@
   import { derivePrDotStatus } from '../lib/pr-status.js';
   import StatusDot from './StatusDot.svelte';
   import TuiInput from './TuiInput.svelte';
+  import { getAllActions } from '../lib/actions/registry.svelte.js';
+  import type { ActionContext, Action } from '../lib/actions/types.js';
 
   let {
     open = false,
     workspaces,
     sessions,
+    actionContext,
     onClose,
     onSelectWorkspace,
     onSelectSession,
     onSelectPr,
-    onCommand,
     onOpenSettings,
   }: {
     open: boolean;
     workspaces: Repo[];
     sessions: SessionSummary[];
+    actionContext: ActionContext;
     onClose: () => void;
     onSelectWorkspace: (path: string) => void;
     onSelectSession: (id: string) => void;
     onSelectPr: (pr: PullRequest) => void;
-    onCommand: (cmd: string) => void;
     onOpenSettings?: (sectionId: string) => void;
   } = $props();
 
@@ -61,12 +63,10 @@
     { id: 'setting-version', label: 'Version', description: 'Check for updates', section: 'section-about' },
   ];
 
-  // Commands
-  const commands = [
-    { id: 'new-worktree', label: 'New worktree', icon: '+' },
-    { id: 'new-agent', label: 'New agent session', icon: '+' },
-    { id: 'settings', label: 'Settings', icon: '>' },
-  ];
+  // Commands from the action registry, filtered by current context
+  let registryCommands = $derived.by(() => {
+    return getAllActions().filter(a => !a.when || a.when(actionContext));
+  });
 
   // "Needs Attention" — PRs with changes requested or awaiting review
   let needsAttention = $derived(
@@ -84,7 +84,7 @@
     | { type: 'session'; id: string; label: string; sublabel?: string; data: SessionSummary }
     | { type: 'pr' | 'attention'; id: string; label: string; sublabel?: string; data: PullRequest }
     | { type: 'ticket'; id: string; label: string; sublabel?: string; data: GitHubIssue | JiraIssue }
-    | { type: 'command'; id: string; label: string; sublabel?: string; data: { id: string; label: string; icon: string } }
+    | { type: 'command'; id: string; label: string; sublabel?: string; data: Action }
     | { type: 'setting'; id: string; label: string; sublabel?: string; data: { id: string; label: string; description: string; section: string } };
 
   let results = $derived.by((): SpotlightResult[] => {
@@ -111,13 +111,13 @@
           data: ws,
         });
       }
-      for (const cmd of commands) {
+      for (const action of registryCommands) {
         items.push({
           type: 'command',
-          id: `cmd-${cmd.id}`,
-          label: cmd.label,
-          sublabel: '',
-          data: cmd,
+          id: `cmd-${action.id}`,
+          label: action.label,
+          sublabel: action.description ?? '',
+          data: action,
         });
       }
       return items;
@@ -207,16 +207,20 @@
       });
     }
 
-    // Commands
-    const cmdMatches = commands
-      .filter(c => c.label.toLowerCase().includes(q));
-    for (const cmd of cmdMatches) {
+    // Commands from registry
+    const cmdMatches = registryCommands
+      .filter(a =>
+        a.label.toLowerCase().includes(q) ||
+        (a.description?.toLowerCase().includes(q)) ||
+        (a.aliases?.some(alias => alias.toLowerCase().includes(q)))
+      );
+    for (const action of cmdMatches) {
       items.push({
         type: 'command',
-        id: `cmd-${cmd.id}`,
-        label: cmd.label,
-        sublabel: '',
-        data: cmd,
+        id: `cmd-${action.id}`,
+        label: action.label,
+        sublabel: action.description ?? '',
+        data: action,
       });
     }
 
@@ -299,7 +303,17 @@
     }, 150);
   }
 
-  function selectItem(item: SpotlightResult) {
+  async function selectItem(item: SpotlightResult) {
+    if (item.type === 'command') {
+      try {
+        await item.data.handler(actionContext);
+        onClose();
+      } catch (err) {
+        console.error(`Action "${item.data.id}" failed:`, err);
+        onClose();
+      }
+      return;
+    }
     onClose();
     switch (item.type) {
       case 'workspace':
@@ -313,10 +327,6 @@
         onSelectPr(item.data);
         break;
       case 'ticket':
-        // No direct ticket action from spotlight for now
-        break;
-      case 'command':
-        onCommand(item.data.id);
         break;
       case 'setting':
         onOpenSettings?.(item.data.section);
@@ -361,6 +371,17 @@
     if ((e.target as HTMLElement).classList.contains('spotlight-overlay')) {
       onClose();
     }
+  }
+
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
+
+  function formatShortcut(key: string): string {
+    const parts = key
+      .replace('mod', isMac ? '⌘' : 'ctrl')
+      .replace('shift', '⇧')
+      .split('+')
+      .map(k => k.length === 1 ? k.toUpperCase() : k);
+    return isMac ? parts.join('') : parts.join('+');
   }
 
   function categoryIcon(type: SpotlightResult['type']): string {
@@ -427,12 +448,17 @@
               >
                 {#if item.type === 'attention' || item.type === 'pr'}
                   <StatusDot status={derivePrDotStatus(item.data)} size={7} />
+                {:else if item.type === 'command' && item.data.icon}
+                  <span class="item-icon">{item.data.icon}</span>
                 {:else}
                   <span class="item-icon">{@html categoryIcon(item.type)}</span>
                 {/if}
                 <span class="item-label">{item.label}</span>
                 {#if item.sublabel}
                   <span class="item-sublabel">{item.sublabel}</span>
+                {/if}
+                {#if item.type === 'command' && item.data.shortcut}
+                  <kbd class="item-shortcut">{formatShortcut(item.data.shortcut.key)}</kbd>
                 {/if}
               </div>
             {/each}
@@ -575,6 +601,16 @@
     flex-shrink: 1;
     min-width: 0;
     max-width: 120px;
+  }
+
+  .item-shortcut {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    padding: 1px 4px;
+    flex-shrink: 0;
+    opacity: 0.6;
   }
 
   .spotlight-empty {

@@ -322,6 +322,16 @@ When a CLI command installs a background service (launchd, systemd) that starts 
 
 ---
 
+### L-20260328-svelte-runes-testability: Split .svelte.ts modules into pure .ts logic + thin .svelte.ts wrapper for node:test compatibility
+- status: active
+- category: testing
+- source: /harness:reflect 2026-03-28
+- branch: design/command-center
+
+Svelte 5 runes (`$state`, `$derived`) are compiler macros that only work when processed by the Svelte compiler. Files with `.svelte.ts` extension cannot be compiled by `tsc` alone, so they cannot be included in `tsconfig.test.json` for `node --test` execution. When a reactive module needs unit tests, split it: put all pure logic in a plain `.ts` file (Map operations, validation, filtering), then create a thin `.svelte.ts` wrapper that imports the pure functions and adds reactivity via `$state`. Tests import from the `.ts` file; components import from the `.svelte.ts` file. This pattern was used for `registry.ts` + `registry.svelte.ts` in the action system.
+
+---
+
 ### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
 - status: active
 - category: architecture
