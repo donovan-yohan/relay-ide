@@ -56,11 +56,11 @@
   let actionContext = $derived.by<ActionContext>(() => {
     if (sessionState.activeSessionId) {
       const ctx: ActionContext = { view: 'session', sessionId: sessionState.activeSessionId };
-      if (ui.activeWorkspacePath) ctx.workspacePath = ui.activeWorkspacePath;
+      if (ui.activeRepoPath) ctx.workspacePath = ui.activeRepoPath;
       return ctx;
     }
-    if (ui.activeWorkspacePath) {
-      return { view: 'workspace', workspacePath: ui.activeWorkspacePath };
+    if (ui.activeRepoPath) {
+      return { view: 'workspace', workspacePath: ui.activeRepoPath };
     }
     return { view: 'dashboard' };
   });
