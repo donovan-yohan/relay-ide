@@ -21,7 +21,7 @@ before(async () => {
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
 
-  saveConfig(configPath, { ...DEFAULTS, workspaces: [repoDir] });
+  saveConfig(configPath, { ...DEFAULTS, repos: [repoDir] });
 
   const app = express();
   app.use(express.json());

@@ -943,7 +943,7 @@ describe('session persistence', () => {
 
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
@@ -977,7 +977,7 @@ describe('session persistence', () => {
 
     const s = sessions.create({
       repoName: 'test-repo',
-      workspacePath: '/tmp',
+      repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/cat',
