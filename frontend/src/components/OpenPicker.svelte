@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { useQueryClient, createQuery } from '@tanstack/svelte-query';
+  import { createQuery } from '@tanstack/svelte-query';
   import type {
     PullRequest, OrgPrsResponse, GitHubIssue, GitHubIssuesResponse,
     SessionSummary, WorktreeInfo, BranchInfo,
   } from '../lib/types.js';
-  import { fetchBranches } from '../lib/api.js';
+  import { fetchBranches, fetchOrgPrs, fetchGithubIssues } from '../lib/api.js';
   import { resolveIntent } from '../lib/session-intent.js';
   import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
@@ -35,16 +35,20 @@
   let focusedIndex = $state(0);
   let inputWrapperEl = $state<HTMLDivElement | undefined>(undefined);
 
-  const queryClient = useQueryClient();
+  // Data sources — all use createQuery so TanStack deduplicates with existing queries
+  const prsQuery = createQuery<OrgPrsResponse>(() => ({
+    queryKey: ['org-prs'],
+    queryFn: fetchOrgPrs,
+    staleTime: 60_000,
+    enabled: open,
+  }));
 
-  // Data sources — read from TanStack Query cache + fetch branches on demand
-  let cachedPrs = $derived<PullRequest[]>(
-    queryClient.getQueryData<OrgPrsResponse>(['org-prs'])?.prs ?? []
-  );
-
-  let cachedIssues = $derived<GitHubIssue[]>(
-    queryClient.getQueryData<GitHubIssuesResponse>(['github-issues'])?.issues ?? []
-  );
+  const issuesQuery = createQuery<GitHubIssuesResponse>(() => ({
+    queryKey: ['github-issues'],
+    queryFn: fetchGithubIssues,
+    staleTime: 60_000,
+    enabled: open,
+  }));
 
   const branchQuery = createQuery<BranchInfo[]>(() => ({
     queryKey: ['branches', repoPath],
@@ -53,6 +57,8 @@
     enabled: open && !!repoPath,
   }));
 
+  let cachedPrs = $derived<PullRequest[]>(prsQuery.data?.prs ?? []);
+  let cachedIssues = $derived<GitHubIssue[]>(issuesQuery.data?.issues ?? []);
   let branches = $derived(branchQuery.data ?? []);
 
   // Filter
@@ -247,7 +253,14 @@
     onClose();
   }
 
+  let isLoading = $derived(
+    (activeTab === 'prs' || activeTab === 'all') && prsQuery.isLoading ||
+    (activeTab === 'issues' || activeTab === 'all') && issuesQuery.isLoading ||
+    (activeTab === 'branches' || activeTab === 'all') && branchQuery.isLoading
+  );
+
   let emptyMessage = $derived.by((): string => {
+    if (isLoading) return 'loading...';
     if (q) return `no results for '${q}'`;
     switch (activeTab) {
       case 'prs': return 'no open pull requests';
