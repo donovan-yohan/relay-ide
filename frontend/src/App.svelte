@@ -2,13 +2,13 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar, toggleSidebarCollapsed } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest, ChangedFile } from './lib/types.js';
-  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi } from './lib/api.js';
+  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi, launchWorkspaceSession } from './lib/api.js';
   import { derivePrAction, buildPrStateInput, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal, getAllActions } from './lib/actions/registry.svelte.js';
@@ -35,6 +35,9 @@
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
   import CommandPalette from './components/CommandPalette.svelte';
+  import OpenPicker from './components/OpenPicker.svelte';
+  import type { SessionIntent, PickerItem } from './lib/session-intent.js';
+  import { issueToBranchName } from './lib/session-intent.js';
   import CustomizeSessionDialog from './components/dialogs/CustomizeSessionDialog.svelte';
   import SettingsDialog from './components/dialogs/SettingsDialog.svelte';
   import DeleteWorktreeDialog from './components/dialogs/DeleteWorktreeDialog.svelte';
@@ -119,6 +122,7 @@
 
   let keyboardOpen = $state(false);
   let spotlightOpen = $state(false);
+  let pickerOpen = $state(false);
 
   onMount(() => {
     initAnalytics(() => sessionState.activeSessionId);
@@ -304,8 +308,24 @@
           return;
         }
 
-        const tag = (document.activeElement as HTMLElement | null)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
+        const isInInput = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || !!(document.activeElement as HTMLElement)?.isContentEditable;
+
+        // / — open picker (not from inputs)
+        if (e.key === '/' && !mod && !isInInput) {
+          e.preventDefault();
+          pickerOpen = true;
+          return;
+        }
+
+        // Cmd/Ctrl+K — open picker (works from input fields)
+        if (mod && e.key === 'k') {
+          e.preventDefault();
+          pickerOpen = !pickerOpen;
+          return;
+        }
+
+        if (isInInput) return;
 
         if (!e.shiftKey && e.key >= '1' && e.key <= '9') {
           const sessions = workspaceSessions;
@@ -423,18 +443,6 @@
           navigateToSession(sessionParam, 'repo');
         }
 
-        const viewParam = params.get('view');
-        if (viewParam === 'diff') {
-          const diffPath = params.get('path');
-          if (diffPath) {
-            ui.fullPageDiff = {
-              workspacePath: diffPath,
-              file: params.get('file') ?? undefined,
-              base: params.get('base') ?? undefined,
-            };
-          }
-        }
-
         // Auto-select if exactly one session exists and none is selected
         if (!sessionState.activeSessionId && !sessionParam && sessionState.sessions.length === 1) {
           handleSelectSession(sessionState.sessions[0]!.id);
@@ -480,9 +488,11 @@
       if (msg.type === 'worktrees-changed') {
         refreshAll();
       } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
-        handleBackendStateChanged(msg.sessionId, msg.state as import('./lib/state/display-state.js').BackendDisplayState);
+        handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
       } else if (msg.type === 'session-renamed' && msg.sessionId) {
         renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
+      } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
+        handleBranchChanged(msg.sessionId, msg.branch ?? '');
       } else if (msg.type === 'session-ended') {
         invalidatePrQueries();
         refreshAll();
@@ -565,11 +575,16 @@
   // Handlers
   function handleSelectWorkspace(path: string) {
     if (ui.activeRepoPath === path) {
-      // Already viewing this workspace — return to dashboard
-      sessionState.activeSessionId = null;
+      // Already viewing this workspace — toggle between session and dashboard
+      if (sessionState.activeSessionId) {
+        sessionState.activeSessionId = null;
+      } else {
+        const recalled = recallSessionForWorkspace(path);
+        if (recalled) sessionState.activeSessionId = recalled;
+      }
     } else {
       ui.activeRepoPath = path;
-      sessionState.activeSessionId = null;
+      sessionState.activeSessionId = recallSessionForWorkspace(path);
     }
     closeSidebar();
   }
@@ -578,6 +593,7 @@
     sessionState.activeSessionId = id;
     const session = sessionState.sessions.find(s => s.id === id);
     if (session) {
+      rememberSessionForWorkspace(session.repoPath, id);
       ui.activeRepoPath = session.repoPath;
     }
     handleUserViewed(id);
@@ -682,6 +698,32 @@
     }
   }
 
+  async function handleLaunchWorkspaceSession(workspaceId: string) {
+    const loadingKey = `ws-launch:${workspaceId}`;
+    if (isItemLoading(loadingKey)) return;
+    setLoading(loadingKey);
+    try {
+      const result = await launchWorkspaceSession(workspaceId);
+      await refreshAll();
+      sessionState.activeSessionId = result.id;
+      ui.activeRepoPath = result.repoPath;
+      ui.activeWorkspaceId = workspaceId;
+      closeSidebar();
+
+      if (result.warnings?.length) {
+        const msgs = result.warnings.map(w => `  ${w.repoPath}: ${w.error}`).join('\n');
+        console.warn('[workspace-session] partial failure:', result.warnings);
+        alert(`workspace launched with warnings:\n${msgs}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error';
+      console.error('[workspace-session] launch failed:', err);
+      alert(`workspace launch failed: ${message}`);
+    } finally {
+      clearLoading(loadingKey);
+    }
+  }
+
   async function handleFixConflicts(pr: PullRequest) {
     if (!activeWorkspace) return;
 
@@ -777,6 +819,7 @@
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
 
+      // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
       if (prompt) {
         setTimeout(() => {
           sendPtyData(prompt + '\r');
@@ -787,18 +830,104 @@
     }
   }
 
+  async function handlePickerIntent(intent: SessionIntent, item: PickerItem) {
+    switch (intent.type) {
+      case 'resume-session': {
+        if (intent.existingSessionId) {
+          navigateToSession(intent.existingSessionId, 'agent');
+        } else {
+          console.warn('resume-session intent missing existingSessionId');
+        }
+        break;
+      }
+      case 'fix-conflicts': {
+        if (item.kind === 'pr') {
+          handleFixConflicts(item.pr);
+        }
+        break;
+      }
+      case 'review-pr':
+      case 'fix-errors':
+      case 'resolve-comments':
+      case 'create-pr': {
+        if (item.kind === 'pr') {
+          handleOpenPrBranch(item.pr, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'merge-pr': {
+        if (item.kind === 'pr') {
+          window.open(item.pr.url, '_blank');
+        }
+        break;
+      }
+      case 'open-branch': {
+        if (item.kind === 'branch') {
+          await handleOpenBranchSession(item.name, item.repoPath, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'start-from-issue': {
+        if (item.kind === 'issue') {
+          const branchName = issueToBranchName(item.issue);
+          await handleOpenBranchSession(branchName, item.issue.repoPath, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'archive': {
+        // TODO: wire to archive flow with confirmation UX
+        if (intent.existingSessionId) {
+          sessionState.activeSessionId = intent.existingSessionId;
+          await handleArchive();
+        }
+        break;
+      }
+    }
+  }
+
+  async function handleOpenBranchSession(branchName: string, repoPath: string, prompt?: string) {
+    try {
+      const existingSession = sessionState.sessions.find(s => s.branchName === branchName && s.repoPath === repoPath);
+      const existingWorktree = sessionState.worktrees.find(w => w.branchName === branchName && w.repoPath === repoPath);
+
+      let worktreePath: string | null;
+      let resolvedBranch: string;
+
+      if (existingSession) {
+        worktreePath = existingSession.worktreePath;
+        resolvedBranch = existingSession.branchName;
+      } else if (existingWorktree) {
+        worktreePath = existingWorktree.path;
+        resolvedBranch = existingWorktree.branchName;
+      } else {
+        const wt = await createWorktree(repoPath, branchName);
+        worktreePath = wt.worktreePath;
+        resolvedBranch = wt.branchName;
+      }
+
+      const session = await createSession({
+        repoPath,
+        worktreePath,
+        type: 'agent',
+        branchName: resolvedBranch,
+      });
+      await refreshAll();
+      sessionState.activeSessionId = session.id;
+      ui.activeRepoPath = repoPath;
+      initSessionNotification(session.id, configState.defaultNotifications);
+      closeSidebar();
+
+      // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
+      if (prompt) {
+        setTimeout(() => sendPtyData(prompt + '\r'), 1500);
+      }
+    } catch (e) {
+      console.error('Failed to open branch session:', e);
+    }
+  }
+
   function handlePrAction(pr: PullRequest) {
-    const prState = pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    const action = derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: 0,
-      ciFailing: 0,
-      ciPending: 0,
-      ciTotal: 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: 0,
-    });
+    const action = derivePrAction(buildPrStateInput(pr));
     const prompt = getActionPrompt(action, {
       branchName: pr.headRefName,
       baseBranch: pr.baseRefName,
@@ -859,12 +988,6 @@
   function handleRefocusMobileInput() { terminalRef?.focusTerm(); }
   function handleCopyModeChange(active: boolean) { copyModeActive = active; }
   function handleExitCopyMode() { terminalRef?.exitCopyMode(); }
-
-  function handleExpandFile(file: ChangedFile, base: string | undefined) {
-    const workspacePath = activeSession?.cwd ?? activeSession?.repoPath ?? '';
-    if (!workspacePath) return;
-    ui.fullPageDiff = { workspacePath, file: file.path, base };
-  }
 
   let addWorkspaceDialogRef = $state<AddWorkspaceDialog | undefined>();
 
@@ -934,6 +1057,7 @@
       onAddWorkspace={handleAddWorkspace}
       onDeleteSession={handleCloseSession}
       onDeleteWorktree={handleDeleteWorktree}
+      onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
     />
 
     <div class="terminal-area">
@@ -954,7 +1078,7 @@
 
       {:else if viewMode === 'org'}
         <OrgDashboard
-          onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; }}
+          onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = recallSessionForWorkspace(path); }}
           onOpenSession={(id) => { sessionState.activeSessionId = id; }}
         />
 
@@ -1000,7 +1124,6 @@
         <ChangedFiles
           bind:this={changedFilesRef}
           workspacePath={activeSession?.cwd ?? activeSession?.repoPath ?? ''}
-          onExpandFile={handleExpandFile}
         />
 
         <Toolbar
@@ -1053,10 +1176,20 @@
     sessions={sessionState.sessions}
     {actionContext}
     onClose={() => { spotlightOpen = false; }}
-    onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; closeSidebar(); }}
+    onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = recallSessionForWorkspace(path); closeSidebar(); }}
     onSelectSession={(id) => handleSelectSession(id)}
     onSelectPr={handlePaletteSelectPr}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}
+  />
+
+  <!-- Open Picker (/ or Cmd+K) -->
+  <OpenPicker
+    open={pickerOpen}
+    repoPath={ui.activeRepoPath ?? ''}
+    sessions={sessionState.sessions}
+    worktrees={sessionState.worktrees}
+    onClose={() => pickerOpen = false}
+    onSelectIntent={handlePickerIntent}
   />
 
   <!-- Toasts -->
@@ -1101,12 +1234,5 @@
     .terminal-area {
       width: 100%;
     }
-  }
-
-  .full-page-diff-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    background: var(--bg, #000);
   }
 </style>

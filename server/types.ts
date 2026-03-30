@@ -2,7 +2,7 @@ import type { IPty } from 'node-pty';
 import type { OutputParser } from './output-parsers/index.js';
 
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
-export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission';
+export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission' | 'error';
 
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = 'claude' | 'codex';
@@ -46,6 +46,8 @@ interface BaseSession {
   status: SessionStatus;
   needsBranchRename: boolean;
   agentState: AgentState;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface PtySession extends BaseSession {
@@ -64,6 +66,7 @@ export interface PtySession extends BaseSession {
   cleanedUp: boolean;
   _lastHookTime?: number | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
+  _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
   lastAttentionNotifiedAt?: number | undefined;
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
@@ -95,6 +98,8 @@ export interface SessionSummary {
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface WorktreeMetadata {

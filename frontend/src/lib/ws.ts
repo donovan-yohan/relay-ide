@@ -1,12 +1,13 @@
 import type { Terminal } from '@xterm/xterm';
-
+import type { BackendDisplayState } from './state/display-state.js';
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 interface EventMessage {
   type: string;
   sessionId?: string;
   idle?: boolean;
-  state?: string;
+  state?: BackendDisplayState;
+  permissionType?: 'approval' | 'question';
   branchName?: string;
   displayName?: string;
   cwd?: string;

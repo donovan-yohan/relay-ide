@@ -9,8 +9,10 @@
     DEFAULT_SIDEBAR_WIDTH,
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
-  import { getSessionState, getSessionsForRepo, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
-  import type { Repo, WorktreeInfo, OrgPrsResponse } from '../lib/types.js';
+  import { getSessionState, getSessionsForRepo, getSessionsForWorkspaceGroup, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
+  import { workspaceAttentionScore } from '../lib/state/attention.js';
+  import type { Repo, WorktreeInfo, OrgPrsResponse, Workspace } from '../lib/types.js';
+  import WorkspaceGroup from './WorkspaceGroup.svelte';
   import { fetchOrgPrs } from '../lib/api.js';
   import { createQuery } from '@tanstack/svelte-query';
   import { dndzone } from 'svelte-dnd-action';
@@ -27,6 +29,7 @@
     onAddWorkspace,
     onDeleteSession,
     onDeleteWorktree,
+    onLaunchWorkspaceSession,
   }: {
     onSelectSession: (id: string) => void;
     onOpenSettings: (workspace?: Repo) => void;
@@ -34,6 +37,7 @@
     onAddWorkspace: () => void;
     onDeleteSession?: (id: string) => void;
     onDeleteWorktree?: (wt: WorktreeInfo) => void;
+    onLaunchWorkspaceSession?: (workspaceId: string) => void;
   } = $props();
 
   let effectiveWidth = $derived(
@@ -79,6 +83,12 @@
     saveSidebarWidth();
   }
 
+  // Workspace groups + ungrouped repos
+  let workspaceGroups = $derived(sessionState.workspaceGroups);
+  let groupedRepoPaths = $derived(new Set(workspaceGroups.flatMap((ws: Workspace) => ws.repos)));
+  let ungroupedRepos = $derived(sessionState.repos.filter(r => !groupedRepoPaths.has(r.path)));
+  let reposByPath = $derived(new Map(sessionState.repos.map(r => [r.path, r])));
+
   // ── Drag-and-drop reorder ──
   const flipDurationMs = 200;
 
@@ -87,9 +97,29 @@
   let mobileDragEnabled = $state(false);
   let dragDisabled = $derived(isTouchDevice && !mobileDragEnabled);
 
+  // Track whether user has manually reordered in this session
+  let userHasDragged = $state(false);
+
+  // Pre-compute sidebar items grouped by repo for O(1) lookup in sort
+  let itemsByRepo = $derived(new Map(
+    sessionState.repos.map(r => [
+      r.path,
+      sessionState.sidebarItems.filter(i => i.repoPath === r.path),
+    ])
+  ));
+
+  // Attention-sorted ungrouped workspace list
+  let attentionSortedUngrouped = $derived(
+    [...ungroupedRepos].sort((a, b) => {
+      return workspaceAttentionScore(itemsByRepo.get(b.path) ?? [])
+        - workspaceAttentionScore(itemsByRepo.get(a.path) ?? []);
+    })
+  );
+
   // svelte-dnd-action requires items with `id` property
   let dndItems = $derived(
-    sessionState.repos.map(w => ({ id: w.path, workspace: w }))
+    (userHasDragged ? ungroupedRepos : attentionSortedUngrouped)
+      .map(w => ({ id: w.path, workspace: w }))
   );
 
   // Local mutable copy for DnD updates
@@ -102,8 +132,12 @@
 
   function handleDndFinalize(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
-    const newOrder = localDndItems.map(item => item.id);
-    reorderWorkspaces(newOrder);
+    userHasDragged = true;
+    // Server requires the full set of repo paths (grouped + ungrouped).
+    // Keep grouped repos in their current order, then append the new ungrouped order.
+    const groupedPaths = sessionState.repos.filter(r => groupedRepoPaths.has(r.path)).map(r => r.path);
+    const newUngroupedOrder = localDndItems.map(item => item.id);
+    reorderWorkspaces([...groupedPaths, ...newUngroupedOrder]);
     mobileDragEnabled = false;
   }
 
@@ -169,57 +203,96 @@
 
   {#if !ui.sidebarCollapsed}
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="workspace-list"
-      use:dndzone={{ items: localDndItems, flipDurationMs, type: 'workspaces', dropTargetStyle: {}, dragDisabled }}
-      onconsider={handleDndConsider}
-      onfinalize={handleDndFinalize}
-      ontouchstart={handleTouchStart}
-      ontouchend={cancelTouch}
-      ontouchmove={cancelTouch}
-      ontouchcancel={cancelTouch}
-    >
-      {#each localDndItems as item (item.id)}
-        {@const workspace = item.workspace}
-        {@const activeSessions = getSessionsForRepo(workspace.path)}
-        {@const activeWorktreePaths = new Set(activeSessions.map(s => s.worktreePath).filter(Boolean) as string[])}
-        {@const inactiveWorktrees = sessionState.worktrees.filter(wt =>
-          wt.repoPath === workspace.path &&
-          wt.path.startsWith(workspace.path + '/') &&
-          !activeWorktreePaths.has(wt.path)
+    <div class="workspace-list">
+      <!-- Workspace groups -->
+      {#each workspaceGroups.toSorted((a, b) => a.order - b.order) as ws (ws.id)}
+        {@const wsRepos = ws.repos.map((p: string) => reposByPath.get(p)).filter((r): r is import('../lib/types.js').Repo => r !== undefined)}
+        {@const wsSessions = getSessionsForWorkspaceGroup(ws.id)}
+        {@const wsWorktrees = sessionState.worktrees.filter(wt =>
+          ws.repos.includes(wt.repoPath)
         )}
-        {@const groupedByPath = (() => {
-          const groups = new Map<string, typeof activeSessions>();
-          groups.set(workspace.path, []);
-          for (const s of activeSessions) {
-            const groupKey = s.worktreePath ?? s.repoPath;
-            const existing = groups.get(groupKey);
-            if (existing) existing.push(s);
-            else groups.set(groupKey, [s]);
-          }
-          return groups;
-        })()}
-        <div>
-          <WorkspaceItem
-            {workspace}
-            sessionGroups={groupedByPath}
-            {inactiveWorktrees}
-            isActive={ui.activeRepoPath === workspace.path && !sessionState.activeSessionId}
-            onSelectWorkspace={handleSelectWorkspace}
-            {onSelectSession}
-            onNewWorktree={onNewWorktree}
-            {onOpenSettings}
-            onDeleteSession={(id) => onDeleteSession?.(id)}
-            onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
-            {orgPrs}
-          />
-        </div>
+        <WorkspaceGroup
+          workspace={ws}
+          repos={wsRepos}
+          sessions={wsSessions}
+          worktrees={wsWorktrees}
+          activeRepoPath={ui.activeRepoPath}
+          activeSessionId={sessionState.activeSessionId}
+          onLaunchSession={(id) => onLaunchWorkspaceSession?.(id)}
+          {onSelectSession}
+          onSelectWorkspace={handleSelectWorkspace}
+          {onNewWorktree}
+          {onOpenSettings}
+          onDeleteSession={(id) => onDeleteSession?.(id)}
+          onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
+          {orgPrs}
+        />
       {/each}
 
+      <!-- Ungrouped section -->
+      {#if ungroupedRepos.length > 0}
+        {#if workspaceGroups.length > 0}
+          <div class="ungrouped-label">ungrouped</div>
+        {/if}
+
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="ungrouped-list"
+          use:dndzone={{ items: localDndItems, flipDurationMs, type: 'workspaces', dropTargetStyle: {}, dragDisabled }}
+          onconsider={handleDndConsider}
+          onfinalize={handleDndFinalize}
+          ontouchstart={handleTouchStart}
+          ontouchend={cancelTouch}
+          ontouchmove={cancelTouch}
+          ontouchcancel={cancelTouch}
+        >
+          {#each localDndItems as item (item.id)}
+            {@const workspace = item.workspace}
+            {@const activeSessions = getSessionsForRepo(workspace.path)}
+            {@const activeWorktreePaths = new Set(activeSessions.map(s => s.worktreePath).filter(Boolean) as string[])}
+            {@const inactiveWorktrees = sessionState.worktrees.filter(wt =>
+              wt.repoPath === workspace.path &&
+              wt.path.startsWith(workspace.path + '/') &&
+              !activeWorktreePaths.has(wt.path)
+            )}
+            {@const groupedByPath = (() => {
+              const groups = new Map<string, typeof activeSessions>();
+              groups.set(workspace.path, []);
+              for (const s of activeSessions) {
+                const groupKey = s.worktreePath ?? s.repoPath;
+                const existing = groups.get(groupKey);
+                if (existing) existing.push(s);
+                else groups.set(groupKey, [s]);
+              }
+              return groups;
+            })()}
+            <div>
+              <WorkspaceItem
+                {workspace}
+                sessionGroups={groupedByPath}
+                {inactiveWorktrees}
+                isActive={ui.activeRepoPath === workspace.path && !sessionState.activeSessionId}
+                onSelectWorkspace={handleSelectWorkspace}
+                {onSelectSession}
+                onNewWorktree={onNewWorktree}
+                {onOpenSettings}
+                onDeleteSession={(id) => onDeleteSession?.(id)}
+                onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
+                {orgPrs}
+              />
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Empty states -->
       {#if sessionState.repos.length === 0}
         <div class="empty-state">
-          <span>No workspaces</span>
+          <span>no workspaces</span>
+        </div>
+      {:else if workspaceGroups.length === 0 && ungroupedRepos.length > 0}
+        <div class="empty-workspace-hint">
+          <span>no workspaces yet</span>
         </div>
       {/if}
     </div>
@@ -348,6 +421,28 @@
 
   .empty-state {
     padding: 16px 12px;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    opacity: 0.5;
+    text-align: center;
+  }
+
+  .ungrouped-label {
+    padding: 8px 12px 4px;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    text-transform: lowercase;
+  }
+
+  .ungrouped-list {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .empty-workspace-hint {
+    padding: 12px 12px;
     font-size: var(--font-size-xs);
     font-family: var(--font-mono);
     color: var(--text-muted);
