@@ -91,3 +91,18 @@ describe('GET /workspaces/file-diff', () => {
     assert.equal(res.status, 400);
   });
 });
+
+describe('GET /workspaces/default-branch', () => {
+  test('returns default branch for a workspace', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/default-branch?path=${encodeURIComponent(repoDir)}`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(typeof data.branch, 'string');
+    assert.ok(data.branch.length > 0);
+  });
+
+  test('returns 400 without path parameter', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/default-branch`);
+    assert.equal(res.status, 400);
+  });
+});

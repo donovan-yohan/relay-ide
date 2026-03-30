@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getChangedFiles, getFileDiff } from '../server/git.js';
+import { getChangedFiles, getFileDiff, getDefaultBranch } from '../server/git.js';
 
 describe('getChangedFiles', () => {
   it('parses working tree changes from git status + numstat', async () => {
@@ -121,5 +121,42 @@ describe('getFileDiff', () => {
       }),
       { message: 'git failed' },
     );
+  });
+});
+
+describe('getDefaultBranch', () => {
+  it('returns default branch from symbolic-ref', async () => {
+    const branch = await getDefaultBranch('/tmp/repo', async (_file, args) => {
+      if (args[0] === 'symbolic-ref') {
+        return { stdout: 'refs/remotes/origin/main\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    assert.equal(branch, 'main');
+  });
+
+  it('falls back to checking rev-parse for main then master', async () => {
+    const branch = await getDefaultBranch('/tmp/repo', async (_file, args) => {
+      if (args[0] === 'symbolic-ref') {
+        throw new Error('not set');
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        if (args[2] === 'refs/heads/main') {
+          throw new Error('not found');
+        }
+        if (args[2] === 'refs/heads/master') {
+          return { stdout: 'abc123\n', stderr: '' };
+        }
+      }
+      return { stdout: '', stderr: '' };
+    });
+    assert.equal(branch, 'master');
+  });
+
+  it('returns "main" as ultimate fallback', async () => {
+    const branch = await getDefaultBranch('/tmp/repo', async () => {
+      throw new Error('everything fails');
+    });
+    assert.equal(branch, 'main');
   });
 });

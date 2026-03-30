@@ -45,6 +45,7 @@
   interface SideBySidePair {
     left: SbsHalfLeft;
     right: SbsHalfRight;
+    hunkHeader?: string | undefined;
   }
 
   interface ParsedDiff {
@@ -84,10 +85,19 @@
     return { rawLines, hunkHeaderMap, lang };
   });
 
-  function buildPairs(hlines: HighlightedLine[]): SideBySidePair[] {
+  function buildPairs(hlines: HighlightedLine[], hunkHeaders?: Map<number, string>): SideBySidePair[] {
     const pairs: SideBySidePair[] = [];
     let i = 0;
     while (i < hlines.length) {
+      // Emit hunk header before this line if one exists at this index
+      const header = hunkHeaders?.get(i);
+      if (header) {
+        pairs.push({
+          left: { content: '', type: 'empty', tokens: null },
+          right: { content: '', type: 'empty', tokens: null },
+          hunkHeader: header,
+        });
+      }
       const line = hlines[i]!;
       if (line.type === 'context') {
         pairs.push({
@@ -136,7 +146,7 @@
     // Immediately render without syntax highlighting
     const plain = rawLines.map(l => ({ ...l, tokens: null as ThemedToken[] | null }));
     lines = plain;
-    pairedLines = buildPairs(plain);
+    pairedLines = buildPairs(plain, hunkHeaderMap);
 
     if (onHunkCount) onHunkCount(hunkHeaderMap.size);
     if (rawLines.length === 0) return;
@@ -150,7 +160,7 @@
         tokens: tokenLines[i] ?? null,
       }));
       lines = highlighted;
-      pairedLines = buildPairs(highlighted);
+      pairedLines = buildPairs(highlighted, hunkHeaderMap);
     }).catch((err: unknown) => {
       console.warn('[DiffViewer] Shiki tokenization failed:', err);
     });
@@ -165,6 +175,9 @@
   {:else if mode === 'side-by-side'}
     <div class="diff-content-sbs">
       {#each pairedLines as pair, i (i)}
+        {#if pair.hunkHeader}
+          <div class="hunk-header sbs-hunk" id="sbs-hunk-{i}">{pair.hunkHeader}</div>
+        {/if}
         <div class="sbs-row">
           <div class="sbs-half {pair.left.type}">
             <span class="line-number">{pair.left.number ?? ''}</span>

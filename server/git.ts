@@ -901,6 +901,33 @@ async function getFileDiff(
   return stdout;
 }
 
+async function getDefaultBranch(
+  repoPath: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<string> {
+  // Try symbolic-ref first (most repos have this set)
+  try {
+    const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: repoPath, timeout: 5000 });
+    const ref = stdout.trim();
+    const prefix = 'refs/remotes/origin/';
+    if (ref.startsWith(prefix)) return ref.slice(prefix.length);
+  } catch {
+    // Not set — fall through to heuristic
+  }
+
+  // Check if main or master exists locally
+  for (const candidate of ['main', 'master']) {
+    try {
+      await exec('git', ['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd: repoPath, timeout: 5000 });
+      return candidate;
+    } catch {
+      // Not found — try next
+    }
+  }
+
+  return 'main'; // ultimate fallback
+}
+
 const ONE_DAY_MS = 86_400_000;
 
 /** A PR is stale if it's MERGED or CLOSED and was last updated more than 1 day ago (or has no valid timestamp). */
@@ -1034,6 +1061,7 @@ export {
   pushBranch,
   getChangedFiles,
   getFileDiff,
+  getDefaultBranch,
   ensureBranchLocal,
   isPrMerged,
   computeBranchLifecycleState,
