@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, mock } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseShortcut, matchesShortcut, formatShortcut } from '../../frontend/src/lib/actions/shortcuts.js';
 
