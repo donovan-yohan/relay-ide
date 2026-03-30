@@ -6,6 +6,7 @@ Execution plans for active and completed work.
 
 | Plan | Created | Topic |
 |------|---------|-------|
+| `sidebar-ux-redesign` | 2026-03-29 | Three-axis indicators, attention scoring, real-time branch updates, read/unread tracking. **Phase 2 deferred:** needs-eyes rail, workspace pinning, PR comment badges, mobile legend, TuiTooltip — see exec plan's Deferred section |
 | `true-workspaces-phase1` | 2026-03-28 | Rename workspacePath→repoPath, config v4 migration, workspace entity CRUD |
 | `bg-pin-setup-blocked` | 2026-03-28 | Fix --bg first-run crash loop: remove non-TTY exit, trust web-based PIN setup flow |
 
@@ -19,7 +20,9 @@ Execution plans for active and completed work.
 
 ## Tech Debt
 
-No tech debt tracked yet.
+| Item | File | Description |
+|------|------|-------------|
+| EventMessage discriminated union | `frontend/src/lib/ws.ts` | Refactor `EventMessage` from bag-of-optionals to a discriminated union keyed on `type`. Currently all fields except `type` are optional and `type` is `string` — `branch` and `branchName` coexist for different events. A union would give compile-time narrowing and catch missing fields on new event types. |
 
 ## Completed Plans
 

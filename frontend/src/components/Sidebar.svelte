@@ -10,6 +10,7 @@
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
   import { getSessionState, getSessionsForRepo, getSessionsForWorkspaceGroup, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
+  import { workspaceAttentionScore } from '../lib/state/attention.js';
   import type { Repo, WorktreeInfo, OrgPrsResponse, Workspace } from '../lib/types.js';
   import WorkspaceGroup from './WorkspaceGroup.svelte';
   import { fetchOrgPrs } from '../lib/api.js';
@@ -96,9 +97,29 @@
   let mobileDragEnabled = $state(false);
   let dragDisabled = $derived(isTouchDevice && !mobileDragEnabled);
 
+  // Track whether user has manually reordered in this session
+  let userHasDragged = $state(false);
+
+  // Pre-compute sidebar items grouped by repo for O(1) lookup in sort
+  let itemsByRepo = $derived(new Map(
+    sessionState.repos.map(r => [
+      r.path,
+      sessionState.sidebarItems.filter(i => i.repoPath === r.path),
+    ])
+  ));
+
+  // Attention-sorted ungrouped workspace list
+  let attentionSortedUngrouped = $derived(
+    [...ungroupedRepos].sort((a, b) => {
+      return workspaceAttentionScore(itemsByRepo.get(b.path) ?? [])
+        - workspaceAttentionScore(itemsByRepo.get(a.path) ?? []);
+    })
+  );
+
   // svelte-dnd-action requires items with `id` property
   let dndItems = $derived(
-    ungroupedRepos.map(w => ({ id: w.path, workspace: w }))
+    (userHasDragged ? ungroupedRepos : attentionSortedUngrouped)
+      .map(w => ({ id: w.path, workspace: w }))
   );
 
   // Local mutable copy for DnD updates
@@ -111,6 +132,7 @@
 
   function handleDndFinalize(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
+    userHasDragged = true;
     // Server requires the full set of repo paths (grouped + ungrouped).
     // Keep grouped repos in their current order, then append the new ungrouped order.
     const groupedPaths = sessionState.repos.filter(r => groupedRepoPaths.has(r.path)).map(r => r.path);
