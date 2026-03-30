@@ -225,6 +225,8 @@ function list(): SessionSummary[] {
       needsBranchRename: !!s.needsBranchRename,
       agentState: s.agentState,
       currentActivity: s.currentActivity,
+      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+      ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
