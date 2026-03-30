@@ -381,3 +381,23 @@ When process A (server) spawns process B (Claude Code in tmux) with credentials 
 When a server serializes a session's authentication token (e.g., hookToken) and restores it on restart, the token alone is not enough. If the spawned process reads its credentials from a config file on disk (e.g., Claude Code's `--settings` hooks-settings.json in `/tmp/`), that file may have been cleaned up by the OS between restarts. The restore path must distinguish two scenarios: (1) surviving process (e.g., tmux attach) — the old process already has the file path and the file likely still exists, no re-creation needed; (2) dead process being respawned — the new process needs the config file re-written to disk AND the `--settings` arg injected into its spawn args. Gating the file-write block on "token already exists" silently skips file creation for case (2), leaving the new process without its configuration. When preserving credentials across restarts, always ask: "does the consumer need a file on disk, or just an in-memory token?"
 
 ---
+
+### L-20260329-nullish-override-shadow: Never pass global defaults as explicit overrides when a server-side merge cascade exists — `false ?? true` evaluates to `false`
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server function uses nullish coalescing (`??`) to merge settings from multiple layers (global < workspace < repo < per-request), an explicit `false` passed as a per-request override shadows a `true` from a lower layer — because `false ?? true` is `false`. Frontend quick-launch functions should omit fields they don't have explicit user input for (send `undefined`, not the global default) so the server's cascade resolves correctly. The pattern "read global state, pass it as override" defeats the entire purpose of per-repo settings. When calling an API that resolves settings from a cascade, only include fields where the user made an explicit choice.
+
+---
+
+### L-20260329-settings-resolution-boundary: Session settings resolution should happen at one layer — don't pre-resolve on the frontend what the server already resolves
+- status: active
+- category: patterns
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server has a canonical settings resolution function (e.g., `resolveSessionSettings()` that merges global → workspace → repo → override), the frontend should not duplicate this logic by pre-filling overrides from its own partial view of the settings. The frontend's `configState` only has global defaults — it cannot see repo-level overrides. Sending global defaults as explicit overrides creates a shadow that the server's merge cascade cannot penetrate. Either (a) omit the fields and let the server resolve, or (b) fetch the merged settings from the server before populating UI defaults. The `fetchMergedWorkspaceSettings()` API exists for case (b).
+
+---

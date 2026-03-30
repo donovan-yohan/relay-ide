@@ -373,7 +373,7 @@
     padding: 0 8px;
     gap: 0;
     flex-shrink: 0;
-    overflow: hidden;
+    overflow: visible;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
   }

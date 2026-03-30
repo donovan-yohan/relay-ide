@@ -573,6 +573,23 @@ export async function deleteWorkspaceGroup(id: string): Promise<void> {
   if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to delete workspace'));
 }
 
+export async function launchWorkspaceSession(workspaceId: string, opts?: {
+  agent?: string;
+  yolo?: boolean;
+  useTmux?: boolean;
+  claudeArgs?: string[];
+  cols?: number;
+  rows?: number;
+}): Promise<SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }> {
+  const res = await fetch(`/workspace-groups/${workspaceId}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  });
+  if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to launch workspace session'));
+  return res.json() as Promise<SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }>;
+}
+
 export async function fetchChangedFiles(repoPath: string, base?: string): Promise<ChangedFilesResponse> {
   const params = new URLSearchParams({ path: repoPath });
   if (base) params.set('base', base);

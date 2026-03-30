@@ -113,16 +113,7 @@
             title="Open session on this branch"
             onclick={() => onOpenPrSession(pr)}
           >+</button>
-          {#if pr.mergeable === 'CONFLICTING'}
-            <TuiButton
-              variant="danger"
-              size="sm"
-              title="Open worktree and fix merge conflicts"
-              onclick={() => onFixConflicts(pr)}
-            >
-              Fix Conflicts
-            </TuiButton>
-          {:else if pr.mergeable === 'MERGEABLE' && pr.state === 'OPEN'}
+          {#if action.type === 'merge-pr'}
             <TuiButton
               variant="success"
               size="sm"
@@ -131,13 +122,14 @@
               rel="noopener noreferrer"
               title="Ready to merge on GitHub"
             >
-              Merge
+              {action.label}
             </TuiButton>
           {:else if action.type !== 'none' && action.label}
             <TuiButton
-              variant={action.color === 'success' ? 'success' : action.color === 'error' ? 'danger' : action.color === 'accent' ? 'primary' : 'ghost'}
+              variant={action.color === 'success' ? 'success' : action.color === 'error' ? 'danger' : action.color === 'info' ? 'info' : action.color === 'accent' ? 'primary' : 'ghost'}
               size="sm"
               title={action.label}
+              disabled={action.type === 'checks-running'}
               onclick={() => onPrAction(pr)}
             >
               {action.label}

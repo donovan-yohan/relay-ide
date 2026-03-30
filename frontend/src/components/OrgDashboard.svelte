@@ -77,7 +77,13 @@
 
   // --- Helpers ---
   function prActionForRow(pr: PullRequest) {
-    return derivePrAction(buildPrStateInput(pr));
+    const action = derivePrAction(buildPrStateInput(pr));
+    // Org dashboard buttons navigate to the workspace, not perform the action directly.
+    // Map merge/archive to neutral "Open" label to avoid misleading CTA.
+    if (action.type === 'merge-pr' || action.type === 'archive-merged' || action.type === 'archive-closed') {
+      return { ...action, label: 'Open' };
+    }
+    return action;
   }
 
   function prRoleLabel(pr: PullRequest): string {

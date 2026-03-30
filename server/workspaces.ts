@@ -19,6 +19,7 @@ const execFileAsync = promisify(execFile);
 
 /** Extract repo name from a git remote URL (SSH or HTTPS). */
 export function repoNameFromRemoteUrl(url: string): string | undefined {
+  // Strip trailing slash before splitting so pop() gets the last real segment
   const name = url.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '');
   return name || undefined;
 }
@@ -178,8 +179,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
-        let name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
+
+        let name = path.basename(p);
+
 
         if (isGitRepo) {
           try {
