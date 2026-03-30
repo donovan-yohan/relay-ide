@@ -1578,13 +1578,28 @@ Task 5 (SessionIndicator) → Task 9 (Summary pips) — pips use same shape lang
 
 ## Outcomes & Retrospective
 
-_Filled by /harness:complete when work is done._
-
 **What worked:**
--
+- Pure logic / reactive wrapper split (unread-logic.ts, attention.ts) made node:test testing straightforward
+- Shape language with text characters (not SVG) kept implementation simple and accessible
+- Color-alpha pulse instead of opacity pulse was the right call — no tooltip fade issues
 
 **What didn't:**
--
+- Previous agent left Task 4 uncommitted with collapsed newlines — formatting issues from automated editing
+- `backend-state.test.ts` had a stale assertion from Task 1's error state addition — should have been caught in Task 1's commit
 
 **Learnings to codify:**
--
+- When adding a new BackendDisplayState variant, grep for all test files asserting on the old behavior
+
+## Deferred / Phase 2
+
+Items explicitly deferred from this plan, with pointers for future pickup:
+
+| Item | Design Doc Section | Why Deferred |
+|------|-------------------|--------------|
+| **Needs-eyes rail** — ephemeral inbox at sidebar top promoting urgent items | Cross-Model Perspective (line 52), Approaches Considered (line 338) | Need real usage data from attentionScore before designing the rail UI |
+| **Drag-and-drop workspace pinning** — persistent pin order | Attention Score & Sorting (line 254) | Requires new interaction model, persistence, and state beyond Phase 1 scope |
+| **PR comment count badge** — `[3]` badge on PRs with unread comments | Axis 3: PR Status (line 135), Reviewer Concerns (line 415) | Needs investigation: do existing GitHub webhooks provide comment data, or new polling needed? |
+| **Mobile `?` legend overlay** — sidebar footer icon explaining indicator shapes | Responsive & Accessibility (line 397) | Not blocking — shapes are accessible without legend, but good discoverability improvement |
+| **TuiTooltip for indicators** — custom tooltips instead of native `title` | Discoverability (line 143) | No TuiTooltip component exists yet; native `title` used as fallback |
+| **Sidebar header redesign** — collapse to `« relay` | Constraints (line 31), Item 6 (line 308) | Deferred to Phase 3 spotlight design doc |
+| **Worktree HEAD path verification** — confirm BranchWatcher handles worktree `.git` files | Reviewer Concerns (line 410) | Flagged but not explicitly verified during execution |

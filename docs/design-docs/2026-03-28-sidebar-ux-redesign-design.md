@@ -382,6 +382,18 @@ Implementation order (dependencies flow downward):
 
 Items 1-3 are independent quick fixes. Items 4-7 build on each other and should ship as a unit. Item 8 depends on item 4.
 
+## Deferred to Phase 2
+
+These items were explicitly scoped out of the Phase 1 implementation. See the exec plan (`docs/exec-plans/active/2026-03-29-sidebar-ux-redesign.md`) for implementation notes.
+
+1. **Needs-eyes rail** — ephemeral inbox at sidebar top that promotes items crossing an attention threshold, then decays them back. Blocked on real usage data from attentionScore to inform the rail's threshold and decay behavior. See: Cross-Model Perspective (above), Approaches Considered → Approach B.
+2. **Drag-and-drop workspace pinning** — users pin workspace order; pinned workspaces hold position while unpinned sort by attention. Requires new interaction model and persistence. See: Attention Score & Sorting section.
+3. **PR comment count badge** — `[3]` badge on PRs with unread comments. Needs investigation: do existing GitHub webhooks provide comment data, or does this require new polling? See: Axis 3 (PR Status), Reviewer Concerns.
+4. **Mobile `?` legend overlay** — sidebar footer icon toggling a legend explaining indicator shapes. See: Responsive & Accessibility → Mobile.
+5. **TuiTooltip for all indicators** — design specifies custom TuiTooltip on every indicator. Phase 1 used native `title` attributes since no TuiTooltip component exists yet. See: Discoverability section.
+6. **Sidebar header redesign** — collapse to `« relay`. Deferred to Phase 3 spotlight design doc (`2026-03-23-relay-phase3-spotlight-identity-design.md`). See: Constraints, Item 6 above.
+7. **Worktree HEAD path verification** — BranchWatcher may need adjustment for worktree `.git` files (which are files, not directories). Flagged in Reviewer Concerns but not verified during Phase 1 execution.
+
 ## What I noticed about how you think
 
 - You pushed back on the braille spinner placement ("it draws attention to something not actionable") and reframed motion as an attention budget. That's the kind of constraint that produces good design, not just good-looking design.
