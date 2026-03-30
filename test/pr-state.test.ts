@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { derivePrAction, getActionPrompt, getStatusCssVar, shouldUseDarkText } from '../frontend/src/lib/pr-state.js';
+import { derivePrAction, deriveSecondaryAction, getActionPrompt, getStatusCssVar, shouldUseDarkText } from '../frontend/src/lib/pr-state.js';
 import type { PrStateInput } from '../frontend/src/lib/pr-state.js';
 
 describe('derivePrAction', () => {
@@ -43,7 +43,7 @@ describe('derivePrAction', () => {
     assert.equal(action.label, 'Ready for Review');
   });
 
-  it('returns review-pr for open PR with all CI passing', () => {
+  it('returns merge-pr for open PR with all CI passing (author default)', () => {
     const input: PrStateInput = {
       commitsAhead: 2,
       prState: 'OPEN',
@@ -51,12 +51,12 @@ describe('derivePrAction', () => {
       mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'review-pr');
+    assert.equal(action.type, 'merge-pr');
     assert.equal(action.color, 'success');
-    assert.equal(action.label, 'Review PR');
+    assert.equal(action.label, 'Merge');
   });
 
-  it('returns review-pr for open PR with no CI checks', () => {
+  it('returns merge-pr for open PR with no CI checks (author default)', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
@@ -64,7 +64,7 @@ describe('derivePrAction', () => {
       mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'review-pr');
+    assert.equal(action.type, 'merge-pr');
     assert.equal(action.color, 'success');
   });
 
@@ -168,6 +168,74 @@ describe('derivePrAction', () => {
     assert.equal(action.color, 'accent');
     assert.equal(action.label, 'Resolve Comments (3)');
   });
+
+  // ── Role-aware tests ──
+
+  it('returns merge-pr for author when open + all clear', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      role: 'author',
+    };
+    const action = derivePrAction(input);
+    assert.equal(action.type, 'merge-pr');
+    assert.equal(action.color, 'success');
+    assert.equal(action.label, 'Merge');
+  });
+
+  it('returns review-pr with info color for reviewer when open + all clear', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      role: 'reviewer',
+    };
+    const action = derivePrAction(input);
+    assert.equal(action.type, 'review-pr');
+    assert.equal(action.color, 'info');
+    assert.equal(action.label, 'Review');
+  });
+
+  it('returns muted checks-running for reviewer when CI failing', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 3, ciFailing: 2, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      role: 'reviewer',
+    };
+    const action = derivePrAction(input);
+    assert.equal(action.type, 'checks-running');
+    assert.equal(action.color, 'muted');
+    assert.equal(action.label, 'CI Failing');
+  });
+
+  it('returns none for reviewer on draft PR', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1,
+      prState: 'DRAFT',
+      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
+      mergeable: null, unresolvedCommentCount: 0,
+      role: 'reviewer',
+    };
+    const action = derivePrAction(input);
+    assert.equal(action.type, 'none');
+  });
+
+  it('defaults to author behavior when role omitted', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+    };
+    const action = derivePrAction(input);
+    // Without role, defaults to author → merge-pr
+    assert.equal(action.type, 'merge-pr');
+  });
 });
 
 describe('getActionPrompt', () => {
@@ -241,6 +309,13 @@ describe('getActionPrompt', () => {
       null,
     );
   });
+
+  it('returns null for merge-pr (GitHub link action)', () => {
+    assert.equal(
+      getActionPrompt({ type: 'merge-pr', color: 'success', label: 'Merge' }, { branchName: 'main' }),
+      null,
+    );
+  });
 });
 
 describe('getStatusCssVar', () => {
@@ -252,6 +327,7 @@ describe('getStatusCssVar', () => {
     assert.equal(getStatusCssVar('merged'), 'var(--status-merged)');
     assert.equal(getStatusCssVar('muted'), 'var(--border)');
     assert.equal(getStatusCssVar('none'), 'transparent');
+    assert.equal(getStatusCssVar('info'), 'var(--status-info)');
   });
 });
 
@@ -267,5 +343,38 @@ describe('shouldUseDarkText', () => {
     assert.equal(shouldUseDarkText('merged'), false);
     assert.equal(shouldUseDarkText('muted'), false);
     assert.equal(shouldUseDarkText('none'), false);
+  });
+});
+
+describe('deriveSecondaryAction', () => {
+  it('returns review-pr secondary for author with unresolved comments', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1, prState: 'OPEN',
+      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 3,
+      role: 'author',
+    };
+    const primary = derivePrAction(input);
+    assert.equal(primary.type, 'resolve-comments');
+    const secondary = deriveSecondaryAction(primary, input);
+    assert.ok(secondary);
+    assert.equal(secondary!.type, 'review-pr');
+    assert.equal(secondary!.color, 'muted');
+  });
+
+  it('returns resolve-comments secondary for reviewer with unresolved comments', () => {
+    const input: PrStateInput = {
+      commitsAhead: 1, prState: 'OPEN',
+      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
+      mergeable: 'MERGEABLE', unresolvedCommentCount: 3,
+      role: 'reviewer',
+    };
+    const primary = derivePrAction(input);
+    assert.equal(primary.type, 'review-pr');
+    assert.equal(primary.color, 'info');
+    const secondary = deriveSecondaryAction(primary, input);
+    assert.ok(secondary);
+    assert.equal(secondary!.type, 'resolve-comments');
+    assert.equal(secondary!.color, 'accent');
   });
 });
