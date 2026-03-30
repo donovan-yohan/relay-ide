@@ -2,16 +2,14 @@
   import type { Repo, SessionSummary, WorktreeInfo, PullRequest } from '../lib/types.js';
   import { deriveColor } from '../lib/colors.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
-  import PrGlyph from './PrGlyph.svelte';
+  import StatusDot from './StatusDot.svelte';
   import { getSessionState, refreshAll, setLoading, clearLoading, isItemLoading } from '../lib/state/sessions.svelte.js';
-  import { isAttentionState, type DisplayState } from '../lib/state/display-state.js';
+  import { isAttentionState } from '../lib/state/display-state.js';
   import { toggleWorkspaceCollapse, isWorkspaceCollapsed, getTimeTick } from '../lib/state/ui.svelte.js';
   import { formatRelativeTimeCompact } from '../lib/utils.js';
   import { createSession, renameSession } from '../lib/api.js';
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './ContextMenu.svelte';
-  import CipherText from './CipherText.svelte';
-  import SessionIndicator from './SessionIndicator.svelte';
 
   const sessionState = getSessionState();
 
@@ -54,46 +52,10 @@
     new Map(sessionState.sidebarItems.map(i => [i.id, i]))
   );
 
-  interface StatePip {
-    char: string;
-    colorClass: string;
-    count: number;
+  function statusDotClass(groupPath: string): string {
+    const state = sidebarItemById.get(groupPath)?.displayState ?? 'inactive';
+    return 'status-dot status-dot--' + state;
   }
-
-  const pipConfig: Record<DisplayState, { char: string; colorClass: string }> = {
-    permission:     { char: '◆', colorClass: 'pip-red' },
-    'needs-answer': { char: '◇', colorClass: 'pip-red' },
-    error:          { char: '■', colorClass: 'pip-red' },
-    'unseen-idle':  { char: '▶', colorClass: 'pip-yellow' },
-    running:        { char: '●', colorClass: 'pip-green' },
-    initializing:   { char: '●', colorClass: 'pip-green' },
-    'seen-idle':    { char: '▶', colorClass: 'pip-yellow-muted' },
-    inactive:       { char: '─', colorClass: 'pip-gray' },
-  };
-
-  const urgencyOrder = ['permission', 'needs-answer', 'error', 'unseen-idle', 'running', 'initializing', 'seen-idle', 'inactive'];
-
-  let summaryPips = $derived.by((): StatePip[] => {
-    const items = sessionState.sidebarItems.filter(i => i.repoPath === workspace.path);
-    const counts = new Map<string, StatePip>();
-
-    for (const item of items) {
-      const cfg = pipConfig[item.displayState];
-      if (!cfg) continue;
-      const key = item.displayState;
-      const existing = counts.get(key);
-      if (existing) {
-        existing.count++;
-      } else {
-        counts.set(key, { ...cfg, count: 1 });
-      }
-    }
-
-    return urgencyOrder
-      .filter(state => counts.has(state))
-      .map(state => counts.get(state)!)
-      .slice(0, 3);
-  });
 
   function itemHasAttention(groupPath: string): boolean {
     const item = sidebarItemById.get(groupPath);
@@ -135,26 +97,6 @@
 
   // Detect mobile for context menu behavior
   let isMobile = $state(typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches);
-
-  let clickTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function handleHeaderClick(e: MouseEvent) {
-    void e;
-    if (isMobile) {
-      onSelectWorkspace(workspace.path);
-      return;
-    }
-    if (clickTimer) {
-      clearTimeout(clickTimer);
-      clickTimer = null;
-      toggleWorkspaceCollapse(workspace.path);
-    } else {
-      clickTimer = setTimeout(() => {
-        clickTimer = null;
-        onSelectWorkspace(workspace.path);
-      }, 200);
-    }
-  }
 
   // Context menu refs (keyed by row identifier)
   let menuRefs: Record<string, ContextMenu> = {};
@@ -266,7 +208,7 @@
     class="workspace-header"
     class:attention={hasAttention}
     data-track="sidebar.workspace.click"
-    onclick={handleHeaderClick}
+    onclick={() => { onSelectWorkspace(workspace.path); }}
   >
     <div class="workspace-left">
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -278,15 +220,8 @@
       >{collapsed ? '›' : '⌄'}</span>
       <span class="initial-block" style:background={initialColor}>{initial}</span>
       <span class="workspace-name">{workspace.name}</span>
-      {#if collapsed}
-        {@const pips = summaryPips}
-        {#if pips.length > 0}
-          <span class="summary-pips">
-            {#each pips as pip}
-              <span class="pip {pip.colorClass}">{pip.char}{pip.count}</span>
-            {/each}
-          </span>
-        {/if}
+      {#if collapsed && totalItems > 0}
+        <span class="collapse-count">{totalItems}</span>
       {/if}
     </div>
     <div class="workspace-actions">
@@ -309,14 +244,12 @@
         {@const hasActiveSessions = sessionCount > 0}
         {#if hasActiveSessions && representative}
           {@const matchedPr = findPrForBranch(groupSessions[0]?.branchName ?? '')}
-          {@const itemIsUnread = sidebarItemById.get(groupPath)?.isUnread ?? false}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <li
             class="session-row"
             class:selected={groupSessions.some(s => sessionState.activeSessionId === s.id)}
             class:attention={itemHasAttention(groupPath)}
-            class:unread={itemIsUnread}
             data-track="sidebar.session.click"
             onclick={() => onSelectSession(representative.id)}
             ontouchstart={(e) => handleRowTouchStart(representative.id, e.currentTarget as HTMLElement)}
@@ -324,17 +257,17 @@
             ontouchmove={cancelLongPress}
           >
             <div class="session-row-primary">
-              <SessionIndicator state={sidebarItemById.get(groupPath)?.displayState ?? 'inactive'} />
-              <span class="session-name" class:bold={itemIsUnread || itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
+              <span class={statusDotClass(groupPath)}></span>
+              <span class="session-name" class:bold={itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
               {#if sessionCount > 1}
                 <span class="session-count-badge">{sessionCount}</span>
               {/if}
               {#if matchedPr}
                 <span class="sidebar-pr-status">
-                  <PrGlyph status={derivePrDotStatus(matchedPr)} />
-                  {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass">✓</span>
-                  {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail">✕</span>
-                  {:else if matchedPr.ciStatus === 'PENDING'}<span class="ci-pending">●</span>
+                  <StatusDot status={derivePrDotStatus(matchedPr)} size={5} />
+                  {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="9" height="9"><polyline points="20 6 9 17 4 12"/></svg></span>
+                  {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="9" height="9"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
+                  {:else if matchedPr.ciStatus === 'PENDING'}<span class="ci-pending" style="font-size:9px">●</span>
                   {/if}
                 </span>
               {/if}
@@ -342,7 +275,7 @@
             <div class="session-row-secondary">
               <span class="secondary-time">{sessionTime(representative)}</span>
               {#if representative.branchName}
-                <span class="secondary-branch"><CipherText text={representative.branchName} /></span>
+                <span class="secondary-branch">{representative.branchName}</span>
               {/if}
             </div>
             <div class="row-menu-overlay">
@@ -375,7 +308,7 @@
             }}
           >
             <div class="session-row-primary">
-              <SessionIndicator state="inactive" />
+              <span class="dot dot-inactive"></span>
               <span class="session-name">{isItemLoading(repoLoadingKey) ? 'starting...' : 'default'}</span>
             </div>
             {#if workspace.defaultBranch}
@@ -414,13 +347,13 @@
           ontouchmove={cancelLongPress}
         >
           <div class="session-row-primary">
-            <SessionIndicator state="inactive" />
+            <span class="dot dot-inactive"></span>
             <span class="session-name">{isItemLoading(wt.path) ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</span>
           </div>
           <div class="session-row-secondary">
             <span class="secondary-time">{worktreeTime(wt)}</span>
             {#if wt.branchName}
-              <span class="secondary-branch"><CipherText text={wt.branchName} /></span>
+              <span class="secondary-branch">{wt.branchName}</span>
             {/if}
           </div>
           <div class="row-menu-overlay">
@@ -492,27 +425,15 @@
     color: var(--text);
   }
 
-  .summary-pips {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--font-mono);
+  .collapse-count {
     font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: var(--border);
+    border-radius: 0;
+    padding: 2px 8px;
     flex-shrink: 0;
   }
-
-  .pip {
-    display: inline-flex;
-    align-items: center;
-    gap: 1px;
-    white-space: nowrap;
-  }
-
-  .pip-red         { color: #cc6666; }
-  .pip-yellow      { color: #f0c674; }
-  .pip-yellow-muted { color: rgba(240, 198, 116, 0.5); }
-  .pip-green       { color: rgba(74, 222, 128, 0.8); }
-  .pip-gray        { color: #555; }
 
   .initial-block {
     display: inline-flex;
@@ -698,18 +619,40 @@
   .diff-add { color: var(--status-success); }
   .diff-del { color: var(--status-error); }
 
+  /* Status dot */
+  .status-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Display-state dot classes */
+  .status-dot--running      { background: var(--status-success); }
+  .status-dot--initializing { background: #6b7280; }
+  .status-dot--unseen-idle  {
+    background: var(--status-warning);
+    box-shadow: 0 0 5px 1px rgba(251, 191, 36, 0.45);
+    animation: attention-glow 2s ease-in-out infinite;
+  }
+  .status-dot--seen-idle    { background: var(--status-info); }
+  .status-dot--permission   {
+    background: #eab308;
+    box-shadow: 0 0 5px 1px rgba(234, 179, 8, 0.45);
+    animation: attention-glow 1.5s ease-in-out infinite;
+  }
+  .status-dot--inactive     { background: transparent; border: 1.5px solid var(--border); }
+
+  .dot-inactive        { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1.5px solid var(--border); flex-shrink: 0; }
   .session-row.inactive .session-name { color: var(--text-muted); }
   .session-row.inactive:hover .session-name { color: var(--text); }
   .session-row.loading { pointer-events: none; opacity: 0.7; }
   .session-row.loading .session-name { color: var(--accent); }
 
-  .session-row.unread {
-    border-left-color: var(--status-warning);
-  }
-
-  .session-row.unread .session-name {
-    font-weight: 700;
-    color: #e8e8e8;
+  @keyframes attention-glow {
+    0%, 100% { box-shadow: 0 0 3px 1px rgba(251, 191, 36, 0.3); }
+    50%       { box-shadow: 0 0 7px 2px rgba(251, 191, 36, 0.6); }
   }
 
   .session-name {

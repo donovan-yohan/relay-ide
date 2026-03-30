@@ -35,8 +35,6 @@ interface SerializedPtySession {
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   continuePolicy?: ContinuePolicy;
-  workspaceId?: string;
-  additionalDirs?: string[];
 }
 
 interface PendingSessionsFile {
@@ -47,16 +45,14 @@ interface PendingSessionsFile {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-export type CreateParams = Omit<CreatePtyParams, 'id'> & {
+type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   initialPrompt?: string;
-  workspaceId?: string;
-  additionalDirs?: string[];
 };
 
-export type CreateResult = SessionSummary & { pid: number | undefined };
+type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();
@@ -118,10 +114,8 @@ export function fireStateChange(sessionId: string, state: AgentState): void {
 export function computeBackendState(session: { agentState: AgentState; idle: boolean }): BackendDisplayState {
   // permission-prompt takes highest priority
   if (session.agentState === 'permission-prompt') return 'permission';
-  // error
-  if (session.agentState === 'error') return 'error';
-  // processing = running
-  if (session.agentState === 'processing') return 'running';
+  // processing or error = running
+  if (session.agentState === 'processing' || session.agentState === 'error') return 'running';
   // initializing
   if (session.agentState === 'initializing') return 'initializing';
   // idle or waiting-for-input = idle (explicitly idle-like agent states)
@@ -130,7 +124,7 @@ export function computeBackendState(session: { agentState: AgentState; idle: boo
   return session.idle ? 'idle' : 'running';
 }
 
-type BackendStateChangeCallback = (sessionId: string, state: BackendDisplayState, permissionType?: 'approval' | 'question') => void;
+type BackendStateChangeCallback = (sessionId: string, state: BackendDisplayState) => void;
 const backendStateChangeCallbacks: BackendStateChangeCallback[] = [];
 
 export function onBackendStateChange(cb: BackendStateChangeCallback): void {
@@ -139,23 +133,15 @@ export function onBackendStateChange(cb: BackendStateChangeCallback): void {
 
 export function fireBackendStateIfChanged(session: Session): void {
   const newState = computeBackendState(session);
-
-  let permissionType: 'approval' | 'question' | undefined;
-  if (newState === 'permission') {
-    permissionType = session.currentActivity?.tool === 'AskUserQuestion' ? 'question' : 'approval';
-  }
-
-  if (session._lastEmittedBackendState === newState && session._lastEmittedPermissionType === permissionType) return;
+  if (session._lastEmittedBackendState === newState) return;
   session._lastEmittedBackendState = newState;
-  session._lastEmittedPermissionType = permissionType;
-
   for (const cb of [...backendStateChangeCallbacks]) {
-    try { cb(session.id, newState, permissionType); }
+    try { cb(session.id, newState); }
     catch (err) { console.error('[sessions] backendStateChange callback error:', err); }
   }
 }
 
-function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
+function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
 
   const ptyParams: CreatePtyParams = {
@@ -190,12 +176,6 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
   }
   if (initialPrompt) {
     ptySession.initialPrompt = initialPrompt;
-  }
-  if (workspaceId) {
-    ptySession.workspaceId = workspaceId;
-  }
-  if (additionalDirs?.length) {
-    ptySession.additionalDirs = additionalDirs;
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   if (initialPrompt) {
@@ -245,8 +225,6 @@ function list(): SessionSummary[] {
       needsBranchRename: !!s.needsBranchRename,
       agentState: s.agentState,
       currentActivity: s.currentActivity,
-      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-      ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
@@ -353,8 +331,6 @@ function serializeAll(configDir: string): void {
       continuePolicy: session.continuePolicy,
       ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
       ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
-      ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
-      ...(session.additionalDirs?.length ? { additionalDirs: session.additionalDirs } : {}),
     });
   }
 
@@ -511,8 +487,6 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         continuePolicy: s.continuePolicy ?? 'never',
         ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
         ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
-        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-        ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;

@@ -573,23 +573,6 @@ export async function deleteWorkspaceGroup(id: string): Promise<void> {
   if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to delete workspace'));
 }
 
-export async function launchWorkspaceSession(workspaceId: string, opts?: {
-  agent?: string;
-  yolo?: boolean;
-  useTmux?: boolean;
-  claudeArgs?: string[];
-  cols?: number;
-  rows?: number;
-}): Promise<SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }> {
-  const res = await fetch(`/workspace-groups/${workspaceId}/session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(opts ?? {}),
-  });
-  if (!res.ok) throw new Error(await parseErrorBody(res, 'Failed to launch workspace session'));
-  return res.json() as Promise<SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }>;
-}
-
 export async function fetchChangedFiles(repoPath: string, base?: string): Promise<ChangedFilesResponse> {
   const params = new URLSearchParams({ path: repoPath });
   if (base) params.set('base', base);
@@ -608,4 +591,16 @@ export async function fetchFileDiff(repoPath: string, filePath: string, base?: s
     return { diff: '', error: `HTTP ${res.status}` };
   }
   return res.json() as Promise<FileDiffResponse>;
+}
+
+export async function fetchDefaultBranch(repoPath: string): Promise<string> {
+  const params = new URLSearchParams({ path: repoPath });
+  try {
+    const res = await fetch('/workspaces/default-branch?' + params.toString());
+    if (!res.ok) return 'main';
+    const data = await res.json() as { branch: string };
+    return data.branch || 'main';
+  } catch {
+    return 'main';
+  }
 }

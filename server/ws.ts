@@ -23,16 +23,7 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
   return cookies;
 }
 
-function setupWebSocket(
-  server: http.Server,
-  authenticatedTokens: Set<string>,
-  watcher: WorktreeWatcher | null,
-  _configPath?: string,
-): {
-  wss: WebSocketServer;
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
-  broadcastBranchChanged: (cwdPath: string, branchName: string) => void;
-} {
+function setupWebSocket(server: http.Server, authenticatedTokens: Set<string>, watcher: WorktreeWatcher | null, _configPath?: string): { wss: WebSocketServer; broadcastEvent: (type: string, data?: Record<string, unknown>) => void } {
   const wss = new WebSocketServer({ noServer: true });
   const eventClients = new Set<WebSocket>();
 
@@ -42,16 +33,6 @@ function setupWebSocket(
       if (client.readyState === client.OPEN) {
         client.send(msg);
       }
-    }
-  }
-
-  function broadcastBranchChanged(cwdPath: string, branchName: string): void {
-    const matchingSessions = sessions.list().filter(
-      (session) => session.cwd === cwdPath || session.worktreePath === cwdPath || session.repoPath === cwdPath,
-    );
-
-    for (const session of matchingSessions) {
-      broadcastEvent('session-branch-changed', { sessionId: session.id, branch: branchName, cwdPath });
     }
   }
 
@@ -166,8 +147,8 @@ function setupWebSocket(
     });
   });
 
-  sessions.onBackendStateChange((sessionId, state, permissionType) => {
-    broadcastEvent('session-backend-state-changed', { sessionId, state, permissionType });
+  sessions.onBackendStateChange((sessionId, state) => {
+    broadcastEvent('session-backend-state-changed', { sessionId, state });
     if (state === 'idle') { trackEvent({ category: 'agent', action: 'idle', target: sessionId, session_id: sessionId }); }
     if (state === 'permission') { trackEvent({ category: 'agent', action: 'waiting-for-input', target: sessionId, session_id: sessionId }); }
   });
@@ -176,7 +157,7 @@ function setupWebSocket(
     broadcastEvent('session-ended', { sessionId, cwd, branchName });
   });
 
-  return { wss, broadcastEvent, broadcastBranchChanged };
+  return { wss, broadcastEvent };
 }
 
 export { setupWebSocket };

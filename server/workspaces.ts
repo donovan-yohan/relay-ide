@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import { loadConfig, saveConfig, getRepoSettings, setRepoSettings, deleteRepoSettingKeys, writeMeta, readMeta } from './config.js';
 import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
-import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, ensureBranchLocal } from './git.js';
+import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, getDefaultBranch, ensureBranchLocal } from './git.js';
 import type { Config, PrInfo, PullRequest, PullRequestsResponse, Repo } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
@@ -1100,6 +1100,28 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     } catch (err: unknown) {
       console.warn('[workspaces] /file-diff failed for', resolvedRepo, filePath, err instanceof Error ? err.message : String(err));
       res.status(500).json({ diff: '', error: 'Failed to get file diff' });
+    }
+  });
+
+  // GET /workspaces/default-branch — detect the default branch for a repo
+  router.get('/default-branch', async (req: Request, res: Response) => {
+    if (typeof req.query.path !== 'string') {
+      res.status(400).json({ branch: '', error: 'path parameter required' });
+      return;
+    }
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({ branch: '', error: 'path not in configured workspaces' });
+      return;
+    }
+
+    try {
+      const branch = await getDefaultBranch(resolvedRepo, exec);
+      res.json({ branch });
+    } catch (err: unknown) {
+      console.warn('[workspaces] /default-branch failed for', resolvedRepo, err instanceof Error ? err.message : String(err));
+      res.status(500).json({ branch: 'main', error: 'Failed to detect default branch' });
     }
   });
 

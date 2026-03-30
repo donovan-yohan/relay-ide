@@ -30,8 +30,8 @@ describe('computeBackendState', () => {
     assert.equal(computeBackendState(mockState('permission-prompt', false)), 'permission');
   });
 
-  it('maps error + idle=false to error', () => {
-    assert.equal(computeBackendState(mockState('error', false)), 'error');
+  it('maps error + idle=false to running', () => {
+    assert.equal(computeBackendState(mockState('error', false)), 'running');
   });
 });
 

@@ -77,54 +77,6 @@ describe('transitionDisplayState', () => {
       'inactive',
       'seen-idle + session-ended → inactive',
     ],
-    [
-      'running',
-      { type: 'backend-state-changed', state: 'permission', permissionType: 'question' },
-      'needs-answer',
-      'running + backend-state-changed(permission, question) → needs-answer',
-    ],
-    [
-      'running',
-      { type: 'backend-state-changed', state: 'permission', permissionType: 'approval' },
-      'permission',
-      'running + backend-state-changed(permission, approval) → permission',
-    ],
-    [
-      'running',
-      { type: 'backend-state-changed', state: 'permission' },
-      'permission',
-      'running + backend-state-changed(permission, no type) → permission (backward compat)',
-    ],
-    [
-      'needs-answer',
-      { type: 'user-viewed' },
-      'needs-answer',
-      'needs-answer + user-viewed → needs-answer (question must be answered, not just viewed)',
-    ],
-    [
-      'needs-answer',
-      { type: 'backend-state-changed', state: 'running' },
-      'running',
-      'needs-answer + backend-state-changed(running) → running',
-    ],
-    [
-      'running',
-      { type: 'backend-state-changed', state: 'error' },
-      'error',
-      'running + backend-state-changed(error) → error',
-    ],
-    [
-      'error',
-      { type: 'session-ended' },
-      'inactive',
-      'error + session-ended → inactive',
-    ],
-    [
-      'error',
-      { type: 'user-viewed' },
-      'error',
-      'error + user-viewed → error (stays — error needs acknowledgment, not just viewing)',
-    ],
   ];
 
   for (const [current, event, expected, description] of transitionTable) {
@@ -150,13 +102,5 @@ describe('shouldNotify', () => {
 
   it('seen-idle → seen-idle → false', () => {
     assert.equal(shouldNotify('seen-idle', 'seen-idle'), false);
-  });
-
-  it('running → needs-answer → true', () => {
-    assert.equal(shouldNotify('running', 'needs-answer'), true);
-  });
-
-  it('running → error → true', () => {
-    assert.equal(shouldNotify('running', 'error'), true);
   });
 });
