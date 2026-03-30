@@ -833,7 +833,7 @@ async function getChangedFiles(
   // Get per-file stats via numstat
   const numstatArgs = base
     ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
-    : ['diff', '--numstat', '--find-renames'];
+    : ['diff', '--numstat', '--find-renames', 'HEAD'];
   const numstatMap = new Map<string, { additions: number; deletions: number }>();
   try {
     const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });

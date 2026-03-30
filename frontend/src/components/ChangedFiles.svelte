@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { Column } from './DataTable.svelte';
   import DataTable from './DataTable.svelte';
   import DiffViewer from './DiffViewer.svelte';
@@ -38,8 +39,8 @@
   const columns: Column[] = [
     { key: 'status', label: '', width: '24px' },
     { key: 'path', label: 'file', sortable: true },
-    { key: 'additions', label: '+', sortable: true, width: '50px' },
-    { key: 'deletions', label: '-', sortable: true, width: '50px' },
+    { key: 'additions', label: '+', sortable: true, width: '50px', align: 'right' },
+    { key: 'deletions', label: '-', sortable: true, width: '50px', align: 'right' },
   ];
 
   let sortedFiles = $derived.by(() => {
@@ -60,8 +61,9 @@
   export async function refresh(force = false) {
     if (!workspacePath) return;
     if (!force && !expanded) return;
-    loading = true;
-    error = undefined;
+    // Only show loading skeleton on initial fetch — background refreshes update silently
+    const showLoading = files.length === 0 && !error;
+    if (showLoading) loading = true;
     try {
       const data = await fetchChangedFiles(workspacePath, base);
       files = data.files;
@@ -81,10 +83,12 @@
 
   // $effect is intentional here: refresh() is async and writes to $state — cannot be $derived.
   // force=true so summary bar shows file count even when panel is collapsed.
+  // untrack: refresh() reads $state (files, error) — without untrack, those reads
+  // become dependencies and writing to files after fetch re-triggers the effect → infinite loop.
   $effect(() => {
     void workspacePath;
     void base;
-    if (workspacePath) void refresh(true);
+    if (workspacePath) untrack(() => { void refresh(true); });
   });
 
   $effect(() => {
@@ -181,27 +185,27 @@
         maxHeight="300px"
       >
         {#snippet row(file: ChangedFile, _index: number)}
-          <div class="file-row" class:expanded-row={expandedFile === file.path}>
-            <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
-            <span class="file-name" title={file.path}>
-              {rootShortName(file.path)}
-              {#if summaries.get(file.path)}
-                <span class="file-summary">{summaries.get(file.path)}</span>
-              {/if}
-            </span>
-            <span class="stat stat-add">+{file.additions}</span>
-            <span class="stat stat-del">-{file.deletions}</span>
-            {#if onExpandFile}
-              <button
-                class="expand-btn"
-                title="open full diff"
-                onclick={(e) => { e.stopPropagation(); onExpandFile(file, base); }}
-                aria-label="expand diff for {file.path}"
-              >[↗]</button>
+          <span class="cell cell--status" style:width="24px" style:flex="none" style:color={statusColor[file.status] ?? 'var(--text-muted)'}>{statusIcon[file.status] ?? '?'}</span>
+          <span class="cell cell--path" style:flex="1" title={file.path}>
+            {rootShortName(file.path)}
+            {#if summaries.get(file.path)}
+              <span class="file-summary">{summaries.get(file.path)}</span>
             {/if}
-          </div>
+          </span>
+          <span class="cell cell--stat stat-add" style:width="50px" style:flex="none">+{file.additions}</span>
+          <span class="cell cell--stat stat-del" style:width="50px" style:flex="none">-{file.deletions}</span>
+          {#if onExpandFile}
+            <button
+              class="expand-btn"
+              title="open full diff"
+              onclick={(e) => { e.stopPropagation(); onExpandFile(file, base); }}
+              aria-label="expand diff for {file.path}"
+            >[↗]</button>
+          {/if}
           {#if expandedFile === file.path}
-            <div class="inline-diff">
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div class="inline-diff" onclick={(e) => e.stopPropagation()}>
               {#if diffError}
                 <div class="diff-error">{diffError}</div>
               {:else}
@@ -280,8 +284,8 @@
     opacity: 0.5;
   }
 
-  .stat-add { color: var(--status-success, #4ade80); }
-  .stat-del { color: var(--status-error, #f87171); }
+  .stat-add, .cell.stat-add { color: var(--status-success, #4ade80); }
+  .stat-del, .cell.stat-del { color: var(--status-error, #f87171); }
 
   .diff-error {
     padding: 8px 12px;
@@ -323,38 +327,27 @@
     border-color: var(--accent, #d97757);
   }
 
-  .file-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    cursor: pointer;
+  .cell {
+    padding: 6px 8px;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    color: var(--text, #e0e0e0);
   }
 
-  .file-row:hover {
-    background: var(--surface-hover, #141414);
-  }
-
-  .expanded-row {
-    background: var(--surface-hover, #141414);
-  }
-
-  .status-icon {
-    flex-shrink: 0;
-    width: 16px;
+  .cell--status {
     text-align: center;
     font-weight: bold;
   }
 
-  .file-name {
-    flex: 1;
+  .cell--path {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-xs, 0.75rem);
-    color: var(--text, #e0e0e0);
+  }
+
+  .cell--stat {
+    text-align: right;
   }
 
   .file-summary {
@@ -363,16 +356,9 @@
     font-size: var(--font-size-xs, 0.75rem);
   }
 
-  .stat {
-    flex-shrink: 0;
-    width: 40px;
-    text-align: right;
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-xs, 0.75rem);
-  }
-
   .inline-diff {
-    margin: 4px 0 4px 24px;
+    flex-basis: 100%;
+    padding: 4px 8px 4px 32px;
   }
 
   .mobile-file-card {

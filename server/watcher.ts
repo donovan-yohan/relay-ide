@@ -520,8 +520,17 @@ export class RefWatcher {
   }
 }
 
+// Directories to ignore when watching the working tree.
+// These never contain user-authored source files worth diffing.
+const IGNORED_DIRS = new Set([
+  '.git', 'node_modules', '.next', '.nuxt', '.svelte-kit',
+  'dist', 'build', 'out', '.output', 'coverage',
+  '__pycache__', '.pytest_cache', '.venv', 'venv',
+  '.turbo', '.cache', '.parcel-cache',
+]);
+
 export class GitWatcher extends EventEmitter {
-  private _watchers = new Map<string, { watcher: fs.FSWatcher; extraWatchers?: fs.FSWatcher[]; refCount: number }>();
+  private _watchers = new Map<string, { treeWatcher: fs.FSWatcher; headWatcher?: fs.FSWatcher | undefined; refCount: number }>();
   private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   watch(workspacePath: string): void {
@@ -531,59 +540,64 @@ export class GitWatcher extends EventEmitter {
       return;
     }
 
-    const gitDir = path.join(workspacePath, '.git');
-    if (!fs.existsSync(gitDir)) return;
+    let treeWatcher: fs.FSWatcher | undefined;
+    let headWatcher: fs.FSWatcher | undefined;
 
-    // For worktrees, .git is a file — resolve to actual git dir
-    let watchTarget: string;
-    let commonDir: string | null = null;
+    // 1. Watch the working tree recursively for file edits.
+    //    macOS uses FSEvents (single kernel subscription). Linux uses inotify
+    //    (one watch per directory, can hit fs.inotify.max_user_watches limit).
+    //    .git/ changes are filtered out so git-status calls never cause feedback loops.
+    try {
+      treeWatcher = fs.watch(
+        workspacePath,
+        { persistent: false, recursive: true },
+        (_event, filename) => {
+          if (!filename) return;
+          const firstSegment = filename.split(path.sep)[0] ?? '';
+          if (IGNORED_DIRS.has(firstSegment)) return;
+          this._debouncedEmit(workspacePath);
+        },
+      );
+      treeWatcher.on('error', (err) => {
+        console.warn('[GitWatcher] working-tree watch failed for', workspacePath, '—', err.message);
+        console.warn('[GitWatcher] changed-files will not auto-refresh for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288');
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('[GitWatcher] could not watch working tree for', workspacePath, '—', msg);
+    }
+
+    // 2. Watch .git/HEAD for commits and branch switches.
+    //    Single-file watch, no feedback loop risk (HEAD only changes on checkout/commit).
+    const gitDir = path.join(workspacePath, '.git');
     try {
       const stat = fs.statSync(gitDir);
+      let headPath: string;
       if (stat.isFile()) {
+        // Worktree: .git is a file pointing to the real git dir
         const content = fs.readFileSync(gitDir, 'utf-8').trim();
         const match = content.match(/^gitdir:\s*(.+)$/);
-        if (!match) return;
-        watchTarget = path.resolve(workspacePath, match[1]!);
-        // Check for commondir (shared refs in the main repo git dir)
-        const commonDirFile = path.join(watchTarget, 'commondir');
-        try {
-          const commonDirContent = fs.readFileSync(commonDirFile, 'utf-8').trim();
-          commonDir = path.resolve(watchTarget, commonDirContent);
-        } catch {
-          // No commondir — standalone worktree git dir
-        }
+        headPath = match ? path.join(path.resolve(workspacePath, match[1]!), 'HEAD') : '';
       } else {
-        watchTarget = gitDir;
+        headPath = path.join(gitDir, 'HEAD');
       }
-    } catch {
-      return;
-    }
-
-    const onChange = () => this._debouncedEmit(workspacePath);
-    const watchers: fs.FSWatcher[] = [];
-
-    try {
-      const watcher = fs.watch(watchTarget, { persistent: false }, onChange);
-      watcher.on('error', (err) => {
-        console.warn('[GitWatcher] fs.watch error for', workspacePath, err.message);
-        this._watchers.delete(workspacePath);
-      });
-      watchers.push(watcher);
-
-      // Also watch commondir if it exists (shared refs for worktrees)
-      if (commonDir && fs.existsSync(commonDir)) {
-        const commonWatcher = fs.watch(commonDir, { persistent: false }, onChange);
-        commonWatcher.on('error', (err) => {
-          console.warn('[GitWatcher] commondir watch error for', workspacePath, err.message);
+      if (headPath && fs.existsSync(headPath)) {
+        headWatcher = fs.watch(headPath, { persistent: false }, () => {
+          this._debouncedEmit(workspacePath);
         });
-        watchers.push(commonWatcher);
+        headWatcher.on('error', () => { /* HEAD watch is best-effort */ });
       }
-
-      this._watchers.set(workspacePath, { watcher: watchers[0]!, extraWatchers: watchers.slice(1), refCount: 1 });
     } catch {
-      // Cannot watch — directory may not exist
-      for (const w of watchers) try { w.close(); } catch {}
+      // .git doesn't exist or isn't readable — skip HEAD watching
     }
+
+    if (!treeWatcher && !headWatcher) return;
+
+    this._watchers.set(workspacePath, {
+      treeWatcher: treeWatcher ?? headWatcher!,
+      headWatcher: treeWatcher ? headWatcher : undefined,
+      refCount: 1,
+    });
   }
 
   unwatch(workspacePath: string): void {
@@ -591,10 +605,8 @@ export class GitWatcher extends EventEmitter {
     if (!entry) return;
     entry.refCount--;
     if (entry.refCount <= 0) {
-      try { entry.watcher.close(); } catch {}
-      if (entry.extraWatchers) {
-        for (const w of entry.extraWatchers) try { w.close(); } catch {}
-      }
+      try { entry.treeWatcher.close(); } catch {}
+      if (entry.headWatcher) try { entry.headWatcher.close(); } catch {}
       this._watchers.delete(workspacePath);
       const timer = this._debounceTimers.get(workspacePath);
       if (timer) {
@@ -610,15 +622,13 @@ export class GitWatcher extends EventEmitter {
     this._debounceTimers.set(workspacePath, setTimeout(() => {
       this._debounceTimers.delete(workspacePath);
       this.emit('files-changed', { workspacePath });
-    }, 500));
+    }, 1000));
   }
 
   close(): void {
     for (const entry of this._watchers.values()) {
-      try { entry.watcher.close(); } catch {}
-      if (entry.extraWatchers) {
-        for (const w of entry.extraWatchers) try { w.close(); } catch {}
-      }
+      try { entry.treeWatcher.close(); } catch {}
+      if (entry.headWatcher) try { entry.headWatcher.close(); } catch {}
     }
     this._watchers.clear();
     for (const timer of this._debounceTimers.values()) {
