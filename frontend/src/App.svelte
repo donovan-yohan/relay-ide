@@ -34,7 +34,7 @@
   import MobileHeader from './components/MobileHeader.svelte';
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
-  import Spotlight from './components/Spotlight.svelte';
+  import CommandPalette from './components/CommandPalette.svelte';
   import CustomizeSessionDialog from './components/dialogs/CustomizeSessionDialog.svelte';
   import SettingsDialog from './components/dialogs/SettingsDialog.svelte';
   import DeleteWorktreeDialog from './components/dialogs/DeleteWorktreeDialog.svelte';
@@ -358,6 +358,16 @@
         document.removeEventListener('touchmove', onSwipeTouchMove);
         document.removeEventListener('touchend', onSwipeTouchEnd);
       };
+    }
+
+    // Hardware keyboard detection (mobile only)
+    if (isMobileDevice) {
+      const detectKeyboard = () => {
+        if (!ui.hasHardwareKeyboard) {
+          ui.hasHardwareKeyboard = true;
+        }
+      };
+      document.addEventListener('keydown', detectKeyboard);
     }
 
     return () => {
@@ -822,7 +832,7 @@
 
   let addWorkspaceDialogRef = $state<AddWorkspaceDialog | undefined>();
 
-  function handleSpotlightSelectPr(pr: import('./lib/types.js').PullRequest) {
+  function handlePaletteSelectPr(pr: import('./lib/types.js').PullRequest) {
     // Navigate to the PR's workspace, then open the PR branch
     if (pr.repoPath) {
       ui.activeRepoPath = pr.repoPath;
@@ -894,6 +904,7 @@
       <MobileHeader
         title={sessionTitle}
         onMenuClick={openSidebar}
+        onCommandClick={() => { spotlightOpen = true; }}
         hidden={keyboardOpen}
       />
 
@@ -986,8 +997,8 @@
     }}
   />
 
-  <!-- Spotlight command palette -->
-  <Spotlight
+  <!-- Command palette -->
+  <CommandPalette
     open={spotlightOpen}
     workspaces={sessionState.repos}
     sessions={sessionState.sessions}
@@ -995,7 +1006,7 @@
     onClose={() => { spotlightOpen = false; }}
     onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; closeSidebar(); }}
     onSelectSession={(id) => handleSelectSession(id)}
-    onSelectPr={handleSpotlightSelectPr}
+    onSelectPr={handlePaletteSelectPr}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}
   />
 
