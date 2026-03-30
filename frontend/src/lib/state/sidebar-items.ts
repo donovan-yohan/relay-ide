@@ -1,6 +1,7 @@
 import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
 import type { BackendDisplayState, DisplayState } from './display-state.js';
 import { transitionDisplayState } from './display-state.js';
+import { sortByAttention } from './attention.js';
 
 /**
  * Derive a BackendDisplayState from a session's agentState and idle flag.
@@ -201,7 +202,7 @@ export function buildSidebarItems(
     });
   }
 
-  return result;
+  return sortByAttention(result);
 }
 
 /**
