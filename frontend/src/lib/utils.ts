@@ -47,7 +47,8 @@ export const isMobileDevice =
 
 export const isMac =
   typeof navigator !== 'undefined' &&
-  /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
+  /Mac/.test(navigator.platform || '') &&
+  !/iPhone|iPad|iPod/.test(navigator.platform || '');
 
 export function estimateTerminalDimensions(): { cols: number; rows: number } {
   const fontSize = isMobileDevice ? 12 : getUi().terminalFontSize;

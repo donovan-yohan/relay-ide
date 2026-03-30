@@ -9,7 +9,7 @@
   import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi } from './lib/api.js';
-  import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
+  import { derivePrAction, buildPrStateInput, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal, getAllActions } from './lib/actions/registry.svelte.js';
   import { setupShortcutListener } from './lib/actions/shortcuts.js';
@@ -219,7 +219,7 @@
       { ...ticketSwitchProvider, handler: () => {} },
       { ...ticketOpenExternal, handler: () => {} },
       // ── Phase 3: Terminal (scroll methods not yet exposed by Terminal.svelte) ──
-      { ...terminalScrollTop, handler: () => terminalRef?.getTerm()?.scrollToTop() },
+      { ...terminalScrollTop, handler: () => terminalRef?.getTerm()?.scrollToLine(0) },
       { ...terminalScrollBottom, handler: () => terminalRef?.getTerm()?.scrollToLine(terminalRef?.getTerm()?.buffer?.active?.length ?? 0) },
       // ── Phase 3: Navigation ──
       { ...navPreviousTab, handler: () => {
@@ -752,17 +752,7 @@
   }
 
   function handlePrAction(pr: PullRequest) {
-    const prState = pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    const action = derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: 0,
-      ciFailing: 0,
-      ciPending: 0,
-      ciTotal: 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: 0,
-    });
+    const action = derivePrAction(buildPrStateInput(pr));
     const prompt = getActionPrompt(action, {
       branchName: pr.headRefName,
       baseBranch: pr.baseRefName,

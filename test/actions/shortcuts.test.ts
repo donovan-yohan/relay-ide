@@ -38,6 +38,18 @@ describe('ShortcutListener', () => {
       const event = { metaKey: true, ctrlKey: false, shiftKey: false, key: '[' };
       assert.ok(!matchesShortcut(event as KeyboardEvent, parsed, true));
     });
+
+    it('matches mod+shift+[ when Linux/Windows produces { due to key transform', () => {
+      const parsed = parseShortcut('mod+shift+[');
+      const event = { metaKey: false, ctrlKey: true, shiftKey: true, key: '{' };
+      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
+    });
+
+    it('matches mod+shift+] when Linux/Windows produces } due to key transform', () => {
+      const parsed = parseShortcut('mod+shift+]');
+      const event = { metaKey: false, ctrlKey: true, shiftKey: true, key: '}' };
+      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
+    });
   });
 
   describe('formatShortcut', () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { fetchOrgPrs, fetchBranchLinks, fetchPresets, savePreset, deletePreset } from '../lib/api.js';
-  import { derivePrAction } from '../lib/pr-state.js';
+  import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
   import { formatRelativeTime } from '../lib/utils.js';
   import type { AnyIssue, PullRequest, OrgPrsResponse, BranchLinksResponse, FilterPreset } from '../lib/types.js';
   import { deriveColor } from '../lib/colors.js';
@@ -77,17 +77,7 @@
 
   // --- Helpers ---
   function prActionForRow(pr: PullRequest) {
-    const prState = pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    return derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: 0,
-      ciFailing: 0,
-      ciPending: 0,
-      ciTotal: 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: 0,
-    });
+    return derivePrAction(buildPrStateInput(pr));
   }
 
   function prRoleLabel(pr: PullRequest): string {

@@ -7,6 +7,7 @@
   import { getAllActions } from '../lib/actions/registry.svelte.js';
   import { formatShortcut } from '../lib/actions/shortcuts.js';
   import type { ActionContext, Action } from '../lib/actions/types.js';
+  import { onDestroy } from 'svelte';
   import { isMobileDevice, isMac } from '../lib/utils.js';
 
   const TABS = ['all', 'sessions', 'workspaces', 'prs', 'settings'] as const;
@@ -199,9 +200,13 @@
       debouncedQuery = '';
       focusedIndex = 0;
       activeTab = 'all';
+      dragOffset = 0;
+      dragging = false;
       requestAnimationFrame(() => inputWrapperEl?.querySelector('input')?.focus());
     }
   });
+
+  onDestroy(() => { if (debounceTimer) clearTimeout(debounceTimer); });
 
   function handleInput() {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -305,6 +310,7 @@
       ontouchstart={handleDragStart}
       ontouchmove={handleDragMove}
       ontouchend={handleDragEnd}
+      ontouchcancel={handleDragEnd}
     >
       {#if isMobileDevice}
         <div class="drag-handle"><span class="drag-bar"></span></div>

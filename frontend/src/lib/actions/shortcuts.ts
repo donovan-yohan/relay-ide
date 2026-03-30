@@ -15,6 +15,30 @@ export function parseShortcut(shortcutKey: string): ParsedShortcut {
   };
 }
 
+const SHIFTED_KEY_MAP: Record<string, string> = {
+  '[': '{',
+  ']': '}',
+  '\\': '|',
+  ';': ':',
+  "'": '"',
+  ',': '<',
+  '.': '>',
+  '/': '?',
+  '`': '~',
+  '1': '!',
+  '2': '@',
+  '3': '#',
+  '4': '$',
+  '5': '%',
+  '6': '^',
+  '7': '&',
+  '8': '*',
+  '9': '(',
+  '0': ')',
+  '-': '_',
+  '=': '+',
+};
+
 export function matchesShortcut(
   event: KeyboardEvent,
   parsed: ParsedShortcut,
@@ -24,7 +48,12 @@ export function matchesShortcut(
   if (parsed.mod && !modPressed) return false;
   if (!parsed.mod && modPressed) return false;
   if (parsed.shift !== event.shiftKey) return false;
-  return event.key.toLowerCase() === parsed.key.toLowerCase();
+  if (event.key.toLowerCase() === parsed.key.toLowerCase()) return true;
+  if (parsed.shift) {
+    const shiftedVariant = SHIFTED_KEY_MAP[parsed.key.toLowerCase()];
+    if (shiftedVariant && event.key === shiftedVariant) return true;
+  }
+  return false;
 }
 
 export function formatShortcut(shortcutKey: string, isMac: boolean): string {
