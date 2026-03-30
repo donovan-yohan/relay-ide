@@ -27,19 +27,21 @@
 
 ## Progress
 
-- [ ] Task 1: Extend DisplayState + state machine (add `needs-answer`, `error`)
-- [ ] Task 2: Fix stale repo names (read real git state on workspace load)
-- [ ] Task 3: Double-click expand/collapse workspace rows
-- [ ] Task 4: Wire branch-changed WebSocket event (server → frontend)
-- [ ] Task 5: SessionIndicator component (three-axis shape+color system)
-- [ ] Task 6: PR status icon glyphs (replace StatusDot for PR display)
-- [ ] Task 7: Read/unread tracking system
-- [ ] Task 8: Attention score + sidebar sorting
-- [ ] Task 9: Workspace header summary pips
+- [x] Task 1: Extend DisplayState + state machine (add `needs-answer`, `error`)
+- [x] Task 2: Fix stale repo names (read real git state on workspace load)
+- [x] Task 3: Double-click expand/collapse workspace rows
+- [x] Task 4: Wire branch-changed WebSocket event (server → frontend)
+- [x] Task 5: SessionIndicator component (three-axis shape+color system)
+- [x] Task 6: PR status icon glyphs (replace StatusDot for PR display)
+- [x] Task 7: Read/unread tracking system
+- [x] Task 8: Attention score + sidebar sorting
+- [x] Task 9: Workspace header summary pips
 
 ## Surprises & Discoveries
 
-_None yet — updated during execution by /harness:orchestrate._
+- Previous agent left Task 4 uncommitted with minor formatting issues (collapsed newlines) — fixed before committing
+- `backend-state.test.ts` had a stale assertion from before Task 1's error state addition — fixed
+- No TuiTooltip component existed; used native `title` attribute for PrGlyph instead
 
 ## Plan Drift
 
