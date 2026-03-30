@@ -2,16 +2,17 @@
   import type { Column } from './DataTable.svelte';
   import DataTable from './DataTable.svelte';
   import DiffViewer from './DiffViewer.svelte';
-  import { fetchChangedFiles, fetchFileDiff } from '../lib/api.js';
+  import DiffSourceToggle from './DiffSourceToggle.svelte';
+  import { fetchChangedFiles, fetchFileDiff, fetchDefaultBranch } from '../lib/api.js';
   import { generateFileSummary } from '../lib/diff-summary.js';
-  import type { ChangedFile } from '../lib/types.js';
+  import type { ChangedFile, DiffSource } from '../lib/types.js';
 
   let {
     workspacePath,
-    base,
+    onExpandFile,
   }: {
     workspacePath: string;
-    base?: string;
+    onExpandFile?: (file: ChangedFile, base: string | undefined) => void;
   } = $props();
 
   let files = $state<ChangedFile[]>([]);
@@ -26,6 +27,15 @@
   let sortBy = $state('path');
   let sortDir = $state<'asc' | 'desc'>('asc');
   let summaries = $state(new Map<string, string>());
+
+  let diffSource = $state<DiffSource>('working');
+  let defaultBranch = $state('main');
+
+  let base = $derived(
+    diffSource === 'staged' ? 'cached'
+    : diffSource === 'branch' ? defaultBranch
+    : undefined
+  );
 
   const columns: Column[] = [
     { key: 'status', label: '', width: '24px' },
@@ -88,6 +98,12 @@
     void workspacePath;
     void base;
     if (workspacePath) void refresh();
+  });
+
+  $effect(() => {
+    if (workspacePath) {
+      fetchDefaultBranch(workspacePath).then(b => { defaultBranch = b; });
+    }
   });
 
   function handleSort(col: string) {
@@ -161,6 +177,13 @@
 
   {#if expanded}
     <div class="files-content">
+      <div class="files-toolbar">
+        <DiffSourceToggle
+          value={diffSource}
+          onchange={(s) => { diffSource = s; }}
+          {defaultBranch}
+        />
+      </div>
       <DataTable
         {columns}
         rows={sortedFiles}
@@ -185,6 +208,14 @@
             </span>
             <span class="stat stat-add">+{file.additions}</span>
             <span class="stat stat-del">-{file.deletions}</span>
+            {#if onExpandFile}
+              <button
+                class="expand-btn"
+                title="open full diff"
+                onclick={(e) => { e.stopPropagation(); onExpandFile(file, base); }}
+                aria-label="expand diff for {file.path}"
+              >[↗]</button>
+            {/if}
           </div>
           {#if expandedFile === file.path}
             <div class="inline-diff">
@@ -283,6 +314,30 @@
 
   .files-content {
     border-top: 1px solid var(--border, #333);
+  }
+
+  .files-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border, #333);
+  }
+
+  .expand-btn {
+    flex-shrink: 0;
+    padding: 0 4px;
+    background: transparent;
+    border: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    cursor: pointer;
+  }
+
+  .expand-btn:hover {
+    color: var(--accent, #d97757);
+    border-color: var(--accent, #d97757);
   }
 
   .file-row {

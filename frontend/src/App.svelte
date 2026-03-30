@@ -7,7 +7,7 @@
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
-  import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
+  import type { WorktreeInfo, Repo, PullRequest, ChangedFile } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
@@ -758,6 +758,12 @@
   function handleCopyModeChange(active: boolean) { copyModeActive = active; }
   function handleExitCopyMode() { terminalRef?.exitCopyMode(); }
 
+  function handleExpandFile(file: ChangedFile, base: string | undefined) {
+    const workspacePath = activeSession?.cwd ?? activeSession?.repoPath ?? '';
+    if (!workspacePath) return;
+    console.log('[App] expand file:', file.path, 'base:', base);
+  }
+
   let addWorkspaceDialogRef = $state<AddWorkspaceDialog | undefined>();
 
   function handleSpotlightSelectPr(pr: import('./lib/types.js').PullRequest) {
@@ -891,6 +897,7 @@
         <ChangedFiles
           bind:this={changedFilesRef}
           workspacePath={activeSession?.cwd ?? activeSession?.repoPath ?? ''}
+          onExpandFile={handleExpandFile}
         />
 
         <Toolbar
