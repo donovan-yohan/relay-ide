@@ -20,7 +20,9 @@ Execution plans for active and completed work.
 
 ## Tech Debt
 
-No tech debt tracked yet.
+| Item | File | Description |
+|------|------|-------------|
+| EventMessage discriminated union | `frontend/src/lib/ws.ts` | Refactor `EventMessage` from bag-of-optionals to a discriminated union keyed on `type`. Currently all fields except `type` are optional and `type` is `string` — `branch` and `branchName` coexist for different events. A union would give compile-time narrowing and catch missing fields on new event types. |
 
 ## Completed Plans
 
