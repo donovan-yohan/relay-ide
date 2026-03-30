@@ -183,6 +183,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
         let name = path.basename(p);
 
+
         if (isGitRepo) {
           try {
             const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: p });

@@ -45,6 +45,11 @@ export const isMobileDevice =
   'ontouchstart' in window &&
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
+export const isMac =
+  typeof navigator !== 'undefined' &&
+  /Mac/.test(navigator.platform || '') &&
+  !/iPhone|iPad|iPod/.test(navigator.platform || '');
+
 export function estimateTerminalDimensions(): { cols: number; rows: number } {
   const fontSize = isMobileDevice ? 12 : getUi().terminalFontSize;
   return scaledTerminalDimensions(window.innerWidth, window.innerHeight, fontSize);

@@ -56,6 +56,33 @@ export const sessionStartOnTicket: ActionMeta = {
   when: (ctx) => !!ctx.workspacePath,
 };
 
+export const sessionCustomize: ActionMeta = {
+  id: 'session.customize',
+  label: 'customize session',
+  description: 'configure agent and flags for a new session',
+  category: 'session',
+  icon: '>',
+  when: (ctx) => !!ctx.workspacePath,
+};
+
+export const sessionSwitchToTab: ActionMeta = {
+  id: 'session.switch-to-tab',
+  label: 'switch to session tab',
+  description: 'jump to a specific open session',
+  category: 'session',
+  icon: '→',
+  when: (ctx) => !!ctx.sessionId,
+};
+
+export const sessionRename: ActionMeta = {
+  id: 'session.rename',
+  label: 'rename active session',
+  description: 'change the display name of the current session',
+  category: 'session',
+  icon: '~',
+  when: (ctx) => !!ctx.sessionId,
+};
+
 export const sessionActions: ActionMeta[] = [
   sessionNewAgent,
   sessionNewTerminal,
@@ -63,4 +90,7 @@ export const sessionActions: ActionMeta[] = [
   sessionKill,
   sessionStartOnRepo,
   sessionStartOnTicket,
+  sessionCustomize,
+  sessionSwitchToTab,
+  sessionRename,
 ];

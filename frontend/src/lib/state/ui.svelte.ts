@@ -48,6 +48,7 @@ let sidebarCollapsed = $state(loadSidebarCollapsed());
 let searchQuery = $state('');
 let activeRepoPath = $state<string | null>(loadActiveRepoPath());
 let terminalFontSize = $state(loadTerminalFontSize());
+let hasHardwareKeyboard = $state(false);
 let fullPageDiff = $state<{
   workspacePath: string;
   file?: string | undefined;
@@ -74,6 +75,8 @@ export function getUi() {
     },
     get terminalFontSize() { return terminalFontSize; },
     set terminalFontSize(v: number) { terminalFontSize = v; },
+    get hasHardwareKeyboard() { return hasHardwareKeyboard; },
+    set hasHardwareKeyboard(v: boolean) { hasHardwareKeyboard = v; },
     get fullPageDiff() { return fullPageDiff; },
     set fullPageDiff(v: typeof fullPageDiff) { fullPageDiff = v; },
   };

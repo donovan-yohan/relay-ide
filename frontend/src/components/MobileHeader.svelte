@@ -2,10 +2,12 @@
   let {
     title,
     onMenuClick,
+    onCommandClick,
     hidden = false,
   }: {
     title: string;
     onMenuClick: () => void;
+    onCommandClick: () => void;
     hidden?: boolean;
   } = $props();
 </script>
@@ -17,6 +19,11 @@
     onclick={onMenuClick}
   >&#9776;</button>
   <span class="mobile-title">{title}</span>
+  <button
+    class="command-trigger"
+    aria-label="Open command palette"
+    onclick={onCommandClick}
+  >&gt; command</button>
 </div>
 
 <style>
@@ -67,5 +74,27 @@
 
   .icon-btn:hover {
     background: var(--border);
+  }
+
+  .command-trigger {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    padding: 4px 10px;
+    cursor: pointer;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    border-radius: 0;
+    touch-action: manipulation;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .command-trigger:active {
+    background: var(--accent);
+    color: var(--surface);
   }
 </style>
