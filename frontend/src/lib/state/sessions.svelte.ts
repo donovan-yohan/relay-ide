@@ -7,6 +7,7 @@ import { buildSidebarItems } from './sidebar-items.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
+const WORKSPACE_SESSIONS_KEY = 'claude-remote-workspace-sessions';
 
 function loadActiveSessionId(): string | null {
   try { return localStorage.getItem(ACTIVE_SESSION_KEY); }
@@ -20,10 +21,25 @@ function saveActiveSessionId(id: string | null): void {
   } catch { /* localStorage unavailable */ }
 }
 
+function loadWorkspaceSessions(): Record<string, string> {
+  try {
+    const stored = localStorage.getItem(WORKSPACE_SESSIONS_KEY);
+    if (stored) return JSON.parse(stored);
+  } catch { /* localStorage unavailable */ }
+  return {};
+}
+
+function saveWorkspaceSessions(): void {
+  try {
+    localStorage.setItem(WORKSPACE_SESSIONS_KEY, JSON.stringify(workspaceLastSession));
+  } catch { /* localStorage unavailable */ }
+}
+
 let sessions = $state<SessionSummary[]>([]);
 let worktrees = $state<WorktreeInfo[]>([]);
 let repos = $state<Repo[]>([]);
 let activeSessionId = $state<string | null>(loadActiveSessionId());
+let workspaceLastSession: Record<string, string> = loadWorkspaceSessions();
 let loadingItems = $state<Record<string, boolean>>({});
 let notificationSessions = $state<Record<string, boolean>>({});
 let sidebarItems = $state<SidebarItem[]>([]);
@@ -41,6 +57,24 @@ function saveNotificationPrefs(): void {
   try {
     localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(notificationSessions));
   } catch { /* localStorage unavailable */ }
+}
+
+export function rememberSessionForWorkspace(workspacePath: string, sessionId: string): void {
+  workspaceLastSession[workspacePath] = sessionId;
+  saveWorkspaceSessions();
+}
+
+export function recallSessionForWorkspace(workspacePath: string): string | null {
+  const id = workspaceLastSession[workspacePath];
+  if (!id) return null;
+  // Only return if session still exists
+  const exists = sessions.some(s => s.id === id);
+  if (!exists) {
+    delete workspaceLastSession[workspacePath];
+    saveWorkspaceSessions();
+    return null;
+  }
+  return id;
 }
 
 export function getSessionState() {
@@ -86,6 +120,16 @@ export async function refreshAll(): Promise<void> {
       }
     }
     if (notifPruned) saveNotificationPrefs();
+
+    // Prune stale workspace-session mappings
+    let wsPruned = false;
+    for (const [path, id] of Object.entries(workspaceLastSession)) {
+      if (!activeIds.has(id)) {
+        delete workspaceLastSession[path];
+        wsPruned = true;
+      }
+    }
+    if (wsPruned) saveWorkspaceSessions();
 
     // Rebuild sidebar items, reconciling displayState against existing items
     sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);

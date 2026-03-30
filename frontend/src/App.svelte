@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
@@ -463,11 +463,16 @@
   // Handlers
   function handleSelectWorkspace(path: string) {
     if (ui.activeRepoPath === path) {
-      // Already viewing this workspace — return to dashboard
-      sessionState.activeSessionId = null;
+      // Already viewing this workspace — toggle between session and dashboard
+      if (sessionState.activeSessionId) {
+        sessionState.activeSessionId = null;
+      } else {
+        const recalled = recallSessionForWorkspace(path);
+        if (recalled) sessionState.activeSessionId = recalled;
+      }
     } else {
       ui.activeRepoPath = path;
-      sessionState.activeSessionId = null;
+      sessionState.activeSessionId = recallSessionForWorkspace(path);
     }
     closeSidebar();
   }
@@ -476,6 +481,7 @@
     sessionState.activeSessionId = id;
     const session = sessionState.sessions.find(s => s.id === id);
     if (session) {
+      rememberSessionForWorkspace(session.repoPath, id);
       ui.activeRepoPath = session.repoPath;
     }
     handleUserViewed(id);
@@ -845,7 +851,7 @@
 
       {:else if viewMode === 'org'}
         <OrgDashboard
-          onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; }}
+          onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = recallSessionForWorkspace(path); }}
           onOpenSession={(id) => { sessionState.activeSessionId = id; }}
         />
 
@@ -931,7 +937,7 @@
     sessions={sessionState.sessions}
     {actionContext}
     onClose={() => { spotlightOpen = false; }}
-    onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = null; closeSidebar(); }}
+    onSelectWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = recallSessionForWorkspace(path); closeSidebar(); }}
     onSelectSession={(id) => handleSelectSession(id)}
     onSelectPr={handleSpotlightSelectPr}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}
