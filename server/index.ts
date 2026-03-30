@@ -383,7 +383,11 @@ async function main(): Promise<void> {
   app.use('/workspaces', requireAuth, workspaceRouter);
 
   // Mount workspace-groups CRUD router
-  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth));
+  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
+    sessions,
+    gitWatcher,
+    configPath: CONFIG_PATH,
+  }));
 
   // Mount GitHub integration router
   const integrationGitHubRouter = createIntegrationGitHubRouter({ configPath: CONFIG_PATH });

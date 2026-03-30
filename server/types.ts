@@ -46,6 +46,8 @@ interface BaseSession {
   status: SessionStatus;
   needsBranchRename: boolean;
   agentState: AgentState;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface PtySession extends BaseSession {
@@ -96,6 +98,8 @@ export interface SessionSummary {
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface WorktreeMetadata {

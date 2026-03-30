@@ -8,7 +8,7 @@
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
-  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
+  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, launchWorkspaceSession } from './lib/api.js';
   import { derivePrAction, getActionPrompt, buildPrStateInput } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal } from './lib/actions/registry.svelte.js';
@@ -608,6 +608,32 @@
     }
   }
 
+  async function handleLaunchWorkspaceSession(workspaceId: string) {
+    const loadingKey = `ws-launch:${workspaceId}`;
+    if (isItemLoading(loadingKey)) return;
+    setLoading(loadingKey);
+    try {
+      const result = await launchWorkspaceSession(workspaceId);
+      await refreshAll();
+      sessionState.activeSessionId = result.id;
+      ui.activeRepoPath = result.repoPath;
+      ui.activeWorkspaceId = workspaceId;
+      closeSidebar();
+
+      if (result.warnings?.length) {
+        const msgs = result.warnings.map(w => `  ${w.repoPath}: ${w.error}`).join('\n');
+        console.warn('[workspace-session] partial failure:', result.warnings);
+        alert(`workspace launched with warnings:\n${msgs}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error';
+      console.error('[workspace-session] launch failed:', err);
+      alert(`workspace launch failed: ${message}`);
+    } finally {
+      clearLoading(loadingKey);
+    }
+  }
+
   async function handleFixConflicts(pr: PullRequest) {
     if (!activeWorkspace) return;
 
@@ -941,6 +967,7 @@
       onAddWorkspace={handleAddWorkspace}
       onDeleteSession={handleCloseSession}
       onDeleteWorktree={handleDeleteWorktree}
+      onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
     />
 
     <div class="terminal-area">

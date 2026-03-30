@@ -35,6 +35,8 @@ interface SerializedPtySession {
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   continuePolicy?: ContinuePolicy;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 interface PendingSessionsFile {
@@ -45,14 +47,16 @@ interface PendingSessionsFile {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-type CreateParams = Omit<CreatePtyParams, 'id'> & {
+export type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   initialPrompt?: string;
+  workspaceId?: string;
+  additionalDirs?: string[];
 };
 
-type CreateResult = SessionSummary & { pid: number | undefined };
+export type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();
@@ -151,7 +155,7 @@ export function fireBackendStateIfChanged(session: Session): void {
   }
 }
 
-function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
+function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
 
   const ptyParams: CreatePtyParams = {
@@ -186,6 +190,12 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
   }
   if (initialPrompt) {
     ptySession.initialPrompt = initialPrompt;
+  }
+  if (workspaceId) {
+    ptySession.workspaceId = workspaceId;
+  }
+  if (additionalDirs?.length) {
+    ptySession.additionalDirs = additionalDirs;
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   if (initialPrompt) {
@@ -235,6 +245,8 @@ function list(): SessionSummary[] {
       needsBranchRename: !!s.needsBranchRename,
       agentState: s.agentState,
       currentActivity: s.currentActivity,
+      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+      ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
@@ -341,6 +353,8 @@ function serializeAll(configDir: string): void {
       continuePolicy: session.continuePolicy,
       ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
       ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
+      ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+      ...(session.additionalDirs?.length ? { additionalDirs: session.additionalDirs } : {}),
     });
   }
 
@@ -497,6 +511,8 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         continuePolicy: s.continuePolicy ?? 'never',
         ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
         ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
+        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+        ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DEFAULTS, loadConfig, saveConfig, ensureMetaDir, readMeta, writeMeta, deleteMeta, resolveSessionSettings, deleteRepoSettingKeys } from '../server/config.js';
+import type { Config } from '../server/types.js';
 
 let tmpDir!: string;
 
@@ -613,4 +614,50 @@ test('resolveSessionSettings defaults continuePolicy to always when defaultConti
   const resolved = resolveSessionSettings(config, '/some/repo', {});
   // defaultContinue defaults to true via DEFAULTS, so maps to 'always'
   assert.equal(resolved.continuePolicy, 'always');
+});
+
+test('cascades workspace settings when workspaceId is provided', () => {
+  const config = {
+    ...DEFAULTS,
+    configVersion: 4,
+    repos: ['/tmp/test-repo'],
+    workspaces: [{
+      id: 'ws-1',
+      name: 'test workspace',
+      repos: ['/tmp/test-repo'],
+      order: 0,
+      settings: {
+        defaultYolo: true,
+        defaultAgent: 'claude',
+      },
+    }],
+    repoSettings: {},
+  } as Config;
+
+  const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
+  assert.strictEqual(result.yolo, true, 'workspace settings should cascade yolo');
+  assert.strictEqual(result.agent, 'claude');
+});
+
+test('repo settings override workspace settings', () => {
+  const config = {
+    ...DEFAULTS,
+    configVersion: 4,
+    repos: ['/tmp/test-repo'],
+    workspaces: [{
+      id: 'ws-1',
+      name: 'test workspace',
+      repos: ['/tmp/test-repo'],
+      order: 0,
+      settings: {
+        defaultYolo: true,
+      },
+    }],
+    repoSettings: {
+      '/tmp/test-repo': { defaultYolo: false },
+    },
+  } as Config;
+
+  const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
+  assert.strictEqual(result.yolo, false, 'repo settings should override workspace');
 });

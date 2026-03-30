@@ -36,6 +36,8 @@ export interface SessionSummary {
   useTmux?: boolean | undefined;
   status?: 'active' | 'disconnected' | undefined;
   agentState?: AgentState | undefined;
+  workspaceId?: string | undefined;
+  additionalDirs?: string[] | undefined;
 }
 
 export interface WorktreeInfo {

@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
+import type { SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
 import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
@@ -40,6 +40,7 @@ function saveWorkspaceSessions(): void {
 let sessions = $state<SessionSummary[]>([]);
 let worktrees = $state<WorktreeInfo[]>([]);
 let repos = $state<Repo[]>([]);
+let workspaceGroups = $state<Workspace[]>([]);
 let activeSessionId = $state<string | null>(loadActiveSessionId());
 let workspaceLastSession: Record<string, string> = loadWorkspaceSessions();
 let loadingItems = $state<Record<string, boolean>>({});
@@ -84,6 +85,7 @@ export function getSessionState() {
     get sessions() { return sessions; },
     get worktrees() { return worktrees; },
     get repos() { return repos; },
+    get workspaceGroups() { return workspaceGroups; },
     get activeSessionId() { return activeSessionId; },
     set activeSessionId(id: string | null) {
       activeSessionId = id;
@@ -96,54 +98,70 @@ export function getSessionState() {
 }
 
 export async function refreshAll(): Promise<void> {
-  try {
-    const [s, w, ws] = await Promise.all([
-      api.fetchSessions(),
-      api.fetchWorktrees(),
-      api.fetchWorkspaces(),
-    ]);
-    sessions = s;
-    worktrees = w;
-    repos = ws;
+  const [sResult, wResult, wsResult, wgResult] = await Promise.allSettled([
+    api.fetchSessions(),
+    api.fetchWorktrees(),
+    api.fetchWorkspaces(),
+    api.fetchWorkspaceGroups(),
+  ]);
 
-    // Validate restored activeSessionId — clear if the session no longer exists
-    const activeIds = new Set(sessions.map(sess => sess.id));
-    if (activeSessionId !== null && !activeIds.has(activeSessionId)) {
-      activeSessionId = null;
-      saveActiveSessionId(null);
+  if (sResult.status === 'fulfilled') sessions = sResult.value;
+  else console.error('[refreshAll] failed to fetch sessions:', sResult.reason);
+
+  if (wResult.status === 'fulfilled') worktrees = wResult.value;
+  else console.error('[refreshAll] failed to fetch worktrees:', wResult.reason);
+
+  if (wsResult.status === 'fulfilled') repos = wsResult.value;
+  else console.error('[refreshAll] failed to fetch repos:', wsResult.reason);
+
+  if (wgResult.status === 'fulfilled') workspaceGroups = wgResult.value;
+  else console.error('[refreshAll] failed to fetch workspace groups:', wgResult.reason);
+
+  // Validate restored activeSessionId — clear if the session no longer exists
+  const activeIds = new Set(sessions.map(sess => sess.id));
+  if (activeSessionId !== null && !activeIds.has(activeSessionId)) {
+    activeSessionId = null;
+    saveActiveSessionId(null);
+  }
+
+  // Prune stale notification prefs
+  let notifPruned = false;
+  for (const id of Object.keys(notificationSessions)) {
+    if (!activeIds.has(id)) {
+      delete notificationSessions[id];
+      notifPruned = true;
     }
+  }
+  if (notifPruned) saveNotificationPrefs();
 
-    // Prune stale notification prefs
-    let notifPruned = false;
-    for (const id of Object.keys(notificationSessions)) {
-      if (!activeIds.has(id)) {
-        delete notificationSessions[id];
-        notifPruned = true;
-      }
+  // Prune stale workspace-session mappings
+  let wsPruned = false;
+  for (const [path, id] of Object.entries(workspaceLastSession)) {
+    if (!activeIds.has(id)) {
+      delete workspaceLastSession[path];
+      wsPruned = true;
     }
-    if (notifPruned) saveNotificationPrefs();
+  }
+  if (wsPruned) saveWorkspaceSessions();
 
-    // Prune stale workspace-session mappings
-    let wsPruned = false;
-    for (const [path, id] of Object.entries(workspaceLastSession)) {
-      if (!activeIds.has(id)) {
-        delete workspaceLastSession[path];
-        wsPruned = true;
-      }
-    }
-    if (wsPruned) saveWorkspaceSessions();
+  // Rebuild sidebar items, reconciling displayState against existing items
+  sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems, isUnread);
 
-    // Rebuild sidebar items, reconciling displayState against existing items
-    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems, isUnread);
-
-    // Prune stale unread entries from localStorage
-    pruneUnread(new Set(sidebarItems.map(i => i.id)));
-
-  } catch { /* silent */ }
+  // Prune stale unread entries from localStorage
+  pruneUnread(new Set(sidebarItems.map(i => i.id)));
 }
 
 export function getSessionsForRepo(repoPath: string): SessionSummary[] {
   return sessions.filter(s => s.repoPath === repoPath);
+}
+
+export function getSessionsForWorkspaceGroup(workspaceId: string): SessionSummary[] {
+  const directSessions = sessions.filter(s => s.workspaceId === workspaceId);
+  const workspace = workspaceGroups.find(w => w.id === workspaceId);
+  if (!workspace) return directSessions;
+  const repoSet = new Set(workspace.repos);
+  const repoSessions = sessions.filter(s => !s.workspaceId && repoSet.has(s.repoPath));
+  return [...directSessions, ...repoSessions];
 }
 
 export function renameSession(sessionId: string, branchName: string, displayName: string): void {
