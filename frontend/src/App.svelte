@@ -157,6 +157,7 @@
         label: 'open diff view',
         description: 'open full-page diff viewer for changed files',
         category: 'workspace' as const,
+        shortcut: { key: 'd' },
         when: (ctx: ActionContext) => ctx.view === 'session',
         handler: () => {
           const ws = activeSession?.cwd ?? activeSession?.repoPath ?? '';
@@ -168,6 +169,7 @@
         label: 'close diff view',
         description: 'close full-page diff viewer',
         category: 'workspace' as const,
+        shortcut: { key: 'Escape' },
         when: () => !!ui.fullPageDiff,
         handler: () => { ui.fullPageDiff = null; },
       },

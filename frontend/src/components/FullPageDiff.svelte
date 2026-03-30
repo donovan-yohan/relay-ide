@@ -82,6 +82,7 @@
   });
 
   $effect(() => {
+    void base;
     if (activeFilePath) {
       loadDiff(activeFilePath);
     }
