@@ -285,8 +285,7 @@ async function main(): Promise<void> {
   const gitWatcher = new GitWatcher();
 
   const server = http.createServer(app);
-  const { broadcastEvent } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
-
+  const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
   // Also clear the PR cache on real webhook events — these indicate actual PR state changes
   broadcastEventDelegate = (type, data) => {
@@ -313,6 +312,7 @@ async function main(): Promise<void> {
         }
       }
     }
+    broadcastBranchChanged(cwdPath, newBranch);
     // Rebuild ref watchers when branches change (new upstream to watch)
     rebuildRefWatcher();
   });

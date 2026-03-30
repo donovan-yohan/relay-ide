@@ -10,7 +10,7 @@
   import { createSession, renameSession } from '../lib/api.js';
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './ContextMenu.svelte';
-
+  import CipherText from './CipherText.svelte';
   const sessionState = getSessionState();
 
   let {
@@ -295,7 +295,7 @@
             <div class="session-row-secondary">
               <span class="secondary-time">{sessionTime(representative)}</span>
               {#if representative.branchName}
-                <span class="secondary-branch">{representative.branchName}</span>
+                <span class="secondary-branch"><CipherText text={representative.branchName} /></span>
               {/if}
             </div>
             <div class="row-menu-overlay">
@@ -373,7 +373,7 @@
           <div class="session-row-secondary">
             <span class="secondary-time">{worktreeTime(wt)}</span>
             {#if wt.branchName}
-              <span class="secondary-branch">{wt.branchName}</span>
+              <span class="secondary-branch"><CipherText text={wt.branchName} /></span>
             {/if}
           </div>
           <div class="row-menu-overlay">

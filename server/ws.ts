@@ -23,7 +23,16 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
   return cookies;
 }
 
-function setupWebSocket(server: http.Server, authenticatedTokens: Set<string>, watcher: WorktreeWatcher | null, _configPath?: string): { wss: WebSocketServer; broadcastEvent: (type: string, data?: Record<string, unknown>) => void } {
+function setupWebSocket(
+  server: http.Server,
+  authenticatedTokens: Set<string>,
+  watcher: WorktreeWatcher | null,
+  _configPath?: string,
+): {
+  wss: WebSocketServer;
+  broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
+  broadcastBranchChanged: (cwdPath: string, branchName: string) => void;
+} {
   const wss = new WebSocketServer({ noServer: true });
   const eventClients = new Set<WebSocket>();
 
@@ -33,6 +42,16 @@ function setupWebSocket(server: http.Server, authenticatedTokens: Set<string>, w
       if (client.readyState === client.OPEN) {
         client.send(msg);
       }
+    }
+  }
+
+  function broadcastBranchChanged(cwdPath: string, branchName: string): void {
+    const matchingSessions = sessions.list().filter(
+      (session) => session.cwd === cwdPath || session.worktreePath === cwdPath || session.repoPath === cwdPath,
+    );
+
+    for (const session of matchingSessions) {
+      broadcastEvent('session-branch-changed', { sessionId: session.id, branch: branchName, cwdPath });
     }
   }
 
@@ -157,7 +176,7 @@ function setupWebSocket(server: http.Server, authenticatedTokens: Set<string>, w
     broadcastEvent('session-ended', { sessionId, cwd, branchName });
   });
 
-  return { wss, broadcastEvent };
+  return { wss, broadcastEvent, broadcastBranchChanged };
 }
 
 export { setupWebSocket };
