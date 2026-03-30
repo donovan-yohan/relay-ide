@@ -6,6 +6,7 @@ import path from 'node:path';
 import * as sessions from '../server/sessions.js';
 import { resolveTmuxSpawn, generateTmuxSessionName, getTmuxPrefix } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
+import { AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
 
 // Track created session IDs so we can clean up after each test
@@ -910,6 +911,13 @@ describe('session persistence', () => {
     const restored = sessions.get(s.id);
     assert.ok(restored);
     assert.strictEqual((restored as PtySession).yolo, true);
+  });
+
+  it('maps codex yolo to no-approval workspace-write args', () => {
+    assert.deepStrictEqual(
+      AGENT_YOLO_ARGS.codex,
+      ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
+    );
   });
 
   it('serialize/restore preserves claudeArgs', async () => {

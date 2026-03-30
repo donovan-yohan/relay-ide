@@ -1,5 +1,6 @@
 # Bug Analyses
 
+- [2026-03-30-codex-yolo-uses-full-auto-bug-analysis](2026-03-30-codex-yolo-uses-full-auto-bug-analysis.md) — Codex yolo still requests permissions — backend maps yolo to `--full-auto`, but Codex defines that as `-a on-request` rather than no-approval mode (2026-03-30)
 - [2026-03-29-new-agent-ignores-repo-yolo-bug-analysis](2026-03-29-new-agent-ignores-repo-yolo-bug-analysis.md) — New Agent button ignores repo-level yolo setting — frontend sends global defaults as explicit overrides, shadowing repo settings via nullish coalescing (2026-03-29)
 - [2026-03-28-hooks-403-after-restart-bug-analysis](2026-03-28-hooks-403-after-restart-bug-analysis.md) — Hook 403 errors after restart — hookToken not serialized, surviving tmux sessions lose auth + TMUX_PREFIX env pollution (2026-03-28)
 - [2026-03-28-bg-pin-setup-blocked-bug-analysis](2026-03-28-bg-pin-setup-blocked-bug-analysis.md) — --bg first-run exits with "No PIN configured" — non-TTY gate blocks server before web setup UI can load (2026-03-28)

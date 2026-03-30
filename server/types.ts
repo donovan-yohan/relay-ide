@@ -24,7 +24,7 @@ export const AGENT_CONTINUE_ARGS: Record<AgentType, string[]> = {
 
 export const AGENT_YOLO_ARGS: Record<AgentType, string[]> = {
   claude: ['--dangerously-skip-permissions'],
-  codex: ['--full-auto'],
+  codex: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
 };
 
 // Session types — discriminated union on `mode`
