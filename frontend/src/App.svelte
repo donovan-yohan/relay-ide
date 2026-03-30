@@ -152,6 +152,25 @@
         }
       }},
       { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
+      {
+        id: 'workspace.open-diff-view' as const,
+        label: 'open diff view',
+        description: 'open full-page diff viewer for changed files',
+        category: 'workspace' as const,
+        when: (ctx: ActionContext) => ctx.view === 'session',
+        handler: () => {
+          const ws = activeSession?.cwd ?? activeSession?.repoPath ?? '';
+          if (ws) ui.fullPageDiff = { workspacePath: ws };
+        },
+      },
+      {
+        id: 'workspace.close-diff-view' as const,
+        label: 'close diff view',
+        description: 'close full-page diff viewer',
+        category: 'workspace' as const,
+        when: () => !!ui.fullPageDiff,
+        handler: () => { ui.fullPageDiff = null; },
+      },
     ] satisfies Action[]);
 
     let cleanupViewport: (() => void) | undefined;
