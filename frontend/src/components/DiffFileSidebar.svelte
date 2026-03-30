@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { ChangedFile } from '../lib/types.js';
+  import { statusIcon, statusColor } from '../lib/diff-utils.js';
+  import { rootShortName } from '../lib/utils.js';
 
   let {
     files,
@@ -10,27 +12,6 @@
     activeFile: string | null;
     onSelectFile: (file: ChangedFile) => void;
   } = $props();
-
-  const statusIcon: Record<string, string> = {
-    added: '+',
-    modified: '~',
-    deleted: '-',
-    renamed: '→',
-    untracked: '?',
-  };
-
-  const statusColor: Record<string, string> = {
-    added: 'var(--status-success)',
-    modified: 'var(--status-warning)',
-    deleted: 'var(--status-error)',
-    renamed: 'var(--status-info)',
-    untracked: 'var(--text-muted)',
-  };
-
-  function fileName(filePath: string): string {
-    const idx = filePath.lastIndexOf('/');
-    return idx === -1 ? filePath : filePath.slice(idx + 1);
-  }
 
   function fileDir(filePath: string): string {
     const idx = filePath.lastIndexOf('/');
@@ -70,7 +51,7 @@
     >
       <span class="status" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
       <span class="name" title={file.path}>
-        {fileName(file.path)}
+        {rootShortName(file.path)}
         {#if fileDir(file.path)}
           <span class="dir">{fileDir(file.path)}/</span>
         {/if}

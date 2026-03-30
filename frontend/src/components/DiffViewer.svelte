@@ -54,7 +54,6 @@
     lang: string;
   }
 
-  // Synchronous parse — safe for $derived.by (async result handled in $effect below)
   const parsed = $derived.by<ParsedDiff>(() => {
     if (!diff) return { rawLines: [], hunkHeaderMap: new Map(), lang: 'javascript' };
 
@@ -163,7 +162,6 @@
     const gen = ++tokenGeneration;
     showAll = false;
 
-    // Immediately render without syntax highlighting
     const plain = rawLines.map(l => ({ ...l, tokens: null as ThemedToken[] | null }));
     lines = plain;
     pairedLines = buildPairs(plain, hunkHeaderMap);

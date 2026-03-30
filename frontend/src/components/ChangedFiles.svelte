@@ -5,6 +5,8 @@
   import DiffSourceToggle from './DiffSourceToggle.svelte';
   import { fetchChangedFiles, fetchFileDiff, fetchDefaultBranch } from '../lib/api.js';
   import { generateFileSummary } from '../lib/diff-summary.js';
+  import { statusIcon, statusColor, diffSourceToBase } from '../lib/diff-utils.js';
+  import { rootShortName } from '../lib/utils.js';
   import type { ChangedFile, DiffSource } from '../lib/types.js';
 
   let {
@@ -31,11 +33,7 @@
   let diffSource = $state<DiffSource>('working');
   let defaultBranch = $state('main');
 
-  let base = $derived(
-    diffSource === 'staged' ? 'cached'
-    : diffSource === 'branch' ? defaultBranch
-    : undefined
-  );
+  let base = $derived(diffSourceToBase(diffSource, defaultBranch));
 
   const columns: Column[] = [
     { key: 'status', label: '', width: '24px' },
@@ -58,22 +56,6 @@
     });
     return sorted;
   });
-
-  const statusIcon: Record<string, string> = {
-    added: '+',
-    modified: '~',
-    deleted: '-',
-    renamed: '→',
-    untracked: '?',
-  };
-
-  const statusColor: Record<string, string> = {
-    added: 'var(--status-success)',
-    modified: 'var(--status-warning)',
-    deleted: 'var(--status-error)',
-    renamed: 'var(--status-info)',
-    untracked: 'var(--text-muted)',
-  };
 
   export async function refresh() {
     if (!workspacePath) return;
@@ -148,10 +130,6 @@
     }
   }
 
-  function fileName(filePath: string): string {
-    const idx = filePath.lastIndexOf('/');
-    return idx === -1 ? filePath : filePath.slice(idx + 1);
-  }
 </script>
 
 <div class="changed-files-panel">
@@ -201,7 +179,7 @@
           <div class="file-row" class:expanded-row={expandedFile === file.path}>
             <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
             <span class="file-name" title={file.path}>
-              {fileName(file.path)}
+              {rootShortName(file.path)}
               {#if summaries.get(file.path)}
                 <span class="file-summary">{summaries.get(file.path)}</span>
               {/if}
@@ -232,14 +210,14 @@
           <button class="mobile-file-card" onclick={() => handleRowAction(file)}>
             <div class="card-header">
               <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
-              <span class="file-name">{fileName(file.path)}</span>
+              <span class="file-name">{rootShortName(file.path)}</span>
               <span class="card-stats">
                 <span class="stat-add">+{file.additions}</span>
                 <span class="stat-del">-{file.deletions}</span>
               </span>
             </div>
-            {#if file.summary}
-              <div class="card-summary">{file.summary}</div>
+            {#if summaries.get(file.path)}
+              <div class="card-summary">{summaries.get(file.path)}</div>
             {/if}
             {#if expandedFile === file.path}
               <div class="inline-diff">

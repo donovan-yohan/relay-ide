@@ -4,6 +4,7 @@
   import DiffSourceToggle from './DiffSourceToggle.svelte';
   import { fetchChangedFiles, fetchFileDiff, fetchDefaultBranch } from '../lib/api.js';
   import { generateFileSummary } from '../lib/diff-summary.js';
+  import { diffSourceToBase } from '../lib/diff-utils.js';
   import type { ChangedFile, DiffSource } from '../lib/types.js';
 
   let {
@@ -34,11 +35,7 @@
   let hunkCount = $state(0);
   let summary = $state('');
 
-  let base = $derived(
-    diffSource === 'staged' ? 'cached'
-    : diffSource === 'branch' ? defaultBranch
-    : undefined
-  );
+  let base = $derived(diffSourceToBase(diffSource, defaultBranch));
 
   async function loadFiles() {
     loading = true;
@@ -89,7 +86,7 @@
   });
 
   $effect(() => {
-    if (workspacePath) {
+    if (workspacePath && defaultBranch === 'main') {
       fetchDefaultBranch(workspacePath).then(b => { defaultBranch = b; });
     }
   });
@@ -124,8 +121,7 @@
     const target = currentHunkIndex + delta;
     if (target < 0 || target >= hunkCount) return;
     currentHunkIndex = target;
-    const hunks = document.querySelectorAll('.hunk-header[id^="hunk-"], .hunk-header[id^="sbs-hunk-"]');
-    const el = hunks[target];
+    const el = document.getElementById(`hunk-${target}`) ?? document.getElementById(`sbs-hunk-${target}`);
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 </script>
