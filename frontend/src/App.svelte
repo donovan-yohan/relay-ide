@@ -420,10 +420,11 @@
       } else if (msg.type === 'files-changed') {
         const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
         if (!msg.workspacePath || activeWs === msg.workspacePath) {
-          changedFilesRef?.refresh();
+          throttledChangedFilesRefresh();
         }
       } else if (msg.type === 'session-activity-changed') {
-        throttledChangedFilesRefresh();
+        // No changed-files refresh here — git watcher handles actual file changes.
+        // Refreshing on every tool call (Read, Grep, etc.) caused request floods.
       }
     });
 
