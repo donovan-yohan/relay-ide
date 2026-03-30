@@ -11,7 +11,8 @@
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
-  import { registerGlobal } from './lib/actions/registry.svelte.js';
+  import { registerGlobal, getAllActions } from './lib/actions/registry.svelte.js';
+  import { setupShortcutListener } from './lib/actions/shortcuts.js';
   import type { Action, ActionContext } from './lib/actions/types.js';
   import { sessionNewAgent, sessionNewTerminal, sessionCloseActive, sessionKill, sessionStartOnRepo, sessionStartOnTicket, sessionCustomize, sessionSwitchToTab, sessionRename } from './lib/actions/definitions/session.js';
   import { workspaceAdd, workspaceNewWorktree } from './lib/actions/definitions/workspace.js';
@@ -268,16 +269,18 @@
       };
     }
 
-    // Keyboard shortcuts for tab navigation (desktop only)
+    // Keyboard shortcuts — centralized via ShortcutListener
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     let cleanupKeydown: (() => void) | undefined;
 
     {
-      const onKeydown = (e: KeyboardEvent) => {
+      // Special-case: Cmd+P toggles palette (must work even from inputs, before registry check)
+      // Special-case: Cmd+1-9 for tab switching (dynamic, not registry-driven)
+      const onSpecialKeydown = (e: KeyboardEvent) => {
         const mod = isMac ? e.metaKey : e.ctrlKey;
+        if (!mod) return;
 
-        // Cmd/Ctrl+P — open spotlight (works even from input fields)
-        if (mod && e.key === 'p' && !e.shiftKey) {
+        if (e.key === 'p' && !e.shiftKey) {
           e.preventDefault();
           spotlightOpen = !spotlightOpen;
           return;
@@ -286,25 +289,6 @@
         const tag = (document.activeElement as HTMLElement | null)?.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-        if (!mod) return;
-
-        // Cmd/Ctrl+T — quick new agent session
-        if (e.key === 't' && !e.shiftKey) {
-          e.preventDefault();
-          handleQuickAgent();
-          return;
-        }
-
-        // Cmd/Ctrl+W — close current session tab
-        if (e.key === 'w' && !e.shiftKey) {
-          e.preventDefault();
-          if (sessionState.activeSessionId) {
-            handleCloseSession(sessionState.activeSessionId);
-          }
-          return;
-        }
-
-        // Cmd/Ctrl+1–9 — switch to tab N (9 = last)
         if (!e.shiftKey && e.key >= '1' && e.key <= '9') {
           const sessions = workspaceSessions;
           if (sessions.length === 0) return;
@@ -314,32 +298,21 @@
           if (target) handleSelectSession(target.id);
           return;
         }
-
-        // Cmd/Ctrl+Shift+[ — previous tab (cycle)
-        if (e.shiftKey && e.key === '[') {
-          const sessions = workspaceSessions;
-          if (sessions.length === 0) return;
-          e.preventDefault();
-          const idx = sessions.findIndex(s => s.id === sessionState.activeSessionId);
-          const prev = idx <= 0 ? sessions[sessions.length - 1] : sessions[idx - 1];
-          if (prev) handleSelectSession(prev.id);
-          return;
-        }
-
-        // Cmd/Ctrl+Shift+] — next tab (cycle)
-        if (e.shiftKey && e.key === ']') {
-          const sessions = workspaceSessions;
-          if (sessions.length === 0) return;
-          e.preventDefault();
-          const idx = sessions.findIndex(s => s.id === sessionState.activeSessionId);
-          const next = idx === -1 || idx === sessions.length - 1 ? sessions[0] : sessions[idx + 1];
-          if (next) handleSelectSession(next.id);
-          return;
-        }
       };
 
-      document.addEventListener('keydown', onKeydown);
-      cleanupKeydown = () => document.removeEventListener('keydown', onKeydown);
+      document.addEventListener('keydown', onSpecialKeydown);
+
+      // Registry-driven shortcuts (Cmd+T, Cmd+W, Cmd+Shift+[/], etc.)
+      const cleanupRegistry = setupShortcutListener(
+        () => getAllActions(),
+        () => actionContext,
+        isMac,
+      );
+
+      cleanupKeydown = () => {
+        document.removeEventListener('keydown', onSpecialKeydown);
+        cleanupRegistry();
+      };
     }
 
     if (isMobileDevice) {
