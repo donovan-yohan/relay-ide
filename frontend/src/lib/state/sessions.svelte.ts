@@ -4,6 +4,8 @@ import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
 import { transitionDisplayState, shouldNotify } from './display-state.js';
 import { buildSidebarItems } from './sidebar-items.js';
+import { shouldMarkUnread } from './unread-logic.js';
+import { markUnread, markRead } from './unread.svelte.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -150,6 +152,13 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
   if (newDisplayState !== oldDisplayState) {
     item.displayState = newDisplayState;
 
+    // Track unread
+    const isViewing = item.sessions.some(s => s.id === sessionId && s.id === activeSessionId);
+    if (shouldMarkUnread(oldDisplayState, newDisplayState, isViewing)) {
+      markUnread(item.id);
+      item.isUnread = true;
+    }
+
     // Fire notification if appropriate
     if (shouldNotify(oldDisplayState, newDisplayState)) {
       // Prefer the session that triggered this event; fall back to any with notifications enabled
@@ -167,6 +176,8 @@ export function handleUserViewed(sessionId: string): void {
   const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
   if (item) {
     item.displayState = transitionDisplayState(item.displayState, { type: 'user-viewed' });
+    markRead(item.id);
+    item.isUnread = false;
   }
 }
 

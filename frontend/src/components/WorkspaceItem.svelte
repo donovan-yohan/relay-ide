@@ -261,12 +261,14 @@
         {@const hasActiveSessions = sessionCount > 0}
         {#if hasActiveSessions && representative}
           {@const matchedPr = findPrForBranch(groupSessions[0]?.branchName ?? '')}
+          {@const itemIsUnread = sidebarItemById.get(groupPath)?.isUnread ?? false}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <li
             class="session-row"
             class:selected={groupSessions.some(s => sessionState.activeSessionId === s.id)}
             class:attention={itemHasAttention(groupPath)}
+            class:unread={itemIsUnread}
             data-track="sidebar.session.click"
             onclick={() => onSelectSession(representative.id)}
             ontouchstart={(e) => handleRowTouchStart(representative.id, e.currentTarget as HTMLElement)}
@@ -275,7 +277,7 @@
           >
             <div class="session-row-primary">
               <SessionIndicator state={sidebarItemById.get(groupPath)?.displayState ?? 'inactive'} />
-              <span class="session-name" class:bold={itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
+              <span class="session-name" class:bold={itemIsUnread || itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
               {#if sessionCount > 1}
                 <span class="session-count-badge">{sessionCount}</span>
               {/if}
@@ -640,6 +642,15 @@
   .session-row.inactive:hover .session-name { color: var(--text); }
   .session-row.loading { pointer-events: none; opacity: 0.7; }
   .session-row.loading .session-name { color: var(--accent); }
+
+  .session-row.unread {
+    border-left-color: var(--status-warning);
+  }
+
+  .session-row.unread .session-name {
+    font-weight: 700;
+    color: #e8e8e8;
+  }
 
   .session-name {
     flex: 1;
