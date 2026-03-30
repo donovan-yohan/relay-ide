@@ -77,16 +77,17 @@
 
   // --- Helpers ---
   function prActionForRow(pr: PullRequest) {
-    const prState = pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
+    const prState = pr.isDraft ? 'DRAFT' : pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
     return derivePrAction({
       commitsAhead: 1,
       prState,
-      ciPassing: 0,
-      ciFailing: 0,
-      ciPending: 0,
-      ciTotal: 0,
+      ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
+      ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
+      ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
+      ciTotal: pr.ciStatus ? 1 : 0,
       mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: 0,
+      unresolvedCommentCount: pr.reviewDecision === 'CHANGES_REQUESTED' ? 1 : 0,
+      role: pr.role,
     });
   }
 
