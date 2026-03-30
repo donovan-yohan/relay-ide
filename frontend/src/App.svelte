@@ -30,6 +30,9 @@
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
   import Spotlight from './components/Spotlight.svelte';
+  import OpenPicker from './components/OpenPicker.svelte';
+  import type { SessionIntent, PickerItem } from './lib/session-intent.js';
+  import { issueToBranchName } from './lib/session-intent.js';
   import CustomizeSessionDialog from './components/dialogs/CustomizeSessionDialog.svelte';
   import SettingsDialog from './components/dialogs/SettingsDialog.svelte';
   import DeleteWorktreeDialog from './components/dialogs/DeleteWorktreeDialog.svelte';
@@ -106,6 +109,7 @@
 
   let keyboardOpen = $state(false);
   let spotlightOpen = $state(false);
+  let pickerOpen = $state(false);
 
   onMount(() => {
     initAnalytics(() => sessionState.activeSessionId);
@@ -194,8 +198,24 @@
           return;
         }
 
-        const tag = (document.activeElement as HTMLElement | null)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
+        const isInInput = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || !!(document.activeElement as HTMLElement)?.isContentEditable;
+
+        // / — open picker (not from inputs)
+        if (e.key === '/' && !mod && !isInInput) {
+          e.preventDefault();
+          pickerOpen = true;
+          return;
+        }
+
+        // Cmd/Ctrl+K — open picker (works from input fields)
+        if (mod && e.key === 'k') {
+          e.preventDefault();
+          pickerOpen = !pickerOpen;
+          return;
+        }
+
+        if (isInInput) return;
 
         if (!mod) return;
 
@@ -685,6 +705,73 @@
     }
   }
 
+  async function handlePickerIntent(intent: SessionIntent, item: PickerItem) {
+    switch (intent.type) {
+      case 'resume-session': {
+        if (intent.existingSessionId) {
+          sessionState.activeSessionId = intent.existingSessionId;
+          closeSidebar();
+        }
+        break;
+      }
+      case 'review-pr':
+      case 'fix-conflicts':
+      case 'fix-errors':
+      case 'resolve-comments':
+      case 'create-pr': {
+        if (item.kind === 'pr') {
+          handleOpenPrBranch(item.pr, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'merge-pr': {
+        if (item.kind === 'pr') {
+          window.open(item.pr.url, '_blank');
+        }
+        break;
+      }
+      case 'open-branch': {
+        if (item.kind === 'branch' && activeWorkspace) {
+          await handleOpenBranchSession(item.name, activeWorkspace.path, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'start-from-issue': {
+        if (item.kind === 'issue') {
+          const branchName = issueToBranchName(item.issue);
+          await handleOpenBranchSession(branchName, item.issue.repoPath, intent.prompt ?? undefined);
+        }
+        break;
+      }
+      case 'archive': {
+        break;
+      }
+    }
+  }
+
+  async function handleOpenBranchSession(branchName: string, repoPath: string, prompt?: string) {
+    try {
+      const wt = await createWorktree(repoPath, branchName);
+      const session = await createSession({
+        repoPath,
+        worktreePath: wt.worktreePath,
+        type: 'agent',
+        branchName: wt.branchName,
+      });
+      await refreshAll();
+      sessionState.activeSessionId = session.id;
+      ui.activeRepoPath = repoPath;
+      initSessionNotification(session.id, configState.defaultNotifications);
+      closeSidebar();
+
+      if (prompt) {
+        setTimeout(() => sendPtyData(prompt + '\r'), 1500);
+      }
+    } catch (e) {
+      console.error('Failed to open branch session:', e);
+    }
+  }
+
   function handlePrAction(pr: PullRequest) {
     const prState = pr.isDraft ? 'DRAFT' : pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
     const action = derivePrAction({
@@ -936,6 +1023,16 @@
     onSelectSession={(id) => handleSelectSession(id)}
     onSelectPr={handleSpotlightSelectPr}
     onOpenSettings={(sectionId) => { spotlightOpen = false; settingsDialogRef?.open(sectionId); }}
+  />
+
+  <!-- Open Picker (/ or Cmd+K) -->
+  <OpenPicker
+    open={pickerOpen}
+    repoPath={ui.activeRepoPath ?? ''}
+    sessions={sessionState.sessions}
+    worktrees={sessionState.worktrees}
+    onClose={() => pickerOpen = false}
+    onSelectIntent={handlePickerIntent}
   />
 
   <!-- Toasts -->
