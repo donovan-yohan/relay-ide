@@ -57,8 +57,9 @@
     return sorted;
   });
 
-  export async function refresh() {
+  export async function refresh(force = false) {
     if (!workspacePath) return;
+    if (!force && !expanded) return;
     loading = true;
     error = undefined;
     try {
@@ -79,10 +80,11 @@
   }
 
   // $effect is intentional here: refresh() is async and writes to $state — cannot be $derived.
+  // force=true so summary bar shows file count even when panel is collapsed.
   $effect(() => {
     void workspacePath;
     void base;
-    if (workspacePath) void refresh();
+    if (workspacePath) void refresh(true);
   });
 
   $effect(() => {
