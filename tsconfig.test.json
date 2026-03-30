@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["server/**/*.ts", "bin/**/*.ts", "test/**/*.ts", "frontend/src/lib/pr-state.ts", "frontend/src/lib/state/display-state.ts", "frontend/src/lib/state/sidebar-items.ts", "frontend/src/lib/types.ts", "frontend/src/lib/diff-summary.ts", "frontend/src/lib/actions/types.ts", "frontend/src/lib/actions/registry.ts", "frontend/src/lib/actions/definitions/session.ts", "frontend/src/lib/actions/definitions/workspace.ts", "frontend/src/lib/actions/definitions/pr.ts", "frontend/src/lib/actions/definitions/settings.ts"],
+  "include": ["server/**/*.ts", "bin/**/*.ts", "test/**/*.ts", "frontend/src/lib/pr-state.ts", "frontend/src/lib/session-intent.ts", "frontend/src/lib/state/display-state.ts", "frontend/src/lib/state/sidebar-items.ts", "frontend/src/lib/types.ts", "frontend/src/lib/diff-summary.ts", "frontend/src/lib/actions/types.ts", "frontend/src/lib/actions/registry.ts", "frontend/src/lib/actions/definitions/session.ts", "frontend/src/lib/actions/definitions/workspace.ts", "frontend/src/lib/actions/definitions/pr.ts", "frontend/src/lib/actions/definitions/settings.ts"],
   "exclude": ["public/", "node_modules/", "dist/"]
 }
