@@ -48,6 +48,11 @@ let sidebarCollapsed = $state(loadSidebarCollapsed());
 let searchQuery = $state('');
 let activeRepoPath = $state<string | null>(loadActiveRepoPath());
 let terminalFontSize = $state(loadTerminalFontSize());
+let fullPageDiff = $state<{
+  workspacePath: string;
+  file?: string | undefined;
+  base?: string | undefined;
+} | null>(null);
 
 export function getUi() {
   return {
@@ -69,6 +74,8 @@ export function getUi() {
     },
     get terminalFontSize() { return terminalFontSize; },
     set terminalFontSize(v: number) { terminalFontSize = v; },
+    get fullPageDiff() { return fullPageDiff; },
+    set fullPageDiff(v: typeof fullPageDiff) { fullPageDiff = v; },
   };
 }
 

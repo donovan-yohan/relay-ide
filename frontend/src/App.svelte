@@ -37,6 +37,7 @@
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
   import ChangedFiles from './components/ChangedFiles.svelte';
+  import FullPageDiff from './components/FullPageDiff.svelte';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -332,6 +333,18 @@
         if (sessionParam) {
           window.history.replaceState({}, '', '/');
           navigateToSession(sessionParam, 'repo');
+        }
+
+        const viewParam = params.get('view');
+        if (viewParam === 'diff') {
+          const diffPath = params.get('path');
+          if (diffPath) {
+            ui.fullPageDiff = {
+              workspacePath: diffPath,
+              file: params.get('file') ?? undefined,
+              base: params.get('base') ?? undefined,
+            };
+          }
         }
 
         // Auto-select if exactly one session exists and none is selected
@@ -761,7 +774,7 @@
   function handleExpandFile(file: ChangedFile, base: string | undefined) {
     const workspacePath = activeSession?.cwd ?? activeSession?.repoPath ?? '';
     if (!workspacePath) return;
-    console.log('[App] expand file:', file.path, 'base:', base);
+    ui.fullPageDiff = { workspacePath, file: file.path, base };
   }
 
   let addWorkspaceDialogRef = $state<AddWorkspaceDialog | undefined>();
@@ -931,6 +944,18 @@
     }}
   />
 
+  <!-- Full-page diff overlay -->
+  {#if ui.fullPageDiff}
+    <div class="full-page-diff-overlay">
+      <FullPageDiff
+        workspacePath={ui.fullPageDiff.workspacePath}
+        {...(ui.fullPageDiff.file !== undefined ? { initialFile: ui.fullPageDiff.file } : {})}
+        {...(ui.fullPageDiff.base !== undefined ? { initialBase: ui.fullPageDiff.base } : {})}
+        onClose={() => { ui.fullPageDiff = null; }}
+      />
+    </div>
+  {/if}
+
   <!-- Spotlight command palette -->
   <Spotlight
     open={spotlightOpen}
@@ -986,5 +1011,12 @@
     .terminal-area {
       width: 100%;
     }
+  }
+
+  .full-page-diff-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: var(--bg, #000);
   }
 </style>
