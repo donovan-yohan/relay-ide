@@ -220,3 +220,39 @@ Richer CI status in the PR top bar — individual check names, progress indicato
 
 **Blocked on:** Webhook self-service feature shipping (real-time CI events needed).
 **Design doc:** `docs/design-docs/2026-03-24-webhook-self-service-design.md`
+
+---
+
+## New (2026-03-30)
+
+### Onboarding experience for new users
+Replace the empty-state flash on first load with a proper onboarding flow:
+- **Time-aware greeting loading state:** Pre-generate a batch of greetings keyed to time of day to reduce repetition. Include standard ones ("Good morning", "Good evening") and fun ones ("It's high noon", "Burning the midnight oil", "The witching hour").
+- **Guided onboarding:** Walk new users through workspaces/repos setup, GitHub and Jira integration, and the command center.
+
+### Codex integration improvements
+Better support for Codex as an agent type — smoother spawning, configuration, and workflow integration.
+
+### Gemini agent support
+Add Gemini as a supported agent type alongside Claude and Codex.
+
+### Quick agent spawning from new tab
+Make it fast and easy to spawn agents of different types from the new tab button. Overhaul the UX so defaults apply but swapping agent types or using multi-agent flows has minimal friction.
+
+### Mobile: hide top bar when keyboard is open
+On mobile, hide top bar UI elements (tabs at minimum) when the software keyboard is open to maximize reading/terminal space.
+
+### Bug: PR refresh shows stale data
+The refresh button sometimes doesn't actually update PR state. Examples: PR is created but clicking refresh doesn't show PR info; PR is merged but old state persists until a full browser tab refresh.
+
+**Added:** 2026-03-30
+
+### Bug: Changed files viewport resizing on mobile
+The changed files UI rapidly resizes the viewport on mobile devices, making it unusable. Likely a layout feedback loop between the changed files panel and the viewport resize observer.
+
+**Added:** 2026-03-30
+
+### Update channel UI (nightly vs stable)
+Add UI to let users choose between nightly and stable update channels for auto-updates. Track dismissed version notifications so we don't re-show the notification for a version the user already dismissed.
+
+**Added:** 2026-03-30
