@@ -224,7 +224,7 @@
       { ...ticketOpenExternal, handler: () => {} },
       // ── Phase 3: Terminal (scroll methods not yet exposed by Terminal.svelte) ──
       { ...terminalScrollTop, handler: () => terminalRef?.getTerm()?.scrollToLine(0) },
-      { ...terminalScrollBottom, handler: () => terminalRef?.getTerm()?.scrollToLine(terminalRef?.getTerm()?.buffer?.active?.length ?? 0) },
+      { ...terminalScrollBottom, handler: () => terminalRef?.getTerm()?.scrollToBottom() },
       // ── Phase 3: Navigation ──
       { ...navPreviousTab, handler: () => {
         const sessions = workspaceSessions;

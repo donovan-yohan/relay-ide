@@ -266,7 +266,7 @@
       case 'pr': case 'attention': return '●';
       case 'ticket': return '#';
       case 'command': return '>';
-      case 'setting': return '⚙';
+      case 'setting': return '*';
       default: return '';
     }
   }
@@ -446,7 +446,7 @@
   .palette-input-row :global(.tui-input-wrapper) { flex: 1; }
   .palette-input-row :global(.tui-input) { background: transparent; border: none; padding: 0; }
   .palette-input-row :global(.tui-input:focus) { border: none; }
-  .palette-input-row :global(.tui-input::placeholder) { color: #555; }
+  .palette-input-row :global(.tui-input::placeholder) { color: var(--text-muted); opacity: 0.6; }
 
   .palette-tabs {
     display: flex;
@@ -478,7 +478,7 @@
     font-size: var(--font-size-xs);
     font-family: var(--font-mono);
     font-weight: 600;
-    color: #555;
+    color: var(--text-muted);
     letter-spacing: 0.08em;
     user-select: none;
     text-transform: lowercase;
@@ -525,7 +525,7 @@
 
   .item-sublabel {
     font-size: var(--font-size-xs);
-    color: #555;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -537,8 +537,8 @@
   .item-shortcut {
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    color: #888;
-    border: 1px solid #444;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
     padding: 1px 6px;
     flex-shrink: 0;
     border-radius: 0;
@@ -593,7 +593,7 @@
   .palette.mobile .palette-item {
     min-height: 48px;
     padding: 14px 16px;
-    border-bottom: 1px solid #1a1a1a;
+    border-bottom: 1px solid var(--surface-hover);
   }
 
   .palette.mobile .item-cursor { display: none; }

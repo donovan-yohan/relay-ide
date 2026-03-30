@@ -70,7 +70,7 @@ State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting re
 
 ### Action Registry (`frontend/src/lib/actions/`)
 
-Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.svelte` via `registerGlobal()`. Spotlight reads commands from the registry via `getAllActions()`.
+Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.svelte` via `registerGlobal()`. CommandPalette reads commands from the registry via `getAllActions()`.
 
 | Module | Role |
 |--------|------|
