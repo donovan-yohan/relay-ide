@@ -592,3 +592,15 @@ export async function fetchFileDiff(repoPath: string, filePath: string, base?: s
   }
   return res.json() as Promise<FileDiffResponse>;
 }
+
+export async function fetchDefaultBranch(repoPath: string): Promise<string> {
+  const params = new URLSearchParams({ path: repoPath });
+  try {
+    const res = await fetch('/workspaces/default-branch?' + params.toString());
+    if (!res.ok) return 'main';
+    const data = await res.json() as { branch: string };
+    return data.branch || 'main';
+  } catch {
+    return 'main';
+  }
+}

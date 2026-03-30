@@ -286,3 +286,5 @@ export interface FileDiffResponse {
   summary?: string;
   error?: string;
 }
+
+export type DiffSource = 'working' | 'staged' | 'branch';
