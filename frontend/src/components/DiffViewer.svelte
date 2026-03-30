@@ -7,10 +7,14 @@
     diff,
     filePath,
     loading = false,
+    mode = 'unified',
+    onHunkCount,
   }: {
     diff: string;
     filePath: string;
     loading?: boolean;
+    mode?: 'unified' | 'side-by-side';
+    onHunkCount?: (count: number) => void;
   } = $props();
 
   interface RawLine {
@@ -22,6 +26,25 @@
 
   interface HighlightedLine extends RawLine {
     tokens: ThemedToken[] | null;
+  }
+
+  interface SbsHalfLeft {
+    number?: number | undefined;
+    content: string;
+    type: 'delete' | 'context' | 'empty';
+    tokens: ThemedToken[] | null;
+  }
+
+  interface SbsHalfRight {
+    number?: number | undefined;
+    content: string;
+    type: 'add' | 'context' | 'empty';
+    tokens: ThemedToken[] | null;
+  }
+
+  interface SideBySidePair {
+    left: SbsHalfLeft;
+    right: SbsHalfRight;
   }
 
   interface ParsedDiff {
@@ -61,27 +84,73 @@
     return { rawLines, hunkHeaderMap, lang };
   });
 
+  function buildPairs(hlines: HighlightedLine[]): SideBySidePair[] {
+    const pairs: SideBySidePair[] = [];
+    let i = 0;
+    while (i < hlines.length) {
+      const line = hlines[i]!;
+      if (line.type === 'context') {
+        pairs.push({
+          left: { ...(line.oldNumber !== undefined ? { number: line.oldNumber } : {}), content: line.content, type: 'context', tokens: line.tokens },
+          right: { ...(line.newNumber !== undefined ? { number: line.newNumber } : {}), content: line.content, type: 'context', tokens: line.tokens },
+        });
+        i++;
+      } else {
+        const deletes: HighlightedLine[] = [];
+        const inserts: HighlightedLine[] = [];
+        while (i < hlines.length && hlines[i]!.type === 'delete') {
+          deletes.push(hlines[i]!);
+          i++;
+        }
+        while (i < hlines.length && hlines[i]!.type === 'add') {
+          inserts.push(hlines[i]!);
+          i++;
+        }
+        const max = Math.max(deletes.length, inserts.length);
+        for (let j = 0; j < max; j++) {
+          const del = deletes[j];
+          const ins = inserts[j];
+          pairs.push({
+            left: del
+              ? { ...(del.oldNumber !== undefined ? { number: del.oldNumber } : {}), content: del.content, type: 'delete', tokens: del.tokens }
+              : { content: '', type: 'empty', tokens: null },
+            right: ins
+              ? { ...(ins.newNumber !== undefined ? { number: ins.newNumber } : {}), content: ins.content, type: 'add', tokens: ins.tokens }
+              : { content: '', type: 'empty', tokens: null },
+          });
+        }
+      }
+    }
+    return pairs;
+  }
+
   // Highlighted lines — starts as plain, updated asynchronously by $effect
   let lines = $state<HighlightedLine[]>([]);
+  let pairedLines = $state<SideBySidePair[]>([]);
   let tokenGeneration = 0;
 
   $effect(() => {
-    const { rawLines, lang } = parsed;
+    const { rawLines, hunkHeaderMap, lang } = parsed;
     const gen = ++tokenGeneration;
 
     // Immediately render without syntax highlighting
-    lines = rawLines.map(l => ({ ...l, tokens: null }));
+    const plain = rawLines.map(l => ({ ...l, tokens: null as ThemedToken[] | null }));
+    lines = plain;
+    pairedLines = buildPairs(plain);
 
+    if (onHunkCount) onHunkCount(hunkHeaderMap.size);
     if (rawLines.length === 0) return;
 
     // Asynchronously apply Shiki tokens — guard against stale resolutions
     const codeStr = rawLines.map(l => l.content).join('\n');
     tokenizeCode(codeStr, lang).then((tokenLines) => {
       if (gen !== tokenGeneration) return; // stale — newer parse already in flight
-      lines = rawLines.map((line, i) => ({
+      const highlighted = rawLines.map((line, i) => ({
         ...line,
         tokens: tokenLines[i] ?? null,
       }));
+      lines = highlighted;
+      pairedLines = buildPairs(highlighted);
     }).catch((err: unknown) => {
       console.warn('[DiffViewer] Shiki tokenization failed:', err);
     });
@@ -93,11 +162,28 @@
     <div class="diff-loading">loading diff...</div>
   {:else if lines.length === 0}
     <div class="diff-empty">no changes</div>
+  {:else if mode === 'side-by-side'}
+    <div class="diff-content-sbs">
+      {#each pairedLines as pair, i (i)}
+        <div class="sbs-row">
+          <div class="sbs-half {pair.left.type}">
+            <span class="line-number">{pair.left.number ?? ''}</span>
+            <span class="line-prefix">{pair.left.type === 'delete' ? '-' : pair.left.type === 'context' ? ' ' : ''}</span>
+            <span class="line-content">{#if pair.left.tokens}{#each pair.left.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.left.content}{/if}</span>
+          </div>
+          <div class="sbs-half {pair.right.type}">
+            <span class="line-number">{pair.right.number ?? ''}</span>
+            <span class="line-prefix">{pair.right.type === 'add' ? '+' : pair.right.type === 'context' ? ' ' : ''}</span>
+            <span class="line-content">{#if pair.right.tokens}{#each pair.right.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.right.content}{/if}</span>
+          </div>
+        </div>
+      {/each}
+    </div>
   {:else}
     <div class="diff-content">
       {#each lines as line, i (i)}
         {#if parsed.hunkHeaderMap.has(i)}
-          <div class="hunk-header">{parsed.hunkHeaderMap.get(i) ?? ''}</div>
+          <div class="hunk-header" id="hunk-{i}">{parsed.hunkHeaderMap.get(i) ?? ''}</div>
         {/if}
         <div
           class="diff-line {line.type}"
@@ -189,5 +275,70 @@
     border-top: 1px solid var(--border, #333);
     border-bottom: 1px solid var(--border, #333);
     user-select: none;
+  }
+
+  .diff-content-sbs {
+    min-width: max-content;
+  }
+
+  .sbs-row {
+    display: flex;
+  }
+
+  .sbs-half {
+    flex: 1;
+    display: flex;
+    white-space: pre;
+    min-height: 1.5em;
+    overflow: hidden;
+  }
+
+  .sbs-half + .sbs-half {
+    border-left: 1px solid var(--border, #333);
+  }
+
+  .sbs-half.add {
+    background: rgba(74, 222, 128, 0.08);
+  }
+
+  .sbs-half.add .line-content,
+  .sbs-half.add .line-prefix {
+    color: var(--status-success, #4ade80);
+  }
+
+  .sbs-half.delete {
+    background: rgba(248, 113, 113, 0.08);
+  }
+
+  .sbs-half.delete .line-content,
+  .sbs-half.delete .line-prefix {
+    color: var(--status-error, #f87171);
+  }
+
+  .sbs-half.empty {
+    background: rgba(136, 136, 136, 0.03);
+  }
+
+  .sbs-half .line-number {
+    display: inline-block;
+    width: 3em;
+    text-align: right;
+    padding-right: 0.5em;
+    color: #888888;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .sbs-half .line-prefix {
+    display: inline-block;
+    width: 1.5em;
+    text-align: center;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .sbs-half .line-content {
+    flex: 1;
+    padding-right: 0.5em;
   }
 </style>
