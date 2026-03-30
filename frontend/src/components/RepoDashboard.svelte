@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
   import { fetchDashboard } from '../lib/api.js';
-  import { derivePrAction } from '../lib/pr-state.js';
+  import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
   import { formatRelativeTime } from '../lib/utils.js';
   import type { PullRequest, ActivityEntry, DashboardData } from '../lib/types.js';
   import DataTable from './DataTable.svelte';
@@ -50,18 +50,7 @@
   ];
 
   function prActionForRow(pr: PullRequest) {
-    const prState = pr.isDraft ? 'DRAFT' : pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    return derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
-      ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
-      ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
-      ciTotal: pr.ciStatus ? 1 : 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: pr.reviewDecision === 'CHANGES_REQUESTED' ? 1 : 0,
-      role: pr.role,
-    });
+    return derivePrAction(buildPrStateInput(pr));
   }
 
   function prRoleLabel(pr: PullRequest): string {

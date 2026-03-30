@@ -77,7 +77,7 @@
     ) : cachedIssues
   );
 
-  // Group PRs by role
+  // Split PRs: open review requests vs everything else (authored + closed/merged)
   let reviewPrs = $derived(filteredPrs.filter(pr => pr.role === 'reviewer' && pr.state === 'OPEN'));
   let authorPrs = $derived(filteredPrs.filter(pr => pr.role === 'author' || pr.state !== 'OPEN'));
 
@@ -167,6 +167,7 @@
   });
 
   let flatRows = $derived(groups.flatMap(g => g.rows));
+  let rowIndexMap = $derived(new Map(flatRows.map((row, i) => [row, i])));
 
   $effect(() => {
     if (focusedIndex >= flatRows.length) {
@@ -301,7 +302,7 @@
           {#each groups as group}
             <div class="picker-category">{group.label}</div>
             {#each group.rows as row}
-              {@const globalIndex = flatRows.indexOf(row)}
+              {@const globalIndex = rowIndexMap.get(row) ?? -1}
               <PickerResultRow
                 label={row.label}
                 sublabel={row.sublabel}

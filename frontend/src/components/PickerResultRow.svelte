@@ -69,7 +69,7 @@
         {intent.label}
       </TuiButton>
     {/each}
-    {#if primary}
+    {#if primary && primary.label}
       <TuiButton
         variant={colorToVariant(primary.color)}
         size="sm"

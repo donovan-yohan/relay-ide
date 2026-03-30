@@ -66,6 +66,22 @@ export interface ActionPromptContext {
   unresolvedCommentCount?: number;
 }
 
+/** Build PrStateInput from a PullRequest, mapping ciStatus/reviewDecision to the state machine's numeric fields. */
+export function buildPrStateInput(pr: { isDraft: boolean; state: string; ciStatus: string | null; mergeable: string | null; reviewDecision: string | null; role: 'author' | 'reviewer' }): PrStateInput {
+  return {
+    commitsAhead: 1,
+    prState: pr.isDraft ? 'DRAFT' : pr.state as PrStateInput['prState'],
+    ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
+    ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
+    ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
+    ciTotal: pr.ciStatus ? 1 : 0,
+    mergeable: (pr.mergeable as PrStateInput['mergeable']) ?? null,
+    // TODO: use actual unresolved count once PullRequest carries it (currently a boolean heuristic)
+    unresolvedCommentCount: pr.reviewDecision === 'CHANGES_REQUESTED' ? 1 : 0,
+    role: pr.role,
+  };
+}
+
 export function derivePrAction(input: PrStateInput): PrAction {
   const { commitsAhead, prState, ciFailing, ciPending, ciTotal, mergeable, unresolvedCommentCount } = input;
   const role = input.role ?? 'author';

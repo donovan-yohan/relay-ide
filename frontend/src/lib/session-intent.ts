@@ -1,6 +1,6 @@
 import type { PullRequest, SessionSummary, WorktreeInfo, GitHubIssue } from './types.js';
-import { derivePrAction, getActionPrompt } from './pr-state.js';
-import type { StatusColor, PrStateInput } from './pr-state.js';
+import { derivePrAction, getActionPrompt, buildPrStateInput } from './pr-state.js';
+import type { StatusColor, PrActionType } from './pr-state.js';
 
 export type SessionIntentType =
   | 'review-pr'
@@ -14,6 +14,10 @@ export type SessionIntentType =
   | 'resume-session'
   | 'archive';
 
+// TODO: refine into a discriminated union so resume-session requires existingSessionId at compile time:
+//   type SessionIntent = ResumeIntent | ActionIntent;
+//   interface ResumeIntent { type: 'resume-session'; existingSessionId: string; ... }
+//   interface ActionIntent { type: Exclude<SessionIntentType, 'resume-session'>; ... }
 export interface SessionIntent {
   type: SessionIntentType;
   label: string;
@@ -34,13 +38,13 @@ export type PickerItem =
  */
 export function resolveIntent(
   item: PickerItem,
-  role: 'author' | 'reviewer',
+  _role: 'author' | 'reviewer',
   sessions: SessionSummary[],
   worktrees: WorktreeInfo[],
 ): SessionIntent[] {
   switch (item.kind) {
     case 'pr':
-      return resolvePrIntent(item.pr, role, sessions, worktrees);
+      return resolvePrIntent(item.pr, sessions, worktrees);
     case 'branch':
       return resolveBranchIntent(item, sessions, worktrees);
     case 'issue':
@@ -50,7 +54,6 @@ export function resolveIntent(
 
 function resolvePrIntent(
   pr: PullRequest,
-  role: 'author' | 'reviewer',
   sessions: SessionSummary[],
   _worktrees: WorktreeInfo[],
 ): SessionIntent[] {
@@ -59,18 +62,7 @@ function resolvePrIntent(
   // Check for existing session on this PR's branch
   const existingSession = sessions.find(s => s.branchName === pr.headRefName);
 
-  // Build PrStateInput from PullRequest data
-  const prStateInput: PrStateInput = {
-    commitsAhead: 1,
-    prState: pr.isDraft ? 'DRAFT' : pr.state,
-    ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
-    ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
-    ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
-    ciTotal: pr.ciStatus ? 1 : 0,
-    mergeable: pr.mergeable,
-    unresolvedCommentCount: pr.reviewDecision === 'CHANGES_REQUESTED' ? 1 : 0,
-    role,
-  };
+  const prStateInput = buildPrStateInput(pr);
 
   const prAction = derivePrAction(prStateInput);
   const actionCtx = {
@@ -109,7 +101,7 @@ function resolvePrIntent(
   return intents;
 }
 
-function mapPrActionToIntent(actionType: string): SessionIntentType {
+function mapPrActionToIntent(actionType: PrActionType): SessionIntentType {
   switch (actionType) {
     case 'review-pr': return 'review-pr';
     case 'merge-pr': return 'merge-pr';
@@ -119,7 +111,9 @@ function mapPrActionToIntent(actionType: string): SessionIntentType {
     case 'create-pr': return 'create-pr';
     case 'archive-merged':
     case 'archive-closed': return 'archive';
-    default: return 'open-branch';
+    case 'ready-for-review': return 'open-branch';
+    case 'checks-running': return 'open-branch';
+    case 'none': return 'open-branch';
   }
 }
 
@@ -158,8 +152,9 @@ function resolveIssueIntent(
   sessions: SessionSummary[],
 ): SessionIntent[] {
   // Check if a session already exists for a branch matching this issue
-  const issueBranchPattern = `issue-${issue.number}`;
-  const existingSession = sessions.find(s => s.branchName.includes(issueBranchPattern));
+  // Use regex with word boundary to avoid false-positives (e.g., issue-12 matching issue-123)
+  const issueBranchPattern = new RegExp(`issue-${issue.number}(?:-|$)`);
+  const existingSession = sessions.find(s => issueBranchPattern.test(s.branchName));
 
   if (existingSession) {
     const resumeIntent: SessionIntent = {
@@ -197,7 +192,7 @@ function buildIssuePrompt(issue: GitHubIssue): string {
 /**
  * Derive a branch name from a GitHub issue.
  * Format: {type}/issue-{number}-{slug}
- * Type is derived from labels: bug → fix, enhancement/feature → feat, default → feat
+ * Type is derived from labels: bug → fix, all others → feat
  * Slug is first 5 words of title, lowercased and hyphenated.
  */
 export function issueToBranchName(issue: GitHubIssue): string {

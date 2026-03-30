@@ -9,7 +9,7 @@
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
-  import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
+  import { derivePrAction, getActionPrompt, buildPrStateInput } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal } from './lib/actions/registry.svelte.js';
   import type { Action, ActionContext } from './lib/actions/types.js';
@@ -695,6 +695,7 @@
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
 
+      // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
       if (prompt) {
         setTimeout(() => {
           sendPtyData(prompt + '\r');
@@ -709,13 +710,19 @@
     switch (intent.type) {
       case 'resume-session': {
         if (intent.existingSessionId) {
-          sessionState.activeSessionId = intent.existingSessionId;
-          closeSidebar();
+          navigateToSession(intent.existingSessionId, 'agent');
+        } else {
+          console.warn('resume-session intent missing existingSessionId');
+        }
+        break;
+      }
+      case 'fix-conflicts': {
+        if (item.kind === 'pr') {
+          handleFixConflicts(item.pr);
         }
         break;
       }
       case 'review-pr':
-      case 'fix-conflicts':
       case 'fix-errors':
       case 'resolve-comments':
       case 'create-pr': {
@@ -731,8 +738,8 @@
         break;
       }
       case 'open-branch': {
-        if (item.kind === 'branch' && activeWorkspace) {
-          await handleOpenBranchSession(item.name, activeWorkspace.path, intent.prompt ?? undefined);
+        if (item.kind === 'branch') {
+          await handleOpenBranchSession(item.name, item.repoPath, intent.prompt ?? undefined);
         }
         break;
       }
@@ -744,6 +751,11 @@
         break;
       }
       case 'archive': {
+        // TODO: wire to archive flow with confirmation UX
+        if (intent.existingSessionId) {
+          sessionState.activeSessionId = intent.existingSessionId;
+          await handleArchive();
+        }
         break;
       }
     }
@@ -751,12 +763,29 @@
 
   async function handleOpenBranchSession(branchName: string, repoPath: string, prompt?: string) {
     try {
-      const wt = await createWorktree(repoPath, branchName);
+      const existingSession = sessionState.sessions.find(s => s.branchName === branchName && s.repoPath === repoPath);
+      const existingWorktree = sessionState.worktrees.find(w => w.branchName === branchName && w.repoPath === repoPath);
+
+      let worktreePath: string | null;
+      let resolvedBranch: string;
+
+      if (existingSession) {
+        worktreePath = existingSession.worktreePath;
+        resolvedBranch = existingSession.branchName;
+      } else if (existingWorktree) {
+        worktreePath = existingWorktree.path;
+        resolvedBranch = existingWorktree.branchName;
+      } else {
+        const wt = await createWorktree(repoPath, branchName);
+        worktreePath = wt.worktreePath;
+        resolvedBranch = wt.branchName;
+      }
+
       const session = await createSession({
         repoPath,
-        worktreePath: wt.worktreePath,
+        worktreePath,
         type: 'agent',
-        branchName: wt.branchName,
+        branchName: resolvedBranch,
       });
       await refreshAll();
       sessionState.activeSessionId = session.id;
@@ -764,6 +793,7 @@
       initSessionNotification(session.id, configState.defaultNotifications);
       closeSidebar();
 
+      // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
       if (prompt) {
         setTimeout(() => sendPtyData(prompt + '\r'), 1500);
       }
@@ -773,18 +803,7 @@
   }
 
   function handlePrAction(pr: PullRequest) {
-    const prState = pr.isDraft ? 'DRAFT' : pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    const action = derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
-      ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
-      ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
-      ciTotal: pr.ciStatus ? 1 : 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: pr.reviewDecision === 'CHANGES_REQUESTED' ? 1 : 0,
-      role: pr.role,
-    });
+    const action = derivePrAction(buildPrStateInput(pr));
     const prompt = getActionPrompt(action, {
       branchName: pr.headRefName,
       baseBranch: pr.baseRefName,
