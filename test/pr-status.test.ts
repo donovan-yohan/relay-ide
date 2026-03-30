@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { derivePrDotStatus } from '../frontend/src/lib/pr-status.js';
+import { derivePrDotStatus, prGlyph } from '../frontend/src/lib/pr-status.js';
+import type { PrDotStatus } from '../frontend/src/lib/pr-status.js';
 import type { PullRequest } from '../frontend/src/lib/types.js';
 
 function makePr(overrides: Partial<PullRequest>): PullRequest {
@@ -59,5 +60,22 @@ describe('derivePrDotStatus', () => {
 
   it('merged takes priority over everything', () => {
     assert.equal(derivePrDotStatus(makePr({ state: 'MERGED', isDraft: true, reviewDecision: 'APPROVED', role: 'reviewer' })), 'merged');
+  });
+});
+
+describe('prGlyph', () => {
+  it('maps each status to a unique character', () => {
+    const statuses: PrDotStatus[] = ['draft', 'open', 'review-requested', 'changes-requested', 'approved', 'merged', 'closed', 'unknown'];
+    const chars = statuses.map(s => prGlyph(s).char);
+    for (const c of chars) {
+      assert.ok(c.length > 0);
+    }
+    assert.notEqual(prGlyph('changes-requested').char, prGlyph('closed').char);
+  });
+
+  it('approved is green checkmark', () => {
+    const g = prGlyph('approved');
+    assert.equal(g.char, '✓');
+    assert.equal(g.colorClass, 'pr-green');
   });
 });

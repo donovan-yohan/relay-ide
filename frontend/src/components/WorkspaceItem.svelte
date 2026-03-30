@@ -2,7 +2,7 @@
   import type { Repo, SessionSummary, WorktreeInfo, PullRequest } from '../lib/types.js';
   import { deriveColor } from '../lib/colors.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
-  import StatusDot from './StatusDot.svelte';
+  import PrGlyph from './PrGlyph.svelte';
   import { getSessionState, refreshAll, setLoading, clearLoading, isItemLoading } from '../lib/state/sessions.svelte.js';
   import { isAttentionState } from '../lib/state/display-state.js';
   import { toggleWorkspaceCollapse, isWorkspaceCollapsed, getTimeTick } from '../lib/state/ui.svelte.js';
@@ -281,10 +281,10 @@
               {/if}
               {#if matchedPr}
                 <span class="sidebar-pr-status">
-                  <StatusDot status={derivePrDotStatus(matchedPr)} size={5} />
-                  {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="9" height="9"><polyline points="20 6 9 17 4 12"/></svg></span>
-                  {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" width="9" height="9"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
-                  {:else if matchedPr.ciStatus === 'PENDING'}<span class="ci-pending" style="font-size:9px">●</span>
+                  <PrGlyph status={derivePrDotStatus(matchedPr)} />
+                  {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass">✓</span>
+                  {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail">✕</span>
+                  {:else if matchedPr.ciStatus === 'PENDING'}<span class="ci-pending">●</span>
                   {/if}
                 </span>
               {/if}
