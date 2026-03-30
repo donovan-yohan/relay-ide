@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
@@ -399,9 +399,11 @@
       if (msg.type === 'worktrees-changed') {
         refreshAll();
       } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
-        handleBackendStateChanged(msg.sessionId, msg.state as import('./lib/state/display-state.js').BackendDisplayState);
+        handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
       } else if (msg.type === 'session-renamed' && msg.sessionId) {
         renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
+      } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
+        handleBranchChanged(msg.sessionId, msg.branch ?? '');
       } else if (msg.type === 'session-ended') {
         invalidatePrQueries();
         refreshAll();

@@ -454,6 +454,28 @@ describe('mountain name collision retry', () => {
   });
 });
 
+describe('workspace name from git remote', () => {
+  it('derives repo name from various git remote URLs', async () => {
+    const { repoNameFromRemoteUrl } = await import('../server/workspaces.js');
+
+    const fixtures: Array<{ url: string; expected: string }> = [
+      { url: 'git@github.com:anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'https://github.com/anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'ssh://git@github.com/anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'https://github.com/anthropic/claude-remote-cli', expected: 'claude-remote-cli' },
+      { url: 'https://example.com/some-group/another-repo.git', expected: 'another-repo' },
+      { url: 'https://example.com/some-group/another-repo/', expected: 'another-repo' },
+    ];
+
+    for (const { url, expected } of fixtures) {
+      const name = repoNameFromRemoteUrl(url);
+      assert.equal(name, expected, `should extract "${expected}" from "${url}"`);
+      assert.ok(name && name.length > 0, `should extract a non-empty name from "${url}"`);
+      assert.ok(name && !name.includes('/'), `name "${name}" from "${url}" should not contain slashes`);
+    }
+  });
+});
+
 describe('repo-scoped tmux naming', () => {
   it('produces readable tmux names from repo-branch slugs', () => {
     const name = generateTmuxSessionName('claude-remote-cli-nightly', 'a3b4c5d6-1234-5678');

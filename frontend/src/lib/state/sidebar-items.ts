@@ -1,10 +1,11 @@
 import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
 import type { BackendDisplayState, DisplayState } from './display-state.js';
 import { transitionDisplayState } from './display-state.js';
+import { sortByAttention } from './attention.js';
 
 /**
  * Derive a BackendDisplayState from a session's agentState and idle flag.
- * Priority order (highest first): permission > running > initializing > idle
+ * Priority order (highest first): permission > error > running > initializing > idle
  *
  * Mirrors server/sessions.ts computeBackendState — keep in sync.
  * The idle flag is a fallback for sessions without a defined agentState.
@@ -12,7 +13,8 @@ import { transitionDisplayState } from './display-state.js';
 function sessionToBackendState(session: SessionSummary): BackendDisplayState {
   const { agentState, idle } = session;
   if (agentState === 'permission-prompt') return 'permission';
-  if (agentState === 'processing' || agentState === 'error') return 'running';
+  if (agentState === 'error') return 'error';
+  if (agentState === 'processing') return 'running';
   if (agentState === 'initializing') return 'initializing';
   // For sessions without agentState (e.g. terminal sessions), fall back to the idle timer flag
   if (!agentState && !idle) return 'running';
@@ -23,11 +25,12 @@ function sessionToBackendState(session: SessionSummary): BackendDisplayState {
  * Given an array of sessions that belong to the same sidebar item, derive the
  * aggregate BackendDisplayState (highest-priority state wins).
  *
- * Priority order (highest first): permission > running > initializing > idle
+ * Priority order (highest first): permission > error > running > initializing > idle
  */
 function deriveBackendState(sessions: SessionSummary[]): BackendDisplayState {
   const priority: Record<BackendDisplayState, number> = {
-    permission: 3,
+    permission: 4,
+    error: 3,
     running: 2,
     initializing: 1,
     idle: 0,
@@ -51,6 +54,7 @@ function initialDisplayState(sessions: SessionSummary[]): DisplayState {
   if (sessions.length === 0) return 'inactive';
   switch (deriveBackendState(sessions)) {
     case 'permission':   return 'permission';
+    case 'error':        return 'error';
     case 'running':      return 'running';
     case 'initializing': return 'initializing';
     case 'idle':
@@ -77,6 +81,7 @@ export function buildSidebarItems(
   worktrees: WorktreeInfo[],
   workspaces: Repo[],
   existingItems: SidebarItem[],
+  checkUnread?: (id: string) => boolean,
 ): SidebarItem[] {
   // Build lookup from id → existing item for O(1) reconciliation
   const existingById = new Map<string, SidebarItem>();
@@ -134,6 +139,7 @@ export function buildSidebarItems(
         displayState,
         lastKnownBackendState: newBackendState,
         sessions: groupSessions,
+        isUnread: existingById.get(groupPath)?.isUnread ?? checkUnread?.(groupPath) ?? false,
       });
       coveredPaths.add(groupPath);
     }
@@ -154,6 +160,7 @@ export function buildSidebarItems(
         displayState: reconcileDisplayState(existingById.get(worktree.path), null, []),
         lastKnownBackendState: null,
         sessions: [],
+        isUnread: existingById.get(worktree.path)?.isUnread ?? checkUnread?.(worktree.path) ?? false,
       });
       coveredPaths.add(worktree.path);
     }
@@ -172,6 +179,7 @@ export function buildSidebarItems(
         displayState: reconcileDisplayState(existingById.get(workspace.path), null, []),
         lastKnownBackendState: null,
         sessions: [],
+        isUnread: existingById.get(workspace.path)?.isUnread ?? checkUnread?.(workspace.path) ?? false,
       });
     }
   }
@@ -195,10 +203,11 @@ export function buildSidebarItems(
       displayState: reconcileDisplayState(existingById.get(groupPath), newBackendState, groupSessions),
       lastKnownBackendState: newBackendState,
       sessions: groupSessions,
+      isUnread: existingById.get(groupPath)?.isUnread ?? checkUnread?.(groupPath) ?? false,
     });
   }
 
-  return result;
+  return sortByAttention(result);
 }
 
 /**
@@ -224,6 +233,11 @@ function reconcileDisplayState(
 
   // Backend state changed — apply transition
   if (newBackendState) {
+    // Preserve needs-answer: reconciliation doesn't have permissionType, so
+    // transitionDisplayState would downgrade needs-answer → permission.
+    if (newBackendState === 'permission' && existing.displayState === 'needs-answer') {
+      return 'needs-answer';
+    }
     return transitionDisplayState(existing.displayState, { type: 'backend-state-changed', state: newBackendState });
   }
   return existing.displayState;

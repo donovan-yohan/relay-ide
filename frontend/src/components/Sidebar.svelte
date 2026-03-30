@@ -10,6 +10,7 @@
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
   import { getSessionState, getSessionsForRepo, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
+  import { workspaceAttentionScore } from '../lib/state/attention.js';
   import type { Repo, WorktreeInfo, OrgPrsResponse } from '../lib/types.js';
   import { fetchOrgPrs } from '../lib/api.js';
   import { createQuery } from '@tanstack/svelte-query';
@@ -87,9 +88,29 @@
   let mobileDragEnabled = $state(false);
   let dragDisabled = $derived(isTouchDevice && !mobileDragEnabled);
 
+  // Track whether user has manually reordered in this session
+  let userHasDragged = $state(false);
+
+  // Pre-compute sidebar items grouped by repo for O(1) lookup in sort
+  let itemsByRepo = $derived(new Map(
+    sessionState.repos.map(r => [
+      r.path,
+      sessionState.sidebarItems.filter(i => i.repoPath === r.path),
+    ])
+  ));
+
+  // Attention-sorted workspace list
+  let attentionSortedRepos = $derived(
+    [...sessionState.repos].sort((a, b) => {
+      return workspaceAttentionScore(itemsByRepo.get(b.path) ?? [])
+        - workspaceAttentionScore(itemsByRepo.get(a.path) ?? []);
+    })
+  );
+
   // svelte-dnd-action requires items with `id` property
   let dndItems = $derived(
-    sessionState.repos.map(w => ({ id: w.path, workspace: w }))
+    (userHasDragged ? sessionState.repos : attentionSortedRepos)
+      .map(w => ({ id: w.path, workspace: w }))
   );
 
   // Local mutable copy for DnD updates
@@ -102,6 +123,7 @@
 
   function handleDndFinalize(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
+    userHasDragged = true;
     const newOrder = localDndItems.map(item => item.id);
     reorderWorkspaces(newOrder);
     mobileDragEnabled = false;

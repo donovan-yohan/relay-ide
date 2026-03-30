@@ -4,6 +4,8 @@ import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
 import { transitionDisplayState, shouldNotify } from './display-state.js';
 import { buildSidebarItems } from './sidebar-items.js';
+import { shouldMarkUnread } from './unread-logic.js';
+import { isUnread, markUnread, markRead, pruneUnread } from './unread.svelte.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -132,7 +134,10 @@ export async function refreshAll(): Promise<void> {
     if (wsPruned) saveWorkspaceSessions();
 
     // Rebuild sidebar items, reconciling displayState against existing items
-    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);
+    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems, isUnread);
+
+    // Prune stale unread entries from localStorage
+    pruneUnread(new Set(sidebarItems.map(i => i.id)));
 
   } catch { /* silent */ }
 }
@@ -149,7 +154,23 @@ export function renameSession(sessionId: string, branchName: string, displayName
   }
 }
 
-export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState): void {
+export function handleBranchChanged(sessionId: string, branch: string): void {
+  const session = sessions.find(s => s.id === sessionId);
+  if (session) {
+    session.branchName = branch;
+  } else {
+    console.debug('[sessions] handleBranchChanged: session not found', sessionId);
+  }
+
+  const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
+  if (item) {
+    item.branchName = branch;
+  } else {
+    console.debug('[sessions] handleBranchChanged: sidebar item not found for session', sessionId);
+  }
+}
+
+export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState, permissionType?: 'approval' | 'question'): void {
   // Keep session fields in sync so that refreshAll()/buildSidebarItems() reconciliation
   // sees the latest state if a full refresh arrives while real-time events are in flight.
   const session = sessions.find(s => s.id === sessionId);
@@ -159,6 +180,7 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
       case 'running':      session.agentState = 'processing'; break;
       case 'idle':         session.agentState = 'idle'; break;
       case 'permission':   session.agentState = 'permission-prompt'; break;
+      case 'error':        session.agentState = 'error'; break;
       case 'initializing': session.agentState = 'initializing'; break;
     }
   }
@@ -172,9 +194,21 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
   item.lastKnownBackendState = backendState;
 
   // Apply transition
-  const newDisplayState = transitionDisplayState(item.displayState, { type: 'backend-state-changed', state: backendState });
+  const newDisplayState = transitionDisplayState(
+    item.displayState,
+    permissionType
+      ? { type: 'backend-state-changed' as const, state: backendState, permissionType }
+      : { type: 'backend-state-changed' as const, state: backendState },
+  );
   if (newDisplayState !== oldDisplayState) {
     item.displayState = newDisplayState;
+
+    // Track unread — mark unread unless the user is viewing a session in this group
+    const isViewing = item.sessions.some(s => s.id === activeSessionId);
+    if (shouldMarkUnread(oldDisplayState, newDisplayState, isViewing)) {
+      markUnread(item.id);
+      item.isUnread = true;
+    }
 
     // Fire notification if appropriate
     if (shouldNotify(oldDisplayState, newDisplayState)) {
@@ -193,6 +227,8 @@ export function handleUserViewed(sessionId: string): void {
   const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
   if (item) {
     item.displayState = transitionDisplayState(item.displayState, { type: 'user-viewed' });
+    markRead(item.id);
+    item.isUnread = false;
   }
 }
 

@@ -1,4 +1,5 @@
 import type { DisplayState, BackendDisplayState } from './state/display-state.js';
+import type { PrDotStatus } from './pr-status.js';
 
 export type AgentType = 'claude' | 'codex';
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
@@ -260,6 +261,8 @@ export interface SidebarItem {
   displayState: DisplayState;
   lastKnownBackendState: BackendDisplayState | null;
   sessions: SessionSummary[];
+  isUnread?: boolean;
+  prStatus?: PrDotStatus;
 }
 
 // Changed files panel types
