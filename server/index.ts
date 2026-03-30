@@ -384,6 +384,7 @@ async function main(): Promise<void> {
   app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
     sessions,
     gitWatcher,
+    configPath: CONFIG_PATH,
   }));
 
   // Mount GitHub integration router

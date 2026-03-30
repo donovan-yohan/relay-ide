@@ -15,6 +15,8 @@
     sessions = [],
     worktrees = [],
     loading = false,
+    activeRepoPath = null,
+    activeSessionId = null,
     onLaunchSession,
     onSelectSession,
     onSelectWorkspace,
@@ -29,6 +31,8 @@
     sessions?: SessionSummary[];
     worktrees?: WorktreeInfo[];
     loading?: boolean;
+    activeRepoPath?: string | null;
+    activeSessionId?: string | null;
     onLaunchSession: (workspaceId: string) => void;
     onSelectSession: (id: string) => void;
     onSelectWorkspace: (path: string) => void;
@@ -44,7 +48,7 @@
   let accentBorder = $derived(`color-mix(in srgb, ${themeColor} 30%, transparent)`);
   let launching = $derived(isItemLoading(`ws-launch:${workspace.id}`));
 
-  // Sessions at workspace level (workspaceId matches, worktreePath is null-ish or no specific repo)
+  // Sessions launched at the workspace level (have workspaceId set directly)
   let workspaceSessions = $derived(
     sessions.filter(s => s.workspaceId === workspace.id)
   );
@@ -146,11 +150,11 @@
             workspace={repo}
             sessionGroups={getSessionGroupsForRepo(repo)}
             inactiveWorktrees={getInactiveWorktreesForRepo(repo)}
-            isActive={false}
+            isActive={activeRepoPath === repo.path && !activeSessionId}
             {onSelectWorkspace}
             {onSelectSession}
             {onNewWorktree}
-            onOpenSettings={(r) => onOpenSettings(r)}
+            {onOpenSettings}
             onDeleteSession={(id) => onDeleteSession?.(id)}
             onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
             orgPrs={orgPrs ?? []}
@@ -236,7 +240,7 @@
     flex-shrink: 0;
   }
 
-  /* Group body — pure black interior */
+  /* Group body — base background to contrast with header */
   .group-body {
     background: var(--bg);
     display: flex;

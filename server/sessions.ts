@@ -47,7 +47,7 @@ interface PendingSessionsFile {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-type CreateParams = Omit<CreatePtyParams, 'id'> & {
+export type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
@@ -56,7 +56,7 @@ type CreateParams = Omit<CreatePtyParams, 'id'> & {
   additionalDirs?: string[];
 };
 
-type CreateResult = SessionSummary & { pid: number | undefined };
+export type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();

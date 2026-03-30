@@ -593,10 +593,14 @@
       closeSidebar();
 
       if (result.warnings?.length) {
+        const msgs = result.warnings.map(w => `  ${w.repoPath}: ${w.error}`).join('\n');
         console.warn('[workspace-session] partial failure:', result.warnings);
+        alert(`workspace launched with warnings:\n${msgs}`);
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error';
       console.error('[workspace-session] launch failed:', err);
+      alert(`workspace launch failed: ${message}`);
     } finally {
       clearLoading(loadingKey);
     }

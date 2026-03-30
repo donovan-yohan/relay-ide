@@ -62,39 +62,44 @@ export function getSessionState() {
 }
 
 export async function refreshAll(): Promise<void> {
-  try {
-    const [s, w, ws, wg] = await Promise.all([
-      api.fetchSessions(),
-      api.fetchWorktrees(),
-      api.fetchWorkspaces(),
-      api.fetchWorkspaceGroups(),
-    ]);
-    sessions = s;
-    worktrees = w;
-    repos = ws;
-    workspaceGroups = wg;
+  const [sResult, wResult, wsResult, wgResult] = await Promise.allSettled([
+    api.fetchSessions(),
+    api.fetchWorktrees(),
+    api.fetchWorkspaces(),
+    api.fetchWorkspaceGroups(),
+  ]);
 
-    // Validate restored activeSessionId — clear if the session no longer exists
-    const activeIds = new Set(sessions.map(sess => sess.id));
-    if (activeSessionId !== null && !activeIds.has(activeSessionId)) {
-      activeSessionId = null;
-      saveActiveSessionId(null);
+  if (sResult.status === 'fulfilled') sessions = sResult.value;
+  else console.error('[refreshAll] failed to fetch sessions:', sResult.reason);
+
+  if (wResult.status === 'fulfilled') worktrees = wResult.value;
+  else console.error('[refreshAll] failed to fetch worktrees:', wResult.reason);
+
+  if (wsResult.status === 'fulfilled') repos = wsResult.value;
+  else console.error('[refreshAll] failed to fetch repos:', wsResult.reason);
+
+  if (wgResult.status === 'fulfilled') workspaceGroups = wgResult.value;
+  else console.error('[refreshAll] failed to fetch workspace groups:', wgResult.reason);
+
+  // Validate restored activeSessionId — clear if the session no longer exists
+  const activeIds = new Set(sessions.map(sess => sess.id));
+  if (activeSessionId !== null && !activeIds.has(activeSessionId)) {
+    activeSessionId = null;
+    saveActiveSessionId(null);
+  }
+
+  // Prune stale notification prefs
+  let notifPruned = false;
+  for (const id of Object.keys(notificationSessions)) {
+    if (!activeIds.has(id)) {
+      delete notificationSessions[id];
+      notifPruned = true;
     }
+  }
+  if (notifPruned) saveNotificationPrefs();
 
-    // Prune stale notification prefs
-    let notifPruned = false;
-    for (const id of Object.keys(notificationSessions)) {
-      if (!activeIds.has(id)) {
-        delete notificationSessions[id];
-        notifPruned = true;
-      }
-    }
-    if (notifPruned) saveNotificationPrefs();
-
-    // Rebuild sidebar items, reconciling displayState against existing items
-    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);
-
-  } catch { /* silent */ }
+  // Rebuild sidebar items, reconciling displayState against existing items
+  sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);
 }
 
 export function getSessionsForRepo(repoPath: string): SessionSummary[] {

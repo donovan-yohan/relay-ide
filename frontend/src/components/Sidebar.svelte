@@ -9,7 +9,7 @@
     DEFAULT_SIDEBAR_WIDTH,
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
-  import { getSessionState, getSessionsForRepo, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
+  import { getSessionState, getSessionsForRepo, getSessionsForWorkspaceGroup, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
   import type { Repo, WorktreeInfo, OrgPrsResponse, Workspace } from '../lib/types.js';
   import WorkspaceGroup from './WorkspaceGroup.svelte';
   import { fetchOrgPrs } from '../lib/api.js';
@@ -111,8 +111,11 @@
 
   function handleDndFinalize(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
-    const newOrder = localDndItems.map(item => item.id);
-    reorderWorkspaces(newOrder);
+    // Server requires the full set of repo paths (grouped + ungrouped).
+    // Keep grouped repos in their current order, then append the new ungrouped order.
+    const groupedPaths = sessionState.repos.filter(r => groupedRepoPaths.has(r.path)).map(r => r.path);
+    const newUngroupedOrder = localDndItems.map(item => item.id);
+    reorderWorkspaces([...groupedPaths, ...newUngroupedOrder]);
     mobileDragEnabled = false;
   }
 
@@ -180,11 +183,9 @@
 
     <div class="workspace-list">
       <!-- Workspace groups -->
-      {#each workspaceGroups.sort((a, b) => a.order - b.order) as ws (ws.id)}
+      {#each workspaceGroups.toSorted((a, b) => a.order - b.order) as ws (ws.id)}
         {@const wsRepos = ws.repos.map((p: string) => reposByPath.get(p)).filter((r): r is import('../lib/types.js').Repo => r !== undefined)}
-        {@const wsSessions = sessionState.sessions.filter(s =>
-          s.workspaceId === ws.id || ws.repos.includes(s.repoPath)
-        )}
+        {@const wsSessions = getSessionsForWorkspaceGroup(ws.id)}
         {@const wsWorktrees = sessionState.worktrees.filter(wt =>
           ws.repos.includes(wt.repoPath)
         )}
@@ -193,6 +194,8 @@
           repos={wsRepos}
           sessions={wsSessions}
           worktrees={wsWorktrees}
+          activeRepoPath={ui.activeRepoPath}
+          activeSessionId={sessionState.activeSessionId}
           onLaunchSession={(id) => onLaunchWorkspaceSession?.(id)}
           {onSelectSession}
           onSelectWorkspace={handleSelectWorkspace}

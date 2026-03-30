@@ -6,20 +6,22 @@ import { execFile } from 'node:child_process';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { loadConfig, saveConfig, resolveSessionSettings } from './config.js';
+import { loadConfig, saveConfig, resolveSessionSettings, writeMeta } from './config.js';
 import type { Config, Workspace, AgentType } from './types.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
-import { findOrCreateWorktreeForBranch } from './watcher.js';
+import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
 import { detectGitRepo } from './workspaces.js';
+import type { CreateParams, CreateResult } from './sessions.js';
 
 const execFileAsync = promisify(execFile);
 
 interface SessionDeps {
   sessions: {
-    create: (params: any) => any;
+    create: (params: CreateParams) => CreateResult;
     nextAgentName: () => string;
   };
   gitWatcher: { watch(cwd: string): void };
+  configPath: string;
 }
 
 export function createWorkspaceGroupsRouter(
@@ -281,7 +283,8 @@ export function createWorkspaceGroupsRouter(
 
       type RepoResult = { repoPath: string; resolvedPath: string } | { repoPath: string; error: string };
 
-      const results = await Promise.allSettled(
+      // Inner fn always returns (never rejects), so Promise.all is safe here
+      const results = await Promise.all(
         workspace.repos.map(async (repoPath): Promise<RepoResult> => {
           if (!fs.existsSync(repoPath)) {
             return { repoPath, error: `directory not found: ${repoPath}` };
@@ -290,7 +293,8 @@ export function createWorkspaceGroupsRouter(
           let gitInfo: { isGitRepo: boolean; defaultBranch: string | null };
           try {
             gitInfo = await detectGitRepo(repoPath);
-          } catch {
+          } catch (err) {
+            console.warn(`[workspace-groups] detectGitRepo failed for ${repoPath}:`, err);
             return { repoPath, resolvedPath: repoPath };
           }
 
@@ -301,11 +305,11 @@ export function createWorkspaceGroupsRouter(
           try {
             const result = await findOrCreateWorktreeForBranch(repoPath, gitInfo.defaultBranch, execFn);
             return { repoPath, resolvedPath: result.worktreePath };
-          } catch (err: any) {
-            if (err?.constructor?.name === 'BranchCheckedOutInMainError') {
+          } catch (err) {
+            if (err instanceof BranchCheckedOutInMainError) {
               return { repoPath, resolvedPath: repoPath };
             }
-            return { repoPath, error: err?.message ?? 'worktree creation failed' };
+            return { repoPath, error: err instanceof Error ? err.message : 'worktree creation failed' };
           }
         }),
       );
@@ -313,12 +317,7 @@ export function createWorkspaceGroupsRouter(
       const successes: Array<{ repoPath: string; resolvedPath: string }> = [];
       const failures: Array<{ repoPath: string; error: string }> = [];
 
-      for (const result of results) {
-        if (result.status === 'rejected') {
-          failures.push({ repoPath: 'unknown', error: result.reason?.message ?? 'unknown error' });
-          continue;
-        }
-        const val = result.value;
+      for (const val of results) {
         if ('error' in val) {
           failures.push(val);
         } else {
@@ -335,16 +334,19 @@ export function createWorkspaceGroupsRouter(
       const additionalDirs = successes.slice(1).map(s => s.resolvedPath);
       const addDirArgs = additionalDirs.flatMap(dir => ['--add-dir', dir]);
 
+      // Resolve settings first (respects global < workspace < repo cascade),
+      // then append --add-dir args so they don't replace configured claudeArgs
       const resolved = resolveSessionSettings(config, primary.repoPath, {
         agent: agent as AgentType | undefined,
         yolo,
         useTmux,
-        claudeArgs: claudeArgs ? [...claudeArgs, ...addDirArgs] : addDirArgs.length > 0 ? addDirArgs : undefined,
+        claudeArgs,
       }, workspace.id);
 
       const resolvedAgent = resolved.agent;
+      const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
       const baseArgs = [
-        ...(resolved.claudeArgs),
+        ...combinedClaudeArgs,
         ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
       ];
 
@@ -361,7 +363,7 @@ export function createWorkspaceGroupsRouter(
       const worktreePath = primary.resolvedPath !== primary.repoPath ? primary.resolvedPath : null;
 
       try {
-        const session = sessionDeps.sessions.create({
+        const createParams: CreateParams = {
           type: 'agent',
           agent: resolvedAgent,
           repoName: workspace.name,
@@ -371,15 +373,28 @@ export function createWorkspaceGroupsRouter(
           branchName: '',
           displayName,
           args: finalArgs,
+          configPath: sessionDeps.configPath,
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
-          claudeArgs: resolved.claudeArgs,
+          claudeArgs: combinedClaudeArgs,
           continuePolicy: resolved.continuePolicy,
           workspaceId: workspace.id,
-          additionalDirs: additionalDirs.length > 0 ? additionalDirs : undefined,
-          ...(safeCols != null && { cols: safeCols }),
-          ...(safeRows != null && { rows: safeRows }),
-        });
+        };
+        if (additionalDirs.length > 0) createParams.additionalDirs = additionalDirs;
+        if (safeCols != null) createParams.cols = safeCols;
+        if (safeRows != null) createParams.rows = safeRows;
+
+        const session = sessionDeps.sessions.create(createParams);
+
+        // Write worktree metadata (matches pattern in server/index.ts)
+        if (worktreePath) {
+          writeMeta(sessionDeps.configPath, {
+            worktreePath: cwd,
+            displayName,
+            lastActivity: new Date().toISOString(),
+            branchName: '',
+          });
+        }
 
         sessionDeps.gitWatcher.watch(session.cwd);
 
@@ -389,8 +404,9 @@ export function createWorkspaceGroupsRouter(
         }
 
         res.status(201).json(response);
-      } catch (err: any) {
-        res.status(500).json({ error: err?.message ?? 'Failed to create workspace session' });
+      } catch (err) {
+        console.error(`[workspace-groups] session creation failed for workspace ${id}:`, err);
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create workspace session' });
       }
     });
   }
