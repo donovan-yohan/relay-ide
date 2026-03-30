@@ -9,7 +9,7 @@
 
 ## Review Agent Setup
 
-The harness loop uses `docs/risk-contract.json` to select the review provider:
+The `/review` and `/ship` workflows use `docs/risk-contract.json` to select the review provider:
 
 - `"provider": "default"` — spawns the `pr:review` subagent directly (no external service needed)
 - `"provider": "greptile"` — waits for the `Greptile Code Review` check run on the head SHA

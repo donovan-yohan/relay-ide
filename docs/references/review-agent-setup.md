@@ -1,10 +1,10 @@
 # Review Agent Setup
 
-> Part of the [Harness documentation system](../../CLAUDE.md). Edit this file to configure your code review agent.
+> Edit this file to configure your code review agent for `/review` and `/ship` workflows.
 
 ## Default (zero-config)
 
-With `"provider": "default"` in `docs/risk-contract.json`, the harness loop uses `pr:review` (code-quality:code-reviewer subagent). No external service needed.
+With `"provider": "default"` in `docs/risk-contract.json`, the `/review` and `/ship` workflows use `pr:review` (code-quality:code-reviewer subagent). No external service needed.
 
 ## Configuring an External Reviewer
 
@@ -54,9 +54,9 @@ Edit the `reviewAgent` section in `docs/risk-contract.json`:
 - `rerunComment` — Comment text posted to trigger re-review after remediation
 - `timeoutMinutes` — Max time to wait for review completion (default: 20)
 
-## How the Loop Uses the Review Agent
+## How the Review Agent Works
 
-1. After the risk gate passes, the loop checks `reviewAgent.provider`
+1. After the risk gate passes, the workflow checks `reviewAgent.provider`
 2. If `"default"`: spawns `pr:review` subagent directly
 3. If anything else: waits for the GitHub check run matching `checkName` on the current head SHA
 4. Review findings are parsed from check run output or PR review comments

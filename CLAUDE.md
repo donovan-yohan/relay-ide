@@ -26,8 +26,6 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 | Design | `docs/DESIGN.md` | Backend patterns, auth flow, PTY management, session types |
 | Frontend | `docs/FRONTEND.md` | Svelte 5 components, state management, UI conventions |
 | Quality | `docs/QUALITY.md` | Test runner, test files, isolation patterns |
-| Plans | `docs/PLANS.md` | Active work, completed plans, tech debt |
-| Design Docs | `docs/design-docs/` | Feature brainstorm outputs and design decisions |
 | References | `docs/references/` | Deployment guide, review agent setup |
 | ADRs | `docs/adrs/` | Architecture decision records (normative constraints) |
 | Learnings | `docs/LEARNINGS.md` | Persistent cross-session learnings (architecture, debugging, patterns) |
@@ -53,13 +51,9 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 - Direct pushes to `master` are blocked (no bypass) — all commits via PR, version tags via `git push origin <tag>`.
 - See `docs/references/deployment.md` for full workflow.
 
-## Workflow
+## gstack
 
-> brainstorm → plan → orchestrate → complete
+- Use `/browse` from gstack for ALL web browsing — never use `mcp__claude-in-chrome__*` tools
+- Available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-design-review, /design-consultation, /design-shotgun, /design-html, /review, /ship, /land-and-deploy, /canary, /benchmark, /browse, /connect-chrome, /qa, /qa-only, /design-review, /setup-browser-cookies, /setup-deploy, /retro, /investigate, /document-release, /codex, /cso, /autoplan, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, /learn
+- If gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to build the binary and register skills
 
-| Step | Command | Purpose |
-|------|---------|---------|
-| 1 | `/harness:brainstorm` | Design through collaborative dialogue |
-| 2 | `/harness:plan` | Create living implementation plan |
-| 3 | `/harness:orchestrate` | Execute with agent teams + micro-reflects |
-| 4 | `/harness:complete` | Reflect, review, and create PR |

@@ -57,7 +57,7 @@ Check for evidence that this branch's changes have been reviewed:
 
 ## Step 3/8: Documentation review
 
-1. **Run reflect:** Execute `/harness:reflect` to check tier 2/3 documentation against recent changes. Report any findings to the user.
+1. **Run reflect:** Execute `/doc-review` to check tier 2/3 documentation against recent changes. Report any findings to the user.
 
 2. **Check README:** Run `git diff master..<branch> -- README.md` to see if README was already updated.
    - Then review the branch changes (`git diff master..<branch> --stat`) for new CLI flags, config changes, or user-facing features.

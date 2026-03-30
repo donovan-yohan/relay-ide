@@ -1,11 +1,10 @@
 # TODOs
 
-Backlog of ideas, bugs, and features. Each item is tagged with its harness entry point so any session can pick one up cold.
+Backlog of ideas, bugs, and features. Each item is tagged with its entry point so any session can pick one up cold.
 
 ## Quick Fixes
 
-> Entry: `/harness:bug` → `/harness:plan` → `/harness:orchestrate`
-> These have clear root causes and known solutions. No brainstorm needed.
+> Clear root causes and known solutions. No brainstorm needed.
 
 ### Sidenav double-click to expand/collapse
 Double-clicking a sidenav item (anywhere on the row) should toggle expand/collapse, so users don't have to aim for the tiny chevron icon.
@@ -60,6 +59,18 @@ Inactive repo items always show "default" as session name and "master" as branch
 
 **Scope:** Read actual branch from repo git state on load; preserve custom session names in config. **Files:** Sidebar repo item component, session/workspace store.
 
+### Repo root click goes to dashboard instead of creating session
+Clicking an inactive repo root in the sidebar navigates to the dashboard instead of creating a new session for that repo. Trivial fix.
+
+**Scope:** Fix the click handler on inactive repo root items to create a session instead of navigating. **Files:** Sidebar repo item component.
+
+### Fix --bg first-run crash loop
+`claude-remote-cli --bg` crashes on first run if no PIN is configured. The non-TTY exit blocks the server from starting, but the web-based PIN setup flow (`POST /auth/setup` + PinGate) needs the server running. Remove the non-TTY exit and trust the web layer.
+
+**Scope:** Remove the `!process.stdin.isTTY` exit in `server/index.ts`, ensure PinGate UI handles the no-PIN state. **Files:** `server/index.ts`, `server/auth.ts`.
+
+**Added:** 2026-03-28
+
 ### PR row missing "Review PR" CTA when review is requested
 A PR with "review requested" status and Role=Review only shows "Merge" and "+". Should show a "Review" button that launches a review agent session.
 
@@ -67,8 +78,7 @@ A PR with "review requested" status and Role=Review only shows "Merge" and "+". 
 
 ## Investigation Required
 
-> Entry: `/harness:bug` (investigate phase) → root cause → then plan
-> Don't propose fixes until root cause is confirmed.
+> Use `/investigate` for root cause analysis. Don't propose fixes until root cause is confirmed.
 
 ### [Recurring] "Continue" default breaks new worktree sessions
 When "Continue" is enabled as a repo default, new worktree sessions start and immediately close for Claude agent. This was supposedly fixed before but keeps recurring. Only workaround is disabling "Continue" for the repo.
@@ -86,7 +96,6 @@ Tmux sessions are named `crc-<displayName>-<id>` which is opaque in `tmux ls` ou
 
 ## Small Features
 
-> Entry: `/harness:brainstorm` → `/harness:plan` → `/harness:orchestrate`
 > Need design decisions before implementation.
 
 ### UI preview mode for worktree QA testing
@@ -129,7 +138,6 @@ Add end-to-end browser tests using Playwright for UI components that can't be un
 Opt-in feature: generate one-line summaries for each changed file in the Code & File Tools panel by piping the diff through `claude -p --bare` with Haiku (or the user's configured agent). Batch all changed files into one call, cache until next `files-changed` event. The +N -N fallback stats tell you HOW MUCH changed; LLM summaries tell you WHAT changed.
 
 **Depends on:** Phase 2 changed files panel (needs the file list and diff infrastructure to exist first).
-**Design doc:** `docs/design-docs/2026-03-28-code-file-tools-design.md` (see "Future Extensions: v2 LLM-Powered Summaries").
 
 **Added:** 2026-03-28
 
@@ -164,8 +172,7 @@ After a PR merges, auto-archive or prompt for cleanup without requiring manual s
 
 ## Epics
 
-> Entry: `/harness:brainstorm` → break into phases → multiple loops per phase
-> Too large for a single plan. Need to be decomposed first.
+> Too large for a single plan. Break into phases first.
 
 ### True Workspaces
 Current "workspaces" are really just repos. True workspaces should be an arbitrary grouping of repos/folders.
@@ -195,10 +202,32 @@ The command palette needs a full overhaul.
 3. **Keyboard shortcuts:** Audit, improve, and document shortcuts; make them consistent and discoverable
 4. **Discoverability:** Show shortcuts inline, add recently-used section, contextual commands based on current view
 
+## Stalled Work
+
+> Partially completed work that needs to be picked back up.
+
+### Mobile input redesign (5/6 done)
+Event-intent architecture replacing value-diffing for mobile input. All tasks complete except on-device manual testing.
+
+**Remaining:** Run the test suite on actual iOS/Android devices and verify the event-intent pipeline handles autocorrect, predictive text, and swipe keyboards correctly.
+
+**Added:** 2026-02-25
+
+### Filesystem browser frontend (4/8 done)
+File system browser for workspace selection with bulk import. Backend API complete, frontend tree UI integration incomplete.
+
+**Remaining:** Wire the file browser API into the AddWorkspace dialog, build the tree UI, add bulk import from a parent directory.
+
+**Added:** 2026-03-19
+
+## Tech Debt
+
+### EventMessage discriminated union
+Refactor `EventMessage` in `frontend/src/lib/ws.ts` from bag-of-optionals to a discriminated union keyed on `type`. Currently all fields except `type` are optional and `type` is `string` — `branch` and `branchName` coexist for different events. A union would give compile-time narrowing and catch missing fields on new event types.
+
 ## Research / Blocked
 
-> Entry: investigate first, then decide whether to scope as a feature
-> Don't plan implementation until the research question is answered.
+> Use `/investigate` first, then decide whether to scope as a feature.
 
 ### Investigate gstack multi-repo mode and proactive mode
 Find out what "multi-repo mode" and "proactive mode" mean in gstack — how do they work, what do they enable, and are there ideas to steal or integrate?
@@ -219,7 +248,6 @@ Re-add Linear integration via CLI with proper `BranchLink.source` field support 
 Richer CI status in the PR top bar — individual check names, progress indicators, mobile-responsive.
 
 **Blocked on:** Webhook self-service feature shipping (real-time CI events needed).
-**Design doc:** `docs/design-docs/2026-03-24-webhook-self-service-design.md`
 
 ---
 
