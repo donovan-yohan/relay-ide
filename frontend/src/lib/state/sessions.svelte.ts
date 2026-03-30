@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
+import type { SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
 import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
@@ -23,6 +23,7 @@ function saveActiveSessionId(id: string | null): void {
 let sessions = $state<SessionSummary[]>([]);
 let worktrees = $state<WorktreeInfo[]>([]);
 let repos = $state<Repo[]>([]);
+let workspaceGroups = $state<Workspace[]>([]);
 let activeSessionId = $state<string | null>(loadActiveSessionId());
 let loadingItems = $state<Record<string, boolean>>({});
 let notificationSessions = $state<Record<string, boolean>>({});
@@ -48,6 +49,7 @@ export function getSessionState() {
     get sessions() { return sessions; },
     get worktrees() { return worktrees; },
     get repos() { return repos; },
+    get workspaceGroups() { return workspaceGroups; },
     get activeSessionId() { return activeSessionId; },
     set activeSessionId(id: string | null) {
       activeSessionId = id;
@@ -61,14 +63,16 @@ export function getSessionState() {
 
 export async function refreshAll(): Promise<void> {
   try {
-    const [s, w, ws] = await Promise.all([
+    const [s, w, ws, wg] = await Promise.all([
       api.fetchSessions(),
       api.fetchWorktrees(),
       api.fetchWorkspaces(),
+      api.fetchWorkspaceGroups(),
     ]);
     sessions = s;
     worktrees = w;
     repos = ws;
+    workspaceGroups = wg;
 
     // Validate restored activeSessionId — clear if the session no longer exists
     const activeIds = new Set(sessions.map(sess => sess.id));
@@ -95,6 +99,15 @@ export async function refreshAll(): Promise<void> {
 
 export function getSessionsForRepo(repoPath: string): SessionSummary[] {
   return sessions.filter(s => s.repoPath === repoPath);
+}
+
+export function getSessionsForWorkspaceGroup(workspaceId: string): SessionSummary[] {
+  const directSessions = sessions.filter(s => s.workspaceId === workspaceId);
+  const workspace = workspaceGroups.find(w => w.id === workspaceId);
+  if (!workspace) return directSessions;
+  const repoSet = new Set(workspace.repos);
+  const repoSessions = sessions.filter(s => !s.workspaceId && repoSet.has(s.repoPath));
+  return [...directSessions, ...repoSessions];
 }
 
 export function renameSession(sessionId: string, branchName: string, displayName: string): void {
