@@ -98,6 +98,26 @@
   // Detect mobile for context menu behavior
   let isMobile = $state(typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches);
 
+  let clickTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleHeaderClick(e: MouseEvent) {
+    void e;
+    if (isMobile) {
+      onSelectWorkspace(workspace.path);
+      return;
+    }
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      toggleWorkspaceCollapse(workspace.path);
+    } else {
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        onSelectWorkspace(workspace.path);
+      }, 200);
+    }
+  }
+
   // Context menu refs (keyed by row identifier)
   let menuRefs: Record<string, ContextMenu> = {};
 
@@ -208,7 +228,7 @@
     class="workspace-header"
     class:attention={hasAttention}
     data-track="sidebar.workspace.click"
-    onclick={() => { onSelectWorkspace(workspace.path); }}
+    onclick={handleHeaderClick}
   >
     <div class="workspace-left">
       <!-- svelte-ignore a11y_click_events_have_key_events -->
