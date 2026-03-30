@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
   import { fetchDashboard } from '../lib/api.js';
-  import { derivePrAction } from '../lib/pr-state.js';
+  import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
   import { formatRelativeTime } from '../lib/utils.js';
   import type { PullRequest, ActivityEntry, DashboardData } from '../lib/types.js';
   import DataTable from './DataTable.svelte';
@@ -50,17 +50,7 @@
   ];
 
   function prActionForRow(pr: PullRequest) {
-    const prState = pr.state === 'OPEN' ? 'OPEN' : pr.state === 'MERGED' ? 'MERGED' : 'CLOSED';
-    return derivePrAction({
-      commitsAhead: 1,
-      prState,
-      ciPassing: 0,
-      ciFailing: 0,
-      ciPending: 0,
-      ciTotal: 0,
-      mergeable: (pr.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
-      unresolvedCommentCount: 0,
-    });
+    return derivePrAction(buildPrStateInput(pr));
   }
 
   function prRoleLabel(pr: PullRequest): string {
@@ -123,16 +113,7 @@
             title="Open session on this branch"
             onclick={() => onOpenPrSession(pr)}
           >+</button>
-          {#if pr.mergeable === 'CONFLICTING'}
-            <TuiButton
-              variant="danger"
-              size="sm"
-              title="Open worktree and fix merge conflicts"
-              onclick={() => onFixConflicts(pr)}
-            >
-              Fix Conflicts
-            </TuiButton>
-          {:else if pr.mergeable === 'MERGEABLE' && pr.state === 'OPEN'}
+          {#if action.type === 'merge-pr'}
             <TuiButton
               variant="success"
               size="sm"
@@ -141,13 +122,14 @@
               rel="noopener noreferrer"
               title="Ready to merge on GitHub"
             >
-              Merge
+              {action.label}
             </TuiButton>
           {:else if action.type !== 'none' && action.label}
             <TuiButton
-              variant={action.color === 'success' ? 'success' : action.color === 'error' ? 'danger' : action.color === 'accent' ? 'primary' : 'ghost'}
+              variant={action.color === 'success' ? 'success' : action.color === 'error' ? 'danger' : action.color === 'info' ? 'info' : action.color === 'accent' ? 'primary' : 'ghost'}
               size="sm"
               title={action.label}
+              disabled={action.type === 'checks-running'}
               onclick={() => onPrAction(pr)}
             >
               {action.label}
