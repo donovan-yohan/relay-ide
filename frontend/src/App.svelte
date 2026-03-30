@@ -1,22 +1,26 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
-  import { getUi, openSidebar, closeSidebar } from './lib/state/ui.svelte.js';
+  import { getUi, openSidebar, closeSidebar, toggleSidebarCollapsed } from './lib/state/ui.svelte.js';
   import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
-  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo } from './lib/api.js';
+  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal } from './lib/actions/registry.svelte.js';
   import type { Action, ActionContext } from './lib/actions/types.js';
-  import { sessionNewAgent, sessionNewTerminal, sessionCloseActive, sessionKill, sessionStartOnRepo, sessionStartOnTicket } from './lib/actions/definitions/session.js';
+  import { sessionNewAgent, sessionNewTerminal, sessionCloseActive, sessionKill, sessionStartOnRepo, sessionStartOnTicket, sessionCustomize, sessionSwitchToTab, sessionRename } from './lib/actions/definitions/session.js';
   import { workspaceAdd, workspaceNewWorktree } from './lib/actions/definitions/workspace.js';
-  import { prCreate, prPushBranch, prSwitchBranch } from './lib/actions/definitions/pr.js';
-  import { settingsOpen, settingsConnectGithub, settingsToggleYolo, settingsCheckUpdates } from './lib/actions/definitions/settings.js';
+  import { prCreate, prPushBranch, prSwitchBranch, prFixConflicts, prArchiveBranch, prRenameBranch, prCopyBranchName, prOpenExternal, prRefresh, prChangeTarget, prSkipChecks } from './lib/actions/definitions/pr.js';
+  import { settingsOpen, settingsConnectGithub, settingsToggleYolo, settingsCheckUpdates, settingsDisconnectGithub, settingsSetupWebhooks, settingsRemoveWebhook, settingsTestWebhook, settingsConnectJira, settingsDisconnectJira, settingsToggleDevTools, settingsClearAnalytics, settingsToggleContinue, settingsToggleTmux, settingsToggleNotifications, settingsChangeDefaultAgent } from './lib/actions/definitions/settings.js';
+  import { sidebarCollapse, sidebarNavigateDashboard, sidebarWorkspaceSettings, sidebarRenameSession, sidebarDeleteWorktree, sidebarResumeSession, sidebarResumeYolo } from './lib/actions/definitions/sidebar.js';
+  import { dashboardOpenPrSession, dashboardSortPrs, dashboardClearFilters, orgSwitchTab, orgSaveFilter, orgDeleteFilter, orgTogglePrStatus, orgNavigateToWorkspace, ticketSwitchProvider, ticketOpenExternal } from './lib/actions/definitions/dashboard.js';
+  import { terminalScrollTop, terminalScrollBottom } from './lib/actions/definitions/terminal.js';
+  import { navPreviousTab, navNextTab, navSwitchToTab } from './lib/actions/definitions/navigation.js';
   import PinGate from './components/PinGate.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Terminal from './components/Terminal.svelte';
@@ -151,6 +155,91 @@
         }
       }},
       { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
+      // ── Phase 3: Session ──
+      { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }); } },
+      { ...sessionSwitchToTab, handler: () => {} },
+      { ...sessionRename, handler: async () => {
+        const name = prompt('rename session:');
+        if (name?.trim() && sessionState.activeSessionId) {
+          await renameSessionApi(sessionState.activeSessionId, name.trim());
+        }
+      }},
+      // ── Phase 3: PR ──
+      { ...prFixConflicts, handler: () => navigateToDashboard() },
+      { ...prArchiveBranch, handler: () => navigateToDashboard() },
+      { ...prRenameBranch, handler: () => navigateToDashboard() },
+      { ...prCopyBranchName, handler: async () => {
+        const sessions = workspaceSessions;
+        const branch = sessions[0]?.branchName;
+        if (branch) await navigator.clipboard.writeText(branch);
+      }},
+      { ...prOpenExternal, handler: () => navigateToDashboard() },
+      { ...prRefresh, handler: async () => {
+        await refreshAll();
+      }},
+      { ...prChangeTarget, handler: () => navigateToDashboard() },
+      { ...prSkipChecks, handler: () => navigateToDashboard() },
+      // ── Phase 3: Settings ──
+      { ...settingsDisconnectGithub, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsSetupWebhooks, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsRemoveWebhook, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsTestWebhook, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsConnectJira, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsDisconnectJira, handler: () => settingsDialogRef?.open('section-integrations') },
+      { ...settingsToggleDevTools, handler: () => settingsDialogRef?.open('section-advanced') },
+      { ...settingsClearAnalytics, handler: () => settingsDialogRef?.open('section-advanced') },
+      { ...settingsToggleContinue, handler: () => settingsDialogRef?.open('section-general') },
+      { ...settingsToggleTmux, handler: () => settingsDialogRef?.open('section-general') },
+      { ...settingsToggleNotifications, handler: () => settingsDialogRef?.open('section-general') },
+      { ...settingsChangeDefaultAgent, handler: () => settingsDialogRef?.open('section-general') },
+      // ── Phase 3: Sidebar ──
+      { ...sidebarCollapse, handler: () => toggleSidebarCollapsed() },
+      { ...sidebarNavigateDashboard, handler: () => navigateToDashboard() },
+      { ...sidebarWorkspaceSettings, handler: () => {
+        if (activeWorkspace) workspaceSettingsDialogRef?.open(activeWorkspace.path, activeWorkspace.name);
+      }},
+      { ...sidebarRenameSession, handler: async () => {
+        const name = prompt('rename session:');
+        if (name?.trim() && sessionState.activeSessionId) {
+          await renameSessionApi(sessionState.activeSessionId, name.trim());
+        }
+      }},
+      { ...sidebarDeleteWorktree, handler: () => {
+        const wt = sessionState.worktrees.find(w => w.path === activeSession?.worktreePath);
+        if (wt) deleteWorktreeDialogRef?.open(wt);
+      }},
+      { ...sidebarResumeSession, handler: () => handleQuickAgent() },
+      { ...sidebarResumeYolo, handler: () => handleQuickAgent() },
+      // ── Phase 3: Dashboard/Org/Ticket ──
+      { ...dashboardOpenPrSession, handler: () => handleQuickAgent() },
+      { ...dashboardSortPrs, handler: () => {} },
+      { ...dashboardClearFilters, handler: () => {} },
+      { ...orgSwitchTab, handler: () => {} },
+      { ...orgSaveFilter, handler: () => {} },
+      { ...orgDeleteFilter, handler: () => {} },
+      { ...orgTogglePrStatus, handler: () => {} },
+      { ...orgNavigateToWorkspace, handler: () => {} },
+      { ...ticketSwitchProvider, handler: () => {} },
+      { ...ticketOpenExternal, handler: () => {} },
+      // ── Phase 3: Terminal ──
+      { ...terminalScrollTop, handler: () => (terminalRef as any)?.scrollToTop?.() },
+      { ...terminalScrollBottom, handler: () => (terminalRef as any)?.scrollToBottom?.() },
+      // ── Phase 3: Navigation ──
+      { ...navPreviousTab, handler: () => {
+        const sessions = workspaceSessions;
+        if (sessions.length === 0) return;
+        const idx = sessions.findIndex(s => s.id === sessionState.activeSessionId);
+        const prev = idx <= 0 ? sessions[sessions.length - 1] : sessions[idx - 1];
+        if (prev) handleSelectSession(prev.id);
+      }},
+      { ...navNextTab, handler: () => {
+        const sessions = workspaceSessions;
+        if (sessions.length === 0) return;
+        const idx = sessions.findIndex(s => s.id === sessionState.activeSessionId);
+        const next = idx === -1 || idx === sessions.length - 1 ? sessions[0] : sessions[idx + 1];
+        if (next) handleSelectSession(next.id);
+      }},
+      { ...navSwitchToTab, handler: () => {} },
     ] satisfies Action[]);
 
     let cleanupViewport: (() => void) | undefined;
