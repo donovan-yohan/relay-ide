@@ -1,10 +1,9 @@
 <script lang="ts">
   import { getAction } from '../lib/actions/registry.svelte.js';
   import { formatShortcut } from '../lib/actions/shortcuts.js';
+  import { isMac } from '../lib/utils.js';
 
   let { actionId }: { actionId: string } = $props();
-
-  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
 
   let shortcut = $derived.by(() => {
     const action = getAction(actionId);

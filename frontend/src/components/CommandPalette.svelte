@@ -7,7 +7,10 @@
   import { getAllActions } from '../lib/actions/registry.svelte.js';
   import { formatShortcut } from '../lib/actions/shortcuts.js';
   import type { ActionContext, Action } from '../lib/actions/types.js';
-  import { isMobileDevice } from '../lib/utils.js';
+  import { isMobileDevice, isMac } from '../lib/utils.js';
+
+  const TABS = ['all', 'sessions', 'workspaces', 'prs', 'settings'] as const;
+  type Tab = typeof TABS[number];
 
   let {
     open = false,
@@ -32,7 +35,6 @@
   } = $props();
 
   const queryClient = useQueryClient();
-  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
 
   let query = $state('');
   let focusedIndex = $state(0);
@@ -40,7 +42,7 @@
   let resultsEl = $state<HTMLDivElement | undefined>(undefined);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let debouncedQuery = $state('');
-  let activeTab = $state<'all' | 'sessions' | 'workspaces' | 'prs' | 'settings'>('all');
+  let activeTab = $state<Tab>('all');
 
   // Drag-dismiss state (mobile)
   let dragStartY = 0;
@@ -185,6 +187,7 @@
   });
 
   let flatItems = $derived(groupedResults.flatMap(g => g.items));
+  let flatIndexMap = $derived(new Map(flatItems.map((item, i) => [item.id, i])));
 
   $effect(() => {
     if (focusedIndex >= flatItems.length) focusedIndex = Math.max(0, flatItems.length - 1);
@@ -233,9 +236,8 @@
     if (e.key === 'Enter') { e.preventDefault(); const item = flatItems[focusedIndex]; if (item) selectItem(item); return; }
     if (e.key === 'Tab') {
       e.preventDefault();
-      const tabs: typeof activeTab[] = ['all', 'sessions', 'workspaces', 'prs', 'settings'];
-      const idx = tabs.indexOf(activeTab);
-      activeTab = e.shiftKey ? tabs[(idx - 1 + tabs.length) % tabs.length]! : tabs[(idx + 1) % tabs.length]!;
+      const idx = TABS.indexOf(activeTab);
+      activeTab = e.shiftKey ? TABS[(idx - 1 + TABS.length) % TABS.length]! : TABS[(idx + 1) % TABS.length]!;
       focusedIndex = 0;
       return;
     }
@@ -325,7 +327,7 @@
       </div>
 
       <div class="palette-tabs" role="tablist">
-        {#each ['all', 'sessions', 'workspaces', 'prs', 'settings'] as tab (tab)}
+        {#each TABS as tab (tab)}
           <button
             class="palette-tab"
             class:active={activeTab === tab}
@@ -348,7 +350,7 @@
               {/if}
             </div>
             {#each group.items as item (item.id)}
-              {@const globalIndex = flatItems.indexOf(item)}
+              {@const globalIndex = flatIndexMap.get(item.id) ?? -1}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div
                 id="palette-item-{item.id}"

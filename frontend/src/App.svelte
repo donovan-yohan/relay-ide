@@ -6,7 +6,7 @@
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
-  import { isMobileDevice, estimateTerminalDimensions } from './lib/utils.js';
+  import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi } from './lib/api.js';
   import { derivePrAction, getActionPrompt } from './lib/pr-state.js';
@@ -74,6 +74,13 @@
     if (sessionState.activeSessionId) sessionState.activeSessionId = null;
   }
 
+  async function handleRenameActiveSession() {
+    const name = prompt('rename session:');
+    if (name?.trim() && sessionState.activeSessionId) {
+      await renameSessionApi(sessionState.activeSessionId, name.trim());
+    }
+  }
+
   function navigateToSession(sessionId: string, _sessionType: string) {
     sessionState.activeSessionId = sessionId;
     // Set active workspace from session's repoPath
@@ -134,7 +141,6 @@
         }
       }},
       { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
-      // PR/ticket stubs: navigate to dashboard. Direct handlers deferred to Phase 3.
       { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
       { ...workspaceAdd, handler: () => addWorkspaceDialogRef?.open() },
       { ...workspaceNewWorktree, handler: () => {
@@ -159,12 +165,7 @@
       // ── Phase 3: Session ──
       { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }); } },
       { ...sessionSwitchToTab, handler: () => {} },
-      { ...sessionRename, handler: async () => {
-        const name = prompt('rename session:');
-        if (name?.trim() && sessionState.activeSessionId) {
-          await renameSessionApi(sessionState.activeSessionId, name.trim());
-        }
-      }},
+      { ...sessionRename, handler: () => handleRenameActiveSession() },
       // ── Phase 3: PR ──
       { ...prFixConflicts, handler: () => navigateToDashboard() },
       { ...prArchiveBranch, handler: () => navigateToDashboard() },
@@ -199,12 +200,7 @@
       { ...sidebarWorkspaceSettings, handler: () => {
         if (activeWorkspace) workspaceSettingsDialogRef?.open(activeWorkspace.path, activeWorkspace.name);
       }},
-      { ...sidebarRenameSession, handler: async () => {
-        const name = prompt('rename session:');
-        if (name?.trim() && sessionState.activeSessionId) {
-          await renameSessionApi(sessionState.activeSessionId, name.trim());
-        }
-      }},
+      { ...sidebarRenameSession, handler: () => handleRenameActiveSession() },
       { ...sidebarDeleteWorktree, handler: () => {
         const wt = sessionState.worktrees.find(w => w.path === activeSession?.worktreePath);
         if (wt) deleteWorktreeDialogRef?.open(wt);
@@ -222,9 +218,9 @@
       { ...orgNavigateToWorkspace, handler: () => {} },
       { ...ticketSwitchProvider, handler: () => {} },
       { ...ticketOpenExternal, handler: () => {} },
-      // ── Phase 3: Terminal ──
-      { ...terminalScrollTop, handler: () => (terminalRef as any)?.scrollToTop?.() },
-      { ...terminalScrollBottom, handler: () => (terminalRef as any)?.scrollToBottom?.() },
+      // ── Phase 3: Terminal (scroll methods not yet exposed by Terminal.svelte) ──
+      { ...terminalScrollTop, handler: () => terminalRef?.getTerm()?.scrollToTop() },
+      { ...terminalScrollBottom, handler: () => terminalRef?.getTerm()?.scrollToLine(terminalRef?.getTerm()?.buffer?.active?.length ?? 0) },
       // ── Phase 3: Navigation ──
       { ...navPreviousTab, handler: () => {
         const sessions = workspaceSessions;
@@ -270,7 +266,6 @@
     }
 
     // Keyboard shortcuts — centralized via ShortcutListener
-    const isMac = navigator.platform.toUpperCase().includes('MAC');
     let cleanupKeydown: (() => void) | undefined;
 
     {
@@ -360,12 +355,11 @@
       };
     }
 
-    // Hardware keyboard detection (mobile only)
+    // Hardware keyboard detection (mobile only — self-removing once triggered)
     if (isMobileDevice) {
       const detectKeyboard = () => {
-        if (!ui.hasHardwareKeyboard) {
-          ui.hasHardwareKeyboard = true;
-        }
+        ui.hasHardwareKeyboard = true;
+        document.removeEventListener('keydown', detectKeyboard);
       };
       document.addEventListener('keydown', detectKeyboard);
     }
