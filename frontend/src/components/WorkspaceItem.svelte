@@ -54,6 +54,47 @@
     new Map(sessionState.sidebarItems.map(i => [i.id, i]))
   );
 
+  interface StatePip {
+    char: string;
+    colorClass: string;
+    count: number;
+  }
+
+  const pipConfig: Record<string, { char: string; colorClass: string }> = {
+    permission:     { char: '◆', colorClass: 'pip-red' },
+    'needs-answer': { char: '◇', colorClass: 'pip-red' },
+    error:          { char: '■', colorClass: 'pip-red' },
+    'unseen-idle':  { char: '▶', colorClass: 'pip-yellow' },
+    running:        { char: '●', colorClass: 'pip-green' },
+    initializing:   { char: '●', colorClass: 'pip-green' },
+    'seen-idle':    { char: '▶', colorClass: 'pip-yellow-muted' },
+    inactive:       { char: '─', colorClass: 'pip-gray' },
+  };
+
+  const urgencyOrder = ['permission', 'needs-answer', 'error', 'unseen-idle', 'running', 'initializing', 'seen-idle', 'inactive'];
+
+  let summaryPips = $derived((): StatePip[] => {
+    const items = sessionState.sidebarItems.filter(i => i.repoPath === workspace.path);
+    const counts = new Map<string, StatePip>();
+
+    for (const item of items) {
+      const cfg = pipConfig[item.displayState];
+      if (!cfg) continue;
+      const key = item.displayState;
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        counts.set(key, { ...cfg, count: 1 });
+      }
+    }
+
+    return urgencyOrder
+      .filter(state => counts.has(state))
+      .map(state => counts.get(state)!)
+      .slice(0, 3);
+  });
+
   function itemHasAttention(groupPath: string): boolean {
     const item = sidebarItemById.get(groupPath);
     return item !== undefined && isAttentionState(item.displayState);
@@ -237,8 +278,15 @@
       >{collapsed ? '›' : '⌄'}</span>
       <span class="initial-block" style:background={initialColor}>{initial}</span>
       <span class="workspace-name">{workspace.name}</span>
-      {#if collapsed && totalItems > 0}
-        <span class="collapse-count">{totalItems}</span>
+      {#if collapsed}
+        {@const pips = summaryPips()}
+        {#if pips.length > 0}
+          <span class="summary-pips">
+            {#each pips as pip}
+              <span class="pip {pip.colorClass}">{pip.char}{pip.count}</span>
+            {/each}
+          </span>
+        {/if}
       {/if}
     </div>
     <div class="workspace-actions">
@@ -444,15 +492,27 @@
     color: var(--text);
   }
 
-  .collapse-count {
-    font-size: var(--font-size-xs);
+  .summary-pips {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-family: var(--font-mono);
-    color: var(--text-muted);
-    background: var(--border);
-    border-radius: 0;
-    padding: 2px 8px;
+    font-size: var(--font-size-xs);
     flex-shrink: 0;
   }
+
+  .pip {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    white-space: nowrap;
+  }
+
+  .pip-red         { color: #cc6666; }
+  .pip-yellow      { color: #f0c674; }
+  .pip-yellow-muted { color: rgba(240, 198, 116, 0.5); }
+  .pip-green       { color: rgba(74, 222, 128, 0.8); }
+  .pip-gray        { color: #555; }
 
   .initial-block {
     display: inline-flex;
