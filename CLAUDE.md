@@ -27,7 +27,6 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 | Frontend | `docs/FRONTEND.md` | Svelte 5 components, state management, UI conventions |
 | Quality | `docs/QUALITY.md` | Test runner, test files, isolation patterns |
 | References | `docs/references/` | Deployment guide, review agent setup |
-| ADRs | `docs/adrs/` | Architecture decision records (normative constraints) |
 | Learnings | `docs/LEARNINGS.md` | Persistent cross-session learnings (architecture, debugging, patterns) |
 
 ## Key Patterns
