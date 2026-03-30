@@ -1,14 +1,31 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { loadConfig, saveConfig } from './config.js';
-import type { Config, Workspace } from './types.js';
+import { loadConfig, saveConfig, resolveSessionSettings } from './config.js';
+import type { Config, Workspace, AgentType } from './types.js';
+import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
+import { findOrCreateWorktreeForBranch } from './watcher.js';
+import { detectGitRepo } from './workspaces.js';
+
+const execFileAsync = promisify(execFile);
+
+interface SessionDeps {
+  sessions: {
+    create: (params: any) => any;
+    nextAgentName: () => string;
+  };
+  gitWatcher: { watch(cwd: string): void };
+}
 
 export function createWorkspaceGroupsRouter(
   configPath: string,
   requireAuth: (req: any, res: any, next: any) => void,
+  sessionDeps?: SessionDeps,
 ): Router {
   const router = Router();
 
@@ -223,6 +240,160 @@ export function createWorkspaceGroupsRouter(
 
     res.status(204).end();
   });
+
+  // POST /workspace-groups/:id/session — launch a workspace session with coordinated worktrees
+  if (sessionDeps) {
+    router.post('/:id/session', requireAuth, async (req: Request, res: Response) => {
+      const { id } = req.params as { id: string };
+      const { agent, yolo, useTmux, claudeArgs, cols, rows } = req.body as {
+        agent?: string;
+        yolo?: boolean;
+        useTmux?: boolean;
+        claudeArgs?: string[];
+        cols?: number;
+        rows?: number;
+      };
+
+      let config: Config;
+      try {
+        config = loadConfig(configPath);
+      } catch {
+        res.status(500).json({ error: 'Failed to read config' });
+        return;
+      }
+
+      const workspaces = config.workspaces ?? [];
+      const workspace = workspaces.find(w => w.id === id);
+      if (!workspace) {
+        res.status(404).json({ error: 'Workspace not found' });
+        return;
+      }
+
+      if (workspace.repos.length === 0) {
+        res.status(400).json({ error: 'Workspace has no repos' });
+        return;
+      }
+
+      // Resolve paths per-repo in parallel: git repos get worktrees, non-git use path directly
+      const execFn = (cmd: string, args: string[], opts: { cwd: string; timeout?: number }) =>
+        execFileAsync(cmd, args, { cwd: opts.cwd, timeout: opts.timeout ?? 10_000 })
+          .then(({ stdout, stderr }) => ({ stdout, stderr }));
+
+      type RepoResult = { repoPath: string; resolvedPath: string } | { repoPath: string; error: string };
+
+      const results = await Promise.allSettled(
+        workspace.repos.map(async (repoPath): Promise<RepoResult> => {
+          if (!fs.existsSync(repoPath)) {
+            return { repoPath, error: `directory not found: ${repoPath}` };
+          }
+
+          let gitInfo: { isGitRepo: boolean; defaultBranch: string | null };
+          try {
+            gitInfo = await detectGitRepo(repoPath);
+          } catch {
+            return { repoPath, resolvedPath: repoPath };
+          }
+
+          if (!gitInfo.isGitRepo || !gitInfo.defaultBranch) {
+            return { repoPath, resolvedPath: repoPath };
+          }
+
+          try {
+            const result = await findOrCreateWorktreeForBranch(repoPath, gitInfo.defaultBranch, execFn);
+            return { repoPath, resolvedPath: result.worktreePath };
+          } catch (err: any) {
+            if (err?.constructor?.name === 'BranchCheckedOutInMainError') {
+              return { repoPath, resolvedPath: repoPath };
+            }
+            return { repoPath, error: err?.message ?? 'worktree creation failed' };
+          }
+        }),
+      );
+
+      const successes: Array<{ repoPath: string; resolvedPath: string }> = [];
+      const failures: Array<{ repoPath: string; error: string }> = [];
+
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          failures.push({ repoPath: 'unknown', error: result.reason?.message ?? 'unknown error' });
+          continue;
+        }
+        const val = result.value;
+        if ('error' in val) {
+          failures.push(val);
+        } else {
+          successes.push(val);
+        }
+      }
+
+      if (successes.length === 0) {
+        res.status(500).json({ error: 'All repos failed to resolve', failures });
+        return;
+      }
+
+      const primary = successes[0]!;
+      const additionalDirs = successes.slice(1).map(s => s.resolvedPath);
+      const addDirArgs = additionalDirs.flatMap(dir => ['--add-dir', dir]);
+
+      const resolved = resolveSessionSettings(config, primary.repoPath, {
+        agent: agent as AgentType | undefined,
+        yolo,
+        useTmux,
+        claudeArgs: claudeArgs ? [...claudeArgs, ...addDirArgs] : addDirArgs.length > 0 ? addDirArgs : undefined,
+      }, workspace.id);
+
+      const resolvedAgent = resolved.agent;
+      const baseArgs = [
+        ...(resolved.claudeArgs),
+        ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
+      ];
+
+      const useContinue = resolved.continuePolicy === 'always';
+      const finalArgs = useContinue
+        ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
+        : [...baseArgs];
+
+      const displayName = sessionDeps.sessions.nextAgentName();
+      const safeCols = typeof cols === 'number' && Number.isFinite(cols) && cols >= 1 && cols <= 500 ? Math.round(cols) : undefined;
+      const safeRows = typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 && rows <= 200 ? Math.round(rows) : undefined;
+
+      const cwd = primary.resolvedPath;
+      const worktreePath = primary.resolvedPath !== primary.repoPath ? primary.resolvedPath : null;
+
+      try {
+        const session = sessionDeps.sessions.create({
+          type: 'agent',
+          agent: resolvedAgent,
+          repoName: workspace.name,
+          repoPath: primary.repoPath,
+          worktreePath,
+          cwd,
+          branchName: '',
+          displayName,
+          args: finalArgs,
+          useTmux: resolved.useTmux,
+          yolo: resolved.yolo,
+          claudeArgs: resolved.claudeArgs,
+          continuePolicy: resolved.continuePolicy,
+          workspaceId: workspace.id,
+          additionalDirs: additionalDirs.length > 0 ? additionalDirs : undefined,
+          ...(safeCols != null && { cols: safeCols }),
+          ...(safeRows != null && { rows: safeRows }),
+        });
+
+        sessionDeps.gitWatcher.watch(session.cwd);
+
+        const response: Record<string, unknown> = { ...session };
+        if (failures.length > 0) {
+          response.warnings = failures;
+        }
+
+        res.status(201).json(response);
+      } catch (err: any) {
+        res.status(500).json({ error: err?.message ?? 'Failed to create workspace session' });
+      }
+    });
+  }
 
   return router;
 }
