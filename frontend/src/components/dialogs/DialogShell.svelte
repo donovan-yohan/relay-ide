@@ -177,7 +177,6 @@
   }
 
   .dialog-shell--compact .dialog-shell__content {
-    height: auto;
     max-height: 90vh;
   }
 

@@ -2,16 +2,19 @@
   import type { Column } from './DataTable.svelte';
   import DataTable from './DataTable.svelte';
   import DiffViewer from './DiffViewer.svelte';
-  import { fetchChangedFiles, fetchFileDiff } from '../lib/api.js';
+  import DiffSourceToggle from './DiffSourceToggle.svelte';
+  import { fetchChangedFiles, fetchFileDiff, fetchDefaultBranch } from '../lib/api.js';
   import { generateFileSummary } from '../lib/diff-summary.js';
-  import type { ChangedFile } from '../lib/types.js';
+  import { statusIcon, statusColor, diffSourceToBase } from '../lib/diff-utils.js';
+  import { rootShortName } from '../lib/utils.js';
+  import type { ChangedFile, DiffSource } from '../lib/types.js';
 
   let {
     workspacePath,
-    base,
+    onExpandFile,
   }: {
     workspacePath: string;
-    base?: string;
+    onExpandFile?: (file: ChangedFile, base: string | undefined) => void;
   } = $props();
 
   let files = $state<ChangedFile[]>([]);
@@ -26,6 +29,11 @@
   let sortBy = $state('path');
   let sortDir = $state<'asc' | 'desc'>('asc');
   let summaries = $state(new Map<string, string>());
+
+  let diffSource = $state<DiffSource>('working');
+  let defaultBranch = $state('main');
+
+  let base = $derived(diffSourceToBase(diffSource, defaultBranch));
 
   const columns: Column[] = [
     { key: 'status', label: '', width: '24px' },
@@ -49,24 +57,9 @@
     return sorted;
   });
 
-  const statusIcon: Record<string, string> = {
-    added: '+',
-    modified: '~',
-    deleted: '-',
-    renamed: '→',
-    untracked: '?',
-  };
-
-  const statusColor: Record<string, string> = {
-    added: 'var(--status-success)',
-    modified: 'var(--status-warning)',
-    deleted: 'var(--status-error)',
-    renamed: 'var(--status-info)',
-    untracked: 'var(--text-muted)',
-  };
-
-  export async function refresh() {
+  export async function refresh(force = false) {
     if (!workspacePath) return;
+    if (!force && !expanded) return;
     loading = true;
     error = undefined;
     try {
@@ -74,6 +67,9 @@
       files = data.files;
       aggregate = data.aggregate;
       error = data.error;
+      summaries = new Map();
+      expandedFile = null;
+      fileDiff = '';
     } catch (err: unknown) {
       console.error('[ChangedFiles] refresh failed:', err instanceof Error ? err.message : String(err));
       error = 'Failed to fetch changed files';
@@ -84,10 +80,17 @@
   }
 
   // $effect is intentional here: refresh() is async and writes to $state — cannot be $derived.
+  // force=true so summary bar shows file count even when panel is collapsed.
   $effect(() => {
     void workspacePath;
     void base;
-    if (workspacePath) void refresh();
+    if (workspacePath) void refresh(true);
+  });
+
+  $effect(() => {
+    if (workspacePath) {
+      fetchDefaultBranch(workspacePath).then(b => { defaultBranch = b; });
+    }
   });
 
   function handleSort(col: string) {
@@ -132,10 +135,6 @@
     }
   }
 
-  function fileName(filePath: string): string {
-    const idx = filePath.lastIndexOf('/');
-    return idx === -1 ? filePath : filePath.slice(idx + 1);
-  }
 </script>
 
 <div class="changed-files-panel">
@@ -161,6 +160,13 @@
 
   {#if expanded}
     <div class="files-content">
+      <div class="files-toolbar">
+        <DiffSourceToggle
+          value={diffSource}
+          onchange={(s) => { diffSource = s; }}
+          {defaultBranch}
+        />
+      </div>
       <DataTable
         {columns}
         rows={sortedFiles}
@@ -178,13 +184,21 @@
           <div class="file-row" class:expanded-row={expandedFile === file.path}>
             <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
             <span class="file-name" title={file.path}>
-              {fileName(file.path)}
+              {rootShortName(file.path)}
               {#if summaries.get(file.path)}
                 <span class="file-summary">{summaries.get(file.path)}</span>
               {/if}
             </span>
             <span class="stat stat-add">+{file.additions}</span>
             <span class="stat stat-del">-{file.deletions}</span>
+            {#if onExpandFile}
+              <button
+                class="expand-btn"
+                title="open full diff"
+                onclick={(e) => { e.stopPropagation(); onExpandFile(file, base); }}
+                aria-label="expand diff for {file.path}"
+              >[↗]</button>
+            {/if}
           </div>
           {#if expandedFile === file.path}
             <div class="inline-diff">
@@ -201,14 +215,14 @@
           <button class="mobile-file-card" onclick={() => handleRowAction(file)}>
             <div class="card-header">
               <span class="status-icon" style="color: {statusColor[file.status] ?? 'var(--text-muted)'}">{statusIcon[file.status] ?? '?'}</span>
-              <span class="file-name">{fileName(file.path)}</span>
+              <span class="file-name">{rootShortName(file.path)}</span>
               <span class="card-stats">
                 <span class="stat-add">+{file.additions}</span>
                 <span class="stat-del">-{file.deletions}</span>
               </span>
             </div>
-            {#if file.summary}
-              <div class="card-summary">{file.summary}</div>
+            {#if summaries.get(file.path)}
+              <div class="card-summary">{summaries.get(file.path)}</div>
             {/if}
             {#if expandedFile === file.path}
               <div class="inline-diff">
@@ -283,6 +297,30 @@
 
   .files-content {
     border-top: 1px solid var(--border, #333);
+  }
+
+  .files-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border, #333);
+  }
+
+  .expand-btn {
+    flex-shrink: 0;
+    padding: 0 4px;
+    background: transparent;
+    border: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    cursor: pointer;
+  }
+
+  .expand-btn:hover {
+    color: var(--accent, #d97757);
+    border-color: var(--accent, #d97757);
   }
 
   .file-row {

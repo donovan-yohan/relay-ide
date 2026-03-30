@@ -1,7 +1,6 @@
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
 const SIDEBAR_COLLAPSED_KEY = 'claude-remote-sidebar-collapsed';
 const ACTIVE_WORKSPACE_KEY = 'claude-remote-active-workspace';
-const ACTIVE_WORKSPACE_GROUP_KEY = 'claude-remote-active-workspace-group';
 const TERMINAL_FONT_SIZE_KEY = 'claude-remote-terminal-font-size';
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
@@ -48,12 +47,13 @@ let sidebarWidth = $state(loadSidebarWidth());
 let sidebarCollapsed = $state(loadSidebarCollapsed());
 let searchQuery = $state('');
 let activeRepoPath = $state<string | null>(loadActiveRepoPath());
-let activeWorkspaceId = $state<string | null>((() => {
-  try { return localStorage.getItem(ACTIVE_WORKSPACE_GROUP_KEY); }
-  catch { return null; }
-})());
 let terminalFontSize = $state(loadTerminalFontSize());
 let hasHardwareKeyboard = $state(false);
+let fullPageDiff = $state<{
+  workspacePath: string;
+  file?: string | undefined;
+  base?: string | undefined;
+} | null>(null);
 
 export function getUi() {
   return {
@@ -73,18 +73,12 @@ export function getUi() {
         else localStorage.setItem(ACTIVE_WORKSPACE_KEY, v);
       } catch { /* localStorage unavailable */ }
     },
-    get activeWorkspaceId() { return activeWorkspaceId; },
-    set activeWorkspaceId(id: string | null) {
-      activeWorkspaceId = id;
-      try {
-        if (id === null) localStorage.removeItem(ACTIVE_WORKSPACE_GROUP_KEY);
-        else localStorage.setItem(ACTIVE_WORKSPACE_GROUP_KEY, id);
-      } catch { /* localStorage unavailable */ }
-    },
     get terminalFontSize() { return terminalFontSize; },
     set terminalFontSize(v: number) { terminalFontSize = v; },
     get hasHardwareKeyboard() { return hasHardwareKeyboard; },
     set hasHardwareKeyboard(v: boolean) { hasHardwareKeyboard = v; },
+    get fullPageDiff() { return fullPageDiff; },
+    set fullPageDiff(v: typeof fullPageDiff) { fullPageDiff = v; },
   };
 }
 

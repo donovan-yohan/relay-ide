@@ -786,7 +786,18 @@ async function getChangedFiles(
 ): Promise<ChangedFile[]> {
   let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
 
-  if (base) {
+  if (base === 'cached') {
+    // Staged files
+    const { stdout } = await exec('git', ['diff', '--cached', '--name-status', '--find-renames'], { cwd: repoPath, timeout: 10000 });
+    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      const code = parts[0] ?? '';
+      if (code.startsWith('R')) {
+        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
+      }
+      return { path: parts[1] ?? '', status: parseStatus(code) };
+    });
+  } else if (base) {
     // Branch comparison
     const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
     statusEntries = stdout.split('\n').filter(Boolean).map(line => {
@@ -899,6 +910,33 @@ async function getFileDiff(
   }
 
   return stdout;
+}
+
+async function getDefaultBranch(
+  repoPath: string,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+): Promise<string> {
+  // Try symbolic-ref first (most repos have this set)
+  try {
+    const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: repoPath, timeout: 5000 });
+    const ref = stdout.trim();
+    const prefix = 'refs/remotes/origin/';
+    if (ref.startsWith(prefix)) return ref.slice(prefix.length);
+  } catch {
+    // Not set — fall through to heuristic
+  }
+
+  // Check if main or master exists locally
+  for (const candidate of ['main', 'master']) {
+    try {
+      await exec('git', ['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd: repoPath, timeout: 5000 });
+      return candidate;
+    } catch {
+      // Not found — try next
+    }
+  }
+
+  return 'main'; // ultimate fallback
 }
 
 const ONE_DAY_MS = 86_400_000;
@@ -1034,6 +1072,7 @@ export {
   pushBranch,
   getChangedFiles,
   getFileDiff,
+  getDefaultBranch,
   ensureBranchLocal,
   isPrMerged,
   computeBranchLifecycleState,

@@ -285,7 +285,8 @@ async function main(): Promise<void> {
   const gitWatcher = new GitWatcher();
 
   const server = http.createServer(app);
-  const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
+  const { broadcastEvent } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
+
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
   // Also clear the PR cache on real webhook events — these indicate actual PR state changes
   broadcastEventDelegate = (type, data) => {
@@ -300,7 +301,6 @@ async function main(): Promise<void> {
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
     for (const session of sessions.list()) {
-      // Match by worktreePath or repoPath — session.cwd can drift to subdirectories
       const groupPath = session.worktreePath ?? session.repoPath;
       if (groupPath === cwdPath) {
         const raw = sessions.get(session.id);
@@ -314,7 +314,6 @@ async function main(): Promise<void> {
         }
       }
     }
-    broadcastBranchChanged(cwdPath, newBranch);
     // Rebuild ref watchers when branches change (new upstream to watch)
     rebuildRefWatcher();
   });
@@ -383,11 +382,7 @@ async function main(): Promise<void> {
   app.use('/workspaces', requireAuth, workspaceRouter);
 
   // Mount workspace-groups CRUD router
-  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
-    sessions,
-    gitWatcher,
-    configPath: CONFIG_PATH,
-  }));
+  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth));
 
   // Mount GitHub integration router
   const integrationGitHubRouter = createIntegrationGitHubRouter({ configPath: CONFIG_PATH });
