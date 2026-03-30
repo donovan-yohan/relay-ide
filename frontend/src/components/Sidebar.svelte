@@ -91,12 +91,19 @@
   // Track whether user has manually reordered in this session
   let userHasDragged = $state(false);
 
+  // Pre-compute sidebar items grouped by repo for O(1) lookup in sort
+  let itemsByRepo = $derived(new Map(
+    sessionState.repos.map(r => [
+      r.path,
+      sessionState.sidebarItems.filter(i => i.repoPath === r.path),
+    ])
+  ));
+
   // Attention-sorted workspace list
   let attentionSortedRepos = $derived(
     [...sessionState.repos].sort((a, b) => {
-      const aItems = sessionState.sidebarItems.filter(i => i.repoPath === a.path);
-      const bItems = sessionState.sidebarItems.filter(i => i.repoPath === b.path);
-      return workspaceAttentionScore(bItems) - workspaceAttentionScore(aItems);
+      return workspaceAttentionScore(itemsByRepo.get(b.path) ?? [])
+        - workspaceAttentionScore(itemsByRepo.get(a.path) ?? []);
     })
   );
 

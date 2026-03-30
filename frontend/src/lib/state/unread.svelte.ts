@@ -5,7 +5,10 @@ let unreadItems = $state<Set<string>>(loadUnread());
 function loadUnread(): Set<string> {
   try {
     const stored = localStorage.getItem(UNREAD_STORAGE_KEY);
-    return stored ? new Set(JSON.parse(stored)) : new Set();
+    if (!stored) return new Set();
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id: unknown) => typeof id === 'string'));
   } catch { return new Set(); }
 }
 

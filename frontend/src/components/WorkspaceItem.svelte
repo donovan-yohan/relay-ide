@@ -4,7 +4,7 @@
   import { derivePrDotStatus } from '../lib/pr-status.js';
   import PrGlyph from './PrGlyph.svelte';
   import { getSessionState, refreshAll, setLoading, clearLoading, isItemLoading } from '../lib/state/sessions.svelte.js';
-  import { isAttentionState } from '../lib/state/display-state.js';
+  import { isAttentionState, type DisplayState } from '../lib/state/display-state.js';
   import { toggleWorkspaceCollapse, isWorkspaceCollapsed, getTimeTick } from '../lib/state/ui.svelte.js';
   import { formatRelativeTimeCompact } from '../lib/utils.js';
   import { createSession, renameSession } from '../lib/api.js';
@@ -60,7 +60,7 @@
     count: number;
   }
 
-  const pipConfig: Record<string, { char: string; colorClass: string }> = {
+  const pipConfig: Record<DisplayState, { char: string; colorClass: string }> = {
     permission:     { char: '◆', colorClass: 'pip-red' },
     'needs-answer': { char: '◇', colorClass: 'pip-red' },
     error:          { char: '■', colorClass: 'pip-red' },
@@ -73,7 +73,7 @@
 
   const urgencyOrder = ['permission', 'needs-answer', 'error', 'unseen-idle', 'running', 'initializing', 'seen-idle', 'inactive'];
 
-  let summaryPips = $derived((): StatePip[] => {
+  let summaryPips = $derived.by((): StatePip[] => {
     const items = sessionState.sidebarItems.filter(i => i.repoPath === workspace.path);
     const counts = new Map<string, StatePip>();
 
@@ -279,7 +279,7 @@
       <span class="initial-block" style:background={initialColor}>{initial}</span>
       <span class="workspace-name">{workspace.name}</span>
       {#if collapsed}
-        {@const pips = summaryPips()}
+        {@const pips = summaryPips}
         {#if pips.length > 0}
           <span class="summary-pips">
             {#each pips as pip}

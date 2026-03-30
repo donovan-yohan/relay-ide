@@ -5,7 +5,7 @@ import type { BackendDisplayState } from './display-state.js';
 import { transitionDisplayState, shouldNotify } from './display-state.js';
 import { buildSidebarItems } from './sidebar-items.js';
 import { shouldMarkUnread } from './unread-logic.js';
-import { markUnread, markRead } from './unread.svelte.js';
+import { isUnread, markUnread, markRead, pruneUnread } from './unread.svelte.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -90,7 +90,10 @@ export async function refreshAll(): Promise<void> {
     if (notifPruned) saveNotificationPrefs();
 
     // Rebuild sidebar items, reconciling displayState against existing items
-    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems);
+    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems, isUnread);
+
+    // Prune stale unread entries from localStorage
+    pruneUnread(new Set(sidebarItems.map(i => i.id)));
 
   } catch { /* silent */ }
 }
@@ -111,11 +114,15 @@ export function handleBranchChanged(sessionId: string, branch: string): void {
   const session = sessions.find(s => s.id === sessionId);
   if (session) {
     session.branchName = branch;
+  } else {
+    console.debug('[sessions] handleBranchChanged: session not found', sessionId);
   }
 
   const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
   if (item) {
     item.branchName = branch;
+  } else {
+    console.debug('[sessions] handleBranchChanged: sidebar item not found for session', sessionId);
   }
 }
 
@@ -146,14 +153,14 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
   const newDisplayState = transitionDisplayState(
     item.displayState,
     permissionType
-      ? { type: 'backend-state-changed', state: backendState, permissionType }
-      : { type: 'backend-state-changed', state: backendState },
+      ? { type: 'backend-state-changed' as const, state: backendState, permissionType }
+      : { type: 'backend-state-changed' as const, state: backendState },
   );
   if (newDisplayState !== oldDisplayState) {
     item.displayState = newDisplayState;
 
-    // Track unread
-    const isViewing = item.sessions.some(s => s.id === sessionId && s.id === activeSessionId);
+    // Track unread — mark unread unless the user is viewing a session in this group
+    const isViewing = item.sessions.some(s => s.id === activeSessionId);
     if (shouldMarkUnread(oldDisplayState, newDisplayState, isViewing)) {
       markUnread(item.id);
       item.isUnread = true;

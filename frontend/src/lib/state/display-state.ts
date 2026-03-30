@@ -23,9 +23,10 @@ export function transitionDisplayState(current: DisplayState, event: DisplayEven
           return 'error';
         case 'initializing':
           return 'initializing';
+        default:
+          return current;
       }
     }
-    // eslint-disable-next-line no-fallthrough
     case 'user-viewed': {
       if (current === 'unseen-idle' || current === 'permission') return 'seen-idle';
       return current;

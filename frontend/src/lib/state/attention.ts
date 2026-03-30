@@ -14,11 +14,13 @@ const STATE_SCORES: Record<DisplayState, number> = {
 
 function minutesSinceLastActivity(item: SidebarItem): number {
   if (!item.lastActivity) return Infinity;
-  return (Date.now() - new Date(item.lastActivity).getTime()) / 60_000;
+  const ms = new Date(item.lastActivity).getTime();
+  if (Number.isNaN(ms)) return Infinity;
+  return (Date.now() - ms) / 60_000;
 }
 
 export function computeAttentionScore(item: SidebarItem): number {
-  let score = STATE_SCORES[item.displayState] ?? 0;
+  let score = STATE_SCORES[item.displayState];
 
   // PR urgency
   if (item.prStatus === 'changes-requested') score += 200;

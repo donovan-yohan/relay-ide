@@ -17,6 +17,13 @@ import { MOUNTAIN_NAMES } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Extract repo name from a git remote URL (SSH or HTTPS). */
+export function repoNameFromRemoteUrl(url: string): string | undefined {
+  // Strip trailing slash before splitting so pop() gets the last real segment
+  const name = url.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '');
+  return name || undefined;
+}
+
 const BROWSE_DENYLIST = new Set([
   'node_modules', '.git', '.Trash', '__pycache__',
   '.cache', '.npm', '.yarn', '.nvm',
@@ -181,7 +188,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: p });
             const url = stdout.trim();
             if (url) {
-              const remoteName = url.split('/').pop()?.replace(/\.git$/, '');
+              const remoteName = repoNameFromRemoteUrl(url);
               if (remoteName) name = remoteName;
             }
           } catch {

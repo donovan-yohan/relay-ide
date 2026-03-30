@@ -23,7 +23,7 @@ export function prGlyph(status: PrDotStatus): PrGlyphInfo {
   switch (status) {
     case 'draft':             return { char: '◌', colorClass: 'pr-gray',   label: 'draft pr' };
     case 'open':              return { char: '○', colorClass: 'pr-blue',   label: 'open pr' };
-    case 'review-requested':  return { char: '○', colorClass: 'pr-yellow', label: 'review requested' };
+    case 'review-requested':  return { char: '◎', colorClass: 'pr-yellow', label: 'review requested' };
     case 'changes-requested': return { char: '✕', colorClass: 'pr-red',    label: 'changes requested' };
     case 'approved':          return { char: '✓', colorClass: 'pr-green',  label: 'approved' };
     case 'merged':            return { char: '●', colorClass: 'pr-purple', label: 'merged' };

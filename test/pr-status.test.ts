@@ -68,9 +68,10 @@ describe('prGlyph', () => {
     const statuses: PrDotStatus[] = ['draft', 'open', 'review-requested', 'changes-requested', 'approved', 'merged', 'closed', 'unknown'];
     const chars = statuses.map(s => prGlyph(s).char);
     for (const c of chars) {
-      assert.ok(c.length > 0);
+      assert.ok(c.length > 0, 'each glyph should be non-empty');
     }
-    assert.notEqual(prGlyph('changes-requested').char, prGlyph('closed').char);
+    // Ensure each status maps to a distinct glyph character
+    assert.equal(new Set(chars).size, statuses.length, 'all glyph characters should be unique');
   });
 
   it('approved is green checkmark', () => {

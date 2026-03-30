@@ -455,16 +455,24 @@ describe('mountain name collision retry', () => {
 });
 
 describe('workspace name from git remote', () => {
-  it('derives repo name from git remote origin URL', async () => {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const exec = promisify(execFile);
+  it('derives repo name from various git remote URLs', async () => {
+    const { repoNameFromRemoteUrl } = await import('../server/workspaces.js');
 
-    const result = await exec('git', ['remote', 'get-url', 'origin'], { cwd: process.cwd() });
-    const url = result.stdout.trim();
-    const name = url.split('/').pop()?.replace(/\.git$/, '') ?? '';
-    assert.ok(name.length > 0, 'should extract a non-empty name from git remote');
-    assert.ok(!name.includes('/'), 'name should not contain slashes');
+    const fixtures: Array<{ url: string; expected: string }> = [
+      { url: 'git@github.com:anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'https://github.com/anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'ssh://git@github.com/anthropic/claude-remote-cli.git', expected: 'claude-remote-cli' },
+      { url: 'https://github.com/anthropic/claude-remote-cli', expected: 'claude-remote-cli' },
+      { url: 'https://example.com/some-group/another-repo.git', expected: 'another-repo' },
+      { url: 'https://example.com/some-group/another-repo/', expected: 'another-repo' },
+    ];
+
+    for (const { url, expected } of fixtures) {
+      const name = repoNameFromRemoteUrl(url);
+      assert.equal(name, expected, `should extract "${expected}" from "${url}"`);
+      assert.ok(name && name.length > 0, `should extract a non-empty name from "${url}"`);
+      assert.ok(name && !name.includes('/'), `name "${name}" from "${url}" should not contain slashes`);
+    }
   });
 });
 
