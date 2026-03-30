@@ -147,8 +147,8 @@ function setupWebSocket(server: http.Server, authenticatedTokens: Set<string>, w
     });
   });
 
-  sessions.onBackendStateChange((sessionId, state) => {
-    broadcastEvent('session-backend-state-changed', { sessionId, state });
+  sessions.onBackendStateChange((sessionId, state, permissionType) => {
+    broadcastEvent('session-backend-state-changed', { sessionId, state, permissionType });
     if (state === 'idle') { trackEvent({ category: 'agent', action: 'idle', target: sessionId, session_id: sessionId }); }
     if (state === 'permission') { trackEvent({ category: 'agent', action: 'waiting-for-input', target: sessionId, session_id: sessionId }); }
   });

@@ -6,6 +6,7 @@ Execution plans for active and completed work.
 
 | Plan | Created | Topic |
 |------|---------|-------|
+| `sidebar-ux-redesign` | 2026-03-29 | Three-axis indicators, attention scoring, real-time branch updates, read/unread tracking |
 | `true-workspaces-phase1` | 2026-03-28 | Rename workspacePath→repoPath, config v4 migration, workspace entity CRUD |
 | `bg-pin-setup-blocked` | 2026-03-28 | Fix --bg first-run crash loop: remove non-TTY exit, trust web-based PIN setup flow |
 

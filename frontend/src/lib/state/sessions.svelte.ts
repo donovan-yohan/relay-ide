@@ -105,7 +105,7 @@ export function renameSession(sessionId: string, branchName: string, displayName
   }
 }
 
-export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState): void {
+export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState, permissionType?: 'approval' | 'question'): void {
   // Keep session fields in sync so that refreshAll()/buildSidebarItems() reconciliation
   // sees the latest state if a full refresh arrives while real-time events are in flight.
   const session = sessions.find(s => s.id === sessionId);
@@ -115,6 +115,7 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
       case 'running':      session.agentState = 'processing'; break;
       case 'idle':         session.agentState = 'idle'; break;
       case 'permission':   session.agentState = 'permission-prompt'; break;
+      case 'error':        session.agentState = 'error'; break;
       case 'initializing': session.agentState = 'initializing'; break;
     }
   }
@@ -128,7 +129,12 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
   item.lastKnownBackendState = backendState;
 
   // Apply transition
-  const newDisplayState = transitionDisplayState(item.displayState, { type: 'backend-state-changed', state: backendState });
+  const newDisplayState = transitionDisplayState(
+    item.displayState,
+    permissionType
+      ? { type: 'backend-state-changed', state: backendState, permissionType }
+      : { type: 'backend-state-changed', state: backendState },
+  );
   if (newDisplayState !== oldDisplayState) {
     item.displayState = newDisplayState;
 

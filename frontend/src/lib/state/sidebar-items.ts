@@ -12,7 +12,8 @@ import { transitionDisplayState } from './display-state.js';
 function sessionToBackendState(session: SessionSummary): BackendDisplayState {
   const { agentState, idle } = session;
   if (agentState === 'permission-prompt') return 'permission';
-  if (agentState === 'processing' || agentState === 'error') return 'running';
+  if (agentState === 'error') return 'error';
+  if (agentState === 'processing') return 'running';
   if (agentState === 'initializing') return 'initializing';
   // For sessions without agentState (e.g. terminal sessions), fall back to the idle timer flag
   if (!agentState && !idle) return 'running';
@@ -27,7 +28,8 @@ function sessionToBackendState(session: SessionSummary): BackendDisplayState {
  */
 function deriveBackendState(sessions: SessionSummary[]): BackendDisplayState {
   const priority: Record<BackendDisplayState, number> = {
-    permission: 3,
+    permission: 4,
+    error: 3,
     running: 2,
     initializing: 1,
     idle: 0,
@@ -51,6 +53,7 @@ function initialDisplayState(sessions: SessionSummary[]): DisplayState {
   if (sessions.length === 0) return 'inactive';
   switch (deriveBackendState(sessions)) {
     case 'permission':   return 'permission';
+    case 'error':        return 'error';
     case 'running':      return 'running';
     case 'initializing': return 'initializing';
     case 'idle':

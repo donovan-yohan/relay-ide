@@ -379,7 +379,7 @@
       if (msg.type === 'worktrees-changed') {
         refreshAll();
       } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
-        handleBackendStateChanged(msg.sessionId, msg.state as import('./lib/state/display-state.js').BackendDisplayState);
+        handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
       } else if (msg.type === 'session-renamed' && msg.sessionId) {
         renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
       } else if (msg.type === 'session-ended') {
