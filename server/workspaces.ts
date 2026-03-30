@@ -172,8 +172,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
-        const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
+
+        let name = path.basename(p);
+
+        if (isGitRepo) {
+          try {
+            const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: p });
+            const url = stdout.trim();
+            if (url) {
+              const remoteName = url.split('/').pop()?.replace(/\.git$/, '');
+              if (remoteName) name = remoteName;
+            }
+          } catch {
+            // No remote configured — fall back to directory name
+          }
+        }
+
         return { path: p, name, isGitRepo, defaultBranch };
       }),
     );

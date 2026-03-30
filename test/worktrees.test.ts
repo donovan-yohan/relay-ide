@@ -454,6 +454,20 @@ describe('mountain name collision retry', () => {
   });
 });
 
+describe('workspace name from git remote', () => {
+  it('derives repo name from git remote origin URL', async () => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+
+    const result = await exec('git', ['remote', 'get-url', 'origin'], { cwd: process.cwd() });
+    const url = result.stdout.trim();
+    const name = url.split('/').pop()?.replace(/\.git$/, '') ?? '';
+    assert.ok(name.length > 0, 'should extract a non-empty name from git remote');
+    assert.ok(!name.includes('/'), 'name should not contain slashes');
+  });
+});
+
 describe('repo-scoped tmux naming', () => {
   it('produces readable tmux names from repo-branch slugs', () => {
     const name = generateTmuxSessionName('claude-remote-cli-nightly', 'a3b4c5d6-1234-5678');
