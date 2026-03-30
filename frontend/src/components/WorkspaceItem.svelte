@@ -11,6 +11,8 @@
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './ContextMenu.svelte';
   import CipherText from './CipherText.svelte';
+  import SessionIndicator from './SessionIndicator.svelte';
+
   const sessionState = getSessionState();
 
   let {
@@ -51,11 +53,6 @@
   let sidebarItemById = $derived(
     new Map(sessionState.sidebarItems.map(i => [i.id, i]))
   );
-
-  function statusDotClass(groupPath: string): string {
-    const state = sidebarItemById.get(groupPath)?.displayState ?? 'inactive';
-    return 'status-dot status-dot--' + state;
-  }
 
   function itemHasAttention(groupPath: string): boolean {
     const item = sidebarItemById.get(groupPath);
@@ -277,7 +274,7 @@
             ontouchmove={cancelLongPress}
           >
             <div class="session-row-primary">
-              <span class={statusDotClass(groupPath)}></span>
+              <SessionIndicator state={sidebarItemById.get(groupPath)?.displayState ?? 'inactive'} />
               <span class="session-name" class:bold={itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
               {#if sessionCount > 1}
                 <span class="session-count-badge">{sessionCount}</span>
@@ -328,7 +325,7 @@
             }}
           >
             <div class="session-row-primary">
-              <span class="dot dot-inactive"></span>
+              <SessionIndicator state="inactive" />
               <span class="session-name">{isItemLoading(repoLoadingKey) ? 'starting...' : 'default'}</span>
             </div>
             {#if workspace.defaultBranch}
@@ -367,7 +364,7 @@
           ontouchmove={cancelLongPress}
         >
           <div class="session-row-primary">
-            <span class="dot dot-inactive"></span>
+            <SessionIndicator state="inactive" />
             <span class="session-name">{isItemLoading(wt.path) ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</span>
           </div>
           <div class="session-row-secondary">
@@ -639,41 +636,10 @@
   .diff-add { color: var(--status-success); }
   .diff-del { color: var(--status-error); }
 
-  /* Status dot */
-  .status-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  /* Display-state dot classes */
-  .status-dot--running      { background: var(--status-success); }
-  .status-dot--initializing { background: #6b7280; }
-  .status-dot--unseen-idle  {
-    background: var(--status-warning);
-    box-shadow: 0 0 5px 1px rgba(251, 191, 36, 0.45);
-    animation: attention-glow 2s ease-in-out infinite;
-  }
-  .status-dot--seen-idle    { background: var(--status-info); }
-  .status-dot--permission   {
-    background: #eab308;
-    box-shadow: 0 0 5px 1px rgba(234, 179, 8, 0.45);
-    animation: attention-glow 1.5s ease-in-out infinite;
-  }
-  .status-dot--inactive     { background: transparent; border: 1.5px solid var(--border); }
-
-  .dot-inactive        { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1.5px solid var(--border); flex-shrink: 0; }
   .session-row.inactive .session-name { color: var(--text-muted); }
   .session-row.inactive:hover .session-name { color: var(--text); }
   .session-row.loading { pointer-events: none; opacity: 0.7; }
   .session-row.loading .session-name { color: var(--accent); }
-
-  @keyframes attention-glow {
-    0%, 100% { box-shadow: 0 0 3px 1px rgba(251, 191, 36, 0.3); }
-    50%       { box-shadow: 0 0 7px 2px rgba(251, 191, 36, 0.6); }
-  }
 
   .session-name {
     flex: 1;
