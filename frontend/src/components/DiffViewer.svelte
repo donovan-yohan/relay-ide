@@ -139,9 +139,29 @@
   let pairedLines = $state<SideBySidePair[]>([]);
   let tokenGeneration = 0;
 
+  const TRUNCATION_LIMIT = 5000;
+  let showAll = $state(false);
+
+  let displayLines = $derived(
+    !showAll && lines.length > TRUNCATION_LIMIT
+      ? lines.slice(0, TRUNCATION_LIMIT)
+      : lines
+  );
+
+  let displayPairs = $derived(
+    !showAll && pairedLines.length > TRUNCATION_LIMIT
+      ? pairedLines.slice(0, TRUNCATION_LIMIT)
+      : pairedLines
+  );
+
+  let isTruncated = $derived(
+    !showAll && (lines.length > TRUNCATION_LIMIT || pairedLines.length > TRUNCATION_LIMIT)
+  );
+
   $effect(() => {
     const { rawLines, hunkHeaderMap, lang } = parsed;
     const gen = ++tokenGeneration;
+    showAll = false;
 
     // Immediately render without syntax highlighting
     const plain = rawLines.map(l => ({ ...l, tokens: null as ThemedToken[] | null }));
@@ -174,7 +194,7 @@
     <div class="diff-empty">no changes</div>
   {:else if mode === 'side-by-side'}
     <div class="diff-content-sbs">
-      {#each pairedLines as pair, i (i)}
+      {#each displayPairs as pair, i (i)}
         {#if pair.hunkHeader}
           <div class="hunk-header sbs-hunk" id="sbs-hunk-{i}">{pair.hunkHeader}</div>
         {/if}
@@ -192,9 +212,15 @@
         </div>
       {/each}
     </div>
+    {#if isTruncated}
+      <div class="truncation-notice">
+        <span>showing {TRUNCATION_LIMIT} of {pairedLines.length} lines</span>
+        <button class="show-more-btn" onclick={() => { showAll = true; }}>[show all]</button>
+      </div>
+    {/if}
   {:else}
     <div class="diff-content">
-      {#each lines as line, i (i)}
+      {#each displayLines as line, i (i)}
         {#if parsed.hunkHeaderMap.has(i)}
           <div class="hunk-header" id="hunk-{i}">{parsed.hunkHeaderMap.get(i) ?? ''}</div>
         {/if}
@@ -210,6 +236,12 @@
         </div>
       {/each}
     </div>
+    {#if isTruncated}
+      <div class="truncation-notice">
+        <span>showing {TRUNCATION_LIMIT} of {lines.length} lines</span>
+        <button class="show-more-btn" onclick={() => { showAll = true; }}>[show all]</button>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -353,5 +385,30 @@
   .sbs-half .line-content {
     flex: 1;
     padding-right: 0.5em;
+  }
+
+  .truncation-notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+  }
+
+  .show-more-btn {
+    background: transparent;
+    border: 1px solid var(--border, #333);
+    color: var(--accent, #d97757);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    cursor: pointer;
+    padding: 1px 6px;
+  }
+
+  .show-more-btn:hover {
+    background: rgba(217, 119, 87, 0.08);
   }
 </style>
