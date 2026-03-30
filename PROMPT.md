@@ -1,6 +1,6 @@
-# Implementation: True Workspaces — Multi-Repo Workspace Grouping
+# Implementation: Sidebar & Navigation UX
 
-**Priority: WAVE 2-3 — Phase 1 (rename + model) starts in Wave 2. Workspace session launch needs Worktree Lifecycle.**
+**Priority: WAVE 2 — Depends on Worktree Lifecycle items 1-2.**
 
 ## Pre-flight Checks
 
@@ -13,108 +13,80 @@ git log --oneline -3
 git fetch origin nightly
 git rebase origin/nightly
 
-# 3. CRITICAL: Verify Worktree Lifecycle enhanced endpoint has landed
-#    Workspace session launch creates coordinated worktrees per repo
-grep -r "branch_checked_out_in_main\|branch_not_found" server/ || echo "BLOCKER for session launch: enhanced worktree endpoint not found"
+# 3. CRITICAL: Verify Worktree Lifecycle contracts have landed on nightly
+#    Check for the enhanced worktree endpoint and branch watching
+git log origin/nightly --oneline --grep="worktree" --grep="lifecycle" --grep="branch-changed" --all-match | head -5
 
-# 4. Check if Sidebar UX indicators have landed (nice-to-have, not blocking)
-grep -r "DisplayState\|attentionScore" frontend/src/ || echo "INFO: Sidebar UX indicators not yet landed (non-blocking)"
+# 4. Verify these specific things exist on nightly before starting:
+#    a. session-branch-changed WebSocket event in server/ws.ts or server/watcher.ts
+#    b. branchState field in GET /worktrees response
+#    c. continuePolicy field in session creation
+grep -r "session-branch-changed" server/ || echo "BLOCKER: session-branch-changed event not found"
+grep -r "branchState" server/ || echo "BLOCKER: branchState not found in worktree response"
 
-# 5. Check current workspace/repo naming in codebase (understand rename scope)
-grep -rc "workspacePath\b" server/ | sort -t: -k2 -rn | head -10
-grep -rc "workspacePath\b" frontend/src/ | sort -t: -k2 -rn | head -10
-
-# 6. Design doc exists
-cat docs/design-docs/2026-03-28-true-workspaces-design.md | head -5
+# 5. Design doc exists
+cat docs/design-docs/2026-03-28-sidebar-ux-redesign-design.md | head -5
 ```
 
-**Phase 1 (rename + model + migration) can start without worktree lifecycle.** Only the workspace session launch (creating coordinated worktrees) needs the enhanced endpoint.
+**If blockers found:** Wait for Worktree Lifecycle stream to merge items 1-2. Items 1 (double-click) and 3 (stale repo names) can start independently.
 
 ## Design Doc
 
-Read fully: `docs/design-docs/2026-03-28-true-workspaces-design.md`
+Read fully: `docs/design-docs/2026-03-28-sidebar-ux-redesign-design.md`
 
 ## What This Stream CONSUMES
 
-### From Worktree Lifecycle (needed for workspace session launch):
-- Enhanced `POST /workspaces/worktree` — called per-repo to create coordinated worktrees
-- `continuePolicy: 'never'` — workspace session worktrees are always fresh
+### From Worktree Lifecycle (must be on nightly):
+- `session-branch-changed` WebSocket event → drives CipherText animation on branch name update (Item 2)
+- `branchState: BranchLifecycleState` on GET /worktrees → feeds into attentionScore computation
+- Enhanced `POST /workspaces/worktree` endpoint → not directly used, but the lifecycle state it enables is consumed
 
-### From Sidebar UX (nice-to-have, not blocking):
-- Three-axis indicator model — workspace sidebar rows use the same indicators
-- attentionScore — workspace sorting by highest-urgency session
-
-### From Command Center (NOT a blocker):
-- Action registration — "launch workspace session" action registers later
+### From Command Center (NOT a blocker — additive):
+- Action registration interface → sidebar actions register with ActionRegistry when it ships
+- This stream does NOT wait for Command Center. Actions are registered as a follow-up.
 
 ## What This Stream PRODUCES
 
-### Contract: Config v4 Schema
+### Contract: Session Display State Chain
 
 ```typescript
-interface Config {
-  configVersion: 4;
-  repos: string[];                           // renamed from workspaces (string[])
-  repoSettings: Record<string, RepoSettings>; // renamed from workspaceSettings
-  workspaces: Workspace[];                    // NEW: grouping entities
-}
+type DisplayState = 'initializing' | 'running' | 'unseen-idle' | 'seen-idle'
+  | 'permission' | 'needs-answer' | 'inactive' | 'error';
 
-interface Workspace {
-  id: string; name: string; repos: string[]; themeColor?: string;
-  order: number; template?: WorkspaceTemplate; settings?: WorkspaceLevelSettings;
-}
+// WebSocket extension needed (produce from server):
+// session-state-changed event adds permissionType
+{ sessionId: string; state: BackendDisplayState; permissionType?: 'approval' | 'question' }
+
+// Attention score function (frontend):
+function computeAttentionScore(session: SidebarSession): number;
 ```
 
-### Contract: Settings Cascade Extension
+Consumers: Command Center (ActionContext.agentRunning derives from DisplayState), True Workspaces (uses sidebar indicators as-is).
 
-```typescript
-// resolveSessionSettings() gets new optional parameter:
-function resolveSessionSettings(repoPath: string, workspaceId?: string): ResolvedSettings;
-// Cascade: global → workspace.settings (if workspaceId) → repoSettings[path] → session
-```
+## Implementation Order (from design doc)
 
-### Contract: New API Routes
+Items 1-3 have no cross-stream deps — start immediately:
+1. **Item 3: Fix stale repo names** — Read real git state on workspace load
+2. **Item 1: Double-click expand/collapse** — Add dblclick handler to WorkspaceItem
+3. **Item 2: Fix stale branch names** — DEPENDS ON worktree lifecycle (session-branch-changed event)
 
-```
-GET    /workspace-groups           → Workspace[]
-POST   /workspace-groups           → Workspace
-PUT    /workspace-groups/:id       → Workspace
-DELETE /workspace-groups/:id       → void
-PUT    /workspace-groups/reorder   → void
-POST   /workspace-groups/:id/session → Session (workspace session with --add-dir)
-```
-
-### Contract: Session Type Extension
-
-```typescript
-interface BaseSession {
-  repoPath: string;       // renamed from workspacePath
-  workspaceId?: string;   // NEW: set for workspace sessions
-  additionalDirs?: string[]; // NEW: --add-dir paths
-}
-```
-
-## Implementation Order (vertical slice from design doc)
-
-1. **Rename: workspacePath → repoPath** — Server types, config, sessions, routes. Grep-and-replace with judgment (workspace-group references keep "workspace")
-2. **Config v4 migration** — Reconcile repos[], promote workspaceGroups, rename settings key
-3. **Workspace entity + CRUD** — New type, new routes, settings dialog workspace section
-4. **Sidebar workspace grouping** — WorkspaceGroup.svelte, collapse behavior, colored borders
-5. **Workspace session launch** — POST /workspace-groups/:id/session with coordinated worktrees + --add-dir
-6. **Session persistence** — pending-sessions.json v4 with workspaceId + additionalDirs
+Items 4-8 build on each other:
+4. **Item 4: Three-axis indicator model** — Replace StatusDot with shape+color system
+5. **Item 5: PR status icons** — Icon-only PR glyphs with tooltips
+6. **Attention scoring** — computeAttentionScore, sort workspaces + sessions
+7. **Read/unread tracking** — Unread state management, bold/pulse overlay
+8. **Workspace header summary pips** — Replace count badges
 
 ## What NOT to Build
 
-- View mode toggle (repos/workspaces/sessions) → follow-up
-- Repo role tags display → follow-up
-- Workspace template import/export → follow-up
-- Cross-repo intelligence → future epic
-- Color picker UI → separate design doc exists
+- Sidebar header redesign → deferred to relay-phase3-spotlight (design doc already exists)
+- "Needs-eyes" rail → Phase 2 idea, not in scope
+- Command Center action registration → done when Command Center stream ships
 
 ## Process
 
-1. Start Step 1-2 immediately (rename + migration, no deps)
-2. Run `/harness:plan` for the full vertical slice
-3. Steps 3-4 can proceed in parallel
-4. Gate Step 5 on worktree lifecycle endpoint landing
+1. Start Items 1 + 3 immediately (no deps)
+2. Run `/harness:plan` for the full stream
+3. Gate Item 2 on worktree lifecycle landing
+4. Ship Items 4-8 as a unit after Items 1-3
 5. Run `/harness:complete`

@@ -786,7 +786,18 @@ async function getChangedFiles(
 ): Promise<ChangedFile[]> {
   let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
 
-  if (base) {
+  if (base === 'cached') {
+    // Staged files
+    const { stdout } = await exec('git', ['diff', '--cached', '--name-status', '--find-renames'], { cwd: repoPath, timeout: 10000 });
+    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      const code = parts[0] ?? '';
+      if (code.startsWith('R')) {
+        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
+      }
+      return { path: parts[1] ?? '', status: parseStatus(code) };
+    });
+  } else if (base) {
     // Branch comparison
     const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
     statusEntries = stdout.split('\n').filter(Boolean).map(line => {

@@ -42,8 +42,8 @@
     try {
       const data = await fetchChangedFiles(workspacePath, base);
       files = data.files;
-      if (!activeFilePath && files.length > 0) {
-        activeFilePath = files[0]!.path;
+      if (!activeFilePath || !files.some(f => f.path === activeFilePath)) {
+        activeFilePath = files.length > 0 ? files[0]!.path : null;
       }
     } catch {
       files = [];
@@ -118,11 +118,13 @@
   let currentHunkIndex = $state(-1);
 
   function scrollToHunk(delta: number) {
+    const hunks = document.querySelectorAll('.fpd-main .hunk-header');
+    const visibleCount = hunks.length;
+    if (visibleCount === 0) return;
     const target = currentHunkIndex + delta;
-    if (target < 0 || target >= hunkCount) return;
+    if (target < 0 || target >= visibleCount) return;
     currentHunkIndex = target;
-    const el = document.getElementById(`hunk-${target}`) ?? document.getElementById(`sbs-hunk-${target}`);
-    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    hunks[target]!.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 </script>
 

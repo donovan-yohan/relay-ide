@@ -17,6 +17,13 @@ import { MOUNTAIN_NAMES } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Extract repo name from a git remote URL (SSH or HTTPS). */
+export function repoNameFromRemoteUrl(url: string): string | undefined {
+  // Strip trailing slash before splitting so pop() gets the last real segment
+  const name = url.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '');
+  return name || undefined;
+}
+
 const BROWSE_DENYLIST = new Set([
   'node_modules', '.git', '.Trash', '__pycache__',
   '.cache', '.npm', '.yarn', '.nvm',
@@ -172,8 +179,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const results: Repo[] = await Promise.all(
       workspacePaths.map(async (p) => {
-        const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
+
+        let name = path.basename(p);
+
+        if (isGitRepo) {
+          try {
+            const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: p });
+            const url = stdout.trim();
+            if (url) {
+              const remoteName = repoNameFromRemoteUrl(url);
+              if (remoteName) name = remoteName;
+            }
+          } catch {
+            // No remote configured — fall back to directory name
+          }
+        }
+
         return { path: p, name, isGitRepo, defaultBranch };
       }),
     );

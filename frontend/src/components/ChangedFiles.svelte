@@ -66,6 +66,9 @@
       files = data.files;
       aggregate = data.aggregate;
       error = data.error;
+      summaries = new Map();
+      expandedFile = null;
+      fileDiff = '';
     } catch (err: unknown) {
       console.error('[ChangedFiles] refresh failed:', err instanceof Error ? err.message : String(err));
       error = 'Failed to fetch changed files';

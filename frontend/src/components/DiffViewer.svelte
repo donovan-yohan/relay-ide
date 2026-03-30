@@ -154,7 +154,9 @@
   );
 
   let isTruncated = $derived(
-    !showAll && (lines.length > TRUNCATION_LIMIT || pairedLines.length > TRUNCATION_LIMIT)
+    !showAll && (mode === 'side-by-side'
+      ? pairedLines.length > TRUNCATION_LIMIT
+      : lines.length > TRUNCATION_LIMIT)
   );
 
   $effect(() => {
@@ -169,8 +171,11 @@
     if (onHunkCount) onHunkCount(hunkHeaderMap.size);
     if (rawLines.length === 0) return;
 
-    // Asynchronously apply Shiki tokens — guard against stale resolutions
-    const codeStr = rawLines.map(l => l.content).join('\n');
+    // Asynchronously apply Shiki tokens — only tokenize visible subset when truncated
+    const linesToTokenize = (!showAll && rawLines.length > TRUNCATION_LIMIT)
+      ? rawLines.slice(0, TRUNCATION_LIMIT)
+      : rawLines;
+    const codeStr = linesToTokenize.map(l => l.content).join('\n');
     tokenizeCode(codeStr, lang).then((tokenLines) => {
       if (gen !== tokenGeneration) return; // stale — newer parse already in flight
       const highlighted = rawLines.map((line, i) => ({
@@ -195,19 +200,20 @@
       {#each displayPairs as pair, i (i)}
         {#if pair.hunkHeader}
           <div class="hunk-header sbs-hunk" id="sbs-hunk-{i}">{pair.hunkHeader}</div>
+        {:else}
+          <div class="sbs-row">
+            <div class="sbs-half {pair.left.type}">
+              <span class="line-number">{pair.left.number ?? ''}</span>
+              <span class="line-prefix">{pair.left.type === 'delete' ? '-' : pair.left.type === 'context' ? ' ' : ''}</span>
+              <span class="line-content">{#if pair.left.tokens}{#each pair.left.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.left.content}{/if}</span>
+            </div>
+            <div class="sbs-half {pair.right.type}">
+              <span class="line-number">{pair.right.number ?? ''}</span>
+              <span class="line-prefix">{pair.right.type === 'add' ? '+' : pair.right.type === 'context' ? ' ' : ''}</span>
+              <span class="line-content">{#if pair.right.tokens}{#each pair.right.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.right.content}{/if}</span>
+            </div>
+          </div>
         {/if}
-        <div class="sbs-row">
-          <div class="sbs-half {pair.left.type}">
-            <span class="line-number">{pair.left.number ?? ''}</span>
-            <span class="line-prefix">{pair.left.type === 'delete' ? '-' : pair.left.type === 'context' ? ' ' : ''}</span>
-            <span class="line-content">{#if pair.left.tokens}{#each pair.left.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.left.content}{/if}</span>
-          </div>
-          <div class="sbs-half {pair.right.type}">
-            <span class="line-number">{pair.right.number ?? ''}</span>
-            <span class="line-prefix">{pair.right.type === 'add' ? '+' : pair.right.type === 'context' ? ' ' : ''}</span>
-            <span class="line-content">{#if pair.right.tokens}{#each pair.right.tokens as token, j (j)}<span style="color: {token.color ?? '#e0e0e0'}">{token.content}</span>{/each}{:else}{pair.right.content}{/if}</span>
-          </div>
-        </div>
       {/each}
     </div>
     {#if isTruncated}

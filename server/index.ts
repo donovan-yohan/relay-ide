@@ -301,7 +301,8 @@ async function main(): Promise<void> {
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
     for (const session of sessions.list()) {
-      if (session.cwd === cwdPath) {
+      const groupPath = session.worktreePath ?? session.repoPath;
+      if (groupPath === cwdPath) {
         const raw = sessions.get(session.id);
         if (raw) {
           raw.branchName = newBranch;
