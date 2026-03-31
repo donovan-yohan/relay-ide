@@ -6,7 +6,7 @@ Testing patterns and quality standards for claude-remote-cli.
 
 - Node.js built-in `node:test` + `node:assert` — no external test framework
 - TypeScript test files in `test/`, compiled via `tsc -p tsconfig.test.json`
-- Thirty-seven test files covering all server modules
+- Forty-eight test files covering server modules and shared frontend utilities
 - `svelte-check` runs in `build`, `test`, and standalone `check` — catches type errors in `.svelte` files
 - E2E tests (Playwright) planned but not yet implemented
 
@@ -50,7 +50,8 @@ Both `build` and `test` fail on type errors. CI runs both via `npm run build && 
 | `test/analytics.test.ts` | Analytics DB init, trackEvent insertion, optional null fields, idempotency, DB size, Express router endpoints |
 | `test/branch-rename.test.ts` | Branch auto-rename flow, sideband `claude -p` invocation, branch watcher polling |
 | `test/branch-watcher.test.ts` | BranchWatcher: detects HEAD file changes, no false positives on unchanged branch |
-| `test/fs-browse.test.ts` | Filesystem browser API: directory listing, git repo detection, denylist filtering |
+| `test/file-tree-utils.test.ts` | File tree utilities: buildChangedFilesTree, flattenVisibleNodes, findMostRecentlyChanged, parseLineReference, statusToBadge |
+| `test/fs-browse.test.ts` | Filesystem browser API: directory listing, git repo detection, denylist filtering, includeFiles mode |
 | `test/git.test.ts` | Git operations: branch listing, activity feed, CI status parsing |
 | `test/pr-state.test.ts` | PR lifecycle state machine: action derivation from PR state + CI + mergeable + comments |
 | `test/display-state.test.ts` | Display state machine transitions (6 states), shouldNotify gating, critical seen-idle invariant |

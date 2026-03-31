@@ -15,6 +15,7 @@ interface EventMessage {
   branch?: string;
   repo?: string;
   workspacePath?: string;
+  changedFiles?: string[];
 }
 
 type EventCallback = (msg: EventMessage) => void;

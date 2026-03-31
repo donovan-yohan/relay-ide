@@ -7,7 +7,7 @@
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
-  import type { WorktreeInfo, Repo, PullRequest, ChangedFile } from './lib/types.js';
+  import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi, launchWorkspaceSession } from './lib/api.js';
   import { derivePrAction, buildPrStateInput, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
@@ -46,8 +46,11 @@
   import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.svelte';
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
-  import ChangedFiles from './components/ChangedFiles.svelte';
   import FullPageDiff from './components/FullPageDiff.svelte';
+  import FileTreeSidebar from './components/FileTreeSidebar.svelte';
+  import FileViewerPane from './components/FileViewerPane.svelte';
+  import SplitPaneLayout from './components/SplitPaneLayout.svelte';
+  import { openFileTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -102,13 +105,14 @@
 
   // Component refs — must be $state() so $effect can track bind:this assignments
   let terminalRef = $state<Terminal | undefined>();
-  let changedFilesRef = $state<ChangedFiles | undefined>();
+  let fileTreeSidebarRef = $state<FileTreeSidebar | undefined>();
+  let changedFilesData = $state<string[]>([]);
   let changedFilesThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   function throttledChangedFilesRefresh() {
     if (changedFilesThrottleTimer) return;
     changedFilesThrottleTimer = setTimeout(() => {
       changedFilesThrottleTimer = null;
-      changedFilesRef?.refresh();
+      fileTreeSidebarRef?.refresh();
     }, 2000);
   }
   onDestroy(() => {
@@ -330,6 +334,13 @@
           return;
         }
 
+        // Ctrl/Cmd+B — toggle right sidebar
+        if (mod && e.key === 'b') {
+          e.preventDefault();
+          toggleRightSidebarCollapsed();
+          return;
+        }
+
         if (isInInput) return;
 
         if (!e.shiftKey && e.key >= '1' && e.key <= '9') {
@@ -522,6 +533,9 @@
         const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
         if (!msg.workspacePath || activeWs === msg.workspacePath) {
           throttledChangedFilesRefresh();
+          if (msg.changedFiles) {
+            changedFilesData = msg.changedFiles;
+          }
         }
       } else if (msg.type === 'session-activity-changed') {
         // No changed-files refresh here — git watcher handles actual file changes.
@@ -583,6 +597,21 @@
     !hasActiveSession ? 'dashboard' :
     'session'
   );
+
+  // Active workspace path for file tree — use worktreePath/repoPath (stable root),
+  // not cwd which can drift to subdirectories during session use
+  let activeWorkspaceCwd = $derived(activeSession?.worktreePath ?? activeSession?.repoPath ?? '');
+
+  // Diff-to-agent bridge: inject file reference into terminal input
+  function handleInjectReference(reference: string) {
+    // Inject the reference followed by a space into the active PTY session
+    sendPtyData(reference + ' ');
+  }
+
+  // Handle file selection from sidebar
+  function handleFileSelect(filePath: string, isChanged: boolean) {
+    openFileTab(filePath, isChanged);
+  }
 
   // Handlers
   function handleSelectWorkspace(path: string) {
@@ -1107,47 +1136,62 @@
         />
 
       {:else if viewMode === 'session'}
-        <PrTopBar
-          repoPath={ui.activeRepoPath ?? ''}
-          branchName={activeSession?.branchName ?? ''}
-          sessionId={sessionState.activeSessionId}
-          agentRunning={activeSession?.agentState === 'processing'}
-          onArchive={handleArchive}
-        />
+        <SplitPaneLayout>
+          {#snippet terminal()}
+            <PrTopBar
+              repoPath={ui.activeRepoPath ?? ''}
+              branchName={activeSession?.branchName ?? ''}
+              sessionId={sessionState.activeSessionId}
+              agentRunning={activeSession?.agentState === 'processing'}
+              onArchive={handleArchive}
+            />
 
-        <SessionTabBar
-          sessions={workspaceSessions}
-          activeSessionId={sessionState.activeSessionId}
-          onSelectSession={handleSelectSession}
-          onCloseSession={handleCloseSession}
-          onNewAgent={() => handleQuickAgent()}
-          onNewTerminal={() => handleQuickTerminal()}
-          onCustomize={() => handleCustomize()}
-        />
+            <SessionTabBar
+              sessions={workspaceSessions}
+              activeSessionId={sessionState.activeSessionId}
+              onSelectSession={handleSelectSession}
+              onCloseSession={handleCloseSession}
+              onNewAgent={() => handleQuickAgent()}
+              onNewTerminal={() => handleQuickTerminal()}
+              onCustomize={() => handleCustomize()}
+            />
 
-        <Terminal
-          bind:this={terminalRef}
-          sessionId={sessionState.activeSessionId}
-          onImageUpload={handleImageUpload}
-          useTmux={activeSessionUseTmux}
-          onCopyModeChange={handleCopyModeChange}
-        />
+            <Terminal
+              bind:this={terminalRef}
+              sessionId={sessionState.activeSessionId}
+              onImageUpload={handleImageUpload}
+              useTmux={activeSessionUseTmux}
+              onCopyModeChange={handleCopyModeChange}
+            />
 
-        <ChangedFiles
-          bind:this={changedFilesRef}
-          workspacePath={activeSession?.cwd ?? activeSession?.repoPath ?? ''}
-        />
+            <Toolbar
+              onSendKey={handleSendKey}
+              onFlushComposedText={handleFlushComposedText}
+              onClearInput={handleClearInput}
+              onUploadImage={handleUploadImage}
+              onRefocusMobileInput={handleRefocusMobileInput}
+              useTmux={activeSessionUseTmux}
+              inCopyMode={copyModeActive}
+              onExitCopyMode={handleExitCopyMode}
+            />
+          {/snippet}
 
-        <Toolbar
-          onSendKey={handleSendKey}
-          onFlushComposedText={handleFlushComposedText}
-          onClearInput={handleClearInput}
-          onUploadImage={handleUploadImage}
-          onRefocusMobileInput={handleRefocusMobileInput}
-          useTmux={activeSessionUseTmux}
-          inCopyMode={copyModeActive}
-          onExitCopyMode={handleExitCopyMode}
-        />
+          {#snippet fileViewer()}
+            <FileViewerPane
+              workspacePath={activeWorkspaceCwd}
+              onInjectReference={handleInjectReference}
+            />
+          {/snippet}
+
+          {#snippet rightSidebar()}
+            <FileTreeSidebar
+              bind:this={fileTreeSidebarRef}
+              workspacePath={activeWorkspaceCwd}
+              changedFilesData={changedFilesData}
+              onFileSelect={handleFileSelect}
+            />
+          {/snippet}
+        </SplitPaneLayout>
       {/if}
     </div>
   </div>

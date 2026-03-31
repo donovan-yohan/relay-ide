@@ -14,6 +14,8 @@ export interface BrowseEntry {
   path: string;
   isGitRepo: boolean;
   hasChildren: boolean;
+  isDirectory?: boolean;
+  size?: number;
 }
 
 export interface BrowseResponse {
@@ -109,12 +111,13 @@ export async function reorderWorkspaces(paths: string[]): Promise<Repo[]> {
 
 export async function browseFsDirectory(
   dirPath?: string,
-  options?: { prefix?: string; showHidden?: boolean },
+  options?: { prefix?: string; showHidden?: boolean; includeFiles?: boolean },
 ): Promise<BrowseResponse> {
   const params = new URLSearchParams();
   if (dirPath) params.set('path', dirPath);
   if (options?.prefix) params.set('prefix', options.prefix);
   if (options?.showHidden) params.set('showHidden', 'true');
+  if (options?.includeFiles) params.set('includeFiles', 'true');
   return json<BrowseResponse>(await fetch('/workspaces/browse?' + params.toString()));
 }
 
