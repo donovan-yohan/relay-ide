@@ -115,7 +115,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): ReviewPollerDeps {
   return {
     configPath,
     getWorkspacePaths: () => [WORKSPACE_PATH],
-    getWorkspaceSettings: () => undefined,
+    getRepoSettings: () => undefined,
     createSession: async () => {},
     broadcastEvent: () => {},
     execAsync: makeMockExec({}) as unknown as ExecAsync,

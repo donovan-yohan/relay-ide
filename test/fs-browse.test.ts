@@ -190,6 +190,49 @@ describe('GET /workspaces/browse', () => {
     // Should have at least some entries (home dir is not empty)
     assert.ok(data.entries.length > 0, 'home directory should have entries');
   });
+
+  test('includes files when includeFiles=true', async () => {
+    const browsable = path.join(tmpDir, 'browsable');
+    const data = await browse({ path: browsable, includeFiles: 'true' });
+    const names = data.entries.map((e) => e.name);
+
+    assert.ok(names.includes('file.txt'), 'should include file.txt');
+    assert.ok(names.includes('visible-dir'), 'should still include directories');
+  });
+
+  test('directories sort before files with includeFiles=true', async () => {
+    const browsable = path.join(tmpDir, 'browsable');
+    const data = await browse({ path: browsable, includeFiles: 'true' });
+    const entries = data.entries as Array<{ name: string; isDirectory?: boolean }>;
+
+    const firstFileIdx = entries.findIndex((e) => e.isDirectory === false);
+    let lastDirIdx = -1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i]!.isDirectory === true) { lastDirIdx = i; break; }
+    }
+    if (firstFileIdx !== -1 && lastDirIdx !== -1) {
+      assert.ok(lastDirIdx < firstFileIdx, 'all directories should come before files');
+    }
+  });
+
+  test('files have isDirectory=false and size field with includeFiles=true', async () => {
+    const browsable = path.join(tmpDir, 'browsable');
+    const data = await browse({ path: browsable, includeFiles: 'true' });
+    const fileEntry = data.entries.find((e) => e.name === 'file.txt') as { name: string; isDirectory?: boolean; size?: number } | undefined;
+
+    assert.ok(fileEntry, 'file.txt should exist');
+    assert.equal(fileEntry.isDirectory, false, 'file should have isDirectory=false');
+    assert.equal(typeof fileEntry.size, 'number', 'file should have size');
+    assert.ok(fileEntry.size! > 0, 'file should have non-zero size');
+  });
+
+  test('excludes files when includeFiles is not set', async () => {
+    const browsable = path.join(tmpDir, 'browsable');
+    const data = await browse({ path: browsable });
+    const names = data.entries.map((e) => e.name);
+
+    assert.ok(!names.includes('file.txt'), 'should exclude files by default');
+  });
 });
 
 describe('POST /workspaces/bulk', () => {

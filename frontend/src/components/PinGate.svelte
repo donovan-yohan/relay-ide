@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAuth, submitPin, setupNewPin } from '../lib/state/auth.svelte.js';
   import TuiButton from './TuiButton.svelte';
-  import TuiInput from './TuiInput.svelte';
+  import PinInput from './PinInput.svelte';
 
   const auth = getAuth();
   let pinValue = $state('');
@@ -61,33 +61,23 @@
 
     {#if auth.needsSetup}
       <p>set up a PIN to secure this instance</p>
-      <TuiInput
-        type="password"
+      <PinInput
         bind:value={pinValue}
         onkeydown={handleKeydown}
         placeholder="choose a PIN"
-        inputmode="numeric"
-        maxlength="20"
         autofocus
       />
-      <TuiInput
-        type="password"
+      <PinInput
         bind:value={confirmValue}
         onkeydown={handleKeydown}
         placeholder="confirm PIN"
-        inputmode="numeric"
-        maxlength="20"
       />
       <TuiButton variant="primary" onclick={handleSetup}>set PIN</TuiButton>
     {:else}
       <p>enter PIN to continue</p>
-      <TuiInput
-        type="password"
+      <PinInput
         bind:value={pinValue}
         onkeydown={handleKeydown}
-        placeholder="PIN"
-        inputmode="numeric"
-        maxlength="20"
         autofocus
       />
       <TuiButton variant="primary" onclick={handleUnlock}>unlock</TuiButton>
@@ -128,13 +118,6 @@
   .pin-container p {
     color: var(--text-muted);
     font-size: var(--font-size-base);
-  }
-
-  .pin-container :global(.tui-input) {
-    padding: 16px 16px;
-    background: var(--surface);
-    font-size: var(--font-size-lg);
-    text-align: center;
   }
 
   .error {

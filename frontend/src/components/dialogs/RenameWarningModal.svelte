@@ -5,12 +5,12 @@
   let {
     oldName,
     newName,
-    workspacePath,
+    repoPath,
     onClose,
   }: {
     oldName: string;
     newName: string;
-    workspacePath: string;
+    repoPath: string;
     onClose: () => void;
   } = $props();
 
@@ -27,7 +27,7 @@
     loading = 'push';
     errorMsg = null;
     try {
-      const res = await fetch('/workspaces/push-branch?path=' + encodeURIComponent(workspacePath), {
+      const res = await fetch('/workspaces/push-branch?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ branch: newName, deleteOldBranch: oldName }),
@@ -50,7 +50,7 @@
     loading = 'cancel';
     errorMsg = null;
     try {
-      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(workspacePath), {
+      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newName: oldName }),

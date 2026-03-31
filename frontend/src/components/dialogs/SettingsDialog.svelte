@@ -7,6 +7,9 @@
   import GitHubIntegration from './integrations/GitHubIntegration.svelte';
   import WebhookIntegration from './integrations/WebhookIntegration.svelte';
   import JiraIntegration from './integrations/JiraIntegration.svelte';
+  import WorkspaceEditor from './WorkspaceEditor.svelte';
+  import type { Workspace } from '../../lib/types.js';
+  import * as api from '../../lib/api.js';
   import {
     setDefaultAgent,
     setDefaultContinue,
@@ -20,7 +23,7 @@
     fetchGitHubStatus,
     fetchWebhookStatus,
   } from '../../lib/api.js';
-  import { refreshAll, getNotificationSessionIds } from '../../lib/state/sessions.svelte.js';
+  import { refreshAll, getNotificationSessionIds, getSessionState } from '../../lib/state/sessions.svelte.js';
   import { getConfigState, refreshConfig } from '../../lib/state/config.svelte.js';
   import { requestPermission, getPermissionState, syncPushSubscription } from '../../lib/notifications.js';
 
@@ -28,7 +31,11 @@
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
 
   const config = getConfigState();
+  const sessionState = getSessionState();
   let error = $state('');
+
+  // Workspace groups state
+  let workspaceGroups = $state<Workspace[]>([]);
 
   // Version state
   let currentVersion = $state('');
@@ -65,10 +72,15 @@
     const sectionData: Record<string, string[]> = {
       general: ['default coding agent', 'continue existing session', 'yolo mode', 'launch in tmux', 'notifications', 'push notifications'],
       integrations: ['github', 'webhooks', 'jira', 'real-time', 'ci', 'pr', 'tickets'],
+      workspaces: ['workspace', 'group', 'multi-repo', 'project'],
       advanced: ['developer tools', 'analytics', 'debug panel', 'usage data'],
       about: ['version', 'update'],
     };
     return sectionData[sectionId]?.some(term => term.includes(q)) ?? false;
+  }
+
+  async function loadWorkspaceGroups() {
+    try { workspaceGroups = await api.fetchWorkspaceGroups(); } catch { /* silent */ }
   }
 
   async function checkVersionAsync() {
@@ -120,6 +132,7 @@
     checkVersionAsync();
     fetchAnalyticsSizeAsync();
     fetchGitHubStatusAsync();
+    loadWorkspaceGroups();
     shellRef?.open();
     if (scrollToId) {
       requestAnimationFrame(() => {
@@ -289,6 +302,7 @@
           { id: 'integration-webhooks', label: 'Webhooks' },
           { id: 'integration-jira', label: 'Jira' },
         ]},
+        { id: 'section-workspaces', label: 'workspaces' },
         { id: 'section-advanced', label: 'advanced' },
         { id: 'section-about', label: 'about' },
       ]}
@@ -345,6 +359,39 @@
       <div id="integration-jira">
         <JiraIntegration />
       </div>
+    </section>
+
+    <!-- WORKSPACES section -->
+    <section id="section-workspaces" class="settings-section" class:dimmed={!matchesSearch('workspaces')}>
+      <h3 class="section-heading">workspaces</h3>
+      <p class="section-description">group repos into workspaces for multi-repo sessions</p>
+
+      {#if workspaceGroups.length === 0}
+        <p style="color: var(--text-muted); font-size: var(--font-size-xs);">no workspaces yet</p>
+      {/if}
+
+      {#each workspaceGroups as ws (ws.id)}
+        <WorkspaceEditor
+          workspace={ws}
+          repos={sessionState.repos}
+          onsave={async (updates) => {
+            await api.updateWorkspaceGroup(ws.id, updates);
+            await loadWorkspaceGroups();
+          }}
+          ondelete={async () => {
+            await api.deleteWorkspaceGroup(ws.id);
+            await loadWorkspaceGroups();
+          }}
+        />
+      {/each}
+
+      <button
+        class="ghost-btn"
+        onclick={async () => {
+          await api.createWorkspaceGroup({ name: 'new workspace', repos: [] });
+          await loadWorkspaceGroups();
+        }}
+      >[ + new workspace ]</button>
     </section>
 
     <!-- ADVANCED section -->
@@ -527,5 +574,28 @@
   select:focus {
     border-color: var(--accent);
     outline: none;
+  }
+
+  .section-description {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin: 0 0 12px;
+    font-family: var(--font-mono);
+  }
+
+  .ghost-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    padding: 6px 10px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+
+  .ghost-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 </style>

@@ -2,10 +2,12 @@ import type { IPty } from 'node-pty';
 import type { OutputParser } from './output-parsers/index.js';
 
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
-export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission';
+export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission' | 'error';
 
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = 'claude' | 'codex';
+export type ContinuePolicy = 'always' | 'never';
+export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty';
 
@@ -22,7 +24,7 @@ export const AGENT_CONTINUE_ARGS: Record<AgentType, string[]> = {
 
 export const AGENT_YOLO_ARGS: Record<AgentType, string[]> = {
   claude: ['--dangerously-skip-permissions'],
-  codex: ['--full-auto'],
+  codex: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
 };
 
 // Session types — discriminated union on `mode`
@@ -31,7 +33,7 @@ interface BaseSession {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -44,6 +46,8 @@ interface BaseSession {
   status: SessionStatus;
   needsBranchRename: boolean;
   agentState: AgentState;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface PtySession extends BaseSession {
@@ -62,10 +66,12 @@ export interface PtySession extends BaseSession {
   cleanedUp: boolean;
   _lastHookTime?: number | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
+  _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
   lastAttentionNotifiedAt?: number | undefined;
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
   claudeArgs: string[];
+  continuePolicy: ContinuePolicy;
 }
 
 export type Session = PtySession;
@@ -76,7 +82,7 @@ export interface SessionSummary {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -92,6 +98,8 @@ export interface SessionSummary {
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 export interface WorktreeMetadata {
@@ -105,6 +113,7 @@ export interface WorkspaceSettings {
   // Session defaults
   defaultAgent?: AgentType;
   defaultContinue?: boolean;
+  defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
   claudeArgs?: string[];
@@ -140,6 +149,7 @@ export const MOUNTAIN_NAMES = [
 ] as const;
 
 export interface Config {
+  configVersion?: number | undefined;
   host: string;
   port: number;
   cookieTTL: string;
@@ -153,8 +163,9 @@ export interface Config {
   defaultNotifications: boolean;
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
-  workspaces?: string[] | undefined;
+  workspaces?: Workspace[] | undefined;
   workspaceSettings?: Record<string, WorkspaceSettings> | undefined;
+  repoSettings?: Record<string, WorkspaceSettings> | undefined;
   vapidPublicKey?: string | undefined;
   vapidPrivateKey?: string | undefined;
   debugLog?: boolean | undefined;
@@ -347,11 +358,44 @@ export interface DashboardData {
   hasGhCli: boolean;
 }
 
-export interface Workspace {
+export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
+}
+
+export type RepoRole = 'frontend' | 'backend' | 'lib' | 'infra' | 'docs' | 'other';
+
+export interface WorkspaceTemplate {
+  repoRoles?: Record<string, RepoRole>;
+  defaultAgent?: string;
+  customPrompt?: string;
+  claudeArgs?: string[];
+}
+
+export interface WorkspaceLevelSettings {
+  defaultAgent?: AgentType;
+  defaultContinue?: boolean;
+  defaultYolo?: boolean;
+  launchInTmux?: boolean;
+  claudeArgs?: string[];
+  promptCodeReview?: string;
+  promptCreatePr?: string;
+  promptBranchRename?: string;
+  promptGeneral?: string;
+  promptFixConflicts?: string;
+  promptStartWork?: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  repos: string[];
+  themeColor?: string;
+  order: number;
+  template?: WorkspaceTemplate;
+  settings?: WorkspaceLevelSettings;
 }
 
 export type Platform = 'macos' | 'linux';
@@ -360,4 +404,29 @@ export interface InstallOpts {
   configPath?: string | undefined;
   port?: string | undefined;
   host?: string | undefined;
+}
+
+// Changed file status from git status/diff
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+
+export interface ChangedFile {
+  path: string;
+  oldPath?: string;          // only for renames
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  directory: string;         // parent directory for DataTable groupBy
+  summary?: string;          // rule-based summary (v1)
+}
+
+export interface ChangedFilesResponse {
+  files: ChangedFile[];
+  aggregate: { additions: number; deletions: number; fileCount: number };
+  error?: string;
+}
+
+export interface FileDiffResponse {
+  diff: string;
+  summary?: string;
+  error?: string;
 }

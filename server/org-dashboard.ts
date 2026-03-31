@@ -90,7 +90,7 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
   // GET /org-dashboard/prs — list all open PRs involving the current user across all workspaces
   router.get('/prs', async (_req: Request, res: Response) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       const response: PullRequestsResponse = { prs: [], error: 'no_workspaces' };

@@ -82,7 +82,7 @@ export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fet
   /** Core link-building logic, usable both from the HTTP handler and internal callers. */
   async function fetchLinks(): Promise<BranchLinksResponse> {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       return {};

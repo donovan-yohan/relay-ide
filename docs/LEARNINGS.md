@@ -321,3 +321,83 @@ When a server startup gate (hard exit if precondition not met) is the only way t
 When a CLI command installs a background service (launchd, systemd) that starts a separate process, the install path must verify all preconditions that the service process needs but cannot interactively satisfy. Background service processes have no TTY, no user interaction, and limited environment. If the server requires a configured PIN to start, the `--bg` / `install` command must either (a) ensure the PIN exists before installing, or (b) the server must be able to start without it and offer a non-interactive setup path. Never assume the background-started process will have the same capabilities as the interactive CLI session.
 
 ---
+
+### L-20260328-svelte-runes-testability: Split .svelte.ts modules into pure .ts logic + thin .svelte.ts wrapper for node:test compatibility
+- status: active
+- category: testing
+- source: /harness:reflect 2026-03-28
+- branch: design/command-center
+
+Svelte 5 runes (`$state`, `$derived`) are compiler macros that only work when processed by the Svelte compiler. Files with `.svelte.ts` extension cannot be compiled by `tsc` alone, so they cannot be included in `tsconfig.test.json` for `node --test` execution. When a reactive module needs unit tests, split it: put all pure logic in a plain `.ts` file (Map operations, validation, filtering), then create a thin `.svelte.ts` wrapper that imports the pure functions and adds reactivity via `$state`. Tests import from the `.ts` file; components import from the `.svelte.ts` file. This pattern was used for `registry.ts` + `registry.svelte.ts` in the action system.
+
+---
+
+### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: design/true-workspaces
+
+When a config field changes its type (e.g., `Config.workspaces` from `string[]` to `Workspace[]`), using `as any` casts to bypass TypeScript hides runtime breakage. Every consumer that reads the field with the old type assumption will silently receive the wrong shape at runtime — string comparisons against objects, `.startsWith()` on entity objects, `.includes()` on arrays of the wrong type. The fix agent's approach of changing the type declaration and grepping all consumers is correct, but must be verified by running `tsc --noEmit` BEFORE committing. When planning a type rename: (1) grep all files that access the field, (2) update consumers to use the correct accessor (e.g., `config.repos` for paths, `config.workspaces` for entities), (3) verify zero compile errors, THEN commit.
+
+---
+
+### L-20260328-serialization-whitelist-audit: When adding properties to a long-lived object, check whether it needs serialization — whitelist-based serialization silently drops new fields
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+When a system uses whitelist-based serialization (`SerializedPtySession` manually picks fields from `PtySession`), adding a new property to the runtime type does NOT cause a compile error if serialization is missing. This has caused the same bug class three times: `tmuxSessionName` (2026-03-17), `yolo`/`claudeArgs` (2026-03-22), `hookToken`/`hooksActive` (2026-03-28). When adding any property to a long-lived object that participates in serialization, always check the serialized type and `serializeAll()`. Better: use `Pick<>` or a compile-time exhaustiveness check so TypeScript flags the gap.
+
+---
+
+### L-20260328-surviving-process-stale-config: When a process survives a restart of its parent, the parent must accept the process's stale credentials — not just its own fresh ones
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+When process A (server) spawns process B (Claude Code in tmux) with credentials (hookToken), and process A restarts while process B survives (tmux daemon keeps B alive), the restarted A must still accept B's original credentials. Generating fresh credentials for the "restored" session while the old process still holds the original credentials creates an authentication mismatch. Either serialize and restore the original credentials, or have a mechanism to re-provision credentials to the surviving process.
+
+---
+
+### L-20260328-module-level-env-eval: Module-level constants derived from `process.env` are evaluated once at import time — they cannot be overridden in tests and leak across process boundaries
+- status: active
+- category: testing
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+`export const TMUX_PREFIX = process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';` evaluates when the module is first imported. Tests that import this module get whatever `NO_PIN` was in the environment at import time — the value cannot be changed per-test. If the user's shell exports `NO_PIN=1` (e.g., from running `npm run dev`), all tests in the same process see the dev value. Either: (1) make it a function that can be called with explicit parameters, (2) use a getter that reads the env on each access, or (3) ensure tests clean the environment before importing the module.
+
+---
+
+### L-20260328-settings-file-recreation: When restoring a process with preserved credentials, the credential FILE must also be re-created — token preservation alone is insufficient
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: fix/hooks-403-after-restart
+
+When a server serializes a session's authentication token (e.g., hookToken) and restores it on restart, the token alone is not enough. If the spawned process reads its credentials from a config file on disk (e.g., Claude Code's `--settings` hooks-settings.json in `/tmp/`), that file may have been cleaned up by the OS between restarts. The restore path must distinguish two scenarios: (1) surviving process (e.g., tmux attach) — the old process already has the file path and the file likely still exists, no re-creation needed; (2) dead process being respawned — the new process needs the config file re-written to disk AND the `--settings` arg injected into its spawn args. Gating the file-write block on "token already exists" silently skips file creation for case (2), leaving the new process without its configuration. When preserving credentials across restarts, always ask: "does the consumer need a file on disk, or just an in-memory token?"
+
+---
+
+### L-20260329-nullish-override-shadow: Never pass global defaults as explicit overrides when a server-side merge cascade exists — `false ?? true` evaluates to `false`
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server function uses nullish coalescing (`??`) to merge settings from multiple layers (global < workspace < repo < per-request), an explicit `false` passed as a per-request override shadows a `true` from a lower layer — because `false ?? true` is `false`. Frontend quick-launch functions should omit fields they don't have explicit user input for (send `undefined`, not the global default) so the server's cascade resolves correctly. The pattern "read global state, pass it as override" defeats the entire purpose of per-repo settings. When calling an API that resolves settings from a cascade, only include fields where the user made an explicit choice.
+
+---
+
+### L-20260329-settings-resolution-boundary: Session settings resolution should happen at one layer — don't pre-resolve on the frontend what the server already resolves
+- status: active
+- category: patterns
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server has a canonical settings resolution function (e.g., `resolveSessionSettings()` that merges global → workspace → repo → override), the frontend should not duplicate this logic by pre-filling overrides from its own partial view of the settings. The frontend's `configState` only has global defaults — it cannot see repo-level overrides. Sending global defaults as explicit overrides creates a shadow that the server's merge cascade cannot penetrate. Either (a) omit the fields and let the server resolve, or (b) fetch the merged settings from the server before populating UI defaults. The `fetchMergedWorkspaceSettings()` API exists for case (b).
+
+---

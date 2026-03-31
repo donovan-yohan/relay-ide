@@ -4,6 +4,7 @@
     label: string;
     sortable?: boolean;
     width?: string;
+    align?: 'left' | 'right' | 'center';
   }
 </script>
 
@@ -180,6 +181,7 @@
           aria-sort={getAriaSort(col)}
           style:width={col.width}
           style:flex={col.width ? 'none' : '1'}
+          style:text-align={col.align}
         >
           {#if col.sortable}
             <button
@@ -269,12 +271,15 @@
           {#if !collapsed[group.key]}
             {#each group.items as item, ii (getFlatIndex(gi, ii))}
               {@const flatIdx = getFlatIndex(gi, ii)}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <div
                 class="data-table-row"
+                class:clickable={!!onRowAction}
                 class:focused={focusedIndex === flatIdx}
                 data-row-index={flatIdx}
                 role="listitem"
                 tabindex="-1"
+                onclick={() => onRowAction?.(item)}
               >
                 {#if isMobile}
                   {@render mobileCard(item, flatIdx)}
@@ -289,12 +294,15 @@
       {:else}
         <!-- Ungrouped rows -->
         {#each rows as item, i (i)}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
             class="data-table-row"
+            class:clickable={!!onRowAction}
             class:focused={focusedIndex === i}
             data-row-index={i}
             role="listitem"
             tabindex="-1"
+            onclick={() => onRowAction?.(item)}
           >
             {#if isMobile}
               {@render mobileCard(item, i)}
@@ -365,11 +373,14 @@
     position: relative;
     border: 1px solid var(--border);
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .scroll-container {
     overflow-y: auto;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     outline: none;
   }
 
@@ -390,9 +401,20 @@
   /* --- Rows --- */
   .data-table-row {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 0 4px;
     border-bottom: 1px solid var(--border);
     transition: background 0.1s;
     outline: none;
+  }
+
+  .data-table-row.clickable {
+    cursor: pointer;
+  }
+
+  .data-table-row.clickable:hover {
+    background: var(--surface-hover);
   }
 
   .data-table-row:last-child {

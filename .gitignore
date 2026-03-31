@@ -4,6 +4,7 @@ config.json
 .claude/worktrees/
 .claude/projects/
 .claude/todos/
+.claude/skills/
 bun.lockb
 dist/
 .worktrees/
@@ -12,3 +13,10 @@ config.dev.json
 analytics.db
 analytics.db-shm
 analytics.db-wal
+
+# Agent/plugin runtime data
+.desloppify/
+.lead/
+worktree-meta/
+pending-sessions.json
+scorecard.png

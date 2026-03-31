@@ -10,20 +10,23 @@
   } from '../lib/pr-state.js';
   import type { PrAction, StatusColor } from '../lib/pr-state.js';
   import type { PrInfo, CiStatus } from '../lib/types.js';
+  import { getUi, toggleRightSidebarCollapsed } from '../lib/state/ui.svelte.js';
   import CipherText from './CipherText.svelte';
   import TuiButton from './TuiButton.svelte';
   import BranchSwitcher from './BranchSwitcher.svelte';
   import TargetBranchSwitcher from './TargetBranchSwitcher.svelte';
   import RenameWarningModal from './dialogs/RenameWarningModal.svelte';
 
+  const ui = getUi();
+
   let {
-    workspacePath,
+    repoPath,
     branchName,
     sessionId,
     agentRunning = false,
     onArchive,
   }: {
-    workspacePath: string;
+    repoPath: string;
     branchName: string;
     sessionId: string | null;
     agentRunning?: boolean;
@@ -38,23 +41,23 @@
 
   // If branchName is empty (repo sessions), detect the current branch from git
   $effect(() => {
-    if (!branchName && workspacePath) {
-      fetchCurrentBranch(workspacePath).then(branch => {
+    if (!branchName && repoPath) {
+      fetchCurrentBranch(repoPath).then(branch => {
         if (branch) currentBranch = branch;
       });
     }
   });
 
   const prQuery = createQuery<PrInfo | null>(() => ({
-    queryKey: ['pr', workspacePath, currentBranch],
-    queryFn: () => fetchPrForBranchOrNull(workspacePath, currentBranch),
+    queryKey: ['pr', repoPath, currentBranch],
+    queryFn: () => fetchPrForBranchOrNull(repoPath, currentBranch),
     staleTime: 60_000,
     refetchOnWindowFocus: true,
   }));
 
   const ciQuery = createQuery<CiStatus | null>(() => ({
-    queryKey: ['ci-status', workspacePath, currentBranch],
-    queryFn: () => fetchCiStatusOrNull(workspacePath, currentBranch),
+    queryKey: ['ci-status', repoPath, currentBranch],
+    queryFn: () => fetchCiStatusOrNull(repoPath, currentBranch),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     enabled: prQuery.data?.state === 'OPEN',
@@ -164,7 +167,7 @@
 
     renameSubmitting = true;
     try {
-      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(workspacePath), {
+      const res = await fetch('/workspaces/rename-branch?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newName: trimmed }),
@@ -222,8 +225,8 @@
     {:else}
       <div class="branch-with-actions">
         <BranchSwitcher
-          {workspacePath}
-          currentWorktreePath={workspacePath}
+          {repoPath}
+          currentWorktreePath={repoPath}
           currentBranch={currentBranch}
           disabled={agentRunning}
           onSwitch={handleBranchSwitch}
@@ -271,7 +274,7 @@
           </svg>
         </span>
         <TargetBranchSwitcher
-          {workspacePath}
+          {repoPath}
           currentBase={pr.baseRefName}
           prNumber={pr.number}
           disabled={agentRunning}
@@ -348,13 +351,24 @@
         </TuiButton>
       {/if}
     {/if}
+    <button
+      class="sidebar-toggle-btn"
+      onclick={toggleRightSidebarCollapsed}
+      aria-label={ui.rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'}
+      title={ui.rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'}
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="1" y="2" width="14" height="12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="square"/>
+        <line x1="10" y1="2" x2="10" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>
+      </svg>
+    </button>
   </div>
 
   {#if renameWarning}
     <RenameWarningModal
       oldName={renameWarning.oldName}
       newName={renameWarning.newName}
-      {workspacePath}
+      {repoPath}
       onClose={() => {
         renameWarning = null;
         prQuery.refetch();
@@ -373,7 +387,7 @@
     padding: 0 8px;
     gap: 0;
     flex-shrink: 0;
-    overflow: hidden;
+    overflow: visible;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
   }
@@ -440,6 +454,26 @@
     padding-left: 8px;
     gap: 8px;
     flex-shrink: 0;
+  }
+
+  .sidebar-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.12s, background 0.12s;
+  }
+
+  .sidebar-toggle-btn:hover {
+    color: var(--text);
+    background: var(--border);
   }
 
   .refresh-btn {

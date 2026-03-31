@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentType, AgentState, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
+import type { AgentType, AgentState, ContinuePolicy, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
@@ -12,11 +12,13 @@ import { outputParsers } from './output-parsers/index.js';
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
 
-export const TMUX_PREFIX = process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
+export function getTmuxPrefix(): string {
+  return process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
+}
 
 export function generateTmuxSessionName(displayName: string, id: string): string {
   const sanitized = displayName.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
-  return `${TMUX_PREFIX}${sanitized}-${id.slice(0, 8)}`;
+  return `${getTmuxPrefix()}${sanitized}-${id.slice(0, 8)}`;
 }
 
 export function resolveTmuxSpawn(
@@ -64,7 +66,7 @@ export type CreatePtyParams = {
   type?: SessionType | undefined;
   agent?: AgentType | undefined;
   repoName?: string | undefined;
-  workspacePath: string;
+  repoPath: string;
   worktreePath?: string | null | undefined;
   cwd: string;
   branchName?: string | undefined;
@@ -76,12 +78,16 @@ export type CreatePtyParams = {
   configPath?: string | undefined;
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
+  tmuxDisplayName?: string | undefined;
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;
   forceOutputParser?: boolean | undefined;
   yolo?: boolean | undefined;
   claudeArgs?: string[] | undefined;
+  hookToken?: string | undefined;
+  hooksActive?: boolean | undefined;
+  continuePolicy?: ContinuePolicy | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -98,7 +104,7 @@ export function createPtySession(
     type,
     agent = 'claude',
     repoName,
-    workspacePath,
+    repoPath,
     worktreePath = null,
     cwd,
     branchName,
@@ -116,6 +122,8 @@ export function createPtySession(
     forceOutputParser,
     yolo: paramYolo,
     claudeArgs: paramClaudeArgs,
+    hookToken: paramHookToken,
+    hooksActive: paramHooksActive,
   } = params;
 
   let args = rawArgs;
@@ -124,13 +132,19 @@ export function createPtySession(
 
   const env = cleanEnv();
 
-  // Inject hooks settings when spawning a real claude agent (not custom command, not forceOutputParser)
-  let hookToken = '';
-  let hooksActive = false;
+  // Inject hooks settings when spawning a real claude agent (not custom command, not forceOutputParser).
+  // For restored sessions whose tmux died, reuse the preserved token but re-create the settings
+  // file on disk — the new Claude process needs --settings even though the token is the same.
+  // For surviving tmux sessions (command='tmux'), shouldInjectHooks is false — the old Claude
+  // instance already has its settings file, and we just need the token for server-side validation.
+  let hookToken = paramHookToken ?? '';
+  let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
   const shouldInjectHooks = agent === 'claude' && !command && !forceOutputParser && port !== undefined;
   if (shouldInjectHooks) {
-    hookToken = crypto.randomBytes(32).toString('hex');
+    if (!hookToken) {
+      hookToken = crypto.randomBytes(32).toString('hex');
+    }
     try {
       settingsPath = writeHooksSettingsFile(id, port, hookToken);
       args = ['--settings', settingsPath, ...args];
@@ -138,13 +152,14 @@ export function createPtySession(
     } catch (err) {
       console.warn(`[pty-handler] Failed to generate hooks settings for session ${id}:`, err);
       hooksActive = false;
+      hookToken = '';
     }
   }
 
   const useTmux = !command && !!paramUseTmux;
   let spawnCommand = resolvedCommand;
   let spawnArgs = args;
-  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(displayName || repoName || path.basename(cwd) || 'session', id) : '');
+  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(params.tmuxDisplayName || displayName || repoName || path.basename(cwd) || 'session', id) : '');
 
   if (useTmux) {
     const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);
@@ -171,7 +186,7 @@ export function createPtySession(
     type: type || 'agent',
     agent,
     mode: 'pty' as const,
-    workspacePath: workspacePath || '',
+    repoPath: repoPath || '',
     worktreePath: worktreePath ?? null,
     repoName: repoName || '',
     branchName: branchName || '',
@@ -196,6 +211,7 @@ export function createPtySession(
     cleanedUp: false,
     yolo: paramYolo ?? false,
     claudeArgs: paramClaudeArgs ?? [],
+    continuePolicy: params.continuePolicy ?? 'never',
     _lastHookTime: undefined,
   };
   sessionsMap.set(id, session);
@@ -357,7 +373,7 @@ export function createPtySession(
     type: session.type,
     agent: session.agent,
     mode: 'pty' as const,
-    workspacePath: session.workspacePath,
+    repoPath: session.repoPath,
     worktreePath: session.worktreePath,
     repoName: session.repoName,
     branchName: session.branchName,

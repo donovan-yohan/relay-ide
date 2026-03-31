@@ -35,20 +35,27 @@ Nightly versions are stamped automatically: `3.18.1-nightly.20260328.42`
 
 ### 2. Stable Release
 
-Promote `nightly` to `master` via PR for an audit trail, then tag.
+Version bump on nightly, PR to master, then tag. Direct pushes to master are
+blocked — all commits must arrive via PR.
 
 ```bash
-# 1. Create and merge a release PR
-gh pr create --base master --head nightly --title "Release v3.19.0"
+# 1. Bump version on nightly (no tag yet)
+git checkout nightly
+npm version <patch|minor|major> --no-git-tag-version
+git add package.json package-lock.json
+git commit -m "3.19.0" && git push origin nightly
+
+# 2. Create and merge a release PR
+gh pr create --base master --head nightly --title "v3.19.0"
 gh pr merge --merge
 
-# 2. Tag the release on master
+# 3. Tag on master and push (tags bypass branch protection)
 git checkout master && git pull
-npm version <patch|minor|major>
-git push && git push --tags     # CI publishes to npm @latest
+git tag v3.19.0
+git push origin v3.19.0          # CI publishes to npm @latest
 
-# 3. Sync the version bump back to nightly
-git checkout nightly && git merge master && git push
+# 4. Sync master back to nightly
+git checkout nightly && git merge master && git push origin nightly
 ```
 
 ### 3. Hotfix (skip nightly)
@@ -63,14 +70,23 @@ git checkout -b hotfix/fix-description
 gh pr create --base master
 gh pr merge --merge
 
-# 2. Tag the release
+# 2. Bump version on master via another PR
 git checkout master && git pull
-npm version patch
-git push && git push --tags     # CI publishes to npm @latest
+git checkout -b hotfix/bump-version
+npm version patch --no-git-tag-version
+git add package.json package-lock.json
+git commit -m "3.19.1" && git push origin hotfix/bump-version
+gh pr create --base master --title "v3.19.1"
+gh pr merge --merge
 
-# 3. Sync the fix back to nightly
+# 3. Tag and push
+git checkout master && git pull
+git tag v3.19.1
+git push origin v3.19.1          # CI publishes to npm @latest
+
+# 4. Sync the fix back to nightly
 git checkout nightly && git pull
-git merge master && git push
+git merge master && git push origin nightly
 ```
 
 ## What CI Does
@@ -103,9 +119,10 @@ Both stable and nightly publishing are handled by a single workflow (`publish.ym
 1. All tests pass: `npm test`
 2. Build succeeds: `npm run build`
 3. No uncommitted changes: `git status` is clean
-4. Create PR from `nightly` to `master` and merge
-5. Tag on `master` with `npm version`
-6. `files` field in `package.json` includes all needed directories
+4. Version bumped on `nightly` with `npm version --no-git-tag-version`
+5. PR from `nightly` to `master` created and merged
+6. Tag created on `master` and pushed (triggers CI publish)
+7. `master` merged back into `nightly` to sync
 
 ## What Gets Published
 

@@ -8,6 +8,15 @@ const execFileAsync = promisify(execFile);
 
 export const WORKTREE_DIRS = ['.worktrees', '.claude/worktrees'];
 
+export class BranchCheckedOutInMainError extends Error {
+  readonly repoPath: string;
+  constructor(repoPath: string) {
+    super(`Branch is checked out in main worktree: ${repoPath}`);
+    this.name = 'BranchCheckedOutInMainError';
+    this.repoPath = repoPath;
+  }
+}
+
 function closeWatchers(watchers: fs.FSWatcher[]): void {
   for (const w of watchers) {
     try { w.close(); } catch (_) {}
@@ -83,27 +92,41 @@ export interface FindOrCreateResult {
  * Find an existing worktree for a branch, or create a new one.
  * Prevents "fatal: branch is already used by worktree" errors by
  * checking `git worktree list` before attempting `git worktree add`.
+ * Throws branch_checked_out_in_main error if the branch is checked out
+ * in the main worktree (caller should open a repo-root session instead).
  */
 export async function findOrCreateWorktreeForBranch(
   repoPath: string,
   branch: string,
   execFn: (cmd: string, args: string[], opts: { cwd: string; timeout?: number }) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<FindOrCreateResult> {
-  // Check if branch is already checked out in an existing worktree
+  // Check ALL worktrees including main repo
   try {
     const { stdout } = await execFn('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
-    const existing = parseWorktreeListPorcelain(stdout, repoPath);
-    const match = existing.find(wt => wt.branch === branch);
-    if (match) {
-      return {
-        worktreePath: match.path,
-        branchName: match.branch,
-        dirName: match.path.split('/').pop() || '',
-        existing: true,
-      };
+    const allEntries = parseAllWorktrees(stdout, repoPath);
+
+    for (const entry of allEntries) {
+      if (entry.branch === branch) {
+        if (entry.isMain) {
+          // Branch is checked out in the main repo — caller should open a repo-root session
+          throw new BranchCheckedOutInMainError(repoPath);
+        }
+        // Branch is in an existing sub-worktree — reuse it
+        return {
+          worktreePath: entry.path,
+          branchName: entry.branch,
+          dirName: entry.path.split('/').pop() || '',
+          existing: true,
+        };
+      }
     }
-  } catch {
+  } catch (err) {
+    // Re-throw our own error
+    if (err instanceof BranchCheckedOutInMainError) {
+      throw err;
+    }
     // git worktree list failed — proceed with creation attempt
+    console.warn('[watcher] git worktree list failed, proceeding with creation attempt:', err instanceof Error ? err.message : err);
   }
 
   // Sanitize branch name for directory
@@ -122,7 +145,7 @@ export async function findOrCreateWorktreeForBranch(
       fs.writeFileSync(gitignorePath, '.worktrees/\n');
     }
   } catch {
-    // Directory may not exist in test environments — skip
+    // Directory may not exist in test environments
   }
 
   await execFn('git', ['worktree', 'add', worktreePath, branch], { cwd: repoPath });
@@ -524,5 +547,147 @@ export class RefWatcher {
 
   close(): void {
     this._closeAll();
+  }
+}
+
+// Directories to ignore when watching the working tree.
+// These never contain user-authored source files worth diffing.
+const IGNORED_DIRS = new Set([
+  '.git', 'node_modules', '.next', '.nuxt', '.svelte-kit',
+  'dist', 'build', 'out', '.output', 'coverage',
+  '__pycache__', '.pytest_cache', '.venv', 'venv',
+  '.turbo', '.cache', '.parcel-cache',
+]);
+
+export class GitWatcher extends EventEmitter {
+  private _watchers = new Map<string, { treeWatcher: fs.FSWatcher; headWatcher?: fs.FSWatcher | undefined; refCount: number }>();
+  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  watch(workspacePath: string): void {
+    const existing = this._watchers.get(workspacePath);
+    if (existing) {
+      existing.refCount++;
+      return;
+    }
+
+    let treeWatcher: fs.FSWatcher | undefined;
+    let headWatcher: fs.FSWatcher | undefined;
+
+    // 1. Watch the working tree recursively for file edits.
+    //    macOS uses FSEvents (single kernel subscription). Linux uses inotify
+    //    (one watch per directory, can hit fs.inotify.max_user_watches limit).
+    //    .git/ changes are filtered out so git-status calls never cause feedback loops.
+    try {
+      treeWatcher = fs.watch(
+        workspacePath,
+        { persistent: false, recursive: true },
+        (_event, filename) => {
+          if (!filename) return;
+          const firstSegment = filename.split(path.sep)[0] ?? '';
+          if (IGNORED_DIRS.has(firstSegment)) return;
+          this._debouncedEmit(workspacePath);
+        },
+      );
+      treeWatcher.on('error', (err) => {
+        console.warn('[GitWatcher] working-tree watch failed for', workspacePath, '—', err.message);
+        console.warn('[GitWatcher] changed-files will not auto-refresh for this workspace. On Linux, try: sysctl fs.inotify.max_user_watches=524288');
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('[GitWatcher] could not watch working tree for', workspacePath, '—', msg);
+    }
+
+    // 2. Watch .git/HEAD for commits and branch switches.
+    //    Single-file watch, no feedback loop risk (HEAD only changes on checkout/commit).
+    const gitDir = path.join(workspacePath, '.git');
+    try {
+      const stat = fs.statSync(gitDir);
+      let headPath: string;
+      if (stat.isFile()) {
+        // Worktree: .git is a file pointing to the real git dir
+        const content = fs.readFileSync(gitDir, 'utf-8').trim();
+        const match = content.match(/^gitdir:\s*(.+)$/);
+        headPath = match ? path.join(path.resolve(workspacePath, match[1]!), 'HEAD') : '';
+      } else {
+        headPath = path.join(gitDir, 'HEAD');
+      }
+      if (headPath && fs.existsSync(headPath)) {
+        headWatcher = fs.watch(headPath, { persistent: false }, () => {
+          this._debouncedEmit(workspacePath);
+        });
+        headWatcher.on('error', () => { /* HEAD watch is best-effort */ });
+      }
+    } catch {
+      // .git doesn't exist or isn't readable — skip HEAD watching
+    }
+
+    if (!treeWatcher && !headWatcher) return;
+
+    this._watchers.set(workspacePath, {
+      treeWatcher: treeWatcher ?? headWatcher!,
+      headWatcher: treeWatcher ? headWatcher : undefined,
+      refCount: 1,
+    });
+  }
+
+  unwatch(workspacePath: string): void {
+    const entry = this._watchers.get(workspacePath);
+    if (!entry) return;
+    entry.refCount--;
+    if (entry.refCount <= 0) {
+      try { entry.treeWatcher.close(); } catch {}
+      if (entry.headWatcher) try { entry.headWatcher.close(); } catch {}
+      this._watchers.delete(workspacePath);
+      const timer = this._debounceTimers.get(workspacePath);
+      if (timer) {
+        clearTimeout(timer);
+        this._debounceTimers.delete(workspacePath);
+      }
+    }
+  }
+
+  private _debouncedEmit(workspacePath: string): void {
+    const existing = this._debounceTimers.get(workspacePath);
+    if (existing) clearTimeout(existing);
+    this._debounceTimers.set(workspacePath, setTimeout(async () => {
+      this._debounceTimers.delete(workspacePath);
+      // Collect changed file paths via git status for the sidebar's blue-dot tracking
+      let changedFiles: string[] = [];
+      try {
+        const { stdout } = await execFileAsync('git', ['status', '--porcelain=v1', '-z'], {
+          cwd: workspacePath,
+          timeout: 5000,
+        });
+        const parts = stdout.split('\0').filter(Boolean);
+        for (let i = 0; i < parts.length; i++) {
+          const entry = parts[i]!;
+          const code = entry.slice(0, 2);
+          const filePath = entry.slice(3);
+          if (code.startsWith('R')) {
+            // Rename: porcelain -z gives [newPath]\0[oldPath]
+            // filePath is the new name (the one on disk), next part is the old name
+            if (filePath) changedFiles.push(filePath);
+            i++; // skip old path
+            continue;
+          }
+          if (filePath) changedFiles.push(filePath);
+        }
+      } catch {
+        // git status failed — emit without file list
+      }
+      this.emit('files-changed', { workspacePath, changedFiles });
+    }, 1000));
+  }
+
+  close(): void {
+    for (const entry of this._watchers.values()) {
+      try { entry.treeWatcher.close(); } catch {}
+      if (entry.headWatcher) try { entry.headWatcher.close(); } catch {}
+    }
+    this._watchers.clear();
+    for (const timer of this._debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._debounceTimers.clear();
   }
 }

@@ -236,10 +236,10 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
 
     // Verify webhookId saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, 99001);
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookEnabled, true);
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, 99001);
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, true);
   } finally {
     await stopServer(srv);
   }
@@ -279,9 +279,9 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
 
     // Verify webhookError saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookError?: string }>;
+      repoSettings?: Record<string, { webhookError?: string }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookError, 'not-admin');
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookError, 'not-admin');
   } finally {
     await stopServer(srv);
   }
@@ -380,7 +380,7 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
       webhookSecret: 'test_secret',
       smeeUrl: 'https://smee.io/test123',
     },
-    workspaceSettings: {
+    repoSettings: {
       [repoDir]: {
         webhookId: 55555,
         webhookEnabled: true,
@@ -409,10 +409,10 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
 
     // Verify webhookId cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, undefined);
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookEnabled, undefined);
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, undefined);
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, undefined);
   } finally {
     await stopServer(srv);
   }
@@ -430,7 +430,7 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
       webhookSecret: 'test_secret',
       smeeUrl: 'https://smee.io/test123',
     },
-    workspaceSettings: {
+    repoSettings: {
       [repoDir]: {
         webhookId: 11111,
         webhookEnabled: true,
@@ -459,9 +459,9 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
 
     // Local state cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number }>;
+      repoSettings?: Record<string, { webhookId?: number }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, undefined);
+    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, undefined);
   } finally {
     await stopServer(srv);
   }
@@ -533,7 +533,7 @@ test('POST /backfill — partial failure returns correct totals', async () => {
   makeGitRepo(repoC, 'ownerC', 'repoC');
 
   const configPath = makeTempConfig('backfill-partial', {
-    workspaces: [repoA, repoB, repoC],
+    repos: [repoA, repoB, repoC],
     github: {
       accessToken: 'ghs_token',
       webhookSecret: 'test_secret',

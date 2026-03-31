@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AgentType, AgentState, BackendDisplayState, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
+import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { createPtySession } from './pty-handler.js';
@@ -17,7 +17,7 @@ interface SerializedPtySession {
   id: string;
   type: SessionType;
   agent: AgentType;
-  workspacePath: string;
+  repoPath: string;
   worktreePath: string | null;
   cwd: string;
   repoName: string;
@@ -30,24 +30,33 @@ interface SerializedPtySession {
   customCommand: string | null;
   yolo?: boolean;
   claudeArgs?: string[];
+  hookToken?: string;
+  hooksActive?: boolean;
+  needsBranchRename?: boolean;
+  branchRenamePrompt?: string;
+  continuePolicy?: ContinuePolicy;
+  workspaceId?: string;
+  additionalDirs?: string[];
 }
 
 interface PendingSessionsFile {
-  version: number;  // now 3
+  version: number;  // now 4
   timestamp: string;
   sessions: SerializedPtySession[];
 }
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-type CreateParams = Omit<CreatePtyParams, 'id'> & {
+export type CreateParams = Omit<CreatePtyParams, 'id'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
-  initialPrompt?: string | undefined;
+  initialPrompt?: string;
+  workspaceId?: string;
+  additionalDirs?: string[];
 };
 
-type CreateResult = SessionSummary & { pid: number | undefined };
+export type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();
@@ -109,8 +118,10 @@ export function fireStateChange(sessionId: string, state: AgentState): void {
 export function computeBackendState(session: { agentState: AgentState; idle: boolean }): BackendDisplayState {
   // permission-prompt takes highest priority
   if (session.agentState === 'permission-prompt') return 'permission';
-  // processing or error = running
-  if (session.agentState === 'processing' || session.agentState === 'error') return 'running';
+  // error
+  if (session.agentState === 'error') return 'error';
+  // processing = running
+  if (session.agentState === 'processing') return 'running';
   // initializing
   if (session.agentState === 'initializing') return 'initializing';
   // idle or waiting-for-input = idle (explicitly idle-like agent states)
@@ -119,7 +130,7 @@ export function computeBackendState(session: { agentState: AgentState; idle: boo
   return session.idle ? 'idle' : 'running';
 }
 
-type BackendStateChangeCallback = (sessionId: string, state: BackendDisplayState) => void;
+type BackendStateChangeCallback = (sessionId: string, state: BackendDisplayState, permissionType?: 'approval' | 'question') => void;
 const backendStateChangeCallbacks: BackendStateChangeCallback[] = [];
 
 export function onBackendStateChange(cb: BackendStateChangeCallback): void {
@@ -128,15 +139,23 @@ export function onBackendStateChange(cb: BackendStateChangeCallback): void {
 
 export function fireBackendStateIfChanged(session: Session): void {
   const newState = computeBackendState(session);
-  if (session._lastEmittedBackendState === newState) return;
+
+  let permissionType: 'approval' | 'question' | undefined;
+  if (newState === 'permission') {
+    permissionType = session.currentActivity?.tool === 'AskUserQuestion' ? 'question' : 'approval';
+  }
+
+  if (session._lastEmittedBackendState === newState && session._lastEmittedPermissionType === permissionType) return;
   session._lastEmittedBackendState = newState;
+  session._lastEmittedPermissionType = permissionType;
+
   for (const cb of [...backendStateChangeCallbacks]) {
-    try { cb(session.id, newState); }
+    try { cb(session.id, newState, permissionType); }
     catch (err) { console.error('[sessions] backendStateChange callback error:', err); }
   }
 }
 
-function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
+function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
 
   const ptyParams: CreatePtyParams = {
@@ -158,7 +177,7 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     properties: {
       agent,
       type: rest.type ?? 'agent',
-      workspace: rest.workspacePath,
+      workspace: rest.repoPath,
       mode: rest.command ? 'terminal' : 'agent',
     },
     session_id: id,
@@ -171,6 +190,12 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
   }
   if (initialPrompt) {
     ptySession.initialPrompt = initialPrompt;
+  }
+  if (workspaceId) {
+    ptySession.workspaceId = workspaceId;
+  }
+  if (additionalDirs?.length) {
+    ptySession.additionalDirs = additionalDirs;
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   if (initialPrompt) {
@@ -204,7 +229,7 @@ function list(): SessionSummary[] {
       type: s.type,
       agent: s.agent,
       mode: s.mode,
-      workspacePath: s.workspacePath,
+      repoPath: s.repoPath,
       worktreePath: s.worktreePath,
       cwd: s.cwd,
       repoName: s.repoName,
@@ -220,6 +245,8 @@ function list(): SessionSummary[] {
       needsBranchRename: !!s.needsBranchRename,
       agentState: s.agentState,
       currentActivity: s.currentActivity,
+      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+      ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
@@ -252,7 +279,7 @@ function kill(id: string): void {
     properties: {
       agent: session.agent,
       type: session.type,
-      workspace: session.workspacePath,
+      workspace: session.repoPath,
       duration_s: durationS,
     },
     session_id: id,
@@ -308,7 +335,7 @@ function serializeAll(configDir: string): void {
       id: session.id,
       type: session.type,
       agent: session.agent,
-      workspacePath: session.workspacePath,
+      repoPath: session.repoPath,
       worktreePath: session.worktreePath,
       cwd: session.cwd,
       repoName: session.repoName,
@@ -321,11 +348,18 @@ function serializeAll(configDir: string): void {
       customCommand: session.customCommand,
       yolo: session.yolo,
       claudeArgs: session.claudeArgs,
+      hookToken: session.hookToken,
+      hooksActive: session.hooksActive,
+      continuePolicy: session.continuePolicy,
+      ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
+      ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
+      ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+      ...(session.additionalDirs?.length ? { additionalDirs: session.additionalDirs } : {}),
     });
   }
 
   const pending: PendingSessionsFile = {
-    version: 3,
+    version: 4,
     timestamp: new Date().toISOString(),
     sessions: serializedPty,
   };
@@ -354,34 +388,49 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
   // v2 → v3 migration
   if (pending.version <= 2) {
     for (const s of pending.sessions) {
-      const legacy = s as SerializedPtySession & { repoPath?: string; root?: string; worktreeName?: string };
-      if (!('cwd' in s) && legacy.repoPath) {
-        (s as any).cwd = legacy.repoPath;
+      const legacy = s as SerializedPtySession & { legacyCwd?: string; root?: string; worktreeName?: string };
+      // In v2 format, the field was called "repoPath" and stored the CWD
+      const v2Cwd: string | undefined = (s as unknown as Record<string, unknown>)['repoPath'] as string | undefined;
+      if (!('cwd' in s) && v2Cwd) {
+        (s as any).cwd = v2Cwd;
       }
-      if (!('workspacePath' in s)) {
-        // Derive workspacePath: find configured workspace that contains this cwd
+      if (!('repoPath' in s) || v2Cwd === (s as any).repoPath) {
+        // Derive repoPath from the configured workspaces (it's different from the old cwd meaning)
         const configuredWorkspaces = workspaces ?? [];
-        const cwd = (s as any).cwd ?? legacy.repoPath ?? '';
+        const cwd = (s as any).cwd ?? v2Cwd ?? '';
         const matchedWorkspace = configuredWorkspaces.find(w => cwd === w || cwd.startsWith(w + '/'));
         if (!matchedWorkspace) {
-          console.warn(`[sessions] v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as workspacePath`);
+          console.warn(`[sessions] v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`);
         }
-        (s as any).workspacePath = matchedWorkspace ?? cwd;
+        (s as any).repoPath = matchedWorkspace ?? cwd;
       }
       if (!('worktreePath' in s)) {
         const cwd = (s as any).cwd ?? '';
-        const workspacePath = (s as any).workspacePath ?? '';
-        // If cwd differs from workspacePath, it's a worktree
-        (s as any).worktreePath = cwd !== workspacePath ? cwd : null;
+        const repoPath = (s as any).repoPath ?? '';
+        // If cwd differs from repoPath, it's a worktree
+        (s as any).worktreePath = cwd !== repoPath ? cwd : null;
       }
       // Map old types to new
       if ((s as any).type === 'repo' || (s as any).type === 'worktree') {
         (s as any).type = 'agent';
       }
-      // Clean up legacy fields
-      delete legacy.repoPath;
+      // Clean up legacy fields (repoPath is now kept as it's our real field)
       delete legacy.root;
       delete legacy.worktreeName;
+    }
+  }
+
+  // v3 → v4 migration: workspacePath → repoPath
+  // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
+  // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
+  // guard is false. Correctness depends on sequential execution order.
+  if (pending.version <= 3) {
+    for (const s of pending.sessions) {
+      const legacy = s as SerializedPtySession & { workspacePath?: string };
+      if ('workspacePath' in legacy && !('repoPath' in s)) {
+        (s as any).repoPath = legacy.workspacePath;
+        delete (legacy as any).workspacePath;
+      }
     }
   }
 
@@ -446,7 +495,7 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         type: s.type,
         agent: s.agent,
         repoName: s.repoName,
-        workspacePath: s.workspacePath,
+        repoPath: s.repoPath,
         worktreePath: s.worktreePath,
         cwd: s.cwd,
         branchName: s.branchName,
@@ -457,6 +506,13 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         restored: true,
         yolo: s.yolo ?? false,
         claudeArgs: s.claudeArgs ?? [],
+        hookToken: s.hookToken,
+        hooksActive: s.hooksActive,
+        continuePolicy: s.continuePolicy ?? 'never',
+        ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
+        ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
+        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+        ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;

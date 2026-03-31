@@ -3,7 +3,7 @@
   import { estimateTerminalDimensions } from '../../lib/utils.js';
   import { refreshAll } from '../../lib/state/sessions.svelte.js';
   import { getConfigState, refreshConfig } from '../../lib/state/config.svelte.js';
-  import type { AgentType, Workspace } from '../../lib/types.js';
+  import type { AgentType, Repo } from '../../lib/types.js';
   import DialogShell from './DialogShell.svelte';
   import TuiButton from '../TuiButton.svelte';
   import TuiCheckbox from '../TuiCheckbox.svelte';
@@ -18,8 +18,8 @@
 
   let shellRef = $state<DialogShell | undefined>(undefined);
 
-  // Workspace info
-  let workspacePath = $state('');
+  // Repo info
+  let repoPath = $state('');
   let workspaceName = $state('');
 
   // Form state
@@ -37,9 +37,9 @@
     useTmux = false;
   }
 
-  export async function open(workspace: Pick<Workspace, 'name' | 'path'>) {
+  export async function open(workspace: Pick<Repo, 'name' | 'path'>) {
     reset();
-    workspacePath = workspace.path;
+    repoPath = workspace.path;
     workspaceName = workspace.name;
 
     await refreshConfig();
@@ -56,7 +56,7 @@
   }
 
   async function handleSubmit() {
-    if (!workspacePath || creating) return;
+    if (!repoPath || creating) return;
     creating = true;
 
     const claudeArgs = claudeArgsInput.trim().split(/\s+/).filter(Boolean);
@@ -64,7 +64,7 @@
 
     try {
       const session = await createSession({
-        workspacePath,
+        repoPath,
         worktreePath: null,
         type: 'agent',
         continue: continueExisting,
@@ -107,7 +107,7 @@
         variant="primary"
         data-track="dialog.customize-session.create"
         onclick={handleSubmit}
-        disabled={!workspacePath || creating}
+        disabled={!repoPath || creating}
       >
         {creating ? 'Creating...' : 'Start Session'}
       </TuiButton>
