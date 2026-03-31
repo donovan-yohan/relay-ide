@@ -13,7 +13,7 @@ Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vit
 
 | Component | Role |
 |-----------|------|
-| `App.svelte` | Root layout: sidebar + main area (dashboard / PR top bar + tabs + terminal) |
+| `App.svelte` | Root layout: left sidebar + SplitPaneLayout (terminal | FileViewerPane | FileTreeSidebar) for session view; dashboard / PR top bar + tabs for non-session views |
 | `Sidebar.svelte` | Flat workspace list with smart search, no tabs |
 | `WorkspaceItem.svelte` | Workspace tree item: letter icon, sessions, inactive worktrees, context menus |
 | `SmartSearch.svelte` | Terminal-style typeahead search with `>` prompt |
@@ -35,7 +35,10 @@ Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vit
 | `SearchableSelect.svelte` | Searchable dropdown filter replacing native selects |
 | `SessionItem.svelte` | Session list item with status dot, context menu, metadata row |
 | `MobileInput.svelte` | Event-intent mobile keyboard input handler |
-| `ChangedFiles.svelte` | Collapsible changed files panel below terminal with inline diff expansion, DataTable integration, mobile card layout |
+| `FileTreeSidebar.svelte` | Right sidebar: changes tab (git diff tree with M/A/D badges, aggregate stats), all files tab (lazy filesystem browser), checks tab (stubbed); shared diffSource via ui.svelte.ts |
+| `FileViewerPane.svelte` | File viewer pane: independent tab bar for open files, DiffViewer for changed files, CodeBlock for raw files, send-to-agent pill, diff-to-agent bridge (click line numbers to inject filepath:linenum) |
+| `SplitPaneLayout.svelte` | Resizable 3-pane layout (terminal | file viewer | right sidebar) with draggable resize handles, localStorage-persisted widths, auto-collapse file viewer when no tabs open |
+| `ChangedFiles.svelte` | Collapsible changed files panel (superseded by FileTreeSidebar in session view, retained in codebase) |
 | `DiffViewer.svelte` | Unified diff renderer with diff2html parsing and Shiki syntax highlighting |
 | `CodeBlock.svelte` | Shared Shiki syntax highlighting wrapper component |
 | `OrgDashboard.svelte` | Cross-repo PR list and tickets panel with tab navigation |
@@ -64,7 +67,7 @@ State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting re
 | `sidebar-items.ts` | Pure `buildSidebarItems()` function: merges sessions + worktrees + workspaces into `SidebarItem[]` with reconciliation |
 | `config.svelte.ts` | Global session defaults (continue, yolo, tmux, agent, notifications); shared by SettingsDialog, SessionList, NewSessionDialog |
 | `auth.svelte.ts` | Authentication state (PIN check, cookie token) |
-| `ui.svelte.ts` | UI state (active tab, sidebar, filters) |
+| `ui.svelte.ts` | UI state: active tab, left sidebar (collapse/width), filters; right sidebar (visible, collapsed, width, active tab); file viewer (open tabs, ratio); shared `fileDiffSource`/`fileDiffDefaultBranch` synced between FileTreeSidebar and FileViewerPane |
 | `shiki.ts` | Shiki highlighter singleton, custom TUI theme, language detection, lazy grammar loading |
 | `diff-summary.ts` | Rule-based smart diff summaries (v1): function detection, hunk analysis, fallback +N/-N |
 
@@ -117,6 +120,7 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 - Settings dialog close triggers `refreshAll()` for immediate sidebar update
 - All dialogs are built on `DialogShell.svelte` — use the `fullscreen` prop for the Settings modal and omit it for compact dialogs (AddWorkspace, CustomizeSession, DeleteWorktree). DialogShell uses `popover="manual"` + `showPopover()`/`hidePopover()` to guarantee top-layer stacking above xterm.js canvas elements (z-index alone is insufficient for canvas stacking contexts)
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
+- **Right sidebar + file viewer split** — `SplitPaneLayout` wraps the session view with `FileTreeSidebar` (right, resizable/collapsible via Ctrl+B) and `FileViewerPane` (center, appears on demand when files are opened). Both share `fileDiffSource` and `fileDiffDefaultBranch` via `ui.svelte.ts` so switching diff source in the sidebar updates all open file viewer tabs. `openFileTab()`/`closeFileTab()` in `ui.svelte.ts` drive file viewer tab state
 - Root directory scanning: one level deep for git repos, hidden directories excluded
 
 ## Mobile Touch & Input
