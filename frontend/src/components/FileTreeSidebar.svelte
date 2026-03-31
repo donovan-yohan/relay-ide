@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, openFileTab, type RightSidebarTab, toggleRightSidebarCollapsed } from '../lib/state/ui.svelte.js';
+  import { getUi, openFileTab, type RightSidebarTab } from '../lib/state/ui.svelte.js';
   import { fetchChangedFiles, fetchDefaultBranch, browseFsDirectory, type BrowseEntry } from '../lib/api.js';
   import type { ChangedFile, DiffSource } from '../lib/types.js';
   import { buildChangedFilesTree, flattenVisibleNodes, statusToBadge, statusToBadgeColor, type FileTreeNode, type FlatNode } from '../lib/file-tree-utils.js';
@@ -195,12 +195,7 @@
   }
 </script>
 
-{#if ui.rightSidebarCollapsed}
-  <!-- Collapsed rail -->
-  <div class="sidebar-collapsed" role="complementary" aria-label="file tree">
-    <button class="expand-btn" onclick={toggleRightSidebarCollapsed} aria-label="expand file tree">&gt;</button>
-  </div>
-{:else}
+{#if !ui.rightSidebarCollapsed}
   <div
     class="sidebar"
     role="complementary"
@@ -227,7 +222,6 @@
           {/if}
         </button>
       {/each}
-      <button class="collapse-btn" onclick={toggleRightSidebarCollapsed} aria-label="collapse file tree">&lt;</button>
     </div>
 
     <!-- Tab content -->
@@ -262,11 +256,12 @@
                 class:focused={isFocused}
                 class:animating={isAnimating}
                 class:directory={node.isDirectory}
+                class:file={!node.isDirectory}
                 role="treeitem"
                 aria-selected={isFocused}
                 aria-expanded={node.isDirectory ? node.expanded : undefined}
                 aria-label="{node.name}{node.status ? `, ${node.status}` : ''}{node.additions ? `, ${node.additions} additions` : ''}{node.deletions ? `, ${node.deletions} deletions` : ''}{isRecentlyChanged(node.path) ? ', recently changed' : ''}"
-                style="padding-left: {16 + depth * 20}px"
+                style="padding-left: {8 + depth * 16}px"
                 onclick={() => handleFileClick(node)}
               >
                 <span class="icon-slot">
@@ -274,6 +269,8 @@
                     <span class="blue-dot" aria-label="recently changed"></span>
                   {:else if node.isDirectory}
                     <span class="expand-arrow">{node.expanded ? 'v' : '>'}</span>
+                  {:else}
+                    <span class="file-icon">-</span>
                   {/if}
                 </span>
                 <span class="node-name">{node.name}</span>
@@ -316,15 +313,18 @@
               <button
                 class="tree-item"
                 class:directory={entry.isDirectory !== false}
+                class:file={entry.isDirectory === false}
                 role="treeitem"
                 aria-expanded={entry.isDirectory !== false ? allFilesExpanded.has(entry.path) : undefined}
                 aria-selected={false}
-                style="padding-left: {16 + depth * 20}px"
+                style="padding-left: {8 + depth * 16}px"
                 onclick={() => handleAllFilesClick(entry)}
               >
                 <span class="icon-slot">
                   {#if entry.isDirectory !== false}
                     <span class="expand-arrow">{allFilesExpanded.has(entry.path) ? 'v' : '>'}</span>
+                  {:else}
+                    <span class="file-icon">-</span>
                   {/if}
                 </span>
                 <span class="node-name">{entry.name}</span>
@@ -363,31 +363,6 @@
     min-width: 160px;
   }
 
-  .sidebar-collapsed {
-    width: 16px;
-    height: 100%;
-    background: var(--bg, #000);
-    border-left: 1px solid var(--border, #333);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 8px;
-  }
-
-  .expand-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted, #888);
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-sm, 0.8125rem);
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .expand-btn:hover {
-    color: var(--text, #e0e0e0);
-  }
-
   /* Tab bar */
   .tab-bar {
     display: flex;
@@ -424,21 +399,6 @@
     margin-left: 4px;
   }
 
-  .collapse-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted, #888);
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-xs, 0.75rem);
-    cursor: pointer;
-    padding: 6px 8px;
-    flex-shrink: 0;
-  }
-
-  .collapse-btn:hover {
-    color: var(--text, #e0e0e0);
-  }
-
   /* Tab content */
   .tab-content {
     flex: 1;
@@ -447,7 +407,7 @@
   }
 
   .controls-row {
-    padding: 6px 8px;
+    padding: 4px 8px;
     border-bottom: 1px solid var(--border, #333);
   }
 
@@ -460,8 +420,8 @@
     display: flex;
     align-items: center;
     width: 100%;
-    min-height: 44px;
-    padding: 10px 16px;
+    min-height: 26px;
+    padding: 2px 8px;
     background: none;
     border: none;
     font-family: var(--font-mono, monospace);
@@ -472,8 +432,16 @@
     gap: 4px;
   }
 
+  .tree-item.file {
+    color: var(--text-muted, #888);
+  }
+
   .tree-item:hover {
     background: var(--surface-hover, #141414);
+  }
+
+  .tree-item:hover.file {
+    color: var(--text, #e0e0e0);
   }
 
   .tree-item.focused {
@@ -492,7 +460,7 @@
   }
 
   .icon-slot {
-    width: 24px;
+    width: 16px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -501,6 +469,11 @@
 
   .expand-arrow {
     color: var(--text-muted, #888);
+    font-size: var(--font-size-xs, 0.75rem);
+  }
+
+  .file-icon {
+    color: var(--border, #333);
     font-size: var(--font-size-xs, 0.75rem);
   }
 
@@ -520,7 +493,7 @@
 
   .action-slot {
     flex-shrink: 0;
-    min-width: 36px;
+    min-width: 24px;
     text-align: right;
   }
 
@@ -545,9 +518,9 @@
 
   /* States */
   .loading-state, .error-state, .empty-state {
-    padding: 16px;
+    padding: 12px 8px;
     font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-sm, 0.8125rem);
+    font-size: var(--font-size-xs, 0.75rem);
     color: var(--text-muted, #888);
   }
 
@@ -587,7 +560,7 @@
 
   /* Stats bar */
   .stats-bar {
-    padding: 6px 16px;
+    padding: 4px 8px;
     border-top: 1px solid var(--border, #333);
     font-family: var(--font-mono, monospace);
     font-size: var(--font-size-xs, 0.75rem);

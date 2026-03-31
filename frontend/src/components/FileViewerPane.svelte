@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, closeFileTab, closeAllFileTabs, type OpenFileTab } from '../lib/state/ui.svelte.js';
+  import { getUi, closeFileTab, closeAllFileTabs, type OpenFileTab, type DiffViewMode } from '../lib/state/ui.svelte.js';
   import { getSessionState } from '../lib/state/sessions.svelte.js';
   import { fetchFileDiff } from '../lib/api.js';
   import { diffSourceToBase } from '../lib/diff-utils.js';
@@ -19,9 +19,14 @@
   const ui = getUi();
   const sessionState = getSessionState();
 
-  // Read diffSource from shared UI state (synced with FileTreeSidebar)
+  // Read diffSource and view mode from shared UI state
   let diffSource = $derived(ui.fileDiffSource);
   let defaultBranch = $derived(ui.fileDiffDefaultBranch);
+  let diffViewMode = $derived(ui.fileDiffViewMode);
+
+  function toggleDiffViewMode(): void {
+    ui.fileDiffViewMode = diffViewMode === 'unified' ? 'side-by-side' : 'unified';
+  }
 
   // ── Diff/content cache ──
   let diffCache = $state<Map<string, string>>(new Map());
@@ -160,6 +165,11 @@
       {/each}
     </div>
     <div class="tab-bar-actions">
+      {#if activeTab?.isChanged}
+        <button class="diff-mode-btn" onclick={toggleDiffViewMode} title="Toggle split/unified diff">
+          {diffViewMode === 'unified' ? '[split]' : '[unified]'}
+        </button>
+      {/if}
       {#if ui.openFileTabs.length > 1}
         <button class="close-all-btn" onclick={closeAllFileTabs}>close all</button>
       {/if}
@@ -205,6 +215,7 @@
         <DiffViewer
           diff={activeDiff}
           filePath={activeTab.filePath}
+          mode={diffViewMode}
         />
       </div>
     {:else if !activeTab.isChanged}
@@ -310,6 +321,22 @@
     gap: 8px;
     padding: 0 8px;
     flex-shrink: 0;
+  }
+
+  .diff-mode-btn {
+    background: none;
+    border: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    cursor: pointer;
+    white-space: nowrap;
+    padding: 1px 6px;
+  }
+
+  .diff-mode-btn:hover {
+    color: var(--text, #e0e0e0);
+    border-color: var(--text-muted, #888);
   }
 
   .close-all-btn {

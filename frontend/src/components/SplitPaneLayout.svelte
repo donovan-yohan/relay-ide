@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, saveRightSidebarWidth, saveFileViewerRatio, COLLAPSED_RIGHT_SIDEBAR_WIDTH, MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH } from '../lib/state/ui.svelte.js';
+  import { getUi, saveRightSidebarWidth, saveFileViewerRatio, MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH } from '../lib/state/ui.svelte.js';
   import type { Snippet } from 'svelte';
 
   let {
@@ -24,9 +24,9 @@
   // Whether file viewer is open (has open tabs)
   let fileViewerOpen = $derived(ui.openFileTabs.length > 0);
 
-  // Right sidebar effective width
+  // Right sidebar effective width (0 when collapsed — sidebar is fully hidden)
   let rightSidebarEffectiveWidth = $derived(
-    ui.rightSidebarCollapsed ? COLLAPSED_RIGHT_SIDEBAR_WIDTH : ui.rightSidebarWidth
+    ui.rightSidebarCollapsed ? 0 : ui.rightSidebarWidth
   );
 
   function handlePointerDown(handle: 'right-sidebar' | 'file-viewer', e: PointerEvent): void {
@@ -99,7 +99,7 @@
     </div>
   {/if}
 
-  <!-- Resize handle before right sidebar -->
+  <!-- Resize handle + right sidebar (hidden entirely when collapsed) -->
   {#if !ui.rightSidebarCollapsed}
     <div
       class="resize-handle"
@@ -108,12 +108,11 @@
       aria-label="resize right sidebar"
       onpointerdown={(e) => handlePointerDown('right-sidebar', e)}
     ></div>
-  {/if}
 
-  <!-- Right sidebar -->
-  <div class="pane-right-sidebar">
-    {@render rightSidebar()}
-  </div>
+    <div class="pane-right-sidebar">
+      {@render rightSidebar()}
+    </div>
+  {/if}
 </div>
 
 <style>

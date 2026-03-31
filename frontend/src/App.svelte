@@ -1124,16 +1124,15 @@
         />
 
       {:else if viewMode === 'session'}
+        <PrTopBar
+          repoPath={ui.activeRepoPath ?? ''}
+          branchName={activeSession?.branchName ?? ''}
+          sessionId={sessionState.activeSessionId}
+          agentRunning={activeSession?.agentState === 'processing'}
+          onArchive={handleArchive}
+        />
         <SplitPaneLayout>
           {#snippet terminal()}
-            <PrTopBar
-              repoPath={ui.activeRepoPath ?? ''}
-              branchName={activeSession?.branchName ?? ''}
-              sessionId={sessionState.activeSessionId}
-              agentRunning={activeSession?.agentState === 'processing'}
-              onArchive={handleArchive}
-            />
-
             <SessionTabBar
               sessions={workspaceSessions}
               activeSessionId={sessionState.activeSessionId}
