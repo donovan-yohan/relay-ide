@@ -49,11 +49,6 @@ Option 2 is best — low overhead, instant updates, no wasted HTTP requests.
 
 **Added:** 2026-03-28
 
-### Missing loading state on app load / refresh
-On page load, the empty "Add workspace" state flashes before real content loads. Need a skeleton/shimmer until workspaces have loaded.
-
-**Scope:** Add a loading state to the root app layout that shows until the initial workspace data fetch resolves. **Files:** Root layout component, workspace store initialization.
-
 ### Inactive sidenav repo items show stale "default" name and "master" branch
 Inactive repo items always show "default" as session name and "master" as branch, even when the repo is on a different branch or the session was renamed.
 
@@ -284,3 +279,10 @@ The changed files UI rapidly resizes the viewport on mobile devices, making it u
 Add UI to let users choose between nightly and stable update channels for auto-updates. Track dismissed version notifications so we don't re-show the notification for a version the user already dismissed.
 
 **Added:** 2026-03-30
+
+## Completed
+
+### Missing loading state on app load / refresh
+On page load, the empty "Add workspace" state flashes before real content loads. Replaced with systemd-inspired boot sequence with real API status lines, time-aware greeting, and degraded mode.
+
+**Completed:** v3.19.3 (2026-03-30)
