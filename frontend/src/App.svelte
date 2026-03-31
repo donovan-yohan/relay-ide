@@ -586,8 +586,9 @@
     'session'
   );
 
-  // Active workspace path for file tree
-  let activeWorkspaceCwd = $derived(activeSession?.cwd ?? activeSession?.repoPath ?? '');
+  // Active workspace path for file tree — use worktreePath/repoPath (stable root),
+  // not cwd which can drift to subdirectories during session use
+  let activeWorkspaceCwd = $derived(activeSession?.worktreePath ?? activeSession?.repoPath ?? '');
 
   // Diff-to-agent bridge: inject file reference into terminal input
   function handleInjectReference(reference: string) {

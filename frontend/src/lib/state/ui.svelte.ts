@@ -194,6 +194,9 @@ export function openFileTab(filePath: string, isChanged: boolean): void {
   const existing = openFileTabs.find(t => t.filePath === filePath);
   if (!existing) {
     openFileTabs = [...openFileTabs, { filePath, fileName, isChanged }];
+  } else if (existing.isChanged !== isChanged) {
+    // Update existing tab's mode if reopened from a different context (all-files vs changes)
+    openFileTabs = openFileTabs.map(t => t.filePath === filePath ? { ...t, isChanged } : t);
   }
   activeFileTabPath = filePath;
 }

@@ -32,9 +32,9 @@
   let activeTab = $derived<OpenFileTab | undefined>(
     ui.openFileTabs.find(t => t.filePath === ui.activeFileTabPath)
   );
-  let activeDiff = $derived(activeTab ? diffCache.get(activeTab.filePath) ?? '' : '');
-  let activeLoading = $derived(activeTab ? loadingPaths.has(activeTab.filePath) : false);
-  let activeError = $derived(activeTab ? errorPaths.get(activeTab.filePath) ?? null : null);
+  let activeDiff = $derived(activeTab ? diffCache.get(cacheKey(activeTab.filePath)) ?? '' : '');
+  let activeLoading = $derived(activeTab ? loadingPaths.has(cacheKey(activeTab.filePath)) : false);
+  let activeError = $derived(activeTab ? errorPaths.get(cacheKey(activeTab.filePath)) ?? null : null);
 
   // Active session info for send-to pill
   let activeSessionName = $derived.by(() => {
@@ -48,48 +48,54 @@
     (ui.sendToTargetSessionId ?? sessionState.activeSessionId) !== null
   );
 
-  // Fetch diff when active tab changes
+  // Cache key includes base to avoid stale diffs across diff source changes
+  function cacheKey(filePath: string): string {
+    return `${filePath}::${base ?? 'working'}`;
+  }
+
+  // Fetch diff when active tab or base changes
   $effect(() => {
     const tab = activeTab;
     if (!tab || !workspacePath) return;
-    if (diffCache.has(tab.filePath)) return;
-    if (loadingPaths.has(tab.filePath)) return;
+    const key = cacheKey(tab.filePath);
+    if (diffCache.has(key)) return;
+    if (loadingPaths.has(key)) return;
 
-    loadingPaths.add(tab.filePath);
+    const capturedBase = base;
+    loadingPaths.add(key);
     loadingPaths = new Set(loadingPaths);
 
-    fetchFileDiff(workspacePath, tab.filePath, base).then(
+    fetchFileDiff(workspacePath, tab.filePath, capturedBase).then(
       (result) => {
+        // Discard if base changed during fetch
+        if (base !== capturedBase) return;
         if (result.error) {
-          errorPaths.set(tab.filePath, result.error);
+          errorPaths.set(key, result.error);
           errorPaths = new Map(errorPaths);
         } else {
-          diffCache.set(tab.filePath, result.diff);
+          diffCache.set(key, result.diff);
           diffCache = new Map(diffCache);
         }
       },
       (err) => {
-        errorPaths.set(tab.filePath, err instanceof Error ? err.message : 'failed to load diff');
+        if (base !== capturedBase) return;
+        errorPaths.set(key, err instanceof Error ? err.message : 'failed to load diff');
         errorPaths = new Map(errorPaths);
       },
     ).finally(() => {
-      loadingPaths.delete(tab.filePath);
+      loadingPaths.delete(key);
       loadingPaths = new Set(loadingPaths);
     });
-  });
-
-  // Clear cache when diff source changes
-  $effect(() => {
-    void base;
-    diffCache = new Map();
-    errorPaths = new Map();
   });
 
   function handleCloseTab(filePath: string, e: MouseEvent): void {
     e.stopPropagation();
     closeFileTab(filePath);
-    diffCache.delete(filePath);
-    errorPaths.delete(filePath);
+    const key = cacheKey(filePath);
+    diffCache.delete(key);
+    errorPaths.delete(key);
+    diffCache = new Map(diffCache);
+    errorPaths = new Map(errorPaths);
   }
 
   function handleTabClick(tab: OpenFileTab): void {
@@ -104,8 +110,9 @@
 
   function handleRetry(): void {
     if (!activeTab) return;
-    errorPaths.delete(activeTab.filePath);
-    diffCache.delete(activeTab.filePath);
+    const key = cacheKey(activeTab.filePath);
+    errorPaths.delete(key);
+    diffCache.delete(key);
     errorPaths = new Map(errorPaths);
     diffCache = new Map(diffCache);
   }

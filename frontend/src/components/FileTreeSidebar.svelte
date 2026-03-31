@@ -158,8 +158,11 @@
     if (entry.isDirectory !== false) {
       toggleAllFilesDir(entry.path);
     } else {
-      // Determine if this file is in the changed set
-      const relativePath = entry.path.replace(workspacePath + '/', '');
+      // Derive relative path safely via prefix check + slice
+      const prefix = workspacePath + '/';
+      const relativePath = entry.path.startsWith(prefix)
+        ? entry.path.slice(prefix.length)
+        : entry.path;
       const isChanged = changedFiles.some(f => f.path === relativePath);
       openFileTab(relativePath, isChanged);
       onFileSelect?.(relativePath, isChanged);
@@ -260,6 +263,7 @@
                 class:animating={isAnimating}
                 class:directory={node.isDirectory}
                 role="treeitem"
+                aria-selected={isFocused}
                 aria-expanded={node.isDirectory ? node.expanded : undefined}
                 aria-label="{node.name}{node.status ? `, ${node.status}` : ''}{node.additions ? `, ${node.additions} additions` : ''}{node.deletions ? `, ${node.deletions} deletions` : ''}{isRecentlyChanged(node.path) ? ', recently changed' : ''}"
                 style="padding-left: {16 + depth * 20}px"
@@ -307,13 +311,15 @@
         {:else if allFilesTree.length === 0}
           <div class="empty-state">empty repository</div>
         {:else}
-          <div class="tree" role="tree">
-            {#each allFilesTree as entry (entry.path)}
+          {#snippet allFilesNode(entries: BrowseEntry[], depth: number)}
+            {#each entries as entry (entry.path)}
               <button
                 class="tree-item"
                 class:directory={entry.isDirectory !== false}
                 role="treeitem"
                 aria-expanded={entry.isDirectory !== false ? allFilesExpanded.has(entry.path) : undefined}
+                aria-selected={false}
+                style="padding-left: {16 + depth * 20}px"
                 onclick={() => handleAllFilesClick(entry)}
               >
                 <span class="icon-slot">
@@ -329,24 +335,13 @@
                 {/if}
               </button>
               {#if allFilesExpanded.has(entry.path) && allFilesChildren.has(entry.path)}
-                {#each allFilesChildren.get(entry.path) ?? [] as child (child.path)}
-                  <button
-                    class="tree-item"
-                    class:directory={child.isDirectory !== false}
-                    role="treeitem"
-                    style="padding-left: 36px"
-                    onclick={() => handleAllFilesClick(child)}
-                  >
-                    <span class="icon-slot">
-                      {#if child.isDirectory !== false}
-                        <span class="expand-arrow">&gt;</span>
-                      {/if}
-                    </span>
-                    <span class="node-name">{child.name}</span>
-                  </button>
-                {/each}
+                {@render allFilesNode(allFilesChildren.get(entry.path) ?? [], depth + 1)}
               {/if}
             {/each}
+          {/snippet}
+
+          <div class="tree" role="tree">
+            {@render allFilesNode(allFilesTree, 0)}
           </div>
         {/if}
 

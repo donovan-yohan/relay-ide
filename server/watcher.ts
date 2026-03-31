@@ -634,8 +634,11 @@ export class GitWatcher extends EventEmitter {
           const code = entry.slice(0, 2);
           const filePath = entry.slice(3);
           if (code.startsWith('R')) {
-            // Rename: next part is the old path — skip it
-            i++;
+            // Rename: porcelain -z gives [newPath]\0[oldPath]
+            // filePath is the new name (the one on disk), next part is the old name
+            if (filePath) changedFiles.push(filePath);
+            i++; // skip old path
+            continue;
           }
           if (filePath) changedFiles.push(filePath);
         }
