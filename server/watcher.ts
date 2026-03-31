@@ -242,7 +242,10 @@ export class BranchWatcher {
   private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _lastBranch = new Map<string, string>();
   private _callback: BranchChangeCallback;
-  private _closed = false;
+  /** Monotonic generation counter. Incremented on rebuild()/close() so that
+   *  in-flight async _readAndEmit calls from a prior generation don't
+   *  recreate watchers into the new (or cleared) _watcherMap. */
+  private _generation = 0;
 
   constructor(callback: BranchChangeCallback) {
     this._callback = callback;
@@ -250,7 +253,6 @@ export class BranchWatcher {
 
   rebuild(rootDirs: string[]): void {
     this._closeAll();
-    this._closed = false;
 
     for (const rootDir of rootDirs) {
       let entries: fs.Dirent[];
@@ -340,13 +342,15 @@ export class BranchWatcher {
     const existing = this._debounceTimers.get(cwdPath);
     if (existing) clearTimeout(existing);
 
+    // Capture generation so the async callback can detect stale invocations
+    const gen = this._generation;
     this._debounceTimers.set(cwdPath, setTimeout(() => {
       this._debounceTimers.delete(cwdPath);
-      this._readAndEmit(headPath, cwdPath);
+      this._readAndEmit(headPath, cwdPath, gen);
     }, 300));
   }
 
-  private async _readAndEmit(headPath: string, cwdPath: string): Promise<void> {
+  private async _readAndEmit(headPath: string, cwdPath: string, gen: number): Promise<void> {
     try {
       const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: cwdPath });
       const newBranch = stdout.trim();
@@ -360,15 +364,15 @@ export class BranchWatcher {
     }
 
     // Recreate the watcher — the inode may have changed due to atomic rename.
-    // Guard: if close()/rebuild() was called while git rev-parse was in flight,
-    // don't leak an orphan watcher into the cleared map.
-    if (!this._closed) {
+    // Only recreate if the generation hasn't changed (rebuild/close didn't happen
+    // while git rev-parse was in flight).
+    if (this._generation === gen) {
       this._createWatcher(headPath, cwdPath);
     }
   }
 
   private _closeAll(): void {
-    this._closed = true;
+    this._generation++;
     for (const { watcher } of this._watcherMap.values()) {
       try { watcher.close(); } catch (_) {}
     }
