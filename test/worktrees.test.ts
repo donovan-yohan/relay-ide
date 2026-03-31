@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch, BranchCheckedOutInMainError } from '../server/watcher.js';
+import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 import { generateTmuxSessionName } from '../server/pty-handler.js';
 
