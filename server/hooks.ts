@@ -22,6 +22,7 @@ const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const DEFAULT_RENAME_PROMPT =
   'Output ONLY a short kebab-case git branch name (no explanation, no backticks, no prefix, just the name) that describes this task:';
 const RENAME_RETRY_DELAY_MS = 5000;
+const BRANCH_CHECK_DEBOUNCE_MS = 1000;
 
 // ---------------------------------------------------------------------------
 // Deps type
@@ -39,10 +40,53 @@ export interface HookDeps {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Branch change detection — debounced per-session check via git
+// ---------------------------------------------------------------------------
+
+const branchCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Schedule a debounced git branch check for a session. If the branch changed
+ * since the last known value, update the session and broadcast session-renamed.
+ * Uses trailing-edge debounce: each call resets the timer so the check runs
+ * after activity settles.
+ */
+function scheduleBranchCheck(session: Session, deps: HookDeps, delayMs = BRANCH_CHECK_DEBOUNCE_MS): void {
+  if (!session.cwd) return;
+  const existing = branchCheckTimers.get(session.id);
+  if (existing) clearTimeout(existing);
+
+  branchCheckTimers.set(session.id, setTimeout(async () => {
+    branchCheckTimers.delete(session.id);
+    if (!deps.getSession(session.id)) return; // session may have ended
+    try {
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: session.cwd,
+        timeout: 5000,
+      });
+      const currentBranch = stdout.trim();
+      if (currentBranch && currentBranch !== session.branchName) {
+        session.branchName = currentBranch;
+        deps.broadcastEvent('session-renamed', {
+          sessionId: session.id,
+          branchName: currentBranch,
+          displayName: session.displayName,
+        });
+      }
+    } catch { /* non-fatal — repo may be mid-rebase or detached */ }
+  }, delayMs));
+}
+
 function setAgentState(session: Session, state: AgentState, deps: HookDeps): void {
   session.agentState = state;
   deps.fireBackendStateIfChanged(session);
   session._lastHookTime = Date.now();
+
+  // Check for branch changes on meaningful pauses (agent stopped or waiting for user)
+  if (state === 'idle' || state === 'permission-prompt' || state === 'waiting-for-input') {
+    scheduleBranchCheck(session, deps, 0);
+  }
 }
 
 function extractToolDetail(_toolName: string, toolInput: unknown): string | undefined {
@@ -238,11 +282,13 @@ export function createHooksRouter(deps: HookDeps): Router {
     res.json({ ok: true });
   });
 
-  // POST /tool-result → clear currentActivity
+  // POST /tool-result → clear currentActivity + debounced branch check
   router.post('/tool-result', (req: Request, res: Response) => {
     const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
     session.currentActivity = undefined;
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
+    // Debounced branch check — catches git checkout/switch during tool execution
+    scheduleBranchCheck(session, deps);
     res.json({ ok: true });
   });
 

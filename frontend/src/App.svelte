@@ -304,6 +304,8 @@
         handleBackendStateChanged(msg.sessionId, msg.state as import('./lib/state/display-state.js').BackendDisplayState);
       } else if (msg.type === 'session-renamed' && msg.sessionId) {
         renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
+        // Branch changed — old PR data is stale
+        invalidatePrQueries();
       } else if (msg.type === 'session-ended') {
         invalidatePrQueries();
         refreshAll();

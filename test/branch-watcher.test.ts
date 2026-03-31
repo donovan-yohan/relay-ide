@@ -80,6 +80,47 @@ describe('BranchWatcher', () => {
     assert.equal(events.length, 0, 'Should not fire callback when branch is unchanged');
   });
 
+  it('detects second branch change after atomic rename (inode change)', async () => {
+    const repoDir = makeTempGitRepo();
+    const parentDir = path.dirname(repoDir);
+    cleanups.push(() => fs.rmSync(repoDir, { recursive: true, force: true }));
+
+    const events: Array<{ cwdPath: string; newBranch: string }> = [];
+    const watcher = new BranchWatcher((cwdPath, newBranch) => {
+      events.push({ cwdPath, newBranch });
+    });
+    cleanups.push(() => watcher.close());
+
+    watcher.rebuild([parentDir]);
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const headPath = path.join(repoDir, '.git', 'HEAD');
+
+    // First change: simulate git's atomic checkout (write to .lock, rename over HEAD)
+    // This changes the inode, which would kill kqueue-based watchers
+    execFileSync('git', ['branch', 'branch-one'], { cwd: repoDir });
+    const lockPath = headPath + '.lock';
+    fs.writeFileSync(lockPath, 'ref: refs/heads/branch-one\n');
+    fs.renameSync(lockPath, headPath);
+
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    assert.ok(events.length >= 1, 'Expected at least one event after first atomic rename');
+    assert.equal(events[events.length - 1]!.newBranch, 'branch-one');
+
+    // Second change: simulate another atomic checkout — this would fail without
+    // watcher recreation because the old watcher tracked the deleted inode
+    execFileSync('git', ['branch', 'branch-two'], { cwd: repoDir });
+    const lockPath2 = headPath + '.lock';
+    fs.writeFileSync(lockPath2, 'ref: refs/heads/branch-two\n');
+    fs.renameSync(lockPath2, headPath);
+
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    const secondChange = events.find(e => e.newBranch === 'branch-two');
+    assert.ok(secondChange, 'Expected branch-two event after second atomic rename (watcher must survive inode change)');
+  });
+
   it('closes cleanly', () => {
     const watcher = new BranchWatcher(() => {});
     watcher.close();
