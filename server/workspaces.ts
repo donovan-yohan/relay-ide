@@ -875,42 +875,63 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    // Filter to directories only, apply denylist, hidden filter, prefix filter
-    let dirs = dirents.filter((d) => {
-      if (!d.isDirectory()) return false;
+    const includeFiles = req.query.includeFiles === 'true';
+
+    // Filter entries: directories always, files only when includeFiles is set
+    let filtered = dirents.filter((d) => {
+      const isDir = d.isDirectory();
+      if (!isDir && !includeFiles) return false;
       if (BROWSE_DENYLIST.has(d.name)) return false;
-      // Also check if name contains a path separator component in denylist
-      // e.g. "Library/Caches" — we check the full name, not path components
       if (!showHidden && d.name.startsWith('.')) return false;
       if (prefix && !d.name.toLowerCase().startsWith(prefix.toLowerCase())) return false;
       return true;
     });
 
-    dirs.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    filtered.sort((a, b) => {
+      // Directories first, then files
+      const aDir = a.isDirectory() ? 0 : 1;
+      const bDir = b.isDirectory() ? 0 : 1;
+      if (aDir !== bDir) return aDir - bDir;
+      return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    });
 
-    const total = dirs.length;
-    const truncated = dirs.length > BROWSE_MAX_ENTRIES;
-    if (truncated) dirs = dirs.slice(0, BROWSE_MAX_ENTRIES);
+    const total = filtered.length;
+    const truncated = filtered.length > BROWSE_MAX_ENTRIES;
+    if (truncated) filtered = filtered.slice(0, BROWSE_MAX_ENTRIES);
 
-    // Enrich each entry with isGitRepo and hasChildren (parallelized)
+    // Enrich each entry (parallelized)
     const entries = await Promise.all(
-      dirs.map(async (d) => {
+      filtered.map(async (d) => {
         const entryPath = path.join(resolved, d.name);
+        const isDir = d.isDirectory();
 
         let isGitRepo = false;
-        try {
-          const gitStat = await fs.promises.stat(path.join(entryPath, '.git'));
-          isGitRepo = gitStat.isDirectory();
-        } catch {
-          // not a git repo
-        }
-
         let hasChildren = false;
-        try {
-          const children = await fs.promises.readdir(entryPath, { withFileTypes: true });
-          hasChildren = children.some((c) => c.isDirectory() && !BROWSE_DENYLIST.has(c.name));
-        } catch {
-          // can't read — treat as no children
+        let size: number | undefined;
+
+        if (isDir) {
+          try {
+            const gitStat = await fs.promises.stat(path.join(entryPath, '.git'));
+            isGitRepo = gitStat.isDirectory();
+          } catch {
+            // not a git repo
+          }
+
+          try {
+            const children = await fs.promises.readdir(entryPath, { withFileTypes: true });
+            hasChildren = children.some((c) =>
+              (c.isDirectory() || includeFiles) && !BROWSE_DENYLIST.has(c.name) && (showHidden || !c.name.startsWith('.')),
+            );
+          } catch {
+            // can't read — treat as no children
+          }
+        } else {
+          try {
+            const fileStat = await fs.promises.stat(entryPath);
+            size = fileStat.size;
+          } catch {
+            // best effort
+          }
         }
 
         return {
@@ -918,6 +939,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           path: entryPath,
           isGitRepo,
           hasChildren,
+          isDirectory: isDir,
+          ...(size !== undefined ? { size } : {}),
         };
       }),
     );

@@ -619,9 +619,30 @@ export class GitWatcher extends EventEmitter {
   private _debouncedEmit(workspacePath: string): void {
     const existing = this._debounceTimers.get(workspacePath);
     if (existing) clearTimeout(existing);
-    this._debounceTimers.set(workspacePath, setTimeout(() => {
+    this._debounceTimers.set(workspacePath, setTimeout(async () => {
       this._debounceTimers.delete(workspacePath);
-      this.emit('files-changed', { workspacePath });
+      // Collect changed file paths via git status for the sidebar's blue-dot tracking
+      let changedFiles: string[] = [];
+      try {
+        const { stdout } = await execFileAsync('git', ['status', '--porcelain=v1', '-z'], {
+          cwd: workspacePath,
+          timeout: 5000,
+        });
+        const parts = stdout.split('\0').filter(Boolean);
+        for (let i = 0; i < parts.length; i++) {
+          const entry = parts[i]!;
+          const code = entry.slice(0, 2);
+          const filePath = entry.slice(3);
+          if (code.startsWith('R')) {
+            // Rename: next part is the old path — skip it
+            i++;
+          }
+          if (filePath) changedFiles.push(filePath);
+        }
+      } catch {
+        // git status failed — emit without file list
+      }
+      this.emit('files-changed', { workspacePath, changedFiles });
     }, 1000));
   }
 

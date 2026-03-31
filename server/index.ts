@@ -293,8 +293,8 @@ async function main(): Promise<void> {
     broadcastEvent(type, data);
   };
 
-  gitWatcher.on('files-changed', (data: { workspacePath: string }) => {
-    broadcastEvent('files-changed', { workspacePath: data.workspacePath });
+  gitWatcher.on('files-changed', (data: { workspacePath: string; changedFiles?: string[] }) => {
+    broadcastEvent('files-changed', { workspacePath: data.workspacePath, changedFiles: data.changedFiles });
   });
 
   // Watch .git/HEAD files for branch changes and update active sessions
