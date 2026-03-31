@@ -11,12 +11,10 @@ Double-clicking a sidenav item (anywhere on the row) should toggle expand/collap
 
 **Scope:** Add click handler to the full row element, distinguish single-click (navigate) from double-click (toggle). **Files:** Sidebar workspace/repo row component.
 
-### Existing worktrees not detected — duplicate checkout fails
-Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree. The app used to detect existing worktrees and show them in the sidebar, but this is broken — only `everest-9436` shows, not the `rainier` worktree that has `tui-outline-aesthetic` checked out. Should detect all existing worktrees on load, show them in the sidebar, and redirect to the existing worktree instead of trying to create a duplicate.
+### ~~Existing worktrees not detected — duplicate checkout fails~~
+~~Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree.~~
 
-**Scope:** Fix worktree discovery (likely `git worktree list` parsing is broken or filtered), and fix the "open PR session" flow to check for existing checkouts before `git worktree add`. **Files:** `server/worktree-manager.ts`, sidebar worktree listing, session creation flow.
-
-**Added:** 2026-03-26
+**Completed:** v3.19.3 (2026-03-31) — `findOrCreateWorktreeForBranch` now uses `parseAllWorktrees` to detect branches in main repo. Returns `isMain: true` so server returns `worktreePath: null` for main-repo matches. Also added error toast system for user-visible error messages.
 
 ### Branch picker dropdown broken
 The new branch picker renders as a text input showing the current branch name but doesn't open a dropdown to select other branches. Likely a missing click handler or broken SearchableSelect binding.
