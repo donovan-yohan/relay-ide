@@ -465,8 +465,8 @@
     display: flex;
     align-items: center;
     width: 100%;
-    min-height: 32px;
-    padding: 4px 16px;
+    min-height: 44px;
+    padding: 10px 16px;
     background: none;
     border: none;
     font-family: var(--font-mono, monospace);
@@ -497,7 +497,7 @@
   }
 
   .icon-slot {
-    width: 20px;
+    width: 24px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -506,7 +506,7 @@
 
   .expand-arrow {
     color: var(--text-muted, #888);
-    font-size: 10px;
+    font-size: var(--font-size-xs, 0.75rem);
   }
 
   .blue-dot {
@@ -525,7 +525,7 @@
 
   .action-slot {
     flex-shrink: 0;
-    min-width: 20px;
+    min-width: 36px;
     text-align: right;
   }
 

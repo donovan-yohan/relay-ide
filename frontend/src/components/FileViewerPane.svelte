@@ -287,7 +287,7 @@
     background: none;
     border: none;
     color: var(--text-muted, #888);
-    font-size: 14px;
+    font-size: var(--font-size-sm, 0.8125rem);
     cursor: pointer;
     padding: 0 2px;
     line-height: 1;
