@@ -225,6 +225,14 @@ export function handleBranchChanged(sessionId: string, branch: string): void {
   }
 }
 
+export function handleActivityChanged(sessionId: string, timestamp?: string): void {
+  const now = timestamp || new Date().toISOString();
+  const session = sessions.find(s => s.id === sessionId);
+  if (session) session.lastActivity = now;
+  const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
+  if (item) item.lastActivity = now;
+}
+
 export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState, permissionType?: 'approval' | 'question'): void {
   // Keep session fields in sync so that refreshAll()/buildSidebarItems() reconciliation
   // sees the latest state if a full refresh arrives while real-time events are in flight.

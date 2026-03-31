@@ -31,21 +31,10 @@ Opening a session from a PR fails with `fatal: invalid reference` when the branc
 
 **Scope:** Add a fetch step in the worktree creation path when the ref doesn't exist locally. **Files:** `server/worktree-manager.ts` or session creation handler.
 
-### Sidenav branch name goes stale when agent switches branches
-Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.
+### ~~Sidenav branch name goes stale when agent switches branches~~
+~~Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.~~
 
-**Root cause:** The frontend has no periodic polling for session data. `refreshAll()` is only called on discrete events (WebSocket messages, user actions). The server's `GET /sessions` handler *does* refresh branch names (10s rate-limited `git rev-parse`), but nothing on the client calls it on an interval. The `ref-changed` WebSocket event only fires for upstream tracking ref changes (push/fetch), not local branch switches — and even when it fires, it only invalidates PR queries, not session data.
-
-**Fix options:**
-1. **Periodic poll:** Add a `setInterval` on the frontend that calls `refreshAll()` every ~15–30s
-2. **Filesystem watch:** Have the server watch `.git/HEAD` for each session's cwd and broadcast a `session-branch-changed` event
-3. **Hybrid:** Watch `.git/HEAD` for real-time detection, with a slow poll as fallback
-
-Option 2 is best — low overhead, instant updates, no wasted HTTP requests.
-
-**Scope:** Server: watch `.git/HEAD` per active session, broadcast branch change event. Frontend: handle the event and update session branch name. **Files:** `server/index.ts` or new watcher module, `server/ws.ts`, `frontend/src/App.svelte`, `frontend/src/lib/state/sessions.svelte.ts`.
-
-**Added:** 2026-03-28
+**Completed:** v3.19.3 (2026-03-31) — `BranchWatcher` watches `.git/HEAD` per active session (including worktrees), broadcasts `session-renamed` + `session-branch-changed` events. Frontend `handleBranchChanged()` updates session and sidebar item branch names in real time. Inode survival handled via watcher recreation after atomic checkout.
 
 ### Inactive sidenav repo items show stale "default" name and "master" branch
 Inactive repo items always show "default" as session name and "master" as branch, even when the repo is on a different branch or the session was renamed.
