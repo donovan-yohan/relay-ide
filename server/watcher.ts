@@ -8,14 +8,6 @@ const execFileAsync = promisify(execFile);
 
 export const WORKTREE_DIRS = ['.worktrees', '.claude/worktrees'];
 
-export class BranchCheckedOutInMainError extends Error {
-  readonly repoPath: string;
-  constructor(repoPath: string) {
-    super(`Branch is checked out in main worktree: ${repoPath}`);
-    this.name = 'BranchCheckedOutInMainError';
-    this.repoPath = repoPath;
-  }
-}
 
 function closeWatchers(watchers: fs.FSWatcher[]): void {
   for (const w of watchers) {

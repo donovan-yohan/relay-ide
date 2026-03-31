@@ -4,44 +4,47 @@
   let toasts = $derived(getToasts());
 </script>
 
-{#each toasts as toast (toast.id)}
-  <div class="error-toast" class:error-toast--error={toast.variant === 'error'} class:error-toast--info={toast.variant === 'info'}>
-    <div class="error-toast-content">
-      <span class="error-toast-text">{toast.message}</span>
-      <button class="error-toast-dismiss" onclick={() => dismissToast(toast.id)} aria-label="Dismiss">
-        &times;
-      </button>
-    </div>
+{#if toasts.length > 0}
+  <div class="error-toast-container">
+    {#each toasts as toast (toast.id)}
+      <div class="error-toast" class:error-toast--error={toast.variant === 'error'} class:error-toast--info={toast.variant === 'info'}>
+        <div class="error-toast-content">
+          <span class="error-toast-text">{toast.message}</span>
+          <button class="error-toast-dismiss" onclick={() => dismissToast(toast.id)} aria-label="Dismiss">
+            &times;
+          </button>
+        </div>
+      </div>
+    {/each}
   </div>
-{/each}
+{/if}
 
 <style>
-  .error-toast {
+  .error-toast-container {
     position: fixed;
     bottom: 12px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 1100;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+    pointer-events: none;
     max-width: 90vw;
-    animation: toast-slide-up 0.25s ease-out;
+  }
+
+  .error-toast {
     pointer-events: auto;
-  }
-
-  .error-toast:nth-child(2) {
-    bottom: 56px;
-  }
-
-  .error-toast:nth-child(3) {
-    bottom: 100px;
+    animation: toast-slide-up 0.25s ease-out;
   }
 
   @keyframes toast-slide-up {
     from {
-      transform: translateX(-50%) translateY(100%);
+      transform: translateY(100%);
       opacity: 0;
     }
     to {
-      transform: translateX(-50%) translateY(0);
+      transform: translateY(0);
       opacity: 1;
     }
   }
