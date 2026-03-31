@@ -25,14 +25,14 @@ const GREETINGS: Record<string, string[]> = {
   ],
 };
 
-export function getGreeting(): string {
-  const hour = new Date().getHours();
+export function getGreeting(hour?: number): string {
+  const h = hour ?? new Date().getHours();
   const bucket =
-    hour >= 5 && hour < 12
+    h >= 5 && h < 12
       ? 'morning'
-      : hour >= 12 && hour < 17
+      : h >= 12 && h < 17
         ? 'afternoon'
-        : hour >= 17 && hour < 21
+        : h >= 17 && h < 21
           ? 'evening'
           : 'night';
   const pool = GREETINGS[bucket]!;

@@ -59,7 +59,7 @@ export function reportFetch(
   }
 }
 
-// Called inside refreshAll() after Promise.allSettled() resolves.
+// Called inside refreshAll() after all timed fetch promises have resolved.
 // Checks all non-auth lines and transitions phase to ready or degraded.
 export function finishBoot(): void {
   const fetchLines = lines.filter(l => l.service !== 'auth');

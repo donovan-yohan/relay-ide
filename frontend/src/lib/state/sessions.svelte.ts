@@ -113,18 +113,21 @@ async function timed<T>(
 ): Promise<PromiseSettledResult<T>> {
   report?.(service, 'loading');
   const start = performance.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const value = await (report
       ? Promise.race([
           fn(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), BOOT_FETCH_TIMEOUT_MS),
-          ),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('timeout')), BOOT_FETCH_TIMEOUT_MS);
+          }),
         ])
       : fn());
+    clearTimeout(timer);
     report?.(service, 'ok', { summary: summarize(value), durationMs: Math.round(performance.now() - start) });
     return { status: 'fulfilled' as const, value };
   } catch (reason) {
+    clearTimeout(timer);
     const errorMsg = reason instanceof Error ? reason.message : String(reason);
     report?.(service, 'fail', { error: errorMsg, durationMs: Math.round(performance.now() - start) });
     return { status: 'rejected' as const, reason };

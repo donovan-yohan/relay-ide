@@ -131,6 +131,15 @@
   let pickerOpen = $state(false);
 
   const bootState = getBootState();
+  let bootScreenVisible = $state(true);
+
+  // Keep boot screen mounted for 300ms after completion so the CSS fade-out plays
+  $effect(() => {
+    if (bootState.bootComplete) {
+      const timer = setTimeout(() => { bootScreenVisible = false; }, 300);
+      return () => clearTimeout(timer);
+    }
+  });
 
   onMount(() => {
     initAnalytics(() => sessionState.activeSessionId);
@@ -449,13 +458,13 @@
   });
 
   // Refresh when authenticated
-  let bootRefreshDone = false;
+  let bootRefreshDone = false; // intentionally non-reactive — one-shot guard for boot sequence
   $effect(() => {
     if (auth.authenticated) {
       const isInitialBoot = !bootRefreshDone;
       if (isInitialBoot) {
         bootRefreshDone = true;
-        reportFetch('auth', 'ok', { durationMs: 0 });
+        reportFetch('auth', 'ok');
       }
       refreshAll(isInitialBoot ? reportFetch : undefined).then(() => {
         if (isInitialBoot) finishBoot();
@@ -1077,7 +1086,7 @@
   }
 </script>
 
-{#if auth.checking || (auth.authenticated && !bootState.bootComplete)}
+{#if auth.checking || (auth.authenticated && bootScreenVisible)}
   <BootScreen />
 {:else if !auth.authenticated || auth.needsSetup}
   <PinGate />

@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pure boot state logic inlined here because boot-state.svelte.ts uses Svelte
-// runes ($state) that the Node.js test runner cannot process.
-// These mirror the core logic in frontend/src/lib/state/boot-state.svelte.ts.
+// Test-only boot state logic stubbed here because boot-state.svelte.ts uses Svelte
+// runes ($state) that the Node.js test runner cannot process directly.
+// This is a minimal approximation suitable for tests, not a source of truth.
+// TODO: Extract pure logic into a shared .ts module so both the Svelte wrapper
+// and these tests import the same code (see docs/LEARNINGS.md).
 
 type FetchStatus = 'pending' | 'loading' | 'ok' | 'fail';
 

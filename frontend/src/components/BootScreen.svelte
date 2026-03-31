@@ -11,7 +11,7 @@
   let retrying = $state(false);
 
   $effect(() => {
-    if (boot.bootComplete && !fadingOut) {
+    if (boot.bootComplete && !fadingOut && !allFailed) {
       fadingOut = true;
     }
   });
