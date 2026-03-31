@@ -333,7 +333,7 @@
                 <span class="session-count-badge">{sessionCount}</span>
               {/if}
               {#if matchedPr}
-                <span class="sidebar-pr-status" title="PR #{matchedPr.number}: {derivePrDotStatus(matchedPr)}">
+                <span class="sidebar-pr-status" title="PR #{matchedPr.number}: {matchedPr.title}">
                   <PrGlyph status={derivePrDotStatus(matchedPr)} />
                   {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass">✓</span>
                   {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail">✕</span>
