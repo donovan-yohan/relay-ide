@@ -50,8 +50,8 @@ describe('transitionDisplayState', () => {
     [
       'permission',
       { type: 'user-viewed' },
-      'seen-idle',
-      'permission + user-viewed → seen-idle',
+      'permission',
+      'permission + user-viewed → permission (approval must be given, not just viewed)',
     ],
     [
       'permission',

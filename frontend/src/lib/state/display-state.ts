@@ -28,7 +28,7 @@ export function transitionDisplayState(current: DisplayState, event: DisplayEven
       }
     }
     case 'user-viewed': {
-      if (current === 'unseen-idle' || current === 'permission') return 'seen-idle';
+      if (current === 'unseen-idle') return 'seen-idle';
       return current;
     }
     case 'session-ended': {

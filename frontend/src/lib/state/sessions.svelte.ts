@@ -3,7 +3,7 @@ import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
 import { transitionDisplayState, shouldNotify } from './display-state.js';
-import { buildSidebarItems } from './sidebar-items.js';
+import { buildSidebarItems, deriveBackendState } from './sidebar-items.js';
 import { shouldMarkUnread } from './unread-logic.js';
 import { isUnread, markUnread, markRead, pruneUnread } from './unread.svelte.js';
 
@@ -207,16 +207,29 @@ export function handleBackendStateChanged(sessionId: string, backendState: Backe
   const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
   if (!item) return;
 
-  // Update lastKnownBackendState
-  const oldDisplayState = item.displayState;
-  item.lastKnownBackendState = backendState;
+  // Re-derive the aggregate backend state from ALL sessions in the group
+  // (the individual session's fields were already updated above).
+  // Using the single session's state would be wrong for multi-session groups:
+  // one session going idle shouldn't flip the group to idle if another is still running.
+  const aggregateState = deriveBackendState(item.sessions);
 
-  // Apply transition
+  // If the aggregate hasn't changed, no transition needed. This prevents spurious
+  // transitions (e.g., needs-answer → permission when a non-permission session changes
+  // state but the group's highest-priority state remains permission without permissionType).
+  if (aggregateState === item.lastKnownBackendState) return;
+
+  const oldDisplayState = item.displayState;
+  item.lastKnownBackendState = aggregateState;
+
+  // Apply transition using the aggregate state.
+  // Only pass permissionType when the aggregate state is 'permission' and the
+  // triggering event provided it (i.e., this session is the one driving the permission state).
+  const effectivePermissionType = aggregateState === 'permission' ? permissionType : undefined;
   const newDisplayState = transitionDisplayState(
     item.displayState,
-    permissionType
-      ? { type: 'backend-state-changed' as const, state: backendState, permissionType }
-      : { type: 'backend-state-changed' as const, state: backendState },
+    effectivePermissionType
+      ? { type: 'backend-state-changed' as const, state: aggregateState, permissionType: effectivePermissionType }
+      : { type: 'backend-state-changed' as const, state: aggregateState },
   );
   if (newDisplayState !== oldDisplayState) {
     item.displayState = newDisplayState;

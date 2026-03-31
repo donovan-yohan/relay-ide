@@ -27,7 +27,7 @@ function sessionToBackendState(session: SessionSummary): BackendDisplayState {
  *
  * Priority order (highest first): permission > error > running > initializing > idle
  */
-function deriveBackendState(sessions: SessionSummary[]): BackendDisplayState {
+export function deriveBackendState(sessions: SessionSummary[]): BackendDisplayState {
   const priority: Record<BackendDisplayState, number> = {
     permission: 4,
     error: 3,
