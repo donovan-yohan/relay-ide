@@ -16,7 +16,6 @@ export const MAX_TERMINAL_FONT_SIZE = 28;
 export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 220;
 export const MIN_RIGHT_SIDEBAR_WIDTH = 160;
 export const MAX_RIGHT_SIDEBAR_WIDTH = 400;
-export const COLLAPSED_RIGHT_SIDEBAR_WIDTH = 16;
 export const DEFAULT_FILE_VIEWER_RATIO = 0.35; // 35% of available space
 
 function loadSidebarWidth(): number {
@@ -79,6 +78,15 @@ export interface OpenFileTab {
 
 let fileDiffSource = $state<'working' | 'staged' | 'branch'>('working');
 let fileDiffDefaultBranch = $state('main');
+export type DiffViewMode = 'unified' | 'side-by-side';
+const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
+let fileDiffViewMode = $state<DiffViewMode>((() => {
+  try {
+    const stored = localStorage.getItem(DIFF_VIEW_MODE_KEY);
+    if (stored === 'unified' || stored === 'side-by-side') return stored;
+  } catch { /* localStorage unavailable */ }
+  return 'unified';
+})());
 
 let rightSidebarVisible = $state(true);
 let rightSidebarCollapsed = $state((() => {
@@ -148,6 +156,12 @@ export function getUi() {
     set fileDiffSource(v: 'working' | 'staged' | 'branch') { fileDiffSource = v; },
     get fileDiffDefaultBranch() { return fileDiffDefaultBranch; },
     set fileDiffDefaultBranch(v: string) { fileDiffDefaultBranch = v; },
+    get fileDiffViewMode() { return fileDiffViewMode; },
+    set fileDiffViewMode(v: DiffViewMode) {
+      fileDiffViewMode = v;
+      try { localStorage.setItem(DIFF_VIEW_MODE_KEY, v); }
+      catch { /* localStorage unavailable */ }
+    },
     get rightSidebarVisible() { return rightSidebarVisible; },
     set rightSidebarVisible(v: boolean) { rightSidebarVisible = v; },
     get rightSidebarCollapsed() { return rightSidebarCollapsed; },

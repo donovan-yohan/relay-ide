@@ -10,11 +10,14 @@
   } from '../lib/pr-state.js';
   import type { PrAction, StatusColor } from '../lib/pr-state.js';
   import type { PrInfo, CiStatus } from '../lib/types.js';
+  import { getUi, toggleRightSidebarCollapsed } from '../lib/state/ui.svelte.js';
   import CipherText from './CipherText.svelte';
   import TuiButton from './TuiButton.svelte';
   import BranchSwitcher from './BranchSwitcher.svelte';
   import TargetBranchSwitcher from './TargetBranchSwitcher.svelte';
   import RenameWarningModal from './dialogs/RenameWarningModal.svelte';
+
+  const ui = getUi();
 
   let {
     repoPath,
@@ -348,6 +351,17 @@
         </TuiButton>
       {/if}
     {/if}
+    <button
+      class="sidebar-toggle-btn"
+      onclick={toggleRightSidebarCollapsed}
+      aria-label={ui.rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'}
+      title={ui.rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'}
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="1" y="2" width="14" height="12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="square"/>
+        <line x1="10" y1="2" x2="10" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>
+      </svg>
+    </button>
   </div>
 
   {#if renameWarning}
@@ -440,6 +454,26 @@
     padding-left: 8px;
     gap: 8px;
     flex-shrink: 0;
+  }
+
+  .sidebar-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.12s, background 0.12s;
+  }
+
+  .sidebar-toggle-btn:hover {
+    color: var(--text);
+    background: var(--border);
   }
 
   .refresh-btn {
