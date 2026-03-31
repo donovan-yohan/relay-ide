@@ -236,10 +236,16 @@ export class WorktreeWatcher extends EventEmitter {
 export type BranchChangeCallback = (cwdPath: string, newBranch: string) => void;
 
 export class BranchWatcher {
-  private _watchers: fs.FSWatcher[] = [];
+  // Map headPath → { watcher, cwdPath } so we can recreate individual watchers
+  // after detection (git's atomic checkout can change the inode, killing kqueue watchers)
+  private _watcherMap = new Map<string, { watcher: fs.FSWatcher; cwdPath: string }>();
   private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _lastBranch = new Map<string, string>();
   private _callback: BranchChangeCallback;
+  /** Monotonic generation counter. Incremented on rebuild()/close() so that
+   *  in-flight async _readAndEmit calls from a prior generation don't
+   *  recreate watchers into the new (or cleared) _watcherMap. */
+  private _generation = 0;
 
   constructor(callback: BranchChangeCallback) {
     this._callback = callback;
@@ -307,26 +313,44 @@ export class BranchWatcher {
       if (match) this._lastBranch.set(cwdPath, match[1]!);
     } catch (_) {}
 
+    this._createWatcher(headPath, cwdPath);
+  }
+
+  /**
+   * Create (or recreate) an fs.watch() for a HEAD file. Tracked by headPath
+   * so we can close and recreate after detection — git's atomic checkout
+   * (write HEAD.lock, rename to HEAD) can change the file's inode, which
+   * silently kills kqueue-based watchers on macOS.
+   */
+  private _createWatcher(headPath: string, cwdPath: string): void {
+    // Close existing watcher for this path if any
+    const existing = this._watcherMap.get(headPath);
+    if (existing) {
+      try { existing.watcher.close(); } catch (_) {}
+    }
+
     try {
       const watcher = fs.watch(headPath, { persistent: false }, () => {
-        this._debouncedCheck(cwdPath);
+        this._debouncedCheck(headPath, cwdPath);
       });
       watcher.on('error', () => {});
-      this._watchers.push(watcher);
+      this._watcherMap.set(headPath, { watcher, cwdPath });
     } catch (_) {}
   }
 
-  private _debouncedCheck(cwdPath: string): void {
+  private _debouncedCheck(headPath: string, cwdPath: string): void {
     const existing = this._debounceTimers.get(cwdPath);
     if (existing) clearTimeout(existing);
 
+    // Capture generation so the async callback can detect stale invocations
+    const gen = this._generation;
     this._debounceTimers.set(cwdPath, setTimeout(() => {
       this._debounceTimers.delete(cwdPath);
-      this._readAndEmit(cwdPath);
+      this._readAndEmit(headPath, cwdPath, gen);
     }, 300));
   }
 
-  private async _readAndEmit(cwdPath: string): Promise<void> {
+  private async _readAndEmit(headPath: string, cwdPath: string, gen: number): Promise<void> {
     try {
       const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: cwdPath });
       const newBranch = stdout.trim();
@@ -338,11 +362,21 @@ export class BranchWatcher {
     } catch (_) {
       // Non-fatal — repo may be in detached HEAD or mid-rebase
     }
+
+    // Recreate the watcher — the inode may have changed due to atomic rename.
+    // Only recreate if the generation hasn't changed (rebuild/close didn't happen
+    // while git rev-parse was in flight).
+    if (this._generation === gen) {
+      this._createWatcher(headPath, cwdPath);
+    }
   }
 
   private _closeAll(): void {
-    closeWatchers(this._watchers);
-    this._watchers = [];
+    this._generation++;
+    for (const { watcher } of this._watcherMap.values()) {
+      try { watcher.close(); } catch (_) {}
+    }
+    this._watcherMap.clear();
     for (const timer of this._debounceTimers.values()) {
       clearTimeout(timer);
     }

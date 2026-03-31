@@ -523,6 +523,8 @@
         handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
       } else if (msg.type === 'session-renamed' && msg.sessionId) {
         renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
+        // Branch changed — old PR data is stale
+        invalidatePrQueries();
       } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
         handleBranchChanged(msg.sessionId, msg.branch ?? '');
       } else if (msg.type === 'session-ended') {
