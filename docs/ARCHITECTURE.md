@@ -29,7 +29,7 @@ Twenty-eight TypeScript modules compiled to `dist/server/` via `tsc`. Modules co
 | `ws.ts` | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input; unit-tested via JSON fixtures |
 | `utils.ts` | Shared server utilities |
-| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh), GitWatcher (.git/ dirs for changed-files events) |
+| `watcher.ts` | File system watching: WorktreeWatcher (workspace dirs), BranchWatcher (.git/HEAD), RefWatcher (upstream tracking refs for PR auto-refresh), GitWatcher (.git/ dirs for changed-files events with `changedFiles: string[]` from `git status`) |
 | `auth.ts` | PIN hashing (scrypt), rate limiting (5 fails = 15-min lockout), cookie tokens |
 | `config.ts` | Config loading/saving with defaults, v3→v4 migration (configVersion, repoSettings, workspace promotion), per-repo settings, worktree metadata, settings cascade (global→workspace→repo→session) |
 | `clipboard.ts` | System clipboard detection and image-set operations (osascript/xclip) |
@@ -59,7 +59,7 @@ Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 | Path | Role |
 |------|------|
 | `frontend/src/components/` | Svelte 5 components (Terminal, Sidebar, WorkspaceItem, PrTopBar, SessionTabBar, RepoDashboard, Spotlight, dialogs, etc.) |
-| `frontend/src/lib/state/` | Reactive state modules (`.svelte.ts` files) exporting state + mutations; includes pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation) |
+| `frontend/src/lib/state/` | Reactive state modules (`.svelte.ts` files) exporting state + mutations; includes pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `ui.svelte.ts` — left/right sidebar state, file viewer tabs, shared diff source) |
 | `frontend/src/lib/api.ts` | REST API client functions |
 | `frontend/src/lib/ws.ts` | WebSocket connection management (PTY relay + event channel) |
 | `frontend/src/lib/types.ts` | Frontend TypeScript interfaces |
@@ -68,6 +68,7 @@ Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 | `frontend/src/lib/notifications.ts` | Browser Notification API wrapper, service worker registration, Web Push subscription |
 | `frontend/src/lib/utils.ts` | Shared utilities (path display, relative time formatting, device detection) |
 | `frontend/src/lib/pr-state.ts` | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments |
+| `frontend/src/lib/file-tree-utils.ts` | Pure file tree functions: `buildChangedFilesTree`, `flattenVisibleNodes`, `findMostRecentlyChanged`, `parseLineReference`, status badge helpers |
 | `frontend/src/lib/analytics.ts` | Frontend analytics: batch event collection, `data-track` attribute integration |
 
 **Architecture Invariant:** The frontend does NOT vendor any libraries. xterm.js, xterm-addon-fit, and `@tanstack/svelte-query` are npm dependencies. State lives in `.svelte.ts` modules, not in component files (PR data is an exception — managed via svelte-query cache).
@@ -129,7 +130,7 @@ PTY flow:
 | `GET` | `/workspaces/pr` | PR info for a branch (`?path=X&branch=Y`) |
 | `GET` | `/workspaces/ci-status` | CI check results (`?path=X&branch=Y`) |
 | `POST` | `/workspaces/branch` | Switch branch (`?path=X`, body: `{branch}`) |
-| `GET` | `/workspaces/browse` | Browse filesystem directories for tree UI (`?path=X&prefix=Y&showHidden=bool`) |
+| `GET` | `/workspaces/browse` | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`) |
 | `POST` | `/workspaces/bulk` | Add multiple workspace paths at once (body: `{paths}`) |
 | `GET` | `/workspaces/autocomplete` | Path prefix autocomplete (`?prefix=X`) |
 | `POST` | `/workspaces/worktree` | Create worktree with mountain name (`?path=X`) |
@@ -158,7 +159,7 @@ PTY flow:
 ## WebSocket Channels
 
 - `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
-- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed`).
+- `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed` with `changedFiles: string[]`).
 
 Both channels require authentication via `token` cookie verified during HTTP upgrade.
 
@@ -178,10 +179,10 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 | ADR | Topic |
 |-----|-------|
-| ADR-001 | Modular server architecture (twenty-seven modules, composition root, dependency flow) |
+| ADR-001 | Modular server architecture (twenty-eight modules, composition root, dependency flow) |
 | ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping) |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting) |
-| ADR-005 | Built-in test runner (node:test, nine test files, no external framework) |
+| ADR-005 | Built-in test runner (node:test, no external framework) |
 | ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars) |
 | ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher) |
 | ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24) |
