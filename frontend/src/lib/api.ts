@@ -175,7 +175,7 @@ export async function autocompletePath(prefix: string): Promise<string[]> {
   return data.suggestions;
 }
 
-export async function createWorktree(repoPath: string, branch?: string): Promise<{ branchName: string; mountainName: string; worktreePath: string }> {
+export async function createWorktree(repoPath: string, branch?: string): Promise<{ branchName: string; mountainName: string; worktreePath: string | null }> {
   const res = await fetch('/workspaces/worktree?path=' + encodeURIComponent(repoPath), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -184,7 +184,7 @@ export async function createWorktree(repoPath: string, branch?: string): Promise
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to create worktree'));
   }
-  return res.json() as Promise<{ branchName: string; mountainName: string; worktreePath: string }>;
+  return res.json() as Promise<{ branchName: string; mountainName: string; worktreePath: string | null }>;
 }
 
 export async function switchBranch(repoPath: string, branch: string): Promise<{ success: boolean; error?: string }> {

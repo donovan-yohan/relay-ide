@@ -269,6 +269,95 @@ describe('parseAllWorktrees', () => {
   });
 });
 
+describe('findOrCreateWorktreeForBranch', () => {
+  it('should return existing: true when branch is checked out in the main worktree', async () => {
+    const repoPath = '/home/user/my-repo';
+    const branch = 'feat/boot-sequence-loading';
+
+    // Mock exec that returns porcelain output showing the branch in the main worktree
+    const porcelainOutput = [
+      `worktree ${repoPath}`,
+      'HEAD abc1234',
+      `branch refs/heads/${branch}`,
+      '',
+    ].join('\n');
+
+    const mockExec = async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+        return { stdout: porcelainOutput, stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const result = await findOrCreateWorktreeForBranch(repoPath, branch, mockExec);
+    assert.equal(result.existing, true);
+    assert.equal(result.isMain, true);
+    assert.equal(result.worktreePath, repoPath);
+    assert.equal(result.branchName, branch);
+  });
+
+  it('should return existing: true when branch is in a secondary worktree', async () => {
+    const repoPath = '/home/user/my-repo';
+    const branch = 'feat/sidebar';
+
+    const porcelainOutput = [
+      `worktree ${repoPath}`,
+      'HEAD abc1234',
+      'branch refs/heads/main',
+      '',
+      `worktree ${repoPath}/.worktrees/kilimanjaro`,
+      'HEAD def5678',
+      `branch refs/heads/${branch}`,
+      '',
+    ].join('\n');
+
+    const mockExec = async (cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+        return { stdout: porcelainOutput, stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const result = await findOrCreateWorktreeForBranch(repoPath, branch, mockExec);
+    assert.equal(result.existing, true);
+    assert.equal(result.isMain, false);
+    assert.equal(result.worktreePath, `${repoPath}/.worktrees/kilimanjaro`);
+    assert.equal(result.branchName, branch);
+  });
+
+  it('should create a new worktree when branch is not checked out anywhere', async () => {
+    const repoPath = '/home/user/my-repo';
+    const branch = 'feat/new-feature';
+
+    const porcelainOutput = [
+      `worktree ${repoPath}`,
+      'HEAD abc1234',
+      'branch refs/heads/main',
+      '',
+    ].join('\n');
+
+    const commands: string[][] = [];
+    const mockExec = async (cmd: string, args: string[]) => {
+      commands.push([cmd, ...args]);
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+        return { stdout: porcelainOutput, stderr: '' };
+      }
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        return { stdout: '', stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const result = await findOrCreateWorktreeForBranch(repoPath, branch, mockExec);
+    assert.equal(result.existing, false);
+    assert.equal(result.isMain, false);
+    assert.equal(result.branchName, branch);
+    // Should have called git worktree add
+    const addCmd = commands.find(c => c[0] === 'git' && c[1] === 'worktree' && c[2] === 'add');
+    assert.ok(addCmd, 'Should have run git worktree add');
+  });
+});
+
 describe('workspace-to-repo merging for worktree discovery', () => {
   // This tests the logic used in GET /worktrees to merge config.workspaces
   // into the rootDir-scanned repo list, preventing the bug where workspaces
@@ -504,7 +593,7 @@ describe('repo-scoped tmux naming', () => {
 });
 
 describe('findOrCreateWorktreeForBranch', () => {
-  it('returns branch_checked_out_in_main when branch is in main worktree', async () => {
+  it('returns existing: true and isMain: true when branch is in main worktree', async () => {
     const repoPath = '/Users/me/code/my-repo';
     const stdout = [
       `worktree ${repoPath}`,
@@ -518,13 +607,11 @@ describe('findOrCreateWorktreeForBranch', () => {
       throw new Error('unexpected call');
     };
 
-    try {
-      await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
-      assert.fail('Expected error to be thrown');
-    } catch (err) {
-      assert.ok(err instanceof BranchCheckedOutInMainError);
-      assert.equal(err.repoPath, repoPath);
-    }
+    const result = await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
+    assert.equal(result.existing, true);
+    assert.equal(result.isMain, true);
+    assert.equal(result.worktreePath, repoPath);
+    assert.equal(result.branchName, 'nightly');
   });
 
   it('returns existing worktree when branch is in a sub-worktree', async () => {
@@ -547,6 +634,7 @@ describe('findOrCreateWorktreeForBranch', () => {
 
     const result = await findOrCreateWorktreeForBranch(repoPath, 'fix/auth', exec);
     assert.equal(result.existing, true);
+    assert.equal(result.isMain, false);
     assert.equal(result.worktreePath, '/Users/me/code/my-repo/.worktrees/fix-auth');
   });
 
@@ -569,6 +657,7 @@ describe('findOrCreateWorktreeForBranch', () => {
 
     const result = await findOrCreateWorktreeForBranch(repoPath, 'feat/new', exec);
     assert.equal(result.existing, false);
+    assert.equal(result.isMain, false);
     assert.equal(result.branchName, 'feat/new');
   });
 });

@@ -9,7 +9,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { loadConfig, saveConfig, getRepoSettings, setRepoSettings, deleteRepoSettingKeys, writeMeta, readMeta } from './config.js';
-import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
+import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, getDefaultBranch, ensureBranchLocal } from './git.js';
 import type { Config, PrInfo, PullRequest, PullRequestsResponse, Repo } from './types.js';
@@ -723,30 +723,33 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       // Find existing checkout or create new worktree
       try {
         const result = await findOrCreateWorktreeForBranch(resolved, existingBranch, exec);
-        const meta = readMeta(configPath, result.worktreePath);
-        writeMeta(configPath, {
-          worktreePath: result.worktreePath,
-          displayName: meta?.displayName || result.dirName,
-          lastActivity: new Date().toISOString(),
-          branchName: result.branchName,
-        });
-        res.status(result.existing ? 200 : 201).json({
-          path: result.worktreePath,
-          existing: result.existing,
-          branchName: result.branchName,
-          mountainName: meta?.displayName || result.dirName,
-          worktreePath: result.worktreePath,
-        });
-      } catch (err) {
-        if (err instanceof BranchCheckedOutInMainError) {
-          res.status(409).json({
-            error: 'branch_checked_out_in_main',
-            repoPath: err.repoPath,
+        // For main worktree matches, return worktreePath: null to signal "use the main repo"
+        // and skip writeMeta (main repo is not a disposable worktree)
+        if (!result.isMain) {
+          const meta = readMeta(configPath, result.worktreePath);
+          writeMeta(configPath, {
+            worktreePath: result.worktreePath,
+            displayName: meta?.displayName || result.dirName,
+            lastActivity: new Date().toISOString(),
+            branchName: result.branchName,
+          });
+          res.json({
+            branchName: result.branchName,
+            mountainName: meta?.displayName || result.dirName,
+            worktreePath: result.worktreePath,
+            existing: result.existing,
           });
         } else {
-          const msg = err instanceof Error ? err.message : String(err);
-          res.status(500).json({ error: `Failed to create worktree: ${msg}` });
+          res.json({
+            branchName: result.branchName,
+            mountainName: result.dirName,
+            worktreePath: null,
+            existing: true,
+          });
         }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: `Failed to create worktree: ${msg}` });
       }
       return;
     } else {

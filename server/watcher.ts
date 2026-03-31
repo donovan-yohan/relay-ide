@@ -86,6 +86,7 @@ export interface FindOrCreateResult {
   branchName: string;
   dirName: string;
   existing: boolean;
+  isMain: boolean;
 }
 
 /**
@@ -100,31 +101,21 @@ export async function findOrCreateWorktreeForBranch(
   branch: string,
   execFn: (cmd: string, args: string[], opts: { cwd: string; timeout?: number }) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<FindOrCreateResult> {
-  // Check ALL worktrees including main repo
+  // Check if branch is already checked out in ANY worktree (including the main repo)
   try {
     const { stdout } = await execFn('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
-    const allEntries = parseAllWorktrees(stdout, repoPath);
-
-    for (const entry of allEntries) {
-      if (entry.branch === branch) {
-        if (entry.isMain) {
-          // Branch is checked out in the main repo — caller should open a repo-root session
-          throw new BranchCheckedOutInMainError(repoPath);
-        }
-        // Branch is in an existing sub-worktree — reuse it
-        return {
-          worktreePath: entry.path,
-          branchName: entry.branch,
-          dirName: entry.path.split('/').pop() || '',
-          existing: true,
-        };
-      }
+    const allWorktrees = parseAllWorktrees(stdout, repoPath);
+    const match = allWorktrees.find(wt => wt.branch === branch);
+    if (match) {
+      return {
+        worktreePath: match.path,
+        branchName: match.branch,
+        dirName: match.path.split('/').pop() || '',
+        existing: true,
+        isMain: match.isMain,
+      };
     }
   } catch (err) {
-    // Re-throw our own error
-    if (err instanceof BranchCheckedOutInMainError) {
-      throw err;
-    }
     // git worktree list failed — proceed with creation attempt
     console.warn('[watcher] git worktree list failed, proceeding with creation attempt:', err instanceof Error ? err.message : err);
   }
@@ -155,6 +146,7 @@ export async function findOrCreateWorktreeForBranch(
     branchName: branch,
     dirName,
     existing: false,
+    isMain: false,
   };
 }
 
