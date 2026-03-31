@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import {
     getUi,
     closeSidebar,
@@ -10,7 +11,6 @@
     COLLAPSED_SIDEBAR_WIDTH,
   } from '../lib/state/ui.svelte.js';
   import { getSessionState, getSessionsForRepo, getSessionsForWorkspaceGroup, reorderWorkspaces } from '../lib/state/sessions.svelte.js';
-  import { workspaceAttentionScore } from '../lib/state/attention.js';
   import type { Repo, WorktreeInfo, OrgPrsResponse, Workspace } from '../lib/types.js';
   import WorkspaceGroup from './WorkspaceGroup.svelte';
   import { fetchOrgPrs } from '../lib/api.js';
@@ -97,34 +97,28 @@
   let mobileDragEnabled = $state(false);
   let dragDisabled = $derived(isTouchDevice && !mobileDragEnabled);
 
-  // Track whether user has manually reordered in this session
-  let userHasDragged = $state(false);
-
-  // Pre-compute sidebar items grouped by repo for O(1) lookup in sort
-  let itemsByRepo = $derived(new Map(
-    sessionState.repos.map(r => [
-      r.path,
-      sessionState.sidebarItems.filter(i => i.repoPath === r.path),
-    ])
-  ));
-
-  // Attention-sorted ungrouped workspace list
-  let attentionSortedUngrouped = $derived(
-    [...ungroupedRepos].sort((a, b) => {
-      return workspaceAttentionScore(itemsByRepo.get(b.path) ?? [])
-        - workspaceAttentionScore(itemsByRepo.get(a.path) ?? []);
-    })
-  );
-
   // svelte-dnd-action requires items with `id` property
   let dndItems = $derived(
-    (userHasDragged ? ungroupedRepos : attentionSortedUngrouped)
-      .map(w => ({ id: w.path, workspace: w }))
+    ungroupedRepos.map(w => ({ id: w.path, workspace: w }))
   );
 
-  // Local mutable copy for DnD updates
+  // Local mutable copy for DnD updates — only sync when workspace set actually changes
+  // (add/remove), not on every poll. This preserves user's drag-and-drop order.
   let localDndItems = $state<Array<{ id: string; workspace: Repo }>>([]);
-  $effect(() => { localDndItems = dndItems; });
+  $effect(() => {
+    const incoming = dndItems;
+    const current = untrack(() => localDndItems);
+    const localIds = new Set(current.map(i => i.id));
+    const incomingIds = new Set(incoming.map(i => i.id));
+    const added = incoming.some(i => !localIds.has(i.id));
+    const removed = current.some(i => !incomingIds.has(i.id));
+    if (added || removed || current.length === 0) {
+      localDndItems = incoming;
+    } else {
+      const incomingById = new Map(incoming.map(i => [i.id, i]));
+      localDndItems = current.map(item => incomingById.get(item.id) ?? item);
+    }
+  });
 
   function handleDndConsider(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
@@ -132,7 +126,6 @@
 
   function handleDndFinalize(e: CustomEvent<{ items: typeof localDndItems }>) {
     localDndItems = e.detail.items;
-    userHasDragged = true;
     // Server requires the full set of repo paths (grouped + ungrouped).
     // Keep grouped repos in their current order, then append the new ungrouped order.
     const groupedPaths = sessionState.repos.filter(r => groupedRepoPaths.has(r.path)).map(r => r.path);
@@ -256,15 +249,23 @@
               !activeWorktreePaths.has(wt.path)
             )}
             {@const groupedByPath = (() => {
-              const groups = new Map<string, typeof activeSessions>();
-              groups.set(workspace.path, []);
+              const unsorted = new Map<string, typeof activeSessions>();
+              unsorted.set(workspace.path, []);
               for (const s of activeSessions) {
                 const groupKey = s.worktreePath ?? s.repoPath;
-                const existing = groups.get(groupKey);
+                const existing = unsorted.get(groupKey);
                 if (existing) existing.push(s);
-                else groups.set(groupKey, [s]);
+                else unsorted.set(groupKey, [s]);
               }
-              return groups;
+              // Stable sort: repo root first, then worktrees alphabetically
+              const sorted = new Map<string, typeof activeSessions>();
+              const rootSessions = unsorted.get(workspace.path);
+              if (rootSessions) sorted.set(workspace.path, rootSessions);
+              const worktreeKeys = [...unsorted.keys()]
+                .filter(k => k !== workspace.path)
+                .sort();
+              for (const k of worktreeKeys) sorted.set(k, unsorted.get(k)!);
+              return sorted;
             })()}
             <div>
               <WorkspaceItem

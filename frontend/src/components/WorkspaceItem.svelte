@@ -11,6 +11,7 @@
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './ContextMenu.svelte';
   import CipherText from './CipherText.svelte';
+  import MarqueeText from './MarqueeText.svelte';
   import SessionIndicator from './SessionIndicator.svelte';
 
   const sessionState = getSessionState();
@@ -191,7 +192,7 @@
   }
 
   function findPrForBranch(branchName: string): PullRequest | undefined {
-    return orgPrs?.find(pr => pr.headRefName === branchName && pr.state === 'OPEN' && pr.repoPath === workspace.path);
+    return orgPrs?.find(pr => pr.headRefName === branchName && pr.repoPath === workspace.path);
   }
 
   async function handleRename(session: SessionSummary) {
@@ -277,7 +278,7 @@
         onclick={(e) => { e.stopPropagation(); toggleWorkspaceCollapse(workspace.path); }}
       >{collapsed ? '›' : '⌄'}</span>
       <span class="initial-block" style:background={initialColor}>{initial}</span>
-      <span class="workspace-name">{workspace.name}</span>
+      <span class="workspace-name"><MarqueeText>{workspace.name}</MarqueeText></span>
       {#if collapsed}
         {@const pips = summaryPips}
         {#if pips.length > 0}
@@ -325,12 +326,14 @@
           >
             <div class="session-row-primary">
               <SessionIndicator state={sidebarItemById.get(groupPath)?.displayState ?? 'inactive'} />
-              <span class="session-name" class:bold={itemIsUnread || itemHasAttention(groupPath)}>{groupDisplayName(groupPath, groupSessions)}</span>
+              <span class="session-name" class:bold={itemIsUnread || itemHasAttention(groupPath)}>
+                <MarqueeText>{groupDisplayName(groupPath, groupSessions)}</MarqueeText>
+              </span>
               {#if sessionCount > 1}
                 <span class="session-count-badge">{sessionCount}</span>
               {/if}
               {#if matchedPr}
-                <span class="sidebar-pr-status">
+                <span class="sidebar-pr-status" title="PR #{matchedPr.number}: {derivePrDotStatus(matchedPr)}">
                   <PrGlyph status={derivePrDotStatus(matchedPr)} />
                   {#if matchedPr.ciStatus === 'SUCCESS'}<span class="ci-pass">✓</span>
                   {:else if matchedPr.ciStatus === 'FAILURE' || matchedPr.ciStatus === 'ERROR'}<span class="ci-fail">✕</span>
@@ -342,7 +345,9 @@
             <div class="session-row-secondary">
               <span class="secondary-time">{sessionTime(representative)}</span>
               {#if representative.branchName}
-                <span class="secondary-branch"><CipherText text={representative.branchName} /></span>
+                <span class="secondary-branch">
+                  <MarqueeText><CipherText text={representative.branchName} /></MarqueeText>
+                </span>
               {/if}
             </div>
             <div class="row-menu-overlay">
@@ -415,12 +420,16 @@
         >
           <div class="session-row-primary">
             <SessionIndicator state="inactive" />
-            <span class="session-name">{isItemLoading(wt.path) ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</span>
+            <span class="session-name">
+              <MarqueeText>{isItemLoading(wt.path) ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</MarqueeText>
+            </span>
           </div>
           <div class="session-row-secondary">
             <span class="secondary-time">{worktreeTime(wt)}</span>
             {#if wt.branchName}
-              <span class="secondary-branch"><CipherText text={wt.branchName} /></span>
+              <span class="secondary-branch">
+                <MarqueeText><CipherText text={wt.branchName} /></MarqueeText>
+              </span>
             {/if}
           </div>
           <div class="row-menu-overlay">
@@ -534,9 +543,7 @@
     font-weight: 700;
     color: var(--text);
     font-family: var(--font-mono);
-    white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     min-width: 0;
   }
 
@@ -583,7 +590,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 8px 8px 8px 36px;
+    padding: 8px 8px 8px 14px;
     cursor: pointer;
     min-height: 44px;
     font-size: var(--font-size-xs);
@@ -622,16 +629,14 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-left: 16px;
+    padding-left: 15px;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     min-width: 0;
   }
 
   .secondary-branch {
-    white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     min-width: 0;
   }
 
@@ -716,7 +721,6 @@
     flex: 1;
     overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
     min-width: 0;
   }
 
@@ -726,7 +730,7 @@
 
   /* Add worktree row */
   .add-worktree-row {
-    padding: 4px 8px 8px 36px;
+    padding: 4px 8px 8px 14px;
   }
 
   .add-worktree-btn {
