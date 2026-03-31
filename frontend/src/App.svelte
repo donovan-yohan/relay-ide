@@ -36,6 +36,8 @@
   import MobileHeader from './components/MobileHeader.svelte';
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
+  import ErrorToast from './components/ErrorToast.svelte';
+  import { showToast } from './lib/state/toasts.svelte.js';
   import CommandPalette from './components/CommandPalette.svelte';
   import OpenPicker from './components/OpenPicker.svelte';
   import type { SessionIntent, PickerItem } from './lib/session-intent.js';
@@ -682,6 +684,7 @@
         }
       } else {
         console.error('Failed to create agent session:', err);
+        showToast(err instanceof Error ? err.message : 'failed to create agent session');
       }
     }
   }
@@ -701,6 +704,7 @@
       }
     } catch (err) {
       console.error('Failed to create terminal session:', err);
+      showToast(err instanceof Error ? err.message : 'failed to create terminal session');
     }
   }
 
@@ -743,6 +747,7 @@
       terminalRef?.focusTerm();
     } catch (e) {
       console.error('Failed to create worktree session:', e);
+      showToast(e instanceof Error ? e.message : 'failed to create worktree');
       // Fall back to dialog on error so user can retry with options
       customizeDialogRef?.open({ name: workspace.name, path: workspace.path });
     } finally {
@@ -833,6 +838,7 @@
       }, 1500);
     } catch (e) {
       console.error('Failed to start conflict resolution:', e);
+      showToast(e instanceof Error ? e.message : 'failed to start conflict resolution');
     }
   }
 
@@ -879,6 +885,7 @@
       }
     } catch (e) {
       console.error('Failed to open PR branch session:', e);
+      showToast(e instanceof Error ? e.message : 'failed to open session on this branch');
     }
   }
 
@@ -1261,6 +1268,7 @@
   <!-- Toasts -->
   <UpdateToast />
   <ImageToast bind:this={imageToastRef} />
+  <ErrorToast />
   </QueryClientProvider>
 {/if}
 
