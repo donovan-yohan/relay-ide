@@ -465,15 +465,15 @@
     border-radius: 0;
     border: none;
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-muted, #888);
     cursor: pointer;
     padding: 0;
     transition: color 0.12s, background 0.12s;
   }
 
   .sidebar-toggle-btn:hover {
-    color: var(--text);
-    background: var(--border);
+    color: var(--text, #e0e0e0);
+    background: var(--border, #333);
   }
 
   .refresh-btn {

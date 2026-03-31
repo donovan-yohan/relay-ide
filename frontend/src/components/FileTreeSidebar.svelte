@@ -440,7 +440,7 @@
     background: var(--surface-hover, #141414);
   }
 
-  .tree-item:hover.file {
+  .tree-item.file:hover {
     color: var(--text, #e0e0e0);
   }
 
@@ -468,7 +468,7 @@
   }
 
   .expand-arrow {
-    color: var(--text-muted, #888);
+    color: var(--text, #e0e0e0);
     font-size: var(--font-size-xs, 0.75rem);
   }
 

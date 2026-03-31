@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, closeFileTab, closeAllFileTabs, type OpenFileTab, type DiffViewMode } from '../lib/state/ui.svelte.js';
+  import { getUi, closeFileTab, closeAllFileTabs, type OpenFileTab } from '../lib/state/ui.svelte.js';
   import { getSessionState } from '../lib/state/sessions.svelte.js';
   import { fetchFileDiff } from '../lib/api.js';
   import { diffSourceToBase } from '../lib/diff-utils.js';
