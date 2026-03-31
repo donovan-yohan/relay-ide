@@ -22,6 +22,8 @@
   import { dashboardOpenPrSession, dashboardSortPrs, dashboardClearFilters, orgSwitchTab, orgSaveFilter, orgDeleteFilter, orgTogglePrStatus, orgNavigateToWorkspace, ticketSwitchProvider, ticketOpenExternal } from './lib/actions/definitions/dashboard.js';
   import { terminalScrollTop, terminalScrollBottom } from './lib/actions/definitions/terminal.js';
   import { navPreviousTab, navNextTab, navSwitchToTab } from './lib/actions/definitions/navigation.js';
+  import BootScreen from './components/BootScreen.svelte';
+  import { getBootState, startBoot, reportFetch, finishBoot } from './lib/state/boot-state.svelte.js';
   import PinGate from './components/PinGate.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Terminal from './components/Terminal.svelte';
@@ -124,8 +126,11 @@
   let spotlightOpen = $state(false);
   let pickerOpen = $state(false);
 
+  const bootState = getBootState();
+
   onMount(() => {
     initAnalytics(() => sessionState.activeSessionId);
+    startBoot();
     checkExistingAuth();
 
     // ── Action Registry ──────────────────────────────────
@@ -433,9 +438,16 @@
   });
 
   // Refresh when authenticated
+  let bootRefreshDone = false;
   $effect(() => {
     if (auth.authenticated) {
-      refreshAll().then(() => {
+      const isInitialBoot = !bootRefreshDone;
+      if (isInitialBoot) {
+        bootRefreshDone = true;
+        reportFetch('auth', 'ok', { durationMs: 0 });
+      }
+      refreshAll(isInitialBoot ? reportFetch : undefined).then(() => {
+        if (isInitialBoot) finishBoot();
         const params = new URLSearchParams(window.location.search);
         const sessionParam = params.get('session');
         if (sessionParam) {
@@ -1036,8 +1048,8 @@
   }
 </script>
 
-{#if auth.checking}
-  <!-- Loading -->
+{#if auth.checking || (auth.authenticated && !bootState.bootComplete)}
+  <BootScreen />
 {:else if !auth.authenticated || auth.needsSetup}
   <PinGate />
 {:else}
