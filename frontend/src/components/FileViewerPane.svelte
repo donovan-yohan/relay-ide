@@ -23,9 +23,14 @@
   let diffSource = $derived(ui.fileDiffSource);
   let defaultBranch = $derived(ui.fileDiffDefaultBranch);
   let diffViewMode = $derived(ui.fileDiffViewMode);
+  let wordWrap = $derived(ui.fileWordWrap);
 
   function toggleDiffViewMode(): void {
     ui.fileDiffViewMode = diffViewMode === 'unified' ? 'side-by-side' : 'unified';
+  }
+
+  function toggleWordWrap(): void {
+    ui.fileWordWrap = !wordWrap;
   }
 
   // ── Diff/content cache ──
@@ -165,6 +170,9 @@
       {/each}
     </div>
     <div class="tab-bar-actions">
+      <button class="diff-mode-btn" onclick={toggleWordWrap} title="Toggle word wrap">
+        {wordWrap ? '[nowrap]' : '[wrap]'}
+      </button>
       {#if activeTab?.isChanged}
         <button class="diff-mode-btn" onclick={toggleDiffViewMode} title="Toggle split/unified diff">
           {diffViewMode === 'unified' ? '[split]' : '[unified]'}
@@ -216,11 +224,12 @@
           diff={activeDiff}
           filePath={activeTab.filePath}
           mode={diffViewMode}
+          {wordWrap}
         />
       </div>
     {:else if !activeTab.isChanged}
       <!-- Raw file view -->
-      <div class="raw-file">
+      <div class="raw-file" class:word-wrap={wordWrap}>
         <CodeBlock code={activeDiff || '(empty file)'} language={languageFromPath(activeTab.filePath)} />
       </div>
     {:else}
@@ -235,7 +244,6 @@
     flex-direction: column;
     height: 100%;
     background: var(--bg, #000);
-    border-left: 1px solid var(--border, #333);
     overflow: hidden;
   }
 
@@ -272,6 +280,7 @@
     border: none;
     border-bottom: 1px solid transparent;
     border-right: 1px solid var(--border, #333);
+    margin-bottom: -1px;
     font-family: var(--font-mono, monospace);
     font-size: var(--font-size-xs, 0.75rem);
     color: var(--text-muted, #888);
@@ -391,6 +400,12 @@
     overflow: auto;
   }
 
+  /* Override DiffViewer standalone styles when embedded in file viewer */
+  .diff-wrapper :global(.diff-viewer) {
+    max-height: none;
+    border: none;
+  }
+
   /* Diff-to-agent bridge: make line numbers clickable with + indicator */
   .diff-wrapper :global(.line-number),
   .diff-wrapper :global(.d2h-code-linenumber) {
@@ -425,6 +440,11 @@
 
   .raw-file {
     padding: 8px;
+  }
+
+  .raw-file.word-wrap :global(pre) {
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 
   .empty-viewer, .loading-viewer, .error-viewer {

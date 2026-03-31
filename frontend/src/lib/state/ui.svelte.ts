@@ -88,6 +88,12 @@ let fileDiffViewMode = $state<DiffViewMode>((() => {
   return 'unified';
 })());
 
+const WORD_WRAP_KEY = 'claude-remote-word-wrap';
+let fileWordWrap = $state((() => {
+  try { return localStorage.getItem(WORD_WRAP_KEY) === 'true'; }
+  catch { return false; }
+})());
+
 let rightSidebarVisible = $state(true);
 let rightSidebarCollapsed = $state((() => {
   try { return localStorage.getItem(RIGHT_SIDEBAR_COLLAPSED_KEY) === 'true'; }
@@ -160,6 +166,12 @@ export function getUi() {
     set fileDiffViewMode(v: DiffViewMode) {
       fileDiffViewMode = v;
       try { localStorage.setItem(DIFF_VIEW_MODE_KEY, v); }
+      catch { /* localStorage unavailable */ }
+    },
+    get fileWordWrap() { return fileWordWrap; },
+    set fileWordWrap(v: boolean) {
+      fileWordWrap = v;
+      try { localStorage.setItem(WORD_WRAP_KEY, String(v)); }
       catch { /* localStorage unavailable */ }
     },
     get rightSidebarVisible() { return rightSidebarVisible; },

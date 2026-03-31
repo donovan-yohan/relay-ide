@@ -263,6 +263,54 @@ Make it fast and easy to spawn agents of different types from the new tab button
 ### Mobile: hide top bar when keyboard is open
 On mobile, hide top bar UI elements (tabs at minimum) when the software keyboard is open to maximize reading/terminal space.
 
+### Bug: Clicking blinking+bold sidenav item doesn't always clear read status
+Clicking a sidenav item that has unread attention state (blinking + bold) sometimes fails to clear it. The item stays highlighted as if it still has unread activity.
+
+**Scope:** Debug the click handler that clears attention/unread state — likely a race condition or missed state update when the attention flag is set at the same time as the click. **Files:** Sidebar session item component, attention/read state management.
+
+**Added:** 2026-03-31
+
+### Bug: Sidenav colored bars are unclear — audit needed
+The colored bars/indicators next to sidenav items have no obvious meaning. Need to audit what each color/state represents, whether the mapping is correct, and whether it's communicating anything useful. If not, redesign or remove.
+
+**Scope:** Trace the code that renders sidebar status indicators, document what each color maps to, compare against actual session states, and decide whether to clarify, redesign, or remove. **Files:** Sidebar session item component, session state types, any status color mapping logic.
+
+**Added:** 2026-03-31
+
+### Missing hover tooltips on buttons
+No buttons in the UI have tooltips on hover. Users have to guess what icon buttons do. Add tooltips to all icon/action buttons across the app — sidebar, toolbar, session tabs, PR bar, etc.
+
+**Scope:** Add a tooltip component (or use an existing one), then sweep all icon buttons and add descriptive tooltips. Include the keyboard shortcut in the tooltip where applicable. **Files:** All components with icon buttons; may need a shared Tooltip component.
+
+**Added:** 2026-03-31
+
+### Command center discoverability — funnel users into it
+Users don't know the command center exists. Add entry points that guide them there: empty states, onboarding hints, a persistent shortcut indicator (e.g. `⌘K` badge), and contextual nudges when users look lost or try to do something the command center handles.
+
+**Scope:** Identify all places where a command center nudge makes sense, add subtle affordances. **Files:** Sidebar header, empty states, onboarding flow, toolbar.
+
+**Added:** 2026-03-31
+
+### PR table missing branch info
+The repo PR table doesn't show the PR's source branch or target branch. Add columns or labels showing `head → base` branch names so users can tell at a glance which branch a PR is on and where it's merging to.
+
+**Scope:** Add branch info to the PR table rows. Data likely already available from the GitHub API response. **Files:** PR table component, PR data types if branch fields aren't passed through.
+
+**Added:** 2026-03-31
+
+### Optimistic UI for long-running actions
+Many actions (creating worktrees, deleting worktrees, session creation, etc.) block the UI while the server processes them. Users can click away mid-operation, causing janky states. Switch to optimistic updates: immediately reflect the expected state in the UI, then roll back and show a meaningful toast on failure.
+
+**Key areas:**
+- **Worktree creation:** Immediately add the worktree item to the sidebar, show a loading indicator, roll back + toast on failure
+- **Worktree deletion:** Immediately remove from sidebar, roll back + toast on failure
+- **Session creation/close:** Same pattern
+- **Any other server-round-trip actions** that currently leave the UI unresponsive
+
+**Scope:** Add an optimistic update pattern (update local state → fire request → confirm or roll back), a toast notification system for errors, and apply to all long-running UI actions. **Files:** Session/worktree state stores, sidebar components, toast system (may need new component), all action handlers that hit the server.
+
+**Added:** 2026-03-31
+
 ### Bug: PR refresh shows stale data
 The refresh button sometimes doesn't actually update PR state. Examples: PR is created but clicking refresh doesn't show PR info; PR is merged but old state persists until a full browser tab refresh.
 

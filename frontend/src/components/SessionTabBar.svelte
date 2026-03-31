@@ -225,6 +225,7 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);

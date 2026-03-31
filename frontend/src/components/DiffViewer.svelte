@@ -8,12 +8,14 @@
     filePath,
     loading = false,
     mode = 'unified',
+    wordWrap = false,
     onHunkCount,
   }: {
     diff: string;
     filePath: string;
     loading?: boolean;
     mode?: 'unified' | 'side-by-side';
+    wordWrap?: boolean;
     onHunkCount?: (count: number) => void;
   } = $props();
 
@@ -190,7 +192,7 @@
   });
 </script>
 
-<div class="diff-viewer" role="region" aria-label="File diff">
+<div class="diff-viewer" class:word-wrap={wordWrap} role="region" aria-label="File diff">
   {#if loading}
     <div class="diff-loading">loading diff...</div>
   {:else if lines.length === 0}
@@ -414,5 +416,21 @@
 
   .show-more-btn:hover {
     background: rgba(217, 119, 87, 0.08);
+  }
+
+  /* Word wrap mode */
+  .word-wrap .diff-content,
+  .word-wrap .diff-content-sbs {
+    min-width: 0;
+  }
+
+  .word-wrap .diff-line,
+  .word-wrap .sbs-half {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .word-wrap .sbs-half {
+    overflow: visible;
   }
 </style>
