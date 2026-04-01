@@ -94,37 +94,37 @@
     t.loadAddon(new WebLinksAddon());
 
     // File path link provider — matches paths like src/foo.ts or /abs/path.html
-    // and opens them in the in-app file viewer on click
-    const fileExtPattern = /(?:^|(?<=[\s'"(`\[{]))(\/?(?:\.\/)?(?:[\w.@~-]+\/)*(?:[\w.@~-]+\.(?:ts|tsx|js|jsx|svelte|html|htm|css|scss|json|yaml|yml|toml|md|txt|py|rs|go|rb|java|c|cpp|h|sh|sql|graphql|xml|csv|env|log|cfg|conf|ini)|(?:Makefile|Dockerfile|Vagrantfile|Rakefile|Gemfile|Procfile|Brewfile|Justfile|Taskfile|Containerfile)(?:\.\w+)?))(?::(\d+)(?::(\d+))?)?/;
+    // and opens them in the in-app file viewer on click.
+    // Uses a capturing group for the optional leading delimiter so we can compute
+    // the real match start without lookbehind (which breaks older iOS Safari).
+    const fileExtPattern = /([\s'"(`\[{])?(\/?\/?(?:\.\/)?(?:[\w.@~-]+\/)*(?:[\w.@~-]+\.(?:ts|tsx|js|jsx|svelte|html|htm|css|scss|json|yaml|yml|toml|md|txt|py|rs|go|rb|java|c|cpp|h|sh|sql|graphql|xml|csv|env|log|cfg|conf|ini)|(?:Makefile|Dockerfile|Vagrantfile|Rakefile|Gemfile|Procfile|Brewfile|Justfile|Taskfile|Containerfile)(?:\.\w+)?))(?::(\d+)(?::(\d+))?)?/g;
     t.registerLinkProvider({
       provideLinks(lineNumber, callback) {
         const line = t.buffer.active.getLine(lineNumber - 1);
         if (!line) { callback(undefined); return; }
         const text = line.translateToString(true);
         const links: import('@xterm/xterm').ILink[] = [];
-        // Scan for all file path matches in the line
-        let offset = 0;
-        let remaining = text;
-        while (remaining.length > 0) {
-          const m = remaining.match(fileExtPattern);
-          if (!m || m.index === undefined) break;
-          const matchStart = offset + m.index;
-          const fullMatch = m[0];
-          const matchEnd = matchStart + fullMatch.length;
+        // Use matchAll with a global regex to iterate without slicing
+        for (const m of text.matchAll(fileExtPattern)) {
+          if (m.index === undefined) continue;
+          const delimiter = m[1] || '';
+          // Only allow match at start-of-line or after a boundary character
+          if (m.index > 0 && !delimiter) continue;
+          const pathStart = m.index + delimiter.length;
+          const pathText = m[0].slice(delimiter.length);
+          const pathEnd = pathStart + pathText.length;
           links.push({
             range: {
-              start: { x: matchStart + 1, y: lineNumber },
-              end: { x: matchEnd + 1, y: lineNumber },
+              start: { x: pathStart + 1, y: lineNumber },
+              end: { x: pathEnd + 1, y: lineNumber },
             },
-            text: fullMatch,
+            text: pathText,
             activate(_event, linkText) {
               // Strip trailing :line:col suffix to get clean path
               const cleanPath = linkText.replace(/:\d+(?::\d+)?$/, '');
               onFilePathClick?.(cleanPath);
             },
           });
-          offset = matchEnd;
-          remaining = text.slice(offset);
         }
         callback(links.length > 0 ? links : undefined);
       },

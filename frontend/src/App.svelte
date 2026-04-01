@@ -639,6 +639,10 @@
     } else if (clickedPath.startsWith('./')) {
       relative = clickedPath.slice(2);
     }
+    // Normalize: strip any remaining leading "./" (e.g. from ${cwd}/./src/foo.ts)
+    while (relative.startsWith('./')) {
+      relative = relative.slice(2);
+    }
     openFileTab(relative, false);
   }
 
