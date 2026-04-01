@@ -19,5 +19,6 @@ export function semverLessThan(a: string, b: string): boolean {
 export function cleanEnv(): Record<string, string> {
   const env = Object.assign({}, process.env) as Record<string, string>;
   delete env.CLAUDECODE;
+  env.CLAUDE_CODE_NO_FLICKER = '1';
   return env;
 }
