@@ -36,8 +36,30 @@ export interface SessionSummary {
   useTmux?: boolean | undefined;
   status?: 'active' | 'disconnected' | undefined;
   agentState?: AgentState | undefined;
+  currentActivity?: { tool: string; detail?: string } | undefined;
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
+}
+
+export interface TelemetryData {
+  sessionId: string;
+  model: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  contextPercent: number;
+  contextWindowSize: number;
+  costUsd: number | null;
+  source: 'statusLine' | 'jsonl';
+}
+
+export interface AccountTelemetry {
+  fiveHourUsedPercent: number;
+  fiveHourResetsAt: string;
+  sevenDayUsedPercent: number;
+  sevenDayResetsAt: string;
+  updatedAt: string;
 }
 
 export interface WorktreeInfo {

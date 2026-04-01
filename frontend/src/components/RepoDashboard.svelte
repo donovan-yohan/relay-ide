@@ -4,6 +4,8 @@
   import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
   import { formatRelativeTime } from '../lib/utils.js';
   import type { PullRequest, ActivityEntry, DashboardData } from '../lib/types.js';
+  import { getSessionState } from '../lib/state/sessions.svelte.js';
+  import { getTelemetryState } from '../lib/state/telemetry.svelte.js';
   import DataTable from './DataTable.svelte';
   import type { Column } from './DataTable.svelte';
   import StatusDot from './StatusDot.svelte';
@@ -40,6 +42,8 @@
   let data = $derived(dashQuery.data);
   let isLoading = $derived(dashQuery.isLoading);
   let isError = $derived(dashQuery.isError);
+  const sessionState = getSessionState();
+  const telemetry = getTelemetryState();
 
   const prColumns: Column[] = [
     { key: 'status', label: 'St', sortable: false, width: '36px' },
@@ -88,6 +92,27 @@
     });
     return prs;
   });
+
+  function formatTokens(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) return '0';
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+    return String(Math.round(value));
+  }
+
+  let repoUsage = $derived.by(() => {
+    const tracked = sessionState.sessions
+      .filter((session) => session.repoPath === repoPath)
+      .map((session) => telemetry.sessionTelemetry.get(session.id))
+      .filter((entry): entry is NonNullable<typeof entry> => !!entry);
+
+    return tracked.reduce((totals, entry) => ({
+      sessions: totals.sessions + 1,
+      input: totals.input + entry.totalInputTokens,
+      output: totals.output + entry.totalOutputTokens,
+      cache: totals.cache + entry.totalCacheRead + entry.totalCacheWrite,
+    }), { sessions: 0, input: 0, output: 0, cache: 0 });
+  });
 </script>
 
 <div class="repo-dashboard">
@@ -97,6 +122,34 @@
       <span class="non-git-msg">Not a git repository</span>
     </div>
   {:else}
+    <section class="dashboard-section">
+      <div class="section-heading">usage</div>
+      {#if repoUsage.sessions === 0}
+        <div class="section-message">no telemetry data available</div>
+      {:else}
+        <div class="usage-grid">
+          <div class="usage-row"><span>sessions tracked</span><span>{repoUsage.sessions}</span></div>
+          <div class="usage-row"><span>tokens</span><span>↓{formatTokens(repoUsage.input)} ↑{formatTokens(repoUsage.output)}</span></div>
+          <div class="usage-row"><span>cache</span><span>{formatTokens(repoUsage.cache)}</span></div>
+        </div>
+      {/if}
+
+      {#if telemetry.accountTelemetry}
+        <div class="rate-limit-list">
+          <div class="rate-limit-row">
+            <span>5-hour</span>
+            <div class="rate-limit-bar"><div class="rate-limit-fill" style:width={`${Math.max(0, telemetry.accountTelemetry.fiveHourUsedPercent)}%`}></div></div>
+            <span>{Math.round(telemetry.accountTelemetry.fiveHourUsedPercent)}%</span>
+          </div>
+          <div class="rate-limit-row">
+            <span>7-day</span>
+            <div class="rate-limit-bar"><div class="rate-limit-fill" style:width={`${Math.max(0, telemetry.accountTelemetry.sevenDayUsedPercent)}%`}></div></div>
+            <span>{Math.round(telemetry.accountTelemetry.sevenDayUsedPercent)}%</span>
+          </div>
+        </div>
+      {/if}
+    </section>
+
     <!-- OPEN PULL REQUESTS section -->
     <section class="dashboard-section dashboard-section--scroll">
       <div class="section-heading">open pull requests</div>
@@ -329,6 +382,34 @@
 
   .section-message.info a:hover {
     text-decoration: underline;
+  }
+
+  .usage-grid,
+  .rate-limit-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+  }
+
+  .usage-row,
+  .rate-limit-row {
+    display: grid;
+    grid-template-columns: 120px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    color: var(--text);
+  }
+
+  .rate-limit-bar {
+    height: 8px;
+    border: 1px solid var(--border);
+  }
+
+  .rate-limit-fill {
+    height: 100%;
+    background: var(--accent);
   }
 
   /* -- PR cell layout (DataTable row) -- */

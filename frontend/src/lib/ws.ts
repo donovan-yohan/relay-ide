@@ -1,5 +1,6 @@
 import type { Terminal } from '@xterm/xterm';
 import type { BackendDisplayState } from './state/display-state.js';
+import type { AccountTelemetry, TelemetryData } from './types.js';
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 interface EventMessage {
@@ -17,6 +18,7 @@ interface EventMessage {
   workspacePath?: string;
   changedFiles?: string[];
   timestamp?: string;
+  data?: TelemetryData | AccountTelemetry;
 }
 
 type EventCallback = (msg: EventMessage) => void;

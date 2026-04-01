@@ -8,7 +8,7 @@
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
   import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
-  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi, launchWorkspaceSession } from './lib/api.js';
+  import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi, launchWorkspaceSession, fetchTelemetrySessions, fetchTelemetryAccount } from './lib/api.js';
   import { derivePrAction, buildPrStateInput, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
   import { registerGlobal, getAllActions } from './lib/actions/registry.svelte.js';
@@ -34,6 +34,7 @@
   import EmptyState from './components/EmptyState.svelte';
   import Toolbar from './components/Toolbar.svelte';
   import MobileHeader from './components/MobileHeader.svelte';
+  import SessionStatusBar from './components/SessionStatusBar.svelte';
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
   import ErrorToast from './components/ErrorToast.svelte';
@@ -53,6 +54,7 @@
   import FileViewerPane from './components/FileViewerPane.svelte';
   import SplitPaneLayout from './components/SplitPaneLayout.svelte';
   import { openFileTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
+  import { handleTelemetryEvent, hydrateTelemetry } from './lib/state/telemetry.svelte.js';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -128,7 +130,6 @@
   let workspaceSettingsDialogRef = $state<WorkspaceSettingsDialog | undefined>();
   let mainAppEl = $state<HTMLDivElement | undefined>();
 
-  let keyboardOpen = $state(false);
   let spotlightOpen = $state(false);
   let pickerOpen = $state(false);
 
@@ -295,9 +296,9 @@
 
       const onViewportResize = () => {
         const kbHeight = window.innerHeight - vv.height;
-        keyboardOpen = kbHeight > 50;
+        ui.keyboardOpen = kbHeight > 50;
         if (mainAppEl) {
-          mainAppEl.style.height = keyboardOpen ? vv.height + 'px' : '';
+          mainAppEl.style.height = ui.keyboardOpen ? vv.height + 'px' : '';
         }
         window.scrollTo(0, 0);
         if (fitTimer) clearTimeout(fitTimer);
@@ -469,6 +470,15 @@
         reportFetch('auth', 'ok');
       }
       refreshAll(isInitialBoot ? reportFetch : undefined).then(() => {
+        Promise.all([
+          fetchTelemetrySessions(),
+          fetchTelemetryAccount(),
+        ]).then(([sessionsTelemetry, account]) => {
+          hydrateTelemetry(sessionsTelemetry, account);
+        }).catch(() => {
+          hydrateTelemetry({}, null);
+        });
+
         if (isInitialBoot) finishBoot();
         const params = new URLSearchParams(window.location.search);
         const sessionParam = params.get('session');
@@ -519,6 +529,7 @@
     }
 
     connectEventSocket((msg) => {
+      handleTelemetryEvent(msg);
       if (msg.type === 'worktrees-changed') {
         refreshAll();
       } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
@@ -1119,7 +1130,7 @@
         title={sessionTitle}
         onMenuClick={openSidebar}
         onCommandClick={() => { spotlightOpen = true; }}
-        hidden={keyboardOpen}
+        hidden={ui.keyboardOpen}
       />
 
       {#if viewMode === 'empty'}
@@ -1175,6 +1186,10 @@
               useTmux={activeSessionUseTmux}
               onCopyModeChange={handleCopyModeChange}
             />
+
+            {#if sessionState.activeSessionId}
+              <SessionStatusBar sessionId={sessionState.activeSessionId} />
+            {/if}
 
             <Toolbar
               onSendKey={handleSendKey}

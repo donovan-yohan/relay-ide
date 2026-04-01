@@ -60,6 +60,7 @@ let activeWorkspaceId = $state<string | null>((() => {
   catch { return null; }
 })());
 let terminalFontSize = $state(loadTerminalFontSize());
+let keyboardOpen = $state(false);
 let hasHardwareKeyboard = $state(false);
 let fullPageDiff = $state<{
   workspacePath: string;
@@ -153,6 +154,8 @@ export function getUi() {
     },
     get terminalFontSize() { return terminalFontSize; },
     set terminalFontSize(v: number) { terminalFontSize = v; },
+    get keyboardOpen() { return keyboardOpen; },
+    set keyboardOpen(v: boolean) { keyboardOpen = v; },
     get hasHardwareKeyboard() { return hasHardwareKeyboard; },
     set hasHardwareKeyboard(v: boolean) { hasHardwareKeyboard = v; },
     get fullPageDiff() { return fullPageDiff; },

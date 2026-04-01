@@ -37,10 +37,47 @@ export function resolveTmuxSpawn(
   };
 }
 
-function writeHooksSettingsFile(sessionId: string, port: number, token: string): string {
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\"'\"'") + "'";
+}
+
+function readGlobalStatusLineCommand(): string {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    const raw = fs.readFileSync(settingsPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { statusLine?: { command?: string } };
+    return typeof parsed.statusLine?.command === 'string' ? parsed.statusLine.command : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStatusLineScript(sessionId: string, dir: string, configDir: string): string {
+  const scriptPath = path.join(dir, 'relay-statusline.sh');
+  const telemetryDir = path.join(configDir, 'telemetry');
+  const telemetryPath = path.join(telemetryDir, `${sessionId}.json`);
+  const globalCmd = readGlobalStatusLineCommand();
+  const script = `#!/usr/bin/env bash
+input=$(cat)
+mkdir -p ${shellQuote(telemetryDir)}
+printf '%s\n' "$input" > ${shellQuote(telemetryPath)}
+GLOBAL_CMD=${shellQuote(globalCmd)}
+if [ -n "$GLOBAL_CMD" ] && [ -x "$GLOBAL_CMD" ]; then
+  printf '%s\n' "$input" | "$GLOBAL_CMD"
+else
+  printf '%s\n' "$input" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; console.log(\`\${model} | \${remaining}% ctx\`); } catch { console.log("Claude | ?% ctx"); } });'
+fi
+`;
+  fs.writeFileSync(scriptPath, script, 'utf-8');
+  fs.chmodSync(scriptPath, 0o755);
+  return scriptPath;
+}
+
+function writeHooksSettingsFile(sessionId: string, port: number, token: string, configDir: string): string {
   const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const filePath = path.join(dir, 'hooks-settings.json');
+  const statusLinePath = writeStatusLineScript(sessionId, dir, configDir);
   const base = `http://127.0.0.1:${port}`;
   const q = `sessionId=${sessionId}&token=${token}`;
   const settings = {
@@ -54,6 +91,10 @@ function writeHooksSettingsFile(sessionId: string, port: number, token: string):
       SessionEnd: [{ hooks: [{ type: 'http', url: `${base}/hooks/session-end?${q}`, timeout: 5 }] }],
       PreToolUse: [{ hooks: [{ type: 'http', url: `${base}/hooks/tool-use?${q}`, timeout: 5 }] }],
       PostToolUse: [{ hooks: [{ type: 'http', url: `${base}/hooks/tool-result?${q}`, timeout: 5 }] }],
+    },
+    statusLine: {
+      type: 'command',
+      command: statusLinePath,
     },
   };
   fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
@@ -76,6 +117,7 @@ export type CreatePtyParams = {
   cols?: number | undefined;
   rows?: number | undefined;
   configPath?: string | undefined;
+  configDir?: string | undefined;
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
   tmuxDisplayName?: string | undefined;
@@ -114,6 +156,7 @@ export function createPtySession(
     cols = 80,
     rows = 24,
     configPath,
+    configDir,
     useTmux: paramUseTmux,
     tmuxSessionName: paramTmuxSessionName,
     initialScrollback,
@@ -146,7 +189,7 @@ export function createPtySession(
       hookToken = crypto.randomBytes(32).toString('hex');
     }
     try {
-      settingsPath = writeHooksSettingsFile(id, port, hookToken);
+      settingsPath = writeHooksSettingsFile(id, port, hookToken, configDir ?? process.cwd());
       args = ['--settings', settingsPath, ...args];
       hooksActive = true;
     } catch (err) {

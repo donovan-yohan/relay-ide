@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, TelemetryData, AccountTelemetry } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -77,6 +77,14 @@ export async function setupPin(pin: string, confirm: string): Promise<void> {
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
+}
+
+export async function fetchTelemetrySessions(): Promise<Record<string, TelemetryData>> {
+  return json<Record<string, TelemetryData>>(await fetch('/telemetry/sessions'));
+}
+
+export async function fetchTelemetryAccount(): Promise<AccountTelemetry | null> {
+  return json<AccountTelemetry | null>(await fetch('/telemetry/account'));
 }
 
 export async function fetchWorktrees(): Promise<WorktreeInfo[]> {

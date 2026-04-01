@@ -207,7 +207,12 @@
   }
 </script>
 
-<div class="pr-top-bar" class:bar-merged={pr?.state === 'MERGED'} class:bar-conflicts={pr?.mergeable === 'CONFLICTING'}>
+<div
+  class="pr-top-bar"
+  class:bar-merged={pr?.state === 'MERGED'}
+  class:bar-conflicts={pr?.mergeable === 'CONFLICTING'}
+  style:display={ui.keyboardOpen ? 'none' : undefined}
+>
   <!-- Left section: branch switcher + target branch -->
   <div class="bar-left">
     {#if renaming}

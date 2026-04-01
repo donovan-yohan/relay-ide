@@ -102,6 +102,27 @@ export interface SessionSummary {
   additionalDirs?: string[];
 }
 
+export interface TelemetryData {
+  sessionId: string;
+  model: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  contextPercent: number;
+  contextWindowSize: number;
+  costUsd: number | null;
+  source: 'statusLine' | 'jsonl';
+}
+
+export interface AccountTelemetry {
+  fiveHourUsedPercent: number;
+  fiveHourResetsAt: string;
+  sevenDayUsedPercent: number;
+  sevenDayResetsAt: string;
+  updatedAt: string;
+}
+
 export interface WorktreeMetadata {
   worktreePath: string;
   displayName: string;
