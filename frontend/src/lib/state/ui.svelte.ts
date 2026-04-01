@@ -78,6 +78,7 @@ export interface OpenFileTab {
   isChanged: boolean; // true = show diff, false = show raw content
   tabType?: FileTabType;  // undefined = legacy diff/code (backward compat)
   token?: string;         // content token for html tabs
+  refreshVersion?: number; // cache-buster for iframe reload
 }
 
 let fileDiffSource = $state<'working' | 'staged' | 'branch'>('working');
@@ -227,9 +228,13 @@ export function openFileTab(filePath: string, isChanged: boolean, tabType?: File
   activeFileTabPath = filePath;
 }
 
-export function closeFileTab(filePath: string): void {
-  openFileTabs = openFileTabs.filter(t => t.filePath !== filePath);
-  if (activeFileTabPath === filePath) {
+export function closeFileTab(filePath: string, tabType?: FileTabType): void {
+  if (tabType) {
+    openFileTabs = openFileTabs.filter(t => !(t.filePath === filePath && t.tabType === tabType));
+  } else {
+    openFileTabs = openFileTabs.filter(t => t.filePath !== filePath);
+  }
+  if (activeFileTabPath === filePath && !openFileTabs.some(t => t.filePath === filePath)) {
     activeFileTabPath = openFileTabs.length > 0 ? openFileTabs[openFileTabs.length - 1]!.filePath : null;
   }
 }
@@ -245,11 +250,10 @@ export function openHtmlTab(filePath: string, token: string): void {
 
 export function refreshHtmlTab(filePath: string): void {
   const tab = openFileTabs.find(t => t.filePath === filePath && t.tabType === 'html');
-  if (tab && tab.token) {
-    const baseToken = tab.token.split('?')[0];
+  if (tab) {
     openFileTabs = openFileTabs.map(t =>
       t.filePath === filePath && t.tabType === 'html'
-        ? { ...t, token: `${baseToken}?t=${Date.now()}` }
+        ? { ...t, refreshVersion: (t.refreshVersion ?? 0) + 1 }
         : t
     );
     activeFileTabPath = filePath;

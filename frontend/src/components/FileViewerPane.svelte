@@ -94,10 +94,10 @@
     });
   });
 
-  function handleCloseTab(filePath: string, e: MouseEvent): void {
+  function handleCloseTab(tab: OpenFileTab, e: MouseEvent): void {
     e.stopPropagation();
-    closeFileTab(filePath);
-    const key = cacheKey(filePath);
+    closeFileTab(tab.filePath, tab.tabType);
+    const key = cacheKey(tab.filePath);
     diffCache.delete(key);
     errorPaths.delete(key);
     diffCache = new Map(diffCache);
@@ -190,7 +190,7 @@
           {/if}
           <button
             class="tab-close"
-            onclick={(e) => handleCloseTab(tab.filePath, e)}
+            onclick={(e) => handleCloseTab(tab, e)}
             aria-label="close {tab.fileName}"
           >×</button>
         </div>
@@ -243,7 +243,7 @@
           </div>
         {/if}
         <iframe
-          src="/browser-content/{activeTab.token}/{activeTab.fileName}"
+          src="/browser-content/{activeTab.token}/{activeTab.fileName}{activeTab.refreshVersion ? `?v=${activeTab.refreshVersion}` : ''}"
           sandbox="allow-scripts"
           title="HTML preview: {activeTab.fileName}"
           class="html-iframe"

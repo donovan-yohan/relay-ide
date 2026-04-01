@@ -95,10 +95,6 @@ export function createBrowserContentRouter(
     }
 
     const resolved = path.resolve(filePath);
-    if (!path.isAbsolute(resolved)) {
-      res.status(400).json({ error: 'path must be absolute' });
-      return;
-    }
 
     try {
       const stat = fs.statSync(resolved);
