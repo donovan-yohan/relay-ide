@@ -37,6 +37,7 @@ import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './web
 import { fetchPrsGraphQL } from './github-graphql.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
+import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -286,6 +287,15 @@ async function main(): Promise<void> {
 
   const server = http.createServer(app);
   const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
+
+  const browserScopedToken = generateScopedToken();
+  process.env['CLAUDE_REMOTE_BROWSER'] = '1';
+  process.env['CLAUDE_REMOTE_BROWSER_CMD'] = 'claude-remote-cli browser';
+  process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = browserScopedToken;
+  if (!process.env['CLAUDE_REMOTE_PORT']) {
+    process.env['CLAUDE_REMOTE_PORT'] = String(startupConfig.port);
+  }
+
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
   // Also clear the PR cache on real webhook events — these indicate actual PR state changes
   broadcastEventDelegate = (type, data) => {
@@ -1463,6 +1473,14 @@ async function main(): Promise<void> {
       res.status(500).json({ ok: false, error: message });
     }
   });
+
+  // Browser content viewer (token-based auth, not cookie auth)
+  const browserContentRouter = createBrowserContentRouter(broadcastEvent);
+  app.use(browserContentRouter);
+
+  // Clean expired browser content tokens every hour
+  const BROWSER_TOKEN_TTL = 24 * 60 * 60 * 1000;
+  setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);
 
   // Clean up orphaned tmux sessions from previous runs (skip any adopted by restore)
   // Skip in dev mode — another server instance owns these sessions
