@@ -117,6 +117,10 @@ export function createBrowserContentRouter(
 
     const existingToken = getTokenForPath(resolved);
     if (existingToken) {
+      // Always emit browser-tab-opened (not just refreshed) so reconnecting clients,
+      // second devices, or users who closed the tab get it re-opened with the token.
+      // openHtmlTab on the frontend is idempotent — it focuses existing tabs.
+      broadcastEvent('browser-tab-opened', { filePath: resolved, token: existingToken });
       broadcastEvent('browser-tab-refreshed', { filePath: resolved });
       res.json({ token: existingToken, refreshed: true });
       return;
