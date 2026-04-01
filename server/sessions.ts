@@ -8,7 +8,8 @@ export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { createPtySession } from './pty-handler.js';
 import type { CreatePtyParams } from './pty-handler.js';
-import { getPrForBranch, isStalePr, getWorkingTreeDiff } from './git.js';
+import { getWorkingTreeDiff } from './git.js';
+import { getPrForBranch, isStalePr } from './gh.js';
 import { trackEvent } from './analytics.js';
 
 const execFileAsync = promisify(execFile);

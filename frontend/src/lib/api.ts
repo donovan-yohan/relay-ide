@@ -143,9 +143,8 @@ export async function fetchTelemetrySetupStatus(): Promise<{ installed: boolean 
   return { installed: value.installed === true };
 }
 
-export async function fetchWorktrees(enrich = true): Promise<WorktreeInfo[]> {
-  const url = enrich ? '/worktrees' : '/worktrees?enrich=false';
-  return json<WorktreeInfo[]>(await fetch(url));
+export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
+  return json<WorktreeInfo[]>(await fetch('/git/worktrees'));
 }
 
 export async function fetchWorkspaces(): Promise<Repo[]> {
@@ -218,13 +217,13 @@ export async function fetchDashboard(repoPath: string): Promise<DashboardData> {
 }
 
 export async function fetchCiStatusOrNull(repoPath: string, branch: string): Promise<CiStatus | null> {
-  const res = await fetch('/workspaces/ci-status?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
+  const res = await fetch('/gh/ci-status?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
   if (!res.ok) return null;
   return res.json() as Promise<CiStatus>;
 }
 
 export async function fetchPrForBranchOrNull(repoPath: string, branch: string): Promise<PrInfo | null> {
-  const res = await fetch('/workspaces/pr?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
+  const res = await fetch('/gh/pr?path=' + encodeURIComponent(repoPath) + '&branch=' + encodeURIComponent(branch));
   if (!res.ok) return null;
   const data = await res.json() as { pr: PrInfo | null };
   return data.pr;
@@ -262,7 +261,21 @@ export async function switchBranch(repoPath: string, branch: string): Promise<{ 
 export async function fetchBranches(repoPath: string, options: { refresh?: boolean } = {}): Promise<BranchInfo[]> {
   const params = new URLSearchParams({ repo: repoPath });
   if (options.refresh) params.set('refresh', '1');
-  return json<BranchInfo[]>(await fetch('/branches?' + params.toString()));
+  return json<BranchInfo[]>(await fetch('/git/branches?' + params.toString()));
+}
+
+export interface EnrichBranchesResult {
+  results: Record<string, { pr: PrInfo | null; stale: boolean }>;
+}
+
+export async function enrichBranches(branches: Array<{ repoPath: string; branchName: string }>): Promise<EnrichBranchesResult> {
+  const res = await fetch('/gh/enrich-branches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ branches }),
+  });
+  if (!res.ok) return { results: {} };
+  return res.json() as Promise<EnrichBranchesResult>;
 }
 
 export async function createSession(body: {

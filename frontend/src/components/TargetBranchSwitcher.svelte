@@ -74,7 +74,7 @@
     switching = branchName;
     switchError = null;
     try {
-      const res = await fetch('/workspaces/pr-base?path=' + encodeURIComponent(repoPath), {
+      const res = await fetch('/gh/pr-base?path=' + encodeURIComponent(repoPath), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prNumber, baseBranch: branchName }),

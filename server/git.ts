@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ActivityEntry, BranchInfo, BranchLifecycleState, ChangedFile, CiStatus, FileChangeStatus, PrInfo } from './types.js';
+import type { ActivityEntry, BranchInfo, BranchLifecycleState, ChangedFile, FileChangeStatus, PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -139,218 +139,6 @@ async function getActivityFeed(
   }
 }
 
-async function getCiStatus(
-  repoPath: string,
-  branch: string,
-  options: {
-    exec?: ExecFileAsyncLike;
-  } = {},
-): Promise<(CiStatus & { authError?: boolean }) | null> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
-
-  let stdout: string;
-  let stderr: string;
-
-  try {
-    ({ stdout, stderr } = await run(
-      'gh',
-      ['pr', 'checks', branch, '--json', 'name,state,conclusion'],
-      { cwd: repoPath, timeout: 5000 },
-    ));
-  } catch (err: unknown) {
-    if (err && typeof err === 'object') {
-      const errObj = err as { code?: string; message?: string; stderr?: string };
-      const errorText = errObj.stderr ?? errObj.message ?? '';
-
-      // gh not installed
-      if (errObj.code === 'ENOENT') return null;
-
-      // Not authenticated
-      if (
-        typeof errorText === 'string' &&
-        (errorText.includes('not logged into') || errorText.includes('authentication'))
-      ) {
-        return { total: 0, passing: 0, failing: 0, pending: 0, authError: true };
-      }
-
-      // No PR for branch
-      if (
-        typeof errorText === 'string' &&
-        (errorText.includes('no pull requests found') || errorText.includes('Could not find'))
-      ) {
-        return null;
-      }
-    }
-
-    return null;
-  }
-
-  // gh may exit 0 but write errors or auth prompts to stderr
-  if (stderr && (stderr.includes('not logged into') || stderr.includes('authentication'))) {
-    return { total: 0, passing: 0, failing: 0, pending: 0, authError: true };
-  }
-
-  if (!stdout.trim()) return null;
-
-  try {
-    const checks: Array<{ name: string; state: string; conclusion: string }> = JSON.parse(stdout);
-
-    let passing = 0;
-    let failing = 0;
-    let pending = 0;
-
-    for (const check of checks) {
-      const conclusion = (check.conclusion ?? '').toUpperCase();
-      const state = (check.state ?? '').toUpperCase();
-
-      if (conclusion === 'SUCCESS' || conclusion === 'SKIPPED' || conclusion === 'NEUTRAL') {
-        passing++;
-      } else if (conclusion === 'FAILURE' || conclusion === 'CANCELLED' || conclusion === 'TIMED_OUT') {
-        failing++;
-      } else if (state === 'IN_PROGRESS' || state === 'QUEUED' || state === 'PENDING' || conclusion === '') {
-        pending++;
-      } else {
-        // Unknown conclusion — treat as pending rather than silently ignoring
-        pending++;
-      }
-    }
-
-    return { total: checks.length, passing, failing, pending };
-  } catch {
-    return null;
-  }
-}
-
-async function getPrForBranch(
-  repoPath: string,
-  branch: string,
-  options: {
-    exec?: ExecFileAsyncLike;
-  } = {},
-): Promise<PrInfo | null> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
-
-  let stdout: string;
-
-  try {
-    ({ stdout } = await run(
-      'gh',
-      [
-        'pr',
-        'view',
-        branch,
-        '--json',
-        'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
-      ],
-      { cwd: repoPath, timeout: 5000 },
-    ));
-  } catch {
-    return null;
-  }
-
-  if (!stdout.trim()) return null;
-
-  try {
-    const data = JSON.parse(stdout) as {
-      number: number;
-      title: string;
-      url: string;
-      state: string;
-      headRefName: string;
-      baseRefName: string;
-      isDraft: boolean;
-      reviewDecision: string | null;
-      additions: number;
-      deletions: number;
-      mergeable: string;
-      updatedAt: string;
-    };
-
-    return {
-      number: data.number,
-      title: data.title,
-      url: data.url,
-      state: data.state as PrInfo['state'],
-      headRefName: data.headRefName,
-      baseRefName: data.baseRefName,
-      isDraft: data.isDraft,
-      reviewDecision: data.reviewDecision ?? null,
-      additions: data.additions ?? 0,
-      deletions: data.deletions ?? 0,
-      mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
-      unresolvedCommentCount: 0,
-      updatedAt: data.updatedAt ?? '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Batch-fetch all PRs for a repo in a single `gh pr list` call.
- * Returns a Map of headRefName → PrInfo for quick branch lookup.
- * Includes both open and closed/merged PRs (up to 100 most recent).
- */
-async function batchGetPrsForRepo(
-  repoPath: string,
-  options: { exec?: ExecFileAsyncLike } = {},
-): Promise<Map<string, PrInfo>> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
-  const prMap = new Map<string, PrInfo>();
-
-  try {
-    const { stdout } = await run(
-      'gh',
-      [
-        'pr', 'list',
-        '--state', 'all',
-        '--limit', '100',
-        '--json',
-        'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
-      ],
-      { cwd: repoPath, timeout: 10000 },
-    );
-
-    if (!stdout.trim()) return prMap;
-
-    const prs = JSON.parse(stdout) as Array<{
-      number: number;
-      title: string;
-      url: string;
-      state: string;
-      headRefName: string;
-      baseRefName: string;
-      isDraft: boolean;
-      reviewDecision: string | null;
-      additions: number;
-      deletions: number;
-      mergeable: string;
-      updatedAt: string;
-    }>;
-
-    for (const data of prs) {
-      prMap.set(data.headRefName, {
-        number: data.number,
-        title: data.title,
-        url: data.url,
-        state: data.state as PrInfo['state'],
-        headRefName: data.headRefName,
-        baseRefName: data.baseRefName,
-        isDraft: data.isDraft,
-        reviewDecision: data.reviewDecision ?? null,
-        additions: data.additions ?? 0,
-        deletions: data.deletions ?? 0,
-        mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
-        unresolvedCommentCount: 0,
-        updatedAt: data.updatedAt ?? '',
-      });
-    }
-  } catch (err) {
-    console.warn('[git] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
-  }
-
-  return prMap;
-}
 
 async function switchBranch(
   repoPath: string,
@@ -392,68 +180,6 @@ async function getCommitsAhead(
     );
     const count = parseInt(stdout.trim(), 10);
     return Number.isFinite(count) ? count : 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function getUnresolvedCommentCount(
-  repoPath: string,
-  prNumber: number,
-  options: {
-    exec?: ExecFileAsyncLike;
-  } = {},
-): Promise<number> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
-
-  try {
-    const { stdout: repoStdout } = await run(
-      'gh',
-      ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-      { cwd: repoPath, timeout: 5000 },
-    );
-    const nameWithOwner = repoStdout.trim();
-    if (!nameWithOwner) return 0;
-
-    const [owner, repo] = nameWithOwner.split('/');
-    if (!owner || !repo) return 0;
-
-    const query = `query($owner: String!, $repo: String!, $number: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100) {
-        nodes { isResolved }
-      }
-    }
-  }
-}`;
-
-    const { stdout } = await run(
-      'gh',
-      [
-        'api', 'graphql',
-        '-f', `query=${query}`,
-        '-f', `owner=${owner}`,
-        '-f', `repo=${repo}`,
-        '-F', `number=${prNumber}`,
-      ],
-      { cwd: repoPath, timeout: 10000 },
-    );
-
-    const result = JSON.parse(stdout) as {
-      data?: {
-        repository?: {
-          pullRequest?: {
-            reviewThreads?: {
-              nodes?: Array<{ isResolved: boolean }>;
-            };
-          };
-        };
-      };
-    };
-
-    const nodes = result?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    return nodes.filter((n) => !n.isResolved).length;
   } catch {
     return 0;
   }
@@ -699,23 +425,6 @@ async function createBranch(
   }
 }
 
-async function changePrBase(
-  repoPath: string,
-  prNumber: number,
-  baseBranch: string,
-  options: { exec?: ExecFileAsyncLike } = {},
-): Promise<{ success: true } | { success: false; error: string }> {
-  const run = options.exec || execFileAsync as ExecFileAsyncLike;
-  try {
-    await run('gh', ['pr', 'edit', String(prNumber), '--base', baseBranch], { cwd: repoPath, timeout: 10000 });
-    return { success: true };
-  } catch (err: unknown) {
-    const errObj = err as { stderr?: string; message?: string; code?: string };
-    if (errObj.code === 'ENOENT') return { success: false, error: 'gh CLI not installed' };
-    return { success: false, error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim() };
-  }
-}
-
 async function pushBranch(
   repoPath: string,
   branch: string,
@@ -939,17 +648,6 @@ async function getDefaultBranch(
   return 'main'; // ultimate fallback
 }
 
-const ONE_DAY_MS = 86_400_000;
-
-/** A PR is stale if it's MERGED or CLOSED and was last updated more than 1 day ago (or has no valid timestamp). */
-function isStalePr(pr: PrInfo): boolean {
-  if (pr.state === 'OPEN') return false;
-  if (!pr.updatedAt) return true; // no timestamp → treat as stale
-  const elapsed = Date.now() - new Date(pr.updatedAt).getTime();
-  if (Number.isNaN(elapsed)) return true; // unparseable date → treat as stale
-  return elapsed > ONE_DAY_MS;
-}
-
 interface EnsureBranchResult {
   found: boolean;
   reason?: 'not_found' | 'fetch_failed';
@@ -1054,21 +752,16 @@ export {
   listBranchesEnriched,
   normalizeBranchNames,
   getActivityFeed,
-  getCiStatus,
-  getPrForBranch,
-  getUnresolvedCommentCount,
   switchBranch,
   getCommitsAhead,
   getCurrentBranch,
   getWorkingTreeDiff,
   branchToDisplayName,
   isBranchStale,
-  isStalePr,
   extractOwnerRepo,
   buildRepoMap,
   renameBranch,
   createBranch,
-  changePrBase,
   pushBranch,
   getChangedFiles,
   getFileDiff,
@@ -1076,6 +769,5 @@ export {
   ensureBranchLocal,
   isPrMerged,
   computeBranchLifecycleState,
-  batchGetPrsForRepo,
 };
 export type { EnsureBranchResult };

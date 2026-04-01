@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar, toggleSidebarCollapsed } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, refreshWorktreesEnriched, handleBackendStateChanged, handleActivityChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, enrichSidebarBranches, handleBackendStateChanged, handleActivityChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
@@ -479,13 +479,13 @@
         bootRefreshDone = true;
         reportFetch('auth', 'ok');
       }
-      refreshAll(isInitialBoot ? reportFetch : undefined, isInitialBoot ? { enrich: false } : undefined).then(async () => {
+      refreshAll(isInitialBoot ? reportFetch : undefined).then(async () => {
         await refreshTelemetry();
 
         if (isInitialBoot) {
           finishBoot();
-          // Backfill PR info and staleness without racing a full refreshAll
-          refreshWorktreesEnriched();
+          // Backfill PR info and staleness via batch enrichment
+          enrichSidebarBranches();
         }
         const params = new URLSearchParams(window.location.search);
         const sessionParam = params.get('session');
@@ -518,9 +518,12 @@
     const refChangedTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let pollInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
 
-    function invalidatePrQueries(): void {
+    function invalidatePrData(): void {
+      // Invalidate TanStack Query caches for PrTopBar individual queries
       queryClient.invalidateQueries({ queryKey: ['pr'] });
       queryClient.invalidateQueries({ queryKey: ['ci-status'] });
+      // Re-enrich sidebar batch data
+      enrichSidebarBranches();
     }
 
     /** Throttled invalidation for poll-based events (pr-updated/ci-updated).
@@ -530,7 +533,7 @@
       if (pollInvalidateTimer) return;
       pollInvalidateTimer = setTimeout(() => {
         pollInvalidateTimer = null;
-        invalidatePrQueries();
+        invalidatePrData();
         queryClient.invalidateQueries({ queryKey: ['org-prs'] });
       }, 500);
     }
@@ -543,11 +546,11 @@
           handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
         } else if (msg.type === 'session-renamed') {
           renameSession(msg.sessionId, msg.branchName, msg.displayName);
-          invalidatePrQueries();
+          invalidatePrData();
         } else if (msg.type === 'session-branch-changed') {
           handleBranchChanged(msg.sessionId, msg.branch);
         } else if (msg.type === 'session-ended') {
-          invalidatePrQueries();
+          invalidatePrData();
           refreshAll();
         } else if (msg.type === 'ref-changed') {
           const key = msg.cwdPath;
@@ -555,7 +558,7 @@
           if (existing) clearTimeout(existing);
           refChangedTimers.set(key, setTimeout(() => {
             refChangedTimers.delete(key);
-            invalidatePrQueries();
+            invalidatePrData();
           }, 5000));
         } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
           throttledPollInvalidate();
