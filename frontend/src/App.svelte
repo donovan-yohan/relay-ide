@@ -188,7 +188,7 @@
       }},
       { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
       // ── Phase 3: Session ──
-      { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }); } },
+      { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }, activeSession?.worktreePath); } },
       { ...sessionSwitchToTab, handler: () => {} },
       { ...sessionRename, handler: () => handleRenameActiveSession() },
       // ── Phase 3: PR ──
@@ -662,10 +662,6 @@
         repoPath: activeWorkspace.path,
         worktreePath: activeSession?.worktreePath ?? null,
         type: 'agent',
-        continue: configState.defaultContinue,
-        yolo: configState.defaultYolo,
-        agent: configState.defaultAgent,
-        useTmux: configState.launchInTmux,
         cols,
         rows,
       });
@@ -709,7 +705,7 @@
 
   function handleCustomize() {
     if (activeWorkspace) {
-      customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path });
+      customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }, activeSession?.worktreePath);
     }
   }
 

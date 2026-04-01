@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { createSession } from '../../lib/api.js';
+  import { createSession, fetchMergedWorkspaceSettings } from '../../lib/api.js';
   import { estimateTerminalDimensions } from '../../lib/utils.js';
   import { refreshAll } from '../../lib/state/sessions.svelte.js';
-  import { getConfigState, refreshConfig } from '../../lib/state/config.svelte.js';
   import type { AgentType, Repo } from '../../lib/types.js';
   import DialogShell from './DialogShell.svelte';
   import TuiButton from '../TuiButton.svelte';
@@ -14,12 +13,11 @@
     onSessionCreated?: (sessionId: string) => void;
   } = $props();
 
-  const config = getConfigState();
-
   let shellRef = $state<DialogShell | undefined>(undefined);
 
   // Repo info
   let repoPath = $state('');
+  let worktreePath = $state<string | null>(null);
   let workspaceName = $state('');
 
   // Form state
@@ -37,16 +35,17 @@
     useTmux = false;
   }
 
-  export async function open(workspace: Pick<Repo, 'name' | 'path'>) {
+  export async function open(workspace: Pick<Repo, 'name' | 'path'>, activeWorktreePath?: string | null) {
     reset();
     repoPath = workspace.path;
+    worktreePath = activeWorktreePath ?? null;
     workspaceName = workspace.name;
 
-    await refreshConfig();
-    selectedAgent = config.defaultAgent as AgentType;
-    yoloMode = config.defaultYolo;
-    continueExisting = config.defaultContinue;
-    useTmux = config.launchInTmux;
+    const merged = await fetchMergedWorkspaceSettings(repoPath).catch(() => null);
+    selectedAgent = (merged?.settings.defaultAgent ?? 'claude') as AgentType;
+    yoloMode = merged?.settings.defaultYolo ?? false;
+    continueExisting = merged?.settings.defaultContinue ?? false;
+    useTmux = merged?.settings.launchInTmux ?? false;
 
     shellRef?.open();
   }
@@ -65,7 +64,7 @@
     try {
       const session = await createSession({
         repoPath,
-        worktreePath: null,
+        worktreePath,
         type: 'agent',
         continue: continueExisting,
         yolo: yoloMode,
