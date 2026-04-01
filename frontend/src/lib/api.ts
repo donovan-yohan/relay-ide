@@ -89,7 +89,7 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
     return data.filter((item): item is SessionTelemetry => !!item && typeof item === 'object' && 'sessionId' in item) as SessionTelemetry[];
   }
   if (data && typeof data === 'object') {
-    const value = data as { sessions?: unknown; data?: unknown };
+    const value = data as { sessions?: unknown; data?: unknown } & Record<string, unknown>;
     if (Array.isArray(value.sessions)) return normalizeTelemetrySessions(value.sessions);
     if (value.sessions && typeof value.sessions === 'object') {
       return Object.entries(value.sessions as Record<string, unknown>).flatMap(([sessionId, raw]) => {
@@ -99,6 +99,10 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
     }
     if (Array.isArray(value.data)) return normalizeTelemetrySessions(value.data);
     if (value.data && typeof value.data === 'object') return normalizeTelemetrySessions(value.data);
+    return Object.entries(value).flatMap(([sessionId, raw]) => {
+      if (!raw || typeof raw !== 'object') return [];
+      return [{ sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) }];
+    });
   }
   return [];
 }

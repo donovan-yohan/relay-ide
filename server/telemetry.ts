@@ -260,5 +260,9 @@ export function createTelemetryRouter(): Router {
     res.json(accountTelemetry);
   });
 
+  router.get('/setup-status', (_req: Request, res: Response) => {
+    res.json({ installed: activeDeps !== null });
+  });
+
   return router;
 }

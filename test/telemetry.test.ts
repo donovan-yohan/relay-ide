@@ -296,6 +296,10 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
     const accountRes = await fetch(`${baseUrl}/telemetry/account`);
     assert.equal(accountRes.status, 200);
     assert.deepEqual(await accountRes.json(), restored.account);
+
+    const setupStatusRes = await fetch(`${baseUrl}/telemetry/setup-status`);
+    assert.equal(setupStatusRes.status, 200);
+    assert.deepEqual(await setupStatusRes.json(), { installed: true });
   } finally {
     await new Promise<void>((resolve) => {
       if (server) server.close(() => resolve());
