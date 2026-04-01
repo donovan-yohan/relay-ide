@@ -32,6 +32,8 @@ Commands:
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
     list                               Forward to git worktree list
+  browser            Open an HTML file in the remote viewer
+    <path>             Path to HTML file
   pin                Manage authentication PIN
     reset              Reset the PIN (interactive, requires TTY)
 
@@ -292,6 +294,68 @@ if (command === 'install' || command === 'uninstall' || command === 'status' || 
         host: getArg('--host') ?? DEFAULTS.host,
       });
     });
+  }
+}
+
+if (command === 'browser') {
+  const browserArgs = args.slice(1);
+
+  if (browserArgs.includes('--help') || browserArgs.includes('-h') || browserArgs.length === 0) {
+    console.error(`Usage: claude-remote-cli browser <path>
+
+Opens an HTML file in the remote browser viewer tab.
+
+Arguments:
+  <path>    Path to HTML file (absolute or relative)
+
+Environment:
+  CLAUDE_REMOTE_PORT            Server port (default: 3456)
+  CLAUDE_REMOTE_BROWSER_TOKEN   Auth token for browser tab API`);
+    process.exit(browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1);
+  }
+
+  const filePath = path.resolve(browserArgs[0]!);
+
+  if (!fs.existsSync(filePath)) {
+    console.error(`Error: file not found: ${filePath}`);
+    process.exit(1);
+  }
+
+  const port = process.env['CLAUDE_REMOTE_PORT'] ?? String(DEFAULTS.port);
+  const token = process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] ?? '';
+
+  if (!token) {
+    console.error('Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?');
+    process.exit(1);
+  }
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/browser-tabs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ path: filePath }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`Error: server returned ${res.status}: ${body}`);
+      process.exit(1);
+    }
+
+    const data = await res.json() as { token: string; refreshed: boolean };
+    if (data.refreshed) {
+      console.log(`Refreshed: ${filePath}`);
+    } else {
+      console.log(`Opened: ${filePath}`);
+    }
+    process.exit(0);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Error: could not connect to server on port ${port}: ${msg}`);
+    process.exit(1);
   }
 }
 

@@ -54,7 +54,7 @@
   import FileTreeSidebar from './components/FileTreeSidebar.svelte';
   import FileViewerPane from './components/FileViewerPane.svelte';
   import SplitPaneLayout from './components/SplitPaneLayout.svelte';
-  import { openFileTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
+  import { openFileTab, openHtmlTab, refreshHtmlTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
   import { refreshTelemetry, handleSessionTelemetryEvent, handleAccountTelemetryEvent } from './lib/state/telemetry.svelte.js';
 
   const queryClient = new QueryClient({
@@ -539,18 +539,17 @@
       (msg) => {
         if (msg.type === 'worktrees-changed') {
           refreshAll();
-        } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
+        } else if (msg.type === 'session-backend-state-changed') {
           handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
-        } else if (msg.type === 'session-renamed' && msg.sessionId) {
-          renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
-          // Branch changed — old PR data is stale
+        } else if (msg.type === 'session-renamed') {
+          renameSession(msg.sessionId, msg.branchName, msg.displayName);
           invalidatePrQueries();
-        } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
-          handleBranchChanged(msg.sessionId, msg.branch ?? '');
+        } else if (msg.type === 'session-branch-changed') {
+          handleBranchChanged(msg.sessionId, msg.branch);
         } else if (msg.type === 'session-ended') {
           invalidatePrQueries();
           refreshAll();
-        } else if (msg.type === 'ref-changed' && msg.cwdPath) {
+        } else if (msg.type === 'ref-changed') {
           const key = msg.cwdPath;
           const existing = refChangedTimers.get(key);
           if (existing) clearTimeout(existing);
@@ -562,19 +561,23 @@
           throttledPollInvalidate();
         } else if (msg.type === 'files-changed') {
           const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
-          if (!msg.workspacePath || activeWs === msg.workspacePath) {
+          if (activeWs === msg.workspacePath) {
             throttledChangedFilesRefresh();
             queryClient.invalidateQueries({ queryKey: ['files-list'] });
             if (msg.changedFiles) {
               changedFilesData = msg.changedFiles;
             }
           }
-        } else if (msg.type === 'session-activity-changed' && msg.sessionId) {
+        } else if (msg.type === 'session-activity-changed') {
           handleActivityChanged(msg.sessionId, msg.timestamp, msg.currentActivity ?? undefined);
-        } else if (msg.type === 'session-telemetry' && msg.sessionId && msg.data) {
+        } else if (msg.type === 'session-telemetry') {
           handleSessionTelemetryEvent(msg.sessionId, msg.data as SessionTelemetry | Record<string, unknown>);
-        } else if (msg.type === 'account-telemetry' && msg.data) {
+        } else if (msg.type === 'account-telemetry') {
           handleAccountTelemetryEvent(msg.data as AccountTelemetry | Record<string, unknown> | null);
+        } else if (msg.type === 'browser-tab-opened') {
+          openHtmlTab(msg.filePath, msg.token);
+        } else if (msg.type === 'browser-tab-refreshed') {
+          refreshHtmlTab(msg.filePath);
         }
       },
       () => {
