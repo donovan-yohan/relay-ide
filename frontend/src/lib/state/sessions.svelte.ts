@@ -46,6 +46,7 @@ let workspaceLastSession: Record<string, string> = loadWorkspaceSessions();
 let loadingItems = $state<Record<string, boolean>>({});
 let notificationSessions = $state<Record<string, boolean>>({});
 let sidebarItems = $state<SidebarItem[]>([]);
+let enrichmentResults = $state<Record<string, { pr: import('../types.js').PrInfo | null; stale: boolean }>>({});
 
 function loadNotificationPrefs(): void {
   try {
@@ -134,20 +135,26 @@ async function timed<T>(
   }
 }
 
-/** Refresh only worktrees state (with enrichment). Used after boot to backfill PR/staleness data without racing a full refreshAll. */
-export async function refreshWorktreesEnriched(): Promise<void> {
+/** Batch-enrich all sidebar worktree branches with PR + staleness data from /gh/enrich-branches. */
+export async function enrichSidebarBranches(): Promise<void> {
+  const branches = worktrees.map(wt => ({ repoPath: wt.repoPath, branchName: wt.branchName }));
+  if (branches.length === 0) return;
   try {
-    worktrees = await api.fetchWorktrees(true);
+    const data = await api.enrichBranches(branches);
+    enrichmentResults = data.results;
   } catch (err) {
-    console.warn('[refreshWorktreesEnriched] failed:', err);
+    console.warn('[enrichSidebarBranches] failed:', err);
   }
 }
 
-export async function refreshAll(report?: FetchReporter, opts?: { enrich?: boolean }): Promise<void> {
-  const enrich = opts?.enrich ?? true;
+export function getEnrichment(repoPath: string, branchName: string): { pr: import('../types.js').PrInfo | null; stale: boolean } | undefined {
+  return enrichmentResults[`${repoPath}::${branchName}`];
+}
+
+export async function refreshAll(report?: FetchReporter): Promise<void> {
   const [sResult, wResult, wsResult, wgResult] = await Promise.all([
     timed('sessions', api.fetchSessions, v => `${v.length} active`, report),
-    timed('worktrees', () => api.fetchWorktrees(enrich), v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
+    timed('worktrees', () => api.fetchWorktrees(), v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
     timed('workspaces', api.fetchWorkspaces, v => `${v.length} ${v.length === 1 ? 'repo' : 'repos'}`, report),
     timed('groups', api.fetchWorkspaceGroups, v => `${v.length} ${v.length === 1 ? 'group' : 'groups'}`, report),
   ]);

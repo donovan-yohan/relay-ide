@@ -16,10 +16,11 @@ import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
-import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, WORKTREE_DIRS, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
+import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
-import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState, batchGetPrsForRepo } from './git.js';
+import { createGitRouter } from './git-routes.js';
+import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
@@ -399,6 +400,14 @@ async function main(): Promise<void> {
   });
   app.use('/workspaces', requireAuth, workspaceRouter);
 
+  // Mount git (local/fast) and gh (network/slow) routers
+  app.use('/git', requireAuth, createGitRouter({
+    configPath: CONFIG_PATH,
+    getConfig,
+    getSessions: () => sessions.list().map(s => ({ id: s.id, worktreePath: s.worktreePath ?? s.repoPath })),
+  }));
+  app.use('/gh', requireAuth, createGhRouter());
+
   // Mount workspace-groups CRUD router
   app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
     sessions,
@@ -706,192 +715,6 @@ async function main(): Promise<void> {
       }
     }));
     res.json(enriched);
-  });
-
-  // GET /branches?repo=<path> — list local and remote branches for a repo
-  app.get('/branches', requireAuth, async (req, res) => {
-    const repoPath = typeof req.query.repo === 'string' ? req.query.repo : undefined;
-    const refresh = req.query.refresh === '1';
-    if (!repoPath) {
-      res.status(400).json({ error: 'repo query parameter is required' });
-      return;
-    }
-
-    const sessionList = sessions.list().map((s) => ({ id: s.id, worktreePath: s.worktreePath ?? s.repoPath }));
-    res.json(await listBranchesEnriched(repoPath, { refresh, sessions: sessionList }));
-  });
-
-  // GET /worktrees?repo=<path>&enrich=true|false — list worktrees
-  // enrich=false (default during boot) returns basic git worktree data fast.
-  // enrich=true adds PR info and staleness checks (slower, hits GitHub API).
-  // Omit repo to scan all repos in all rootDirs.
-  app.get('/worktrees', requireAuth, async (req, res) => {
-    const repoParam = typeof req.query.repo === 'string' ? req.query.repo : undefined;
-    const enrich = req.query.enrich !== 'false';
-    const roots = getConfig().rootDirs || [];
-    const worktrees: Array<{
-      name: string; path: string; repoName: string; repoPath: string;
-      root: string; displayName: string; lastActivity: string; branchName: string;
-      branchState?: 'active' | 'stale' | 'merged';
-      prNumber?: number;
-      prTitle?: string;
-    }> = [];
-
-    let reposToScan: RepoEntry[];
-    if (repoParam) {
-      const root = roots.find(function (r) { return repoParam.startsWith(r); }) || '';
-      reposToScan = [{ path: repoParam, name: repoParam.split('/').filter(Boolean).pop() || '', root }];
-    } else {
-      reposToScan = [];
-      for (const rootDir of roots) {
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(rootDir, { withFileTypes: true });
-        } catch (_) {
-          continue;
-        }
-        for (const entry of entries) {
-          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-          const fullPath = path.join(rootDir, entry.name);
-          const dotGit = path.join(fullPath, '.git');
-          try {
-            if (fs.statSync(dotGit).isDirectory()) {
-              reposToScan.push({ name: entry.name, path: fullPath, root: rootDir });
-            }
-          } catch (_) {
-            // .git doesn't exist — not a repo
-          }
-        }
-      }
-
-      // Also include directly-configured repos (may not be under any rootDir)
-      const configRepos = getConfig().repos ?? [];
-      const scannedPaths = new Set(reposToScan.map(r => r.path));
-      for (const wp of configRepos) {
-        if (scannedPaths.has(wp)) continue;
-        const root = roots.find(r => wp.startsWith(r)) || '';
-        reposToScan.push({ path: wp, name: wp.split('/').filter(Boolean).pop() || '', root });
-      }
-    }
-
-    for (const repo of reposToScan) {
-      // Use git worktree list to discover all worktrees (including those at arbitrary paths)
-      try {
-        const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repo.path });
-        const parsed = parseWorktreeListPorcelain(stdout, repo.path);
-        for (const wt of parsed) {
-          const dirName = wt.path.split('/').pop() || '';
-          const meta = readMeta(CONFIG_PATH, wt.path);
-          worktrees.push({
-            name: dirName,
-            path: wt.path,
-            repoName: repo.name,
-            repoPath: repo.path,
-            root: repo.root,
-            displayName: meta?.displayName || wt.branch || dirName,
-            lastActivity: meta?.lastActivity || '',
-            branchName: wt.branch || meta?.branchName || dirName,
-          });
-        }
-      } catch {
-        // git worktree list failed — fall back to directory scanning
-        for (const dir of WORKTREE_DIRS) {
-          const worktreeDir = path.join(repo.path, dir);
-          let entries: fs.Dirent[];
-          try {
-            entries = fs.readdirSync(worktreeDir, { withFileTypes: true });
-          } catch (_) {
-            continue;
-          }
-          for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            const wtPath = path.join(worktreeDir, entry.name);
-            const meta = readMeta(CONFIG_PATH, wtPath);
-            worktrees.push({
-              name: entry.name,
-              path: wtPath,
-              repoName: repo.name,
-              repoPath: repo.path,
-              root: repo.root,
-              displayName: meta?.displayName || '',
-              lastActivity: meta?.lastActivity || '',
-              branchName: meta?.branchName || entry.name,
-            });
-          }
-        }
-      }
-    }
-
-    // Deduplicate by path (a worktree can appear via multiple repo scans)
-    const seen = new Set<string>();
-    const unique = worktrees.filter(wt => {
-      if (seen.has(wt.path)) return false;
-      seen.add(wt.path);
-      return true;
-    });
-
-    // Skip expensive PR/staleness enrichment when enrich=false (boot fast path)
-    if (!enrich) {
-      for (const wt of unique) {
-        wt.branchState = 'active';
-      }
-      res.json(unique);
-      return;
-    }
-
-    // Compute branch lifecycle state for each worktree
-    // Batch PR lookups per repo to avoid N subprocess spawns
-    const activeSessions = sessions.list();
-    const uniqueRepos = [...new Set(unique.map(wt => wt.repoPath))];
-    const prMaps = new Map<string, Map<string, import('./types.js').PrInfo>>();
-    await Promise.all(uniqueRepos.map(async (repoPath) => {
-      try {
-        prMaps.set(repoPath, await batchGetPrsForRepo(repoPath));
-      } catch (err) {
-        console.warn('[worktrees] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
-        prMaps.set(repoPath, new Map());
-      }
-    }));
-
-    await Promise.all(unique.map(async (wt) => {
-      try {
-        const hasActiveSessions = activeSessions.some(s => s.worktreePath === wt.path || s.cwd === wt.path);
-        const isMainBranch = wt.path === wt.repoPath;
-
-        let stale = false;
-        try {
-          stale = await isBranchStale(wt.repoPath, wt.branchName);
-        } catch (err) {
-          console.warn('[worktrees] isBranchStale failed for', wt.branchName, err instanceof Error ? err.message : err);
-        }
-
-        // Look up PR from batched result; fall back to per-branch call on cache miss
-        let pr = prMaps.get(wt.repoPath)?.get(wt.branchName) ?? null;
-        if (!pr) {
-          try {
-            pr = await getPrForBranch(wt.repoPath, wt.branchName);
-          } catch (err) {
-            console.warn('[worktrees] getPrForBranch failed for', wt.branchName, err instanceof Error ? err.message : err);
-          }
-        }
-
-        const lifecycle = computeBranchLifecycleState({
-          pr,
-          isBranchStale: stale,
-          hasActiveSessions,
-          isMainBranch,
-        });
-
-        wt.branchState = lifecycle.state;
-        if (lifecycle.prNumber != null) wt.prNumber = lifecycle.prNumber;
-        if (lifecycle.prTitle != null) wt.prTitle = lifecycle.prTitle;
-      } catch (err) {
-        console.error('[worktrees] lifecycle computation failed for', wt.path, err);
-        wt.branchState = 'active';
-      }
-    }));
-
-    res.json(unique);
   });
 
   // GET /worktrees/status — pre-cleanup checks for a worktree

@@ -2,7 +2,7 @@
   import CipherText from './CipherText.svelte';
   import TuiProgress from './TuiProgress.svelte';
   import { getBootState, resetBoot, reportFetch, finishBoot } from '../lib/state/boot-state.svelte.js';
-  import { refreshAll, refreshWorktreesEnriched } from '../lib/state/sessions.svelte.js';
+  import { refreshAll, enrichSidebarBranches } from '../lib/state/sessions.svelte.js';
   import type { BootLine } from '../lib/state/boot-state.svelte.js';
 
   const boot = getBootState();
@@ -26,9 +26,9 @@
     if (retrying) return;
     retrying = true;
     resetBoot();
-    await refreshAll(reportFetch, { enrich: false });
+    await refreshAll(reportFetch);
     finishBoot();
-    refreshWorktreesEnriched();
+    enrichSidebarBranches();
     retrying = false;
   }
 

@@ -103,7 +103,7 @@ describe('buildSidebarItems', () => {
   });
 
   it('workspace defaultBranch is used as branchName for inactive repo root', () => {
-    const workspace = makeWorkspace({ path: '/repo', defaultBranch: 'feature-x' });
+    const workspace = makeWorkspace({ path: '/repo', defaultBranch: 'feature-x', currentBranch: null });
     const items = buildSidebarItems([], [], [workspace], []);
 
     assert.equal(items.length, 1);

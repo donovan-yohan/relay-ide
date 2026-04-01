@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractOwnerRepo, isStalePr } from '../server/git.js';
+import { extractOwnerRepo } from '../server/git.js';
+import { isStalePr } from '../server/gh.js';
 import type { PrInfo } from '../server/types.js';
 
 describe('extractOwnerRepo', () => {

@@ -11,8 +11,9 @@ import type { Request, Response } from 'express';
 import { loadConfig, saveConfig, getRepoSettings, setRepoSettings, deleteRepoSettingKeys, writeMeta, readMeta } from './config.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
-import { listBranches, getActivityFeed, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, changePrBase, pushBranch, getChangedFiles, getFileDiff, getDefaultBranch, ensureBranchLocal } from './git.js';
-import type { Config, PrInfo, PullRequest, PullRequestsResponse, Repo } from './types.js';
+import { listBranches, getActivityFeed, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, pushBranch, getChangedFiles, getFileDiff, getDefaultBranch, ensureBranchLocal } from './git.js';
+import { clearPrCache as clearPrCacheImpl } from './gh.js';
+import type { Config, PullRequest, PullRequestsResponse, Repo } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -47,52 +48,7 @@ export function clearFilesListCache(workspacePath?: string): void {
 const BROWSE_MAX_ENTRIES = 100;
 const BULK_MAX_PATHS = 50;
 
-// ── PR lookup cache ─────────────────────────────────────────────────────────
-// Caches `getPrForBranch` results to avoid spawning a `gh` subprocess on every
-// request. Negative results (no PR) use a longer TTL since they only change on
-// user action (push, PR creation).
-
-const PR_CACHE_POSITIVE_TTL_MS = 60_000;   // 60s — same as org-dashboard
-const PR_CACHE_NEGATIVE_TTL_MS = 300_000;  // 5 min — "no PR" rarely changes without user action
-
-interface PrCacheEntry {
-  result: PrInfo | null;
-  fetchedAt: number;
-}
-
-const prCache = new Map<string, PrCacheEntry>();
-
-function prCacheKey(repoPath: string, branch: string): string {
-  return `${repoPath}:${branch}`;
-}
-
-function getPrCached(repoPath: string, branch: string): PrCacheEntry | undefined {
-  const key = prCacheKey(repoPath, branch);
-  const entry = prCache.get(key);
-  if (!entry) return undefined;
-  const ttl = entry.result ? PR_CACHE_POSITIVE_TTL_MS : PR_CACHE_NEGATIVE_TTL_MS;
-  if (Date.now() - entry.fetchedAt > ttl) {
-    prCache.delete(key);
-    return undefined;
-  }
-  return entry;
-}
-
-function setPrCached(repoPath: string, branch: string, result: PrInfo | null): void {
-  prCache.set(prCacheKey(repoPath, branch), { result, fetchedAt: Date.now() });
-}
-
-/** Clear PR cache entries. If repoPath is given, only clears entries for that repo. */
-export function clearPrCache(repoPath?: string): void {
-  if (!repoPath) {
-    prCache.clear();
-    return;
-  }
-  const prefix = `${repoPath}:`;
-  for (const key of prCache.keys()) {
-    if (key.startsWith(prefix)) prCache.delete(key);
-  }
-}
+export { clearPrCacheImpl as clearPrCache };
 
 // Deps type
 
@@ -635,62 +591,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     res.json(final);
   });
 
-  // GET /workspaces/pr — PR info for a specific branch
-  router.get('/pr', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
-
-    if (!repoPath || !branch) {
-      res.status(400).json({ error: 'path and branch query parameters are required' });
-      return;
-    }
-
-    const cached = getPrCached(repoPath, branch);
-    if (cached) {
-      res.json({ pr: cached.result });
-      return;
-    }
-
-    try {
-      const pr = await getPrForBranch(repoPath, branch);
-      if (pr && !isStalePr(pr)) {
-        let unresolvedCommentCount = 0;
-        if (pr.state === 'OPEN') {
-          try {
-            unresolvedCommentCount = await getUnresolvedCommentCount(repoPath, pr.number);
-          } catch { /* degrade gracefully — show PR without comment count */ }
-        }
-        const enriched = { ...pr, unresolvedCommentCount };
-        setPrCached(repoPath, branch, enriched);
-        res.json({ pr: enriched });
-      } else {
-        setPrCached(repoPath, branch, null);
-        res.json({ pr: null });
-      }
-    } catch {
-      // Do NOT cache transient errors — only cache clean null from getPrForBranch
-      res.json({ pr: null });
-    }
-  });
-
-  // GET /workspaces/ci-status — CI check results for a repo + branch
-  router.get('/ci-status', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
-
-    if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
-      return;
-    }
-
-    try {
-      const status = await getCiStatus(repoPath, branch ?? 'HEAD');
-      res.json(status);
-    } catch {
-      res.json({ total: 0, passing: 0, failing: 0, pending: 0 });
-    }
-  });
-
   // POST /workspaces/branch — switch branch for a workspace
   router.post('/branch', async (req: Request, res: Response) => {
     const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
@@ -1061,22 +961,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     if (!branchName || typeof branchName !== 'string') { res.status(400).json({ error: 'branchName is required' }); return; }
 
     const result = await createBranch(repoPath, branchName);
-    if (result.success) {
-      res.json(result);
-    } else {
-      res.status(400).json({ error: result.error });
-    }
-  });
-
-  // POST /workspaces/pr-base — change the base branch of a PR for a workspace
-  router.post('/pr-base', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const { prNumber, baseBranch } = req.body as { prNumber?: number; baseBranch?: string };
-    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
-    if (!prNumber || typeof prNumber !== 'number') { res.status(400).json({ error: 'prNumber is required' }); return; }
-    if (!baseBranch || typeof baseBranch !== 'string') { res.status(400).json({ error: 'baseBranch is required' }); return; }
-
-    const result = await changePrBase(repoPath, prNumber, baseBranch);
     if (result.success) {
       res.json(result);
     } else {
