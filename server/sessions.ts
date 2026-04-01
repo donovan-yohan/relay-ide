@@ -67,10 +67,12 @@ const metaCache = new Map<string, SessionMeta>();
 // Module-level defaults for hooks injection (set via configure())
 let defaultPort: number | undefined;
 let defaultForceOutputParser: boolean | undefined;
+let defaultConfigDir: string | undefined;
 
-function configure(opts: { port?: number; forceOutputParser?: boolean }): void {
+function configure(opts: { port?: number; forceOutputParser?: boolean; configDir?: string }): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
+  defaultConfigDir = opts.configDir;
 }
 
 let terminalCounter = 0;
@@ -167,6 +169,7 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     args,
     port: port ?? defaultPort,
     forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
+    configDir: rest.configDir ?? defaultConfigDir,
   };
 
   const { session: ptySession, result } = createPtySession(ptyParams, sessions, stateChangeCallbacks, sessionEndCallbacks, fireBackendStateIfChanged);

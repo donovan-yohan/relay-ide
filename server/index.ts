@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 
-import { loadConfig, saveConfig, DEFAULTS, readMeta, writeMeta, deleteMeta, ensureMetaDir, resolveSessionSettings } from './config.js';
+import { loadConfig, saveConfig, DEFAULTS, readMeta, writeMeta, deleteMeta, ensureMetaDir, getConfigDir, resolveSessionSettings } from './config.js';
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
@@ -35,6 +35,7 @@ import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
 import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
+import { createTelemetryRouter, startTelemetry, stopTelemetry } from './telemetry.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
 
@@ -178,7 +179,8 @@ async function main(): Promise<void> {
 
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
-  const configDir = path.dirname(CONFIG_PATH);
+  const configDir = getConfigDir(CONFIG_PATH);
+  fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
   try {
     initAnalytics(configDir);
   } catch (err) {
@@ -353,7 +355,11 @@ async function main(): Promise<void> {
   sessions.onSessionEnd(() => rebuildRefWatcher());
 
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
-  sessions.configure({ port: startupConfig.port, forceOutputParser: startupConfig.forceOutputParser ?? false });
+  sessions.configure({
+    port: startupConfig.port,
+    forceOutputParser: startupConfig.forceOutputParser ?? false,
+    configDir,
+  });
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({
@@ -442,6 +448,7 @@ async function main(): Promise<void> {
 
   // Mount analytics router
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
+  app.use('/telemetry', requireAuth, createTelemetryRouter());
 
   // Restore sessions from a previous update restart
   const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
@@ -452,6 +459,12 @@ async function main(): Promise<void> {
       gitWatcher.watch(session.cwd);
     }
   }
+
+  startTelemetry({
+    getActiveSessions: sessions.list,
+    broadcastEvent,
+    configDir,
+  });
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});
@@ -1451,7 +1464,7 @@ async function main(): Promise<void> {
       const restarting = serviceIsInstalled();
       if (restarting) {
         // Persist sessions so they can be restored after restart
-        const configDir = path.dirname(CONFIG_PATH);
+        stopTelemetry();
         serializeAll(configDir);
       }
       res.json({ ok: true, restarting });
@@ -1485,13 +1498,13 @@ async function main(): Promise<void> {
 
   async function gracefulShutdown() {
     await stopPolling();
+    stopTelemetry();
     closeAnalytics();
     branchWatcher.close();
     refWatcher.close();
     gitWatcher.close();
     server.close();
     // Serialize sessions to disk BEFORE killing them
-    const configDir = path.dirname(CONFIG_PATH);
     serializeAll(configDir);
     // Kill all active sessions (PTY + tmux)
     for (const s of sessions.list()) {

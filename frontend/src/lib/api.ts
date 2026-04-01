@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, SessionTelemetry, AccountTelemetry } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -27,6 +27,11 @@ export interface BrowseResponse {
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+async function jsonOrNull<T>(res: Response): Promise<T | null> {
+  if (!res.ok) return null;
   return res.json() as Promise<T>;
 }
 
@@ -77,6 +82,65 @@ export async function setupPin(pin: string, confirm: string): Promise<void> {
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
+}
+
+function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
+  if (Array.isArray(data)) {
+    return data.filter((item): item is SessionTelemetry => !!item && typeof item === 'object' && 'sessionId' in item) as SessionTelemetry[];
+  }
+  if (data && typeof data === 'object') {
+    const value = data as { sessions?: unknown; data?: unknown } & Record<string, unknown>;
+    if (Array.isArray(value.sessions)) return normalizeTelemetrySessions(value.sessions);
+    if (value.sessions && typeof value.sessions === 'object') {
+      return Object.entries(value.sessions as Record<string, unknown>).flatMap(([sessionId, raw]) => {
+        if (!raw || typeof raw !== 'object') return [];
+        return [{ sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) }];
+      });
+    }
+    if (Array.isArray(value.data)) return normalizeTelemetrySessions(value.data);
+    if (value.data && typeof value.data === 'object') return normalizeTelemetrySessions(value.data);
+    return Object.entries(value).flatMap(([sessionId, raw]) => {
+      if (!raw || typeof raw !== 'object') return [];
+      return [{ sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) }];
+    });
+  }
+  return [];
+}
+
+function normalizeAccountTelemetry(data: unknown): AccountTelemetry | null {
+  if (!data || typeof data !== 'object') return null;
+  const value = data as { data?: unknown; account?: unknown };
+  const raw = value.data ?? value.account ?? data;
+  if (!raw || typeof raw !== 'object') return null;
+  const candidate = raw as Partial<AccountTelemetry>;
+  if (typeof candidate.updatedAt !== 'string') return null;
+  return {
+    fiveHourUsedPercent: typeof candidate.fiveHourUsedPercent === 'number' ? candidate.fiveHourUsedPercent : -1,
+    fiveHourResetsAt: typeof candidate.fiveHourResetsAt === 'string' ? candidate.fiveHourResetsAt : null,
+    sevenDayUsedPercent: typeof candidate.sevenDayUsedPercent === 'number' ? candidate.sevenDayUsedPercent : -1,
+    sevenDayResetsAt: typeof candidate.sevenDayResetsAt === 'string' ? candidate.sevenDayResetsAt : null,
+    updatedAt: candidate.updatedAt,
+  };
+}
+
+export async function fetchSessionTelemetry(): Promise<SessionTelemetry[]> {
+  const res = await fetch('/telemetry/sessions');
+  const data = await jsonOrNull<unknown>(res);
+  return normalizeTelemetrySessions(data);
+}
+
+export async function fetchAccountTelemetry(): Promise<AccountTelemetry | null> {
+  const res = await fetch('/telemetry/account');
+  const data = await jsonOrNull<unknown>(res);
+  return normalizeAccountTelemetry(data);
+}
+
+export async function fetchTelemetrySetupStatus(): Promise<{ installed: boolean }> {
+  const res = await fetch('/telemetry/setup-status');
+  const data = await jsonOrNull<unknown>(res);
+  if (!data || typeof data !== 'object') return { installed: false };
+  const value = data as { installed?: unknown };
+  return { installed: value.installed === true };
 }
 
 export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
