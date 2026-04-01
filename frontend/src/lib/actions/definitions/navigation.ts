@@ -29,8 +29,19 @@ export const navSwitchToTab: ActionMeta = {
   icon: '#',
 };
 
+export const navOpenFile: ActionMeta = {
+  id: 'navigation.open-file',
+  label: 'open file...',
+  description: 'search and open a file in the current repo',
+  category: 'navigation',
+  icon: '◇',
+  shortcut: { key: 'mod+o' },
+  when: (ctx) => !!ctx.sessionId,
+};
+
 export const navigationActions: ActionMeta[] = [
   navPreviousTab,
   navNextTab,
   navSwitchToTab,
+  navOpenFile,
 ];

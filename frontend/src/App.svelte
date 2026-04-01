@@ -21,7 +21,7 @@
   import { sidebarCollapse, sidebarNavigateDashboard, sidebarWorkspaceSettings, sidebarRenameSession, sidebarDeleteWorktree, sidebarResumeSession, sidebarResumeYolo } from './lib/actions/definitions/sidebar.js';
   import { dashboardOpenPrSession, dashboardSortPrs, dashboardClearFilters, orgSwitchTab, orgSaveFilter, orgDeleteFilter, orgTogglePrStatus, orgNavigateToWorkspace, ticketSwitchProvider, ticketOpenExternal } from './lib/actions/definitions/dashboard.js';
   import { terminalScrollTop, terminalScrollBottom } from './lib/actions/definitions/terminal.js';
-  import { navPreviousTab, navNextTab, navSwitchToTab } from './lib/actions/definitions/navigation.js';
+  import { navPreviousTab, navNextTab, navSwitchToTab, navOpenFile } from './lib/actions/definitions/navigation.js';
   import BootScreen from './components/BootScreen.svelte';
   import { getBootState, startBoot, reportFetch, finishBoot } from './lib/state/boot-state.svelte.js';
   import PinGate from './components/PinGate.svelte';
@@ -41,6 +41,7 @@
   import { showToast } from './lib/state/toasts.svelte.js';
   import CommandPalette from './components/CommandPalette.svelte';
   import OpenPicker from './components/OpenPicker.svelte';
+  import FilePicker from './components/FilePicker.svelte';
   import type { SessionIntent, PickerItem } from './lib/session-intent.js';
   import { issueToBranchName } from './lib/session-intent.js';
   import CustomizeSessionDialog from './components/dialogs/CustomizeSessionDialog.svelte';
@@ -132,6 +133,7 @@
 
   let spotlightOpen = $state(false);
   let pickerOpen = $state(false);
+  let filePickerOpen = $state(false);
 
   const bootState = getBootState();
   let bootScreenVisible = $state(true);
@@ -263,6 +265,7 @@
         if (next) handleSelectSession(next.id);
       }},
       { ...navSwitchToTab, handler: () => {} },
+      { ...navOpenFile, handler: () => { filePickerOpen = true; } },
       // ── Diff view (from nightly) ──
       {
         id: 'workspace.open-diff-view' as const,
@@ -343,6 +346,13 @@
         if (mod && e.key === 'k') {
           e.preventDefault();
           pickerOpen = !pickerOpen;
+          return;
+        }
+
+        // Cmd/Ctrl+O — open file picker (only when a session is active)
+        if (mod && !e.shiftKey && e.key === 'o' && activeSession && activeWorkspaceCwd) {
+          e.preventDefault();
+          filePickerOpen = !filePickerOpen;
           return;
         }
 
@@ -554,6 +564,7 @@
           const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
           if (!msg.workspacePath || activeWs === msg.workspacePath) {
             throttledChangedFilesRefresh();
+            queryClient.invalidateQueries({ queryKey: ['files-list'] });
             if (msg.changedFiles) {
               changedFilesData = msg.changedFiles;
             }
@@ -1303,6 +1314,16 @@
     worktrees={sessionState.worktrees}
     onClose={() => pickerOpen = false}
     onSelectIntent={handlePickerIntent}
+  />
+
+  <!-- File Picker (Cmd+O) -->
+  <FilePicker
+    open={filePickerOpen}
+    workspacePath={activeWorkspaceCwd}
+    changedFiles={ui.lastChangedFiles}
+    recentFiles={ui.openFileTabs}
+    onClose={() => { filePickerOpen = false; }}
+    onSelect={(path, isChanged) => { openFileTab(path, isChanged); filePickerOpen = false; }}
   />
 
   <!-- Toasts -->

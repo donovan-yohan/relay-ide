@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState, batchGetPrsForRepo } from './git.js';
 import * as push from './push.js';
 import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
-import { createWorkspaceRouter, clearPrCache } from './workspaces.js';
+import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
@@ -297,6 +297,7 @@ async function main(): Promise<void> {
 
   gitWatcher.on('files-changed', (data: { workspacePath: string; changedFiles?: string[] }) => {
     broadcastEvent('files-changed', { workspacePath: data.workspacePath, changedFiles: data.changedFiles });
+    clearFilesListCache(data.workspacePath);
   });
 
   // Watch .git/HEAD files for branch changes and update active sessions
