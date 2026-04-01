@@ -134,10 +134,20 @@ async function timed<T>(
   }
 }
 
-export async function refreshAll(report?: FetchReporter): Promise<void> {
+/** Refresh only worktrees state (with enrichment). Used after boot to backfill PR/staleness data without racing a full refreshAll. */
+export async function refreshWorktreesEnriched(): Promise<void> {
+  try {
+    worktrees = await api.fetchWorktrees(true);
+  } catch (err) {
+    console.warn('[refreshWorktreesEnriched] failed:', err);
+  }
+}
+
+export async function refreshAll(report?: FetchReporter, opts?: { enrich?: boolean }): Promise<void> {
+  const enrich = opts?.enrich ?? true;
   const [sResult, wResult, wsResult, wgResult] = await Promise.all([
     timed('sessions', api.fetchSessions, v => `${v.length} active`, report),
-    timed('worktrees', api.fetchWorktrees, v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
+    timed('worktrees', () => api.fetchWorktrees(enrich), v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
     timed('workspaces', api.fetchWorkspaces, v => `${v.length} ${v.length === 1 ? 'repo' : 'repos'}`, report),
     timed('groups', api.fetchWorkspaceGroups, v => `${v.length} ${v.length === 1 ? 'group' : 'groups'}`, report),
   ]);

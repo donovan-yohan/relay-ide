@@ -143,8 +143,9 @@ export async function fetchTelemetrySetupStatus(): Promise<{ installed: boolean 
   return { installed: value.installed === true };
 }
 
-export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
-  return json<WorktreeInfo[]>(await fetch('/worktrees'));
+export async function fetchWorktrees(enrich = true): Promise<WorktreeInfo[]> {
+  const url = enrich ? '/worktrees' : '/worktrees?enrich=false';
+  return json<WorktreeInfo[]>(await fetch(url));
 }
 
 export async function fetchWorkspaces(): Promise<Repo[]> {

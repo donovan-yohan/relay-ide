@@ -16,7 +16,7 @@ import * as sessions from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
-import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
+import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, WORKTREE_DIRS, parseWorktreeListPorcelain, parseAllWorktrees } from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { listBranches, listBranchesEnriched, isBranchStale, getPrForBranch, computeBranchLifecycleState, batchGetPrsForRepo } from './git.js';
@@ -710,9 +710,13 @@ async function main(): Promise<void> {
     res.json(await listBranchesEnriched(repoPath, { refresh, sessions: sessionList }));
   });
 
-  // GET /worktrees?repo=<path> — list worktrees; omit repo to scan all repos in all rootDirs
+  // GET /worktrees?repo=<path>&enrich=true|false — list worktrees
+  // enrich=false (default during boot) returns basic git worktree data fast.
+  // enrich=true adds PR info and staleness checks (slower, hits GitHub API).
+  // Omit repo to scan all repos in all rootDirs.
   app.get('/worktrees', requireAuth, async (req, res) => {
     const repoParam = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+    const enrich = req.query.enrich !== 'false';
     const roots = getConfig().rootDirs || [];
     const worktrees: Array<{
       name: string; path: string; repoName: string; repoPath: string;
@@ -815,6 +819,15 @@ async function main(): Promise<void> {
       return true;
     });
 
+    // Skip expensive PR/staleness enrichment when enrich=false (boot fast path)
+    if (!enrich) {
+      for (const wt of unique) {
+        wt.branchState = 'active';
+      }
+      res.json(unique);
+      return;
+    }
+
     // Compute branch lifecycle state for each worktree
     // Batch PR lookups per repo to avoid N subprocess spawns
     const activeSessions = sessions.list();
@@ -880,9 +893,31 @@ async function main(): Promise<void> {
 
     const resolved = path.resolve(worktreePath);
 
-    // Validate the path is a recognized worktree — don't allow arbitrary filesystem probing
-    if (!isValidWorktreePath(resolved)) {
-      res.status(400).json({ error: 'Path is not inside a worktree directory' });
+    // Validate the path is a recognized git worktree via git worktree list (trust boundary first)
+    const allRoots = getConfig().rootDirs || [];
+    const allRepos: string[] = [...(getConfig().repos ?? [])];
+    for (const rootDir of allRoots) {
+      try {
+        for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+          const fullPath = path.join(rootDir, entry.name);
+          if (fs.existsSync(path.join(fullPath, '.git'))) allRepos.push(fullPath);
+        }
+      } catch { /* skip unreadable rootDirs */ }
+    }
+    let isKnownWorktree = false;
+    for (const repoPath of [...new Set(allRepos)]) {
+      try {
+        const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath, timeout: 5000 });
+        const allWt = parseAllWorktrees(stdout, repoPath);
+        if (allWt.some(wt => wt.path === resolved && !wt.isMain)) {
+          isKnownWorktree = true;
+          break;
+        }
+      } catch { /* skip repos where git fails */ }
+    }
+    if (!isKnownWorktree) {
+      res.status(400).json({ error: 'Path is not a recognized git worktree' });
       return;
     }
 
@@ -1102,10 +1137,11 @@ async function main(): Promise<void> {
         res.status(400).json({ error: 'Path is not a recognized git worktree' });
         return;
       }
-    } catch {
-      // If git worktree list fails, fall back to the directory-name check
-      if (!isValidWorktreePath(worktreePath)) {
-        res.status(400).json({ error: 'Path is not inside a worktree directory' });
+    } catch (err) {
+      console.warn('[worktrees/delete] git worktree list failed for', repoPath, err instanceof Error ? err.message : err);
+      // Allow force-delete when git is broken (user explicitly wants cleanup)
+      if (!force) {
+        res.status(500).json({ error: 'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.' });
         return;
       }
     }

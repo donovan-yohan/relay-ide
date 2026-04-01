@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar, toggleSidebarCollapsed } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleActivityChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, refreshWorktreesEnriched, handleBackendStateChanged, handleActivityChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
@@ -469,10 +469,14 @@
         bootRefreshDone = true;
         reportFetch('auth', 'ok');
       }
-      refreshAll(isInitialBoot ? reportFetch : undefined).then(async () => {
+      refreshAll(isInitialBoot ? reportFetch : undefined, isInitialBoot ? { enrich: false } : undefined).then(async () => {
         await refreshTelemetry();
 
-        if (isInitialBoot) finishBoot();
+        if (isInitialBoot) {
+          finishBoot();
+          // Backfill PR info and staleness without racing a full refreshAll
+          refreshWorktreesEnriched();
+        }
         const params = new URLSearchParams(window.location.search);
         const sessionParam = params.get('session');
         if (sessionParam) {

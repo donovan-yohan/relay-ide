@@ -58,6 +58,12 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
     assert.equal(body.hasPIN, false, 'Server should report no PIN configured');
   } finally {
     child.kill('SIGTERM');
+    // Wait for the child to fully exit before cleaning up temp files.
+    // Without this, SQLite WAL/SHM files may still be open, causing ENOTEMPTY.
+    await new Promise<void>((resolve) => {
+      child.on('exit', () => resolve());
+      setTimeout(resolve, 3000);
+    });
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
