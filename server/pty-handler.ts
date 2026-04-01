@@ -97,6 +97,38 @@ function writeStatusLineScript(sessionId: string, dir: string, configDir: string
   return scriptPath;
 }
 
+/**
+ * Upgrade an existing hooks-settings.json to include statusLine if missing.
+ * Called on session restore to ensure sessions created before telemetry support
+ * get the relay script written to disk. The running Claude process will pick this
+ * up on its next statusLine poll cycle (Claude re-reads the settings file).
+ */
+export function upgradeHooksSettings(sessionId: string, configDir: string): boolean {
+  const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
+  const filePath = path.join(dir, 'hooks-settings.json');
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    if (settings.statusLine) return false; // already has statusLine
+  } catch {
+    return false; // file doesn't exist or is malformed
+  }
+
+  // Write the relay script and patch the settings file
+  try {
+    const statusLinePath = writeStatusLineScript(sessionId, dir, configDir);
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    settings.statusLine = { type: 'command', command: statusLinePath };
+    fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.warn(`[pty-handler] Failed to upgrade hooks settings for session ${sessionId}:`, err);
+    return false;
+  }
+}
+
 function writeHooksSettingsFile(sessionId: string, port: number, token: string, configDir: string): string {
   const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

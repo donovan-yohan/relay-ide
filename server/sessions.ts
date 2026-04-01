@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
-import { createPtySession } from './pty-handler.js';
+import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getPrForBranch, isStalePr, getWorkingTreeDiff } from './git.js';
 import { trackEvent } from './analytics.js';
@@ -473,6 +473,11 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         // Attach to surviving tmux session
         command = 'tmux';
         args = ['-u', 'attach-session', '-t', s.tmuxSessionName];
+        // Upgrade hooks-settings.json to include statusLine if missing (migration for pre-telemetry sessions)
+        if (s.hooksActive && defaultConfigDir) {
+          const upgraded = upgradeHooksSettings(s.id, defaultConfigDir);
+          if (upgraded) console.log(`[sessions] Upgraded hooks settings for session ${s.id} (added statusLine relay)`);
+        }
       } else {
         // Tmux session died — fall back to agent with continue args + preserved flags
         // Continue args first: Codex uses subcommands (resume --last) that must precede flags
