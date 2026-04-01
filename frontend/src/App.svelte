@@ -50,7 +50,7 @@
   import FileTreeSidebar from './components/FileTreeSidebar.svelte';
   import FileViewerPane from './components/FileViewerPane.svelte';
   import SplitPaneLayout from './components/SplitPaneLayout.svelte';
-  import { openFileTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
+  import { openFileTab, openHtmlTab, refreshHtmlTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -549,6 +549,10 @@
       } else if (msg.type === 'session-activity-changed') {
         // No changed-files refresh here — git watcher handles actual file changes.
         // Refreshing on every tool call (Read, Grep, etc.) caused request floods.
+      } else if (msg.type === 'browser-tab-opened') {
+        openHtmlTab(msg.filePath, msg.token);
+      } else if (msg.type === 'browser-tab-refreshed') {
+        refreshHtmlTab(msg.filePath);
       }
     });
 
