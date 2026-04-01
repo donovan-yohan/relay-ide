@@ -28,6 +28,22 @@ const BROWSE_DENYLIST = new Set([
   'node_modules', '.git', '.Trash', '__pycache__',
   '.cache', '.npm', '.yarn', '.nvm',
 ]);
+
+// ── Files-list cache (used by GET /workspaces/files-list) ──
+const filesListCache = new Map<string, { files: string[]; truncated: boolean; total: number; ts: number }>();
+const FILES_LIST_TTL = 30_000;
+const FILES_LIST_MAX = 50_000;
+
+export function clearFilesListCache(workspacePath?: string): void {
+  if (!workspacePath) { filesListCache.clear(); return; }
+  // Direct match (most common: watcher path = repo root)
+  if (filesListCache.delete(workspacePath)) return;
+  // Subdirectory match: watcher path may be a subdirectory of the cached repo root
+  for (const key of filesListCache.keys()) {
+    if (workspacePath.startsWith(key + path.sep)) { filesListCache.delete(key); return; }
+  }
+}
+
 const BROWSE_MAX_ENTRIES = 100;
 const BULK_MAX_PATHS = 50;
 
@@ -1092,6 +1108,37 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     } catch (err: unknown) {
       console.warn('[workspaces] /changed-files failed for', resolvedRepo, err instanceof Error ? err.message : String(err));
       res.status(500).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'Failed to get changed files' });
+    }
+  });
+
+  // GET /workspaces/files-list — list all files in a repo for quick-open picker
+  router.get('/files-list', async (req: Request, res: Response) => {
+    if (typeof req.query.path !== 'string') {
+      res.status(400).json({ files: [], truncated: false, total: 0, error: 'path parameter required' });
+      return;
+    }
+    const resolved = validateWorkspaceAccess(req.query.path);
+    if (!resolved) {
+      res.status(403).json({ files: [], truncated: false, total: 0, error: 'path not in configured workspaces' });
+      return;
+    }
+
+    const cached = filesListCache.get(resolved);
+    if (cached && Date.now() - cached.ts < FILES_LIST_TTL) {
+      res.json({ files: cached.files, truncated: cached.truncated, total: cached.total });
+      return;
+    }
+
+    try {
+      const { stdout } = await exec('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: resolved, maxBuffer: 10 * 1024 * 1024, timeout: 15_000 });
+      const allFiles = stdout.split('\0').filter(Boolean);
+      const truncated = allFiles.length > FILES_LIST_MAX;
+      const files = truncated ? allFiles.slice(0, FILES_LIST_MAX) : allFiles;
+      filesListCache.set(resolved, { files, truncated, total: allFiles.length, ts: Date.now() });
+      res.json({ files, truncated, total: allFiles.length });
+    } catch (err: unknown) {
+      console.warn('[workspaces] /files-list failed for', resolved, err instanceof Error ? err.message : String(err));
+      res.json({ files: [], truncated: false, total: 0, error: 'not a git repository or git not available' });
     }
   });
 

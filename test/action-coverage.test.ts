@@ -83,10 +83,11 @@ const ACTION_ALLOWLIST = [
   // Terminal (2)
   'terminal.scroll-top',
   'terminal.scroll-bottom',
-  // Navigation (3)
+  // Navigation (4)
   'navigation.previous-tab',
   'navigation.next-tab',
   'navigation.switch-to-tab',
+  'navigation.open-file',
 ] as const;
 
 const ALL_META: ActionMeta[] = [
