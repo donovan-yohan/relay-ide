@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, closeFileTab, closeAllFileTabs, type OpenFileTab } from '../lib/state/ui.svelte.js';
+  import { getUi, closeFileTab, closeAllFileTabs, refreshHtmlTab, type OpenFileTab } from '../lib/state/ui.svelte.js';
   import { getSessionState } from '../lib/state/sessions.svelte.js';
   import { fetchFileDiff } from '../lib/api.js';
   import { diffSourceToBase } from '../lib/diff-utils.js';
@@ -62,6 +62,7 @@
   $effect(() => {
     const tab = activeTab;
     if (!tab || !workspacePath) return;
+    if (tab.tabType === 'html') return;
     const key = cacheKey(tab.filePath);
     if (diffCache.has(key)) return;
     if (loadingPaths.has(key)) return;
@@ -135,13 +136,41 @@
     };
     return map[ext] ?? 'text';
   }
+
+  // ── HTML tab support ──
+  const globeIcon = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c-1.5 2-2 3.5-2 5.5s.5 3.5 2 5.5M7 1.5c1.5 2 2 3.5 2 5.5s-.5 3.5-2 5.5"/></svg>`;
+
+  let sandboxDismissed = $state(false);
+  let lastHtmlTabPath = $state('');
+
+  // Auto-dismiss sandbox notice after 4 seconds
+  $effect(() => {
+    if (activeTab?.tabType === 'html' && !sandboxDismissed) {
+      const timer = setTimeout(() => { sandboxDismissed = true; }, 4000);
+      return () => clearTimeout(timer);
+    }
+  });
+
+  // Reset dismissal when switching to a different HTML tab
+  $effect(() => {
+    if (activeTab?.tabType === 'html' && activeTab.filePath !== lastHtmlTabPath) {
+      lastHtmlTabPath = activeTab.filePath;
+      sandboxDismissed = false;
+    }
+  });
+
+  function handleRefresh(): void {
+    if (activeTab?.tabType === 'html' && activeTab.filePath) {
+      refreshHtmlTab(activeTab.filePath);
+    }
+  }
 </script>
 
 <div class="file-viewer">
   <!-- File tab bar -->
   <div class="file-tab-bar">
     <div class="tabs-scroll">
-      {#each ui.openFileTabs as tab (tab.filePath)}
+      {#each ui.openFileTabs as tab (tab.filePath + '::' + (tab.tabType ?? 'code'))}
         <div
           class="file-tab"
           class:active={ui.activeFileTabPath === tab.filePath}
@@ -152,6 +181,9 @@
           onkeydown={(e) => { if (e.key === 'Enter') handleTabClick(tab); }}
           title={tab.filePath}
         >
+          {#if tab.tabType === 'html'}
+            <span class="tab-icon">{@html globeIcon}</span>
+          {/if}
           <span class="tab-name">{tab.fileName}</span>
           {#if tab.isChanged}
             <span class="tab-badge">M</span>
@@ -168,6 +200,11 @@
       {#if activeTab?.isChanged}
         <button class="diff-mode-btn" onclick={toggleDiffViewMode} title="Toggle split/unified diff">
           {diffViewMode === 'unified' ? '[split]' : '[unified]'}
+        </button>
+      {/if}
+      {#if activeTab?.tabType === 'html'}
+        <button class="refresh-btn" onclick={handleRefresh} title="Reload HTML content">
+          [refresh]
         </button>
       {/if}
       {#if ui.openFileTabs.length > 1}
@@ -196,6 +233,21 @@
           <button class="retry-btn" onclick={handleRetry}>retry</button>
           <button class="close-btn" onclick={() => closeFileTab(activeTab!.filePath)}>close tab</button>
         </div>
+      </div>
+    {:else if activeTab.tabType === 'html' && activeTab.token}
+      <div class="html-viewer">
+        {#if !sandboxDismissed}
+          <div class="sandbox-notice">
+            <span class="notice-text">rendered in sandbox · some web features may not work</span>
+            <button class="notice-dismiss" onclick={() => { sandboxDismissed = true; }} aria-label="dismiss notice">×</button>
+          </div>
+        {/if}
+        <iframe
+          src="/browser-content/{activeTab.token}/{activeTab.fileName}"
+          sandbox="allow-scripts"
+          title="HTML preview: {activeTab.fileName}"
+          class="html-iframe"
+        ></iframe>
       </div>
     {:else if activeTab.isChanged && activeDiff}
       <!-- Diff view with line-click handler -->
@@ -470,5 +522,82 @@
 
   @keyframes braille-spin {
     to { content: '⠏'; }
+  }
+
+  /* HTML tab support */
+  .tab-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted, #888);
+    margin-right: 4px;
+  }
+
+  .file-tab.active .tab-icon {
+    color: var(--text, #e0e0e0);
+  }
+
+  .refresh-btn {
+    background: none;
+    border: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    cursor: pointer;
+    white-space: nowrap;
+    padding: 1px 6px;
+  }
+
+  .refresh-btn:hover {
+    color: var(--text, #e0e0e0);
+    border-color: var(--text-muted, #888);
+  }
+
+  .html-viewer {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .sandbox-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--border, #333);
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs, 0.75rem);
+    color: var(--text-muted, #888);
+    transition: opacity 0.3s ease-out;
+  }
+
+  .notice-text {
+    font-family: inherit;
+  }
+
+  .notice-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--font-size-sm, 0.8125rem);
+    padding: 0 4px;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .notice-dismiss:hover {
+    color: var(--text, #e0e0e0);
+  }
+
+  .html-iframe {
+    flex: 1;
+    width: 100%;
+    border: none;
+    background: white;
   }
 </style>
