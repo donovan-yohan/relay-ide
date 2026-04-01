@@ -9,7 +9,7 @@ import type { Request, Response } from 'express';
 import { loadConfig, saveConfig, resolveSessionSettings, writeMeta } from './config.js';
 import type { Config, Workspace, AgentType } from './types.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
-import { BranchCheckedOutInMainError, findOrCreateWorktreeForBranch } from './watcher.js';
+import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { detectGitRepo } from './workspaces.js';
 import type { CreateParams, CreateResult } from './sessions.js';
 
@@ -306,9 +306,6 @@ export function createWorkspaceGroupsRouter(
             const result = await findOrCreateWorktreeForBranch(repoPath, gitInfo.defaultBranch, execFn);
             return { repoPath, resolvedPath: result.worktreePath };
           } catch (err) {
-            if (err instanceof BranchCheckedOutInMainError) {
-              return { repoPath, resolvedPath: repoPath };
-            }
             return { repoPath, error: err instanceof Error ? err.message : 'worktree creation failed' };
           }
         }),

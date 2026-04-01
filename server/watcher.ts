@@ -8,14 +8,6 @@ const execFileAsync = promisify(execFile);
 
 export const WORKTREE_DIRS = ['.worktrees', '.claude/worktrees'];
 
-export class BranchCheckedOutInMainError extends Error {
-  readonly repoPath: string;
-  constructor(repoPath: string) {
-    super(`Branch is checked out in main worktree: ${repoPath}`);
-    this.name = 'BranchCheckedOutInMainError';
-    this.repoPath = repoPath;
-  }
-}
 
 function closeWatchers(watchers: fs.FSWatcher[]): void {
   for (const w of watchers) {
@@ -86,6 +78,7 @@ export interface FindOrCreateResult {
   branchName: string;
   dirName: string;
   existing: boolean;
+  isMain: boolean;
 }
 
 /**
@@ -100,31 +93,21 @@ export async function findOrCreateWorktreeForBranch(
   branch: string,
   execFn: (cmd: string, args: string[], opts: { cwd: string; timeout?: number }) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<FindOrCreateResult> {
-  // Check ALL worktrees including main repo
+  // Check if branch is already checked out in ANY worktree (including the main repo)
   try {
     const { stdout } = await execFn('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
-    const allEntries = parseAllWorktrees(stdout, repoPath);
-
-    for (const entry of allEntries) {
-      if (entry.branch === branch) {
-        if (entry.isMain) {
-          // Branch is checked out in the main repo — caller should open a repo-root session
-          throw new BranchCheckedOutInMainError(repoPath);
-        }
-        // Branch is in an existing sub-worktree — reuse it
-        return {
-          worktreePath: entry.path,
-          branchName: entry.branch,
-          dirName: entry.path.split('/').pop() || '',
-          existing: true,
-        };
-      }
+    const allWorktrees = parseAllWorktrees(stdout, repoPath);
+    const match = allWorktrees.find(wt => wt.branch === branch);
+    if (match) {
+      return {
+        worktreePath: match.path,
+        branchName: match.branch,
+        dirName: match.path.split('/').pop() || '',
+        existing: true,
+        isMain: match.isMain,
+      };
     }
   } catch (err) {
-    // Re-throw our own error
-    if (err instanceof BranchCheckedOutInMainError) {
-      throw err;
-    }
     // git worktree list failed — proceed with creation attempt
     console.warn('[watcher] git worktree list failed, proceeding with creation attempt:', err instanceof Error ? err.message : err);
   }
@@ -155,6 +138,7 @@ export async function findOrCreateWorktreeForBranch(
     branchName: branch,
     dirName,
     existing: false,
+    isMain: false,
   };
 }
 
@@ -236,10 +220,16 @@ export class WorktreeWatcher extends EventEmitter {
 export type BranchChangeCallback = (cwdPath: string, newBranch: string) => void;
 
 export class BranchWatcher {
-  private _watchers: fs.FSWatcher[] = [];
+  // Map headPath → { watcher, cwdPath } so we can recreate individual watchers
+  // after detection (git's atomic checkout can change the inode, killing kqueue watchers)
+  private _watcherMap = new Map<string, { watcher: fs.FSWatcher; cwdPath: string }>();
   private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _lastBranch = new Map<string, string>();
   private _callback: BranchChangeCallback;
+  /** Monotonic generation counter. Incremented on rebuild()/close() so that
+   *  in-flight async _readAndEmit calls from a prior generation don't
+   *  recreate watchers into the new (or cleared) _watcherMap. */
+  private _generation = 0;
 
   constructor(callback: BranchChangeCallback) {
     this._callback = callback;
@@ -307,26 +297,44 @@ export class BranchWatcher {
       if (match) this._lastBranch.set(cwdPath, match[1]!);
     } catch (_) {}
 
+    this._createWatcher(headPath, cwdPath);
+  }
+
+  /**
+   * Create (or recreate) an fs.watch() for a HEAD file. Tracked by headPath
+   * so we can close and recreate after detection — git's atomic checkout
+   * (write HEAD.lock, rename to HEAD) can change the file's inode, which
+   * silently kills kqueue-based watchers on macOS.
+   */
+  private _createWatcher(headPath: string, cwdPath: string): void {
+    // Close existing watcher for this path if any
+    const existing = this._watcherMap.get(headPath);
+    if (existing) {
+      try { existing.watcher.close(); } catch (_) {}
+    }
+
     try {
       const watcher = fs.watch(headPath, { persistent: false }, () => {
-        this._debouncedCheck(cwdPath);
+        this._debouncedCheck(headPath, cwdPath);
       });
       watcher.on('error', () => {});
-      this._watchers.push(watcher);
+      this._watcherMap.set(headPath, { watcher, cwdPath });
     } catch (_) {}
   }
 
-  private _debouncedCheck(cwdPath: string): void {
+  private _debouncedCheck(headPath: string, cwdPath: string): void {
     const existing = this._debounceTimers.get(cwdPath);
     if (existing) clearTimeout(existing);
 
+    // Capture generation so the async callback can detect stale invocations
+    const gen = this._generation;
     this._debounceTimers.set(cwdPath, setTimeout(() => {
       this._debounceTimers.delete(cwdPath);
-      this._readAndEmit(cwdPath);
+      this._readAndEmit(headPath, cwdPath, gen);
     }, 300));
   }
 
-  private async _readAndEmit(cwdPath: string): Promise<void> {
+  private async _readAndEmit(headPath: string, cwdPath: string, gen: number): Promise<void> {
     try {
       const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: cwdPath });
       const newBranch = stdout.trim();
@@ -338,11 +346,21 @@ export class BranchWatcher {
     } catch (_) {
       // Non-fatal — repo may be in detached HEAD or mid-rebase
     }
+
+    // Recreate the watcher — the inode may have changed due to atomic rename.
+    // Only recreate if the generation hasn't changed (rebuild/close didn't happen
+    // while git rev-parse was in flight).
+    if (this._generation === gen) {
+      this._createWatcher(headPath, cwdPath);
+    }
   }
 
   private _closeAll(): void {
-    closeWatchers(this._watchers);
-    this._watchers = [];
+    this._generation++;
+    for (const { watcher } of this._watcherMap.values()) {
+      try { watcher.close(); } catch (_) {}
+    }
+    this._watcherMap.clear();
     for (const timer of this._debounceTimers.values()) {
       clearTimeout(timer);
     }

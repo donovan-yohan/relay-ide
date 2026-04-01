@@ -141,6 +141,8 @@ function setupWebSocket(
     const ptyReplacedHandler = (newPty: IPty) => attachToPty(newPty);
     session.onPtyReplacedCallbacks.push(ptyReplacedHandler);
 
+    let lastActivityBroadcast = 0;
+
     ws.on('message', (msg) => {
       const str = msg.toString();
       try {
@@ -156,6 +158,13 @@ function setupWebSocket(
       } catch (_) {}
       // Use session.pty dynamically so writes go to current PTY
       session.pty.write(str);
+      // Update activity timestamp on user input (throttled broadcast to avoid storm)
+      const now = Date.now();
+      session.lastActivity = new Date(now).toISOString();
+      if (now - lastActivityBroadcast >= 2000) {
+        lastActivityBroadcast = now;
+        broadcastEvent('session-activity-changed', { sessionId: session.id, timestamp: session.lastActivity });
+      }
     });
 
     ws.on('close', () => {

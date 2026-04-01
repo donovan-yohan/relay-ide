@@ -1,7 +1,13 @@
 // Service worker for PWA install support and push notifications.
-// Does not cache — all requests pass through to the network.
+// Only intercept navigation requests (page loads). Let API calls, analytics,
+// and other subresource fetches go straight to the network without SW interference.
 self.addEventListener('fetch', function (event) {
-  event.respondWith(fetch(event.request));
+  if (event.request.mode !== 'navigate') return;
+  event.respondWith(
+    fetch(event.request).catch(function () {
+      return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
+    })
+  );
 });
 
 // Push notification handler

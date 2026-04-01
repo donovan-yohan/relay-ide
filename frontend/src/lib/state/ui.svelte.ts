@@ -61,6 +61,7 @@ let activeWorkspaceId = $state<string | null>((() => {
 })());
 let terminalFontSize = $state(loadTerminalFontSize());
 let hasHardwareKeyboard = $state(false);
+let keyboardOpen = $state(false);
 let fullPageDiff = $state<{
   workspacePath: string;
   file?: string | undefined;
@@ -91,6 +92,12 @@ let fileDiffViewMode = $state<DiffViewMode>((() => {
     if (stored === 'unified' || stored === 'side-by-side') return stored;
   } catch { /* localStorage unavailable */ }
   return 'unified';
+})());
+
+const WORD_WRAP_KEY = 'claude-remote-word-wrap';
+let fileWordWrap = $state((() => {
+  try { return localStorage.getItem(WORD_WRAP_KEY) === 'true'; }
+  catch { return false; }
 })());
 
 let rightSidebarVisible = $state(true);
@@ -154,6 +161,8 @@ export function getUi() {
     set terminalFontSize(v: number) { terminalFontSize = v; },
     get hasHardwareKeyboard() { return hasHardwareKeyboard; },
     set hasHardwareKeyboard(v: boolean) { hasHardwareKeyboard = v; },
+    get keyboardOpen() { return keyboardOpen; },
+    set keyboardOpen(v: boolean) { keyboardOpen = v; },
     get fullPageDiff() { return fullPageDiff; },
     set fullPageDiff(v: typeof fullPageDiff) { fullPageDiff = v; },
     // Right sidebar & file viewer
@@ -165,6 +174,12 @@ export function getUi() {
     set fileDiffViewMode(v: DiffViewMode) {
       fileDiffViewMode = v;
       try { localStorage.setItem(DIFF_VIEW_MODE_KEY, v); }
+      catch { /* localStorage unavailable */ }
+    },
+    get fileWordWrap() { return fileWordWrap; },
+    set fileWordWrap(v: boolean) {
+      fileWordWrap = v;
+      try { localStorage.setItem(WORD_WRAP_KEY, String(v)); }
       catch { /* localStorage unavailable */ }
     },
     get rightSidebarVisible() { return rightSidebarVisible; },

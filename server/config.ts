@@ -130,8 +130,12 @@ export function saveConfig(configPath: string, config: Config): void {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 }
 
+export function getConfigDir(configPath: string): string {
+  return path.dirname(configPath);
+}
+
 function metaDir(configPath: string): string {
-  return path.join(path.dirname(configPath), 'worktree-meta');
+  return path.join(getConfigDir(configPath), 'worktree-meta');
 }
 
 function metaFilePath(configPath: string, worktreePath: string): string {

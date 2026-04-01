@@ -11,12 +11,10 @@ Double-clicking a sidenav item (anywhere on the row) should toggle expand/collap
 
 **Scope:** Add click handler to the full row element, distinguish single-click (navigate) from double-click (toggle). **Files:** Sidebar workspace/repo row component.
 
-### Existing worktrees not detected — duplicate checkout fails
-Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree. The app used to detect existing worktrees and show them in the sidebar, but this is broken — only `everest-9436` shows, not the `rainier` worktree that has `tui-outline-aesthetic` checked out. Should detect all existing worktrees on load, show them in the sidebar, and redirect to the existing worktree instead of trying to create a duplicate.
+### ~~Existing worktrees not detected — duplicate checkout fails~~
+~~Opening a PR branch session fails with `fatal: 'tui-outline-aesthetic' is already used by worktree at '.worktrees/rainier'` because the branch is already checked out in another worktree.~~
 
-**Scope:** Fix worktree discovery (likely `git worktree list` parsing is broken or filtered), and fix the "open PR session" flow to check for existing checkouts before `git worktree add`. **Files:** `server/worktree-manager.ts`, sidebar worktree listing, session creation flow.
-
-**Added:** 2026-03-26
+**Completed:** v3.19.3 (2026-03-31) — `findOrCreateWorktreeForBranch` now uses `parseAllWorktrees` to detect branches in main repo. Returns `isMain: true` so server returns `worktreePath: null` for main-repo matches. Also added error toast system for user-visible error messages.
 
 ### Branch picker dropdown broken
 The new branch picker renders as a text input showing the current branch name but doesn't open a dropdown to select other branches. Likely a missing click handler or broken SearchableSelect binding.
@@ -33,21 +31,10 @@ Opening a session from a PR fails with `fatal: invalid reference` when the branc
 
 **Scope:** Add a fetch step in the worktree creation path when the ref doesn't exist locally. **Files:** `server/worktree-manager.ts` or session creation handler.
 
-### Sidenav branch name goes stale when agent switches branches
-Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.
+### ~~Sidenav branch name goes stale when agent switches branches~~
+~~Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.~~
 
-**Root cause:** The frontend has no periodic polling for session data. `refreshAll()` is only called on discrete events (WebSocket messages, user actions). The server's `GET /sessions` handler *does* refresh branch names (10s rate-limited `git rev-parse`), but nothing on the client calls it on an interval. The `ref-changed` WebSocket event only fires for upstream tracking ref changes (push/fetch), not local branch switches — and even when it fires, it only invalidates PR queries, not session data.
-
-**Fix options:**
-1. **Periodic poll:** Add a `setInterval` on the frontend that calls `refreshAll()` every ~15–30s
-2. **Filesystem watch:** Have the server watch `.git/HEAD` for each session's cwd and broadcast a `session-branch-changed` event
-3. **Hybrid:** Watch `.git/HEAD` for real-time detection, with a slow poll as fallback
-
-Option 2 is best — low overhead, instant updates, no wasted HTTP requests.
-
-**Scope:** Server: watch `.git/HEAD` per active session, broadcast branch change event. Frontend: handle the event and update session branch name. **Files:** `server/index.ts` or new watcher module, `server/ws.ts`, `frontend/src/App.svelte`, `frontend/src/lib/state/sessions.svelte.ts`.
-
-**Added:** 2026-03-28
+**Completed:** v3.19.3 (2026-03-31) — `BranchWatcher` watches `.git/HEAD` per active session (including worktrees), broadcasts `session-renamed` + `session-branch-changed` events. Frontend `handleBranchChanged()` updates session and sidebar item branch names in real time. Inode survival handled via watcher recreation after atomic checkout.
 
 ### Inactive sidenav repo items show stale "default" name and "master" branch
 Inactive repo items always show "default" as session name and "master" as branch, even when the repo is on a different branch or the session was renamed.
@@ -188,6 +175,42 @@ Add Warp/VS Code-style file utilities to the remote web UI.
 3. **Diff viewer (full-page):** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs. Phase 2's inline DiffViewer handles 90% — Phase 3 adds full-page mode, side-by-side toggle, keyboard nav, URL-addressable `/diff` route
 4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center *(low priority)*
 
+### Verification-First Testing Strategy
+Inspired by ["Cost to Implement vs Verify"](https://clifford.ressel.fyi/blog/cost-to-implement-vs-verify/) — as we lean harder on agents for implementation, our ability to *verify* what they produce must scale proportionally. Today we have `npm test` (unit tests via `node --test`) and nothing else. The goal: full end-to-end verification infrastructure that agents can both run against and author tests for.
+
+**Core principle:** "How will I verify what was built?" must precede every agentic coding task. Reduce Cv (cost to verify) so agents can be delegated freely.
+
+**Phases:**
+
+1. **Sandbox mode (`--sandbox`):** Isolated server instance that can run the full app without affecting the production instance. Extends the existing `--preview` TODO (Small Features) but goes further:
+   - Ephemeral data directory (temp config, temp sessions) — no writes to `~/.config/claude-remote-cli/`
+   - Isolated port range (e.g. 7780-7789) to avoid conflicts with a running production server
+   - Mock PTY that replays canned terminal output for deterministic test scenarios
+   - Teardown on exit — no state leaks between runs
+   - `npm run sandbox` script for local dev, usable in CI
+
+2. **Playwright e2e foundation:** Build on the existing "Playwright UI test suite" TODO but with sandbox as the backend instead of just preview mode:
+   - `playwright` devDependency, `playwright.config.ts`, `e2e/` directory
+   - Sandbox server auto-start/stop in `globalSetup`/`globalTeardown`
+   - `npm run test:e2e` script, CI workflow (`.github/workflows/test-e2e.yml`)
+   - Core workflow tests: login → add repo → create session → verify terminal renders → create worktree → view changed files → close session
+   - Page object model for stable selectors across UI changes
+
+3. **Agent-authored test coverage:** Enable the coding agent (Claude/Codex) to write and run Playwright tests as part of its workflow:
+   - Teach the agent (via CLAUDE.md or skill) to write a Playwright test *before* or *after* implementing a UI feature
+   - Integrate the TDD superpowers skill — explore how `superpowers:test-driven-development` can drive the write-test-first → implement → verify loop for frontend work
+   - Agent can run `npm run test:e2e -- --grep "feature name"` to verify its own work
+   - Tests become the verification artifact: if the test passes, the feature is verified
+
+4. **Verification CI gate:** No PR merges without passing e2e tests for affected areas:
+   - Map changed files → relevant e2e test suites (e.g. changes to sidebar components → run sidebar e2e tests)
+   - Required status check on PRs
+   - Test failure screenshots and traces uploaded as artifacts
+
+**Supersedes:** "UI preview mode" and "Playwright UI test suite" TODOs in Small Features (those become substeps of phases 1-2).
+
+**Added:** 2026-03-31
+
 ### Command Center Audit
 The command palette needs a full overhaul.
 
@@ -229,6 +252,13 @@ Find out what "multi-repo mode" and "proactive mode" mean in gstack — how do t
 
 **Action:** Read gstack docs/source, try them out, write a summary of what's useful.
 
+### Research Claude HUD plugin — expose session info in our UI
+The [Claude HUD](https://github.com/) plugin surfaces real-time Claude Code session internals as a status line: model type, context window usage (color-coded meter), tool activity (files read/edited/searched), subagent status (type, task, runtime), and todo progress. Research how it hooks into the engine and evaluate exposing similar data in our web UI.
+
+**Action:** Install Claude HUD, read its source, identify what APIs/hooks it uses to pull session data (context usage, active tools, subagent list). Prototype a session info panel or status bar in the frontend showing context %, active model, tool activity, and agent count for the active session.
+
+**Added:** 2026-03-31
+
 ### Linear CLI integration — proper ticket source tracking
 Re-add Linear integration via CLI with proper `BranchLink.source` field support (no prefix-length heuristic).
 
@@ -264,6 +294,54 @@ Make it fast and easy to spawn agents of different types from the new tab button
 
 ### Mobile: hide top bar when keyboard is open
 On mobile, hide top bar UI elements (tabs at minimum) when the software keyboard is open to maximize reading/terminal space.
+
+### Bug: Clicking blinking+bold sidenav item doesn't always clear read status
+Clicking a sidenav item that has unread attention state (blinking + bold) sometimes fails to clear it. The item stays highlighted as if it still has unread activity.
+
+**Scope:** Debug the click handler that clears attention/unread state — likely a race condition or missed state update when the attention flag is set at the same time as the click. **Files:** Sidebar session item component, attention/read state management.
+
+**Added:** 2026-03-31
+
+### Bug: Sidenav colored bars are unclear — audit needed
+The colored bars/indicators next to sidenav items have no obvious meaning. Need to audit what each color/state represents, whether the mapping is correct, and whether it's communicating anything useful. If not, redesign or remove.
+
+**Scope:** Trace the code that renders sidebar status indicators, document what each color maps to, compare against actual session states, and decide whether to clarify, redesign, or remove. **Files:** Sidebar session item component, session state types, any status color mapping logic.
+
+**Added:** 2026-03-31
+
+### Missing hover tooltips on buttons
+No buttons in the UI have tooltips on hover. Users have to guess what icon buttons do. Add tooltips to all icon/action buttons across the app — sidebar, toolbar, session tabs, PR bar, etc.
+
+**Scope:** Add a tooltip component (or use an existing one), then sweep all icon buttons and add descriptive tooltips. Include the keyboard shortcut in the tooltip where applicable. **Files:** All components with icon buttons; may need a shared Tooltip component.
+
+**Added:** 2026-03-31
+
+### Command center discoverability — funnel users into it
+Users don't know the command center exists. Add entry points that guide them there: empty states, onboarding hints, a persistent shortcut indicator (e.g. `⌘K` badge), and contextual nudges when users look lost or try to do something the command center handles.
+
+**Scope:** Identify all places where a command center nudge makes sense, add subtle affordances. **Files:** Sidebar header, empty states, onboarding flow, toolbar.
+
+**Added:** 2026-03-31
+
+### PR table missing branch info
+The repo PR table doesn't show the PR's source branch or target branch. Add columns or labels showing `head → base` branch names so users can tell at a glance which branch a PR is on and where it's merging to.
+
+**Scope:** Add branch info to the PR table rows. Data likely already available from the GitHub API response. **Files:** PR table component, PR data types if branch fields aren't passed through.
+
+**Added:** 2026-03-31
+
+### Optimistic UI for long-running actions
+Many actions (creating worktrees, deleting worktrees, session creation, etc.) block the UI while the server processes them. Users can click away mid-operation, causing janky states. Switch to optimistic updates: immediately reflect the expected state in the UI, then roll back and show a meaningful toast on failure.
+
+**Key areas:**
+- **Worktree creation:** Immediately add the worktree item to the sidebar, show a loading indicator, roll back + toast on failure
+- **Worktree deletion:** Immediately remove from sidebar, roll back + toast on failure
+- **Session creation/close:** Same pattern
+- **Any other server-round-trip actions** that currently leave the UI unresponsive
+
+**Scope:** Add an optimistic update pattern (update local state → fire request → confirm or roll back), a toast notification system for errors, and apply to all long-running UI actions. **Files:** Session/worktree state stores, sidebar components, toast system (may need new component), all action handlers that hit the server.
+
+**Added:** 2026-03-31
 
 ### Bug: PR refresh shows stale data
 The refresh button sometimes doesn't actually update PR state. Examples: PR is created but clicking refresh doesn't show PR info; PR is merged but old state persists until a full browser tab refresh.

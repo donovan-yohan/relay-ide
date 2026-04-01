@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SessionSummary } from '../lib/types.js';
+  import { getUi } from '../lib/state/ui.svelte.js';
 
   let {
     sessions,
@@ -18,6 +19,8 @@
     onNewTerminal: () => void;
     onCustomize: () => void;
   } = $props();
+
+  const ui = getUi();
 
   let newMenuOpen = $state(false);
   let newMenuBtnEl = $state<HTMLButtonElement | null>(null);
@@ -110,7 +113,7 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<div class="session-tab-bar" role="tablist" aria-label="Sessions">
+<div class="session-tab-bar" hidden={ui.keyboardOpen} role="tablist" aria-label="Sessions">
   <div class="tabs-scroll">
     {#each sessions as session (session.id)}
       {@const isActive = session.id === activeSessionId}
@@ -225,6 +228,7 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);

@@ -358,7 +358,6 @@
     flex-direction: column;
     height: 100%;
     background: var(--bg, #000);
-    border-left: 1px solid var(--border, #333);
     overflow: hidden;
     min-width: 160px;
   }
@@ -377,6 +376,7 @@
     background: none;
     border: none;
     border-bottom: 1px solid transparent;
+    margin-bottom: -1px;
     font-family: var(--font-mono, monospace);
     font-size: var(--font-size-xs, 0.75rem);
     color: var(--text-muted, #888);

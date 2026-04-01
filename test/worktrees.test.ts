@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch, BranchCheckedOutInMainError } from '../server/watcher.js';
+import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees, findOrCreateWorktreeForBranch } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 import { generateTmuxSessionName } from '../server/pty-handler.js';
 
@@ -504,7 +504,7 @@ describe('repo-scoped tmux naming', () => {
 });
 
 describe('findOrCreateWorktreeForBranch', () => {
-  it('returns branch_checked_out_in_main when branch is in main worktree', async () => {
+  it('returns existing: true and isMain: true when branch is in main worktree', async () => {
     const repoPath = '/Users/me/code/my-repo';
     const stdout = [
       `worktree ${repoPath}`,
@@ -518,13 +518,11 @@ describe('findOrCreateWorktreeForBranch', () => {
       throw new Error('unexpected call');
     };
 
-    try {
-      await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
-      assert.fail('Expected error to be thrown');
-    } catch (err) {
-      assert.ok(err instanceof BranchCheckedOutInMainError);
-      assert.equal(err.repoPath, repoPath);
-    }
+    const result = await findOrCreateWorktreeForBranch(repoPath, 'nightly', exec);
+    assert.equal(result.existing, true);
+    assert.equal(result.isMain, true);
+    assert.equal(result.worktreePath, repoPath);
+    assert.equal(result.branchName, 'nightly');
   });
 
   it('returns existing worktree when branch is in a sub-worktree', async () => {
@@ -547,6 +545,7 @@ describe('findOrCreateWorktreeForBranch', () => {
 
     const result = await findOrCreateWorktreeForBranch(repoPath, 'fix/auth', exec);
     assert.equal(result.existing, true);
+    assert.equal(result.isMain, false);
     assert.equal(result.worktreePath, '/Users/me/code/my-repo/.worktrees/fix-auth');
   });
 
@@ -569,6 +568,7 @@ describe('findOrCreateWorktreeForBranch', () => {
 
     const result = await findOrCreateWorktreeForBranch(repoPath, 'feat/new', exec);
     assert.equal(result.existing, false);
+    assert.equal(result.isMain, false);
     assert.equal(result.branchName, 'feat/new');
   });
 });

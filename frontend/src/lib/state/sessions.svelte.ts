@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
+import type { CurrentActivity, SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
 import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
@@ -134,10 +134,20 @@ async function timed<T>(
   }
 }
 
-export async function refreshAll(report?: FetchReporter): Promise<void> {
+/** Refresh only worktrees state (with enrichment). Used after boot to backfill PR/staleness data without racing a full refreshAll. */
+export async function refreshWorktreesEnriched(): Promise<void> {
+  try {
+    worktrees = await api.fetchWorktrees(true);
+  } catch (err) {
+    console.warn('[refreshWorktreesEnriched] failed:', err);
+  }
+}
+
+export async function refreshAll(report?: FetchReporter, opts?: { enrich?: boolean }): Promise<void> {
+  const enrich = opts?.enrich ?? true;
   const [sResult, wResult, wsResult, wgResult] = await Promise.all([
     timed('sessions', api.fetchSessions, v => `${v.length} active`, report),
-    timed('worktrees', api.fetchWorktrees, v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
+    timed('worktrees', () => api.fetchWorktrees(enrich), v => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
     timed('workspaces', api.fetchWorkspaces, v => `${v.length} ${v.length === 1 ? 'repo' : 'repos'}`, report),
     timed('groups', api.fetchWorkspaceGroups, v => `${v.length} ${v.length === 1 ? 'group' : 'groups'}`, report),
   ]);
@@ -223,6 +233,19 @@ export function handleBranchChanged(sessionId: string, branch: string): void {
   } else {
     console.debug('[sessions] handleBranchChanged: sidebar item not found for session', sessionId);
   }
+}
+
+export function handleActivityChanged(sessionId: string, timestamp?: string, currentActivity?: CurrentActivity | null): void {
+  const now = timestamp || new Date().toISOString();
+  const session = sessions.find(s => s.id === sessionId);
+  if (session) {
+    session.lastActivity = now;
+    if (currentActivity !== undefined) {
+      session.currentActivity = currentActivity ?? undefined;
+    }
+  }
+  const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
+  if (item) item.lastActivity = now;
 }
 
 export function handleBackendStateChanged(sessionId: string, backendState: BackendDisplayState, permissionType?: 'approval' | 'question'): void {
