@@ -65,8 +65,11 @@ function charScore(
   }
 
   // Word boundary / start of string
-  if (ti === 0 || isSeparator(target[ti - 1]!)) {
-    score += target[ti - 1] === '/' || target[ti - 1] === '\\' ? PATH_SEPARATOR_BONUS : WORD_BOUNDARY_BONUS;
+  if (ti === 0) {
+    score += WORD_BOUNDARY_BONUS;
+  } else if (isSeparator(target[ti - 1]!)) {
+    const prev = target[ti - 1]!;
+    score += prev === '/' || prev === '\\' ? PATH_SEPARATOR_BONUS : WORD_BOUNDARY_BONUS;
   }
 
   // CamelCase transition (uppercase after lowercase)

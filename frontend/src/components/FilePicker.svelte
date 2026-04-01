@@ -76,8 +76,23 @@
     let candidates: { path: string; result: ScoredResult }[];
 
     if (!q) {
-      // No query: show all files with a neutral score for section filtering
-      candidates = allFiles.map(p => ({ path: p, result: { score: 0, matches: [] } }));
+      // No query: build a small subset for sections (avoids mapping all 50K files)
+      const MAX_NEUTRAL = 64; // above 5 + 10 + 20 visible items
+      const seen = new Set<string>();
+      const orderedPaths: string[] = [];
+      for (const tab of recentFiles) {
+        if (fileSet.has(tab.filePath) && !seen.has(tab.filePath)) { seen.add(tab.filePath); orderedPaths.push(tab.filePath); }
+        if (orderedPaths.length >= MAX_NEUTRAL) break;
+      }
+      for (const p of changedFiles) {
+        if (fileSet.has(p) && !seen.has(p)) { seen.add(p); orderedPaths.push(p); }
+        if (orderedPaths.length >= MAX_NEUTRAL) break;
+      }
+      for (const p of allFiles) {
+        if (!seen.has(p)) { seen.add(p); orderedPaths.push(p); }
+        if (orderedPaths.length >= MAX_NEUTRAL) break;
+      }
+      candidates = orderedPaths.map(p => ({ path: p, result: { score: 0, matches: [] } }));
     } else {
       // Score and filter
       candidates = [];
@@ -95,7 +110,7 @@
         filename: lastSep >= 0 ? c.path.slice(lastSep + 1) : c.path,
         directory: lastSep >= 0 ? c.path.slice(0, lastSep + 1) : '',
         result: c.result,
-        status: changedSet.has(c.path) ? 'modified' as FileChangeStatus : undefined,
+        status: undefined, // per-file status not available from lastChangedFiles (path-only)
       };
     });
   });
@@ -159,17 +174,33 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return; }
-    if (e.key === 'ArrowDown') { e.preventDefault(); focusedIndex = Math.min(focusedIndex + 1, flatItems.length - 1); scrollFocusedIntoView(); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); focusedIndex = Math.max(focusedIndex - 1, 0); scrollFocusedIntoView(); return; }
+
+    const hasItems = flatItems.length > 0;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!hasItems) return;
+      focusedIndex = Math.min(focusedIndex + 1, flatItems.length - 1);
+      scrollFocusedIntoView();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!hasItems) return;
+      focusedIndex = Math.max(focusedIndex - 1, 0);
+      scrollFocusedIntoView();
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (!hasItems) return;
       const item = flatItems[focusedIndex];
       if (item) onSelect(item.path, changedSet.has(item.path));
       return;
     }
     if (e.key === 'Tab') {
       e.preventDefault();
-      if (sectionStarts.length === 0) return;
+      if (!hasItems || sectionStarts.length === 0) return;
       // Find which section we're currently in
       let currentSection = 0;
       for (let i = sectionStarts.length - 1; i >= 0; i--) {
