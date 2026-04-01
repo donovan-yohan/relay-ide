@@ -70,10 +70,14 @@ let fullPageDiff = $state<{
 // ── Right sidebar & file viewer state ──
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 
+export type FileTabType = 'diff' | 'code' | 'html';
+
 export interface OpenFileTab {
   filePath: string;
   fileName: string;
   isChanged: boolean; // true = show diff, false = show raw content
+  tabType?: FileTabType;  // undefined = legacy diff/code (backward compat)
+  token?: string;         // content token for html tabs
 }
 
 let fileDiffSource = $state<'working' | 'staged' | 'branch'>('working');
@@ -203,14 +207,22 @@ export function saveFileViewerRatio(): void {
   catch { /* localStorage unavailable */ }
 }
 
-export function openFileTab(filePath: string, isChanged: boolean): void {
+export function openFileTab(filePath: string, isChanged: boolean, tabType?: FileTabType, token?: string): void {
   const fileName = filePath.split('/').pop() ?? filePath;
-  const existing = openFileTabs.find(t => t.filePath === filePath);
+  const matchType = tabType ?? (isChanged ? 'diff' : 'code');
+  const existing = openFileTabs.find(t => t.filePath === filePath && (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType);
   if (!existing) {
-    openFileTabs = [...openFileTabs, { filePath, fileName, isChanged }];
-  } else if (existing.isChanged !== isChanged) {
-    // Update existing tab's mode if reopened from a different context (all-files vs changes)
-    openFileTabs = openFileTabs.map(t => t.filePath === filePath ? { ...t, isChanged } : t);
+    const newTab: OpenFileTab = { filePath, fileName, isChanged };
+    if (tabType) newTab.tabType = tabType;
+    if (token) newTab.token = token;
+    openFileTabs = [...openFileTabs, newTab];
+  } else if (existing.isChanged !== isChanged || existing.token !== token) {
+    openFileTabs = openFileTabs.map(t => {
+      if (t.filePath !== filePath || (t.tabType ?? (t.isChanged ? 'diff' : 'code')) !== matchType) return t;
+      const updated: OpenFileTab = { ...t, isChanged };
+      if (token !== undefined) updated.token = token;
+      return updated;
+    });
   }
   activeFileTabPath = filePath;
 }
@@ -225,6 +237,23 @@ export function closeFileTab(filePath: string): void {
 export function closeAllFileTabs(): void {
   openFileTabs = [];
   activeFileTabPath = null;
+}
+
+export function openHtmlTab(filePath: string, token: string): void {
+  openFileTab(filePath, false, 'html', token);
+}
+
+export function refreshHtmlTab(filePath: string): void {
+  const tab = openFileTabs.find(t => t.filePath === filePath && t.tabType === 'html');
+  if (tab && tab.token) {
+    const baseToken = tab.token.split('?')[0];
+    openFileTabs = openFileTabs.map(t =>
+      t.filePath === filePath && t.tabType === 'html'
+        ? { ...t, token: `${baseToken}?t=${Date.now()}` }
+        : t
+    );
+    activeFileTabPath = filePath;
+  }
 }
 export function saveSidebarWidth(): void {
   try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth)); }
