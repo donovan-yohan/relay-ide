@@ -52,22 +52,46 @@ function readGlobalStatusLineCommand(): string {
   }
 }
 
-function writeStatusLineScript(sessionId: string, dir: string, configDir: string): string {
-  const scriptPath = path.join(dir, 'relay-statusline.sh');
+export function buildStatusLineRelayScript(sessionId: string, configDir: string, globalCmd: string): string {
   const telemetryDir = path.join(configDir, 'telemetry');
   const telemetryPath = path.join(telemetryDir, `${sessionId}.json`);
-  const globalCmd = readGlobalStatusLineCommand();
-  const script = `#!/usr/bin/env bash
-input=$(cat)
+  const tempPattern = `${telemetryPath}.tmp.XXXXXX`;
+  return `#!/usr/bin/env bash
+set -u
 mkdir -p ${shellQuote(telemetryDir)}
-printf '%s\n' "$input" > ${shellQuote(telemetryPath)}
+tmp_file=$(mktemp ${shellQuote(tempPattern)})
+cleanup() {
+  rm -f "$tmp_file"
+}
+trap cleanup EXIT
 GLOBAL_CMD=${shellQuote(globalCmd)}
 if [ -n "$GLOBAL_CMD" ] && [ -x "$GLOBAL_CMD" ]; then
-  printf '%s\n' "$input" | "$GLOBAL_CMD"
+  tee "$tmp_file" | "$GLOBAL_CMD"
+  pipeline_statuses=("\${PIPESTATUS[@]}")
 else
-  printf '%s\n' "$input" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; console.log(\`\${model} | \${remaining}% ctx\`); } catch { console.log("Claude | ?% ctx"); } });'
+  tee "$tmp_file" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; console.log(\`\${model} | \${remaining}% ctx\`); } catch { console.log("Claude | ?% ctx"); } });'
+  pipeline_statuses=("\${PIPESTATUS[@]}")
 fi
+
+pipeline_status=0
+for status in "\${pipeline_statuses[@]}"; do
+  if [ "$status" -ne 0 ]; then
+    pipeline_status=$status
+  fi
+done
+
+if [ "\${pipeline_statuses[0]}" -eq 0 ]; then
+  mv "$tmp_file" ${shellQuote(telemetryPath)}
+  trap - EXIT
+fi
+
+exit "$pipeline_status"
 `;
+}
+
+function writeStatusLineScript(sessionId: string, dir: string, configDir: string): string {
+  const scriptPath = path.join(dir, 'relay-statusline.sh');
+  const script = buildStatusLineRelayScript(sessionId, configDir, readGlobalStatusLineCommand());
   fs.writeFileSync(scriptPath, script, 'utf-8');
   fs.chmodSync(scriptPath, 0o755);
   return scriptPath;

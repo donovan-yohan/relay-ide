@@ -113,6 +113,7 @@ export interface TelemetryData {
   contextWindowSize: number;
   costUsd: number | null;
   source: 'statusLine' | 'jsonl';
+  updatedAt: string;
 }
 
 export interface AccountTelemetry {

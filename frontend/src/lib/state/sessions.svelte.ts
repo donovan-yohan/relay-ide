@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
+import type { CurrentActivity, SessionSummary, WorktreeInfo, Repo, SidebarItem, Workspace } from '../types.js';
 import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import type { BackendDisplayState } from './display-state.js';
@@ -225,10 +225,15 @@ export function handleBranchChanged(sessionId: string, branch: string): void {
   }
 }
 
-export function handleActivityChanged(sessionId: string, timestamp?: string): void {
+export function handleActivityChanged(sessionId: string, timestamp?: string, currentActivity?: CurrentActivity | null): void {
   const now = timestamp || new Date().toISOString();
   const session = sessions.find(s => s.id === sessionId);
-  if (session) session.lastActivity = now;
+  if (session) {
+    session.lastActivity = now;
+    if (currentActivity !== undefined) {
+      session.currentActivity = currentActivity ?? undefined;
+    }
+  }
   const item = sidebarItems.find(i => i.sessions.some(s => s.id === sessionId));
   if (item) item.lastActivity = now;
 }

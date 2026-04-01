@@ -99,8 +99,9 @@ test('parses session telemetry from the statusLine file', () => {
 
   startTelemetry(makeDeps(['abc-123'], events));
 
+  const session = getTelemetryForSession('abc-123');
   const account = getAccountTelemetry();
-  assert.deepEqual(getTelemetryForSession('abc-123'), {
+  assert.deepEqual(session, {
     sessionId: 'abc-123',
     model: 'Claude Opus 4.6',
     totalInputTokens: 12400,
@@ -111,6 +112,7 @@ test('parses session telemetry from the statusLine file', () => {
     contextWindowSize: 200000,
     costUsd: 0.42,
     source: 'statusLine',
+    updatedAt: session?.updatedAt,
   });
 
   assert.deepEqual(account, {
@@ -151,6 +153,7 @@ test('inactive sessions are pruned once active telemetry is available', () => {
         contextWindowSize: 999,
         costUsd: 1.23,
         source: 'statusLine',
+        updatedAt: '2026-03-31T17:00:00Z',
       },
     },
     account: null,
@@ -194,6 +197,7 @@ test('restores pending telemetry from disk on startup', () => {
         contextWindowSize: 999,
         costUsd: 1.23,
         source: 'statusLine',
+        updatedAt: '2026-03-31T18:00:00Z',
       },
     },
     account: {
@@ -220,6 +224,7 @@ test('restores pending telemetry from disk on startup', () => {
     contextWindowSize: 999,
     costUsd: 1.23,
     source: 'statusLine',
+    updatedAt: '2026-03-31T18:00:00Z',
   });
   assert.deepEqual(getAccountTelemetry(), restored.account);
   assert.equal(fs.existsSync(pendingPath), false, 'pending telemetry should be cleared after restore');
@@ -242,6 +247,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
         contextWindowSize: 123456,
         costUsd: 4.56,
         source: 'statusLine',
+        updatedAt: '2026-03-31T18:00:00Z',
       },
     },
     account: {
@@ -283,6 +289,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
         contextWindowSize: 123456,
         costUsd: 4.56,
         source: 'statusLine',
+        updatedAt: '2026-03-31T18:00:00Z',
       },
     });
 
@@ -295,4 +302,37 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
       else resolve();
     });
   }
+});
+
+test('stopTelemetry ignores pending persistence write failures', () => {
+  const blockedPath = path.join(tmpDir, 'not-a-directory');
+  fs.writeFileSync(blockedPath, 'blocked');
+
+  startTelemetry(makeDeps([], [], blockedPath));
+
+  assert.doesNotThrow(() => {
+    stopTelemetry();
+  });
+});
+
+test('collectTelemetry reuses a single active session snapshot per poll', () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+  let calls = 0;
+
+  writeStatusLineFile('abc-123', sampleStatusLinePayload());
+
+  startTelemetry({
+    configDir: tmpDir,
+    getActiveSessions: () => {
+      calls++;
+      return [makeSession('abc-123')];
+    },
+    broadcastEvent: (type, data) => {
+      if (data === undefined) events.push({ type });
+      else events.push({ type, data });
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(events.filter((event) => event.type === 'session-telemetry').length, 1);
 });

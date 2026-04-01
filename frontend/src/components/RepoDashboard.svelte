@@ -5,11 +5,12 @@
   import { formatRelativeTime } from '../lib/utils.js';
   import type { PullRequest, ActivityEntry, DashboardData } from '../lib/types.js';
   import { getSessionState } from '../lib/state/sessions.svelte.js';
-  import { getTelemetryState } from '../lib/state/telemetry.svelte.js';
+  import { getTelemetryState, summarizeSessionSetTelemetry } from '../lib/state/telemetry.svelte.js';
   import DataTable from './DataTable.svelte';
   import type { Column } from './DataTable.svelte';
   import StatusDot from './StatusDot.svelte';
   import TuiButton from './TuiButton.svelte';
+  import TuiProgress from './TuiProgress.svelte';
   import { derivePrDotStatus } from '../lib/pr-status.js';
 
   let {
@@ -32,6 +33,9 @@
     onOpenPrSession: (pr: PullRequest) => void;
   } = $props();
 
+  const sessionState = getSessionState();
+  const telemetryState = getTelemetryState();
+
   const dashQuery = createQuery<DashboardData>(() => ({
     queryKey: ['dashboard', repoPath],
     queryFn: () => fetchDashboard(repoPath),
@@ -42,8 +46,9 @@
   let data = $derived(dashQuery.data);
   let isLoading = $derived(dashQuery.isLoading);
   let isError = $derived(dashQuery.isError);
-  const sessionState = getSessionState();
-  const telemetry = getTelemetryState();
+  let repoSessions = $derived(sessionState.sessions.filter((session) => session.repoPath === repoPath));
+  let repoTelemetry = $derived(summarizeSessionSetTelemetry(repoSessions));
+  let accountTelemetry = $derived(telemetryState.accountTelemetry);
 
   const prColumns: Column[] = [
     { key: 'status', label: 'St', sortable: false, width: '36px' },
@@ -65,6 +70,39 @@
     if (!entry.branches || entry.branches.length === 0) return '';
     return '(' + entry.branches.join(', ') + ')';
   }
+
+  function compactCount(value: number): string {
+    if (value < 1000) return String(Math.round(value));
+    if (value < 1_000_000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+
+  function formatResetAt(value: string | null | undefined): string {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+    const now = new Date();
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    if (sameDay) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  let sessionCoveragePercent = $derived(
+    repoTelemetry.totalSessions > 0
+      ? Math.round((repoTelemetry.trackedSessions / repoTelemetry.totalSessions) * 100)
+      : 0
+  );
+
+  let contextPercent = $derived(
+    repoTelemetry.averageContextPercent !== null
+      ? Math.max(0, Math.min(100, Math.round(repoTelemetry.averageContextPercent)))
+      : -1
+  );
 
   let searchQuery = $state('');
   let sortBy = $state('age');
@@ -92,27 +130,6 @@
     });
     return prs;
   });
-
-  function formatTokens(value: number): string {
-    if (!Number.isFinite(value) || value <= 0) return '0';
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-    return String(Math.round(value));
-  }
-
-  let repoUsage = $derived.by(() => {
-    const tracked = sessionState.sessions
-      .filter((session) => session.repoPath === repoPath)
-      .map((session) => telemetry.sessionTelemetry.get(session.id))
-      .filter((entry): entry is NonNullable<typeof entry> => !!entry);
-
-    return tracked.reduce((totals, entry) => ({
-      sessions: totals.sessions + 1,
-      input: totals.input + entry.totalInputTokens,
-      output: totals.output + entry.totalOutputTokens,
-      cache: totals.cache + entry.totalCacheRead + entry.totalCacheWrite,
-    }), { sessions: 0, input: 0, output: 0, cache: 0 });
-  });
 </script>
 
 <div class="repo-dashboard">
@@ -123,31 +140,69 @@
     </div>
   {:else}
     <section class="dashboard-section">
-      <div class="section-heading">usage</div>
-      {#if repoUsage.sessions === 0}
-        <div class="section-message">no telemetry data available</div>
-      {:else}
-        <div class="usage-grid">
-          <div class="usage-row"><span>sessions tracked</span><span>{repoUsage.sessions}</span></div>
-          <div class="usage-row"><span>tokens</span><span>↓{formatTokens(repoUsage.input)} ↑{formatTokens(repoUsage.output)}</span></div>
-          <div class="usage-row"><span>cache</span><span>{formatTokens(repoUsage.cache)}</span></div>
+      <div class="section-heading">usage this window</div>
+      <div class="usage-panel">
+        <div class="usage-row">
+          <span class="usage-label">sessions tracked</span>
+          <span class="usage-bar">
+            <TuiProgress variant="bar" value={sessionCoveragePercent} width={14} />
+          </span>
+          <span class="usage-value">
+            {repoTelemetry.trackedSessions} of {repoTelemetry.totalSessions}
+            {#if repoTelemetry.totalSessions > repoTelemetry.trackedSessions}
+              ({repoTelemetry.totalSessions - repoTelemetry.trackedSessions} outside relay)
+            {/if}
+          </span>
         </div>
-      {/if}
 
-      {#if telemetry.accountTelemetry}
-        <div class="rate-limit-list">
-          <div class="rate-limit-row">
-            <span>5-hour</span>
-            <div class="rate-limit-bar"><div class="rate-limit-fill" style:width={`${Math.max(0, telemetry.accountTelemetry.fiveHourUsedPercent)}%`}></div></div>
-            <span>{Math.round(telemetry.accountTelemetry.fiveHourUsedPercent)}%</span>
-          </div>
-          <div class="rate-limit-row">
-            <span>7-day</span>
-            <div class="rate-limit-bar"><div class="rate-limit-fill" style:width={`${Math.max(0, telemetry.accountTelemetry.sevenDayUsedPercent)}%`}></div></div>
-            <span>{Math.round(telemetry.accountTelemetry.sevenDayUsedPercent)}%</span>
-          </div>
+        <div class="usage-row">
+          <span class="usage-label">relay tokens</span>
+          <span class="usage-value">
+            ↓{compactCount(repoTelemetry.totalInputTokens)} ↑{compactCount(repoTelemetry.totalOutputTokens)}
+          </span>
+          <span class="usage-meta">
+            cache: {compactCount(repoTelemetry.totalCacheRead)} read
+          </span>
         </div>
-      {/if}
+
+        <div class="usage-row">
+          <span class="usage-label">context pressure</span>
+          <span class="usage-bar">
+            <TuiProgress variant="bar" value={contextPercent >= 0 ? contextPercent : 0} width={14} />
+          </span>
+          <span class="usage-value">
+            {repoTelemetry.averageContextPercent !== null ? `${Math.round(repoTelemetry.averageContextPercent)}% avg` : '—'}
+            {#if repoTelemetry.maxContextPercent !== null}
+              <span class="usage-meta">peak {Math.round(repoTelemetry.maxContextPercent)}%</span>
+            {/if}
+          </span>
+        </div>
+
+        {#if accountTelemetry}
+          <div class="usage-divider"></div>
+          <div class="usage-row">
+            <span class="usage-label">5h limit</span>
+            <span class="usage-bar">
+              <TuiProgress variant="bar" value={Math.max(0, Math.min(100, accountTelemetry.fiveHourUsedPercent >= 0 ? accountTelemetry.fiveHourUsedPercent : 0))} width={14} />
+            </span>
+            <span class="usage-value">
+              {accountTelemetry.fiveHourUsedPercent >= 0 ? `${Math.round(accountTelemetry.fiveHourUsedPercent)}% used` : '—'}
+            </span>
+            <span class="usage-meta">resets {formatResetAt(accountTelemetry.fiveHourResetsAt)}</span>
+          </div>
+
+          <div class="usage-row">
+            <span class="usage-label">7d limit</span>
+            <span class="usage-bar">
+              <TuiProgress variant="bar" value={Math.max(0, Math.min(100, accountTelemetry.sevenDayUsedPercent >= 0 ? accountTelemetry.sevenDayUsedPercent : 0))} width={14} />
+            </span>
+            <span class="usage-value">
+              {accountTelemetry.sevenDayUsedPercent >= 0 ? `${Math.round(accountTelemetry.sevenDayUsedPercent)}% used` : '—'}
+            </span>
+            <span class="usage-meta">resets {formatResetAt(accountTelemetry.sevenDayResetsAt)}</span>
+          </div>
+        {/if}
+      </div>
     </section>
 
     <!-- OPEN PULL REQUESTS section -->
@@ -382,34 +437,6 @@
 
   .section-message.info a:hover {
     text-decoration: underline;
-  }
-
-  .usage-grid,
-  .rate-limit-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-  }
-
-  .usage-row,
-  .rate-limit-row {
-    display: grid;
-    grid-template-columns: 120px 1fr auto;
-    gap: 8px;
-    align-items: center;
-    color: var(--text);
-  }
-
-  .rate-limit-bar {
-    height: 8px;
-    border: 1px solid var(--border);
-  }
-
-  .rate-limit-fill {
-    height: 100%;
-    background: var(--accent);
   }
 
   /* -- PR cell layout (DataTable row) -- */

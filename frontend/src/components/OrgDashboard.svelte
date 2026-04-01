@@ -6,8 +6,6 @@
   import type { AnyIssue, PullRequest, OrgPrsResponse, BranchLinksResponse, FilterPreset } from '../lib/types.js';
   import { deriveColor } from '../lib/colors.js';
   import { derivePrDotStatus } from '../lib/pr-status.js';
-  import { getSessionState } from '../lib/state/sessions.svelte.js';
-  import { getTelemetryState } from '../lib/state/telemetry.svelte.js';
   import DataTable from './DataTable.svelte';
   import type { Column } from './DataTable.svelte';
   import FilterChipBar from './FilterChipBar.svelte';
@@ -24,8 +22,6 @@
   } = $props();
 
   const queryClient = useQueryClient();
-  const sessionState = getSessionState();
-  const telemetry = getTelemetryState();
 
   let activeTab = $state<'prs' | 'tickets'>('prs');
   let startWorkIssue = $state<AnyIssue | null>(null);
@@ -235,40 +231,6 @@
       console.error('Failed to delete preset:', e);
     }
   }
-
-  function formatTokens(value: number): string {
-    if (!Number.isFinite(value) || value <= 0) return '0';
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-    return String(Math.round(value));
-  }
-
-  let usageByRepo = $derived.by(() => {
-    const rows = new Map<string, { repoPath: string; repoName: string; total: number; input: number; output: number }>();
-
-    for (const session of sessionState.sessions) {
-      const entry = telemetry.sessionTelemetry.get(session.id);
-      if (!entry) continue;
-      const current = rows.get(session.repoPath) ?? {
-        repoPath: session.repoPath,
-        repoName: session.repoName,
-        total: 0,
-        input: 0,
-        output: 0,
-      };
-      current.total += entry.totalInputTokens + entry.totalOutputTokens;
-      current.input += entry.totalInputTokens;
-      current.output += entry.totalOutputTokens;
-      rows.set(session.repoPath, current);
-    }
-
-    const list = [...rows.values()].sort((a, b) => b.total - a.total);
-    const grandTotal = list.reduce((sum, row) => sum + row.total, 0);
-    return list.map((row) => ({
-      ...row,
-      percent: grandTotal > 0 ? (row.total / grandTotal) * 100 : 0,
-    }));
-  });
 </script>
 
 <div class="org-dashboard">
@@ -280,23 +242,6 @@
       </span>
     {/if}
   </div>
-
-  <section class="usage-section">
-    <div class="usage-heading">usage by repo</div>
-    {#if usageByRepo.length === 0}
-      <div class="state-message">no telemetry data available</div>
-    {:else}
-      <div class="usage-list">
-        {#each usageByRepo as usage (usage.repoPath)}
-          <button class="usage-item" onclick={() => onOpenWorkspace(usage.repoPath)}>
-            <span class="usage-name">{usage.repoName}</span>
-            <div class="usage-bar"><div class="usage-fill" style:width={`${usage.percent}%`}></div></div>
-            <span class="usage-value">↓{formatTokens(usage.input)} ↑{formatTokens(usage.output)}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
-  </section>
 
   <!-- Tab strip -->
   <div class="tab-strip">
@@ -594,59 +539,6 @@
     color: var(--accent);
     margin-left: 4px;
     opacity: 0.8;
-  }
-
-  .usage-section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-
-  .usage-heading {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    letter-spacing: 0.08em;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .usage-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .usage-item {
-    display: grid;
-    grid-template-columns: 140px 1fr auto;
-    gap: 8px;
-    align-items: center;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--text);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    padding: 6px 8px;
-    cursor: pointer;
-  }
-
-  .usage-name,
-  .usage-value {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .usage-bar {
-    height: 8px;
-    border: 1px solid var(--border);
-  }
-
-  .usage-fill {
-    height: 100%;
-    background: var(--accent);
   }
 
   /* -- State messages (gh errors) -- */

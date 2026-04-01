@@ -16,6 +16,8 @@ interface PendingTelemetryFile {
   account: AccountTelemetry | null;
 }
 
+type IncomingTelemetryData = Omit<TelemetryData, 'updatedAt'>;
+
 export interface TelemetryDeps {
   getActiveSessions: () => Array<Pick<Session, 'id'>>;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -49,8 +51,18 @@ function telemetryToObject(): Record<string, TelemetryData> {
   return Object.fromEntries(sessionTelemetry.entries());
 }
 
-function sameTelemetry(a: TelemetryData | undefined, b: TelemetryData): boolean {
-  return a !== undefined && JSON.stringify(a) === JSON.stringify(b);
+function sameTelemetry(a: TelemetryData | undefined, b: IncomingTelemetryData): boolean {
+  if (!a) return false;
+  return a.sessionId === b.sessionId
+    && a.model === b.model
+    && a.totalInputTokens === b.totalInputTokens
+    && a.totalOutputTokens === b.totalOutputTokens
+    && a.totalCacheRead === b.totalCacheRead
+    && a.totalCacheWrite === b.totalCacheWrite
+    && a.contextPercent === b.contextPercent
+    && a.contextWindowSize === b.contextWindowSize
+    && a.costUsd === b.costUsd
+    && a.source === b.source;
 }
 
 function sameAccountTelemetry(a: AccountTelemetry | null, b: Omit<AccountTelemetry, 'updatedAt'>): boolean {
@@ -62,7 +74,7 @@ function sameAccountTelemetry(a: AccountTelemetry | null, b: Omit<AccountTelemet
 }
 
 function extractTelemetry(sessionId: string, payload: unknown): {
-  session: TelemetryData;
+  session: IncomingTelemetryData;
   account: Omit<AccountTelemetry, 'updatedAt'> | null;
 } | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -76,7 +88,7 @@ function extractTelemetry(sessionId: string, payload: unknown): {
   const sevenDay = (rateLimits.seven_day ?? {}) as Record<string, unknown>;
   const model = (data.model ?? {}) as Record<string, unknown>;
 
-  const session: TelemetryData = {
+  const session: IncomingTelemetryData = {
     sessionId,
     model: typeof model.display_name === 'string' ? model.display_name : null,
     totalInputTokens: asNumber(contextWindow.total_input_tokens, 0),
@@ -132,13 +144,21 @@ function persistPendingTelemetry(configDir: string): void {
     sessions: telemetryToObject(),
     account: accountTelemetry,
   };
-  fs.writeFileSync(pendingFilePath(configDir), JSON.stringify(payload, null, 2), 'utf-8');
+  const filePath = pendingFilePath(configDir);
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[telemetry] Failed to persist pending telemetry:', err);
+  }
 }
 
 function collectTelemetry(): void {
   if (!activeDeps) return;
 
-  const activeSessionIds = new Set(activeDeps.getActiveSessions().map((session) => session.id));
+  const activeSessions = activeDeps.getActiveSessions();
+  const activeSessionIds = new Set(activeSessions.map((session) => session.id));
 
   if (activeSessionIds.size > 0) {
     restoredPendingOnly = false;
@@ -151,7 +171,7 @@ function collectTelemetry(): void {
     sessionTelemetry = new Map();
   }
 
-  for (const session of activeDeps.getActiveSessions()) {
+  for (const session of activeSessions) {
     const filePath = path.join(telemetryDir(activeDeps.configDir), `${session.id}.json`);
     let raw: string;
     try {
@@ -176,8 +196,12 @@ function collectTelemetry(): void {
     if (!extracted) continue;
 
     if (!sameTelemetry(sessionTelemetry.get(session.id), extracted.session)) {
-      sessionTelemetry.set(session.id, extracted.session);
-      activeDeps.broadcastEvent('session-telemetry', { sessionId: session.id, data: extracted.session });
+      const nextSessionTelemetry: TelemetryData = {
+        ...extracted.session,
+        updatedAt: new Date().toISOString(),
+      };
+      sessionTelemetry.set(session.id, nextSessionTelemetry);
+      activeDeps.broadcastEvent('session-telemetry', { sessionId: session.id, data: nextSessionTelemetry });
     }
 
     if (extracted.account && !sameAccountTelemetry(accountTelemetry, extracted.account)) {

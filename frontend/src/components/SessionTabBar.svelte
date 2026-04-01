@@ -113,7 +113,7 @@
 
 <svelte:window onclick={onWindowClick} />
 
-<div class="session-tab-bar" role="tablist" aria-label="Sessions" style:display={ui.keyboardOpen ? 'none' : undefined}>
+<div class="session-tab-bar" hidden={ui.keyboardOpen} role="tablist" aria-label="Sessions">
   <div class="tabs-scroll">
     {#each sessions as session (session.id)}
       {@const isActive = session.id === activeSessionId}
