@@ -625,6 +625,23 @@
     openFileTab(filePath, isChanged);
   }
 
+  // Handle file path clicks from terminal output
+  function handleTerminalFilePathClick(clickedPath: string) {
+    const cwd = activeWorkspaceCwd;
+    if (!cwd) return;
+    // Resolve to a path relative to the workspace root
+    let relative = clickedPath;
+    if (clickedPath.startsWith(cwd + '/')) {
+      relative = clickedPath.slice(cwd.length + 1);
+    } else if (clickedPath.startsWith('/')) {
+      // Absolute path outside workspace — ignore
+      return;
+    } else if (clickedPath.startsWith('./')) {
+      relative = clickedPath.slice(2);
+    }
+    openFileTab(relative, false);
+  }
+
   // Handlers
   function handleSelectWorkspace(path: string) {
     if (ui.activeRepoPath === path) {
@@ -1174,6 +1191,7 @@
               onImageUpload={handleImageUpload}
               useTmux={activeSessionUseTmux}
               onCopyModeChange={handleCopyModeChange}
+              onFilePathClick={handleTerminalFilePathClick}
             />
 
             <Toolbar

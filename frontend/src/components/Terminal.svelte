@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
+  import { WebLinksAddon } from '@xterm/addon-web-links';
   import '@xterm/xterm/css/xterm.css';
   import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
   import { isMobileDevice } from '../lib/utils.js';
@@ -14,12 +15,14 @@
     onImageUpload,
     useTmux = false,
     onCopyModeChange,
+    onFilePathClick,
     companionMode = false,
   }: {
     sessionId: string | null;
     onImageUpload?: ((text: string, showInsert: boolean, path?: string) => void) | undefined;
     useTmux?: boolean;
     onCopyModeChange?: ((active: boolean) => void) | undefined;
+    onFilePathClick?: ((path: string) => void) | undefined;
     companionMode?: boolean;
   } = $props();
 
@@ -88,6 +91,45 @@
 
     fitAddon = new FitAddon();
     t.loadAddon(fitAddon);
+    t.loadAddon(new WebLinksAddon());
+
+    // File path link provider — matches paths like src/foo.ts or /abs/path.html
+    // and opens them in the in-app file viewer on click
+    const fileExtPattern = /(?:^|(?<=[\s'"(`\[{]))(\/?(?:\.\/)?(?:[\w.@~-]+\/)*(?:[\w.@~-]+\.(?:ts|tsx|js|jsx|svelte|html|htm|css|scss|json|yaml|yml|toml|md|txt|py|rs|go|rb|java|c|cpp|h|sh|sql|graphql|xml|csv|env|log|cfg|conf|ini)|(?:Makefile|Dockerfile|Vagrantfile|Rakefile|Gemfile|Procfile|Brewfile|Justfile|Taskfile|Containerfile)(?:\.\w+)?))(?::(\d+)(?::(\d+))?)?/;
+    t.registerLinkProvider({
+      provideLinks(lineNumber, callback) {
+        const line = t.buffer.active.getLine(lineNumber - 1);
+        if (!line) { callback(undefined); return; }
+        const text = line.translateToString(true);
+        const links: import('@xterm/xterm').ILink[] = [];
+        // Scan for all file path matches in the line
+        let offset = 0;
+        let remaining = text;
+        while (remaining.length > 0) {
+          const m = remaining.match(fileExtPattern);
+          if (!m || m.index === undefined) break;
+          const matchStart = offset + m.index;
+          const fullMatch = m[0];
+          const matchEnd = matchStart + fullMatch.length;
+          links.push({
+            range: {
+              start: { x: matchStart + 1, y: lineNumber },
+              end: { x: matchEnd + 1, y: lineNumber },
+            },
+            text: fullMatch,
+            activate(_event, linkText) {
+              // Strip trailing :line:col suffix to get clean path
+              const cleanPath = linkText.replace(/:\d+(?::\d+)?$/, '');
+              onFilePathClick?.(cleanPath);
+            },
+          });
+          offset = matchEnd;
+          remaining = text.slice(offset);
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
+
     t.open(containerEl);
     if (isMobileDevice) {
       // Disable xterm's internal touch scroll — it scrolls one line at a time.
