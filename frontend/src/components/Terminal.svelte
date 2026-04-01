@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
+  import { WebLinksAddon } from '@xterm/addon-web-links';
   import '@xterm/xterm/css/xterm.css';
   import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
   import { isMobileDevice } from '../lib/utils.js';
@@ -14,12 +15,14 @@
     onImageUpload,
     useTmux = false,
     onCopyModeChange,
+    onFilePathClick,
     companionMode = false,
   }: {
     sessionId: string | null;
     onImageUpload?: ((text: string, showInsert: boolean, path?: string) => void) | undefined;
     useTmux?: boolean;
     onCopyModeChange?: ((active: boolean) => void) | undefined;
+    onFilePathClick?: ((path: string) => void) | undefined;
     companionMode?: boolean;
   } = $props();
 
@@ -88,6 +91,45 @@
 
     fitAddon = new FitAddon();
     t.loadAddon(fitAddon);
+    t.loadAddon(new WebLinksAddon());
+
+    // File path link provider — matches paths like src/foo.ts or /abs/path.html
+    // and opens them in the in-app file viewer on click.
+    // Uses a capturing group for the optional leading delimiter so we can compute
+    // the real match start without lookbehind (which breaks older iOS Safari).
+    const fileExtPattern = /([\s'"(`\[{])?(\/?\/?(?:\.\/)?(?:[\w.@~-]+\/)*(?:[\w.@~-]+\.(?:ts|tsx|js|jsx|svelte|html|htm|css|scss|json|yaml|yml|toml|md|txt|py|rs|go|rb|java|c|cpp|h|sh|sql|graphql|xml|csv|env|log|cfg|conf|ini)|(?:Makefile|Dockerfile|Vagrantfile|Rakefile|Gemfile|Procfile|Brewfile|Justfile|Taskfile|Containerfile)(?:\.\w+)?))(?::(\d+)(?::(\d+))?)?/g;
+    t.registerLinkProvider({
+      provideLinks(lineNumber, callback) {
+        const line = t.buffer.active.getLine(lineNumber - 1);
+        if (!line) { callback(undefined); return; }
+        const text = line.translateToString(true);
+        const links: import('@xterm/xterm').ILink[] = [];
+        // Use matchAll with a global regex to iterate without slicing
+        for (const m of text.matchAll(fileExtPattern)) {
+          if (m.index === undefined) continue;
+          const delimiter = m[1] || '';
+          // Only allow match at start-of-line or after a boundary character
+          if (m.index > 0 && !delimiter) continue;
+          const pathStart = m.index + delimiter.length;
+          const pathText = m[0].slice(delimiter.length);
+          const pathEnd = pathStart + pathText.length;
+          links.push({
+            range: {
+              start: { x: pathStart + 1, y: lineNumber },
+              end: { x: pathEnd + 1, y: lineNumber },
+            },
+            text: pathText,
+            activate(_event, linkText) {
+              // Strip trailing :line:col suffix to get clean path
+              const cleanPath = linkText.replace(/:\d+(?::\d+)?$/, '');
+              onFilePathClick?.(cleanPath);
+            },
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
+
     t.open(containerEl);
     if (isMobileDevice) {
       // Disable xterm's internal touch scroll — it scrolls one line at a time.
