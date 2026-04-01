@@ -403,7 +403,7 @@ async function main(): Promise<void> {
   // Mount git (local/fast) and gh (network/slow) routers
   app.use('/git', requireAuth, createGitRouter({
     configPath: CONFIG_PATH,
-    getConfig: () => loadConfig(CONFIG_PATH),
+    getConfig,
     getSessions: () => sessions.list().map(s => ({ id: s.id, worktreePath: s.worktreePath ?? s.repoPath })),
   }));
   app.use('/gh', requireAuth, createGhRouter());

@@ -5,7 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { isBranchStale } from './git.js';
-import { batchGetPrsForRepo, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, changePrBase, getPrCached, setPrCached } from './gh.js';
+import { batchGetPrsForRepo, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, changePrBase, getPrCached, setPrCached, clearPrCache } from './gh.js';
 import type { PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -62,7 +62,15 @@ export async function enrichBranches(
   await Promise.all(
     branches.map(async ({ repoPath, branchName }) => {
       const key = `${repoPath}::${branchName}`;
-      const pr = prMaps.get(repoPath)?.get(branchName) ?? null;
+      // Batch lookup first; fall back to per-branch call if batch was truncated (--limit 100)
+      let pr = prMaps.get(repoPath)?.get(branchName) ?? null;
+      if (!pr) {
+        try {
+          pr = await getPrForBranch(repoPath, branchName, { exec });
+        } catch {
+          // degrade gracefully
+        }
+      }
 
       let stale = false;
       try {
@@ -84,8 +92,21 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
 
   // POST /gh/enrich-branches — batch enrichment for sidebar
   router.post('/enrich-branches', async (req: Request, res: Response) => {
-    const body = req.body as { branches?: BranchInput[] };
-    const branches = body.branches ?? [];
+    const raw = (req.body as Record<string, unknown>)?.branches;
+    if (raw !== undefined && !Array.isArray(raw)) {
+      res.status(400).json({ error: 'branches must be an array' });
+      return;
+    }
+    const branches: BranchInput[] = [];
+    for (const item of (raw ?? []) as unknown[]) {
+      if (!item || typeof item !== 'object'
+        || typeof (item as Record<string, unknown>).repoPath !== 'string'
+        || typeof (item as Record<string, unknown>).branchName !== 'string') {
+        res.status(400).json({ error: 'each branch must have string repoPath and branchName' });
+        return;
+      }
+      branches.push({ repoPath: (item as BranchInput).repoPath, branchName: (item as BranchInput).branchName });
+    }
     const results = await enrichBranches(branches, exec);
     res.json({ results });
   });
@@ -155,6 +176,7 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
 
     const result = await changePrBase(repoPath, prNumber, baseBranch, { exec });
     if (result.success) {
+      clearPrCache(repoPath);
       res.json(result);
     } else {
       res.status(400).json({ error: result.error });
