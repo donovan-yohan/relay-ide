@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUi, closeFileTab, closeAllFileTabs, refreshHtmlTab, type OpenFileTab } from '../lib/state/ui.svelte.js';
+  import { getUi, closeFileTab, closeAllFileTabs, refreshHtmlTab, fileTabKey, type OpenFileTab } from '../lib/state/ui.svelte.js';
   import { getSessionState } from '../lib/state/sessions.svelte.js';
   import { fetchFileDiff } from '../lib/api.js';
   import { diffSourceToBase } from '../lib/diff-utils.js';
@@ -40,7 +40,7 @@
 
   let base = $derived(diffSourceToBase(diffSource, defaultBranch));
   let activeTab = $derived<OpenFileTab | undefined>(
-    ui.openFileTabs.find(t => t.filePath === ui.activeFileTabPath)
+    ui.openFileTabs.find(t => fileTabKey(t.filePath, t.tabType) === ui.activeFileTabKey)
   );
   let activeDiff = $derived(activeTab ? diffCache.get(cacheKey(activeTab.filePath)) ?? '' : '');
   let activeLoading = $derived(activeTab ? loadingPaths.has(cacheKey(activeTab.filePath)) : false);
@@ -110,7 +110,7 @@
   }
 
   function handleTabClick(tab: OpenFileTab): void {
-    ui.activeFileTabPath = tab.filePath;
+    ui.activeFileTabKey = fileTabKey(tab.filePath, tab.tabType);
   }
 
   function handleDiffLineClick(filePath: string, lineNumber: number): void {
@@ -175,13 +175,13 @@
   <!-- File tab bar -->
   <div class="file-tab-bar">
     <div class="tabs-scroll">
-      {#each ui.openFileTabs as tab (tab.filePath + '::' + (tab.tabType ?? 'code'))}
+      {#each ui.openFileTabs as tab (fileTabKey(tab.filePath, tab.tabType))}
         <div
           class="file-tab"
-          class:active={ui.activeFileTabPath === tab.filePath}
+          class:active={ui.activeFileTabKey === fileTabKey(tab.filePath, tab.tabType)}
           role="tab"
           tabindex="0"
-          aria-selected={ui.activeFileTabPath === tab.filePath}
+          aria-selected={ui.activeFileTabKey === fileTabKey(tab.filePath, tab.tabType)}
           onclick={() => handleTabClick(tab)}
           onkeydown={(e) => { if (e.key === 'Enter') handleTabClick(tab); }}
           title={tab.filePath}
@@ -239,7 +239,7 @@
         <div class="error-text">failed to load diff: {activeError}</div>
         <div class="error-actions">
           <button class="retry-btn" onclick={handleRetry}>retry</button>
-          <button class="close-btn" onclick={() => closeFileTab(activeTab!.filePath)}>close tab</button>
+          <button class="close-btn" onclick={() => closeFileTab(activeTab!.filePath, activeTab!.tabType)}>close tab</button>
         </div>
       </div>
     {:else if activeTab.tabType === 'html' && activeTab.token}

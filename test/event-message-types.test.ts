@@ -1,10 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+
+function findTsc(startDir: string): string {
+  let dir = startDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = path.join(dir, 'node_modules', '.bin', 'tsc');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return 'tsc'; // fallback to PATH
+}
 
 test('EventMessage types compile without errors', () => {
+  const tscPath = findTsc(process.cwd());
   try {
-    execFileSync('npx', ['tsc', '--noEmit', '--strict', '-p', 'tsconfig.json'], {
+    execFileSync(tscPath, ['--noEmit', '--strict', '-p', 'tsconfig.json'], {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });

@@ -51,6 +51,14 @@ export function resolveTokenPath(token: string, relativePath: string): string | 
   const resolved = path.resolve(entry.baseDir, relativePath);
   if (!resolved.startsWith(entry.baseDir + path.sep) && resolved !== entry.baseDir) return null;
 
+  try {
+    const realBaseDir = fs.realpathSync(entry.baseDir);
+    const realResolved = fs.realpathSync(resolved);
+    if (realResolved !== realBaseDir && !realResolved.startsWith(realBaseDir + path.sep)) return null;
+  } catch {
+    return null;
+  }
+
   return resolved;
 }
 
@@ -134,8 +142,15 @@ export function createBrowserContentRouter(
       return;
     }
 
-    if (!fs.existsSync(resolved)) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
       res.status(404).send('Not found');
+      return;
+    }
+    if (!stat.isFile()) {
+      res.status(400).send('Not a file');
       return;
     }
 

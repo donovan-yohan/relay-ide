@@ -36,9 +36,10 @@ test('openHtmlTab logic creates correct tab shape', () => {
   assert.strictEqual(tab.token, 'abc123');
 });
 
-test('refreshHtmlTab logic appends cache buster', () => {
+test('refreshHtmlTab logic uses version counter', () => {
   const baseUrl = '/browser-content/abc123/design-board.html';
-  const refreshed = `${baseUrl}?t=${Date.now()}`;
-  assert.ok(refreshed.includes('?t='));
+  const refreshVersion = 1;
+  const refreshed = `${baseUrl}?v=${refreshVersion}`;
+  assert.ok(refreshed.includes('?v='));
   assert.ok(refreshed.startsWith(baseUrl));
 });

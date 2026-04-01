@@ -73,6 +73,10 @@ export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 
 export type FileTabType = 'diff' | 'code' | 'html';
 
+export function fileTabKey(filePath: string, tabType?: FileTabType): string {
+  return `${tabType ?? 'code'}::${filePath}`;
+}
+
 export interface OpenFileTab {
   filePath: string;
   fileName: string;
@@ -117,7 +121,7 @@ let rightSidebarWidth = $state((() => {
 })());
 let rightSidebarTab = $state<RightSidebarTab>('changes');
 let openFileTabs = $state<OpenFileTab[]>([]);
-let activeFileTabPath = $state<string | null>(null);
+let activeFileTabKey = $state<string | null>(null);
 let fileViewerRatio = $state((() => {
   try {
     const stored = localStorage.getItem(FILE_VIEWER_WIDTH_KEY);
@@ -192,8 +196,8 @@ export function getUi() {
     set rightSidebarTab(v: RightSidebarTab) { rightSidebarTab = v; },
     get openFileTabs() { return openFileTabs; },
     set openFileTabs(v: OpenFileTab[]) { openFileTabs = v; },
-    get activeFileTabPath() { return activeFileTabPath; },
-    set activeFileTabPath(v: string | null) { activeFileTabPath = v; },
+    get activeFileTabKey() { return activeFileTabKey; },
+    set activeFileTabKey(v: string | null) { activeFileTabKey = v; },
     get fileViewerRatio() { return fileViewerRatio; },
     set fileViewerRatio(v: number) { fileViewerRatio = v; },
     get sendToTargetSessionId() { return sendToTargetSessionId; },
@@ -228,19 +232,18 @@ export function openFileTab(filePath: string, isChanged: boolean, tabType?: File
   const matchType = tabType ?? (isChanged ? 'diff' : 'code');
   const existing = openFileTabs.find(t => t.filePath === filePath && (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType);
   if (!existing) {
-    const newTab: OpenFileTab = { filePath, fileName, isChanged };
-    if (tabType) newTab.tabType = tabType;
+    const newTab: OpenFileTab = { filePath, fileName, isChanged, tabType: matchType };
     if (token) newTab.token = token;
     openFileTabs = [...openFileTabs, newTab];
   } else if (existing.isChanged !== isChanged || existing.token !== token) {
     openFileTabs = openFileTabs.map(t => {
       if (t.filePath !== filePath || (t.tabType ?? (t.isChanged ? 'diff' : 'code')) !== matchType) return t;
-      const updated: OpenFileTab = { ...t, isChanged };
+      const updated: OpenFileTab = { ...t, isChanged, tabType: matchType };
       if (token !== undefined) updated.token = token;
       return updated;
     });
   }
-  activeFileTabPath = filePath;
+  activeFileTabKey = fileTabKey(filePath, matchType);
 }
 
 export function closeFileTab(filePath: string, tabType?: FileTabType): void {
@@ -249,14 +252,17 @@ export function closeFileTab(filePath: string, tabType?: FileTabType): void {
   } else {
     openFileTabs = openFileTabs.filter(t => t.filePath !== filePath);
   }
-  if (activeFileTabPath === filePath && !openFileTabs.some(t => t.filePath === filePath)) {
-    activeFileTabPath = openFileTabs.length > 0 ? openFileTabs[openFileTabs.length - 1]!.filePath : null;
+  const key = tabType ? fileTabKey(filePath, tabType) : null;
+  if (key ? activeFileTabKey === key : activeFileTabKey?.endsWith('::' + filePath)) {
+    activeFileTabKey = openFileTabs.length > 0
+      ? fileTabKey(openFileTabs[openFileTabs.length - 1]!.filePath, openFileTabs[openFileTabs.length - 1]!.tabType)
+      : null;
   }
 }
 
 export function closeAllFileTabs(): void {
   openFileTabs = [];
-  activeFileTabPath = null;
+  activeFileTabKey = null;
 }
 
 export function openHtmlTab(filePath: string, token: string): void {
@@ -271,7 +277,7 @@ export function refreshHtmlTab(filePath: string): void {
         ? { ...t, refreshVersion: (t.refreshVersion ?? 0) + 1 }
         : t
     );
-    activeFileTabPath = filePath;
+    activeFileTabKey = fileTabKey(filePath, 'html');
   }
 }
 export function saveSidebarWidth(): void {
