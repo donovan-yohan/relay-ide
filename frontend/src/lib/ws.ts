@@ -1,8 +1,9 @@
 import type { Terminal } from '@xterm/xterm';
 import type { BackendDisplayState } from './state/display-state.js';
+import type { AccountTelemetry, CurrentActivity, SessionTelemetry } from './types.js';
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-interface EventMessage {
+interface BaseEventMessage {
   type: string;
   sessionId?: string;
   idle?: boolean;
@@ -16,9 +17,36 @@ interface EventMessage {
   repo?: string;
   workspacePath?: string;
   changedFiles?: string[];
+  timestamp?: string;
+  currentActivity?: CurrentActivity | null;
+  data?: SessionTelemetry | AccountTelemetry | Record<string, unknown> | null;
 }
 
+interface SessionActivityChangedMessage extends BaseEventMessage {
+  type: 'session-activity-changed';
+  sessionId: string;
+  currentActivity?: CurrentActivity | null;
+}
+
+interface SessionTelemetryMessage extends BaseEventMessage {
+  type: 'session-telemetry';
+  sessionId: string;
+  data: SessionTelemetry | Record<string, unknown>;
+}
+
+interface AccountTelemetryMessage extends BaseEventMessage {
+  type: 'account-telemetry';
+  data: AccountTelemetry | Record<string, unknown> | null;
+}
+
+type EventMessage =
+  | SessionActivityChangedMessage
+  | SessionTelemetryMessage
+  | AccountTelemetryMessage
+  | BaseEventMessage;
+
 type EventCallback = (msg: EventMessage) => void;
+type EventOpenCallback = () => void;
 
 let eventWs: WebSocket | null = null;
 let ptyWs: WebSocket | null = null;
@@ -42,16 +70,18 @@ let lastPtyTerm: Terminal | null = null;
 let lastPtyOnResize: (() => void) | null = null;
 let lastPtyOnSessionEnd: (() => void) | null = null;
 let lastEventOnMessage: EventCallback | null = null;
+let lastEventOnOpen: EventOpenCallback | null = null;
 
 const PING_INTERVAL = 30_000;   // 30s heartbeat
 const PONG_TIMEOUT = 5_000;     // 5s to respond
 const PING_MSG = '{"type":"ping"}';
 const PONG_MSG = '{"type":"pong"}';
 
-export function connectEventSocket(onMessage: EventCallback): void {
+export function connectEventSocket(onMessage: EventCallback, onOpen?: EventOpenCallback): void {
   // Null onclose before close to prevent old socket from scheduling a reconnect
   if (eventWs) { eventWs.onclose = null; eventWs.close(); eventWs = null; }
   lastEventOnMessage = onMessage;
+  lastEventOnOpen = onOpen ?? null;
   clearEventPing();
 
   const url = wsProtocol + '//' + location.host + '/ws/events';
@@ -59,6 +89,7 @@ export function connectEventSocket(onMessage: EventCallback): void {
 
   eventWs.onopen = () => {
     startEventPing();
+    onOpen?.();
   };
 
   eventWs.onmessage = (event) => {
@@ -72,7 +103,7 @@ export function connectEventSocket(onMessage: EventCallback): void {
 
   eventWs.onclose = () => {
     clearEventPing();
-    setTimeout(() => connectEventSocket(onMessage), 3000);
+    setTimeout(() => connectEventSocket(onMessage, onOpen), 3000);
   };
 
   eventWs.onerror = () => {};
@@ -240,7 +271,7 @@ function sendEventPing(): void {
 function forceReconnectEvent(): void {
   clearEventPing();
   if (eventWs) { eventWs.onclose = null; eventWs.close(); eventWs = null; }
-  if (lastEventOnMessage) connectEventSocket(lastEventOnMessage);
+  if (lastEventOnMessage) connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
 }
 
 function startEventPing(): void {

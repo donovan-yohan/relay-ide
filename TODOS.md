@@ -31,21 +31,10 @@ Opening a session from a PR fails with `fatal: invalid reference` when the branc
 
 **Scope:** Add a fetch step in the worktree creation path when the ref doesn't exist locally. **Files:** `server/worktree-manager.ts` or session creation handler.
 
-### Sidenav branch name goes stale when agent switches branches
-Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.
+### ~~Sidenav branch name goes stale when agent switches branches~~
+~~Active sessions don't update their branch name in the sidenav when Claude checks out a different branch. The branch shown stays stuck on whatever it was when the session started.~~
 
-**Root cause:** The frontend has no periodic polling for session data. `refreshAll()` is only called on discrete events (WebSocket messages, user actions). The server's `GET /sessions` handler *does* refresh branch names (10s rate-limited `git rev-parse`), but nothing on the client calls it on an interval. The `ref-changed` WebSocket event only fires for upstream tracking ref changes (push/fetch), not local branch switches — and even when it fires, it only invalidates PR queries, not session data.
-
-**Fix options:**
-1. **Periodic poll:** Add a `setInterval` on the frontend that calls `refreshAll()` every ~15–30s
-2. **Filesystem watch:** Have the server watch `.git/HEAD` for each session's cwd and broadcast a `session-branch-changed` event
-3. **Hybrid:** Watch `.git/HEAD` for real-time detection, with a slow poll as fallback
-
-Option 2 is best — low overhead, instant updates, no wasted HTTP requests.
-
-**Scope:** Server: watch `.git/HEAD` per active session, broadcast branch change event. Frontend: handle the event and update session branch name. **Files:** `server/index.ts` or new watcher module, `server/ws.ts`, `frontend/src/App.svelte`, `frontend/src/lib/state/sessions.svelte.ts`.
-
-**Added:** 2026-03-28
+**Completed:** v3.19.3 (2026-03-31) — `BranchWatcher` watches `.git/HEAD` per active session (including worktrees), broadcasts `session-renamed` + `session-branch-changed` events. Frontend `handleBranchChanged()` updates session and sidebar item branch names in real time. Inode survival handled via watcher recreation after atomic checkout.
 
 ### Inactive sidenav repo items show stale "default" name and "master" branch
 Inactive repo items always show "default" as session name and "master" as branch, even when the repo is on a different branch or the session was renamed.
@@ -186,6 +175,42 @@ Add Warp/VS Code-style file utilities to the remote web UI.
 3. **Diff viewer (full-page):** Side-by-side or unified diff for staged changes, branch comparisons, PR diffs. Phase 2's inline DiffViewer handles 90% — Phase 3 adds full-page mode, side-by-side toggle, keyboard nav, URL-addressable `/diff` route
 4. **Open in external editor:** "Open in VS Code / Cursor" actions for repos, branches, worktrees — detect installed editors, quick-launch from context menu or command center *(low priority)*
 
+### Verification-First Testing Strategy
+Inspired by ["Cost to Implement vs Verify"](https://clifford.ressel.fyi/blog/cost-to-implement-vs-verify/) — as we lean harder on agents for implementation, our ability to *verify* what they produce must scale proportionally. Today we have `npm test` (unit tests via `node --test`) and nothing else. The goal: full end-to-end verification infrastructure that agents can both run against and author tests for.
+
+**Core principle:** "How will I verify what was built?" must precede every agentic coding task. Reduce Cv (cost to verify) so agents can be delegated freely.
+
+**Phases:**
+
+1. **Sandbox mode (`--sandbox`):** Isolated server instance that can run the full app without affecting the production instance. Extends the existing `--preview` TODO (Small Features) but goes further:
+   - Ephemeral data directory (temp config, temp sessions) — no writes to `~/.config/claude-remote-cli/`
+   - Isolated port range (e.g. 7780-7789) to avoid conflicts with a running production server
+   - Mock PTY that replays canned terminal output for deterministic test scenarios
+   - Teardown on exit — no state leaks between runs
+   - `npm run sandbox` script for local dev, usable in CI
+
+2. **Playwright e2e foundation:** Build on the existing "Playwright UI test suite" TODO but with sandbox as the backend instead of just preview mode:
+   - `playwright` devDependency, `playwright.config.ts`, `e2e/` directory
+   - Sandbox server auto-start/stop in `globalSetup`/`globalTeardown`
+   - `npm run test:e2e` script, CI workflow (`.github/workflows/test-e2e.yml`)
+   - Core workflow tests: login → add repo → create session → verify terminal renders → create worktree → view changed files → close session
+   - Page object model for stable selectors across UI changes
+
+3. **Agent-authored test coverage:** Enable the coding agent (Claude/Codex) to write and run Playwright tests as part of its workflow:
+   - Teach the agent (via CLAUDE.md or skill) to write a Playwright test *before* or *after* implementing a UI feature
+   - Integrate the TDD superpowers skill — explore how `superpowers:test-driven-development` can drive the write-test-first → implement → verify loop for frontend work
+   - Agent can run `npm run test:e2e -- --grep "feature name"` to verify its own work
+   - Tests become the verification artifact: if the test passes, the feature is verified
+
+4. **Verification CI gate:** No PR merges without passing e2e tests for affected areas:
+   - Map changed files → relevant e2e test suites (e.g. changes to sidebar components → run sidebar e2e tests)
+   - Required status check on PRs
+   - Test failure screenshots and traces uploaded as artifacts
+
+**Supersedes:** "UI preview mode" and "Playwright UI test suite" TODOs in Small Features (those become substeps of phases 1-2).
+
+**Added:** 2026-03-31
+
 ### Command Center Audit
 The command palette needs a full overhaul.
 
@@ -226,6 +251,13 @@ Refactor `EventMessage` in `frontend/src/lib/ws.ts` from bag-of-optionals to a d
 Find out what "multi-repo mode" and "proactive mode" mean in gstack — how do they work, what do they enable, and are there ideas to steal or integrate?
 
 **Action:** Read gstack docs/source, try them out, write a summary of what's useful.
+
+### Research Claude HUD plugin — expose session info in our UI
+The [Claude HUD](https://github.com/) plugin surfaces real-time Claude Code session internals as a status line: model type, context window usage (color-coded meter), tool activity (files read/edited/searched), subagent status (type, task, runtime), and todo progress. Research how it hooks into the engine and evaluate exposing similar data in our web UI.
+
+**Action:** Install Claude HUD, read its source, identify what APIs/hooks it uses to pull session data (context usage, active tools, subagent list). Prototype a session info panel or status bar in the frontend showing context %, active model, tool activity, and agent count for the active session.
+
+**Added:** 2026-03-31
 
 ### Linear CLI integration — proper ticket source tracking
 Re-add Linear integration via CLI with proper `BranchLink.source` field support (no prefix-length heuristic).

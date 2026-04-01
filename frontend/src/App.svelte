@@ -2,12 +2,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { getAuth, checkExistingAuth } from './lib/state/auth.svelte.js';
   import { getUi, openSidebar, closeSidebar, toggleSidebarCollapsed } from './lib/state/ui.svelte.js';
-  import { getSessionState, refreshAll, handleBackendStateChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
+  import { getSessionState, refreshAll, refreshWorktreesEnriched, handleBackendStateChanged, handleActivityChanged, handleUserViewed, renameSession, handleBranchChanged, initSessionNotification, getNotificationSessionIds, getSessionsForRepo, setLoading, clearLoading, isItemLoading, rememberSessionForWorkspace, recallSessionForWorkspace } from './lib/state/sessions.svelte.js';
   import { connectEventSocket, sendPtyData } from './lib/ws.js';
   import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
   import { getConfigState } from './lib/state/config.svelte.js';
   import { isMobileDevice, isMac, estimateTerminalDimensions } from './lib/utils.js';
-  import type { WorktreeInfo, Repo, PullRequest } from './lib/types.js';
+  import type { AccountTelemetry, SessionTelemetry, WorktreeInfo, Repo, PullRequest } from './lib/types.js';
   import { createWorktree, createSession, fetchWorkspaceSettings, killSession, deleteWorktree, setDefaultYolo, renameSession as renameSessionApi, launchWorkspaceSession } from './lib/api.js';
   import { derivePrAction, buildPrStateInput, getActionPrompt } from './lib/pr-state.js';
   import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
@@ -34,6 +34,7 @@
   import EmptyState from './components/EmptyState.svelte';
   import Toolbar from './components/Toolbar.svelte';
   import MobileHeader from './components/MobileHeader.svelte';
+  import SessionStatusBar from './components/SessionStatusBar.svelte';
   import UpdateToast from './components/UpdateToast.svelte';
   import ImageToast from './components/ImageToast.svelte';
   import ErrorToast from './components/ErrorToast.svelte';
@@ -54,6 +55,7 @@
   import FileViewerPane from './components/FileViewerPane.svelte';
   import SplitPaneLayout from './components/SplitPaneLayout.svelte';
   import { openFileTab, toggleRightSidebarCollapsed } from './lib/state/ui.svelte.js';
+  import { refreshTelemetry, handleSessionTelemetryEvent, handleAccountTelemetryEvent } from './lib/state/telemetry.svelte.js';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -129,7 +131,6 @@
   let workspaceSettingsDialogRef = $state<WorkspaceSettingsDialog | undefined>();
   let mainAppEl = $state<HTMLDivElement | undefined>();
 
-  let keyboardOpen = $state(false);
   let spotlightOpen = $state(false);
   let pickerOpen = $state(false);
   let filePickerOpen = $state(false);
@@ -190,7 +191,7 @@
       }},
       { ...settingsCheckUpdates, handler: () => settingsDialogRef?.open('section-about') },
       // ── Phase 3: Session ──
-      { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }); } },
+      { ...sessionCustomize, handler: () => { if (activeWorkspace) customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }, activeSession?.worktreePath); } },
       { ...sessionSwitchToTab, handler: () => {} },
       { ...sessionRename, handler: () => handleRenameActiveSession() },
       // ── Phase 3: PR ──
@@ -298,9 +299,9 @@
 
       const onViewportResize = () => {
         const kbHeight = window.innerHeight - vv.height;
-        keyboardOpen = kbHeight > 50;
+        ui.keyboardOpen = kbHeight > 50;
         if (mainAppEl) {
-          mainAppEl.style.height = keyboardOpen ? vv.height + 'px' : '';
+          mainAppEl.style.height = ui.keyboardOpen ? vv.height + 'px' : '';
         }
         window.scrollTo(0, 0);
         if (fitTimer) clearTimeout(fitTimer);
@@ -478,8 +479,14 @@
         bootRefreshDone = true;
         reportFetch('auth', 'ok');
       }
-      refreshAll(isInitialBoot ? reportFetch : undefined).then(() => {
-        if (isInitialBoot) finishBoot();
+      refreshAll(isInitialBoot ? reportFetch : undefined, isInitialBoot ? { enrich: false } : undefined).then(async () => {
+        await refreshTelemetry();
+
+        if (isInitialBoot) {
+          finishBoot();
+          // Backfill PR info and staleness without racing a full refreshAll
+          refreshWorktreesEnriched();
+        }
         const params = new URLSearchParams(window.location.search);
         const sessionParam = params.get('session');
         if (sessionParam) {
@@ -528,44 +535,52 @@
       }, 500);
     }
 
-    connectEventSocket((msg) => {
-      if (msg.type === 'worktrees-changed') {
-        refreshAll();
-      } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
-        handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
-      } else if (msg.type === 'session-renamed' && msg.sessionId) {
-        renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
-        // Branch changed — old PR data is stale
-        invalidatePrQueries();
-      } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
-        handleBranchChanged(msg.sessionId, msg.branch ?? '');
-      } else if (msg.type === 'session-ended') {
-        invalidatePrQueries();
-        refreshAll();
-      } else if (msg.type === 'ref-changed' && msg.cwdPath) {
-        const key = msg.cwdPath;
-        const existing = refChangedTimers.get(key);
-        if (existing) clearTimeout(existing);
-        refChangedTimers.set(key, setTimeout(() => {
-          refChangedTimers.delete(key);
+    connectEventSocket(
+      (msg) => {
+        if (msg.type === 'worktrees-changed') {
+          refreshAll();
+        } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
+          handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
+        } else if (msg.type === 'session-renamed' && msg.sessionId) {
+          renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
+          // Branch changed — old PR data is stale
           invalidatePrQueries();
-        }, 5000));
-      } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
-        throttledPollInvalidate();
-      } else if (msg.type === 'files-changed') {
-        const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
-        if (!msg.workspacePath || activeWs === msg.workspacePath) {
-          throttledChangedFilesRefresh();
-          queryClient.invalidateQueries({ queryKey: ['files-list'] });
-          if (msg.changedFiles) {
-            changedFilesData = msg.changedFiles;
+        } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
+          handleBranchChanged(msg.sessionId, msg.branch ?? '');
+        } else if (msg.type === 'session-ended') {
+          invalidatePrQueries();
+          refreshAll();
+        } else if (msg.type === 'ref-changed' && msg.cwdPath) {
+          const key = msg.cwdPath;
+          const existing = refChangedTimers.get(key);
+          if (existing) clearTimeout(existing);
+          refChangedTimers.set(key, setTimeout(() => {
+            refChangedTimers.delete(key);
+            invalidatePrQueries();
+          }, 5000));
+        } else if (msg.type === 'pr-updated' || msg.type === 'ci-updated') {
+          throttledPollInvalidate();
+        } else if (msg.type === 'files-changed') {
+          const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
+          if (!msg.workspacePath || activeWs === msg.workspacePath) {
+            throttledChangedFilesRefresh();
+            queryClient.invalidateQueries({ queryKey: ['files-list'] });
+            if (msg.changedFiles) {
+              changedFilesData = msg.changedFiles;
+            }
           }
+        } else if (msg.type === 'session-activity-changed' && msg.sessionId) {
+          handleActivityChanged(msg.sessionId, msg.timestamp, msg.currentActivity ?? undefined);
+        } else if (msg.type === 'session-telemetry' && msg.sessionId && msg.data) {
+          handleSessionTelemetryEvent(msg.sessionId, msg.data as SessionTelemetry | Record<string, unknown>);
+        } else if (msg.type === 'account-telemetry' && msg.data) {
+          handleAccountTelemetryEvent(msg.data as AccountTelemetry | Record<string, unknown> | null);
         }
-      } else if (msg.type === 'session-activity-changed') {
-        // No changed-files refresh here — git watcher handles actual file changes.
-        // Refreshing on every tool call (Read, Grep, etc.) caused request floods.
-      }
-    });
+      },
+      () => {
+        void refreshTelemetry();
+      },
+    );
 
     return () => {
       for (const timer of refChangedTimers.values()) clearTimeout(timer);
@@ -637,6 +652,27 @@
     openFileTab(filePath, isChanged);
   }
 
+  // Handle file path clicks from terminal output
+  function handleTerminalFilePathClick(clickedPath: string) {
+    const cwd = activeWorkspaceCwd;
+    if (!cwd) return;
+    // Resolve to a path relative to the workspace root
+    let relative = clickedPath;
+    if (clickedPath.startsWith(cwd + '/')) {
+      relative = clickedPath.slice(cwd.length + 1);
+    } else if (clickedPath.startsWith('/')) {
+      // Absolute path outside workspace — ignore
+      return;
+    } else if (clickedPath.startsWith('./')) {
+      relative = clickedPath.slice(2);
+    }
+    // Normalize: strip any remaining leading "./" (e.g. from ${cwd}/./src/foo.ts)
+    while (relative.startsWith('./')) {
+      relative = relative.slice(2);
+    }
+    openFileTab(relative, false);
+  }
+
   // Handlers
   function handleSelectWorkspace(path: string) {
     if (ui.activeRepoPath === path) {
@@ -674,10 +710,6 @@
         repoPath: activeWorkspace.path,
         worktreePath: activeSession?.worktreePath ?? null,
         type: 'agent',
-        continue: configState.defaultContinue,
-        yolo: configState.defaultYolo,
-        agent: configState.defaultAgent,
-        useTmux: configState.launchInTmux,
         cols,
         rows,
       });
@@ -721,7 +753,7 @@
 
   function handleCustomize() {
     if (activeWorkspace) {
-      customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path });
+      customizeDialogRef?.open({ name: activeWorkspace.name, path: activeWorkspace.path }, activeSession?.worktreePath);
     }
   }
 
@@ -1135,7 +1167,7 @@
         title={sessionTitle}
         onMenuClick={openSidebar}
         onCommandClick={() => { spotlightOpen = true; }}
-        hidden={keyboardOpen}
+        hidden={ui.keyboardOpen}
       />
 
       {#if viewMode === 'empty'}
@@ -1190,7 +1222,15 @@
               onImageUpload={handleImageUpload}
               useTmux={activeSessionUseTmux}
               onCopyModeChange={handleCopyModeChange}
+              onFilePathClick={handleTerminalFilePathClick}
             />
+
+            {#if sessionState.activeSessionId}
+              <SessionStatusBar
+                sessionId={sessionState.activeSessionId}
+                currentActivity={activeSession?.currentActivity ?? null}
+              />
+            {/if}
 
             <Toolbar
               onSendKey={handleSendKey}

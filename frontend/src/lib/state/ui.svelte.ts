@@ -61,6 +61,7 @@ let activeWorkspaceId = $state<string | null>((() => {
 })());
 let terminalFontSize = $state(loadTerminalFontSize());
 let hasHardwareKeyboard = $state(false);
+let keyboardOpen = $state(false);
 let fullPageDiff = $state<{
   workspacePath: string;
   file?: string | undefined;
@@ -155,6 +156,8 @@ export function getUi() {
     set terminalFontSize(v: number) { terminalFontSize = v; },
     get hasHardwareKeyboard() { return hasHardwareKeyboard; },
     set hasHardwareKeyboard(v: boolean) { hasHardwareKeyboard = v; },
+    get keyboardOpen() { return keyboardOpen; },
+    set keyboardOpen(v: boolean) { keyboardOpen = v; },
     get fullPageDiff() { return fullPageDiff; },
     set fullPageDiff(v: typeof fullPageDiff) { fullPageDiff = v; },
     // Right sidebar & file viewer

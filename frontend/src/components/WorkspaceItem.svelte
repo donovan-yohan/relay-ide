@@ -629,7 +629,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-left: 15px;
+    padding-left: 22px;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     min-width: 0;

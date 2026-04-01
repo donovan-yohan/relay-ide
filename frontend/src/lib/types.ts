@@ -4,6 +4,37 @@ import type { PrDotStatus } from './pr-status.js';
 export type AgentType = 'claude' | 'codex';
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
 
+export interface CurrentActivity {
+  tool: string;
+  detail?: string;
+}
+
+export interface SessionTelemetry {
+  sessionId: string;
+  model: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  contextPercent: number;
+  contextWindowSize: number;
+  costUsd: number | null;
+  turnCount: number;
+  subagentCount: number;
+  source: 'statusLine' | 'jsonl';
+  updatedAt: string;
+}
+
+export type TelemetryData = SessionTelemetry;
+
+export interface AccountTelemetry {
+  fiveHourUsedPercent: number;
+  fiveHourResetsAt: string | null;
+  sevenDayUsedPercent: number;
+  sevenDayResetsAt: string | null;
+  updatedAt: string;
+}
+
 export interface Repo {
   path: string;
   name: string;
@@ -38,6 +69,7 @@ export interface SessionSummary {
   agentState?: AgentState | undefined;
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
+  currentActivity?: CurrentActivity | undefined;
 }
 
 export interface WorktreeInfo {
