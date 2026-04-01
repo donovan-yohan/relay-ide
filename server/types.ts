@@ -385,6 +385,7 @@ export interface Repo {
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
+  currentBranch: string | null;
 }
 
 export type RepoRole = 'frontend' | 'backend' | 'lib' | 'infra' | 'docs' | 'other';

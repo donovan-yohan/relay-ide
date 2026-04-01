@@ -40,6 +40,7 @@ export interface Repo {
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
+  currentBranch: string | null;
 }
 
 export interface Workspace {

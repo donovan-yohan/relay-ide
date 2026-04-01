@@ -102,25 +102,14 @@
   }
 
   function sessionDisplayName(session: SessionSummary): string {
-    if (session.worktreePath === null) {
-      // Show "default" unless the user explicitly renamed the session
-      const wasRenamed = session.displayName && session.displayName !== session.repoName;
-      return wasRenamed ? session.displayName : 'default';
-    }
+    if (session.worktreePath === null) return 'default';
     return session.displayName || session.branchName || session.repoName || session.id;
   }
 
   // Group identity: name derived from worktree/branch, not individual tab
   function groupDisplayName(groupPath: string, sessions: SessionSummary[]): string {
     const isRepoRoot = groupPath === workspace.path;
-    if (isRepoRoot) {
-      const repoSession = sessions.find(s => s.worktreePath === null);
-      if (repoSession) {
-        const wasRenamed = repoSession.displayName && repoSession.displayName !== repoSession.repoName;
-        return wasRenamed ? repoSession.displayName : 'default';
-      }
-      return 'default';
-    }
+    if (isRepoRoot) return 'default';
     // All sessions in a worktree group share the same branch — use any
     const branch = sessions.find(s => s.branchName)?.branchName;
     const cwdName = sessions[0]?.cwd.split('/').pop();
@@ -383,9 +372,9 @@
               <SessionIndicator state="inactive" />
               <span class="session-name">{isItemLoading(repoLoadingKey) ? 'starting...' : 'default'}</span>
             </div>
-            {#if workspace.defaultBranch}
+            {#if workspace.currentBranch}
               <div class="session-row-secondary">
-                <span class="secondary-branch">{workspace.defaultBranch}</span>
+                <span class="secondary-branch">{workspace.currentBranch}</span>
               </div>
             {/if}
           </li>

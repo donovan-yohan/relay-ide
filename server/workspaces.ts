@@ -198,6 +198,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
 
         let name = path.basename(p);
+        let currentBranch: string | null = null;
 
         if (isGitRepo) {
           try {
@@ -210,9 +211,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           } catch {
             // No remote configured — fall back to directory name
           }
+          try {
+            const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: p });
+            currentBranch = stdout.trim() || null;
+          } catch { /* detached HEAD or other error */ }
         }
 
-        return { path: p, name, isGitRepo, defaultBranch };
+        return { path: p, name, isGitRepo, defaultBranch, currentBranch };
       }),
     );
 
@@ -262,11 +267,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
     trackEvent({ category: 'workspace', action: 'added', target: resolved, properties: { name: path.basename(resolved) } });
 
+    let currentBranch: string | null = null;
+    if (isGitRepo) {
+      try {
+        const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: resolved });
+        currentBranch = stdout.trim() || null;
+      } catch { /* detached HEAD */ }
+    }
     const workspace: Repo = {
       path: resolved,
       name: path.basename(resolved),
       isGitRepo,
       defaultBranch,
+      currentBranch,
     };
 
     res.status(201).json(workspace);
@@ -364,7 +377,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       (rawPaths as string[]).map(async (p) => {
         const name = path.basename(p);
         const { isGitRepo, defaultBranch } = await detectGitRepo(p, exec);
-        return { path: p, name, isGitRepo, defaultBranch };
+        let currentBranch: string | null = null;
+        if (isGitRepo) {
+          try {
+            const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: p });
+            currentBranch = stdout.trim() || null;
+          } catch { /* detached HEAD */ }
+        }
+        return { path: p, name, isGitRepo, defaultBranch, currentBranch };
       }),
     );
 
@@ -388,7 +408,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const config = getConfig();
     const existing = new Set(config.repos ?? []);
-    const added: Array<{ path: string; name: string; isGitRepo: boolean; defaultBranch: string | null }> = [];
+    const added: Repo[] = [];
     const errors: Array<{ path: string; error: string }> = [];
 
     for (const rawPath of rawPaths) {
@@ -413,7 +433,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const { isGitRepo, defaultBranch } = await detectGitRepo(resolved, exec);
 
       existing.add(resolved);
-      added.push({ path: resolved, name: path.basename(resolved), isGitRepo, defaultBranch });
+      let currentBranch: string | null = null;
+      if (isGitRepo) {
+        try {
+          const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: resolved });
+          currentBranch = stdout.trim() || null;
+        } catch { /* detached HEAD */ }
+      }
+      added.push({ path: resolved, name: path.basename(resolved), isGitRepo, defaultBranch, currentBranch });
 
       // Store detected default branch in per-repo settings
       if (isGitRepo && defaultBranch) {

@@ -38,6 +38,7 @@ function makeWorkspace(overrides: Partial<Repo> & { path: string }): Repo {
     name: overrides.path.split('/').at(-1) ?? 'workspace',
     isGitRepo: true,
     defaultBranch: 'main',
+    currentBranch: 'main',
     ...overrides,
   };
 }

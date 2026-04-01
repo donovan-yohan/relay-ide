@@ -174,7 +174,7 @@ export function buildSidebarItems(
         path: workspace.path,
         repoPath: workspace.path,
         displayName: workspace.name,
-        branchName: workspace.defaultBranch ?? '',
+        branchName: workspace.currentBranch ?? workspace.defaultBranch ?? '',
         lastActivity: '',
         displayState: reconcileDisplayState(existingById.get(workspace.path), null, []),
         lastKnownBackendState: null,

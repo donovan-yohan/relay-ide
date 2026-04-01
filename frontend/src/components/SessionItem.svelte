@@ -34,11 +34,7 @@
   let displayName = $derived.by(() => {
     switch (variant.kind) {
       case 'active': {
-        if (variant.session.worktreePath === null) {
-          // Show "default" unless the user explicitly renamed the session
-          const wasRenamed = variant.session.displayName && variant.session.displayName !== variant.session.repoName;
-          return wasRenamed ? variant.session.displayName : 'default';
-        }
+        if (variant.session.worktreePath === null) return 'default';
         return variant.session.displayName || variant.session.repoName || variant.session.id;
       }
       case 'inactive-worktree': return variant.worktree.displayName || variant.worktree.name;
