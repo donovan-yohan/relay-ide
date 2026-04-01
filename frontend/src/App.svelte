@@ -519,16 +519,16 @@
     connectEventSocket((msg) => {
       if (msg.type === 'worktrees-changed') {
         refreshAll();
-      } else if (msg.type === 'session-backend-state-changed' && msg.sessionId && msg.state) {
+      } else if (msg.type === 'session-backend-state-changed') {
         handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
-      } else if (msg.type === 'session-renamed' && msg.sessionId) {
-        renameSession(msg.sessionId, msg.branchName ?? '', msg.displayName ?? '');
-      } else if (msg.type === 'session-branch-changed' && msg.sessionId) {
-        handleBranchChanged(msg.sessionId, msg.branch ?? '');
+      } else if (msg.type === 'session-renamed') {
+        renameSession(msg.sessionId, msg.branchName, msg.displayName);
+      } else if (msg.type === 'session-branch-changed') {
+        handleBranchChanged(msg.sessionId, msg.branch);
       } else if (msg.type === 'session-ended') {
         invalidatePrQueries();
         refreshAll();
-      } else if (msg.type === 'ref-changed' && msg.cwdPath) {
+      } else if (msg.type === 'ref-changed') {
         const key = msg.cwdPath;
         const existing = refChangedTimers.get(key);
         if (existing) clearTimeout(existing);
@@ -540,7 +540,7 @@
         throttledPollInvalidate();
       } else if (msg.type === 'files-changed') {
         const activeWs = activeSession?.cwd ?? activeSession?.repoPath;
-        if (!msg.workspacePath || activeWs === msg.workspacePath) {
+        if (activeWs === msg.workspacePath) {
           throttledChangedFilesRefresh();
           if (msg.changedFiles) {
             changedFilesData = msg.changedFiles;

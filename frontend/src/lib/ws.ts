@@ -2,21 +2,21 @@ import type { Terminal } from '@xterm/xterm';
 import type { BackendDisplayState } from './state/display-state.js';
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-interface EventMessage {
-  type: string;
-  sessionId?: string;
-  idle?: boolean;
-  state?: BackendDisplayState;
-  permissionType?: 'approval' | 'question';
-  branchName?: string;
-  displayName?: string;
-  cwd?: string;
-  cwdPath?: string;
-  branch?: string;
-  repo?: string;
-  workspacePath?: string;
-  changedFiles?: string[];
-}
+// Discriminated union for WebSocket event messages.
+// Each event type declares only its required fields.
+export type EventMessage =
+  | { type: 'worktrees-changed' }
+  | { type: 'session-backend-state-changed'; sessionId: string; state: BackendDisplayState; permissionType?: 'approval' | 'question' }
+  | { type: 'session-renamed'; sessionId: string; branchName: string; displayName: string }
+  | { type: 'session-branch-changed'; sessionId: string; branch: string; cwdPath?: string }
+  | { type: 'session-ended'; sessionId?: string; cwd?: string; branchName?: string }
+  | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
+  | { type: 'pr-updated' }
+  | { type: 'ci-updated' }
+  | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
+  | { type: 'session-activity-changed'; sessionId: string }
+  | { type: 'browser-tab-opened'; filePath: string; token: string }
+  | { type: 'browser-tab-refreshed'; filePath: string };
 
 type EventCallback = (msg: EventMessage) => void;
 
