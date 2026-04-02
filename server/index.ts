@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching } from './analytics.js';
+import { initAnalytics, closeAnalytics, createAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
@@ -486,6 +486,20 @@ async function main(): Promise<void> {
     configDir,
   });
   startEventBatching();
+
+  // Run retention cleanup and orphan recovery at startup
+  try {
+    const recovered = recoverOrphanedSessions();
+    if (recovered > 0) console.log(`[analytics] Recovered ${recovered} orphaned session(s).`);
+    runRetentionCleanup();
+  } catch (err) {
+    console.warn('[analytics] Retention/recovery error:', err);
+  }
+
+  // Schedule daily retention cleanup
+  setInterval(() => {
+    try { runRetentionCleanup(); } catch { /* non-fatal */ }
+  }, 24 * 60 * 60 * 1000);
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});

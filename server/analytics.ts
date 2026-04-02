@@ -579,3 +579,87 @@ export function computeEngagementMetrics(sessionId: string): {
     toolUseCounts,
   };
 }
+
+// ── Retention Policy ──
+
+export function runRetentionCleanup(retentionDays = 90): void {
+  if (!db) return;
+
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  // Delete old session events
+  db.prepare('DELETE FROM session_events WHERE timestamp < ?').run(cutoff);
+
+  // Downsample rate_limit_snapshots: after 7 days keep hourly, after 30 days keep daily
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Keep first snapshot per hour for entries older than 7 days but newer than 30 days
+  db.prepare(`
+    DELETE FROM rate_limit_snapshots
+    WHERE timestamp < ? AND timestamp >= ?
+    AND id NOT IN (
+      SELECT MIN(id) FROM rate_limit_snapshots
+      WHERE timestamp < ? AND timestamp >= ?
+      GROUP BY strftime('%Y-%m-%d %H', timestamp)
+    )
+  `).run(sevenDaysAgo, thirtyDaysAgo, sevenDaysAgo, thirtyDaysAgo);
+
+  // Keep first snapshot per day for entries older than 30 days
+  db.prepare(`
+    DELETE FROM rate_limit_snapshots
+    WHERE timestamp < ?
+    AND id NOT IN (
+      SELECT MIN(id) FROM rate_limit_snapshots
+      WHERE timestamp < ?
+      GROUP BY strftime('%Y-%m-%d', timestamp)
+    )
+  `).run(thirtyDaysAgo, thirtyDaysAgo);
+}
+
+// ── Orphaned Session Recovery ──
+
+export function recoverOrphanedSessions(): number {
+  if (!db) return 0;
+
+  // Normalize the threshold and stored updated_at to a common format for comparison.
+  // SQLite's datetime('now') returns 'YYYY-MM-DD HH:MM:SS'; JS toISOString() returns
+  // 'YYYY-MM-DDTHH:MM:SS.mmmZ'. We use datetime() on both sides to normalize.
+  const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+  const orphans = db.prepare(`
+    SELECT session_id FROM session_rollups
+    WHERE ended_at IS NULL AND datetime(updated_at) < datetime(?)
+  `).all(staleThreshold) as Array<{ session_id: string }>;
+
+  for (const { session_id } of orphans) {
+    const lastEvent = db.prepare(
+      'SELECT timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1'
+    ).get(session_id) as { timestamp: string } | undefined;
+
+    const endedAt = lastEvent?.timestamp ?? new Date().toISOString();
+    const metrics = computeEngagementMetrics(session_id);
+
+    if (metrics) {
+      upsertSessionRollup({
+        sessionId: session_id,
+        endedAt,
+        recovered: true,
+        ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
+        ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
+        ...(metrics.humanResponseLatencyP95Ms !== null ? { humanResponseLatencyP95Ms: metrics.humanResponseLatencyP95Ms } : {}),
+        ...(metrics.agentIdlePercent !== null ? { agentIdlePercent: metrics.agentIdlePercent } : {}),
+        rateLimitEncounters: metrics.rateLimitEncounters,
+        toolUseCounts: metrics.toolUseCounts,
+      });
+    } else {
+      upsertSessionRollup({
+        sessionId: session_id,
+        endedAt,
+        recovered: true,
+      });
+    }
+  }
+
+  return orphans.length;
+}
