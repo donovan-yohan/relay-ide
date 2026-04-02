@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions, recordRateLimitSnapshot } from './analytics.js';
+import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, getSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions, recordRateLimitSnapshot } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
@@ -587,9 +587,15 @@ async function main(): Promise<void> {
 
       flushEventBuffer(sessionId);
       const metrics = computeEngagementMetrics(sessionId);
+      const endedAt = new Date().toISOString();
+      const existingRollup = getSessionRollup(sessionId);
+      const durationSeconds = existingRollup?.startedAt
+        ? Math.round((new Date(endedAt).getTime() - new Date(existingRollup.startedAt).getTime()) / 1000)
+        : undefined;
       upsertSessionRollup({
         sessionId,
-        endedAt: new Date().toISOString(),
+        endedAt,
+        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
         ...(metrics ? {
           ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
           ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),

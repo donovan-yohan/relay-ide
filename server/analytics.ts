@@ -102,9 +102,7 @@ export interface AnalyticsEvent {
 
 export function initAnalytics(configDir: string): void {
   if (db) {
-    db.close();
-    db = null;
-    insertStmt = null;
+    closeAnalytics();
   }
   const dbPath = path.join(configDir, 'analytics.db');
   db = new Database(dbPath);
@@ -697,9 +695,9 @@ export function createSessionAnalyticsRouter(): Router {
       totalTokensIn += r.total_input_tokens as number;
       totalTokensOut += r.total_output_tokens as number;
       totalCacheRead += r.total_cache_read as number;
-      if (r.duration_seconds) { totalDuration += r.duration_seconds as number; durationCount++; }
-      if (r.human_response_latency_avg_ms) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
-      if (r.agent_idle_percent !== null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
+      if (r.duration_seconds != null) { totalDuration += r.duration_seconds as number; durationCount++; }
+      if (r.human_response_latency_avg_ms != null) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
+      if (r.agent_idle_percent != null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
       totalRateLimits += r.rate_limit_encounters as number;
 
       const rp = (r.repo_path as string) ?? 'unknown';
@@ -742,8 +740,8 @@ export function createSessionAnalyticsRouter(): Router {
   router.get('/sessions', (_req: Request, res: Response) => {
     if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
 
-    const offset = parseInt(_req.query.offset as string) || 0;
-    const limit = Math.min(parseInt(_req.query.limit as string) || 20, 100);
+    const offset = Math.max(parseInt(_req.query.offset as string) || 0, 0);
+    const limit = Math.min(Math.max(parseInt(_req.query.limit as string) || 20, 1), 100);
     const repoFilter = _req.query.repo as string | undefined;
     const agentFilter = _req.query.agent as string | undefined;
     const sort = (_req.query.sort as string) || 'started_at';
@@ -797,7 +795,8 @@ export function createSessionAnalyticsRouter(): Router {
   router.get('/sessions/:id', (req: Request, res: Response) => {
     if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
 
-    const sessionId = req.params['id'] ?? '';
+    const sessionId = req.params['id'];
+    if (!sessionId) { res.status(400).json({ error: 'Missing session ID' }); return; }
     const rollup = getSessionRollup(sessionId);
     if (!rollup) { res.status(404).json({ error: 'Session not found' }); return; }
 
@@ -806,17 +805,12 @@ export function createSessionAnalyticsRouter(): Router {
     ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
 
     const toolBreakdown: Record<string, { count: number }> = {};
-    for (const e of events) {
-      if (e.event_type === 'tool_use' && e.event_data) {
-        try {
-          const data = JSON.parse(e.event_data) as Record<string, unknown>;
-          const tool = (data.tool as string) ?? 'unknown';
-          toolBreakdown[tool] = { count: (toolBreakdown[tool]?.count ?? 0) + 1 };
-        } catch { /* ignore */ }
+    if (rollup.toolUseCounts) {
+      for (const [tool, count] of Object.entries(rollup.toolUseCounts)) {
+        toolBreakdown[tool] = { count };
       }
     }
 
-    // Compute time breakdown from events
     let agentActiveTime = 0, waitingForHumanTime = 0, rateLimitTime = 0;
     if (events.length >= 2) {
       const firstTs = new Date(events[0]!.timestamp).getTime();
@@ -908,7 +902,7 @@ export function createSessionAnalyticsRouter(): Router {
       if (!r.event_data) continue;
       try {
         const data = JSON.parse(r.event_data) as Record<string, unknown>;
-        const tool = (data.tool as string) ?? 'unknown';
+        const tool = typeof data.tool === 'string' ? data.tool : 'unknown';
         counts.set(tool, (counts.get(tool) ?? 0) + 1);
         totalUses++;
       } catch { /* ignore */ }
