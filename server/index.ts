@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter } from './analytics.js';
+import { initAnalytics, closeAnalytics, createAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
@@ -36,7 +36,7 @@ import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
 import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
-import { createTelemetryRouter, startTelemetry, stopTelemetry } from './telemetry.js';
+import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession } from './telemetry.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
 import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
@@ -485,6 +485,7 @@ async function main(): Promise<void> {
     broadcastEvent,
     configDir,
   });
+  startEventBatching();
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});
@@ -534,6 +535,39 @@ async function main(): Promise<void> {
   // Invalidate branch linker cache on session lifecycle changes
   sessions.onSessionCreate(() => { invalidateBranchLinkerCache(); });
   sessions.onSessionEnd((sessionId) => { invalidateBranchLinkerCache(); lastPushState.delete(sessionId); });
+
+  sessions.onSessionEnd((sessionId) => {
+    // 1-second grace period for in-flight hooks before computing final metrics
+    setTimeout(() => {
+      // Capture final telemetry snapshot
+      const telemetry = getTelemetryForSession(sessionId);
+      if (telemetry) {
+        upsertSessionRollup({
+          sessionId,
+          ...(telemetry.model !== null ? { model: telemetry.model } : {}),
+          totalInputTokens: telemetry.totalInputTokens,
+          totalOutputTokens: telemetry.totalOutputTokens,
+          totalCacheRead: telemetry.totalCacheRead,
+          totalCacheWrite: telemetry.totalCacheWrite,
+        });
+      }
+
+      flushEventBuffer(sessionId);
+      const metrics = computeEngagementMetrics(sessionId);
+      upsertSessionRollup({
+        sessionId,
+        endedAt: new Date().toISOString(),
+        ...(metrics ? {
+          ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
+          ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
+          ...(metrics.humanResponseLatencyP95Ms !== null ? { humanResponseLatencyP95Ms: metrics.humanResponseLatencyP95Ms } : {}),
+          ...(metrics.agentIdlePercent !== null ? { agentIdlePercent: metrics.agentIdlePercent } : {}),
+          rateLimitEncounters: metrics.rateLimitEncounters,
+          toolUseCounts: metrics.toolUseCounts,
+        } : {}),
+      });
+    }, 1000);
+  });
 
   // Push notifications on meaningful state transitions (skip when hooks already sent attention notification)
   const lastPushState = new Map<string, string>();
@@ -1334,6 +1368,7 @@ async function main(): Promise<void> {
       const restarting = serviceIsInstalled();
       if (restarting) {
         // Persist sessions so they can be restored after restart
+        stopEventBatching();
         stopTelemetry();
         serializeAll(configDir);
       }
@@ -1376,6 +1411,7 @@ async function main(): Promise<void> {
 
   async function gracefulShutdown() {
     await stopPolling();
+    stopEventBatching();
     stopTelemetry();
     closeAnalytics();
     branchWatcher.close();
