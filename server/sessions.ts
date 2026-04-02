@@ -265,6 +265,7 @@ function list(): SessionSummary[] {
       currentActivity: s.currentActivity,
       ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
       ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+      ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }

@@ -38,6 +38,7 @@ import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './web
 import { fetchPrsGraphQL } from './github-graphql.js';
 import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession, getAccountTelemetry } from './telemetry.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
+import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan } from './utils.js';
 import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
 
@@ -470,6 +471,18 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
+
+  // GET /api/frameworks — returns available agent frameworks with capabilities
+  app.get('/api/frameworks', requireAuth, (_req, res) => {
+    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map(f => ({
+      id: f.id,
+      displayName: f.displayName,
+      command: f.command,
+      capabilities: f.capabilities,
+      eventSource: f.eventSource,
+    }));
+    res.json({ frameworks });
+  });
 
   // Restore sessions from a previous update restart
   const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);

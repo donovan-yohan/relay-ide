@@ -226,6 +226,7 @@ export interface SessionSummary {
   currentActivity?: { tool: string; detail?: string } | undefined;
   workspaceId?: string;
   additionalDirs?: string[];
+  dataQuality?: EventSourceType;
 }
 
 export interface TelemetryData {

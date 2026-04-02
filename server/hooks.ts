@@ -190,6 +190,71 @@ export function createHooksRouter(deps: HookDeps): Router {
   // Middleware: parse JSON with generous limit for PostToolUse payloads
   router.use(express.json({ limit: '5mb' }));
 
+  // POST /agent-event — receives relay events from opencode plugin and codex hooks adapter.
+  // Registered BEFORE the query-param token middleware because it takes sessionId/token from body.
+  router.post('/agent-event', (req: Request, res: Response) => {
+    const { sessionId, token, eventType, data, timestamp } = req.body as {
+      sessionId?: string;
+      token?: string;
+      eventType?: string;
+      data?: Record<string, unknown>;
+      timestamp?: string;
+    };
+
+    if (!sessionId || !token || !eventType) {
+      res.status(400).json({ error: 'Missing required fields: sessionId, token, eventType' });
+      return;
+    }
+
+    // Find the session and validate token
+    const session = deps.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    if (session.hookToken !== token) {
+      res.status(401).json({ error: 'Invalid token' });
+      return;
+    }
+
+    // Record the event for analytics
+    recordSessionEvent({
+      session_id: sessionId,
+      repo_path: session.repoPath,
+      event_type: eventType,
+      ...(data !== undefined && { event_data: data }),
+      timestamp: timestamp || new Date().toISOString(),
+    });
+
+    // Map certain event types to agent state changes
+    if (eventType === 'session.started') {
+      setAgentState(session, 'processing', deps);
+    } else if (eventType === 'session.idle' || eventType === 'session.ended') {
+      setAgentState(session, 'idle', deps);
+    } else if (eventType === 'permission.requested') {
+      setAgentState(session, 'permission-prompt', deps);
+      session.lastAttentionNotifiedAt = Date.now();
+      deps.notifySessionAttention(session.id, { displayName: session.displayName, type: session.type });
+    } else if (eventType === 'tool.started') {
+      setAgentState(session, 'processing', deps);
+      if (data?.tool) {
+        session.currentActivity = { tool: String(data.tool) };
+      }
+    } else if (eventType === 'tool.finished') {
+      session.currentActivity = undefined;
+    } else if (eventType === 'prompt.submitted') {
+      setAgentState(session, 'processing', deps);
+    } else if (eventType === 'state.changed') {
+      // Generic state change from output parser or opencode status events
+      // Only map recognized states
+      const status = data?.status;
+      if (status === 'error') setAgentState(session, 'error', deps);
+    }
+
+    res.status(204).end();
+  });
+
   // Middleware: token verification
   router.use((req: Request, res: Response, next) => {
     const sessionId = req.query.sessionId;
