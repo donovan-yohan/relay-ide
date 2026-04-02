@@ -125,6 +125,13 @@ export async function detectGitRepo(
   return { isGitRepo: true, defaultBranch };
 }
 
+function expandTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return path.join(os.homedir(), p.slice(1));
+  }
+  return p;
+}
+
 // Router factory
 
 /**
@@ -789,11 +796,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const prefix = typeof req.query.prefix === 'string' ? req.query.prefix : '';
     const showHidden = req.query.showHidden === 'true';
 
-    // Resolve ~ to home directory
-    const expanded = rawPath === '~' || rawPath.startsWith('~/')
-      ? path.join(os.homedir(), rawPath.slice(1))
-      : rawPath;
-    const resolved = path.resolve(expanded);
+    const resolved = path.resolve(expandTilde(rawPath));
 
     let stat: fs.Stats;
     try {
@@ -1068,8 +1071,34 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    if (filePath.includes('..') || path.isAbsolute(filePath)) {
+    const expandedFile = expandTilde(filePath);
+
+    if (expandedFile.includes('..')) {
       res.status(400).json({ diff: '', error: 'invalid file path' });
+      return;
+    }
+
+    if (path.isAbsolute(expandedFile)) {
+      try {
+        const stat = await fs.promises.stat(expandedFile);
+        if (!stat.isFile()) {
+          res.status(400).json({ diff: '', error: 'not a regular file' });
+          return;
+        }
+        if (stat.size > 2 * 1024 * 1024) {
+          res.status(413).json({ diff: '', error: 'file too large' });
+          return;
+        }
+        const content = await fs.promises.readFile(expandedFile, 'utf-8');
+        res.json({ diff: content });
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EACCES' || code === 'EPERM') {
+          res.status(403).json({ diff: '', error: 'permission denied' });
+        } else {
+          res.status(404).json({ diff: '', error: 'file not found' });
+        }
+      }
       return;
     }
 
@@ -1079,7 +1108,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     try {
-      const diff = await getFileDiff(resolvedRepo, filePath, base, exec);
+      const diff = await getFileDiff(resolvedRepo, expandedFile, base, exec);
       res.json({ diff });
     } catch (err: unknown) {
       console.warn('[workspaces] /file-diff failed for', resolvedRepo, filePath, err instanceof Error ? err.message : String(err));
