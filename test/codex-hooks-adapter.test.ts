@@ -108,26 +108,21 @@ describe('writeCodexHooksAdapter', () => {
     }
   });
 
-  it('relay.sh contains the correct port in the curl command', () => {
-    const dir = writeCodexHooksAdapter('sess-008', 9999, 'tok-abc', tmpConfigDir);
-    const relayPath = path.join(dir, 'relay.sh');
-    const content = fs.readFileSync(relayPath, 'utf-8');
-    assert.ok(content.includes('9999'), 'relay.sh should contain the port number 9999');
-    assert.ok(content.includes('http://127.0.0.1:9999'), 'relay.sh should contain full localhost URL with port');
+  it('session.json contains the correct port, sessionId, and hookToken', () => {
+    const dir = writeCodexHooksAdapter('sess-008', 9999, 'super-secret-token', tmpConfigDir);
+    const configPath = path.join(dir, 'session.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    assert.strictEqual(config.port, 9999, 'session.json should contain the correct port');
+    assert.strictEqual(config.sessionId, 'sess-008', 'session.json should contain the correct sessionId');
+    assert.strictEqual(config.hookToken, 'super-secret-token', 'session.json should contain the correct hookToken');
   });
 
-  it('relay.sh contains the correct sessionId', () => {
+  it('relay.sh reads config from session.json', () => {
     const dir = writeCodexHooksAdapter('my-unique-session-id', 3456, 'tok-abc', tmpConfigDir);
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    assert.ok(content.includes('my-unique-session-id'), 'relay.sh should contain the sessionId');
-  });
-
-  it('relay.sh contains the correct hookToken', () => {
-    const dir = writeCodexHooksAdapter('sess-010', 3456, 'super-secret-token', tmpConfigDir);
-    const relayPath = path.join(dir, 'relay.sh');
-    const content = fs.readFileSync(relayPath, 'utf-8');
-    assert.ok(content.includes('super-secret-token'), 'relay.sh should contain the hookToken');
+    assert.ok(content.includes('session.json'), 'relay.sh should reference session.json config file');
+    assert.ok(content.includes('CONFIG_FILE='), 'relay.sh should set CONFIG_FILE variable');
   });
 
   it('relay.sh posts to /hooks/agent-event', () => {

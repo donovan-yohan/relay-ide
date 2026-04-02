@@ -36,7 +36,15 @@ export function writeCodexHooksAdapter(
   const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', `codex-hooks-${sessionId}`);
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  // Write relay script
+  // Write session config for the relay script to read
+  const configPath = path.join(tmpDir, 'session.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ sessionId, port, hookToken }),
+    'utf-8'
+  );
+
+  // Write relay script — reads config from file to avoid shell injection
   const relayScript = `#!/usr/bin/env bash
 set -u
 INPUT=$(cat)
@@ -50,9 +58,15 @@ case "$EVENT" in
   PostToolUse) CANONICAL_EVENT="tool.finished" ;;
   *) CANONICAL_EVENT="$EVENT" ;;
 esac
-curl -s -X POST "http://127.0.0.1:${port}/hooks/agent-event" \\
+CONFIG_FILE="${configPath}"
+SESSION_ID=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).sessionId))")
+PORT=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).port))")
+TOKEN=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).hookToken))")
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PAYLOAD=$(printf '{"sessionId":"%s","token":"%s","eventType":"%s","data":%s,"timestamp":"%s"}' "$SESSION_ID" "$TOKEN" "$CANONICAL_EVENT" "$INPUT" "$TIMESTAMP")
+curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
   -H "Content-Type: application/json" \\
-  -d "{\\"sessionId\\":\\"${sessionId}\\",\\"token\\":\\"${hookToken}\\",\\"eventType\\":\\"$CANONICAL_EVENT\\",\\"data\\":$INPUT,\\"timestamp\\":\\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\\"}" \\
+  -d "$PAYLOAD" \\
   > /dev/null 2>&1 || true
 `;
   const relayPath = path.join(tmpDir, 'relay.sh');
