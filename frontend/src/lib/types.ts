@@ -1,8 +1,23 @@
 import type { DisplayState, BackendDisplayState } from './state/display-state.js';
 import type { PrDotStatus } from './pr-status.js';
 
-export type AgentType = 'claude' | 'codex';
+export type AgentType = string;
 export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
+
+export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
+
+export interface FrameworkInfo {
+  id: string;
+  displayName: string;
+  command: string;
+  capabilities: {
+    supportsContinue: boolean;
+    supportsYolo: boolean;
+    supportsHooks: boolean;
+    supportsTelemetry: boolean;
+  };
+  eventSource: EventSourceType;
+}
 
 export interface CurrentActivity {
   tool: string;
@@ -71,6 +86,7 @@ export interface SessionSummary {
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
   currentActivity?: CurrentActivity | undefined;
+  dataQuality?: EventSourceType | undefined;
 }
 
 export interface WorktreeInfo {

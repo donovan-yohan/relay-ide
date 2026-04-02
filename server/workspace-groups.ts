@@ -344,12 +344,12 @@ export function createWorkspaceGroupsRouter(
       const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
       const baseArgs = [
         ...combinedClaudeArgs,
-        ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
+        ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
       ];
 
       const useContinue = resolved.continuePolicy === 'always';
       const finalArgs = useContinue
-        ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
+        ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
         : [...baseArgs];
 
       const displayName = sessionDeps.sessions.nextAgentName();

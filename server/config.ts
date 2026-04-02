@@ -16,6 +16,7 @@ export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings'
   claudeCommand: 'claude',
   claudeArgs: [],
   defaultAgent: 'claude',
+  defaultFramework: 'claude',  // set from defaultAgent in loadConfig; default is 'claude'
   defaultContinue: true,
   defaultYolo: false,
   launchInTmux: false,
@@ -77,6 +78,55 @@ function migrateToV4(config: Config, configPath: string): void {
   saveConfig(configPath, config);
 }
 
+function migrateToV5(config: Config, configPath: string): void {
+  if (config.configVersion != null && config.configVersion >= 5) return;
+
+  // Map defaultAgent → defaultFramework, preserving any explicit defaultFramework
+  if (config.defaultAgent && !config.defaultFramework) {
+    config.defaultFramework = config.defaultAgent;
+  }
+
+  // Map claudeCommand → frameworks.claude.commandOverride (only if non-default)
+  if (config.claudeCommand && config.claudeCommand !== 'claude') {
+    if (!config.frameworks) config.frameworks = {};
+    if (!config.frameworks['claude']) config.frameworks['claude'] = {};
+    if (!config.frameworks['claude'].commandOverride) {
+      config.frameworks['claude'].commandOverride = config.claudeCommand;
+    }
+  }
+
+  // Map claudeArgs → frameworks.claude.extraArgs (only if non-empty)
+  if (Array.isArray(config.claudeArgs) && config.claudeArgs.length > 0) {
+    if (!config.frameworks) config.frameworks = {};
+    if (!config.frameworks['claude']) config.frameworks['claude'] = {};
+    config.frameworks['claude'].extraArgs = config.claudeArgs;
+  }
+
+  // Migrate repoSettings: defaultAgent → defaultFramework per repo
+  if (config.repoSettings) {
+    for (const repoPath of Object.keys(config.repoSettings)) {
+      const repoSettings = config.repoSettings[repoPath];
+      if (repoSettings?.defaultAgent && !repoSettings.defaultFramework) {
+        repoSettings.defaultFramework = repoSettings.defaultAgent;
+      }
+    }
+  }
+
+  // Migrate workspace-level settings: defaultAgent → defaultFramework
+  if (config.workspaces) {
+    for (const workspace of config.workspaces) {
+      if (workspace.settings?.defaultAgent && !workspace.settings.defaultFramework) {
+        workspace.settings.defaultFramework = workspace.settings.defaultAgent;
+      }
+    }
+  }
+
+  config.configVersion = 5;
+
+  // Persist migrated config
+  saveConfig(configPath, config);
+}
+
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -84,6 +134,12 @@ export function loadConfig(configPath: string): Config {
   const raw = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(raw) as Partial<Config>;
   const config: Config = { ...DEFAULTS, ...parsed };
+
+  // If defaultFramework was not explicitly set in the config file, derive it from defaultAgent
+  // so that legacy configs with only defaultAgent work correctly without migration
+  if (parsed.defaultFramework == null) {
+    config.defaultFramework = (parsed.defaultAgent ?? DEFAULTS.defaultAgent) as string;
+  }
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
@@ -122,6 +178,7 @@ export function loadConfig(configPath: string): Config {
   }
 
   migrateToV4(config, configPath);
+  migrateToV5(config, configPath);
 
   return config;
 }
@@ -177,6 +234,7 @@ export function deleteMeta(configPath: string, worktreePath: string): void {
 export function getRepoSettings(config: Config, repoPath: string): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
     defaultAgent: config.defaultAgent,
+    defaultFramework: config.defaultFramework ?? config.defaultAgent,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: config.launchInTmux,
@@ -211,6 +269,7 @@ export function resolveSessionSettings(
 ): ResolvedSessionSettings {
   const globalDefaults: Partial<WorkspaceSettings> = {
     defaultAgent: config.defaultAgent,
+    defaultFramework: config.defaultFramework ?? config.defaultAgent,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: config.launchInTmux,
@@ -232,8 +291,22 @@ export function resolveSessionSettings(
   const configPolicy: ContinuePolicy = merged.defaultContinuePolicy
     ?? (merged.defaultContinue ? 'always' : 'never');
 
+  // Resolve agent: prefer the most specific layer's defaultFramework, falling back to
+  // defaultAgent at that layer. This ensures workspace/repo defaultAgent still wins
+  // over a global defaultFramework.
+  const agentFromLayers = (() => {
+    // Repo layer (most specific)
+    if (repoSpecific.defaultFramework) return repoSpecific.defaultFramework as AgentType;
+    if (repoSpecific.defaultAgent) return repoSpecific.defaultAgent;
+    // Workspace layer
+    if (wsDefaults.defaultFramework) return wsDefaults.defaultFramework as AgentType;
+    if (wsDefaults.defaultAgent) return wsDefaults.defaultAgent;
+    // Global layer
+    return (globalDefaults.defaultFramework ?? globalDefaults.defaultAgent ?? 'claude') as AgentType;
+  })();
+
   return {
-    agent: overrides.agent ?? merged.defaultAgent ?? 'claude' as AgentType,
+    agent: overrides.agent ?? agentFromLayers,
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
     useTmux: overrides.useTmux ?? merged.launchInTmux ?? false,

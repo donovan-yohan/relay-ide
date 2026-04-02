@@ -38,6 +38,7 @@ import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './web
 import { fetchPrsGraphQL } from './github-graphql.js';
 import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession, getAccountTelemetry } from './telemetry.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
+import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan } from './utils.js';
 import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
 
@@ -471,8 +472,20 @@ async function main(): Promise<void> {
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
 
+  // GET /api/frameworks — returns available agent frameworks with capabilities
+  app.get('/api/frameworks', requireAuth, (_req, res) => {
+    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map(f => ({
+      id: f.id,
+      displayName: f.displayName,
+      command: f.command,
+      capabilities: f.capabilities,
+      eventSource: f.eventSource,
+    }));
+    res.json({ frameworks });
+  });
+
   // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
+  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? [], getConfig().frameworks);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
     // Start git watching for restored sessions
@@ -542,7 +555,7 @@ async function main(): Promise<void> {
           cwd: opts.worktreePath,
           branchName: opts.branchName,
           displayName,
-          args: [...resolved.claudeArgs, ...(resolved.yolo ? AGENT_YOLO_ARGS[resolved.agent] : [])],
+          args: [...resolved.claudeArgs, ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : [])],
           configPath: CONFIG_PATH,
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
@@ -1217,14 +1230,14 @@ async function main(): Promise<void> {
 
     const baseArgs = [
       ...(resolved.claudeArgs),
-      ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
+      ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
     ];
 
     // Determine --continue from policy (no .claude directory heuristic)
     const useContinue = resolved.continuePolicy === 'always';
 
     const args = useContinue
-      ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
+      ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
       : [...baseArgs];
 
     // Ticket context validation and initial prompt

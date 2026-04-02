@@ -5,27 +5,165 @@ export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | '
 export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission' | 'error';
 
 export type SessionType = 'agent' | 'terminal';
-export type AgentType = 'claude' | 'codex';
+export type AgentType = string;
+export type BuiltinFrameworkId = 'claude' | 'codex' | 'opencode';
+export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty';
 
-// Agent command records
-export const AGENT_COMMANDS: Record<AgentType, string> = {
-  claude: 'claude',
-  codex: 'codex',
+// ── Agent Framework Registry ──
+
+export interface AgentFramework {
+  id: string;
+  displayName: string;
+  command: string;
+  commandOverride?: string;
+  continueArgs: string[];
+  yoloArgs: string[];
+  yoloEnv?: Record<string, string>;
+  extraArgs?: string[];
+  parserType: string;
+  eventSource: EventSourceType;
+  capabilities: {
+    supportsHooks: boolean;
+    supportsContinue: boolean;
+    supportsYolo: boolean;
+    supportsTelemetry: boolean;
+  };
+}
+
+export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
+  claude: {
+    id: 'claude',
+    displayName: 'Claude Code',
+    command: 'claude',
+    continueArgs: ['--continue'],
+    yoloArgs: ['--dangerously-skip-permissions'],
+    parserType: 'claude',
+    eventSource: 'hooks',
+    capabilities: {
+      supportsHooks: true,
+      supportsContinue: true,
+      supportsYolo: true,
+      supportsTelemetry: true,
+    },
+  },
+  codex: {
+    id: 'codex',
+    displayName: 'Codex',
+    command: 'codex',
+    continueArgs: ['resume', '--last'],
+    yoloArgs: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
+    parserType: 'codex',
+    eventSource: 'hooks',
+    capabilities: {
+      supportsHooks: true,
+      supportsContinue: true,
+      supportsYolo: true,
+      supportsTelemetry: false,
+    },
+  },
+  opencode: {
+    id: 'opencode',
+    displayName: 'OpenCode',
+    command: 'opencode',
+    continueArgs: ['--continue'],
+    yoloArgs: [],
+    yoloEnv: {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        permission: {
+          read: 'allow',
+          edit: 'allow',
+          bash: 'allow',
+          glob: 'allow',
+          grep: 'allow',
+          list: 'allow',
+          task: 'allow',
+          webfetch: 'allow',
+          websearch: 'allow',
+          codesearch: 'allow',
+          lsp: 'allow',
+          skill: 'allow',
+        },
+      }),
+    },
+    parserType: 'opencode',
+    eventSource: 'plugin',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: true,
+      supportsTelemetry: true,
+    },
+  },
 };
 
-export const AGENT_CONTINUE_ARGS: Record<AgentType, string[]> = {
-  claude: ['--continue'],
-  codex: ['resume', '--last'],
-};
+export function resolveFramework(
+  config: { frameworks?: Record<string, Partial<AgentFramework>> },
+  frameworkId: string
+): AgentFramework {
+  const builtin = BUILTIN_FRAMEWORKS[frameworkId as BuiltinFrameworkId] as AgentFramework | undefined;
+  const override = config.frameworks?.[frameworkId];
 
-export const AGENT_YOLO_ARGS: Record<AgentType, string[]> = {
-  claude: ['--dangerously-skip-permissions'],
-  codex: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
-};
+  if (!builtin && !override) {
+    throw new Error(`Unknown framework: "${frameworkId}". Register it in config.frameworks.`);
+  }
+
+  if (!builtin) {
+    // fully custom framework from config — validate all required fields before returning
+    const custom = override!;
+    const validEventSources: EventSourceType[] = ['hooks', 'plugin', 'parser', 'timer'];
+    if (
+      !custom.id ||
+      !custom.displayName ||
+      !custom.command ||
+      !Array.isArray(custom.continueArgs) ||
+      !Array.isArray(custom.yoloArgs) ||
+      !custom.parserType ||
+      !custom.eventSource ||
+      !validEventSources.includes(custom.eventSource) ||
+      !custom.capabilities ||
+      typeof custom.capabilities.supportsHooks !== 'boolean' ||
+      typeof custom.capabilities.supportsContinue !== 'boolean' ||
+      typeof custom.capabilities.supportsYolo !== 'boolean' ||
+      typeof custom.capabilities.supportsTelemetry !== 'boolean'
+    ) {
+      throw new Error(
+        `Custom framework "${frameworkId}" must define id, displayName, command, continueArgs, yoloArgs, parserType, eventSource, and complete capabilities.`
+      );
+    }
+    return { ...custom } as AgentFramework;
+  }
+
+  if (!override) {
+    return builtin;
+  }
+
+  // shallow merge at top level, deep merge for capabilities
+  const { capabilities: overrideCaps, ...overrideRest } = override;
+  return {
+    ...builtin,
+    ...overrideRest,
+    capabilities: overrideCaps
+      ? { ...builtin.capabilities, ...overrideCaps }
+      : builtin.capabilities,
+  };
+}
+
+// Deprecated aliases derived from BUILTIN_FRAMEWORKS for backward compatibility
+export const AGENT_COMMANDS: Record<string, string> = Object.fromEntries(
+  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.command])
+);
+
+export const AGENT_CONTINUE_ARGS: Record<string, string[]> = Object.fromEntries(
+  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.continueArgs])
+);
+
+export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
+  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.yoloArgs])
+);
 
 // Session types — discriminated union on `mode`
 interface BaseSession {
@@ -70,8 +208,13 @@ export interface PtySession extends BaseSession {
   lastAttentionNotifiedAt?: number | undefined;
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
+  /** Framework-specific args (replaces deprecated claudeArgs) */
+  sessionArgs?: string[];
+  /** @deprecated Use sessionArgs instead */
   claudeArgs: string[];
   continuePolicy: ContinuePolicy;
+  /** Actual event source quality (hooks/plugin/parser/timer) */
+  dataQuality?: EventSourceType;
 }
 
 export type Session = PtySession;
@@ -100,6 +243,7 @@ export interface SessionSummary {
   currentActivity?: { tool: string; detail?: string } | undefined;
   workspaceId?: string;
   additionalDirs?: string[];
+  dataQuality?: EventSourceType;
 }
 
 export interface TelemetryData {
@@ -134,6 +278,8 @@ export interface WorktreeMetadata {
 export interface WorkspaceSettings {
   // Session defaults
   defaultAgent?: AgentType;
+  defaultFramework?: string;                      // replaces defaultAgent (v5+)
+  frameworkOverrides?: Partial<AgentFramework>;   // per-repo framework customization
   defaultContinue?: boolean;
   defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
@@ -178,7 +324,10 @@ export interface Config {
   repos: string[];
   claudeCommand: string;
   claudeArgs: string[];
+  /** @deprecated Use defaultFramework instead (v5+) */
   defaultAgent: AgentType;
+  defaultFramework: string;                             // replaces defaultAgent (v5+), defaults to 'claude'
+  frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
   defaultContinue: boolean;
   defaultYolo: boolean;
   launchInTmux: boolean;
@@ -399,6 +548,7 @@ export interface WorkspaceTemplate {
 
 export interface WorkspaceLevelSettings {
   defaultAgent?: AgentType;
+  defaultFramework?: string;  // replaces defaultAgent (v5+)
   defaultContinue?: boolean;
   defaultYolo?: boolean;
   launchInTmux?: boolean;

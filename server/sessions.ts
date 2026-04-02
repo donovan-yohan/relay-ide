@@ -5,8 +5,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
-import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
+import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, resolveFramework } from './types.js';
 import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
+import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
@@ -158,7 +159,7 @@ export function fireBackendStateIfChanged(session: Session): void {
   }
 }
 
-function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, ...rest }: CreateParams): CreateResult {
+function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, frameworks, ...rest }: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
 
   const ptyParams: CreatePtyParams = {
@@ -171,6 +172,7 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     port: port ?? defaultPort,
     forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
     configDir: rest.configDir ?? defaultConfigDir,
+    frameworks,
   };
 
   const { session: ptySession, result } = createPtySession(ptyParams, sessions, stateChangeCallbacks, sessionEndCallbacks, fireBackendStateIfChanged);
@@ -265,6 +267,7 @@ function list(): SessionSummary[] {
       currentActivity: s.currentActivity,
       ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
       ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+      ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
     }))
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
@@ -303,6 +306,12 @@ function kill(id: string): void {
     session_id: id,
   });
   fireSessionEnd(id, session.cwd, session.branchName);
+
+  // Clean up codex hooks adapter temp directory to avoid leaking temp files
+  if (session.agent === 'codex' && session.hooksActive) {
+    cleanupCodexHooksAdapter(id);
+  }
+
   sessions.delete(id);
 }
 
@@ -365,7 +374,7 @@ function serializeAll(configDir: string): void {
       tmuxSessionName: session.tmuxSessionName || '',
       customCommand: session.customCommand,
       yolo: session.yolo,
-      claudeArgs: session.claudeArgs,
+      claudeArgs: session.sessionArgs ?? session.claudeArgs,
       hookToken: session.hookToken,
       hooksActive: session.hooksActive,
       continuePolicy: session.continuePolicy,
@@ -385,7 +394,7 @@ function serializeAll(configDir: string): void {
   fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending, null, 2), 'utf-8');
 }
 
-async function restoreFromDisk(configDir: string, workspaces?: string[]): Promise<number> {
+async function restoreFromDisk(configDir: string, workspaces?: string[], frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>): Promise<number> {
   const pendingPath = path.join(configDir, 'pending-sessions.json');
   if (!fs.existsSync(pendingPath)) return 0;
 
@@ -496,19 +505,41 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
       } else {
         // Tmux session died — fall back to agent with continue args + preserved flags
         // Continue args first: Codex uses subcommands (resume --last) that must precede flags
+        let continueArgsList: string[];
+        let yoloArgsList: string[];
+        try {
+          const framework = resolveFramework(frameworks ? { frameworks } : {}, s.agent);
+          continueArgsList = framework.continueArgs;
+          yoloArgsList = framework.yoloArgs;
+        } catch {
+          // Unknown framework — fall back to deprecated lookup tables
+          continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
+          yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
+        }
         args = [
-          ...AGENT_CONTINUE_ARGS[s.agent],
+          ...continueArgsList,
           ...(s.claudeArgs ?? []),
-          ...(s.yolo ? AGENT_YOLO_ARGS[s.agent] : []),
+          ...(s.yolo ? yoloArgsList : []),
         ];
       }
     } else {
       // Non-tmux agent session — respawn with continue args + preserved flags
       // Continue args first: Codex uses subcommands (resume --last) that must precede flags
+      let continueArgsList: string[];
+      let yoloArgsList: string[];
+      try {
+        const framework = resolveFramework({}, s.agent);
+        continueArgsList = framework.continueArgs;
+        yoloArgsList = framework.yoloArgs;
+      } catch {
+        // Unknown framework — fall back to deprecated lookup tables
+        continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
+        yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
+      }
       args = [
-        ...AGENT_CONTINUE_ARGS[s.agent],
+        ...continueArgsList,
         ...(s.claudeArgs ?? []),
-        ...(s.yolo ? AGENT_YOLO_ARGS[s.agent] : []),
+        ...(s.yolo ? yoloArgsList : []),
       ];
     }
 

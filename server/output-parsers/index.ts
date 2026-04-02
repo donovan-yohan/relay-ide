@@ -1,6 +1,8 @@
-import type { AgentType, AgentState } from '../types.js';
+import type { AgentState } from '../types.js';
 import { ClaudeOutputParser } from './claude-parser.js';
 import { CodexOutputParser } from './codex-parser.js';
+import { OpencodeOutputParser } from './opencode-parser.js';
+import { NullOutputParser } from './null-parser.js';
 
 export type { AgentState };
 
@@ -17,8 +19,13 @@ export interface OutputParser {
   reset(): void;
 }
 
-/** Registry: factory per agent type */
-export const outputParsers: Record<AgentType, () => OutputParser> = {
+/**
+ * Registry: factory per parser type. Unknown keys return undefined (fall back to timer-based detection).
+ * Keys match AgentFramework.parserType values. 'none' is for frameworks that opt out of parsing.
+ */
+export const outputParsers: Record<string, (() => OutputParser) | undefined> = {
   claude: () => new ClaudeOutputParser(),
   codex: () => new CodexOutputParser(),
+  opencode: () => new OpencodeOutputParser(),
+  none: () => new NullOutputParser(),
 };
