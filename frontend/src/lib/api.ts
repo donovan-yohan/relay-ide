@@ -356,12 +356,26 @@ export async function uploadImage(
   );
 }
 
-export async function checkVersion(): Promise<{ current: string; latest: string | null; updateAvailable: boolean }> {
-  return json<{ current: string; latest: string | null; updateAvailable: boolean }>(await fetch('/version'));
+export async function checkVersion(): Promise<{ current: string; latest: string | null; updateAvailable: boolean; channel: string }> {
+  return json<{ current: string; latest: string | null; updateAvailable: boolean; channel: string }>(await fetch('/version'));
 }
 
 export async function triggerUpdate(): Promise<{ ok: boolean; restarting?: boolean; error?: string }> {
   return json<{ ok: boolean; restarting?: boolean; error?: string }>(await fetch('/update', { method: 'POST' }));
+}
+
+export async function fetchUpdateChannel(): Promise<'stable' | 'nightly'> {
+  const data = await json<{ channel: 'stable' | 'nightly' }>(await fetch('/update-channel'));
+  return data.channel;
+}
+
+export async function setUpdateChannel(channel: 'stable' | 'nightly'): Promise<void> {
+  const res = await fetch('/update-channel', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  });
+  if (!res.ok) throw new Error('Failed to update channel');
 }
 
 export async function fetchDefaultAgent(): Promise<string> {

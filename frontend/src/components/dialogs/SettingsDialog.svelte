@@ -18,6 +18,8 @@
     setDefaultNotifications,
     checkVersion,
     triggerUpdate,
+    fetchUpdateChannel,
+    setUpdateChannel,
     fetchAnalyticsSize,
     clearAnalytics,
     fetchGitHubStatus,
@@ -44,6 +46,8 @@
   let versionChecked = $state(false);
   let updating = $state(false);
   let updateStatus = $state('');
+  let updateChannelValue = $state<'stable' | 'nightly'>('stable');
+  let savingChannel = $state(false);
 
   // Analytics state
   let analyticsSize = $state<number | null>(null);
@@ -96,6 +100,29 @@
     }
   }
 
+  async function loadUpdateChannel() {
+    try {
+      updateChannelValue = await fetchUpdateChannel();
+    } catch {
+      updateChannelValue = 'stable';
+    }
+  }
+
+  async function handleChannelChange(channel: 'stable' | 'nightly') {
+    if (savingChannel || channel === updateChannelValue) return;
+    savingChannel = true;
+    try {
+      await setUpdateChannel(channel);
+      updateChannelValue = channel;
+      versionChecked = false;
+      await checkVersionAsync();
+    } catch {
+      error = 'Failed to update channel.';
+    } finally {
+      savingChannel = false;
+    }
+  }
+
   async function fetchAnalyticsSizeAsync() {
     try {
       const d = await fetchAnalyticsSize();
@@ -129,6 +156,7 @@
     devtoolsEnabled = localStorage.getItem('devtools-enabled') === 'true';
     notificationPermission = getPermissionState();
     refreshConfig();
+    loadUpdateChannel();
     checkVersionAsync();
     fetchAnalyticsSizeAsync();
     fetchGitHubStatusAsync();
@@ -428,6 +456,23 @@
         {/if}
       </SettingRow>
 
+      <SettingRow name="Update Channel" description={updateChannelValue === 'nightly' ? 'Nightly builds' : 'Stable releases'}>
+        <div class="channel-selector">
+          <button
+            class="channel-btn"
+            class:active={updateChannelValue === 'stable'}
+            disabled={savingChannel}
+            onclick={() => handleChannelChange('stable')}
+          >Stable</button>
+          <button
+            class="channel-btn"
+            class:active={updateChannelValue === 'nightly'}
+            disabled={savingChannel}
+            onclick={() => handleChannelChange('nightly')}
+          >Nightly</button>
+        </div>
+      </SettingRow>
+
       {#if updateStatus}
         <p class="update-status">{updateStatus}</p>
       {/if}
@@ -597,5 +642,41 @@
   .ghost-btn:hover {
     border-color: var(--accent);
     color: var(--accent);
+  }
+
+  .channel-selector {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+  }
+
+  .channel-btn {
+    background: var(--bg);
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+
+  .channel-btn:last-child {
+    border-right: none;
+  }
+
+  .channel-btn:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+
+  .channel-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .channel-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

@@ -82,8 +82,17 @@ if (command === 'update') {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
     console.log(`Current version: ${pkg.version}`);
-    console.log('Updating claude-remote-cli...');
-    await execFileAsync('npm', ['install', '-g', 'claude-remote-cli@latest']);
+    const configPath = resolveConfigPath();
+    let channel = 'stable';
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { updateChannel?: string };
+      if (config.updateChannel === 'nightly' || config.updateChannel === 'stable') {
+        channel = config.updateChannel;
+      }
+    }
+    const tag = channel === 'nightly' ? 'nightly' : 'latest';
+    console.log(`Updating claude-remote-cli from ${channel} channel...`);
+    await execFileAsync('npm', ['install', '-g', `claude-remote-cli@${tag}`]);
     const updatedPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
     if (updatedPkg.version === pkg.version) {
       console.log(`Already on the latest version (${pkg.version}).`);
