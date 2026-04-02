@@ -321,3 +321,261 @@ export function createAnalyticsRouter(configDir: string): Router {
 
   return router;
 }
+
+export function upsertSessionRollup(data: {
+  sessionId: string;
+  repoPath?: string;
+  repoName?: string;
+  agentType?: string;
+  model?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationSeconds?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCacheRead?: number;
+  totalCacheWrite?: number;
+  turnCount?: number;
+  subagentCount?: number;
+  humanResponseLatencyAvgMs?: number;
+  humanResponseLatencyP50Ms?: number;
+  humanResponseLatencyP95Ms?: number;
+  agentIdlePercent?: number;
+  rateLimitEncounters?: number;
+  toolUseCounts?: Record<string, number>;
+  recovered?: boolean;
+}): void {
+  if (!db) return;
+
+  const existing = db.prepare('SELECT session_id FROM session_rollups WHERE session_id = ?').get(data.sessionId);
+
+  if (!existing) {
+    db.prepare(`
+      INSERT INTO session_rollups (session_id, repo_path, repo_name, agent_type, model, started_at, ended_at, duration_seconds,
+        total_input_tokens, total_output_tokens, total_cache_read, total_cache_write,
+        turn_count, subagent_count, human_response_latency_avg_ms, human_response_latency_p50_ms,
+        human_response_latency_p95_ms, agent_idle_percent, rate_limit_encounters, tool_use_counts, recovered, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      data.sessionId,
+      data.repoPath ?? null,
+      data.repoName ?? null,
+      data.agentType ?? null,
+      data.model ?? null,
+      data.startedAt ?? new Date().toISOString(),
+      data.endedAt ?? null,
+      data.durationSeconds ?? null,
+      data.totalInputTokens ?? 0,
+      data.totalOutputTokens ?? 0,
+      data.totalCacheRead ?? 0,
+      data.totalCacheWrite ?? 0,
+      data.turnCount ?? 0,
+      data.subagentCount ?? 0,
+      data.humanResponseLatencyAvgMs ?? null,
+      data.humanResponseLatencyP50Ms ?? null,
+      data.humanResponseLatencyP95Ms ?? null,
+      data.agentIdlePercent ?? null,
+      data.rateLimitEncounters ?? 0,
+      data.toolUseCounts ? JSON.stringify(data.toolUseCounts) : null,
+      data.recovered ? 1 : 0,
+    );
+  } else {
+    const sets: string[] = ["updated_at = datetime('now')"];
+    const values: unknown[] = [];
+
+    const optionalFields: Array<[keyof typeof data, string]> = [
+      ['repoPath', 'repo_path'],
+      ['repoName', 'repo_name'],
+      ['agentType', 'agent_type'],
+      ['model', 'model'],
+      ['endedAt', 'ended_at'],
+      ['durationSeconds', 'duration_seconds'],
+      ['totalInputTokens', 'total_input_tokens'],
+      ['totalOutputTokens', 'total_output_tokens'],
+      ['totalCacheRead', 'total_cache_read'],
+      ['totalCacheWrite', 'total_cache_write'],
+      ['turnCount', 'turn_count'],
+      ['subagentCount', 'subagent_count'],
+      ['humanResponseLatencyAvgMs', 'human_response_latency_avg_ms'],
+      ['humanResponseLatencyP50Ms', 'human_response_latency_p50_ms'],
+      ['humanResponseLatencyP95Ms', 'human_response_latency_p95_ms'],
+      ['agentIdlePercent', 'agent_idle_percent'],
+      ['rateLimitEncounters', 'rate_limit_encounters'],
+    ];
+
+    for (const [key, col] of optionalFields) {
+      if (data[key] !== undefined) {
+        sets.push(`${col} = ?`);
+        values.push(data[key]);
+      }
+    }
+
+    if (data.recovered !== undefined) {
+      sets.push('recovered = ?');
+      values.push(data.recovered ? 1 : 0);
+    }
+
+    if (data.toolUseCounts !== undefined) {
+      sets.push('tool_use_counts = ?');
+      values.push(JSON.stringify(data.toolUseCounts));
+    }
+
+    values.push(data.sessionId);
+    db.prepare(`UPDATE session_rollups SET ${sets.join(', ')} WHERE session_id = ?`).run(...values);
+  }
+}
+
+export function getSessionRollup(sessionId: string): import('./types.js').SessionRollup | null {
+  if (!db) return null;
+  const row = db.prepare('SELECT * FROM session_rollups WHERE session_id = ?').get(sessionId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    sessionId: row.session_id as string,
+    repoPath: row.repo_path as string | null,
+    repoName: row.repo_name as string | null,
+    agentType: row.agent_type as string | null,
+    model: row.model as string | null,
+    startedAt: row.started_at as string,
+    endedAt: row.ended_at as string | null,
+    durationSeconds: row.duration_seconds as number | null,
+    totalInputTokens: row.total_input_tokens as number,
+    totalOutputTokens: row.total_output_tokens as number,
+    totalCacheRead: row.total_cache_read as number,
+    totalCacheWrite: row.total_cache_write as number,
+    turnCount: row.turn_count as number,
+    subagentCount: row.subagent_count as number,
+    humanResponseLatencyAvgMs: row.human_response_latency_avg_ms as number | null,
+    humanResponseLatencyP50Ms: row.human_response_latency_p50_ms as number | null,
+    humanResponseLatencyP95Ms: row.human_response_latency_p95_ms as number | null,
+    agentIdlePercent: row.agent_idle_percent as number | null,
+    rateLimitEncounters: row.rate_limit_encounters as number,
+    toolUseCounts: row.tool_use_counts ? JSON.parse(row.tool_use_counts as string) as Record<string, number> : null,
+    recovered: (row.recovered as number) === 1,
+  };
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)]!;
+}
+
+export function computeEngagementMetrics(sessionId: string): {
+  humanResponseLatencyAvgMs: number | null;
+  humanResponseLatencyP50Ms: number | null;
+  humanResponseLatencyP95Ms: number | null;
+  agentIdlePercent: number | null;
+  rateLimitEncounters: number;
+  toolUseCounts: Record<string, number>;
+} | null {
+  if (!db) return null;
+
+  const events = db.prepare(
+    'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
+  ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
+
+  if (events.length === 0) return null;
+
+  // 1. Human response latency: last notification before each user_prompt
+  const latencySamples: number[] = [];
+  let lastNotificationTime: number | null = null;
+  let inIdlePeriod = false;
+
+  for (const e of events) {
+    const ts = new Date(e.timestamp).getTime();
+    if (e.event_type === 'agent_stop') {
+      inIdlePeriod = true;
+      lastNotificationTime = null;
+    } else if (e.event_type === 'notification' && inIdlePeriod) {
+      lastNotificationTime = ts;
+    } else if (e.event_type === 'user_prompt') {
+      if (lastNotificationTime !== null) {
+        latencySamples.push(ts - lastNotificationTime);
+      }
+      inIdlePeriod = false;
+      lastNotificationTime = null;
+    }
+  }
+
+  const sortedLatency = [...latencySamples].sort((a, b) => a - b);
+  const avgLatency = sortedLatency.length > 0
+    ? Math.round(sortedLatency.reduce((a, b) => a + b, 0) / sortedLatency.length)
+    : null;
+
+  // 2. Agent idle %
+  const firstTs = new Date(events[0]!.timestamp).getTime();
+  const lastTs = new Date(events[events.length - 1]!.timestamp).getTime();
+  const totalDuration = lastTs - firstTs;
+
+  const stopFailureTimes = events
+    .filter(e => e.event_type === 'stop_failure')
+    .map(e => ({
+      timestamp: new Date(e.timestamp).getTime(),
+      isRateLimit: (() => {
+        try {
+          const data = e.event_data ? JSON.parse(e.event_data) as Record<string, unknown> : {};
+          return data.error === 'rate_limit';
+        } catch { return false; }
+      })(),
+    }));
+
+  let waitingForHumanMs = 0;
+  let lastActiveStart: number | null = firstTs;
+
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    const ts = new Date(e.timestamp).getTime();
+
+    if (e.event_type === 'agent_stop') {
+      lastActiveStart = null;
+    } else if (e.event_type === 'user_prompt') {
+      if (lastActiveStart === null) {
+        let idleStart: number | null = null;
+        for (let j = i - 1; j >= 0; j--) {
+          if (events[j]!.event_type === 'agent_stop') {
+            idleStart = new Date(events[j]!.timestamp).getTime();
+            break;
+          }
+        }
+        if (idleStart !== null) {
+          const idleMs = ts - idleStart;
+          const hasRateLimit = stopFailureTimes.some(sf =>
+            sf.isRateLimit && sf.timestamp >= idleStart! && sf.timestamp <= ts
+          );
+          if (!hasRateLimit) {
+            waitingForHumanMs += idleMs;
+          }
+        }
+      }
+      lastActiveStart = ts;
+    }
+  }
+
+  const agentIdlePercent = totalDuration > 0
+    ? Math.round((waitingForHumanMs / totalDuration) * 1000) / 10
+    : null;
+
+  // 3. Rate limit encounters
+  const rateLimitEncounters = stopFailureTimes.filter(sf => sf.isRateLimit).length;
+
+  // 4. Tool use counts
+  const toolUseCounts: Record<string, number> = {};
+  for (const e of events) {
+    if (e.event_type === 'tool_use' && e.event_data) {
+      try {
+        const data = JSON.parse(e.event_data) as Record<string, unknown>;
+        const tool = typeof data.tool === 'string' ? data.tool : 'unknown';
+        toolUseCounts[tool] = (toolUseCounts[tool] ?? 0) + 1;
+      } catch { /* malformed */ }
+    }
+  }
+
+  return {
+    humanResponseLatencyAvgMs: avgLatency,
+    humanResponseLatencyP50Ms: sortedLatency.length > 0 ? percentile(sortedLatency, 50) : null,
+    humanResponseLatencyP95Ms: sortedLatency.length > 0 ? percentile(sortedLatency, 95) : null,
+    agentIdlePercent,
+    rateLimitEncounters,
+    toolUseCounts,
+  };
+}
