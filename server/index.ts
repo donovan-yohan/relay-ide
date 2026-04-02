@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions } from './analytics.js';
+import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
@@ -468,6 +468,7 @@ async function main(): Promise<void> {
 
   // Mount analytics router
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
+  app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
 
   // Restore sessions from a previous update restart
