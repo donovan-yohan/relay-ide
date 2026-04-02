@@ -497,18 +497,18 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         // Tmux session died — fall back to agent with continue args + preserved flags
         // Continue args first: Codex uses subcommands (resume --last) that must precede flags
         args = [
-          ...AGENT_CONTINUE_ARGS[s.agent],
+          ...(AGENT_CONTINUE_ARGS[s.agent] ?? []),
           ...(s.claudeArgs ?? []),
-          ...(s.yolo ? AGENT_YOLO_ARGS[s.agent] : []),
+          ...(s.yolo ? (AGENT_YOLO_ARGS[s.agent] ?? []) : []),
         ];
       }
     } else {
       // Non-tmux agent session — respawn with continue args + preserved flags
       // Continue args first: Codex uses subcommands (resume --last) that must precede flags
       args = [
-        ...AGENT_CONTINUE_ARGS[s.agent],
+        ...(AGENT_CONTINUE_ARGS[s.agent] ?? []),
         ...(s.claudeArgs ?? []),
-        ...(s.yolo ? AGENT_YOLO_ARGS[s.agent] : []),
+        ...(s.yolo ? (AGENT_YOLO_ARGS[s.agent] ?? []) : []),
       ];
     }
 

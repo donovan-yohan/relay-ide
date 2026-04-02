@@ -8,6 +8,7 @@ import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
+import type { OutputParser } from './output-parsers/index.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -227,7 +228,7 @@ export function createPtySession(
 
   let args = rawArgs;
   const createdAt = new Date().toISOString();
-  const resolvedCommand = command || AGENT_COMMANDS[agent];
+  const resolvedCommand = command || AGENT_COMMANDS[agent] || agent;
 
   const env = cleanEnv();
 
@@ -279,7 +280,11 @@ export function createPtySession(
   let scrollbackBytes = initialScrollback ? initialScrollback.reduce((sum, s) => sum + s.length, 0) : 0;
 
   // Instantiate vendor-specific output parser (terminal/custom-command sessions get no parser)
-  const parser = command ? outputParsers['claude']() : outputParsers[agent]();
+  // Fall back to claude parser for unknown/future agent types (Task 4 will add opencode parser)
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const parser: OutputParser = command
+    ? outputParsers['claude']!()
+    : (outputParsers[agent] ?? outputParsers['claude'])!();
   const session: PtySession = {
     id,
     type: type || 'agent',
@@ -341,7 +346,7 @@ export function createPtySession(
     }, IDLE_TIMEOUT_MS);
   }
 
-  const continueArgs = AGENT_CONTINUE_ARGS[agent];
+  const continueArgs = AGENT_CONTINUE_ARGS[agent] ?? [];
 
   function attachHandlers(proc: pty.IPty, canRetry: boolean): void {
     const spawnTime = Date.now();

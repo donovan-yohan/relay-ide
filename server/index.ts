@@ -542,7 +542,7 @@ async function main(): Promise<void> {
           cwd: opts.worktreePath,
           branchName: opts.branchName,
           displayName,
-          args: [...resolved.claudeArgs, ...(resolved.yolo ? AGENT_YOLO_ARGS[resolved.agent] : [])],
+          args: [...resolved.claudeArgs, ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : [])],
           configPath: CONFIG_PATH,
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
@@ -1211,14 +1211,14 @@ async function main(): Promise<void> {
 
     const baseArgs = [
       ...(resolved.claudeArgs),
-      ...(resolved.yolo ? AGENT_YOLO_ARGS[resolvedAgent] : []),
+      ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
     ];
 
     // Determine --continue from policy (no .claude directory heuristic)
     const useContinue = resolved.continuePolicy === 'always';
 
     const args = useContinue
-      ? [...AGENT_CONTINUE_ARGS[resolvedAgent], ...baseArgs]
+      ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
       : [...baseArgs];
 
     // Ticket context validation and initial prompt

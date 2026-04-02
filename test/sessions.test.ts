@@ -480,7 +480,7 @@ describe('sessions', () => {
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/false',
-      args: [...sessions.AGENT_CONTINUE_ARGS.claude],
+      args: [...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? [])],
     });
     createdIds.push(result.id);
 
@@ -503,7 +503,7 @@ describe('sessions', () => {
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/false',
-      args: [...sessions.AGENT_CONTINUE_ARGS.claude],
+      args: [...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? [])],
     });
     createdIds.push(result.id);
 
@@ -526,7 +526,7 @@ describe('sessions', () => {
       worktreePath: null,
       cwd: '/tmp',
       command: '/bin/sh',
-      args: ['-c', 'exit 0', ...sessions.AGENT_CONTINUE_ARGS.claude],
+      args: ['-c', 'exit 0', ...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? [])],
     });
     createdIds.push(result.id);
 

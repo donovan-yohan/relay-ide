@@ -99,12 +99,14 @@ describe('CodexOutputParser', () => {
 
 describe('outputParsers registry', () => {
   it('creates ClaudeOutputParser for claude', () => {
-    const parser = outputParsers['claude']();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const parser = outputParsers['claude']!();
     assert.ok(parser instanceof ClaudeOutputParser);
   });
 
   it('creates CodexOutputParser for codex', () => {
-    const parser = outputParsers['codex']();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const parser = outputParsers['codex']!();
     assert.ok(parser instanceof CodexOutputParser);
   });
 });
