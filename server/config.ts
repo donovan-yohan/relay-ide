@@ -16,11 +16,12 @@ export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings'
   claudeCommand: 'claude',
   claudeArgs: [],
   defaultAgent: 'claude',
-  defaultFramework: 'claude',  // set from defaultAgent in loadConfig; default is 'claude'
+  defaultFramework: 'claude',
   defaultContinue: true,
   defaultYolo: false,
   launchInTmux: false,
   defaultNotifications: true,
+  updateChannel: 'stable',
 };
 
 function migrateToV4(config: Config, configPath: string): void {
@@ -127,6 +128,17 @@ function migrateToV5(config: Config, configPath: string): void {
   saveConfig(configPath, config);
 }
 
+function migrateToV6(config: Config, configPath: string): void {
+  if (config.configVersion != null && config.configVersion >= 6) return;
+
+  if (!config.updateChannel) {
+    config.updateChannel = 'stable';
+  }
+
+  config.configVersion = 6;
+  saveConfig(configPath, config);
+}
+
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -179,6 +191,7 @@ export function loadConfig(configPath: string): Config {
 
   migrateToV4(config, configPath);
   migrateToV5(config, configPath);
+  migrateToV6(config, configPath);
 
   return config;
 }

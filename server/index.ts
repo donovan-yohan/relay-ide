@@ -62,13 +62,14 @@ function getCurrentVersion(): string {
 }
 
 
-async function getLatestVersion(): Promise<string | null> {
+async function getLatestVersion(channel: 'stable' | 'nightly' = 'stable'): Promise<string | null> {
   const now = Date.now();
   if (versionCache && now - versionCache.fetchedAt < VERSION_CACHE_TTL) {
     return versionCache.latest;
   }
   try {
-    const res = await fetch('https://registry.npmjs.org/claude-remote-cli/latest');
+    const tag = channel === 'nightly' ? 'nightly' : 'latest';
+    const res = await fetch(`https://registry.npmjs.org/claude-remote-cli/${tag}`);
     if (!res.ok) return null;
     const data = await res.json() as { version?: string };
     if (!data.version) return null;
@@ -1408,18 +1409,20 @@ async function main(): Promise<void> {
   // GET /version — check current vs latest
   app.get('/version', requireAuth, async (_req, res) => {
     const current = getCurrentVersion();
-    const latest = await getLatestVersion();
+    const channel = startupConfig.updateChannel ?? 'stable';
+    const latest = await getLatestVersion(channel);
     const updateAvailable = latest !== null && semverLessThan(current, latest);
-    res.json({ current, latest, updateAvailable });
+    res.json({ current, latest, updateAvailable, channel });
   });
 
   // POST /update — install latest version from npm
   app.post('/update', requireAuth, async (_req, res) => {
     try {
-      await execFileAsync('npm', ['install', '-g', 'claude-remote-cli@latest']);
+      const channel = startupConfig.updateChannel ?? 'stable';
+      const tag = channel === 'nightly' ? 'nightly' : 'latest';
+      await execFileAsync('npm', ['install', '-g', `claude-remote-cli@${tag}`]);
       const restarting = serviceIsInstalled();
       if (restarting) {
-        // Persist sessions so they can be restored after restart
         stopEventBatching();
         stopTelemetry();
         serializeAll(configDir);
@@ -1432,6 +1435,21 @@ async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : 'Update failed';
       res.status(500).json({ ok: false, error: message });
     }
+  });
+
+  app.get('/update-channel', requireAuth, (_req, res) => {
+    res.json({ channel: startupConfig.updateChannel ?? 'stable' });
+  });
+
+  app.put('/update-channel', requireAuth, (req, res) => {
+    const { channel } = req.body as { channel?: string };
+    if (channel !== 'stable' && channel !== 'nightly') {
+      res.status(400).json({ error: 'Invalid channel. Must be "stable" or "nightly".' });
+      return;
+    }
+    startupConfig.updateChannel = channel;
+    saveConfig(CONFIG_PATH, startupConfig);
+    res.json({ channel });
   });
 
   // Browser content viewer (token-based auth, not cookie auth)

@@ -355,6 +355,7 @@ export interface Config {
     autoProvision?: boolean;    // defaults to false
     backfillOffered?: boolean;  // tracks if backfill prompt was shown
   } | undefined;
+  updateChannel?: 'stable' | 'nightly' | undefined;
 }
 
 export interface AutomationSettings {
