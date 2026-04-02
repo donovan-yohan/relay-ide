@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { initAnalytics, closeAnalytics, getDbPath, recordSessionEvent, flushEventBuffer, recordRateLimitSnapshot, upsertSessionRollup, getSessionRollup, computeEngagementMetrics } from '../server/analytics.js';
+import { initAnalytics, closeAnalytics, getDbPath, recordSessionEvent, flushEventBuffer, recordRateLimitSnapshot, upsertSessionRollup, getSessionRollup, computeEngagementMetrics, runRetentionCleanup, recoverOrphanedSessions } from '../server/analytics.js';
 import type { SessionEvent } from '../server/types.js';
 
 let tmpDir!: string;
@@ -323,4 +323,79 @@ test('computeEngagementMetrics aggregates tool use counts', () => {
 test('computeEngagementMetrics returns null for unknown session', () => {
   initAnalytics(tmpDir);
   assert.equal(computeEngagementMetrics('nonexistent'), null);
+});
+
+// ── Retention + Recovery Tests ──
+
+test('runRetentionCleanup deletes old session_events', () => {
+  initAnalytics(tmpDir);
+
+  // Insert an event 100 days ago
+  const oldDate = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+  recordSessionEvent({
+    session_id: 'old-sess',
+    event_type: 'session_start',
+    timestamp: oldDate,
+  });
+  // Insert a recent event
+  recordSessionEvent({
+    session_id: 'new-sess',
+    event_type: 'session_start',
+    timestamp: new Date().toISOString(),
+  });
+  flushEventBuffer();
+
+  runRetentionCleanup(90);
+
+  const db = new Database(getDbPath(tmpDir), { readonly: true });
+  const rows = db.prepare('SELECT * FROM session_events').all() as Record<string, unknown>[];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.session_id, 'new-sess');
+  db.close();
+});
+
+test('recoverOrphanedSessions marks stale sessions as recovered', () => {
+  initAnalytics(tmpDir);
+
+  // Create a rollup that appears orphaned (no ended_at, old updated_at)
+  upsertSessionRollup({
+    sessionId: 'orphan-1',
+    repoPath: '/repo',
+    repoName: 'repo',
+    agentType: 'claude',
+    startedAt: '2026-03-01T10:00:00.000Z',
+  });
+
+  // Manually set updated_at to 20 minutes ago
+  const db = new Database(getDbPath(tmpDir));
+  const oldTime = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+  db.prepare("UPDATE session_rollups SET updated_at = ? WHERE session_id = 'orphan-1'").run(oldTime);
+  db.close();
+
+  const recovered = recoverOrphanedSessions();
+  assert.equal(recovered, 1);
+
+  const rollup = getSessionRollup('orphan-1');
+  assert.ok(rollup!.endedAt);
+  assert.equal(rollup!.recovered, true);
+});
+
+test('recoverOrphanedSessions skips recently updated sessions', () => {
+  initAnalytics(tmpDir);
+
+  // Create a rollup that was just updated (not orphaned)
+  upsertSessionRollup({
+    sessionId: 'active-1',
+    repoPath: '/repo',
+    repoName: 'repo',
+    agentType: 'claude',
+    startedAt: new Date().toISOString(),
+  });
+
+  const recovered = recoverOrphanedSessions();
+  assert.equal(recovered, 0);
+
+  const rollup = getSessionRollup('active-1');
+  assert.equal(rollup!.endedAt, null);
+  assert.equal(rollup!.recovered, false);
 });
