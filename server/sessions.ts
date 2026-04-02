@@ -10,7 +10,7 @@ import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
-import { trackEvent } from './analytics.js';
+import { trackEvent, recordSessionEvent, upsertSessionRollup } from './analytics.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -202,6 +202,20 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     ptySession.additionalDirs = additionalDirs;
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
+  // Record session start for analytics
+  recordSessionEvent({
+    session_id: id,
+    repo_path: ptySession.repoPath,
+    event_type: 'session_start',
+    timestamp: new Date().toISOString(),
+  });
+  upsertSessionRollup({
+    sessionId: id,
+    repoPath: ptySession.repoPath,
+    repoName: ptySession.repoName,
+    agentType: agent,
+    startedAt: new Date().toISOString(),
+  });
   if (initialPrompt) {
     const promptHandler = (changedId: string, state: AgentState) => {
       if (changedId === id && state === 'waiting-for-input' && ptySession.initialPrompt) {

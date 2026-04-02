@@ -11,6 +11,7 @@ import type { AgentState } from './output-parsers/index.js';
 import { stripAnsi, cleanEnv } from './utils.js';
 import { branchToDisplayName } from './git.js';
 import { writeMeta } from './config.js';
+import { recordSessionEvent } from './analytics.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -227,6 +228,12 @@ export function createHooksRouter(deps: HookDeps): Router {
   router.post('/stop', (req: Request, res: Response) => {
     const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
     setAgentState(session, 'idle', deps);
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'agent_stop',
+      timestamp: new Date().toISOString(),
+    });
     res.json({ ok: true });
   });
 
@@ -245,6 +252,13 @@ export function createHooksRouter(deps: HookDeps): Router {
       deps.notifySessionAttention(session.id, { displayName: session.displayName, type: session.type });
     }
 
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'notification',
+      event_data: { notificationType: type as string },
+      timestamp: new Date().toISOString(),
+    });
     res.json({ ok: true });
   });
 
@@ -252,6 +266,13 @@ export function createHooksRouter(deps: HookDeps): Router {
   router.post('/prompt-submit', (req: Request, res: Response) => {
     const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
     setAgentState(session, 'processing', deps);
+
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'user_prompt',
+      timestamp: new Date().toISOString(),
+    });
 
     if (session.needsBranchRename === true) {
       session.needsBranchRename = false;
@@ -265,7 +286,14 @@ export function createHooksRouter(deps: HookDeps): Router {
   });
 
   // POST /session-end → acknowledge hook (PTY onExit owns actual cleanup and cleanedUp flag)
-  router.post('/session-end', (_req: Request, res: Response) => {
+  router.post('/session-end', (req: Request, res: Response) => {
+    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'session_end',
+      timestamp: new Date().toISOString(),
+    });
     // Acknowledge hook — PTY onExit owns actual cleanup and cleanedUp flag
     res.json({ ok: true });
   });
@@ -279,6 +307,13 @@ export function createHooksRouter(deps: HookDeps): Router {
     const detail = extractToolDetail(toolName, toolInput);
     session.currentActivity = detail !== undefined ? { tool: toolName, detail } : { tool: toolName };
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'tool_use',
+      event_data: { tool: toolName, target: detail },
+      timestamp: new Date().toISOString(),
+    });
     res.json({ ok: true });
   });
 
@@ -287,6 +322,12 @@ export function createHooksRouter(deps: HookDeps): Router {
     const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
     session.currentActivity = undefined;
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
+    recordSessionEvent({
+      session_id: session.id,
+      repo_path: session.repoPath,
+      event_type: 'tool_complete',
+      timestamp: new Date().toISOString(),
+    });
     // Debounced branch check — catches git checkout/switch during tool execution
     scheduleBranchCheck(session, deps);
     res.json({ ok: true });
