@@ -127,7 +127,13 @@ export async function detectGitRepo(
 
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
-    return path.join(os.homedir(), p.slice(1));
+    const homeDir = os.homedir();
+    const resolved = path.resolve(path.join(homeDir, p.slice(1)));
+    const relative = path.relative(homeDir, resolved);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return p; // traversal attempt — return unexpanded
+    }
+    return resolved;
   }
   return p;
 }
@@ -1073,7 +1079,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const expandedFile = expandTilde(filePath);
 
-    if (expandedFile.includes('..')) {
+    if (expandedFile.includes('..') || (path.isAbsolute(filePath) && !filePath.startsWith('~'))) {
       res.status(400).json({ diff: '', error: 'invalid file path' });
       return;
     }
