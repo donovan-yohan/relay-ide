@@ -50,6 +50,8 @@
   import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.svelte';
   import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+  import AnalyticsDashboard from './components/AnalyticsDashboard.svelte';
+  import SessionDetail from './components/SessionDetail.svelte';
   import FullPageDiff from './components/FullPageDiff.svelte';
   import FileTreeSidebar from './components/FileTreeSidebar.svelte';
   import FileViewerPane from './components/FileViewerPane.svelte';
@@ -635,8 +637,16 @@
   let activeSessionUseTmux = $derived(activeSession?.useTmux ?? false);
   let copyModeActive = $state(false);
 
+  // Analytics view state
+  let analyticsView = $state<'dashboard' | { sessionId: string } | null>(null);
+
+  function openAnalytics() {
+    analyticsView = 'dashboard';
+  }
+
   // View state: which main area content to show
-  let viewMode = $derived<'empty' | 'org' | 'dashboard' | 'session'>(
+  let viewMode = $derived<'empty' | 'org' | 'dashboard' | 'session' | 'analytics'>(
+    analyticsView !== null ? 'analytics' :
     !sessionState.repos.length ? 'empty' :
     !ui.activeRepoPath ? 'org' :
     !hasActiveSession ? 'dashboard' :
@@ -1166,6 +1176,7 @@
       onDeleteSession={handleCloseSession}
       onDeleteWorktree={handleDeleteWorktree}
       onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
+      onOpenAnalytics={openAnalytics}
     />
 
     <div class="terminal-area">
@@ -1189,6 +1200,18 @@
           onOpenWorkspace={(path) => { ui.activeRepoPath = path; sessionState.activeSessionId = recallSessionForWorkspace(path); }}
           onOpenSession={(id) => { sessionState.activeSessionId = id; }}
         />
+
+      {:else if viewMode === 'analytics'}
+        {#if typeof analyticsView === 'object' && analyticsView !== null && 'sessionId' in analyticsView}
+          <SessionDetail
+            sessionId={analyticsView.sessionId}
+            onBack={() => { analyticsView = 'dashboard'; }}
+          />
+        {:else}
+          <AnalyticsDashboard
+            onSelectSession={(id) => { analyticsView = { sessionId: id }; }}
+          />
+        {/if}
 
       {:else if viewMode === 'dashboard'}
         <RepoDashboard
