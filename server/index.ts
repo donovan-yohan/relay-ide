@@ -22,7 +22,7 @@ import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions } from './analytics.js';
+import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions, recordRateLimitSnapshot } from './analytics.js';
 import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
@@ -36,7 +36,7 @@ import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
 import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
-import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession } from './telemetry.js';
+import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession, getAccountTelemetry } from './telemetry.js';
 import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
 import { semverLessThan } from './utils.js';
 import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
@@ -496,6 +496,24 @@ async function main(): Promise<void> {
   } catch (err) {
     console.warn('[analytics] Retention/recovery error:', err);
   }
+
+  // Periodic rate limit snapshot recording (every 5 minutes)
+  let lastRateLimitSnapshot = 0;
+  const RATE_LIMIT_SNAPSHOT_INTERVAL = 5 * 60 * 1000;
+  setInterval(() => {
+    const now = Date.now();
+    if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
+    const account = getAccountTelemetry();
+    if (!account || account.fiveHourUsedPercent < 0) return;
+    lastRateLimitSnapshot = now;
+    recordRateLimitSnapshot({
+      fiveHourPercent: account.fiveHourUsedPercent,
+      fiveHourResetsAt: account.fiveHourResetsAt,
+      sevenDayPercent: account.sevenDayUsedPercent,
+      sevenDayResetsAt: account.sevenDayResetsAt,
+      timestamp: new Date().toISOString(),
+    });
+  }, 60_000);
 
   // Schedule daily retention cleanup
   setInterval(() => {
