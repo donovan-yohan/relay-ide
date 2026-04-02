@@ -453,3 +453,45 @@ export interface FileDiffResponse {
   summary?: string;
   error?: string;
 }
+
+// ── Session Analytics ──
+
+export interface SessionEvent {
+  session_id: string;
+  repo_path?: string;
+  event_type: string;
+  event_data?: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface SessionRollup {
+  sessionId: string;
+  repoPath: string | null;
+  repoName: string | null;
+  agentType: string | null;
+  model: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  turnCount: number;
+  subagentCount: number;
+  humanResponseLatencyAvgMs: number | null;
+  humanResponseLatencyP50Ms: number | null;
+  humanResponseLatencyP95Ms: number | null;
+  agentIdlePercent: number | null;
+  rateLimitEncounters: number;
+  toolUseCounts: Record<string, number> | null;
+  recovered: boolean;
+}
+
+export interface RateLimitSnapshot {
+  fiveHourPercent: number;
+  fiveHourResetsAt: string;
+  sevenDayPercent: number;
+  sevenDayResetsAt: string;
+  timestamp: string;
+}

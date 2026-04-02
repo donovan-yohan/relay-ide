@@ -7,7 +7,7 @@ import type { Request, Response } from 'express';
 let db: Database.Database | null = null;
 let insertStmt: Database.Statement | null = null;
 
-const SCHEMA = `
+const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
@@ -22,6 +22,64 @@ CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_category_action ON events(category, action);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target);
 `;
+
+const SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS session_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  repo_path TEXT,
+  event_type TEXT NOT NULL,
+  event_data TEXT,
+  timestamp TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sevents_session ON session_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_sevents_type ON session_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_sevents_timestamp ON session_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS session_rollups (
+  session_id TEXT PRIMARY KEY,
+  repo_path TEXT,
+  repo_name TEXT,
+  agent_type TEXT,
+  model TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  duration_seconds INTEGER,
+  total_input_tokens INTEGER DEFAULT 0,
+  total_output_tokens INTEGER DEFAULT 0,
+  total_cache_read INTEGER DEFAULT 0,
+  total_cache_write INTEGER DEFAULT 0,
+  turn_count INTEGER DEFAULT 0,
+  subagent_count INTEGER DEFAULT 0,
+  human_response_latency_avg_ms INTEGER,
+  human_response_latency_p50_ms INTEGER,
+  human_response_latency_p95_ms INTEGER,
+  agent_idle_percent REAL,
+  rate_limit_encounters INTEGER DEFAULT 0,
+  tool_use_counts TEXT,
+  recovered INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rollups_repo ON session_rollups(repo_path);
+CREATE INDEX IF NOT EXISTS idx_rollups_started ON session_rollups(started_at);
+
+CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  five_hour_percent REAL,
+  five_hour_resets_at TEXT,
+  seven_day_percent REAL,
+  seven_day_resets_at TEXT,
+  timestamp TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ratelimit_ts ON rate_limit_snapshots(timestamp);
+`;
+
+const MIGRATIONS: Array<{ version: number; sql: string }> = [
+  { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
+];
 
 const INSERT_SQL = 'INSERT INTO events (category, action, target, properties, session_id, device) VALUES (?, ?, ?, ?, ?, ?)';
 
@@ -43,7 +101,25 @@ export function initAnalytics(configDir: string): void {
   const dbPath = path.join(configDir, 'analytics.db');
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
-  db.exec(SCHEMA);
+
+  // Schema version tracking
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
+  const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+  let currentVersion = row?.version ?? 0;
+
+  for (const migration of MIGRATIONS) {
+    if (migration.version > currentVersion) {
+      db.exec(migration.sql);
+      currentVersion = migration.version;
+    }
+  }
+
+  if (row) {
+    db.prepare('UPDATE schema_version SET version = ?').run(currentVersion);
+  } else {
+    db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(currentVersion);
+  }
+
   insertStmt = db.prepare(INSERT_SQL);
 }
 
