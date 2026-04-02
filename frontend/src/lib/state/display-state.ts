@@ -12,7 +12,8 @@ export function transitionDisplayState(current: DisplayState, event: DisplayEven
     case 'backend-state-changed': {
       switch (event.state) {
         case 'idle':
-          if (current === 'running' || current === 'initializing') return 'unseen-idle';
+          if (current === 'running' || current === 'initializing'
+            || current === 'permission' || current === 'needs-answer' || current === 'error') return 'unseen-idle';
           return current;
         case 'running':
           return 'running';

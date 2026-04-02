@@ -125,6 +125,24 @@ describe('transitionDisplayState', () => {
       'error',
       'error + user-viewed → error (stays — error needs acknowledgment, not just viewing)',
     ],
+    [
+      'permission',
+      { type: 'backend-state-changed', state: 'idle' },
+      'unseen-idle',
+      'permission + backend-state-changed(idle) → unseen-idle (escape stuck attention state)',
+    ],
+    [
+      'needs-answer',
+      { type: 'backend-state-changed', state: 'idle' },
+      'unseen-idle',
+      'needs-answer + backend-state-changed(idle) → unseen-idle (escape stuck attention state)',
+    ],
+    [
+      'error',
+      { type: 'backend-state-changed', state: 'idle' },
+      'unseen-idle',
+      'error + backend-state-changed(idle) → unseen-idle (escape stuck attention state)',
+    ],
   ];
 
   for (const [current, event, expected, description] of transitionTable) {
