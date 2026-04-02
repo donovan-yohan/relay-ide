@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { initAnalytics, closeAnalytics, getDbPath, recordSessionEvent, flushEventBuffer, recordRateLimitSnapshot } from '../server/analytics.js';
+import { initAnalytics, closeAnalytics, getDbPath, recordSessionEvent, flushEventBuffer, recordRateLimitSnapshot, upsertSessionRollup, getSessionRollup, computeEngagementMetrics } from '../server/analytics.js';
 import type { SessionEvent } from '../server/types.js';
 
 let tmpDir!: string;
@@ -170,4 +170,157 @@ test('recordRateLimitSnapshot inserts a snapshot row', () => {
   assert.equal(row.five_hour_percent, 62);
   assert.equal(row.seven_day_percent, 91);
   db.close();
+});
+
+// ── Session Rollup Tests ──
+
+test('upsertSessionRollup creates initial rollup', () => {
+  initAnalytics(tmpDir);
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    repoPath: '/repo/path',
+    repoName: 'my-repo',
+    agentType: 'claude',
+    startedAt: '2026-04-01T10:00:00.000Z',
+  });
+
+  const rollup = getSessionRollup('sess-1');
+  assert.ok(rollup, 'rollup should exist');
+  assert.equal(rollup!.sessionId, 'sess-1');
+  assert.equal(rollup!.repoName, 'my-repo');
+  assert.equal(rollup!.agentType, 'claude');
+  assert.equal(rollup!.endedAt, null);
+  assert.equal(rollup!.totalInputTokens, 0);
+  assert.equal(rollup!.recovered, false);
+});
+
+test('upsertSessionRollup updates token counts', () => {
+  initAnalytics(tmpDir);
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    repoPath: '/repo',
+    repoName: 'my-repo',
+    agentType: 'claude',
+    startedAt: '2026-04-01T10:00:00.000Z',
+  });
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    totalInputTokens: 5000,
+    totalOutputTokens: 1200,
+    totalCacheRead: 3000,
+    totalCacheWrite: 800,
+    model: 'opus-4',
+    turnCount: 3,
+  });
+
+  const rollup = getSessionRollup('sess-1');
+  assert.equal(rollup!.totalInputTokens, 5000);
+  assert.equal(rollup!.totalOutputTokens, 1200);
+  assert.equal(rollup!.model, 'opus-4');
+  assert.equal(rollup!.turnCount, 3);
+});
+
+test('upsertSessionRollup sets endedAt and duration', () => {
+  initAnalytics(tmpDir);
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    repoPath: '/repo',
+    repoName: 'my-repo',
+    agentType: 'claude',
+    startedAt: '2026-04-01T10:00:00.000Z',
+  });
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    endedAt: '2026-04-01T10:30:00.000Z',
+    durationSeconds: 1800,
+  });
+
+  const rollup = getSessionRollup('sess-1');
+  assert.equal(rollup!.endedAt, '2026-04-01T10:30:00.000Z');
+  assert.equal(rollup!.durationSeconds, 1800);
+});
+
+test('upsertSessionRollup stores recovered flag', () => {
+  initAnalytics(tmpDir);
+
+  upsertSessionRollup({
+    sessionId: 'sess-1',
+    repoPath: '/repo',
+    repoName: 'repo',
+    agentType: 'claude',
+    startedAt: '2026-04-01T10:00:00.000Z',
+    recovered: true,
+  });
+
+  const rollup = getSessionRollup('sess-1');
+  assert.equal(rollup!.recovered, true);
+});
+
+test('getSessionRollup returns null for unknown session', () => {
+  initAnalytics(tmpDir);
+  assert.equal(getSessionRollup('nonexistent'), null);
+});
+
+// ── Engagement Metric Tests ──
+
+test('computeEngagementMetrics calculates human response latency', () => {
+  initAnalytics(tmpDir);
+
+  const events = [
+    { session_id: 'sess-1', event_type: 'session_start', timestamp: '2026-04-01T10:00:00.000Z' },
+    { session_id: 'sess-1', event_type: 'user_prompt', timestamp: '2026-04-01T10:00:05.000Z' },
+    { session_id: 'sess-1', event_type: 'agent_stop', timestamp: '2026-04-01T10:01:00.000Z' },
+    { session_id: 'sess-1', event_type: 'notification', timestamp: '2026-04-01T10:01:00.500Z' },
+    { session_id: 'sess-1', event_type: 'user_prompt', timestamp: '2026-04-01T10:01:32.500Z' },
+  ];
+  for (const e of events) recordSessionEvent(e);
+  flushEventBuffer();
+
+  const metrics = computeEngagementMetrics('sess-1');
+  assert.ok(metrics);
+  assert.equal(metrics!.humanResponseLatencyAvgMs, 32000);
+  assert.equal(metrics!.humanResponseLatencyP50Ms, 32000);
+});
+
+test('computeEngagementMetrics counts rate limit encounters', () => {
+  initAnalytics(tmpDir);
+
+  const events = [
+    { session_id: 'sess-2', event_type: 'session_start', timestamp: '2026-04-01T10:00:00.000Z' },
+    { session_id: 'sess-2', event_type: 'stop_failure', event_data: { error: 'rate_limit' }, timestamp: '2026-04-01T10:05:00.000Z' },
+    { session_id: 'sess-2', event_type: 'stop_failure', event_data: { error: 'rate_limit' }, timestamp: '2026-04-01T10:10:00.000Z' },
+    { session_id: 'sess-2', event_type: 'stop_failure', event_data: { error: 'other' }, timestamp: '2026-04-01T10:15:00.000Z' },
+  ];
+  for (const e of events) recordSessionEvent(e);
+  flushEventBuffer();
+
+  const metrics = computeEngagementMetrics('sess-2');
+  assert.equal(metrics!.rateLimitEncounters, 2);
+});
+
+test('computeEngagementMetrics aggregates tool use counts', () => {
+  initAnalytics(tmpDir);
+
+  const events = [
+    { session_id: 'sess-3', event_type: 'session_start', timestamp: '2026-04-01T10:00:00.000Z' },
+    { session_id: 'sess-3', event_type: 'tool_use', event_data: { tool: 'Read' }, timestamp: '2026-04-01T10:00:01.000Z' },
+    { session_id: 'sess-3', event_type: 'tool_use', event_data: { tool: 'Read' }, timestamp: '2026-04-01T10:00:02.000Z' },
+    { session_id: 'sess-3', event_type: 'tool_use', event_data: { tool: 'Edit' }, timestamp: '2026-04-01T10:00:03.000Z' },
+    { session_id: 'sess-3', event_type: 'tool_use', event_data: { tool: 'Bash' }, timestamp: '2026-04-01T10:00:04.000Z' },
+  ];
+  for (const e of events) recordSessionEvent(e);
+  flushEventBuffer();
+
+  const metrics = computeEngagementMetrics('sess-3');
+  assert.deepEqual(metrics!.toolUseCounts, { Read: 2, Edit: 1, Bash: 1 });
+});
+
+test('computeEngagementMetrics returns null for unknown session', () => {
+  initAnalytics(tmpDir);
+  assert.equal(computeEngagementMetrics('nonexistent'), null);
 });
