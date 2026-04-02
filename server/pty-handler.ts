@@ -280,7 +280,7 @@ export function createPtySession(
   let scrollbackBytes = initialScrollback ? initialScrollback.reduce((sum, s) => sum + s.length, 0) : 0;
 
   // Instantiate vendor-specific output parser (terminal/custom-command sessions get no parser)
-  // Fall back to claude parser for unknown/future agent types (Task 4 will add opencode parser)
+  // Falls back to claude parser for unknown agent types; Task 5 will dispatch on framework.parserType
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const parser: OutputParser = command
     ? outputParsers['claude']!()
