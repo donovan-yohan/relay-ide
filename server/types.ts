@@ -112,10 +112,27 @@ export function resolveFramework(
   }
 
   if (!builtin) {
-    // fully custom framework from config — validate required fields
+    // fully custom framework from config — validate all required fields before returning
     const custom = override!;
-    if (!custom.id || !custom.command || !custom.continueArgs || !custom.capabilities) {
-      throw new Error(`Custom framework "${frameworkId}" must define id, command, continueArgs, and capabilities.`);
+    const validEventSources: EventSourceType[] = ['hooks', 'plugin', 'parser', 'timer'];
+    if (
+      !custom.id ||
+      !custom.displayName ||
+      !custom.command ||
+      !Array.isArray(custom.continueArgs) ||
+      !Array.isArray(custom.yoloArgs) ||
+      !custom.parserType ||
+      !custom.eventSource ||
+      !validEventSources.includes(custom.eventSource) ||
+      !custom.capabilities ||
+      typeof custom.capabilities.supportsHooks !== 'boolean' ||
+      typeof custom.capabilities.supportsContinue !== 'boolean' ||
+      typeof custom.capabilities.supportsYolo !== 'boolean' ||
+      typeof custom.capabilities.supportsTelemetry !== 'boolean'
+    ) {
+      throw new Error(
+        `Custom framework "${frameworkId}" must define id, displayName, command, continueArgs, yoloArgs, parserType, eventSource, and complete capabilities.`
+      );
     }
     return { ...custom } as AgentFramework;
   }

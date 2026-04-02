@@ -385,7 +385,9 @@ export function createPtySession(
     sessionArgs: paramClaudeArgs ?? [],
     claudeArgs: paramClaudeArgs ?? [],  // keep for backward compat
     continuePolicy: params.continuePolicy ?? 'never',
-    dataQuality: effectiveEventSource,
+    // Derive dataQuality from what actually got enabled, not just the configured framework eventSource.
+    // If hook/plugin injection failed, hooksActive is false → downgrade to 'parser' for accuracy.
+    dataQuality: hooksActive ? effectiveEventSource : 'parser',
     _lastHookTime: undefined,
   };
   sessionsMap.set(id, session);

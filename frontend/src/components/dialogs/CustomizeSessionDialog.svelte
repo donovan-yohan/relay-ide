@@ -19,8 +19,8 @@
       id: 'codex',
       displayName: 'Codex',
       command: 'codex',
-      capabilities: { supportsContinue: false, supportsYolo: false, supportsHooks: false, supportsTelemetry: false },
-      eventSource: 'parser',
+      capabilities: { supportsContinue: true, supportsYolo: true, supportsHooks: true, supportsTelemetry: false },
+      eventSource: 'hooks',
     },
     {
       id: 'opencode',

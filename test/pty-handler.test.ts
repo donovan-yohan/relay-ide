@@ -49,24 +49,24 @@ describe('framework-driven PTY handler', () => {
     assert.equal(session.customCommand, '/bin/echo');
   });
 
-  it('dataQuality is set on session from framework.eventSource (claude -> hooks)', () => {
+  it('dataQuality is derived from actual hooksActive state (hooks when injection succeeds)', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
       agent: 'claude',
-      command: '/bin/cat', // custom command avoids real claude, but agent is still 'claude'
+      command: '/bin/cat',
       args: [],
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
     assert.ok(session);
-    // dataQuality reflects the framework's eventSource (claude = 'hooks')
-    assert.equal(session.dataQuality, 'hooks');
+    // Without a port, hook injection doesn't succeed → hooksActive stays false → dataQuality falls back to 'parser'
+    assert.equal(session.dataQuality, 'parser');
   });
 
-  it('dataQuality is set on session from framework.eventSource (opencode -> plugin)', () => {
+  it('dataQuality falls back to parser when plugin injection fails', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -79,8 +79,8 @@ describe('framework-driven PTY handler', () => {
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
     assert.ok(session);
-    // opencode has eventSource='plugin', so dataQuality should be plugin
-    assert.equal(session.dataQuality, 'plugin' as EventSourceType);
+    // Without a port, opencode plugin injection doesn't succeed → hooksActive stays false → dataQuality is 'parser'
+    assert.equal(session.dataQuality, 'parser' as EventSourceType);
   });
 
   it('sessionArgs is populated on session matching claudeArgs', () => {

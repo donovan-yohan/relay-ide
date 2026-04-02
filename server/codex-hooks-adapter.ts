@@ -45,6 +45,7 @@ export function writeCodexHooksAdapter(
   );
 
   // Write relay script — reads config from file to avoid shell injection
+  // Parse session.json once (single node invocation) to extract all values at once for performance.
   const relayScript = `#!/usr/bin/env bash
 set -u
 INPUT=$(cat)
@@ -59,9 +60,7 @@ case "$EVENT" in
   *) CANONICAL_EVENT="$EVENT" ;;
 esac
 CONFIG_FILE="${configPath}"
-SESSION_ID=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).sessionId))")
-PORT=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).port))")
-TOKEN=$(cat "$CONFIG_FILE" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).hookToken))")
+read -r SESSION_ID PORT TOKEN < <(node -e "const fs=require('node:fs');const{sessionId,port,hookToken}=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));console.log(sessionId,port,hookToken);" "$CONFIG_FILE")
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PAYLOAD=$(printf '{"sessionId":"%s","token":"%s","eventType":"%s","data":%s,"timestamp":"%s"}' "$SESSION_ID" "$TOKEN" "$CANONICAL_EVENT" "$INPUT" "$TIMESTAMP")
 curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
@@ -90,6 +89,19 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
   fs.writeFileSync(path.join(tmpDir, 'hooks.json'), JSON.stringify(mergedHooks, null, 2));
 
   return tmpDir;
+}
+
+/**
+ * Remove the codex hooks adapter temp directory for a session.
+ * Called when the session ends to avoid leaking temp files.
+ */
+export function cleanupCodexHooksAdapter(sessionId: string): void {
+  const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', `codex-hooks-${sessionId}`);
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    // Non-fatal — temp dir may not exist or already be cleaned up
+  }
 }
 
 /** Exported for testing */

@@ -81,8 +81,8 @@ function migrateToV4(config: Config, configPath: string): void {
 function migrateToV5(config: Config, configPath: string): void {
   if (config.configVersion != null && config.configVersion >= 5) return;
 
-  // Map defaultAgent → defaultFramework
-  if (config.defaultAgent) {
+  // Map defaultAgent → defaultFramework, preserving any explicit defaultFramework
+  if (config.defaultAgent && !config.defaultFramework) {
     config.defaultFramework = config.defaultAgent;
   }
 

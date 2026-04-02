@@ -485,7 +485,7 @@ async function main(): Promise<void> {
   });
 
   // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? []);
+  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? [], getConfig().frameworks);
   if (restoredCount > 0) {
     console.log(`Restored ${restoredCount} session(s) from previous update.`);
     // Start git watching for restored sessions

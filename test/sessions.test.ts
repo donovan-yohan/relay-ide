@@ -1215,7 +1215,7 @@ describe('session persistence', () => {
     assert.strictEqual(session.agent, 'codex');
   });
 
-  it('serializeAll writes sessionArgs alongside claudeArgs', () => {
+  it('serializeAll preserves claudeArgs for backward compat', () => {
     const configDir = createTmpDir();
 
     const s = sessions.create({

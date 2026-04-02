@@ -7,6 +7,7 @@ import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Sessio
 export type { BackendDisplayState };
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, resolveFramework } from './types.js';
 import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
+import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
@@ -305,6 +306,12 @@ function kill(id: string): void {
     session_id: id,
   });
   fireSessionEnd(id, session.cwd, session.branchName);
+
+  // Clean up codex hooks adapter temp directory to avoid leaking temp files
+  if (session.agent === 'codex' && session.hooksActive) {
+    cleanupCodexHooksAdapter(id);
+  }
+
   sessions.delete(id);
 }
 
@@ -387,7 +394,7 @@ function serializeAll(configDir: string): void {
   fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending, null, 2), 'utf-8');
 }
 
-async function restoreFromDisk(configDir: string, workspaces?: string[]): Promise<number> {
+async function restoreFromDisk(configDir: string, workspaces?: string[], frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>): Promise<number> {
   const pendingPath = path.join(configDir, 'pending-sessions.json');
   if (!fs.existsSync(pendingPath)) return 0;
 
@@ -501,7 +508,7 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
         let continueArgsList: string[];
         let yoloArgsList: string[];
         try {
-          const framework = resolveFramework({}, s.agent);
+          const framework = resolveFramework(frameworks ? { frameworks } : {}, s.agent);
           continueArgsList = framework.continueArgs;
           yoloArgsList = framework.yoloArgs;
         } catch {
