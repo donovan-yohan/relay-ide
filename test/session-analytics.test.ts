@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { initAnalytics, closeAnalytics, getDbPath } from '../server/analytics.js';
+import { initAnalytics, closeAnalytics, getDbPath, recordSessionEvent, flushEventBuffer, recordRateLimitSnapshot } from '../server/analytics.js';
+import type { SessionEvent } from '../server/types.js';
 
 let tmpDir!: string;
 
@@ -54,5 +55,119 @@ test('initAnalytics creates schema_version table at version 2', () => {
   assert.ok(tables.some(t => t.name === 'schema_version'), 'schema_version table should exist');
   const version = db.prepare('SELECT version FROM schema_version').get() as { version: number };
   assert.equal(version.version, 2);
+  db.close();
+});
+
+test('recordSessionEvent buffers and flushes to DB', () => {
+  initAnalytics(tmpDir);
+
+  recordSessionEvent({
+    session_id: 'sess-1',
+    repo_path: '/repo',
+    event_type: 'session_start',
+    timestamp: '2026-04-01T10:00:00.000Z',
+  });
+
+  // Before flush: DB has 0 session events
+  const db1 = new Database(getDbPath(tmpDir), { readonly: true });
+  const before = db1.prepare('SELECT COUNT(*) as count FROM session_events').get() as { count: number };
+  assert.equal(before.count, 0);
+  db1.close();
+
+  flushEventBuffer();
+
+  // After flush: DB has 1 session event
+  const db2 = new Database(getDbPath(tmpDir), { readonly: true });
+  const after = db2.prepare('SELECT COUNT(*) as count FROM session_events').get() as { count: number };
+  assert.equal(after.count, 1);
+  const row = db2.prepare('SELECT * FROM session_events').get() as Record<string, unknown>;
+  assert.equal(row.session_id, 'sess-1');
+  assert.equal(row.event_type, 'session_start');
+  db2.close();
+});
+
+test('recordSessionEvent stores event_data as JSON', () => {
+  initAnalytics(tmpDir);
+
+  recordSessionEvent({
+    session_id: 'sess-1',
+    event_type: 'tool_use',
+    event_data: { tool: 'Read', target: 'server/index.ts' },
+    timestamp: '2026-04-01T10:00:05.000Z',
+  });
+  flushEventBuffer();
+
+  const db = new Database(getDbPath(tmpDir), { readonly: true });
+  const row = db.prepare('SELECT * FROM session_events').get() as Record<string, unknown>;
+  const data = JSON.parse(row.event_data as string) as Record<string, unknown>;
+  assert.equal(data.tool, 'Read');
+  assert.equal(data.target, 'server/index.ts');
+  db.close();
+});
+
+test('flushEventBuffer batch-inserts multiple events', () => {
+  initAnalytics(tmpDir);
+
+  for (let i = 0; i < 5; i++) {
+    recordSessionEvent({
+      session_id: 'sess-1',
+      event_type: 'tool_use',
+      event_data: { tool: 'Read', i },
+      timestamp: new Date(Date.now() + i * 1000).toISOString(),
+    });
+  }
+  flushEventBuffer();
+
+  const db = new Database(getDbPath(tmpDir), { readonly: true });
+  const count = db.prepare('SELECT COUNT(*) as count FROM session_events').get() as { count: number };
+  assert.equal(count.count, 5);
+  db.close();
+});
+
+test('flushEventBuffer with sessionId only flushes that session', () => {
+  initAnalytics(tmpDir);
+
+  recordSessionEvent({ session_id: 'sess-A', event_type: 'tool_use', timestamp: new Date().toISOString() });
+  recordSessionEvent({ session_id: 'sess-B', event_type: 'tool_use', timestamp: new Date().toISOString() });
+  recordSessionEvent({ session_id: 'sess-A', event_type: 'agent_stop', timestamp: new Date().toISOString() });
+
+  flushEventBuffer('sess-A');
+
+  // sess-A events flushed, sess-B still in buffer
+  const db = new Database(getDbPath(tmpDir), { readonly: true });
+  const rows = db.prepare('SELECT session_id FROM session_events ORDER BY id').all() as { session_id: string }[];
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(r => r.session_id === 'sess-A'));
+  db.close();
+
+  // Flush remaining
+  flushEventBuffer();
+});
+
+test('recordSessionEvent is no-op before initAnalytics', () => {
+  // Should not throw
+  recordSessionEvent({
+    session_id: 'sess-1',
+    event_type: 'session_start',
+    timestamp: new Date().toISOString(),
+  });
+  flushEventBuffer();
+});
+
+test('recordRateLimitSnapshot inserts a snapshot row', () => {
+  initAnalytics(tmpDir);
+
+  recordRateLimitSnapshot({
+    fiveHourPercent: 62,
+    fiveHourResetsAt: '2026-04-01T14:32:00Z',
+    sevenDayPercent: 91,
+    sevenDayResetsAt: '2026-04-03T00:00:00Z',
+    timestamp: '2026-04-01T10:00:00.000Z',
+  });
+
+  const db = new Database(getDbPath(tmpDir), { readonly: true });
+  const row = db.prepare('SELECT * FROM rate_limit_snapshots').get() as Record<string, unknown>;
+  assert.equal(row.five_hour_percent, 62);
+  assert.equal(row.seven_day_percent, 91);
   db.close();
 });

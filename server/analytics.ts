@@ -3,9 +3,17 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import type { SessionEvent, RateLimitSnapshot } from './types.js';
 
 let db: Database.Database | null = null;
 let insertStmt: Database.Statement | null = null;
+
+let eventBuffer: SessionEvent[] = [];
+let batchTimer: ReturnType<typeof setInterval> | null = null;
+const BATCH_INTERVAL_MS = 500;
+
+let insertSessionEventStmt: Database.Statement | null = null;
+let insertRateLimitStmt: Database.Statement | null = null;
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS events (
@@ -127,11 +135,100 @@ export function initAnalytics(configDir: string): void {
   insertStmt = db.prepare(INSERT_SQL);
 }
 
+function ensureSessionStmts(): void {
+  if (!db) return;
+  if (!insertSessionEventStmt) {
+    insertSessionEventStmt = db.prepare(
+      'INSERT INTO session_events (session_id, repo_path, event_type, event_data, timestamp) VALUES (?, ?, ?, ?, ?)'
+    );
+  }
+  if (!insertRateLimitStmt) {
+    insertRateLimitStmt = db.prepare(
+      'INSERT INTO rate_limit_snapshots (five_hour_percent, five_hour_resets_at, seven_day_percent, seven_day_resets_at, timestamp) VALUES (?, ?, ?, ?, ?)'
+    );
+  }
+}
+
+export function recordSessionEvent(event: SessionEvent): void {
+  if (!db) return;
+  eventBuffer.push(event);
+}
+
+export function flushEventBuffer(sessionId?: string): void {
+  if (!db || eventBuffer.length === 0) return;
+  ensureSessionStmts();
+  if (!insertSessionEventStmt) return;
+
+  const toFlush = sessionId
+    ? eventBuffer.filter(e => e.session_id === sessionId)
+    : [...eventBuffer];
+
+  if (toFlush.length === 0) return;
+
+  const stmt = insertSessionEventStmt;
+  const insertMany = db.transaction((events: SessionEvent[]) => {
+    for (const e of events) {
+      stmt.run(
+        e.session_id,
+        e.repo_path ?? null,
+        e.event_type,
+        e.event_data ? JSON.stringify(e.event_data) : null,
+        e.timestamp,
+      );
+    }
+  });
+
+  try {
+    insertMany(toFlush);
+  } catch (err) {
+    console.warn('[analytics] Failed to flush event buffer:', err);
+  }
+
+  if (sessionId) {
+    eventBuffer = eventBuffer.filter(e => e.session_id !== sessionId);
+  } else {
+    eventBuffer = [];
+  }
+}
+
+export function recordRateLimitSnapshot(snapshot: RateLimitSnapshot): void {
+  if (!db) return;
+  ensureSessionStmts();
+  if (!insertRateLimitStmt) return;
+  try {
+    insertRateLimitStmt.run(
+      snapshot.fiveHourPercent,
+      snapshot.fiveHourResetsAt,
+      snapshot.sevenDayPercent,
+      snapshot.sevenDayResetsAt,
+      snapshot.timestamp,
+    );
+  } catch (err) {
+    console.warn('[analytics] Failed to record rate limit snapshot:', err);
+  }
+}
+
+export function startEventBatching(): void {
+  stopEventBatching();
+  batchTimer = setInterval(() => flushEventBuffer(), BATCH_INTERVAL_MS);
+}
+
+export function stopEventBatching(): void {
+  if (batchTimer) {
+    clearInterval(batchTimer);
+    batchTimer = null;
+  }
+  flushEventBuffer(); // flush remaining
+}
+
 export function closeAnalytics(): void {
+  stopEventBatching();
   if (db) {
     db.close();
     db = null;
     insertStmt = null;
+    insertSessionEventStmt = null;
+    insertRateLimitStmt = null;
   }
 }
 
