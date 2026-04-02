@@ -3,8 +3,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentType, AgentState, ContinuePolicy, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
-import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS } from './types.js';
+import type { AgentType, AgentState, ContinuePolicy, EventSourceType, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
+import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, resolveFramework } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
@@ -228,11 +228,41 @@ export function createPtySession(
 
   let args = rawArgs;
   const createdAt = new Date().toISOString();
-  const resolvedCommand = command || AGENT_COMMANDS[agent] || agent;
+
+  // Resolve the agent framework (builtin or future config-driven custom)
+  // Falls back to a minimal stub using deprecated aliases when agent is not a known framework.
+  let framework: import('./types.js').AgentFramework;
+  try {
+    framework = resolveFramework(
+      {}, // TODO: pass config.frameworks here once config is threaded through CreatePtyParams
+      agent
+    );
+  } catch {
+    // Unknown agent — synthesize a minimal framework from deprecated aliases for backward compat
+    framework = {
+      id: agent,
+      displayName: agent,
+      command: AGENT_COMMANDS[agent] ?? agent,
+      continueArgs: AGENT_CONTINUE_ARGS[agent] ?? [],
+      yoloArgs: [],
+      parserType: 'none',
+      eventSource: 'parser',
+      capabilities: {
+        supportsHooks: false,
+        supportsContinue: false,
+        supportsYolo: false,
+        supportsTelemetry: false,
+      },
+    };
+  }
+
+  const resolvedCommand = command || framework.commandOverride || framework.command;
 
   const env = cleanEnv();
 
-  // Inject hooks settings when spawning a real claude agent (not custom command, not forceOutputParser).
+  // Inject Claude --settings hooks file for frameworks that use HTTP hook callbacks.
+  // This is the Claude-specific hook mechanism; codex uses hooks.json (Task 7) and
+  // opencode uses a TS relay plugin (Task 6) — each with its own injection path.
   // For restored sessions whose tmux died, reuse the preserved token but re-create the settings
   // file on disk — the new Claude process needs --settings even though the token is the same.
   // For surviving tmux sessions (command='tmux'), shouldInjectHooks is false — the old Claude
@@ -240,7 +270,9 @@ export function createPtySession(
   let hookToken = paramHookToken ?? '';
   let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
-  const shouldInjectHooks = agent === 'claude' && !command && !forceOutputParser && port !== undefined;
+  const effectiveEventSource: EventSourceType = forceOutputParser ? 'parser' : framework.eventSource;
+  // Only inject --settings for claude; codex and opencode have their own hook injection paths
+  const shouldInjectHooks = framework.id === 'claude' && framework.capabilities.supportsHooks && effectiveEventSource === 'hooks' && !command && port !== undefined;
   if (shouldInjectHooks) {
     if (!hookToken) {
       hookToken = crypto.randomBytes(32).toString('hex');
@@ -279,12 +311,11 @@ export function createPtySession(
   const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
   let scrollbackBytes = initialScrollback ? initialScrollback.reduce((sum, s) => sum + s.length, 0) : 0;
 
-  // Instantiate vendor-specific output parser (terminal/custom-command sessions get no parser)
-  // Falls back to claude parser for unknown agent types; Task 5 will dispatch on framework.parserType
+  // Instantiate vendor-specific output parser dispatched by framework.parserType
+  // Falls back to 'none' parser for unknown parserType values
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const parser: OutputParser = command
-    ? outputParsers['claude']!()
-    : (outputParsers[agent] ?? outputParsers['claude'])!();
+  const parserFactory = outputParsers[framework.parserType] ?? outputParsers['none'];
+  const parser: OutputParser = parserFactory!();
   const session: PtySession = {
     id,
     type: type || 'agent',
@@ -314,8 +345,10 @@ export function createPtySession(
     hooksActive,
     cleanedUp: false,
     yolo: paramYolo ?? false,
-    claudeArgs: paramClaudeArgs ?? [],
+    sessionArgs: paramClaudeArgs ?? [],
+    claudeArgs: paramClaudeArgs ?? [],  // keep for backward compat
     continuePolicy: params.continuePolicy ?? 'never',
+    dataQuality: effectiveEventSource,
     _lastHookTime: undefined,
   };
   sessionsMap.set(id, session);
@@ -346,7 +379,7 @@ export function createPtySession(
     }, IDLE_TIMEOUT_MS);
   }
 
-  const continueArgs = AGENT_CONTINUE_ARGS[agent] ?? [];
+  const continueArgs = framework.continueArgs;
 
   function attachHandlers(proc: pty.IPty, canRetry: boolean): void {
     const spawnTime = Date.now();

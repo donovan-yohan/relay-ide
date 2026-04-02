@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
 export type { BackendDisplayState };
-import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
+import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, resolveFramework } from './types.js';
 import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getWorkingTreeDiff } from './git.js';
@@ -365,7 +365,7 @@ function serializeAll(configDir: string): void {
       tmuxSessionName: session.tmuxSessionName || '',
       customCommand: session.customCommand,
       yolo: session.yolo,
-      claudeArgs: session.claudeArgs,
+      claudeArgs: session.sessionArgs ?? session.claudeArgs,
       hookToken: session.hookToken,
       hooksActive: session.hooksActive,
       continuePolicy: session.continuePolicy,
@@ -496,19 +496,41 @@ async function restoreFromDisk(configDir: string, workspaces?: string[]): Promis
       } else {
         // Tmux session died — fall back to agent with continue args + preserved flags
         // Continue args first: Codex uses subcommands (resume --last) that must precede flags
+        let continueArgsList: string[];
+        let yoloArgsList: string[];
+        try {
+          const framework = resolveFramework({}, s.agent);
+          continueArgsList = framework.continueArgs;
+          yoloArgsList = framework.yoloArgs;
+        } catch {
+          // Unknown framework — fall back to deprecated lookup tables
+          continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
+          yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
+        }
         args = [
-          ...(AGENT_CONTINUE_ARGS[s.agent] ?? []),
+          ...continueArgsList,
           ...(s.claudeArgs ?? []),
-          ...(s.yolo ? (AGENT_YOLO_ARGS[s.agent] ?? []) : []),
+          ...(s.yolo ? yoloArgsList : []),
         ];
       }
     } else {
       // Non-tmux agent session — respawn with continue args + preserved flags
       // Continue args first: Codex uses subcommands (resume --last) that must precede flags
+      let continueArgsList: string[];
+      let yoloArgsList: string[];
+      try {
+        const framework = resolveFramework({}, s.agent);
+        continueArgsList = framework.continueArgs;
+        yoloArgsList = framework.yoloArgs;
+      } catch {
+        // Unknown framework — fall back to deprecated lookup tables
+        continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
+        yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
+      }
       args = [
-        ...(AGENT_CONTINUE_ARGS[s.agent] ?? []),
+        ...continueArgsList,
         ...(s.claudeArgs ?? []),
-        ...(s.yolo ? (AGENT_YOLO_ARGS[s.agent] ?? []) : []),
+        ...(s.yolo ? yoloArgsList : []),
       ];
     }
 

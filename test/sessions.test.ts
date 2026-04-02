@@ -1141,4 +1141,100 @@ describe('session persistence', () => {
     assert.strictEqual(pending.sessions.length, 1);
     assert.strictEqual(pending.sessions[0].displayName, 'before-kill');
   });
+
+  it('restoreFromDisk uses framework continueArgs for claude (--continue)', async () => {
+    const configDir = createTmpDir();
+
+    // Write a v4 pending file with a non-tmux claude agent session
+    const pending = {
+      version: 4,
+      timestamp: new Date().toISOString(),
+      sessions: [{
+        id: 'framework-continue-claude',
+        type: 'agent' as const,
+        agent: 'claude',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        repoName: 'test-repo',
+        branchName: 'main',
+        displayName: 'claude-session',
+        createdAt: new Date().toISOString(),
+        lastActivity: new Date().toISOString(),
+        useTmux: false,
+        tmuxSessionName: '',
+        customCommand: '/bin/cat', // use /bin/cat so session doesn't error out
+        yolo: false,
+        claudeArgs: [],
+      }],
+    };
+    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+
+    const restored = await restoreFromDisk(configDir);
+    assert.strictEqual(restored, 1);
+
+    const session = sessions.get('framework-continue-claude');
+    assert.ok(session, 'restored session should exist');
+    // The session should have been created successfully (continueArgs from framework)
+    assert.strictEqual(session.agent, 'claude');
+  });
+
+  it('restoreFromDisk uses framework continueArgs for codex (resume --last)', async () => {
+    const configDir = createTmpDir();
+
+    // Write a v4 pending file with a non-tmux codex agent session
+    const pending = {
+      version: 4,
+      timestamp: new Date().toISOString(),
+      sessions: [{
+        id: 'framework-continue-codex',
+        type: 'agent' as const,
+        agent: 'codex',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        repoName: 'test-repo',
+        branchName: 'main',
+        displayName: 'codex-session',
+        createdAt: new Date().toISOString(),
+        lastActivity: new Date().toISOString(),
+        useTmux: false,
+        tmuxSessionName: '',
+        customCommand: '/bin/cat',
+        yolo: false,
+        claudeArgs: [],
+      }],
+    };
+    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+
+    const restored = await restoreFromDisk(configDir);
+    assert.strictEqual(restored, 1);
+
+    const session = sessions.get('framework-continue-codex');
+    assert.ok(session, 'restored session should exist');
+    assert.strictEqual(session.agent, 'codex');
+  });
+
+  it('serializeAll writes sessionArgs alongside claudeArgs', () => {
+    const configDir = createTmpDir();
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      claudeArgs: ['--model', 'opus'],
+    });
+
+    serializeAll(configDir);
+    sessions.kill(s.id);
+
+    const pendingPath = path.join(configDir, 'pending-sessions.json');
+    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
+    assert.strictEqual(pending.sessions.length, 1);
+    // claudeArgs should still be there for backward compat
+    assert.deepStrictEqual(pending.sessions[0].claudeArgs, ['--model', 'opus']);
+  });
 });
