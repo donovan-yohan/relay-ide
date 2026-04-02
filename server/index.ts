@@ -498,9 +498,14 @@ async function main(): Promise<void> {
   }
 
   // Periodic rate limit snapshot recording (every 5 minutes)
+  let lastRateLimitSnapshot = 0;
+  const RATE_LIMIT_SNAPSHOT_INTERVAL = 5 * 60 * 1000;
   setInterval(() => {
+    const now = Date.now();
+    if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
     const account = getAccountTelemetry();
     if (!account || account.fiveHourUsedPercent < 0) return;
+    lastRateLimitSnapshot = now;
     recordRateLimitSnapshot({
       fiveHourPercent: account.fiveHourUsedPercent,
       fiveHourResetsAt: account.fiveHourResetsAt,
@@ -508,11 +513,11 @@ async function main(): Promise<void> {
       sevenDayResetsAt: account.sevenDayResetsAt,
       timestamp: new Date().toISOString(),
     });
-  }, 5 * 60 * 1000);
+  }, 60_000);
 
   // Schedule daily retention cleanup
   setInterval(() => {
-    try { runRetentionCleanup(); } catch (err) { console.warn('[analytics] Retention cleanup error:', err); }
+    try { runRetentionCleanup(); } catch { /* non-fatal */ }
   }, 24 * 60 * 60 * 1000);
 
   // Populate session metadata cache in background (non-blocking)

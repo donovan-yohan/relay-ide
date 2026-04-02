@@ -322,6 +322,12 @@ export function createHooksRouter(deps: HookDeps): Router {
     const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
     session.currentActivity = undefined;
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
+    // When a tool completes while in permission-prompt state, the user has answered
+    // the question or approved the permission. Transition to processing so the
+    // backend state reflects that Claude is actively working again.
+    if (session.agentState === 'permission-prompt') {
+      setAgentState(session, 'processing', deps);
+    }
     recordSessionEvent({
       session_id: session.id,
       repo_path: session.repoPath,

@@ -157,19 +157,11 @@ export function flushEventBuffer(sessionId?: string): void {
   ensureSessionStmts();
   if (!insertSessionEventStmt) return;
 
-  let toFlush: SessionEvent[];
-  if (sessionId) {
-    toFlush = [];
-    const remaining: SessionEvent[] = [];
-    for (const e of eventBuffer) {
-      (e.session_id === sessionId ? toFlush : remaining).push(e);
-    }
-    if (toFlush.length === 0) return;
-    eventBuffer = remaining;
-  } else {
-    toFlush = eventBuffer;
-    eventBuffer = [];
-  }
+  const toFlush = sessionId
+    ? eventBuffer.filter(e => e.session_id === sessionId)
+    : [...eventBuffer];
+
+  if (toFlush.length === 0) return;
 
   const stmt = insertSessionEventStmt;
   const insertMany = db.transaction((events: SessionEvent[]) => {
@@ -188,6 +180,12 @@ export function flushEventBuffer(sessionId?: string): void {
     insertMany(toFlush);
   } catch (err) {
     console.warn('[analytics] Failed to flush event buffer:', err);
+  }
+
+  if (sessionId) {
+    eventBuffer = eventBuffer.filter(e => e.session_id !== sessionId);
+  } else {
+    eventBuffer = [];
   }
 }
 
@@ -586,6 +584,8 @@ export function runRetentionCleanup(retentionDays = 90): void {
   if (!db) return;
 
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  // Delete old session events
   db.prepare('DELETE FROM session_events WHERE timestamp < ?').run(cutoff);
 
   // Downsample rate_limit_snapshots: after 7 days keep hourly, after 30 days keep daily
@@ -626,26 +626,22 @@ export function recoverOrphanedSessions(): number {
   const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
   const orphans = db.prepare(`
-    SELECT session_id, started_at FROM session_rollups
+    SELECT session_id FROM session_rollups
     WHERE ended_at IS NULL AND datetime(updated_at) < datetime(?)
-  `).all(staleThreshold) as Array<{ session_id: string; started_at: string }>;
+  `).all(staleThreshold) as Array<{ session_id: string }>;
 
-  for (const { session_id, started_at } of orphans) {
+  for (const { session_id } of orphans) {
     const lastEvent = db.prepare(
       'SELECT timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1'
     ).get(session_id) as { timestamp: string } | undefined;
 
     const endedAt = lastEvent?.timestamp ?? new Date().toISOString();
-    const durationSeconds = started_at
-      ? Math.round((new Date(endedAt).getTime() - new Date(started_at).getTime()) / 1000)
-      : undefined;
     const metrics = computeEngagementMetrics(session_id);
 
     if (metrics) {
       upsertSessionRollup({
         sessionId: session_id,
         endedAt,
-        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
         recovered: true,
         ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
         ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
@@ -658,7 +654,6 @@ export function recoverOrphanedSessions(): number {
       upsertSessionRollup({
         sessionId: session_id,
         endedAt,
-        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
         recovered: true,
       });
     }
@@ -713,7 +708,7 @@ export function createSessionAnalyticsRouter(): Router {
         existing.tokensOut += r.total_output_tokens as number;
       } else {
         byRepo.set(rp, {
-          repoName: (r.repo_name as string) ?? (path.basename(rp) || rp),
+          repoName: (r.repo_name as string) ?? rp.split('/').pop() ?? rp,
           sessions: 1,
           tokensIn: r.total_input_tokens as number,
           tokensOut: r.total_output_tokens as number,
