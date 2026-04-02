@@ -3,12 +3,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentType, AgentState, ContinuePolicy, EventSourceType, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
+import type { AgentFramework, AgentType, AgentState, ContinuePolicy, EventSourceType, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
 import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, resolveFramework } from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
 import type { OutputParser } from './output-parsers/index.js';
+import { installOpencodeRelayPlugin } from './opencode-relay.js';
+import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -187,6 +189,7 @@ export type CreatePtyParams = {
   hookToken?: string | undefined;
   hooksActive?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
+  frameworks?: Record<string, Partial<AgentFramework>> | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -224,6 +227,7 @@ export function createPtySession(
     claudeArgs: paramClaudeArgs,
     hookToken: paramHookToken,
     hooksActive: paramHooksActive,
+    frameworks,
   } = params;
 
   let args = rawArgs;
@@ -234,7 +238,7 @@ export function createPtySession(
   let framework: import('./types.js').AgentFramework;
   try {
     framework = resolveFramework(
-      {}, // TODO: pass config.frameworks here once config is threaded through CreatePtyParams
+      frameworks ? { frameworks } : {},
       agent
     );
   } catch {
@@ -271,6 +275,39 @@ export function createPtySession(
   let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
   const effectiveEventSource: EventSourceType = forceOutputParser ? 'parser' : framework.eventSource;
+
+  if (paramYolo && framework.yoloEnv) {
+    Object.assign(env, framework.yoloEnv);
+  }
+
+  if (effectiveEventSource === 'plugin' && port !== undefined) {
+    if (!hookToken) {
+      hookToken = crypto.randomBytes(32).toString('hex');
+    }
+    try {
+      installOpencodeRelayPlugin();
+      env.CRC_RELAY_URL = `http://127.0.0.1:${port}`;
+      env.CRC_SESSION_ID = id;
+      env.CRC_RELAY_TOKEN = hookToken;
+      hooksActive = true;
+    } catch (err) {
+      console.warn(`[pty-handler] Failed to install opencode relay plugin for session ${id}:`, err);
+    }
+  }
+
+  if (framework.id === 'codex' && port !== undefined) {
+    if (!hookToken) {
+      hookToken = crypto.randomBytes(32).toString('hex');
+    }
+    try {
+      const codexConfigDir = writeCodexHooksAdapter(id, port, hookToken, configDir ?? process.cwd());
+      env.CODEX_CONFIG_DIR = codexConfigDir;
+      hooksActive = true;
+    } catch (err) {
+      console.warn(`[pty-handler] Failed to write codex hooks adapter for session ${id}:`, err);
+    }
+  }
+
   // Only inject --settings for claude; codex and opencode have their own hook injection paths
   const shouldInjectHooks = framework.id === 'claude' && framework.capabilities.supportsHooks && effectiveEventSource === 'hooks' && !command && port !== undefined;
   if (shouldInjectHooks) {

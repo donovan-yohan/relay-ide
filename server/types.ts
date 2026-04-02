@@ -191,12 +191,12 @@ export interface PtySession extends BaseSession {
   lastAttentionNotifiedAt?: number | undefined;
   currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
-  /** Populated by Task 5 (framework-driven PTY handler) to replace claudeArgs */
+  /** Framework-specific args (replaces deprecated claudeArgs) */
   sessionArgs?: string[];
-  /** @deprecated Replaced by sessionArgs in Task 5 */
+  /** @deprecated Use sessionArgs instead */
   claudeArgs: string[];
   continuePolicy: ContinuePolicy;
-  /** Actual event source quality; initialized by Task 5 from framework.eventSource */
+  /** Actual event source quality (hooks/plugin/parser/timer) */
   dataQuality?: EventSourceType;
 }
 
