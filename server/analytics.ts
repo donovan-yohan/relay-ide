@@ -663,3 +663,287 @@ export function recoverOrphanedSessions(): number {
 
   return orphans.length;
 }
+
+// ── Session Analytics REST API ──
+
+export function createSessionAnalyticsRouter(): Router {
+  const router = Router();
+
+  // GET /overview
+  router.get('/overview', (_req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const days = parseInt(_req.query.days as string) || 7;
+    const repoFilter = _req.query.repo as string | undefined;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    let query = `SELECT * FROM session_rollups WHERE started_at >= ?`;
+    const params: unknown[] = [since];
+    if (repoFilter) {
+      query += ' AND repo_path = ?';
+      params.push(repoFilter);
+    }
+
+    const rollups = db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+
+    let totalTokensIn = 0, totalTokensOut = 0, totalCacheRead = 0;
+    let totalDuration = 0, durationCount = 0;
+    let totalLatency = 0, latencyCount = 0;
+    let totalIdle = 0, idleCount = 0;
+    let totalRateLimits = 0;
+    const byRepo = new Map<string, { repoName: string; sessions: number; tokensIn: number; tokensOut: number }>();
+
+    for (const r of rollups) {
+      totalTokensIn += r.total_input_tokens as number;
+      totalTokensOut += r.total_output_tokens as number;
+      totalCacheRead += r.total_cache_read as number;
+      if (r.duration_seconds) { totalDuration += r.duration_seconds as number; durationCount++; }
+      if (r.human_response_latency_avg_ms) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
+      if (r.agent_idle_percent !== null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
+      totalRateLimits += r.rate_limit_encounters as number;
+
+      const rp = (r.repo_path as string) ?? 'unknown';
+      const existing = byRepo.get(rp);
+      if (existing) {
+        existing.sessions++;
+        existing.tokensIn += r.total_input_tokens as number;
+        existing.tokensOut += r.total_output_tokens as number;
+      } else {
+        byRepo.set(rp, {
+          repoName: (r.repo_name as string) ?? rp.split('/').pop() ?? rp,
+          sessions: 1,
+          tokensIn: r.total_input_tokens as number,
+          tokensOut: r.total_output_tokens as number,
+        });
+      }
+    }
+
+    const totalTokens = totalTokensIn + totalTokensOut;
+    const byRepoArr = [...byRepo.entries()].map(([_, v]) => ({
+      ...v,
+      pctOfTotal: totalTokens > 0 ? Math.round(((v.tokensIn + v.tokensOut) / totalTokens) * 1000) / 10 : 0,
+    })).sort((a, b) => b.tokensIn - a.tokensIn);
+
+    res.json({
+      timeWindow: { start: since, end: new Date().toISOString() },
+      totalSessions: rollups.length,
+      totalTokensIn,
+      totalTokensOut,
+      totalCacheRead,
+      avgSessionDuration: durationCount > 0 ? Math.round(totalDuration / durationCount) : 0,
+      avgHumanResponseLatency: latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0,
+      avgAgentIdlePercent: idleCount > 0 ? Math.round(totalIdle / idleCount * 10) / 10 : 0,
+      totalRateLimitEncounters: totalRateLimits,
+      byRepo: byRepoArr,
+    });
+  });
+
+  // GET /sessions
+  router.get('/sessions', (_req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const offset = parseInt(_req.query.offset as string) || 0;
+    const limit = Math.min(parseInt(_req.query.limit as string) || 20, 100);
+    const repoFilter = _req.query.repo as string | undefined;
+    const agentFilter = _req.query.agent as string | undefined;
+    const sort = (_req.query.sort as string) || 'started_at';
+
+    const validSorts: Record<string, string> = {
+      started_at: 'started_at DESC',
+      tokens: 'total_input_tokens DESC',
+      duration: 'duration_seconds DESC',
+    };
+    const orderBy = validSorts[sort] ?? 'started_at DESC';
+
+    let where = 'WHERE 1=1';
+    const params: unknown[] = [];
+    if (repoFilter) { where += ' AND repo_path = ?'; params.push(repoFilter); }
+    if (agentFilter) { where += ' AND agent_type = ?'; params.push(agentFilter); }
+
+    const total = (db.prepare(`SELECT COUNT(*) as count FROM session_rollups ${where}`).get(...params) as { count: number }).count;
+
+    const rows = db.prepare(
+      `SELECT * FROM session_rollups ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset) as Array<Record<string, unknown>>;
+
+    const sessions = rows.map(r => ({
+      sessionId: r.session_id,
+      repoName: r.repo_name,
+      repoPath: r.repo_path,
+      agentType: r.agent_type,
+      model: r.model,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      durationSeconds: r.duration_seconds,
+      totalInputTokens: r.total_input_tokens,
+      totalOutputTokens: r.total_output_tokens,
+      turnCount: r.turn_count,
+      humanResponseLatencyAvg: r.human_response_latency_avg_ms,
+      agentIdlePercent: r.agent_idle_percent,
+      rateLimitEncounters: r.rate_limit_encounters,
+      topTools: (() => {
+        try {
+          const counts = r.tool_use_counts ? JSON.parse(r.tool_use_counts as string) as Record<string, number> : {};
+          return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name]) => name);
+        } catch { return []; }
+      })(),
+      recovered: (r.recovered as number) === 1,
+    }));
+
+    res.json({ sessions, total, offset, limit });
+  });
+
+  // GET /sessions/:id
+  router.get('/sessions/:id', (req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const sessionId = req.params['id'] ?? '';
+    const rollup = getSessionRollup(sessionId);
+    if (!rollup) { res.status(404).json({ error: 'Session not found' }); return; }
+
+    const events = db.prepare(
+      'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
+    ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
+
+    const toolBreakdown: Record<string, { count: number }> = {};
+    for (const e of events) {
+      if (e.event_type === 'tool_use' && e.event_data) {
+        try {
+          const data = JSON.parse(e.event_data) as Record<string, unknown>;
+          const tool = (data.tool as string) ?? 'unknown';
+          toolBreakdown[tool] = { count: (toolBreakdown[tool]?.count ?? 0) + 1 };
+        } catch { /* ignore */ }
+      }
+    }
+
+    // Compute time breakdown from events
+    let agentActiveTime = 0, waitingForHumanTime = 0, rateLimitTime = 0;
+    if (events.length >= 2) {
+      const firstTs = new Date(events[0]!.timestamp).getTime();
+      const lastTs = new Date(events[events.length - 1]!.timestamp).getTime();
+      const totalMs = lastTs - firstTs;
+      if (rollup.agentIdlePercent !== null && totalMs > 0) {
+        waitingForHumanTime = Math.round(totalMs * (rollup.agentIdlePercent / 100) / 1000);
+        agentActiveTime = Math.round((totalMs - waitingForHumanTime * 1000) / 1000);
+      } else {
+        agentActiveTime = Math.round(totalMs / 1000);
+      }
+    }
+
+    res.json({
+      session: rollup,
+      toolBreakdown,
+      events: events.map(e => ({
+        type: e.event_type,
+        timestamp: e.timestamp,
+        data: e.event_data ? (() => { try { return JSON.parse(e.event_data!); } catch { return {}; } })() : {},
+      })),
+      engagementBreakdown: {
+        agentActiveTime,
+        waitingForHumanTime,
+        rateLimitTime,
+        otherTime: Math.max(0, (rollup.durationSeconds ?? 0) - agentActiveTime - waitingForHumanTime - rateLimitTime),
+      },
+    });
+  });
+
+  // GET /trends
+  router.get('/trends', (_req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const days = parseInt(_req.query.days as string) || 30;
+    const repoFilter = _req.query.repo as string | undefined;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    let query = `
+      SELECT
+        date(started_at) as date,
+        COUNT(*) as sessions,
+        SUM(total_input_tokens) as tokens_in,
+        SUM(total_output_tokens) as tokens_out,
+        AVG(human_response_latency_avg_ms) as avg_human_latency,
+        AVG(agent_idle_percent) as avg_agent_idle,
+        SUM(rate_limit_encounters) as rate_limit_encounters
+      FROM session_rollups
+      WHERE started_at >= ?
+    `;
+    const params: unknown[] = [since];
+    if (repoFilter) { query += ' AND repo_path = ?'; params.push(repoFilter); }
+    query += ' GROUP BY date(started_at) ORDER BY date ASC';
+
+    const rows = db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+
+    res.json({
+      days: rows.map(r => ({
+        date: r.date,
+        sessions: r.sessions,
+        tokensIn: r.tokens_in ?? 0,
+        tokensOut: r.tokens_out ?? 0,
+        avgHumanLatency: r.avg_human_latency ? Math.round(r.avg_human_latency as number) : 0,
+        avgAgentIdle: r.avg_agent_idle ? Math.round((r.avg_agent_idle as number) * 10) / 10 : 0,
+        rateLimitEncounters: r.rate_limit_encounters ?? 0,
+      })),
+    });
+  });
+
+  // GET /tools
+  router.get('/tools', (_req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const days = parseInt(_req.query.days as string) || 7;
+    const repoFilter = _req.query.repo as string | undefined;
+    const sessionFilter = _req.query.session as string | undefined;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    let query = `SELECT event_data FROM session_events WHERE event_type = 'tool_use' AND timestamp >= ?`;
+    const params: unknown[] = [since];
+    if (repoFilter) { query += ' AND repo_path = ?'; params.push(repoFilter); }
+    if (sessionFilter) { query += ' AND session_id = ?'; params.push(sessionFilter); }
+
+    const rows = db.prepare(query).all(...params) as Array<{ event_data: string | null }>;
+
+    const counts = new Map<string, number>();
+    let totalUses = 0;
+    for (const r of rows) {
+      if (!r.event_data) continue;
+      try {
+        const data = JSON.parse(r.event_data) as Record<string, unknown>;
+        const tool = (data.tool as string) ?? 'unknown';
+        counts.set(tool, (counts.get(tool) ?? 0) + 1);
+        totalUses++;
+      } catch { /* ignore */ }
+    }
+
+    const tools = [...counts.entries()]
+      .map(([name, count]) => ({
+        name,
+        totalUses: count,
+        pctOfUses: totalUses > 0 ? Math.round((count / totalUses) * 1000) / 10 : 0,
+      }))
+      .sort((a, b) => b.totalUses - a.totalUses);
+
+    res.json({ tools });
+  });
+
+  // GET /rate-limits
+  router.get('/rate-limits', (_req: Request, res: Response) => {
+    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+
+    const hours = parseInt(_req.query.hours as string) || 24;
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
+    const rows = db.prepare(
+      'SELECT * FROM rate_limit_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC'
+    ).all(since) as Array<Record<string, unknown>>;
+
+    res.json({
+      snapshots: rows.map(r => ({
+        timestamp: r.timestamp,
+        fiveHourPercent: r.five_hour_percent,
+        sevenDayPercent: r.seven_day_percent,
+      })),
+    });
+  });
+
+  return router;
+}
