@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fetchAnalyticsSessionDetail } from '../lib/api.js';
   import type { AnalyticsSessionDetail } from '../lib/types.js';
-  import { formatCompact, formatDuration, formatDurationMs, barForPercent } from '../lib/utils.js';
+  import { formatCompact, formatDuration, formatDurationMs } from '../lib/utils.js';
 
   let {
     sessionId,
@@ -100,7 +100,7 @@
       case 'agent_stop':
         return 'agent stop';
       case 'notification':
-        return String(evt.data.message ?? 'notification');
+        return String(evt.data.notificationType ?? evt.data.message ?? 'notification');
       case 'rate_limit':
         return 'rate limit hit';
       default:

@@ -102,9 +102,7 @@ export interface AnalyticsEvent {
 
 export function initAnalytics(configDir: string): void {
   if (db) {
-    db.close();
-    db = null;
-    insertStmt = null;
+    closeAnalytics();
   }
   const dbPath = path.join(configDir, 'analytics.db');
   db = new Database(dbPath);
@@ -628,22 +626,26 @@ export function recoverOrphanedSessions(): number {
   const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
   const orphans = db.prepare(`
-    SELECT session_id FROM session_rollups
+    SELECT session_id, started_at FROM session_rollups
     WHERE ended_at IS NULL AND datetime(updated_at) < datetime(?)
-  `).all(staleThreshold) as Array<{ session_id: string }>;
+  `).all(staleThreshold) as Array<{ session_id: string; started_at: string }>;
 
-  for (const { session_id } of orphans) {
+  for (const { session_id, started_at } of orphans) {
     const lastEvent = db.prepare(
       'SELECT timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1'
     ).get(session_id) as { timestamp: string } | undefined;
 
     const endedAt = lastEvent?.timestamp ?? new Date().toISOString();
+    const durationSeconds = started_at
+      ? Math.round((new Date(endedAt).getTime() - new Date(started_at).getTime()) / 1000)
+      : undefined;
     const metrics = computeEngagementMetrics(session_id);
 
     if (metrics) {
       upsertSessionRollup({
         sessionId: session_id,
         endedAt,
+        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
         recovered: true,
         ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
         ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
@@ -656,6 +658,7 @@ export function recoverOrphanedSessions(): number {
       upsertSessionRollup({
         sessionId: session_id,
         endedAt,
+        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
         recovered: true,
       });
     }
@@ -697,9 +700,9 @@ export function createSessionAnalyticsRouter(): Router {
       totalTokensIn += r.total_input_tokens as number;
       totalTokensOut += r.total_output_tokens as number;
       totalCacheRead += r.total_cache_read as number;
-      if (r.duration_seconds) { totalDuration += r.duration_seconds as number; durationCount++; }
-      if (r.human_response_latency_avg_ms) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
-      if (r.agent_idle_percent !== null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
+      if (r.duration_seconds != null) { totalDuration += r.duration_seconds as number; durationCount++; }
+      if (r.human_response_latency_avg_ms != null) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
+      if (r.agent_idle_percent != null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
       totalRateLimits += r.rate_limit_encounters as number;
 
       const rp = (r.repo_path as string) ?? 'unknown';
@@ -742,8 +745,8 @@ export function createSessionAnalyticsRouter(): Router {
   router.get('/sessions', (_req: Request, res: Response) => {
     if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
 
-    const offset = parseInt(_req.query.offset as string) || 0;
-    const limit = Math.min(parseInt(_req.query.limit as string) || 20, 100);
+    const offset = Math.max(parseInt(_req.query.offset as string) || 0, 0);
+    const limit = Math.min(Math.max(parseInt(_req.query.limit as string) || 20, 1), 100);
     const repoFilter = _req.query.repo as string | undefined;
     const agentFilter = _req.query.agent as string | undefined;
     const sort = (_req.query.sort as string) || 'started_at';
@@ -904,7 +907,7 @@ export function createSessionAnalyticsRouter(): Router {
       if (!r.event_data) continue;
       try {
         const data = JSON.parse(r.event_data) as Record<string, unknown>;
-        const tool = (data.tool as string) ?? 'unknown';
+        const tool = typeof data.tool === 'string' ? data.tool : 'unknown';
         counts.set(tool, (counts.get(tool) ?? 0) + 1);
         totalUses++;
       } catch { /* ignore */ }
