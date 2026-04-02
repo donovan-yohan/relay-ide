@@ -326,3 +326,114 @@ export interface FileDiffResponse {
 }
 
 export type DiffSource = 'working' | 'staged' | 'branch';
+
+// ── Session Analytics ──
+
+export interface AnalyticsOverview {
+  timeWindow: { start: string; end: string };
+  totalSessions: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalCacheRead: number;
+  avgSessionDuration: number;
+  avgHumanResponseLatency: number;
+  avgAgentIdlePercent: number;
+  totalRateLimitEncounters: number;
+  byRepo: Array<{
+    repoName: string;
+    sessions: number;
+    tokensIn: number;
+    tokensOut: number;
+    pctOfTotal: number;
+  }>;
+}
+
+export interface AnalyticsSessionSummary {
+  sessionId: string;
+  repoName: string | null;
+  repoPath: string | null;
+  agentType: string | null;
+  model: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  turnCount: number;
+  humanResponseLatencyAvg: number | null;
+  agentIdlePercent: number | null;
+  rateLimitEncounters: number;
+  topTools: string[];
+  recovered: boolean;
+}
+
+export interface AnalyticsSessionsResponse {
+  sessions: AnalyticsSessionSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface AnalyticsSessionDetail {
+  session: {
+    sessionId: string;
+    repoPath: string | null;
+    repoName: string | null;
+    agentType: string | null;
+    model: string | null;
+    startedAt: string;
+    endedAt: string | null;
+    durationSeconds: number | null;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCacheRead: number;
+    totalCacheWrite: number;
+    turnCount: number;
+    subagentCount: number;
+    humanResponseLatencyAvgMs: number | null;
+    humanResponseLatencyP50Ms: number | null;
+    humanResponseLatencyP95Ms: number | null;
+    agentIdlePercent: number | null;
+    rateLimitEncounters: number;
+    toolUseCounts: Record<string, number> | null;
+    recovered: boolean;
+  };
+  toolBreakdown: Record<string, { count: number }>;
+  events: Array<{
+    type: string;
+    timestamp: string;
+    data: Record<string, unknown>;
+  }>;
+  engagementBreakdown: {
+    agentActiveTime: number;
+    waitingForHumanTime: number;
+    rateLimitTime: number;
+    otherTime: number;
+  };
+}
+
+export interface AnalyticsTrend {
+  date: string;
+  sessions: number;
+  tokensIn: number;
+  tokensOut: number;
+  avgHumanLatency: number;
+  avgAgentIdle: number;
+  rateLimitEncounters: number;
+}
+
+export interface AnalyticsToolBreakdown {
+  tools: Array<{
+    name: string;
+    totalUses: number;
+    pctOfUses: number;
+  }>;
+}
+
+export interface AnalyticsRateLimitHistory {
+  snapshots: Array<{
+    timestamp: string;
+    fiveHourPercent: number;
+    sevenDayPercent: number;
+  }>;
+}

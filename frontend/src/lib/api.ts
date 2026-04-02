@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, SessionTelemetry, AccountTelemetry } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, SessionTelemetry, AccountTelemetry, AnalyticsOverview, AnalyticsSessionsResponse, AnalyticsSessionDetail, AnalyticsTrend, AnalyticsToolBreakdown, AnalyticsRateLimitHistory } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -701,4 +701,45 @@ export async function fetchDefaultBranch(repoPath: string): Promise<string> {
   } catch {
     return 'main';
   }
+}
+
+// ── Session Analytics API ──
+
+export async function fetchAnalyticsOverview(days = 7, repo?: string): Promise<AnalyticsOverview> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  return json<AnalyticsOverview>(await fetch(`/api/analytics/overview?${params}`));
+}
+
+export async function fetchAnalyticsSessions(opts?: {
+  offset?: number; limit?: number; repo?: string; agent?: string; sort?: string;
+}): Promise<AnalyticsSessionsResponse> {
+  const params = new URLSearchParams();
+  if (opts?.offset) params.set('offset', String(opts.offset));
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.repo) params.set('repo', opts.repo);
+  if (opts?.agent) params.set('agent', opts.agent);
+  if (opts?.sort) params.set('sort', opts.sort);
+  return json<AnalyticsSessionsResponse>(await fetch(`/api/analytics/sessions?${params}`));
+}
+
+export async function fetchAnalyticsSessionDetail(id: string): Promise<AnalyticsSessionDetail> {
+  return json<AnalyticsSessionDetail>(await fetch(`/api/analytics/sessions/${encodeURIComponent(id)}`));
+}
+
+export async function fetchAnalyticsTrends(days = 30, repo?: string): Promise<{ days: AnalyticsTrend[] }> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  return json<{ days: AnalyticsTrend[] }>(await fetch(`/api/analytics/trends?${params}`));
+}
+
+export async function fetchAnalyticsTools(days = 7, repo?: string, session?: string): Promise<AnalyticsToolBreakdown> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  if (session) params.set('session', session);
+  return json<AnalyticsToolBreakdown>(await fetch(`/api/analytics/tools?${params}`));
+}
+
+export async function fetchAnalyticsRateLimits(hours = 24): Promise<AnalyticsRateLimitHistory> {
+  return json<AnalyticsRateLimitHistory>(await fetch(`/api/analytics/rate-limits?hours=${hours}`));
 }
