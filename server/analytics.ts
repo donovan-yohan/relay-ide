@@ -107,17 +107,21 @@ export function initAnalytics(configDir: string): void {
   const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
   let currentVersion = row?.version ?? 0;
 
+  const hadRow = row !== undefined;
+
   for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
-      db.exec(migration.sql);
-      currentVersion = migration.version;
+      const ver = migration.version;
+      db.transaction(() => {
+        db!.exec(migration.sql);
+        if (hadRow || currentVersion > 0) {
+          db!.prepare('UPDATE schema_version SET version = ?').run(ver);
+        } else {
+          db!.prepare('INSERT INTO schema_version (version) VALUES (?)').run(ver);
+        }
+      })();
+      currentVersion = ver;
     }
-  }
-
-  if (row) {
-    db.prepare('UPDATE schema_version SET version = ?').run(currentVersion);
-  } else {
-    db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(currentVersion);
   }
 
   insertStmt = db.prepare(INSERT_SQL);
