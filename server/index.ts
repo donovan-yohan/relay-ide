@@ -53,7 +53,7 @@ const CONFIG_PATH = process.env.CLAUDE_REMOTE_CONFIG || path.join(__dirname, '..
 const DEFAULT_GITHUB_CLIENT_ID = 'Ov23lilheF3LelYSo0bu';
 
 const VERSION_CACHE_TTL = 5 * 60 * 1000;
-let versionCache: { latest: string; fetchedAt: number } | null = null;
+const versionCache: Map<string, { latest: string; fetchedAt: number }> = new Map();
 
 function getCurrentVersion(): string {
   const pkgPath = path.join(__dirname, '..', '..', 'package.json');
@@ -64,8 +64,9 @@ function getCurrentVersion(): string {
 
 async function getLatestVersion(channel: 'stable' | 'nightly' = 'stable'): Promise<string | null> {
   const now = Date.now();
-  if (versionCache && now - versionCache.fetchedAt < VERSION_CACHE_TTL) {
-    return versionCache.latest;
+  const cached = versionCache.get(channel);
+  if (cached && now - cached.fetchedAt < VERSION_CACHE_TTL) {
+    return cached.latest;
   }
   try {
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
@@ -73,7 +74,7 @@ async function getLatestVersion(channel: 'stable' | 'nightly' = 'stable'): Promi
     if (!res.ok) return null;
     const data = await res.json() as { version?: string };
     if (!data.version) return null;
-    versionCache = { latest: data.version, fetchedAt: now };
+    versionCache.set(channel, { latest: data.version, fetchedAt: now });
     return data.version;
   } catch (_) {
     return null;
@@ -1449,6 +1450,7 @@ async function main(): Promise<void> {
     }
     startupConfig.updateChannel = channel;
     saveConfig(CONFIG_PATH, startupConfig);
+    versionCache.clear();
     res.json({ channel });
   });
 
