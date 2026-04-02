@@ -54,3 +54,35 @@ export function estimateTerminalDimensions(): { cols: number; rows: number } {
   const fontSize = isMobileDevice ? 12 : getUi().terminalFontSize;
   return scaledTerminalDimensions(window.innerWidth, window.innerHeight, fontSize);
 }
+
+export function formatCompact(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '---';
+  const abs = Math.abs(value);
+  if (abs < 1000) return String(Math.round(value));
+  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}B`;
+}
+
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '---';
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM > 0 ? `${h}h ${remM}m` : `${h}h`;
+}
+
+export function formatDurationMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return '---';
+  return formatDuration(ms / 1000);
+}
+
+export function barForPercent(pct: number, width: number): string {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const filled = Math.round((clamped / 100) * width);
+  return '\u2588'.repeat(filled) + '\u2591'.repeat(width - filled);
+}

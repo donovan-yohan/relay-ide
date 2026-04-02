@@ -159,11 +159,19 @@ export function flushEventBuffer(sessionId?: string): void {
   ensureSessionStmts();
   if (!insertSessionEventStmt) return;
 
-  const toFlush = sessionId
-    ? eventBuffer.filter(e => e.session_id === sessionId)
-    : [...eventBuffer];
-
-  if (toFlush.length === 0) return;
+  let toFlush: SessionEvent[];
+  if (sessionId) {
+    toFlush = [];
+    const remaining: SessionEvent[] = [];
+    for (const e of eventBuffer) {
+      (e.session_id === sessionId ? toFlush : remaining).push(e);
+    }
+    if (toFlush.length === 0) return;
+    eventBuffer = remaining;
+  } else {
+    toFlush = eventBuffer;
+    eventBuffer = [];
+  }
 
   const stmt = insertSessionEventStmt;
   const insertMany = db.transaction((events: SessionEvent[]) => {
@@ -182,12 +190,6 @@ export function flushEventBuffer(sessionId?: string): void {
     insertMany(toFlush);
   } catch (err) {
     console.warn('[analytics] Failed to flush event buffer:', err);
-  }
-
-  if (sessionId) {
-    eventBuffer = eventBuffer.filter(e => e.session_id !== sessionId);
-  } else {
-    eventBuffer = [];
   }
 }
 
@@ -586,8 +588,6 @@ export function runRetentionCleanup(retentionDays = 90): void {
   if (!db) return;
 
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-
-  // Delete old session events
   db.prepare('DELETE FROM session_events WHERE timestamp < ?').run(cutoff);
 
   // Downsample rate_limit_snapshots: after 7 days keep hourly, after 30 days keep daily
@@ -710,7 +710,7 @@ export function createSessionAnalyticsRouter(): Router {
         existing.tokensOut += r.total_output_tokens as number;
       } else {
         byRepo.set(rp, {
-          repoName: (r.repo_name as string) ?? rp.split('/').pop() ?? rp,
+          repoName: (r.repo_name as string) ?? (path.basename(rp) || rp),
           sessions: 1,
           tokensIn: r.total_input_tokens as number,
           tokensOut: r.total_output_tokens as number,
@@ -797,7 +797,8 @@ export function createSessionAnalyticsRouter(): Router {
   router.get('/sessions/:id', (req: Request, res: Response) => {
     if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
 
-    const sessionId = req.params['id'] ?? '';
+    const sessionId = req.params['id'];
+    if (!sessionId) { res.status(400).json({ error: 'Missing session ID' }); return; }
     const rollup = getSessionRollup(sessionId);
     if (!rollup) { res.status(404).json({ error: 'Session not found' }); return; }
 
@@ -806,17 +807,12 @@ export function createSessionAnalyticsRouter(): Router {
     ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
 
     const toolBreakdown: Record<string, { count: number }> = {};
-    for (const e of events) {
-      if (e.event_type === 'tool_use' && e.event_data) {
-        try {
-          const data = JSON.parse(e.event_data) as Record<string, unknown>;
-          const tool = (data.tool as string) ?? 'unknown';
-          toolBreakdown[tool] = { count: (toolBreakdown[tool]?.count ?? 0) + 1 };
-        } catch { /* ignore */ }
+    if (rollup.toolUseCounts) {
+      for (const [tool, count] of Object.entries(rollup.toolUseCounts)) {
+        toolBreakdown[tool] = { count };
       }
     }
 
-    // Compute time breakdown from events
     let agentActiveTime = 0, waitingForHumanTime = 0, rateLimitTime = 0;
     if (events.length >= 2) {
       const firstTs = new Date(events[0]!.timestamp).getTime();

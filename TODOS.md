@@ -252,6 +252,13 @@ Find out what "multi-repo mode" and "proactive mode" mean in gstack — how do t
 
 **Action:** Read gstack docs/source, try them out, write a summary of what's useful.
 
+### Investigate Codex engagement metrics — hook support or parser-based proxy
+Codex sessions get no hook callbacks (hooks only injected for `agent === 'claude'`). The Codex output parser (`codex-parser.ts`) may be a stub. To show engagement metrics (human response latency, agent idle %) for Codex sessions, need to either: (a) verify if Codex CLI supports HTTP hooks similar to Claude Code, or (b) use parser state transitions (idle/processing timestamps) as engagement event proxies.
+
+**Action:** Check Codex CLI docs/source for hook or callback support. If hooks exist, extend `writeHooksSettingsFile` for Codex. If not, extend `codex-parser.ts` to emit timestamped state events that the analytics module can consume. **Files:** `server/pty-handler.ts`, `server/output-parsers/codex-parser.ts`.
+
+**Added:** 2026-04-01
+
 ### Research Claude HUD plugin — expose session info in our UI
 The [Claude HUD](https://github.com/) plugin surfaces real-time Claude Code session internals as a status line: model type, context window usage (color-coded meter), tool activity (files read/edited/searched), subagent status (type, task, runtime), and todo progress. Research how it hooks into the engine and evaluate exposing similar data in our web UI.
 
