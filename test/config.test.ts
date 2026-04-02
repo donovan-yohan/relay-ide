@@ -330,14 +330,15 @@ test('workspaceGroups with all-invalid paths removes empty group', () => {
 
 // ── Config v4 migration ──
 
-test('migrateToV4: sets configVersion to 4', () => {
+test('migrateToV4: sets configVersion (migrates to latest)', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ repos: ['/a'] }), 'utf8');
   const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 4);
+  // v4 migration runs first, then v5 — final version is 5
+  assert.ok(config.configVersion != null && config.configVersion >= 4);
 });
 
-test('migrateToV4: already v4 config is unchanged', () => {
+test('migrateToV4: v4 config upgrades to v5 preserving data', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const v4Config = {
     configVersion: 4,
@@ -347,7 +348,8 @@ test('migrateToV4: already v4 config is unchanged', () => {
   };
   fs.writeFileSync(configPath, JSON.stringify(v4Config), 'utf8');
   const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 4);
+  // v4 data is preserved after v5 migration
+  assert.equal(config.configVersion, 5);
   assert.deepEqual(config.repos, ['/a', '/b']);
   assert.ok(config.repoSettings?.['/a']?.defaultYolo);
   assert.equal((config.workspaces as any[])?.length, 1);
@@ -360,7 +362,7 @@ test('migrateToV4: reconciles legacy workspaces string[] into repos', () => {
     workspaces: ['/old/repo1', '/old/repo2'],
   }), 'utf8');
   const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 4);
+  assert.ok(config.configVersion != null && config.configVersion >= 4);
   assert.ok(config.repos.includes('/old/repo1'));
   assert.ok(config.repos.includes('/old/repo2'));
 });
@@ -561,11 +563,11 @@ test('resolveSessionSettings with unknown workspaceId falls through to global', 
   assert.equal(result.agent, 'claude');
 });
 
-test('migrateToV4: empty config gets configVersion 4', () => {
+test('migrateToV4: empty config gets migrated to latest version', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
   const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 4);
+  assert.ok(config.configVersion != null && config.configVersion >= 4);
 });
 
 test('migrateToV4: persists migrated config to disk', () => {
@@ -577,7 +579,8 @@ test('migrateToV4: persists migrated config to disk', () => {
   }), 'utf8');
   loadConfig(configPath);
   const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  assert.equal(raw.configVersion, 4);
+  // After v4+v5 migrations, configVersion is at least 4
+  assert.ok(raw.configVersion != null && raw.configVersion >= 4);
   assert.ok(raw.repoSettings);
   assert.equal(raw.workspaceSettings, undefined);
   assert.equal(raw.workspaceGroups, undefined);
@@ -660,4 +663,176 @@ test('repo settings override workspace settings', () => {
 
   const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
   assert.strictEqual(result.yolo, false, 'repo settings should override workspace');
+});
+
+// ── Config v5 migration ──
+
+test('migrateToV5: sets configVersion to 5', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ configVersion: 4, repos: ['/a'] }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 5);
+});
+
+test('migrateToV5: maps defaultAgent to defaultFramework', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'codex',
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.defaultFramework, 'codex');
+});
+
+test('migrateToV5: maps claudeCommand to frameworks.claude.commandOverride when non-default', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    claudeCommand: '/usr/local/bin/claude',
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.frameworks?.['claude']?.commandOverride, '/usr/local/bin/claude');
+});
+
+test('migrateToV5: does NOT set frameworks.claude.commandOverride when claudeCommand is default', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    claudeCommand: 'claude',
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.frameworks?.['claude']?.commandOverride, undefined);
+});
+
+test('migrateToV5: maps claudeArgs to frameworks.claude.extraArgs when non-empty', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    claudeArgs: ['--verbose', '--no-update-check'],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.deepEqual(config.frameworks?.['claude']?.extraArgs, ['--verbose', '--no-update-check']);
+});
+
+test('migrateToV5: does NOT set frameworks.claude.extraArgs when claudeArgs is empty', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    claudeArgs: [],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.frameworks?.['claude']?.extraArgs, undefined);
+});
+
+test('migrateToV5: preserves existing v5 config (no double-migration)', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 5,
+    defaultFramework: 'opencode',
+    defaultAgent: 'claude',   // should NOT overwrite defaultFramework
+    frameworks: { claude: { commandOverride: '/existing/path' } },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 5);
+  assert.equal(config.defaultFramework, 'opencode');
+  assert.equal(config.frameworks?.['claude']?.commandOverride, '/existing/path');
+});
+
+test('migrateToV5: migrates repoSettings defaultAgent to defaultFramework', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    repos: ['/my/repo'],
+    repoSettings: {
+      '/my/repo': { defaultAgent: 'codex', defaultYolo: true },
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.repoSettings?.['/my/repo']?.defaultFramework, 'codex');
+  // defaultAgent remains for backward-compat
+  assert.equal(config.repoSettings?.['/my/repo']?.defaultYolo, true);
+});
+
+test('migrateToV5: persists migrated config to disk', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    defaultAgent: 'claude',
+    claudeCommand: '/custom/claude',
+    claudeArgs: ['--arg1'],
+    repos: ['/a'],
+    repoSettings: { '/a': { defaultAgent: 'codex' } },
+  }), 'utf8');
+  loadConfig(configPath);
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(raw.configVersion, 5);
+  assert.equal(raw.defaultFramework, 'claude');
+  assert.equal(raw.frameworks?.claude?.commandOverride, '/custom/claude');
+  assert.deepEqual(raw.frameworks?.claude?.extraArgs, ['--arg1']);
+  assert.equal(raw.repoSettings?.['/a']?.defaultFramework, 'codex');
+});
+
+test('loadConfig applies v5 migration after v4 migration', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  // Simulate an old v3-ish config with legacy fields that needs both migrations
+  fs.writeFileSync(configPath, JSON.stringify({
+    repos: ['/a'],
+    workspaces: ['/a'],       // triggers v4 migration
+    defaultAgent: 'codex',    // triggers v5 migration
+    claudeCommand: '/alt/claude',
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.configVersion, 5);
+  assert.equal(config.defaultFramework, 'codex');
+  assert.equal(config.frameworks?.['claude']?.commandOverride, '/alt/claude');
+});
+
+test('migrateToV5: migrates workspace-level settings defaultAgent to defaultFramework', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 4,
+    repos: ['/my/repo'],
+    workspaces: [{ id: 'ws1', name: 'Test', repos: ['/my/repo'], order: 0, settings: { defaultAgent: 'codex' } }],
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  assert.equal(config.workspaces?.[0]?.settings?.defaultFramework, 'codex');
+});
+
+test('resolveSessionSettings uses defaultFramework over defaultAgent', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 5,
+    defaultFramework: 'opencode',
+    defaultAgent: 'claude',   // should be overridden by defaultFramework
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/some/repo', {});
+  assert.equal(result.agent, 'opencode');
+});
+
+test('resolveSessionSettings falls back to defaultAgent when defaultFramework absent', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 5,
+    defaultAgent: 'codex',
+    // no defaultFramework
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/some/repo', {});
+  assert.equal(result.agent, 'codex');
+});
+
+test('resolveSessionSettings: repoSettings defaultFramework overrides global', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    configVersion: 5,
+    defaultFramework: 'claude',
+    repos: ['/my/repo'],
+    repoSettings: {
+      '/my/repo': { defaultFramework: 'opencode' },
+    },
+  }), 'utf8');
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(config, '/my/repo', {});
+  assert.equal(result.agent, 'opencode');
 });

@@ -260,6 +260,8 @@ export interface WorktreeMetadata {
 export interface WorkspaceSettings {
   // Session defaults
   defaultAgent?: AgentType;
+  defaultFramework?: string;                      // replaces defaultAgent (v5+)
+  frameworkOverrides?: Partial<AgentFramework>;   // per-repo framework customization
   defaultContinue?: boolean;
   defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
@@ -304,7 +306,10 @@ export interface Config {
   repos: string[];
   claudeCommand: string;
   claudeArgs: string[];
+  /** @deprecated Use defaultFramework instead (v5+) */
   defaultAgent: AgentType;
+  defaultFramework: string;                             // replaces defaultAgent (v5+), defaults to 'claude'
+  frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
   defaultContinue: boolean;
   defaultYolo: boolean;
   launchInTmux: boolean;
@@ -525,6 +530,7 @@ export interface WorkspaceTemplate {
 
 export interface WorkspaceLevelSettings {
   defaultAgent?: AgentType;
+  defaultFramework?: string;  // replaces defaultAgent (v5+)
   defaultContinue?: boolean;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
