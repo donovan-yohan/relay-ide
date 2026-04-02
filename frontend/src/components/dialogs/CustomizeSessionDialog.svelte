@@ -22,6 +22,13 @@
       capabilities: { supportsContinue: false, supportsYolo: false, supportsHooks: false, supportsTelemetry: false },
       eventSource: 'parser',
     },
+    {
+      id: 'opencode',
+      displayName: 'OpenCode',
+      command: 'opencode',
+      capabilities: { supportsContinue: true, supportsYolo: true, supportsHooks: false, supportsTelemetry: true },
+      eventSource: 'plugin',
+    },
   ];
 
   let {
