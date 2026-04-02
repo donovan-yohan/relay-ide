@@ -1,4 +1,4 @@
-import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, SessionTelemetry, AccountTelemetry, AnalyticsOverview, AnalyticsSessionsResponse, AnalyticsSessionDetail, AnalyticsTrend, AnalyticsToolBreakdown, AnalyticsRateLimitHistory } from './types.js';
+import type { SessionSummary, WorktreeInfo, Repo, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo, Workspace, ChangedFilesResponse, FileDiffResponse, SessionTelemetry, AccountTelemetry, AnalyticsOverview, AnalyticsSessionsResponse, AnalyticsSessionDetail, AnalyticsTrend, AnalyticsToolBreakdown, AnalyticsRateLimitHistory, FrameworkInfo } from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -742,4 +742,9 @@ export async function fetchAnalyticsTools(days = 7, repo?: string, session?: str
 
 export async function fetchAnalyticsRateLimits(hours = 24): Promise<AnalyticsRateLimitHistory> {
   return json<AnalyticsRateLimitHistory>(await fetch(`/api/analytics/rate-limits?hours=${hours}`));
+}
+
+export async function fetchFrameworks(): Promise<FrameworkInfo[]> {
+  const data = await json<{ frameworks: FrameworkInfo[] }>(await fetch('/api/frameworks'));
+  return data.frameworks;
 }

@@ -123,6 +123,9 @@
           {#if gitStatus.deletions}<span class="diff-del">-{gitStatus.deletions}</span>{/if}
         </span>
       {/if}
+      {#if variant.kind === 'active' && variant.session.dataQuality}
+        <span class="data-quality-badge data-quality-badge--{variant.session.dataQuality}">[{variant.session.dataQuality}]</span>
+      {/if}
     </div>
   </div>
   {#if menuItems.length > 0}
@@ -272,6 +275,25 @@
 
   .diff-add { color: #4ade80; }
   .diff-del { color: #f87171; }
+
+  .data-quality-badge {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+  }
+
+  .data-quality-badge--hooks,
+  .data-quality-badge--plugin {
+    color: #4ade80;
+  }
+
+  .data-quality-badge--parser {
+    color: #fbbf24;
+  }
+
+  .data-quality-badge--timer {
+    color: #888888;
+  }
 
   /* Context menu trigger styling when selected */
   li.active-session.selected :global(.context-menu-trigger) {

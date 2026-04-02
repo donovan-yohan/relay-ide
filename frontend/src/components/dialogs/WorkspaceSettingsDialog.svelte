@@ -23,7 +23,7 @@
   let defaultBranch = $state('');
   let remote = $state('');
   let branchPrefix = $state('');
-  let defaultAgent = $state<'claude' | 'codex'>('claude');
+  let defaultAgent = $state<string>('claude');
   let defaultContinue = $state(false);
   let defaultYolo = $state(false);
   let launchInTmux = $state(false);

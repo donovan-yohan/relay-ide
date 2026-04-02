@@ -1,11 +1,28 @@
 <script lang="ts">
-  import { createSession, fetchMergedWorkspaceSettings } from '../../lib/api.js';
+  import { createSession, fetchMergedWorkspaceSettings, fetchFrameworks } from '../../lib/api.js';
   import { estimateTerminalDimensions } from '../../lib/utils.js';
   import { refreshAll } from '../../lib/state/sessions.svelte.js';
-  import type { AgentType, Repo } from '../../lib/types.js';
+  import type { Repo, FrameworkInfo } from '../../lib/types.js';
   import DialogShell from './DialogShell.svelte';
   import TuiButton from '../TuiButton.svelte';
   import TuiCheckbox from '../TuiCheckbox.svelte';
+
+  const DEFAULT_FRAMEWORKS: FrameworkInfo[] = [
+    {
+      id: 'claude',
+      displayName: 'Claude',
+      command: 'claude',
+      capabilities: { supportsContinue: true, supportsYolo: true, supportsHooks: true, supportsTelemetry: true },
+      eventSource: 'hooks',
+    },
+    {
+      id: 'codex',
+      displayName: 'Codex',
+      command: 'codex',
+      capabilities: { supportsContinue: false, supportsYolo: false, supportsHooks: false, supportsTelemetry: false },
+      eventSource: 'parser',
+    },
+  ];
 
   let {
     onSessionCreated,
@@ -22,11 +39,14 @@
 
   // Form state
   let claudeArgsInput = $state('');
-  let selectedAgent = $state<AgentType>('claude');
+  let selectedAgent = $state<string>('claude');
+  let frameworks = $state<FrameworkInfo[]>([]);
   let yoloMode = $state(false);
   let continueExisting = $state(false);
   let useTmux = $state(false);
   let creating = $state(false);
+
+  let selectedFramework = $derived(frameworks.find(f => f.id === selectedAgent));
 
   function reset() {
     claudeArgsInput = '';
@@ -41,8 +61,12 @@
     worktreePath = activeWorktreePath ?? null;
     workspaceName = workspace.name;
 
-    const merged = await fetchMergedWorkspaceSettings(repoPath).catch(() => null);
-    selectedAgent = (merged?.settings.defaultAgent ?? 'claude') as AgentType;
+    const [merged, fetched] = await Promise.all([
+      fetchMergedWorkspaceSettings(repoPath).catch(() => null),
+      fetchFrameworks().catch(() => [] as FrameworkInfo[]),
+    ]);
+    frameworks = fetched.length > 0 ? fetched : DEFAULT_FRAMEWORKS;
+    selectedAgent = merged?.settings.defaultAgent ?? 'claude';
     yoloMode = merged?.settings.defaultYolo ?? false;
     continueExisting = merged?.settings.defaultContinue ?? false;
     useTmux = merged?.settings.launchInTmux ?? false;
@@ -127,16 +151,21 @@
         data-track="dialog.customize-session.agent"
         bind:value={selectedAgent}
       >
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
+        {#each frameworks as fw}
+          <option value={fw.id}>{fw.displayName}</option>
+        {/each}
       </select>
     </div>
 
     <!-- Continue existing -->
-    <TuiCheckbox bind:checked={continueExisting}>Continue existing session</TuiCheckbox>
+    <TuiCheckbox bind:checked={continueExisting} disabled={!selectedFramework?.capabilities.supportsContinue}>
+      Continue existing session{#if !selectedFramework?.capabilities.supportsContinue} <span class="capability-hint">(not supported by {selectedFramework?.displayName ?? selectedAgent})</span>{/if}
+    </TuiCheckbox>
 
     <!-- Yolo mode -->
-    <TuiCheckbox bind:checked={yoloMode}>Yolo mode (skip permission checks)</TuiCheckbox>
+    <TuiCheckbox bind:checked={yoloMode} disabled={!selectedFramework?.capabilities.supportsYolo}>
+      Yolo mode (skip permission checks){#if !selectedFramework?.capabilities.supportsYolo} <span class="capability-hint">(not supported by {selectedFramework?.displayName ?? selectedAgent})</span>{/if}
+    </TuiCheckbox>
 
     <!-- Launch in tmux -->
     <TuiCheckbox bind:checked={useTmux}>Launch in tmux</TuiCheckbox>
@@ -214,5 +243,12 @@
   .dialog-select:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .capability-hint {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    opacity: 0.7;
+    font-family: var(--font-mono);
   }
 </style>
