@@ -90,6 +90,58 @@ describe('GET /workspaces/file-diff', () => {
     const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}`);
     assert.equal(res.status, 400);
   });
+
+  test('rejects absolute paths that did not start with ~', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=/etc/passwd`);
+    assert.equal(res.status, 400);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'invalid file path');
+  });
+
+  test('rejects .. traversal in relative paths', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=../../etc/passwd`);
+    assert.equal(res.status, 400);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'invalid file path');
+  });
+
+  test('reads ~/file paths directly via fs', async () => {
+    const testFile = path.join(os.homedir(), '.claude-remote-cli-test-tilde');
+    fs.writeFileSync(testFile, 'tilde-test-content', 'utf-8');
+    try {
+      const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-tilde`);
+      assert.equal(res.status, 200);
+      const data = await res.json() as any;
+      assert.equal(data.diff, 'tilde-test-content');
+    } finally {
+      fs.unlinkSync(testFile);
+    }
+  });
+
+  test('rejects ~/../../ etc traversal attempts', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/../../etc/passwd`);
+    assert.equal(res.status, 400);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'invalid file path');
+  });
+
+  test('returns 404 for non-existent ~/file', async () => {
+    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-nonexistent-file`);
+    assert.equal(res.status, 404);
+  });
+
+  test('returns 400 for directory ~/path', async () => {
+    const testDir = path.join(os.homedir(), '.claude-remote-cli-test-dir');
+    fs.mkdirSync(testDir, { recursive: true });
+    try {
+      const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-dir`);
+      assert.equal(res.status, 400);
+      const data = await res.json() as any;
+      assert.equal(data.error, 'not a regular file');
+    } finally {
+      fs.rmdirSync(testDir);
+    }
+  });
 });
 
 describe('GET /workspaces/default-branch', () => {
