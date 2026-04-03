@@ -56,6 +56,15 @@ jobs:
           find dist/frontend -name '*.js' 2>/dev/null || echo "WARNING: dist/frontend does not exist"
           echo "::endgroup::"
 
+      - name: Debug module resolution
+        run: |
+          echo "pwd: $(pwd)"
+          ls -la dist/frontend/src/lib/session-intent.js
+          head -3 dist/frontend/src/lib/session-intent.js
+          head -3 dist/test/session-intent.test.js
+          node -e "import('../dist/frontend/src/lib/session-intent.js').then(() => console.log('direct import OK')).catch(e => console.error('direct import FAIL:', e.code))"
+          cd dist/test && node -e "import('../frontend/src/lib/session-intent.js').then(() => console.log('relative import OK')).catch(e => console.error('relative import FAIL:', e.code))" && cd ../..
+
       - name: Run tests
         run: node --test --test-force-exit $(find dist/test -name '*.test.js')
 
