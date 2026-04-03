@@ -1,28 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { derivePrDotStatus, prGlyph } from '../frontend/src/lib/pr-status.js';
 import type { PrDotStatus } from '../frontend/src/lib/pr-status.js';
-import type { PullRequest } from '../frontend/src/lib/types.js';
-
-function makePr(overrides: Partial<PullRequest>): PullRequest {
-  return {
-    number: 1,
-    title: 'Test',
-    url: '',
-    headRefName: '',
-    baseRefName: '',
-    state: 'OPEN',
-    author: 'user',
-    role: 'author',
-    updatedAt: '',
-    additions: 0,
-    deletions: 0,
-    reviewDecision: null,
-    mergeable: null,
-    isDraft: false,
-    ciStatus: null,
-    ...overrides,
-  };
-}
+import { makePr } from './helpers/frontend-factories.js';
 
 describe('derivePrDotStatus', () => {
   it('returns merged for MERGED state', () => {
@@ -95,7 +74,7 @@ describe('prGlyph', () => {
     ];
     const chars = statuses.map((s) => prGlyph(s).char);
     for (const c of chars) {
-      expect(c.length > 0).toBeTruthy();
+      expect(c.length).toBeGreaterThan(0);
     }
     // Ensure each status maps to a distinct glyph character
     expect(new Set(chars).size).toBe(statuses.length);

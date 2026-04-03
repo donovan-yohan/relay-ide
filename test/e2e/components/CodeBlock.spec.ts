@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,95 +16,62 @@ describe('CodeBlock', () => {
   const cssPath = join(projectRoot, 'frontend/src/components/CodeBlock.css');
 
   it('CodeBlock.tsx file exists', () => {
-    assert.ok(existsSync(componentPath), 'CodeBlock.tsx should exist');
+    expect(existsSync(componentPath)).toBeTruthy();
   });
 
   it('CodeBlock.css file exists', () => {
-    assert.ok(existsSync(cssPath), 'CodeBlock.css should exist');
+    expect(existsSync(cssPath)).toBeTruthy();
   });
 
   it('exports CodeBlock component', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(
-      content.includes('export function CodeBlock'),
-      'Should export CodeBlock function'
-    );
-    assert.ok(
-      content.includes('export default CodeBlock'),
-      'Should have default export'
-    );
+    expect(content).toContain('export function CodeBlock');
+    expect(content).toContain('export default CodeBlock');
   });
 
   it('exports CodeBlockProps interface', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(
-      content.includes('interface CodeBlockProps'),
-      'Should define CodeBlockProps interface'
-    );
+    expect(content).toContain('interface CodeBlockProps');
   });
 
   it('has required props', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(content.includes('code: string'), 'Should have code prop');
-    assert.ok(
-      content.includes('language?:'),
-      'Should have optional language prop'
-    );
-    assert.ok(
-      content.includes('showLineNumbers?:'),
-      'Should have optional showLineNumbers prop'
-    );
-    assert.ok(
-      content.includes('startLine?:'),
-      'Should have optional startLine prop'
-    );
+    expect(content).toContain('code: string');
+    expect(content).toContain('language?:');
+    expect(content).toContain('showLineNumbers?:');
+    expect(content).toContain('startLine?:');
   });
 
   it('imports tokenizeCode from shiki', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(
-      content.includes("from '../lib/shiki.js'"),
-      'Should import from shiki.js'
-    );
-    assert.ok(content.includes('tokenizeCode'), 'Should import tokenizeCode');
+    expect(content).toContain("from '../lib/shiki.js'");
+    expect(content).toContain('tokenizeCode');
   });
 
   it('imports CSS', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(
-      content.includes("import './CodeBlock.css'"),
-      'Should import CodeBlock.css'
-    );
+    expect(content).toContain("import './CodeBlock.css'");
   });
 
   it('uses React hooks', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    assert.ok(content.includes('useState'), 'Should use useState');
-    assert.ok(content.includes('useEffect'), 'Should use useEffect');
+    expect(content).toContain('useState');
+    expect(content).toContain('useEffect');
   });
 
   it('CSS has required classes', () => {
     const content = readFileSync(cssPath, 'utf-8');
-    assert.ok(content.includes('.code-block'), 'Should have .code-block class');
-    assert.ok(content.includes('.line'), 'Should have .line class');
-    assert.ok(
-      content.includes('.line-number'),
-      'Should have .line-number class'
-    );
-    assert.ok(content.includes('.fallback'), 'Should have .fallback class');
-    assert.ok(content.includes('.loading'), 'Should have .loading class');
+    expect(content).toContain('.code-block');
+    expect(content).toContain('.line');
+    expect(content).toContain('.line-number');
+    expect(content).toContain('.fallback');
+    expect(content).toContain('.loading');
   });
 
   it('CSS uses CSS variables for theming', () => {
     const content = readFileSync(cssPath, 'utf-8');
-    assert.ok(
-      content.includes('var(--font-mono'),
-      'Should use --font-mono CSS variable'
-    );
-    assert.ok(
-      content.includes('var(--font-size-xs'),
-      'Should use --font-size-xs CSS variable'
-    );
-    assert.ok(content.includes('var(--text'), 'Should use --text CSS variable');
+    expect(content).toContain('var(--font-mono');
+    expect(content).toContain('var(--font-size-xs');
+    expect(content).toContain('var(--text');
   });
 });

@@ -14,7 +14,7 @@
   "scripts": {
     "clean": "rm -rf dist/",
     "check": "tsc --noEmit",
-    "build": "npm run clean && tsc && vite build --config frontend/vite.config.ts",
+    "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "dev": "RELAY_IDE_CONFIG=./config.dev.json NO_PIN=1 RELAY_IDE_PORT=3457 node dist/server/index.js",

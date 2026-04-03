@@ -1,45 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildSidebarItems } from '../frontend/src/lib/state/sidebar-items.js';
-import type {
-  SessionSummary,
-  WorktreeInfo,
-  Repo,
-  SidebarItem,
-} from '../frontend/src/lib/types.js';
-
-// ─── Minimal mock helpers ────────────────────────────────────────────────────
-
-function makeSession(
-  overrides: Partial<SessionSummary> & { id: string; repoPath: string }
-): SessionSummary {
-  return {
-    type: 'agent',
-    agent: 'claude',
-    repoName: 'repo',
-    worktreePath: null,
-    cwd: overrides.repoPath,
-    branchName: 'main',
-    displayName: 'repo',
-    createdAt: '2026-01-01T00:00:00Z',
-    lastActivity: '2026-01-01T00:00:00Z',
-    idle: true,
-    agentState: 'idle',
-    ...overrides,
-  };
-}
-
-function makeWorktree(
-  overrides: Partial<WorktreeInfo> & { path: string; repoPath: string }
-): WorktreeInfo {
-  return {
-    name: 'worktree',
-    repoName: 'repo',
-    displayName: 'worktree',
-    lastActivity: '2026-01-01T00:00:00Z',
-    branchName: 'feature',
-    ...overrides,
-  };
-}
+import type { Repo, SidebarItem } from '../frontend/src/lib/types.js';
+import { makeSession, makeWorktree } from './helpers/frontend-factories.js';
 
 function makeWorkspace(overrides: Partial<Repo> & { path: string }): Repo {
   return {
@@ -72,7 +34,12 @@ function makeItem(
 
 describe('buildSidebarItems', () => {
   it('active session produces SidebarItem with that session', () => {
-    const session = makeSession({ id: 's1', repoPath: '/repo' });
+    const session = makeSession({
+      id: 's1',
+      repoPath: '/repo',
+      worktreePath: null,
+      cwd: '/repo',
+    });
     const items = buildSidebarItems([session], [], [], []);
 
     expect(items.length).toBe(1);
@@ -137,6 +104,8 @@ describe('buildSidebarItems', () => {
     const session = makeSession({
       id: 's1',
       repoPath: '/repo',
+      worktreePath: null,
+      cwd: '/repo',
       idle: true,
       agentState: 'idle',
     });
@@ -157,6 +126,8 @@ describe('buildSidebarItems', () => {
     const session = makeSession({
       id: 's1',
       repoPath: '/repo',
+      worktreePath: null,
+      cwd: '/repo',
       idle: true,
       agentState: 'idle',
     });

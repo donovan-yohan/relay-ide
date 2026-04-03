@@ -8,63 +8,11 @@ import type {
   SessionIntent,
 } from '../frontend/src/lib/session-intent.js';
 import type { GitHubIssue } from '../frontend/src/lib/types.js';
-import type {
-  PullRequest,
-  SessionSummary,
-  WorktreeInfo,
-} from '../frontend/src/lib/types.js';
-
-function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
-  return {
-    number: 1,
-    title: 'Test PR',
-    url: 'https://github.com/test/repo/pull/1',
-    headRefName: 'feat/test',
-    baseRefName: 'main',
-    state: 'OPEN',
-    author: 'user',
-    role: 'author',
-    updatedAt: '2026-03-29T00:00:00Z',
-    additions: 10,
-    deletions: 5,
-    reviewDecision: null,
-    mergeable: 'MERGEABLE',
-    ciStatus: 'SUCCESS',
-    isDraft: false,
-    ...overrides,
-  };
-}
-
-function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
-  return {
-    id: 'sess-1',
-    type: 'agent',
-    agent: 'claude',
-    repoName: 'repo',
-    repoPath: '/path/to/repo',
-    worktreePath: '/path/to/worktree',
-    cwd: '/path/to/worktree',
-    branchName: 'feat/test',
-    displayName: 'test session',
-    createdAt: '2026-03-29T00:00:00Z',
-    lastActivity: '2026-03-29T00:00:00Z',
-    idle: false,
-    ...overrides,
-  };
-}
-
-function makeWorktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
-  return {
-    name: 'everest',
-    path: '/path/to/worktree',
-    repoName: 'repo',
-    repoPath: '/path/to/repo',
-    displayName: 'everest',
-    lastActivity: '2026-03-29T00:00:00Z',
-    branchName: 'feat/test',
-    ...overrides,
-  };
-}
+import {
+  makePr,
+  makeSession,
+  makeWorktree,
+} from './helpers/frontend-factories.js';
 
 describe('resolveIntent', () => {
   it('returns review-pr intent for reviewer on open PR', () => {
@@ -73,7 +21,7 @@ describe('resolveIntent', () => {
       pr: makePr({ role: 'reviewer', state: 'OPEN' }),
     };
     const intents = resolveIntent(item, 'reviewer', [], []);
-    expect(intents.length >= 1).toBeTruthy();
+    expect(intents.length).toBeGreaterThanOrEqual(1);
     expect(intents[0]!.type).toBe('review-pr');
     expect(intents[0]!.color).toBe('info');
     expect(intents[0]!.prompt).toBeTruthy(); // review prompt should exist
@@ -85,7 +33,7 @@ describe('resolveIntent', () => {
       pr: makePr({ role: 'author', mergeable: 'MERGEABLE' }),
     };
     const intents = resolveIntent(item, 'author', [], []);
-    expect(intents.length >= 1).toBeTruthy();
+    expect(intents.length).toBeGreaterThanOrEqual(1);
     expect(intents[0]!.type).toBe('merge-pr');
     expect(intents[0]!.color).toBe('success');
     expect(intents[0]!.prompt).toBe(null); // merge is a GitHub link
@@ -112,7 +60,7 @@ describe('resolveIntent', () => {
       repoPath: '/path/to/repo',
     };
     const intents = resolveIntent(item, 'author', [], []);
-    expect(intents.length >= 1).toBeTruthy();
+    expect(intents.length).toBeGreaterThanOrEqual(1);
     expect(intents[0]!.type).toBe('open-branch');
     expect(intents[0]!.prompt).toBeTruthy();
   });
@@ -149,13 +97,13 @@ describe('resolveIntent', () => {
       },
     };
     const intents = resolveIntent(item, 'author', [], []);
-    expect(intents.length >= 1).toBeTruthy();
+    expect(intents.length).toBeGreaterThanOrEqual(1);
     expect(intents[0]!.type).toBe('start-from-issue');
     expect(intents[0]!.prompt).toBeTruthy();
-    expect(intents[0]!.prompt!.includes('#45')).toBeTruthy();
-    expect(
-      intents[0]!.prompt!.includes('Mobile virtual keyboard covers input')
-    ).toBeTruthy();
+    expect(intents[0]!.prompt).toContain('#45');
+    expect(intents[0]!.prompt).toContain(
+      'Mobile virtual keyboard covers input'
+    );
   });
 
   it('returns archive for merged PR', () => {
@@ -177,7 +125,7 @@ describe('resolveIntent', () => {
   it('always returns at least one intent', () => {
     const item: PickerItem = { kind: 'pr', pr: makePr() };
     const intents = resolveIntent(item, 'author', [], []);
-    expect(intents.length >= 1).toBeTruthy();
+    expect(intents.length).toBeGreaterThanOrEqual(1);
   });
 
   it('returns archive for closed PR', () => {
