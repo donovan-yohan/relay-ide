@@ -1,0 +1,62 @@
+.split-pane-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.pane-terminal {
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.pane-file-viewer {
+  min-width: 300px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.pane-right-sidebar {
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.resize-handle {
+  width: 8px;
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+  z-index: 5;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--border, #333);
+  pointer-events: none;
+}
+
+.resize-handle:hover::after,
+.resize-handle.active::after {
+  background: var(--accent, #d97757);
+}
+
+@media (max-width: 767px) {
+  .pane-right-sidebar {
+    display: none;
+  }
+
+  .resize-handle {
+    display: none;
+  }
+}
