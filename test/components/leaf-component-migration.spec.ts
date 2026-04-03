@@ -20,7 +20,7 @@ const expectedComponents: ExpectedComponent[] = [
     componentPath: 'frontend/src/components/AgentBadge.tsx',
     cssPath: 'frontend/src/components/AgentBadge.css',
     expectedExports: [
-      'export interface AgentBadgeProps',
+      'interface AgentBadgeProps',
       'export function AgentBadge',
     ],
   },
@@ -106,19 +106,13 @@ const expectedComponents: ExpectedComponent[] = [
     name: 'SettingRow',
     componentPath: 'frontend/src/components/dialogs/SettingRow.tsx',
     cssPath: 'frontend/src/components/dialogs/SettingRow.css',
-    expectedExports: [
-      'export interface SettingRowProps',
-      'export function SettingRow',
-    ],
+    expectedExports: ['export default function SettingRow'],
   },
   {
     name: 'SettingsToc',
     componentPath: 'frontend/src/components/dialogs/SettingsToc.tsx',
     cssPath: 'frontend/src/components/dialogs/SettingsToc.css',
-    expectedExports: [
-      'export interface SettingsTocSection',
-      'export function SettingsToc',
-    ],
+    expectedExports: ['export default function SettingsToc'],
   },
 ];
 

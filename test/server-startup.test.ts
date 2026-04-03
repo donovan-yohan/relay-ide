@@ -13,6 +13,7 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
   const serverScript = path.resolve(
     import.meta.dirname,
     '..',
+    'dist',
     'server',
     'index.js'
   );

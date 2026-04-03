@@ -3,15 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// At runtime, __dirname resolves to dist/test/.
-// The server runs from dist/server/, which uses path.join(__dirname, '..', '..', ...)
-// to reach the project root. This test verifies that relationship is correct.
+// With vitest, tests run from source at test/ (not compiled dist/test/).
+// The project root is one level up from test/.
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// This test file is at dist/test/, server is at dist/server/ — same depth
-const projectRoot = path.resolve(__dirname, '..', '..');
+const projectRoot = path.resolve(__dirname, '..');
 
 test('project root from dist/ contains frontend/ directory', () => {
   const frontendDir = path.join(projectRoot, 'frontend');
