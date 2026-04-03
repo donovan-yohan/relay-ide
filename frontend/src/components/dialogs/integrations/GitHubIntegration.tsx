@@ -6,6 +6,7 @@ import { fetchGitHubStatus, initiateGitHubDevice, disconnectGitHub } from '../..
 import './GitHubIntegration.css';
 
 interface Props {
+  onConnected?: () => void;
   onDisconnect?: () => void;
   needsReauth?: boolean;
   webhookCount?: number;
@@ -53,7 +54,7 @@ function DeviceFlowBody({ deviceCode, onCopy }: { deviceCode: DeviceCode; onCopy
   );
 }
 
-function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (v: boolean) => void) {
+function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (v: boolean) => void, onConnected?: () => void) {
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
   const [deviceFlowError, setDeviceFlowError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
@@ -84,7 +85,7 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
       pollRef.current = setInterval(async () => {
         try {
           const s = await fetchGitHubStatus();
-          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); }
+          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); onConnected?.(); }
           else if (s.deviceFlowStatus === 'denied' || s.deviceFlowStatus === 'expired') { setDeviceCode(null); setDeviceFlowError(s.deviceFlowStatus === 'denied' ? 'Authorization denied. Please try again.' : 'Code expired. Please try again.'); clearTimers(); }
         } catch { /* keep polling */ }
       }, 2000);
@@ -102,12 +103,12 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
   return { deviceCode, deviceFlowError, disconnecting, connect, disconnect };
 }
 
-export default function GitHubIntegration({ onDisconnect, needsReauth = false, webhookCount = 0 }: Props) {
+export default function GitHubIntegration({ onConnected, onDisconnect, needsReauth = false, webhookCount = 0 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const { deviceCode, deviceFlowError, disconnecting, connect, disconnect } = useGitHubFlow(setGithubStatus, setLoading);
+  const { deviceCode, deviceFlowError, disconnecting, connect, disconnect } = useGitHubFlow(setGithubStatus, setLoading, onConnected);
 
   let statusText: string;
   if (loading) statusText = 'Checking connection...';
