@@ -441,3 +441,14 @@ When a server function uses nullish coalescing (`??`) to merge settings from mul
 When a server has a canonical settings resolution function (e.g., `resolveSessionSettings()` that merges global → workspace → repo → override), the frontend should not duplicate this logic by pre-filling overrides from its own partial view of the settings. The frontend's `configState` only has global defaults — it cannot see repo-level overrides. Sending global defaults as explicit overrides creates a shadow that the server's merge cascade cannot penetrate. Either (a) omit the fields and let the server resolve, or (b) fetch the merged settings from the server before populating UI defaults. The `fetchMergedWorkspaceSettings()` API exists for case (b).
 
 ---
+
+### L-20260403-migration-button-completeness: Framework migrations must audit ALL interactive elements — not just the primary action buttons
+
+- status: active
+- category: patterns
+- source: /harness:bug DYS-11 2026-04-03
+- branch: worktree-DYS-11
+
+When migrating a UI framework (e.g., Svelte → React), raw `<button>` elements in non-primary positions are the most likely elements to be left unconverted. The migration agent typically converts the "obvious" action buttons (PR row actions, form submits) but misses secondary buttons embedded in sub-components: error state retries, filter management delete buttons, confirmation inline actions. After any framework migration, run a grep for `<button` in all migrated component files and verify each instance either (a) uses the project's design-system button component (`TuiButton`), or (b) is an intentional pattern-exception with a CSS class that reproduces equivalent design-system styling (e.g., tab strip navigation). Bespoke CSS that re-implements button styling is a red flag — it means the component was migrated structurally but not visually.
+
+---
