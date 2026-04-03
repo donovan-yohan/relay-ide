@@ -199,7 +199,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle>(function SettingsDialog(
         <SettingsToc open={tocOpen} onclose={() => setTocOpen(false)} {...(contentEl ? { contentEl } : {})} sections={TOC_SECTIONS} />
         <div className="settings-dialog-sections">
           <GeneralSection config={config} notifDescription={notifDescription} notifPerm={notifPerm} searchQuery={searchQuery} handlers={configHandlers} />
-          <IntegrationsSection searchQuery={searchQuery} githubConnected={githubConnected} webhookCount={webhookCount} onGitHubConnect={() => setGithubConnected(true)} onGitHubDisconnect={() => setGithubConnected(false)} />
+          <IntegrationsSection searchQuery={searchQuery} githubConnected={githubConnected} webhookCount={webhookCount} onGitHubConnect={() => { setGithubConnected(true); fetchWebhookStatus().then((ws) => { if (ws.configured) setWebhookCount(1); }).catch(() => undefined); }} onGitHubDisconnect={() => setGithubConnected(false)} />
           <AdvancedSection searchQuery={searchQuery} analyticsSize={analyticsSize} clearing={clearing} devtoolsEnabled={devtoolsEnabled} onDevtoolsChange={(v) => { setDevtoolsEnabled(v); localStorage.setItem('devtools-enabled', v ? 'true' : 'false'); window.dispatchEvent(new Event('devtools-changed')); }} onClearAnalytics={() => void handleClearAnalytics()} />
           <AboutSection searchQuery={searchQuery} versionInfo={versionInfo} onUpdate={() => void handleUpdate()} />
         </div>

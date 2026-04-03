@@ -58,11 +58,13 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
   const [deviceFlowError, setDeviceFlowError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stoppedRef = useRef(false);
 
   function clearTimers() {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    stoppedRef.current = true;
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
     if (expiryRef.current) { clearTimeout(expiryRef.current); expiryRef.current = null; }
   }
 
@@ -82,13 +84,17 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
     setDeviceFlowError('');
     try {
       const code = await initiateGitHubDevice(); setDeviceCode(code); clearTimers();
-      pollRef.current = setInterval(async () => {
+      stoppedRef.current = false;
+      async function poll() {
+        if (stoppedRef.current) return;
         try {
           const s = await fetchGitHubStatus();
-          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); onConnected?.(); }
-          else if (s.deviceFlowStatus === 'denied' || s.deviceFlowStatus === 'expired') { setDeviceCode(null); setDeviceFlowError(s.deviceFlowStatus === 'denied' ? 'Authorization denied. Please try again.' : 'Code expired. Please try again.'); clearTimers(); }
+          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); onConnected?.(); return; }
+          else if (s.deviceFlowStatus === 'denied' || s.deviceFlowStatus === 'expired') { setDeviceCode(null); setDeviceFlowError(s.deviceFlowStatus === 'denied' ? 'Authorization denied. Please try again.' : 'Code expired. Please try again.'); clearTimers(); return; }
         } catch { /* keep polling */ }
-      }, 2000);
+        if (!stoppedRef.current) pollRef.current = setTimeout(poll, 2000);
+      }
+      pollRef.current = setTimeout(poll, 2000);
       expiryRef.current = setTimeout(() => { clearTimers(); setDeviceCode(null); setDeviceFlowError('Code expired. Please try again.'); }, code.expiresIn * 1000);
     } catch { setDeviceFlowError('Failed to initiate GitHub authorization. Please try again.'); }
   }
