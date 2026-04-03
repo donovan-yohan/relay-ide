@@ -1,5 +1,4 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,142 +9,81 @@ import {
 
 let tmpDir: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-opencode-relay-test-'));
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
 describe('RELAY_PLUGIN_SOURCE', () => {
   it('contains expected opencode hook event names', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('session.created'),
-      'should include session.created'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('session.idle'),
-      'should include session.idle'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('session.status'),
-      'should include session.status'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('session.error'),
-      'should include session.error'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('permission.asked'),
-      'should include permission.asked'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('permission.replied'),
-      'should include permission.replied'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('tool.execute.before'),
-      'should include tool.execute.before'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('tool.execute.after'),
-      'should include tool.execute.after'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('message.updated'),
-      'should include message.updated'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('session.created')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('session.idle')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('session.status')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('session.error')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('permission.asked')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('permission.replied')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('tool.execute.before')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('tool.execute.after')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('message.updated')).toBeTruthy();
   });
 
   it('reads CRC_RELAY_URL from env', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('CRC_RELAY_URL'),
-      'should read CRC_RELAY_URL from env'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_RELAY_URL'),
-      'should use process.env.CRC_RELAY_URL'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('CRC_RELAY_URL')).toBeTruthy();
+    expect(
+      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_RELAY_URL')
+    ).toBeTruthy();
   });
 
   it('reads CRC_SESSION_ID from env', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('CRC_SESSION_ID'),
-      'should read CRC_SESSION_ID from env'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_SESSION_ID'),
-      'should use process.env.CRC_SESSION_ID'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('CRC_SESSION_ID')).toBeTruthy();
+    expect(
+      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_SESSION_ID')
+    ).toBeTruthy();
   });
 
   it('reads CRC_RELAY_TOKEN from env', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('CRC_RELAY_TOKEN'),
-      'should read CRC_RELAY_TOKEN from env'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_RELAY_TOKEN'),
-      'should use process.env.CRC_RELAY_TOKEN'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('CRC_RELAY_TOKEN')).toBeTruthy();
+    expect(
+      RELAY_PLUGIN_SOURCE.includes('process.env.CRC_RELAY_TOKEN')
+    ).toBeTruthy();
   });
 
   it('relays to /hooks/agent-event endpoint', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('/hooks/agent-event'),
-      'should POST to /hooks/agent-event'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('/hooks/agent-event')).toBeTruthy();
   });
 
   it('uses POST method for relay', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes("method: 'POST'"),
-      'should use POST method'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes("method: 'POST'")).toBeTruthy();
   });
 
   it('returns early when env vars are missing', () => {
-    assert.ok(
+    expect(
       RELAY_PLUGIN_SOURCE.includes(
         'if (!relayUrl || !sessionId || !token) return {};'
-      ),
-      'should return empty object when env vars are missing'
-    );
+      )
+    ).toBeTruthy();
   });
 
   it('includes sessionId and token in request body', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('sessionId'),
-      'should include sessionId in body'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('token'),
-      'should include token in body'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('sessionId')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('token')).toBeTruthy();
   });
 
   it('includes eventType and timestamp in request body', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('eventType'),
-      'should include eventType in body'
-    );
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('timestamp'),
-      'should include timestamp in body'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('eventType')).toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.includes('timestamp')).toBeTruthy();
   });
 
   it('is a non-empty string', () => {
-    assert.ok(typeof RELAY_PLUGIN_SOURCE === 'string', 'should be a string');
-    assert.ok(RELAY_PLUGIN_SOURCE.length > 0, 'should not be empty');
+    expect(typeof RELAY_PLUGIN_SOURCE === 'string').toBeTruthy();
+    expect(RELAY_PLUGIN_SOURCE.length > 0).toBeTruthy();
   });
 
   it('exports a default async function', () => {
-    assert.ok(
-      RELAY_PLUGIN_SOURCE.includes('export default async'),
-      'should export a default async function'
-    );
+    expect(RELAY_PLUGIN_SOURCE.includes('export default async')).toBeTruthy();
   });
 });
 
@@ -153,41 +91,29 @@ describe('installOpencodeRelayPlugin', () => {
   it('writes the plugin file to the specified directory', () => {
     const pluginDir = path.join(tmpDir, 'write-test');
     const pluginPath = installOpencodeRelayPlugin(pluginDir);
-    assert.ok(fs.existsSync(pluginPath), 'plugin file should exist');
-    assert.strictEqual(
-      path.basename(pluginPath),
-      'crc-relay.ts',
-      'file should be named crc-relay.ts'
-    );
+    expect(fs.existsSync(pluginPath)).toBeTruthy();
+    expect(path.basename(pluginPath)).toBe('crc-relay.ts');
   });
 
   it('returns the path to the written plugin file', () => {
     const pluginDir = path.join(tmpDir, 'return-path-test');
     const pluginPath = installOpencodeRelayPlugin(pluginDir);
     const expectedPath = path.join(pluginDir, 'crc-relay.ts');
-    assert.strictEqual(
-      pluginPath,
-      expectedPath,
-      'should return path to crc-relay.ts in pluginDir'
-    );
+    expect(pluginPath).toBe(expectedPath);
   });
 
   it('creates the directory if it does not exist', () => {
     const pluginDir = path.join(tmpDir, 'nested', 'dirs', 'plugins');
-    assert.ok(!fs.existsSync(pluginDir), 'directory should not exist yet');
+    expect(!fs.existsSync(pluginDir)).toBeTruthy();
     installOpencodeRelayPlugin(pluginDir);
-    assert.ok(fs.existsSync(pluginDir), 'directory should be created');
+    expect(fs.existsSync(pluginDir)).toBeTruthy();
   });
 
   it('writes exactly RELAY_PLUGIN_SOURCE as the file content', () => {
     const pluginDir = path.join(tmpDir, 'content-test');
     const pluginPath = installOpencodeRelayPlugin(pluginDir);
     const content = fs.readFileSync(pluginPath, 'utf-8');
-    assert.strictEqual(
-      content,
-      RELAY_PLUGIN_SOURCE,
-      'file content should match RELAY_PLUGIN_SOURCE'
-    );
+    expect(content).toBe(RELAY_PLUGIN_SOURCE);
   });
 
   it('is idempotent — write twice, file still has valid content', () => {
@@ -196,11 +122,7 @@ describe('installOpencodeRelayPlugin', () => {
     installOpencodeRelayPlugin(pluginDir);
     const pluginPath = path.join(pluginDir, 'crc-relay.ts');
     const content = fs.readFileSync(pluginPath, 'utf-8');
-    assert.strictEqual(
-      content,
-      RELAY_PLUGIN_SOURCE,
-      'file should still have valid content after second write'
-    );
+    expect(content).toBe(RELAY_PLUGIN_SOURCE);
   });
 
   it('default path includes opencode/plugins in home dir when no arg given', () => {
@@ -211,10 +133,7 @@ describe('installOpencodeRelayPlugin', () => {
     // Just verify the function is callable and returns a string path.
     const pluginDir = path.join(tmpDir, 'default-path-test');
     const result = installOpencodeRelayPlugin(pluginDir);
-    assert.ok(typeof result === 'string', 'should return a string path');
-    assert.ok(
-      result.endsWith('crc-relay.ts'),
-      'returned path should end with crc-relay.ts'
-    );
+    expect(typeof result === 'string').toBeTruthy();
+    expect(result.endsWith('crc-relay.ts')).toBeTruthy();
   });
 });

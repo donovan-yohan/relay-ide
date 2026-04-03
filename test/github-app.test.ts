@@ -1,5 +1,4 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -179,7 +178,7 @@ let defaultBaseUrl: string;
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
 
-before(async () => {
+beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'github-app-test-'));
   baseConfigPath = path.join(tmpDir, 'config.json');
   saveConfig(baseConfigPath, { ...DEFAULTS });
@@ -189,7 +188,7 @@ before(async () => {
   defaultBaseUrl = result.url;
 });
 
-after(async () => {
+afterAll(async () => {
   await stopServer(defaultServer);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -207,16 +206,16 @@ test('GET /auth/github initiates device flow and returns userCode', async () => 
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as {
       userCode: string;
       verificationUri: string;
       expiresIn: number;
     };
-    assert.equal(data.userCode, 'ABCD-1234');
-    assert.equal(data.verificationUri, 'https://github.com/login/device');
-    assert.equal(data.expiresIn, 900);
+    expect(data.userCode).toBe('ABCD-1234');
+    expect(data.verificationUri).toBe('https://github.com/login/device');
+    expect(data.expiresIn).toBe(900);
   } finally {
     await stopServer(srv);
   }
@@ -224,17 +223,14 @@ test('GET /auth/github initiates device flow and returns userCode', async () => 
 
 test('GET /auth/github/status returns { connected: false } when no token', async () => {
   const res = await fetch(`${defaultBaseUrl}/auth/github/status`);
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
 
   const data = (await res.json()) as {
     connected: boolean;
     username: string | null;
   };
-  assert.equal(data.connected, false);
-  assert.ok(
-    data.username === null || data.username === undefined,
-    'username should be null when not connected'
-  );
+  expect(data.connected).toBe(false);
+  expect(data.username === null || data.username === undefined).toBeTruthy();
 });
 
 test('Device flow poll completes and saves token to config', async () => {
@@ -263,15 +259,15 @@ test('Device flow poll completes and saves token to config', async () => {
 
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     await withTimeout(connectedPromise, 10_000, 'onConnected callback');
 
     const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string; username?: string };
     };
-    assert.equal(savedConfig.github?.accessToken, 'ghs_mock_token_123');
-    assert.equal(savedConfig.github?.username, 'octocat');
+    expect(savedConfig.github?.accessToken).toBe('ghs_mock_token_123');
+    expect(savedConfig.github?.username).toBe('octocat');
   } finally {
     await stopServer(srv);
   }
@@ -303,14 +299,14 @@ test('GET /auth/github/status returns connected after device flow', async () => 
     await withTimeout(connectedPromise, 10_000, 'onConnected callback');
 
     const res = await fetch(`${url}/auth/github/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as {
       connected: boolean;
       username: string | null;
     };
-    assert.equal(data.connected, true);
-    assert.equal(data.username, 'octocat');
+    expect(data.connected).toBe(true);
+    expect(data.username).toBe('octocat');
   } finally {
     await stopServer(srv);
   }
@@ -329,22 +325,22 @@ test('access_denied sets deviceFlowStatus to denied', async () => {
 
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     // Poll until the flow status changes to denied (or time out)
     await waitForFlowStatus(url, 'denied', 5_000);
 
     const statusRes = await fetch(`${url}/auth/github/status`);
-    assert.equal(statusRes.status, 200);
+    expect(statusRes.status).toBe(200);
 
     const data = (await statusRes.json()) as {
       connected: boolean;
       username: string | null;
       deviceFlowStatus?: string;
     };
-    assert.equal(data.connected, false);
-    assert.equal(data.username, null);
-    assert.equal(data.deviceFlowStatus, 'denied');
+    expect(data.connected).toBe(false);
+    expect(data.username).toBe(null);
+    expect(data.deviceFlowStatus).toBe('denied');
   } finally {
     await stopServer(srv);
   }
@@ -363,22 +359,22 @@ test('expired_token sets deviceFlowStatus to expired', async () => {
 
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     // Poll until the flow status changes to expired (or time out)
     await waitForFlowStatus(url, 'expired', 5_000);
 
     const statusRes = await fetch(`${url}/auth/github/status`);
-    assert.equal(statusRes.status, 200);
+    expect(statusRes.status).toBe(200);
 
     const data = (await statusRes.json()) as {
       connected: boolean;
       username: string | null;
       deviceFlowStatus?: string;
     };
-    assert.equal(data.connected, false);
-    assert.equal(data.username, null);
-    assert.equal(data.deviceFlowStatus, 'expired');
+    expect(data.connected).toBe(false);
+    expect(data.username).toBe(null);
+    expect(data.deviceFlowStatus).toBe('expired');
   } finally {
     await stopServer(srv);
   }
@@ -396,10 +392,10 @@ test('Device code initiation failure returns 500', async () => {
 
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 500);
+    expect(res.status).toBe(500);
 
     const data = (await res.json()) as { error: string };
-    assert.ok(data.error, 'Response should have an error message');
+    expect(data.error).toBeTruthy();
   } finally {
     await stopServer(srv);
   }
@@ -441,11 +437,7 @@ test('slow_down increases poll interval', async () => {
     await delay(1500);
 
     const state = _getDeviceFlowState();
-    assert.equal(
-      state.interval,
-      6,
-      `Expected interval to be 6 after slow_down, got ${state.interval}`
-    );
+    expect(state.interval).toBe(6);
 
     // Let the flow finish to clean up timers
     await withTimeout(connectedPromise, 15_000, 'onConnected after slow_down');
@@ -480,7 +472,7 @@ test('Network error during poll continues polling', async () => {
 
   try {
     const res = await fetch(`${url}/auth/github`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     await withTimeout(
       connectedPromise,
@@ -491,7 +483,7 @@ test('Network error during poll continues polling', async () => {
     const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string };
     };
-    assert.equal(savedConfig.github?.accessToken, 'ghs_mock_token_123');
+    expect(savedConfig.github?.accessToken).toBe('ghs_mock_token_123');
   } finally {
     await stopServer(srv);
   }
@@ -543,11 +535,7 @@ test('Concurrent flow cancels previous', async () => {
     const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string };
     };
-    assert.equal(
-      savedConfig.github?.accessToken,
-      'ghs_second_token',
-      'Second flow token should be saved'
-    );
+    expect(savedConfig.github?.accessToken).toBe('ghs_second_token');
   } finally {
     await stopServer(srv);
   }
@@ -571,10 +559,10 @@ test('POST /disconnect preserves webhookSecret and smeeUrl', async () => {
     const res = await fetch(`${url}/auth/github/disconnect`, {
       method: 'POST',
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean };
-    assert.equal(data.ok, true);
+    expect(data.ok).toBe(true);
 
     // Verify token and username removed, but webhook config preserved
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
@@ -585,31 +573,15 @@ test('POST /disconnect preserves webhookSecret and smeeUrl', async () => {
         smeeUrl?: string;
       };
     };
-    assert.equal(
-      saved.github?.accessToken,
-      undefined,
-      'accessToken should be removed'
-    );
-    assert.equal(
-      saved.github?.username,
-      undefined,
-      'username should be removed'
-    );
-    assert.equal(
-      saved.github?.webhookSecret,
-      'whsec_keep',
-      'webhookSecret should be preserved'
-    );
-    assert.equal(
-      saved.github?.smeeUrl,
-      'https://smee.io/keep',
-      'smeeUrl should be preserved'
-    );
+    expect(saved.github?.accessToken).toBe(undefined);
+    expect(saved.github?.username).toBe(undefined);
+    expect(saved.github?.webhookSecret).toBe('whsec_keep');
+    expect(saved.github?.smeeUrl).toBe('https://smee.io/keep');
 
     // Status should show disconnected
     const statusRes = await fetch(`${url}/auth/github/status`);
     const statusData = (await statusRes.json()) as { connected: boolean };
-    assert.equal(statusData.connected, false);
+    expect(statusData.connected).toBe(false);
   } finally {
     await stopServer(srv);
   }
@@ -647,16 +619,8 @@ test('Token saved without username when GraphQL fails', async () => {
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string; username?: string };
     };
-    assert.equal(
-      saved.github?.accessToken,
-      'ghs_mock_token_123',
-      'Token should be saved'
-    );
-    assert.equal(
-      saved.github?.username,
-      undefined,
-      'Username should not be saved when GraphQL fails'
-    );
+    expect(saved.github?.accessToken).toBe('ghs_mock_token_123');
+    expect(saved.github?.username).toBe(undefined);
   } finally {
     await stopServer(srv);
   }

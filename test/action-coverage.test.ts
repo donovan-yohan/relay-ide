@@ -1,5 +1,4 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeEach, expect } from 'vitest';
 import {
   registerGlobal,
   getAllActions,
@@ -113,11 +112,7 @@ describe('Action Coverage', () => {
   it('all allowlist IDs have corresponding definitions', () => {
     const definedIds = new Set(ALL_META.map((a) => a.id));
     const missing = ACTION_ALLOWLIST.filter((id) => !definedIds.has(id));
-    assert.deepStrictEqual(
-      missing,
-      [],
-      `Missing action definitions: ${missing.join(', ')}`
-    );
+    expect(missing).toEqual([]);
   });
 
   it('all defined actions are in the allowlist', () => {
@@ -125,11 +120,7 @@ describe('Action Coverage', () => {
     const extra = ALL_META.filter((a) => !allowedIds.has(a.id)).map(
       (a) => a.id
     );
-    assert.deepStrictEqual(
-      extra,
-      [],
-      `Defined actions not in allowlist: ${extra.join(', ')}`
-    );
+    expect(extra).toEqual([]);
   });
 
   it('all registered action IDs are unique', () => {
@@ -137,27 +128,16 @@ describe('Action Coverage', () => {
     const all = getAllActions();
     const ids = all.map((a: Action) => a.id);
     const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
-    assert.deepStrictEqual(
-      dupes,
-      [],
-      `Duplicate action IDs: ${dupes.join(', ')}`
-    );
+    expect(dupes).toEqual([]);
   });
 
   it('all required Action fields are present and well-formed', () => {
     for (const meta of ALL_META) {
-      assert.ok(meta.id, `Action missing id`);
-      assert.ok(
-        meta.id.includes('.'),
-        `Action id "${meta.id}" must use category.verb-noun format`
-      );
-      assert.ok(meta.label, `Action "${meta.id}" missing label`);
-      assert.ok(meta.category, `Action "${meta.id}" missing category`);
-      assert.strictEqual(
-        meta.label,
-        meta.label.toLowerCase(),
-        `Action "${meta.id}" label must be lowercase`
-      );
+      expect(meta.id).toBeTruthy();
+      expect(meta.id.includes('.')).toBeTruthy();
+      expect(meta.label).toBeTruthy();
+      expect(meta.category).toBeTruthy();
+      expect(meta.label).toBe(meta.label.toLowerCase());
     }
   });
 
@@ -168,7 +148,7 @@ describe('Action Coverage', () => {
     const seen = new Map<string, string>();
     for (const { id, key } of shortcuts) {
       if (seen.has(key)) {
-        assert.fail(
+        throw new Error(
           `Shortcut conflict: "${key}" claimed by both "${seen.get(key)}" and "${id}"`
         );
       }

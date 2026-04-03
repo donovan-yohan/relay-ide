@@ -1,5 +1,4 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,7 +7,7 @@ import { GitWatcher } from '../server/watcher.js';
 let tmpDir: string;
 let repoDir: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-watcher-test-'));
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
@@ -21,7 +20,7 @@ before(() => {
   );
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -44,8 +43,8 @@ describe('GitWatcher', () => {
     // Wait for debounce (1000ms) + buffer
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    assert.ok(emitted, 'should emit files-changed for working-tree file');
-    assert.equal(emittedPath, repoDir);
+    expect(emitted).toBeTruthy();
+    expect(emittedPath).toBe(repoDir);
 
     watcher.close();
   });
@@ -71,11 +70,7 @@ describe('GitWatcher', () => {
     fs.writeFileSync(path.join(repoDir, '.git', 'index'), 'fake2');
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    assert.equal(
-      emitCount,
-      countBefore,
-      'should not emit for .git/index changes'
-    );
+    expect(emitCount).toBe(countBefore);
 
     watcher.close();
   });
@@ -99,7 +94,7 @@ describe('GitWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    assert.ok(!emitted, 'should not emit for node_modules/ changes');
+    expect(!emitted).toBeTruthy();
 
     watcher.close();
   });
@@ -124,7 +119,7 @@ describe('GitWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    assert.ok(emitted, 'should emit when .git/HEAD changes');
+    expect(emitted).toBeTruthy();
 
     watcher.close();
   });
@@ -142,7 +137,7 @@ describe('GitWatcher', () => {
     fs.writeFileSync(path.join(repoDir, 'src', 'closed.ts'), 'export {}');
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    assert.equal(emitCount, 0);
+    expect(emitCount).toBe(0);
   });
 
   it('deduplicates watchers for the same path via refCount', () => {

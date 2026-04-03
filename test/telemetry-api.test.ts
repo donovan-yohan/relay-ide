@@ -1,5 +1,4 @@
-import { afterEach, test } from 'node:test';
-import assert from 'node:assert/strict';
+import { afterEach, test, expect } from 'vitest';
 
 import {
   fetchSessionTelemetry,
@@ -40,7 +39,7 @@ test('fetchSessionTelemetry handles plain object-map responses', async () => {
 
   const result = await fetchSessionTelemetry();
 
-  assert.deepEqual(result, [
+  expect(result).toEqual([
     {
       sessionId: 'session-1',
       model: 'Claude Sonnet 4',
@@ -66,5 +65,5 @@ test('fetchTelemetrySetupStatus returns installed flag from the server response'
       headers: { 'Content-Type': 'application/json' },
     })) as typeof globalThis.fetch;
 
-  assert.deepEqual(await fetchTelemetrySetupStatus(), { installed: true });
+  expect(await fetchTelemetrySetupStatus()).toEqual({ installed: true });
 });

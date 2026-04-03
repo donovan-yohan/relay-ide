@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   derivePrAction,
   deriveSecondaryAction,
@@ -22,9 +21,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'none');
-    assert.equal(action.color, 'none');
-    assert.equal(action.label, '');
+    expect(action.type).toBe('none');
+    expect(action.color).toBe('none');
+    expect(action.label).toBe('');
   });
 
   it('returns create-pr when commits ahead but no PR', () => {
@@ -39,9 +38,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'create-pr');
-    assert.equal(action.color, 'accent');
-    assert.equal(action.label, 'Create PR');
+    expect(action.type).toBe('create-pr');
+    expect(action.color).toBe('accent');
+    expect(action.label).toBe('Create PR');
   });
 
   it('returns ready-for-review for draft PR', () => {
@@ -56,9 +55,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'ready-for-review');
-    assert.equal(action.color, 'muted');
-    assert.equal(action.label, 'Ready for Review');
+    expect(action.type).toBe('ready-for-review');
+    expect(action.color).toBe('muted');
+    expect(action.label).toBe('Ready for Review');
   });
 
   it('returns merge-pr for open PR with all CI passing (author default)', () => {
@@ -73,9 +72,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'merge-pr');
-    assert.equal(action.color, 'success');
-    assert.equal(action.label, 'Merge');
+    expect(action.type).toBe('merge-pr');
+    expect(action.color).toBe('success');
+    expect(action.label).toBe('Merge');
   });
 
   it('returns merge-pr for open PR with no CI checks (author default)', () => {
@@ -90,8 +89,8 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'merge-pr');
-    assert.equal(action.color, 'success');
+    expect(action.type).toBe('merge-pr');
+    expect(action.color).toBe('success');
   });
 
   it('returns fix-errors for open PR with failing CI', () => {
@@ -106,9 +105,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'fix-errors');
-    assert.equal(action.color, 'error');
-    assert.equal(action.label, 'Fix Errors 2/8');
+    expect(action.type).toBe('fix-errors');
+    expect(action.color).toBe('error');
+    expect(action.label).toBe('Fix Errors 2/8');
   });
 
   it('returns checks-running for open PR with pending CI', () => {
@@ -123,9 +122,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'checks-running');
-    assert.equal(action.color, 'warning');
-    assert.equal(action.label, 'Checks Running...');
+    expect(action.type).toBe('checks-running');
+    expect(action.color).toBe('warning');
+    expect(action.label).toBe('Checks Running...');
   });
 
   it('prioritizes failing over pending CI', () => {
@@ -140,8 +139,8 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'fix-errors');
-    assert.equal(action.label, 'Fix Errors 1/5');
+    expect(action.type).toBe('fix-errors');
+    expect(action.label).toBe('Fix Errors 1/5');
   });
 
   it('returns archive-merged for merged PR', () => {
@@ -156,9 +155,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'archive-merged');
-    assert.equal(action.color, 'merged');
-    assert.equal(action.label, 'Archive');
+    expect(action.type).toBe('archive-merged');
+    expect(action.color).toBe('merged');
+    expect(action.label).toBe('Archive');
   });
 
   it('returns archive-closed for closed PR', () => {
@@ -173,9 +172,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'archive-closed');
-    assert.equal(action.color, 'muted');
-    assert.equal(action.label, 'Archive');
+    expect(action.type).toBe('archive-closed');
+    expect(action.color).toBe('muted');
+    expect(action.label).toBe('Archive');
   });
 
   it('returns fix-conflicts for open PR with CONFLICTING mergeable', () => {
@@ -190,9 +189,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'fix-conflicts');
-    assert.equal(action.color, 'error');
-    assert.equal(action.label, 'Fix Conflicts');
+    expect(action.type).toBe('fix-conflicts');
+    expect(action.color).toBe('error');
+    expect(action.label).toBe('Fix Conflicts');
   });
 
   it('prioritizes fix-conflicts over fix-errors', () => {
@@ -207,7 +206,7 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'fix-conflicts');
+    expect(action.type).toBe('fix-conflicts');
   });
 
   it('returns resolve-comments when unresolved comments > 0 and CI passing', () => {
@@ -222,9 +221,9 @@ describe('derivePrAction', () => {
       unresolvedCommentCount: 3,
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'resolve-comments');
-    assert.equal(action.color, 'accent');
-    assert.equal(action.label, 'Resolve Comments (3)');
+    expect(action.type).toBe('resolve-comments');
+    expect(action.color).toBe('accent');
+    expect(action.label).toBe('Resolve Comments (3)');
   });
 
   // ── Role-aware tests ──
@@ -242,9 +241,9 @@ describe('derivePrAction', () => {
       role: 'author',
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'merge-pr');
-    assert.equal(action.color, 'success');
-    assert.equal(action.label, 'Merge');
+    expect(action.type).toBe('merge-pr');
+    expect(action.color).toBe('success');
+    expect(action.label).toBe('Merge');
   });
 
   it('returns review-pr with info color for reviewer when open + all clear', () => {
@@ -260,9 +259,9 @@ describe('derivePrAction', () => {
       role: 'reviewer',
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'review-pr');
-    assert.equal(action.color, 'info');
-    assert.equal(action.label, 'Review');
+    expect(action.type).toBe('review-pr');
+    expect(action.color).toBe('info');
+    expect(action.label).toBe('Review');
   });
 
   it('returns muted checks-running for reviewer when CI failing', () => {
@@ -278,9 +277,9 @@ describe('derivePrAction', () => {
       role: 'reviewer',
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'checks-running');
-    assert.equal(action.color, 'muted');
-    assert.equal(action.label, 'CI Failing');
+    expect(action.type).toBe('checks-running');
+    expect(action.color).toBe('muted');
+    expect(action.label).toBe('CI Failing');
   });
 
   it('returns none for reviewer on draft PR', () => {
@@ -296,7 +295,7 @@ describe('derivePrAction', () => {
       role: 'reviewer',
     };
     const action = derivePrAction(input);
-    assert.equal(action.type, 'none');
+    expect(action.type).toBe('none');
   });
 
   it('defaults to author behavior when role omitted', () => {
@@ -312,7 +311,7 @@ describe('derivePrAction', () => {
     };
     const action = derivePrAction(input);
     // Without role, defaults to author → merge-pr
-    assert.equal(action.type, 'merge-pr');
+    expect(action.type).toBe('merge-pr');
   });
 });
 
@@ -322,9 +321,9 @@ describe('getActionPrompt', () => {
       { type: 'create-pr', color: 'accent', label: 'Create PR' },
       { branchName: 'feat/my-feature' }
     );
-    assert.ok(prompt);
-    assert.ok(prompt.includes('feat/my-feature'));
-    assert.ok(prompt.includes('pull request'));
+    expect(prompt).toBeTruthy();
+    expect(prompt!.includes('feat/my-feature')).toBeTruthy();
+    expect(prompt!.includes('pull request')).toBeTruthy();
   });
 
   it('returns prompt for fix-errors', () => {
@@ -332,9 +331,9 @@ describe('getActionPrompt', () => {
       { type: 'fix-errors', color: 'error', label: 'Fix Errors 2/8' },
       { branchName: 'bugfix/auth' }
     );
-    assert.ok(prompt);
-    assert.ok(prompt.includes('bugfix/auth'));
-    assert.ok(prompt.includes('failing'));
+    expect(prompt).toBeTruthy();
+    expect(prompt!.includes('bugfix/auth')).toBeTruthy();
+    expect(prompt!.includes('failing')).toBeTruthy();
   });
 
   it('returns prompt for review-pr', () => {
@@ -342,8 +341,8 @@ describe('getActionPrompt', () => {
       { type: 'review-pr', color: 'success', label: 'Review PR' },
       { branchName: 'main', prNumber: 42 }
     );
-    assert.ok(prompt);
-    assert.ok(prompt.includes('Review'));
+    expect(prompt).toBeTruthy();
+    expect(prompt!.includes('Review')).toBeTruthy();
   });
 
   it('returns prompt for fix-conflicts', () => {
@@ -351,9 +350,9 @@ describe('getActionPrompt', () => {
       { type: 'fix-conflicts', color: 'error', label: 'Fix Conflicts' },
       { branchName: 'feat/foo', baseBranch: 'main' }
     );
-    assert.ok(prompt);
-    assert.ok(prompt.includes('main'));
-    assert.ok(prompt.includes('conflict'));
+    expect(prompt).toBeTruthy();
+    expect(prompt!.includes('main')).toBeTruthy();
+    expect(prompt!.includes('conflict')).toBeTruthy();
   });
 
   it('returns prompt for resolve-comments', () => {
@@ -365,37 +364,34 @@ describe('getActionPrompt', () => {
       },
       { branchName: 'feat/foo', prNumber: 7, unresolvedCommentCount: 3 }
     );
-    assert.ok(prompt);
-    assert.ok(prompt.includes('3'));
-    assert.ok(prompt.includes('#7'));
+    expect(prompt).toBeTruthy();
+    expect(prompt!.includes('3')).toBeTruthy();
+    expect(prompt!.includes('#7')).toBeTruthy();
   });
 
   it('returns null for archive actions', () => {
-    assert.equal(
+    expect(
       getActionPrompt(
         { type: 'archive-merged', color: 'merged', label: 'Archive' },
         { branchName: 'main' }
-      ),
-      null
-    );
-    assert.equal(
+      )
+    ).toBe(null);
+    expect(
       getActionPrompt(
         { type: 'archive-closed', color: 'muted', label: 'Archive' },
         { branchName: 'main' }
-      ),
-      null
-    );
+      )
+    ).toBe(null);
   });
 
   it('returns null for none and checks-running', () => {
-    assert.equal(
+    expect(
       getActionPrompt(
         { type: 'none', color: 'none', label: '' },
         { branchName: 'main' }
-      ),
-      null
-    );
-    assert.equal(
+      )
+    ).toBe(null);
+    expect(
       getActionPrompt(
         {
           type: 'checks-running',
@@ -403,47 +399,45 @@ describe('getActionPrompt', () => {
           label: 'Checks Running...',
         },
         { branchName: 'main' }
-      ),
-      null
-    );
+      )
+    ).toBe(null);
   });
 
   it('returns null for merge-pr (GitHub link action)', () => {
-    assert.equal(
+    expect(
       getActionPrompt(
         { type: 'merge-pr', color: 'success', label: 'Merge' },
         { branchName: 'main' }
-      ),
-      null
-    );
+      )
+    ).toBe(null);
   });
 });
 
 describe('getStatusCssVar', () => {
   it('maps all colors correctly', () => {
-    assert.equal(getStatusCssVar('accent'), 'var(--accent)');
-    assert.equal(getStatusCssVar('success'), 'var(--status-success)');
-    assert.equal(getStatusCssVar('error'), 'var(--status-error)');
-    assert.equal(getStatusCssVar('warning'), 'var(--status-warning)');
-    assert.equal(getStatusCssVar('merged'), 'var(--status-merged)');
-    assert.equal(getStatusCssVar('muted'), 'var(--border)');
-    assert.equal(getStatusCssVar('none'), 'transparent');
-    assert.equal(getStatusCssVar('info'), 'var(--status-info)');
+    expect(getStatusCssVar('accent')).toBe('var(--accent)');
+    expect(getStatusCssVar('success')).toBe('var(--status-success)');
+    expect(getStatusCssVar('error')).toBe('var(--status-error)');
+    expect(getStatusCssVar('warning')).toBe('var(--status-warning)');
+    expect(getStatusCssVar('merged')).toBe('var(--status-merged)');
+    expect(getStatusCssVar('muted')).toBe('var(--border)');
+    expect(getStatusCssVar('none')).toBe('transparent');
+    expect(getStatusCssVar('info')).toBe('var(--status-info)');
   });
 });
 
 describe('shouldUseDarkText', () => {
   it('returns true for success and warning (light backgrounds)', () => {
-    assert.equal(shouldUseDarkText('success'), true);
-    assert.equal(shouldUseDarkText('warning'), true);
+    expect(shouldUseDarkText('success')).toBe(true);
+    expect(shouldUseDarkText('warning')).toBe(true);
   });
 
   it('returns false for dark backgrounds', () => {
-    assert.equal(shouldUseDarkText('accent'), false);
-    assert.equal(shouldUseDarkText('error'), false);
-    assert.equal(shouldUseDarkText('merged'), false);
-    assert.equal(shouldUseDarkText('muted'), false);
-    assert.equal(shouldUseDarkText('none'), false);
+    expect(shouldUseDarkText('accent')).toBe(false);
+    expect(shouldUseDarkText('error')).toBe(false);
+    expect(shouldUseDarkText('merged')).toBe(false);
+    expect(shouldUseDarkText('muted')).toBe(false);
+    expect(shouldUseDarkText('none')).toBe(false);
   });
 });
 
@@ -461,11 +455,11 @@ describe('deriveSecondaryAction', () => {
       role: 'author',
     };
     const primary = derivePrAction(input);
-    assert.equal(primary.type, 'resolve-comments');
+    expect(primary.type).toBe('resolve-comments');
     const secondary = deriveSecondaryAction(primary, input);
-    assert.ok(secondary);
-    assert.equal(secondary!.type, 'review-pr');
-    assert.equal(secondary!.color, 'muted');
+    expect(secondary).toBeTruthy();
+    expect(secondary!.type).toBe('review-pr');
+    expect(secondary!.color).toBe('muted');
   });
 
   it('returns resolve-comments secondary for reviewer with unresolved comments', () => {
@@ -481,11 +475,11 @@ describe('deriveSecondaryAction', () => {
       role: 'reviewer',
     };
     const primary = derivePrAction(input);
-    assert.equal(primary.type, 'review-pr');
-    assert.equal(primary.color, 'info');
+    expect(primary.type).toBe('review-pr');
+    expect(primary.color).toBe('info');
     const secondary = deriveSecondaryAction(primary, input);
-    assert.ok(secondary);
-    assert.equal(secondary!.type, 'resolve-comments');
-    assert.equal(secondary!.color, 'accent');
+    expect(secondary).toBeTruthy();
+    expect(secondary!.type).toBe('resolve-comments');
+    expect(secondary!.color).toBe('accent');
   });
 });

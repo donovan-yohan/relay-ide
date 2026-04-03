@@ -1,5 +1,4 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,7 +18,7 @@ let tmpDir!: string;
 let server: http.Server;
 let port: number;
 
-before(async () => {
+beforeAll(async () => {
   tmpDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'session-analytics-api-test-')
   );
@@ -78,7 +77,7 @@ before(async () => {
   port = (server.address() as { port: number }).port;
 });
 
-after(() => {
+afterAll(() => {
   server.close();
   closeAnalytics();
   fs.rmSync(tmpDir, { recursive: true });
@@ -90,61 +89,61 @@ function url(p: string): string {
 
 test('GET /api/analytics/overview returns summary', async () => {
   const res = await fetch(url('/overview'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  assert.equal(typeof data.totalSessions, 'number');
-  assert.ok((data.totalSessions as number) >= 1);
-  assert.equal(typeof data.totalTokensIn, 'number');
-  assert.ok(Array.isArray(data.byRepo));
+  expect(typeof data.totalSessions).toBe('number');
+  expect((data.totalSessions as number) >= 1).toBeTruthy();
+  expect(typeof data.totalTokensIn).toBe('number');
+  expect(Array.isArray(data.byRepo)).toBeTruthy();
 });
 
 test('GET /api/analytics/sessions returns paginated list', async () => {
   const res = await fetch(url('/sessions?limit=10'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  assert.ok(Array.isArray(data.sessions));
-  assert.equal(typeof data.total, 'number');
-  assert.equal(typeof data.offset, 'number');
-  assert.equal(typeof data.limit, 'number');
+  expect(Array.isArray(data.sessions)).toBeTruthy();
+  expect(typeof data.total).toBe('number');
+  expect(typeof data.offset).toBe('number');
+  expect(typeof data.limit).toBe('number');
 });
 
 test('GET /api/analytics/sessions/:id returns session detail', async () => {
   const res = await fetch(url('/sessions/sess-1'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  assert.ok(data.session);
-  assert.ok(data.toolBreakdown);
-  assert.ok(Array.isArray(data.events));
-  assert.ok(data.engagementBreakdown);
+  expect(data.session).toBeTruthy();
+  expect(data.toolBreakdown).toBeTruthy();
+  expect(Array.isArray(data.events)).toBeTruthy();
+  expect(data.engagementBreakdown).toBeTruthy();
 });
 
 test('GET /api/analytics/sessions/:id returns 404 for unknown', async () => {
   const res = await fetch(url('/sessions/nonexistent'));
-  assert.equal(res.status, 404);
+  expect(res.status).toBe(404);
 });
 
 test('GET /api/analytics/trends returns daily data', async () => {
   const res = await fetch(url('/trends?days=7'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  assert.ok(Array.isArray(data.days));
+  expect(Array.isArray(data.days)).toBeTruthy();
 });
 
 test('GET /api/analytics/tools returns tool breakdown', async () => {
   const res = await fetch(url('/tools?days=7'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as {
     tools: Array<{ name: string; totalUses: number; pctOfUses: number }>;
   };
-  assert.ok(Array.isArray(data.tools));
+  expect(Array.isArray(data.tools)).toBeTruthy();
   // We seeded 2 tool_use events (Read + Edit)
-  assert.ok(data.tools.length >= 1);
+  expect(data.tools.length >= 1).toBeTruthy();
 });
 
 test('GET /api/analytics/rate-limits returns snapshots', async () => {
   const res = await fetch(url('/rate-limits?hours=24'));
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as { snapshots: unknown[] };
-  assert.ok(Array.isArray(data.snapshots));
-  assert.ok(data.snapshots.length >= 1);
+  expect(Array.isArray(data.snapshots)).toBeTruthy();
+  expect(data.snapshots.length >= 1).toBeTruthy();
 });

@@ -1,5 +1,4 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeEach, expect } from 'vitest';
 import {
   registerGlobal,
   registerContextual,
@@ -28,7 +27,7 @@ describe('ActionRegistry', () => {
   it('registerGlobal adds actions retrievable via getAction', () => {
     const action = makeAction({ id: 'session.new-agent' });
     registerGlobal([action]);
-    assert.deepStrictEqual(getAction('session.new-agent'), action);
+    expect(getAction('session.new-agent')).toEqual(action);
   });
 
   it('registerGlobal with duplicate ID overwrites (idempotent for HMR)', () => {
@@ -36,32 +35,32 @@ describe('ActionRegistry', () => {
     registerGlobal([action1]);
     const action2 = makeAction({ id: 'session.new-agent', label: 'v2' });
     registerGlobal([action2]);
-    assert.strictEqual(getAction('session.new-agent')?.label, 'v2');
+    expect(getAction('session.new-agent')?.label).toBe('v2');
   });
 
   it('registerContextual + unregisterContextual lifecycle', () => {
     const action = makeAction({ id: 'session.temp' });
     registerContextual([action]);
-    assert.deepStrictEqual(getAction('session.temp'), action);
+    expect(getAction('session.temp')).toEqual(action);
     unregisterContextual(['session.temp']);
-    assert.strictEqual(getAction('session.temp'), undefined);
+    expect(getAction('session.temp')).toBe(undefined);
   });
 
   it('unregister action that was never registered is a no-op', () => {
-    assert.doesNotThrow(() => unregisterContextual(['nonexistent']));
+    expect(() => unregisterContextual(['nonexistent'])).not.toThrow();
   });
 
   it('getAction returns undefined for unknown ID', () => {
-    assert.strictEqual(getAction('nope'), undefined);
+    expect(getAction('nope')).toBe(undefined);
   });
 
   it('getAllActions returns global + contextual', () => {
     registerGlobal([makeAction({ id: 'session.a' })]);
     registerContextual([makeAction({ id: 'session.b' })]);
     const all = getAllActions();
-    assert.strictEqual(all.length, 2);
-    assert.ok(all.some((a: Action) => a.id === 'session.a'));
-    assert.ok(all.some((a: Action) => a.id === 'session.b'));
+    expect(all.length).toBe(2);
+    expect(all.some((a: Action) => a.id === 'session.a')).toBeTruthy();
+    expect(all.some((a: Action) => a.id === 'session.b')).toBeTruthy();
   });
 
   it('getActionsByCategory filters correctly', () => {
@@ -71,7 +70,9 @@ describe('ActionRegistry', () => {
       makeAction({ id: 'session.c', category: 'session' }),
     ]);
     const sessions = getActionsByCategory('session');
-    assert.strictEqual(sessions.length, 2);
-    assert.ok(sessions.every((a: Action) => a.category === 'session'));
+    expect(sessions.length).toBe(2);
+    expect(
+      sessions.every((a: Action) => a.category === 'session')
+    ).toBeTruthy();
   });
 });

@@ -1,5 +1,4 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -71,7 +70,7 @@ function getSession(id: string): Session | undefined {
   return sessions.get(id);
 }
 
-before(async () => {
+beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-agent-event-test-'));
   initAnalytics(tmpDir);
 
@@ -100,7 +99,7 @@ before(async () => {
   port = (server.address() as { port: number }).port;
 });
 
-after(() => {
+afterAll(() => {
   server.close();
   closeAnalytics();
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -127,9 +126,9 @@ describe('POST /hooks/agent-event — validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: 'tok', eventType: 'session.started' }),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    assert.ok(body.error, 'should have error message');
+    expect(body.error).toBeTruthy();
   });
 
   it('returns 400 when token is missing', async () => {
@@ -141,9 +140,9 @@ describe('POST /hooks/agent-event — validation', () => {
         eventType: 'session.started',
       }),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    assert.ok(body.error);
+    expect(body.error).toBeTruthy();
   });
 
   it('returns 400 when eventType is missing', async () => {
@@ -152,9 +151,9 @@ describe('POST /hooks/agent-event — validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: 'sess-001', token: 'tok' }),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    assert.ok(body.error);
+    expect(body.error).toBeTruthy();
   });
 
   it('returns 400 when all three required fields are missing', async () => {
@@ -163,7 +162,7 @@ describe('POST /hooks/agent-event — validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 
   it('returns 404 when sessionId does not match any session', async () => {
@@ -176,9 +175,9 @@ describe('POST /hooks/agent-event — validation', () => {
         eventType: 'session.started',
       }),
     });
-    assert.equal(res.status, 404);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
-    assert.ok(body.error);
+    expect(body.error).toBeTruthy();
   });
 
   it('returns 401 when token does not match session hookToken', async () => {
@@ -195,9 +194,9 @@ describe('POST /hooks/agent-event — validation', () => {
         eventType: 'session.started',
       }),
     });
-    assert.equal(res.status, 401);
+    expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
-    assert.ok(body.error);
+    expect(body.error).toBeTruthy();
     sessions.delete('sess-001');
   });
 });
@@ -207,14 +206,14 @@ describe('POST /hooks/agent-event — validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /hooks/agent-event — successful events', () => {
-  before(() => {
+  beforeAll(() => {
     sessions.set(
       'sess-002',
       makeSession({ id: 'sess-002', hookToken: 'valid-token-2' })
     );
   });
 
-  after(() => {
+  afterAll(() => {
     sessions.delete('sess-002');
   });
 
@@ -229,7 +228,7 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'some.custom.event',
       }),
     });
-    assert.equal(res.status, 204);
+    expect(res.status).toBe(204);
   });
 
   it('maps session.started to processing state', async () => {
@@ -250,16 +249,9 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'session.started',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'processing',
-      'session.started should transition state to processing'
-    );
-    assert.ok(
-      backendStateCalls.length > 0,
-      'fireBackendStateIfChanged should have been called'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('processing');
+    expect(backendStateCalls.length > 0).toBeTruthy();
     sessions.delete('sess-003');
   });
 
@@ -281,12 +273,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'session.idle',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'idle',
-      'session.idle should transition state to idle'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('idle');
     sessions.delete('sess-004');
   });
 
@@ -308,12 +296,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'session.ended',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'idle',
-      'session.ended should transition state to idle'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('idle');
     sessions.delete('sess-005');
   });
 
@@ -335,17 +319,10 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'permission.requested',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'permission-prompt',
-      'permission.requested should transition to permission-prompt'
-    );
-    assert.ok(
-      attentionCalls.length > 0,
-      'notifySessionAttention should have been called'
-    );
-    assert.equal(attentionCalls[0]?.sessionId, 'sess-006');
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('permission-prompt');
+    expect(attentionCalls.length > 0).toBeTruthy();
+    expect(attentionCalls[0]?.sessionId).toBe('sess-006');
     sessions.delete('sess-006');
   });
 
@@ -368,14 +345,10 @@ describe('POST /hooks/agent-event — successful events', () => {
         data: { tool: 'Read' },
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'processing',
-      'tool.started should transition to processing'
-    );
-    assert.ok(session.currentActivity, 'currentActivity should be set');
-    assert.equal(session.currentActivity?.tool, 'Read');
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('processing');
+    expect(session.currentActivity).toBeTruthy();
+    expect(session.currentActivity?.tool).toBe('Read');
     sessions.delete('sess-007');
   });
 
@@ -398,12 +371,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'tool.finished',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.currentActivity,
-      undefined,
-      'tool.finished should clear currentActivity'
-    );
+    expect(res.status).toBe(204);
+    expect(session.currentActivity).toBe(undefined);
     sessions.delete('sess-008');
   });
 
@@ -425,12 +394,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'prompt.submitted',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'processing',
-      'prompt.submitted should transition to processing'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('processing');
     sessions.delete('sess-009');
   });
 
@@ -453,12 +418,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         data: { status: 'error' },
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'error',
-      'state.changed with status=error should set error state'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('error');
     sessions.delete('sess-010');
   });
 
@@ -477,7 +438,7 @@ describe('POST /hooks/agent-event — successful events', () => {
         timestamp: '2026-04-01T00:00:00.000Z',
       }),
     });
-    assert.equal(res.status, 204);
+    expect(res.status).toBe(204);
     sessions.delete('sess-011');
   });
 
@@ -499,12 +460,8 @@ describe('POST /hooks/agent-event — successful events', () => {
         eventType: 'custom.unknown.event',
       }),
     });
-    assert.equal(res.status, 204);
-    assert.equal(
-      session.agentState,
-      'idle',
-      'unrecognized eventType should not change state'
-    );
+    expect(res.status).toBe(204);
+    expect(session.agentState).toBe('idle');
     sessions.delete('sess-012');
   });
 });

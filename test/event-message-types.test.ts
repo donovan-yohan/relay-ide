@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert';
+import { test, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -23,10 +22,11 @@ test('EventMessage types compile without errors', () => {
       cwd: process.cwd(),
       encoding: 'utf-8',
     });
-    assert.ok(true, 'TypeScript compilation succeeded');
+    expect(true).toBeTruthy();
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string };
-    assert.fail(
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
       `TypeScript compilation failed:\n${e.stdout ?? ''}\n${e.stderr ?? ''}`
     );
   }

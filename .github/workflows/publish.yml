@@ -48,16 +48,7 @@ jobs:
 
       - run: npm run build
 
-      - name: Compile tests
-        run: |
-          rm -rf dist/
-          npx tsc -p tsconfig.test.json
-          echo "::group::Frontend files emitted"
-          find dist/frontend -name '*.js' 2>/dev/null || echo "WARNING: dist/frontend does not exist"
-          echo "::endgroup::"
-
-      - name: Run tests
-        run: node --test --test-force-exit --test-concurrency=1 $(find dist/test -name '*.test.js')
+      - run: npx vitest run
 
       # Stable: publish as @latest (default)
       - name: Publish stable

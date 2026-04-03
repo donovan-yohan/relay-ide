@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 import { scanWorktrees, type GitRouterDeps } from '../server/git-routes.js';
 
@@ -48,25 +47,22 @@ describe('scanWorktrees', () => {
     });
 
     const items = await scanWorktrees(deps);
-    assert.ok(Array.isArray(items));
+    expect(Array.isArray(items)).toBeTruthy();
     // parseWorktreeListPorcelain excludes the main worktree, so only child worktrees are returned
-    assert.equal(items.length, 1);
-    assert.equal(items[0]!.branchName, 'feat/login');
+    expect(items.length).toBe(1);
+    expect(items[0]!.branchName).toBe('feat/login');
     for (const wt of items) {
-      assert.equal(
-        (wt as unknown as Record<string, unknown>).branchState,
+      expect((wt as unknown as Record<string, unknown>).branchState).toBe(
         undefined
       );
-      assert.equal(
-        (wt as unknown as Record<string, unknown>).prNumber,
+      expect((wt as unknown as Record<string, unknown>).prNumber).toBe(
         undefined
       );
-      assert.equal(
-        (wt as unknown as Record<string, unknown>).prTitle,
+      expect((wt as unknown as Record<string, unknown>).prTitle).toBe(
         undefined
       );
-      assert.ok(typeof wt.path === 'string');
-      assert.ok(typeof wt.branchName === 'string');
+      expect(typeof wt.path === 'string').toBeTruthy();
+      expect(typeof wt.branchName === 'string').toBeTruthy();
     }
   });
 
@@ -76,7 +72,7 @@ describe('scanWorktrees', () => {
     });
 
     const items = await scanWorktrees(deps);
-    assert.deepEqual(items, []);
+    expect(items).toEqual([]);
   });
 
   it('filters by repo param', async () => {
@@ -107,9 +103,9 @@ describe('scanWorktrees', () => {
 
     // parseWorktreeListPorcelain excludes the main worktree, so only the child is returned
     const items = await scanWorktrees(deps, '/repos/my-repo');
-    assert.ok(Array.isArray(items));
-    assert.equal(items.length, 1);
-    assert.equal(items[0]!.branchName, 'feat/x');
+    expect(Array.isArray(items)).toBeTruthy();
+    expect(items.length).toBe(1);
+    expect(items[0]!.branchName).toBe('feat/x');
   });
 
   it('deduplicates worktrees appearing via multiple repos', async () => {
@@ -148,11 +144,7 @@ describe('scanWorktrees', () => {
     const items = await scanWorktrees(deps);
     const paths = items.map((wt) => wt.path);
     const uniquePaths = [...new Set(paths)];
-    assert.equal(
-      paths.length,
-      uniquePaths.length,
-      'should have no duplicate paths'
-    );
+    expect(paths.length).toBe(uniquePaths.length);
   });
 
   it('falls back to directory scanning when git worktree list fails', async () => {
@@ -178,6 +170,6 @@ describe('scanWorktrees', () => {
     });
 
     const items = await scanWorktrees(deps);
-    assert.ok(items.length > 0, 'should fall back to directory scanning');
+    expect(items.length > 0).toBeTruthy();
   });
 });

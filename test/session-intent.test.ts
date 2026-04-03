@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   resolveIntent,
   issueToBranchName,
@@ -74,10 +73,10 @@ describe('resolveIntent', () => {
       pr: makePr({ role: 'reviewer', state: 'OPEN' }),
     };
     const intents = resolveIntent(item, 'reviewer', [], []);
-    assert.ok(intents.length >= 1);
-    assert.equal(intents[0]!.type, 'review-pr');
-    assert.equal(intents[0]!.color, 'info');
-    assert.ok(intents[0]!.prompt); // review prompt should exist
+    expect(intents.length >= 1).toBeTruthy();
+    expect(intents[0]!.type).toBe('review-pr');
+    expect(intents[0]!.color).toBe('info');
+    expect(intents[0]!.prompt).toBeTruthy(); // review prompt should exist
   });
 
   it('returns merge-pr intent for author on open mergeable PR', () => {
@@ -86,10 +85,10 @@ describe('resolveIntent', () => {
       pr: makePr({ role: 'author', mergeable: 'MERGEABLE' }),
     };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.ok(intents.length >= 1);
-    assert.equal(intents[0]!.type, 'merge-pr');
-    assert.equal(intents[0]!.color, 'success');
-    assert.equal(intents[0]!.prompt, null); // merge is a GitHub link
+    expect(intents.length >= 1).toBeTruthy();
+    expect(intents[0]!.type).toBe('merge-pr');
+    expect(intents[0]!.color).toBe('success');
+    expect(intents[0]!.prompt).toBe(null); // merge is a GitHub link
   });
 
   it('returns resume-session when matching session exists', () => {
@@ -99,8 +98,8 @@ describe('resolveIntent', () => {
     const intents = resolveIntent(item, 'author', [session], []);
     // resume-session should appear in the intents
     const resume = intents.find((i) => i.type === 'resume-session');
-    assert.ok(resume);
-    assert.equal(resume!.existingSessionId, 'sess-1');
+    expect(resume).toBeTruthy();
+    expect(resume!.existingSessionId).toBe('sess-1');
   });
 
   it('returns open-branch for branch without session', () => {
@@ -113,9 +112,9 @@ describe('resolveIntent', () => {
       repoPath: '/path/to/repo',
     };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.ok(intents.length >= 1);
-    assert.equal(intents[0]!.type, 'open-branch');
-    assert.ok(intents[0]!.prompt);
+    expect(intents.length >= 1).toBeTruthy();
+    expect(intents[0]!.type).toBe('open-branch');
+    expect(intents[0]!.prompt).toBeTruthy();
   });
 
   it('returns resume-session for branch with existing session', () => {
@@ -129,8 +128,8 @@ describe('resolveIntent', () => {
       repoPath: '/path/to/repo',
     };
     const intents = resolveIntent(item, 'author', [session], []);
-    assert.equal(intents[0]!.type, 'resume-session');
-    assert.equal(intents[0]!.existingSessionId, 'sess-1');
+    expect(intents[0]!.type).toBe('resume-session');
+    expect(intents[0]!.existingSessionId).toBe('sess-1');
   });
 
   it('returns start-from-issue for GitHub issue', () => {
@@ -150,19 +149,19 @@ describe('resolveIntent', () => {
       },
     };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.ok(intents.length >= 1);
-    assert.equal(intents[0]!.type, 'start-from-issue');
-    assert.ok(intents[0]!.prompt);
-    assert.ok(intents[0]!.prompt!.includes('#45'));
-    assert.ok(
+    expect(intents.length >= 1).toBeTruthy();
+    expect(intents[0]!.type).toBe('start-from-issue');
+    expect(intents[0]!.prompt).toBeTruthy();
+    expect(intents[0]!.prompt!.includes('#45')).toBeTruthy();
+    expect(
       intents[0]!.prompt!.includes('Mobile virtual keyboard covers input')
-    );
+    ).toBeTruthy();
   });
 
   it('returns archive for merged PR', () => {
     const item: PickerItem = { kind: 'pr', pr: makePr({ state: 'MERGED' }) };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.equal(intents[0]!.type, 'archive');
+    expect(intents[0]!.type).toBe('archive');
   });
 
   it('returns fix-conflicts for PR with conflicts', () => {
@@ -171,20 +170,20 @@ describe('resolveIntent', () => {
       pr: makePr({ mergeable: 'CONFLICTING' }),
     };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.equal(intents[0]!.type, 'fix-conflicts');
-    assert.equal(intents[0]!.color, 'error');
+    expect(intents[0]!.type).toBe('fix-conflicts');
+    expect(intents[0]!.color).toBe('error');
   });
 
   it('always returns at least one intent', () => {
     const item: PickerItem = { kind: 'pr', pr: makePr() };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.ok(intents.length >= 1);
+    expect(intents.length >= 1).toBeTruthy();
   });
 
   it('returns archive for closed PR', () => {
     const item: PickerItem = { kind: 'pr', pr: makePr({ state: 'CLOSED' }) };
     const intents = resolveIntent(item, 'author', [], []);
-    assert.equal(intents[0]!.type, 'archive');
+    expect(intents[0]!.type).toBe('archive');
   });
 
   it('issue branch match does not false-positive on longer numbers', () => {
@@ -207,7 +206,7 @@ describe('resolveIntent', () => {
     };
     const intents = resolveIntent(item, 'author', [session], []);
     // Should NOT resume the session for issue-123
-    assert.equal(intents[0]!.type, 'start-from-issue');
+    expect(intents[0]!.type).toBe('start-from-issue');
   });
 
   it('issue branch match works for exact issue number', () => {
@@ -230,7 +229,7 @@ describe('resolveIntent', () => {
       },
     };
     const intents = resolveIntent(item, 'author', [session], []);
-    assert.equal(intents[0]!.type, 'resume-session');
+    expect(intents[0]!.type).toBe('resume-session');
   });
 });
 
@@ -255,7 +254,7 @@ describe('issueToBranchName', () => {
     const name = issueToBranchName(
       makeIssue({ number: 10, title: 'Add dark mode support' })
     );
-    assert.equal(name, 'feat/issue-10-add-dark-mode-support');
+    expect(name).toBe('feat/issue-10-add-dark-mode-support');
   });
 
   it('uses fix prefix for bug label', () => {
@@ -266,14 +265,14 @@ describe('issueToBranchName', () => {
         labels: [{ name: 'bug', color: 'ff0000' }],
       })
     );
-    assert.equal(name, 'fix/issue-42-button-not-clickable');
+    expect(name).toBe('fix/issue-42-button-not-clickable');
   });
 
   it('strips special characters from title', () => {
     const name = issueToBranchName(
       makeIssue({ number: 5, title: "Can't open [modal] (broken)" })
     );
-    assert.equal(name, 'feat/issue-5-cant-open-modal-broken');
+    expect(name).toBe('feat/issue-5-cant-open-modal-broken');
   });
 
   it('truncates to 5 words', () => {
@@ -283,11 +282,11 @@ describe('issueToBranchName', () => {
         title: 'This is a very long issue title that goes on forever',
       })
     );
-    assert.equal(name, 'feat/issue-99-this-is-a-very-long');
+    expect(name).toBe('feat/issue-99-this-is-a-very-long');
   });
 
   it('handles single-word title', () => {
     const name = issueToBranchName(makeIssue({ number: 3, title: 'Crash' }));
-    assert.equal(name, 'feat/issue-3-crash');
+    expect(name).toBe('feat/issue-3-crash');
   });
 });

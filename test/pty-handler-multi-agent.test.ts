@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,7 +41,9 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     for (const id of createdIds) {
       try {
         if (sessions.get(id)) sessions.kill(id);
-      } catch {}
+      } catch {
+        /* session may already be dead */
+      }
     }
     createdIds.length = 0;
 
@@ -83,12 +84,11 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       result.id,
       'PLUGIN_EXISTS=true'
     );
-    assert.match(
-      output,
+    expect(output).toMatch(
       new RegExp(`CRC_RELAY_URL=http://127\\.0\\.0\\.1:${port}`)
     );
-    assert.match(output, new RegExp(`CRC_SESSION_ID=${result.id}`));
-    assert.match(output, new RegExp(`CRC_RELAY_TOKEN=${hookToken}`));
+    expect(output).toMatch(new RegExp(`CRC_SESSION_ID=${result.id}`));
+    expect(output).toMatch(new RegExp(`CRC_RELAY_TOKEN=${hookToken}`));
   });
 
   it('writes Codex hooks adapter and injects CODEX_CONFIG_DIR', async () => {
@@ -121,8 +121,8 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       result.id,
       'HAS_RELAY_SH=true'
     );
-    assert.match(output, /CODEX_CONFIG_DIR=\/.*codex-hooks-/);
-    assert.match(output, /HAS_HOOKS_JSON=true/);
+    expect(output).toMatch(/CODEX_CONFIG_DIR=\/.*codex-hooks-/);
+    expect(output).toMatch(/HAS_HOOKS_JSON=true/);
   });
 
   it('resolves framework from config.frameworks overrides', () => {
@@ -143,8 +143,8 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     createdIds.push(result.id);
 
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
-    assert.equal(session.dataQuality, 'parser');
+    expect(session).toBeTruthy();
+    expect(session.dataQuality).toBe('parser');
   });
 
   it('injects framework.yoloEnv for opencode in yolo mode', async () => {
@@ -173,6 +173,6 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       result.id,
       'OPENCODE_CONFIG_CONTENT='
     );
-    assert.match(output, /OPENCODE_CONFIG_CONTENT=.*"permission"/);
+    expect(output).toMatch(/OPENCODE_CONFIG_CONTENT=.*"permission"/);
   });
 });

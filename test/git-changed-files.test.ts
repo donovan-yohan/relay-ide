@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   getChangedFiles,
   getFileDiff,
@@ -29,25 +28,25 @@ describe('getChangedFiles', () => {
       }
     );
 
-    assert.equal(files.length, 3);
+    expect(files.length).toBe(3);
 
     const gitTs = files.find((f) => f.path === 'server/git.ts');
-    assert.ok(gitTs);
-    assert.equal(gitTs.status, 'modified');
-    assert.equal(gitTs.additions, 15);
-    assert.equal(gitTs.deletions, 3);
-    assert.equal(gitTs.directory, 'server');
+    expect(gitTs).toBeTruthy();
+    expect(gitTs.status).toBe('modified');
+    expect(gitTs.additions).toBe(15);
+    expect(gitTs.deletions).toBe(3);
+    expect(gitTs.directory).toBe('server');
 
     const newFile = files.find((f) => f.path === 'frontend/new.svelte');
-    assert.ok(newFile);
-    assert.equal(newFile.status, 'untracked');
-    assert.equal(newFile.additions, 42);
-    assert.equal(newFile.directory, 'frontend');
+    expect(newFile).toBeTruthy();
+    expect(newFile.status).toBe('untracked');
+    expect(newFile.additions).toBe(42);
+    expect(newFile.directory).toBe('frontend');
 
     const deleted = files.find((f) => f.path === 'old-file.js');
-    assert.ok(deleted);
-    assert.equal(deleted.status, 'deleted');
-    assert.equal(deleted.directory, '.');
+    expect(deleted).toBeTruthy();
+    expect(deleted.status).toBe('deleted');
+    expect(deleted.directory).toBe('.');
   });
 
   it('parses branch comparison with renames', async () => {
@@ -73,22 +72,20 @@ describe('getChangedFiles', () => {
       }
     );
 
-    assert.equal(files.length, 3);
+    expect(files.length).toBe(3);
 
     const renamed = files.find((f) => f.path === 'new-name.ts');
-    assert.ok(renamed);
-    assert.equal(renamed.status, 'renamed');
-    assert.equal(renamed.oldPath, 'old-name.ts');
+    expect(renamed).toBeTruthy();
+    expect(renamed.status).toBe('renamed');
+    expect(renamed.oldPath).toBe('old-name.ts');
   });
 
   it('throws on git failure', async () => {
-    await assert.rejects(
-      () =>
-        getChangedFiles('/tmp/repo', undefined, async () => {
-          throw new Error('not a git repo');
-        }),
-      { message: 'not a git repo' }
-    );
+    await expect(() =>
+      getChangedFiles('/tmp/repo', undefined, async () => {
+        throw new Error('not a git repo');
+      })
+    ).rejects.toThrow('not a git repo');
   });
 });
 
@@ -99,11 +96,11 @@ describe('getFileDiff', () => {
       'server/git.ts',
       undefined,
       async (_file, args) => {
-        assert.equal(args[0], 'diff');
-        assert.ok(args.includes('--unified=3'));
-        assert.ok(args.includes('--find-renames'));
-        assert.ok(args.includes('--'));
-        assert.ok(args.includes('server/git.ts'));
+        expect(args[0]).toBe('diff');
+        expect(args.includes('--unified=3')).toBeTruthy();
+        expect(args.includes('--find-renames')).toBeTruthy();
+        expect(args.includes('--')).toBeTruthy();
+        expect(args.includes('server/git.ts')).toBeTruthy();
         return {
           stdout:
             'diff --git a/server/git.ts b/server/git.ts\n--- a/server/git.ts\n+++ b/server/git.ts\n@@ -1,3 +1,4 @@\n+new line\n old\n',
@@ -111,7 +108,7 @@ describe('getFileDiff', () => {
         };
       }
     );
-    assert.ok(diff.includes('new line'));
+    expect(diff.includes('new line')).toBeTruthy();
   });
 
   it('returns staged diff when base is "cached"', async () => {
@@ -120,11 +117,11 @@ describe('getFileDiff', () => {
       'file.ts',
       'cached',
       async (_file, args) => {
-        assert.ok(args.includes('--cached'));
+        expect(args.includes('--cached')).toBeTruthy();
         return { stdout: 'staged diff output', stderr: '' };
       }
     );
-    assert.equal(diff, 'staged diff output');
+    expect(diff).toBe('staged diff output');
   });
 
   it('returns branch comparison diff', async () => {
@@ -133,11 +130,11 @@ describe('getFileDiff', () => {
       'file.ts',
       'main',
       async (_file, args) => {
-        assert.ok(args.includes('main...HEAD'));
+        expect(args.includes('main...HEAD')).toBeTruthy();
         return { stdout: 'branch diff output', stderr: '' };
       }
     );
-    assert.equal(diff, 'branch diff output');
+    expect(diff).toBe('branch diff output');
   });
 
   it('falls back to --no-index for untracked files when first diff is empty', async () => {
@@ -153,25 +150,23 @@ describe('getFileDiff', () => {
           return { stdout: '', stderr: '' };
         }
         // Second call: git diff --no-index exits with code 1 but has stdout
-        assert.ok(args.includes('--no-index'));
+        expect(args.includes('--no-index')).toBeTruthy();
         const err = new Error('exit code 1') as Error & { stdout: string };
         err.stdout =
           'diff --git a/dev/null b/new-file.ts\n+++ b/new-file.ts\n+content\n';
         throw err;
       }
     );
-    assert.ok(diff.includes('+content'));
-    assert.equal(callCount, 2);
+    expect(diff.includes('+content')).toBeTruthy();
+    expect(callCount).toBe(2);
   });
 
   it('throws on git failure', async () => {
-    await assert.rejects(
-      () =>
-        getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
-          throw new Error('git failed');
-        }),
-      { message: 'git failed' }
-    );
+    await expect(() =>
+      getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {
+        throw new Error('git failed');
+      })
+    ).rejects.toThrow('git failed');
   });
 });
 
@@ -183,7 +178,7 @@ describe('getDefaultBranch', () => {
       }
       return { stdout: '', stderr: '' };
     });
-    assert.equal(branch, 'main');
+    expect(branch).toBe('main');
   });
 
   it('falls back to checking rev-parse for main then master', async () => {
@@ -201,13 +196,13 @@ describe('getDefaultBranch', () => {
       }
       return { stdout: '', stderr: '' };
     });
-    assert.equal(branch, 'master');
+    expect(branch).toBe('master');
   });
 
   it('returns "main" as ultimate fallback', async () => {
     const branch = await getDefaultBranch('/tmp/repo', async () => {
       throw new Error('everything fails');
     });
-    assert.equal(branch, 'main');
+    expect(branch).toBe('main');
   });
 });

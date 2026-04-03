@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, expect } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,9 +57,9 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
 
     // Hit GET /auth/status — should work without auth
     const res = await fetch(`http://127.0.0.1:${port}/auth/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as { hasPIN: boolean };
-    assert.equal(body.hasPIN, false, 'Server should report no PIN configured');
+    expect(body.hasPIN).toBe(false);
   } finally {
     child.kill('SIGTERM');
     // Wait for the child to fully exit before cleaning up temp files.

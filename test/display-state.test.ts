@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   transitionDisplayState,
   shouldNotify,
@@ -163,33 +162,33 @@ describe('transitionDisplayState', () => {
   for (const [current, event, expected, description] of transitionTable) {
     it(description, () => {
       const result = transitionDisplayState(current, event);
-      assert.equal(result, expected);
+      expect(result).toBe(expected);
     });
   }
 });
 
 describe('shouldNotify', () => {
   it('running → unseen-idle → true', () => {
-    assert.equal(shouldNotify('running', 'unseen-idle'), true);
+    expect(shouldNotify('running', 'unseen-idle')).toBe(true);
   });
 
   it('running → permission → true', () => {
-    assert.equal(shouldNotify('running', 'permission'), true);
+    expect(shouldNotify('running', 'permission')).toBe(true);
   });
 
   it('initializing → unseen-idle → false', () => {
-    assert.equal(shouldNotify('initializing', 'unseen-idle'), false);
+    expect(shouldNotify('initializing', 'unseen-idle')).toBe(false);
   });
 
   it('seen-idle → seen-idle → false', () => {
-    assert.equal(shouldNotify('seen-idle', 'seen-idle'), false);
+    expect(shouldNotify('seen-idle', 'seen-idle')).toBe(false);
   });
 
   it('running → needs-answer → true', () => {
-    assert.equal(shouldNotify('running', 'needs-answer'), true);
+    expect(shouldNotify('running', 'needs-answer')).toBe(true);
   });
 
   it('running → error → true', () => {
-    assert.equal(shouldNotify('running', 'error'), true);
+    expect(shouldNotify('running', 'error')).toBe(true);
   });
 });

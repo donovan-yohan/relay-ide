@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 import type {
   AccountTelemetry,
@@ -77,9 +76,9 @@ describe('mergeSessionTelemetrySnapshot', () => {
       '2026-04-01T00:00:08.000Z'
     );
 
-    assert.deepEqual(Object.keys(mergedSessions).sort(), ['session-1']);
-    assert.deepEqual(mergedSessions['session-1'], currentSession);
-    assert.deepEqual(mergedAccount, currentAccount);
+    expect(Object.keys(mergedSessions).sort()).toEqual(['session-1']);
+    expect(mergedSessions['session-1']).toEqual(currentSession);
+    expect(mergedAccount).toEqual(currentAccount);
   });
 
   it('preserves a newer websocket-only session that arrived after snapshot start', () => {
@@ -94,7 +93,7 @@ describe('mergeSessionTelemetrySnapshot', () => {
       '2026-04-01T00:00:08.000Z'
     );
 
-    assert.deepEqual(Object.keys(mergedSessions), ['session-2']);
-    assert.deepEqual(mergedSessions['session-2'], currentSession);
+    expect(Object.keys(mergedSessions)).toEqual(['session-2']);
+    expect(mergedSessions['session-2']).toEqual(currentSession);
   });
 });

@@ -1,5 +1,4 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -85,14 +84,14 @@ async function getLinks(): Promise<BranchLinksResponse> {
   return res.json() as Promise<BranchLinksResponse>;
 }
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-linker-test-'));
   configPath = path.join(tmpDir, 'config.json');
   // Clear any module-level cache before test suite runs
   invalidateBranchLinkerCache();
 });
 
-after(async () => {
+afterAll(async () => {
   await stopServer();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -114,12 +113,12 @@ test('extracts Jira ticket IDs from branch names', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.ok('ACME-123' in data, 'Should extract ACME-123 from branch name');
+  expect('ACME-123' in data).toBeTruthy();
   const links = data['ACME-123']!;
-  assert.equal(links.length, 1);
-  assert.equal(links[0]!.branchName, 'dy/fix/ACME-123-auth');
-  assert.equal(links[0]!.repoPath, WORKSPACE_PATH_A);
-  assert.equal(links[0]!.repoName, 'repo-a');
+  expect(links.length).toBe(1);
+  expect(links[0]!.branchName).toBe('dy/fix/ACME-123-auth');
+  expect(links[0]!.repoPath).toBe(WORKSPACE_PATH_A);
+  expect(links[0]!.repoName).toBe('repo-a');
 });
 
 test('extracts GH issue IDs from gh-N branches', async () => {
@@ -143,19 +142,13 @@ test('extracts GH issue IDs from gh-N branches', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.ok('GH-42' in data, 'Should extract GH-42 from branch name');
+  expect('GH-42' in data).toBeTruthy();
   const links = data['GH-42']!;
   // Only the GH regex matches this branch — the Jira regex explicitly excludes 'GH'
   // to avoid double-matching. Verify all links point to the correct branch and repo.
-  assert.ok(links.length >= 1, 'Should have at least one GH-42 link');
-  assert.ok(
-    links.every((l) => l.branchName === 'gh-42-login-fix'),
-    'All links should reference the correct branch'
-  );
-  assert.ok(
-    links.every((l) => l.repoPath === WORKSPACE_PATH_A),
-    'All links should reference the correct repo'
-  );
+  expect(links.length >= 1).toBeTruthy();
+  expect(links.every((l) => l.branchName === 'gh-42-login-fix')).toBeTruthy();
+  expect(links.every((l) => l.repoPath === WORKSPACE_PATH_A)).toBeTruthy();
 });
 
 test('same ticket in two repos yields array of 2 BranchLinks', async () => {
@@ -176,16 +169,12 @@ test('same ticket in two repos yields array of 2 BranchLinks', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.ok('PROJ-99' in data, 'Should have PROJ-99 key');
+  expect('PROJ-99' in data).toBeTruthy();
   const links = data['PROJ-99']!;
-  assert.equal(
-    links.length,
-    2,
-    'Should have 2 BranchLinks for the same ticket across 2 repos'
-  );
+  expect(links.length).toBe(2);
 
   const repoPaths = links.map((l) => l.repoPath).sort();
-  assert.deepEqual(repoPaths, [WORKSPACE_PATH_A, WORKSPACE_PATH_B].sort());
+  expect(repoPaths).toEqual([WORKSPACE_PATH_A, WORKSPACE_PATH_B].sort());
 });
 
 test('ignores branches without ticket IDs', async () => {
@@ -210,11 +199,7 @@ test('ignores branches without ticket IDs', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.equal(
-    Object.keys(data).length,
-    0,
-    'Plain branches should produce no ticket links'
-  );
+  expect(Object.keys(data).length).toBe(0);
 });
 
 test('hasActiveSession true when branch is in active set', async () => {
@@ -242,21 +227,13 @@ test('hasActiveSession true when branch is in active set', async () => {
   const data = await getLinks();
 
   const activeLinks = data['ACTIVE-1'];
-  assert.ok(activeLinks, 'Should have ACTIVE-1 ticket');
-  assert.equal(activeLinks.length, 1);
-  assert.equal(
-    activeLinks[0]!.hasActiveSession,
-    true,
-    'Active branch should have hasActiveSession true'
-  );
+  expect(activeLinks).toBeTruthy();
+  expect(activeLinks!.length).toBe(1);
+  expect(activeLinks![0]!.hasActiveSession).toBe(true);
 
   const inactiveLinks = data['INACTIVE-2'];
-  assert.ok(inactiveLinks, 'Should have INACTIVE-2 ticket');
-  assert.equal(
-    inactiveLinks[0]!.hasActiveSession,
-    false,
-    'Inactive branch should have hasActiveSession false'
-  );
+  expect(inactiveLinks).toBeTruthy();
+  expect(inactiveLinks![0]!.hasActiveSession).toBe(false);
 });
 
 test('invalidateBranchLinkerCache forces fresh scan', async () => {
@@ -285,25 +262,21 @@ test('invalidateBranchLinkerCache forces fresh scan', async () => {
 
   // First request — populates module-level cache
   const first = await getLinks();
-  assert.ok('SCAN-1' in first, 'Should have SCAN-1 after first request');
-  assert.equal(gitCallCount, 1, 'git should be called once on first request');
+  expect('SCAN-1' in first).toBeTruthy();
+  expect(gitCallCount).toBe(1);
 
   // Second request — served from cache
   const second = await getLinks();
-  assert.ok('SCAN-1' in second);
-  assert.equal(gitCallCount, 1, 'git should not be called again within TTL');
+  expect('SCAN-1' in second).toBeTruthy();
+  expect(gitCallCount).toBe(1);
 
   // Invalidate cache
   invalidateBranchLinkerCache();
 
   // Third request — cache is cleared, should fetch fresh
   const third = await getLinks();
-  assert.ok('SCAN-1' in third);
-  assert.equal(
-    gitCallCount,
-    2,
-    'git should be called again after cache invalidation'
-  );
+  expect('SCAN-1' in third).toBeTruthy();
+  expect(gitCallCount).toBe(2);
 });
 
 test('returns empty object when no workspaces', async () => {
@@ -320,9 +293,5 @@ test('returns empty object when no workspaces', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.equal(
-    Object.keys(data).length,
-    0,
-    'Should return empty object when no workspaces configured'
-  );
+  expect(Object.keys(data).length).toBe(0);
 });

@@ -1,5 +1,4 @@
-import { describe, it, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, afterEach, expect } from 'vitest';
 import * as sessions from '../server/sessions.js';
 import type { PtySession, EventSourceType } from '../server/types.js';
 
@@ -13,10 +12,10 @@ describe('status-line relay script', () => {
       '/usr/local/bin/status-line'
     );
 
-    assert.match(script, /mktemp/);
-    assert.match(script, /tee "\$tmp_file"/);
-    assert.match(script, /mv "\$tmp_file"/);
-    assert.doesNotMatch(script, /input=\$\(cat\)/);
+    expect(script).toMatch(/mktemp/);
+    expect(script).toMatch(/tee "\$tmp_file"/);
+    expect(script).toMatch(/mv "\$tmp_file"/);
+    expect(script).not.toMatch(/input=\$\(cat\)/);
   });
 });
 
@@ -48,11 +47,11 @@ describe('framework-driven PTY handler', () => {
       args: ['hello'],
     });
     createdIds.push(result.id);
-    assert.equal(result.agent, 'codex');
+    expect(result.agent).toBe('codex');
     const session = sessions.get(result.id);
-    assert.ok(session);
+    expect(session).toBeTruthy();
     // customCommand should be set since we passed command
-    assert.equal(session.customCommand, '/bin/echo');
+    expect(session!.customCommand).toBe('/bin/echo');
   });
 
   it('dataQuality is derived from actual hooksActive state (hooks when injection succeeds)', () => {
@@ -67,9 +66,9 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
+    expect(session).toBeTruthy();
     // Without a port, hook injection doesn't succeed → hooksActive stays false → dataQuality falls back to 'parser'
-    assert.equal(session.dataQuality, 'parser');
+    expect(session.dataQuality).toBe('parser');
   });
 
   it('dataQuality falls back to parser when plugin injection fails', () => {
@@ -84,9 +83,9 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
+    expect(session).toBeTruthy();
     // Without a port, opencode plugin injection doesn't succeed → hooksActive stays false → dataQuality is 'parser'
-    assert.equal(session.dataQuality, 'parser' as EventSourceType);
+    expect(session.dataQuality).toBe('parser' as EventSourceType);
   });
 
   it('sessionArgs is populated on session matching claudeArgs', () => {
@@ -102,10 +101,10 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
-    assert.deepEqual(session.sessionArgs, ['--model', 'opus']);
+    expect(session).toBeTruthy();
+    expect(session.sessionArgs).toEqual(['--model', 'opus']);
     // claudeArgs backward compat still set
-    assert.deepEqual(session.claudeArgs, ['--model', 'opus']);
+    expect(session.claudeArgs).toEqual(['--model', 'opus']);
   });
 
   it('sessionArgs defaults to empty array when claudeArgs not provided', () => {
@@ -120,8 +119,8 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
-    assert.deepEqual(session.sessionArgs, []);
+    expect(session).toBeTruthy();
+    expect(session.sessionArgs).toEqual([]);
   });
 
   it('forceOutputParser sets dataQuality to parser regardless of framework', () => {
@@ -137,8 +136,8 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
-    assert.equal(session.dataQuality, 'parser' as EventSourceType);
+    expect(session).toBeTruthy();
+    expect(session.dataQuality).toBe('parser' as EventSourceType);
   });
 
   it('parser is selected by framework.parserType (opencode uses opencode parser)', () => {
@@ -153,9 +152,9 @@ describe('framework-driven PTY handler', () => {
     });
     createdIds.push(result.id);
     const session = sessions.get(result.id) as PtySession;
-    assert.ok(session);
+    expect(session).toBeTruthy();
     // The outputParser should be an instance of the opencode parser
     // We verify indirectly by checking the session started correctly
-    assert.ok(session.outputParser, 'outputParser should be set');
+    expect(session.outputParser).toBeTruthy();
   });
 });

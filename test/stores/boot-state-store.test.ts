@@ -1,5 +1,4 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeEach, expect } from 'vitest';
 
 // Mock localStorage before importing the store
 const storage: Record<string, string> = {};
@@ -7,10 +6,18 @@ if (typeof globalThis.localStorage === 'undefined') {
   Object.defineProperty(globalThis, 'localStorage', {
     value: {
       getItem: (key: string) => storage[key] ?? null,
-      setItem: (key: string, value: string) => { storage[key] = value; },
-      removeItem: (key: string) => { delete storage[key]; },
-      clear: () => { for (const key of Object.keys(storage)) delete storage[key]; },
-      get length() { return Object.keys(storage).length; },
+      setItem: (key: string, value: string) => {
+        storage[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete storage[key];
+      },
+      clear: () => {
+        for (const key of Object.keys(storage)) delete storage[key];
+      },
+      get length() {
+        return Object.keys(storage).length;
+      },
       key: (index: number) => Object.keys(storage)[index] ?? null,
     },
     configurable: true,
@@ -37,25 +44,28 @@ describe('boot-state Zustand store', () => {
     it('transitions from idle to greeting', () => {
       useBootStateStore.getState().startBoot();
       const state = useBootStateStore.getState();
-      assert.strictEqual(state.phase, 'greeting');
-      assert.strictEqual(state.lines.length, 5);
-      assert.ok(state.greeting.length > 0, 'greeting should be non-empty');
+      expect(state.phase).toBe('greeting');
+      expect(state.lines.length).toBe(5);
+      expect(state.greeting.length > 0).toBeTruthy();
     });
 
     it('creates 5 boot lines for all services', () => {
       useBootStateStore.getState().startBoot();
       const { lines } = useBootStateStore.getState();
-      assert.deepStrictEqual(
-        lines.map((l) => l.service),
-        ['auth', 'workspaces', 'sessions', 'worktrees', 'groups']
-      );
+      expect(lines.map((l) => l.service)).toEqual([
+        'auth',
+        'workspaces',
+        'sessions',
+        'worktrees',
+        'groups',
+      ]);
     });
 
     it('all lines start as pending', () => {
       useBootStateStore.getState().startBoot();
       const { lines } = useBootStateStore.getState();
       for (const line of lines) {
-        assert.strictEqual(line.status, 'pending');
+        expect(line.status).toBe('pending');
       }
     });
 
@@ -63,8 +73,8 @@ describe('boot-state Zustand store', () => {
       useBootStateStore.getState().startBoot();
       const greetingAfterFirst = useBootStateStore.getState().greeting;
       useBootStateStore.getState().startBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'greeting');
-      assert.strictEqual(useBootStateStore.getState().greeting, greetingAfterFirst);
+      expect(useBootStateStore.getState().phase).toBe('greeting');
+      expect(useBootStateStore.getState().greeting).toBe(greetingAfterFirst);
     });
   });
 
@@ -75,8 +85,10 @@ describe('boot-state Zustand store', () => {
 
     it('updates a known service to loading', () => {
       useBootStateStore.getState().reportFetch('workspaces', 'loading');
-      const ws = useBootStateStore.getState().lines.find((l) => l.service === 'workspaces')!;
-      assert.strictEqual(ws.status, 'loading');
+      const ws = useBootStateStore
+        .getState()
+        .lines.find((l) => l.service === 'workspaces')!;
+      expect(ws.status).toBe('loading');
     });
 
     it('updates a service to ok with summary and duration', () => {
@@ -84,10 +96,12 @@ describe('boot-state Zustand store', () => {
         summary: '2 active',
         durationMs: 42,
       });
-      const sess = useBootStateStore.getState().lines.find((l) => l.service === 'sessions')!;
-      assert.strictEqual(sess.status, 'ok');
-      assert.strictEqual(sess.summary, '2 active');
-      assert.strictEqual(sess.durationMs, 42);
+      const sess = useBootStateStore
+        .getState()
+        .lines.find((l) => l.service === 'sessions')!;
+      expect(sess.status).toBe('ok');
+      expect(sess.summary).toBe('2 active');
+      expect(sess.durationMs).toBe(42);
     });
 
     it('updates a service to fail with error', () => {
@@ -95,37 +109,41 @@ describe('boot-state Zustand store', () => {
         error: 'timeout',
         durationMs: 5000,
       });
-      const wt = useBootStateStore.getState().lines.find((l) => l.service === 'worktrees')!;
-      assert.strictEqual(wt.status, 'fail');
-      assert.strictEqual(wt.error, 'timeout');
-      assert.strictEqual(wt.durationMs, 5000);
+      const wt = useBootStateStore
+        .getState()
+        .lines.find((l) => l.service === 'worktrees')!;
+      expect(wt.status).toBe('fail');
+      expect(wt.error).toBe('timeout');
+      expect(wt.durationMs).toBe(5000);
     });
 
     it('ignores unknown service', () => {
       const linesBefore = [...useBootStateStore.getState().lines];
       useBootStateStore.getState().reportFetch('unknown-service', 'ok');
-      assert.deepStrictEqual(useBootStateStore.getState().lines, linesBefore);
+      expect(useBootStateStore.getState().lines).toEqual(linesBefore);
     });
 
     it('does not affect other lines', () => {
-      useBootStateStore.getState().reportFetch('auth', 'ok', { durationMs: 10 });
+      useBootStateStore
+        .getState()
+        .reportFetch('auth', 'ok', { durationMs: 10 });
       const { lines } = useBootStateStore.getState();
       for (const line of lines) {
         if (line.service !== 'auth') {
-          assert.strictEqual(line.status, 'pending', `${line.service} should still be pending`);
+          expect(line.status).toBe('pending');
         }
       }
     });
 
     it('transitions from greeting to booting on first non-auth loading', () => {
-      assert.strictEqual(useBootStateStore.getState().phase, 'greeting');
+      expect(useBootStateStore.getState().phase).toBe('greeting');
       useBootStateStore.getState().reportFetch('workspaces', 'loading');
-      assert.strictEqual(useBootStateStore.getState().phase, 'booting');
+      expect(useBootStateStore.getState().phase).toBe('booting');
     });
 
     it('does not transition to booting on auth loading', () => {
       useBootStateStore.getState().reportFetch('auth', 'loading');
-      assert.strictEqual(useBootStateStore.getState().phase, 'greeting');
+      expect(useBootStateStore.getState().phase).toBe('greeting');
     });
   });
 
@@ -142,8 +160,8 @@ describe('boot-state Zustand store', () => {
       reportFetch('worktrees', 'ok', { summary: '1 tree' });
       reportFetch('groups', 'ok', { summary: '0 groups' });
       useBootStateStore.getState().finishBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'ready');
-      assert.strictEqual(useBootStateStore.getState().bootComplete, true);
+      expect(useBootStateStore.getState().phase).toBe('ready');
+      expect(useBootStateStore.getState().bootComplete).toBe(true);
     });
 
     it('returns degraded when one fetch fails', () => {
@@ -154,8 +172,8 @@ describe('boot-state Zustand store', () => {
       reportFetch('worktrees', 'ok', { summary: '1 tree' });
       reportFetch('groups', 'ok', { summary: '0 groups' });
       useBootStateStore.getState().finishBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'degraded');
-      assert.strictEqual(useBootStateStore.getState().bootComplete, true);
+      expect(useBootStateStore.getState().phase).toBe('degraded');
+      expect(useBootStateStore.getState().bootComplete).toBe(true);
     });
 
     it('ignores auth status when deriving phase', () => {
@@ -166,7 +184,7 @@ describe('boot-state Zustand store', () => {
       reportFetch('worktrees', 'ok', { summary: '0 trees' });
       reportFetch('groups', 'ok', { summary: '0 groups' });
       useBootStateStore.getState().finishBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'ready');
+      expect(useBootStateStore.getState().phase).toBe('ready');
     });
   });
 
@@ -175,14 +193,14 @@ describe('boot-state Zustand store', () => {
       useBootStateStore.getState().startBoot();
       useBootStateStore.getState().reportFetch('auth', 'ok');
       useBootStateStore.getState().finishBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'ready');
+      expect(useBootStateStore.getState().phase).toBe('ready');
 
       useBootStateStore.getState().resetBoot();
-      assert.strictEqual(useBootStateStore.getState().phase, 'greeting');
-      assert.strictEqual(useBootStateStore.getState().bootComplete, false);
-      assert.strictEqual(useBootStateStore.getState().lines.length, 5);
+      expect(useBootStateStore.getState().phase).toBe('greeting');
+      expect(useBootStateStore.getState().bootComplete).toBe(false);
+      expect(useBootStateStore.getState().lines.length).toBe(5);
       for (const line of useBootStateStore.getState().lines) {
-        assert.strictEqual(line.status, 'pending');
+        expect(line.status).toBe('pending');
       }
     });
   });

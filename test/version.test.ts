@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, expect } from 'vitest';
 
 function semverLessThan(a: string, b: string): boolean {
   const pa = a.split('.').map(Number);
@@ -12,29 +11,29 @@ function semverLessThan(a: string, b: string): boolean {
 }
 
 test('semverLessThan returns true when major is lower', () => {
-  assert.equal(semverLessThan('1.0.0', '2.0.0'), true);
+  expect(semverLessThan('1.0.0', '2.0.0')).toBe(true);
 });
 
 test('semverLessThan returns true when minor is lower', () => {
-  assert.equal(semverLessThan('1.1.0', '1.2.0'), true);
+  expect(semverLessThan('1.1.0', '1.2.0')).toBe(true);
 });
 
 test('semverLessThan returns true when patch is lower', () => {
-  assert.equal(semverLessThan('1.1.1', '1.1.2'), true);
+  expect(semverLessThan('1.1.1', '1.1.2')).toBe(true);
 });
 
 test('semverLessThan returns false for equal versions', () => {
-  assert.equal(semverLessThan('1.1.1', '1.1.1'), false);
+  expect(semverLessThan('1.1.1', '1.1.1')).toBe(false);
 });
 
 test('semverLessThan returns false when current is greater', () => {
-  assert.equal(semverLessThan('2.0.0', '1.9.9'), false);
+  expect(semverLessThan('2.0.0', '1.9.9')).toBe(false);
 });
 
 test('semverLessThan handles major version jumps', () => {
-  assert.equal(semverLessThan('1.9.9', '2.0.0'), true);
+  expect(semverLessThan('1.9.9', '2.0.0')).toBe(true);
 });
 
 test('semverLessThan handles two-segment versions gracefully', () => {
-  assert.equal(semverLessThan('1.0', '1.1'), true);
+  expect(semverLessThan('1.0', '1.1')).toBe(true);
 });

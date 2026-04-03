@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { derivePrDotStatus, prGlyph } from '../frontend/src/lib/pr-status.js';
 import type { PrDotStatus } from '../frontend/src/lib/pr-status.js';
 import type { PullRequest } from '../frontend/src/lib/types.js';
@@ -27,53 +26,49 @@ function makePr(overrides: Partial<PullRequest>): PullRequest {
 
 describe('derivePrDotStatus', () => {
   it('returns merged for MERGED state', () => {
-    assert.equal(derivePrDotStatus(makePr({ state: 'MERGED' })), 'merged');
+    expect(derivePrDotStatus(makePr({ state: 'MERGED' }))).toBe('merged');
   });
 
   it('returns closed for CLOSED state', () => {
-    assert.equal(derivePrDotStatus(makePr({ state: 'CLOSED' })), 'closed');
+    expect(derivePrDotStatus(makePr({ state: 'CLOSED' }))).toBe('closed');
   });
 
   it('returns draft for isDraft PRs', () => {
-    assert.equal(derivePrDotStatus(makePr({ isDraft: true })), 'draft');
+    expect(derivePrDotStatus(makePr({ isDraft: true }))).toBe('draft');
   });
 
   it('returns changes-requested when reviewDecision is CHANGES_REQUESTED', () => {
-    assert.equal(
-      derivePrDotStatus(makePr({ reviewDecision: 'CHANGES_REQUESTED' })),
-      'changes-requested'
-    );
+    expect(
+      derivePrDotStatus(makePr({ reviewDecision: 'CHANGES_REQUESTED' }))
+    ).toBe('changes-requested');
   });
 
   it('returns approved when reviewDecision is APPROVED', () => {
-    assert.equal(
-      derivePrDotStatus(makePr({ reviewDecision: 'APPROVED' })),
+    expect(derivePrDotStatus(makePr({ reviewDecision: 'APPROVED' }))).toBe(
       'approved'
     );
   });
 
   it('returns review-requested for reviewers', () => {
-    assert.equal(
-      derivePrDotStatus(makePr({ role: 'reviewer' })),
+    expect(derivePrDotStatus(makePr({ role: 'reviewer' }))).toBe(
       'review-requested'
     );
   });
 
   it('returns open for plain open PRs', () => {
-    assert.equal(derivePrDotStatus(makePr({})), 'open');
+    expect(derivePrDotStatus(makePr({}))).toBe('open');
   });
 
   it('draft takes priority over changes-requested', () => {
-    assert.equal(
+    expect(
       derivePrDotStatus(
         makePr({ isDraft: true, reviewDecision: 'CHANGES_REQUESTED' })
-      ),
-      'draft'
-    );
+      )
+    ).toBe('draft');
   });
 
   it('merged takes priority over everything', () => {
-    assert.equal(
+    expect(
       derivePrDotStatus(
         makePr({
           state: 'MERGED',
@@ -81,9 +76,8 @@ describe('derivePrDotStatus', () => {
           reviewDecision: 'APPROVED',
           role: 'reviewer',
         })
-      ),
-      'merged'
-    );
+      )
+    ).toBe('merged');
   });
 });
 
@@ -101,19 +95,15 @@ describe('prGlyph', () => {
     ];
     const chars = statuses.map((s) => prGlyph(s).char);
     for (const c of chars) {
-      assert.ok(c.length > 0, 'each glyph should be non-empty');
+      expect(c.length > 0).toBeTruthy();
     }
     // Ensure each status maps to a distinct glyph character
-    assert.equal(
-      new Set(chars).size,
-      statuses.length,
-      'all glyph characters should be unique'
-    );
+    expect(new Set(chars).size).toBe(statuses.length);
   });
 
   it('approved is green checkmark', () => {
     const g = prGlyph('approved');
-    assert.equal(g.char, '✓');
-    assert.equal(g.colorClass, 'pr-green');
+    expect(g.char).toBe('✓');
+    expect(g.colorClass).toBe('pr-green');
   });
 });

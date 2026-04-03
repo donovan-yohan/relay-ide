@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   WORKTREE_DIRS,
   isValidWorktreePath,
@@ -12,31 +11,29 @@ import { generateTmuxSessionName } from '../server/pty-handler.js';
 
 describe('worktree directories constant', () => {
   it('should include both .worktrees and .claude/worktrees', () => {
-    assert.deepEqual(WORKTREE_DIRS, ['.worktrees', '.claude/worktrees']);
+    expect(WORKTREE_DIRS).toEqual(['.worktrees', '.claude/worktrees']);
   });
 });
 
 describe('isValidWorktreePath', () => {
   it('should reject paths not inside any worktree directory', () => {
-    assert.equal(isValidWorktreePath('/some/random/path'), false);
+    expect(isValidWorktreePath('/some/random/path')).toBe(false);
   });
 
   it('should accept paths inside .worktrees/', () => {
-    assert.equal(
-      isValidWorktreePath('/Users/me/code/repo/.worktrees/my-worktree'),
-      true
-    );
+    expect(
+      isValidWorktreePath('/Users/me/code/repo/.worktrees/my-worktree')
+    ).toBe(true);
   });
 
   it('should accept paths inside .claude/worktrees/', () => {
-    assert.equal(
-      isValidWorktreePath('/Users/me/code/repo/.claude/worktrees/my-worktree'),
-      true
-    );
+    expect(
+      isValidWorktreePath('/Users/me/code/repo/.claude/worktrees/my-worktree')
+    ).toBe(true);
   });
 
   it('should not match partial .worktrees paths', () => {
-    assert.equal(isValidWorktreePath('/Users/me/.worktrees-fake/foo'), false);
+    expect(isValidWorktreePath('/Users/me/.worktrees-fake/foo')).toBe(false);
   });
 });
 
@@ -44,13 +41,13 @@ describe('branch name to directory name', () => {
   it('should replace slashes with dashes', () => {
     const branchName = 'dy/feat/my-feature';
     const dirName = branchName.replace(/\//g, '-');
-    assert.equal(dirName, 'dy-feat-my-feature');
+    expect(dirName).toBe('dy-feat-my-feature');
   });
 
   it('should leave flat branch names unchanged', () => {
     const branchName = 'my-feature';
     const dirName = branchName.replace(/\//g, '-');
-    assert.equal(dirName, 'my-feature');
+    expect(dirName).toBe('my-feature');
   });
 });
 
@@ -70,12 +67,11 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(
-      result[0]!.path,
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe(
       '/Users/me/code/my-repo/.worktrees/feat-branch'
     );
-    assert.equal(result[0]!.branch, 'feat/branch');
+    expect(result[0]!.branch).toBe('feat/branch');
   });
 
   it('should parse multiple worktree entries', () => {
@@ -95,11 +91,11 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[0]!.path, '/Users/me/code/my-repo/.worktrees/feat-a');
-    assert.equal(result[0]!.branch, 'feat/a');
-    assert.equal(result[1]!.path, '/Users/me/other-path/extend-cli');
-    assert.equal(result[1]!.branch, 'dy/feat/worktree-isolation');
+    expect(result.length).toBe(2);
+    expect(result[0]!.path).toBe('/Users/me/code/my-repo/.worktrees/feat-a');
+    expect(result[0]!.branch).toBe('feat/a');
+    expect(result[1]!.path).toBe('/Users/me/other-path/extend-cli');
+    expect(result[1]!.branch).toBe('dy/feat/worktree-isolation');
   });
 
   it('should skip the main worktree (repo root)', () => {
@@ -111,7 +107,7 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should skip bare entries', () => {
@@ -127,7 +123,7 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should skip detached HEAD worktrees (no branch line)', () => {
@@ -143,12 +139,12 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should handle empty output', () => {
     const result = parseWorktreeListPorcelain('', repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should discover worktrees at arbitrary paths outside .worktrees/', () => {
@@ -164,12 +160,9 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(
-      result[0]!.path,
-      '/completely/different/path/project-checkout'
-    );
-    assert.equal(result[0]!.branch, 'feature/my-feature');
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe('/completely/different/path/project-checkout');
+    expect(result[0]!.branch).toBe('feature/my-feature');
   });
 
   it('should handle deeply nested branch names', () => {
@@ -185,8 +178,8 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.branch, 'dy/feat/deep/nesting/here');
+    expect(result.length).toBe(1);
+    expect(result[0]!.branch).toBe('dy/feat/deep/nesting/here');
   });
 });
 
@@ -202,10 +195,10 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.path, repoPath);
-    assert.equal(result[0]!.branch, 'main');
-    assert.equal(result[0]!.isMain, true);
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe(repoPath);
+    expect(result[0]!.branch).toBe('main');
+    expect(result[0]!.isMain).toBe(true);
   });
 
   it('should mark non-main worktrees with isMain=false', () => {
@@ -221,14 +214,13 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[0]!.isMain, true);
-    assert.equal(result[1]!.isMain, false);
-    assert.equal(
-      result[1]!.path,
+    expect(result.length).toBe(2);
+    expect(result[0]!.isMain).toBe(true);
+    expect(result[1]!.isMain).toBe(false);
+    expect(result[1]!.path).toBe(
       '/Users/me/code/my-repo/.worktrees/feat-branch'
     );
-    assert.equal(result[1]!.branch, 'feat/branch');
+    expect(result[1]!.branch).toBe('feat/branch');
   });
 
   it('should still skip bare entries', () => {
@@ -244,8 +236,8 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.isMain, true);
+    expect(result.length).toBe(1);
+    expect(result[0]!.isMain).toBe(true);
   });
 
   it('should include detached HEAD entries with empty branch', () => {
@@ -261,13 +253,13 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[1]!.branch, '');
+    expect(result.length).toBe(2);
+    expect(result[1]!.branch).toBe('');
   });
 
   it('should handle empty output', () => {
     const result = parseAllWorktrees('', repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should find worktree by branch name', () => {
@@ -286,9 +278,9 @@ describe('parseAllWorktrees', () => {
     const match = result.find(
       (wt) => wt.branch === 'dy/feat/worktree-isolation'
     );
-    assert.ok(match);
-    assert.equal(match!.path, repoPath);
-    assert.equal(match!.isMain, true);
+    expect(match).toBeTruthy();
+    expect(match!.path).toBe(repoPath);
+    expect(match!.isMain).toBe(true);
   });
 });
 
@@ -330,10 +322,10 @@ describe('workspace-to-repo merging for worktree discovery', () => {
       configWorkspaces,
       rootDirs
     );
-    assert.equal(merged.length, 2);
-    assert.equal(merged[1]!.path, '/other/path/my-project');
-    assert.equal(merged[1]!.name, 'my-project');
-    assert.equal(merged[1]!.root, ''); // not under any rootDir
+    expect(merged.length).toBe(2);
+    expect(merged[1]!.path).toBe('/other/path/my-project');
+    expect(merged[1]!.name).toBe('my-project');
+    expect(merged[1]!.root).toBe(''); // not under any rootDir
   });
 
   it('should deduplicate workspaces already found via rootDir scan', () => {
@@ -348,7 +340,7 @@ describe('workspace-to-repo merging for worktree discovery', () => {
       configWorkspaces,
       rootDirs
     );
-    assert.equal(merged.length, 1); // no duplicate
+    expect(merged.length).toBe(1); // no duplicate
   });
 
   it('should handle empty rootDirs with workspaces-only config', () => {
@@ -361,9 +353,9 @@ describe('workspace-to-repo merging for worktree discovery', () => {
       configWorkspaces,
       rootDirs
     );
-    assert.equal(merged.length, 2);
-    assert.equal(merged[0]!.path, '/a/project');
-    assert.equal(merged[1]!.path, '/b/other-project');
+    expect(merged.length).toBe(2);
+    expect(merged[0]!.path).toBe('/a/project');
+    expect(merged[1]!.path).toBe('/b/other-project');
   });
 
   it('should set root when workspace is under a rootDir', () => {
@@ -376,7 +368,7 @@ describe('workspace-to-repo merging for worktree discovery', () => {
       configWorkspaces,
       rootDirs
     );
-    assert.equal(merged[0]!.root, '/root');
+    expect(merged[0]!.root).toBe('/root');
   });
 });
 
@@ -391,8 +383,8 @@ describe('CLI worktree arg parsing', () => {
     ];
     const hasYolo = args.includes('--yolo');
     const gitArgs = args.filter((a) => a !== '--yolo');
-    assert.equal(hasYolo, true);
-    assert.deepEqual(gitArgs, [
+    expect(hasYolo).toBe(true);
+    expect(gitArgs).toEqual([
       'add',
       './.worktrees/my-feature',
       '-b',
@@ -406,7 +398,7 @@ describe('CLI worktree arg parsing', () => {
     const subArgs = args.slice(1); // after 'add'
     const hasPositionalPath =
       subArgs.length > 0 && !subArgs[0]!.startsWith('-');
-    assert.equal(hasPositionalPath, false);
+    expect(hasPositionalPath).toBe(false);
   });
 
   it('should detect path when provided for add', () => {
@@ -414,32 +406,25 @@ describe('CLI worktree arg parsing', () => {
     const subArgs = args.slice(1);
     const hasPositionalPath =
       subArgs.length > 0 && !subArgs[0]!.startsWith('-');
-    assert.equal(hasPositionalPath, true);
-    assert.equal(subArgs[0], './my-path');
+    expect(hasPositionalPath).toBe(true);
+    expect(subArgs[0]).toBe('./my-path');
   });
 });
 
 describe('mountain name collision retry', () => {
   it('MOUNTAIN_NAMES is a non-empty array of strings', () => {
-    assert.ok(
-      Array.isArray(MOUNTAIN_NAMES),
-      'MOUNTAIN_NAMES should be an array'
-    );
-    assert.ok(MOUNTAIN_NAMES.length > 0, 'MOUNTAIN_NAMES should not be empty');
+    expect(Array.isArray(MOUNTAIN_NAMES)).toBeTruthy();
+    expect(MOUNTAIN_NAMES.length > 0).toBeTruthy();
     for (const name of MOUNTAIN_NAMES) {
-      assert.equal(
-        typeof name,
-        'string',
-        `each mountain name should be a string, got: ${typeof name}`
-      );
-      assert.ok(name.length > 0, 'each mountain name should be non-empty');
+      expect(typeof name).toBe('string');
+      expect(name.length > 0).toBeTruthy();
     }
   });
 
   it('MOUNTAIN_NAMES contains expected well-known peaks', () => {
-    assert.ok(MOUNTAIN_NAMES.includes('everest'), 'should include everest');
-    assert.ok(MOUNTAIN_NAMES.includes('k2'), 'should include k2');
-    assert.ok(MOUNTAIN_NAMES.includes('fuji'), 'should include fuji');
+    expect(MOUNTAIN_NAMES.includes('everest')).toBeTruthy();
+    expect(MOUNTAIN_NAMES.includes('k2')).toBeTruthy();
+    expect(MOUNTAIN_NAMES.includes('fuji')).toBeTruthy();
   });
 
   it('collision retry logic skips taken names and selects the next available one', () => {
@@ -460,13 +445,9 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.ok(selected !== null, 'should find an available name');
-    assert.equal(
-      selected,
-      MOUNTAIN_NAMES[2],
-      'should select the third name after skipping first two'
-    );
-    assert.equal(selectedIndex, 2);
+    expect(selected !== null).toBeTruthy();
+    expect(selected).toBe(MOUNTAIN_NAMES[2]);
+    expect(selectedIndex).toBe(2);
   });
 
   it('collision retry wraps around when baseIndex is near the end', () => {
@@ -486,16 +467,9 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.ok(
-      selected !== null,
-      'should find an available name after wrap-around'
-    );
+    expect(selected !== null).toBeTruthy();
     // The first candidate tried was lastIndex (taken), so the next is index 0
-    assert.equal(
-      selected,
-      MOUNTAIN_NAMES[0],
-      'should wrap around to the first name'
-    );
+    expect(selected).toBe(MOUNTAIN_NAMES[0]);
   });
 
   it('nextMountainIndex advances to the candidate after the selected one', () => {
@@ -513,28 +487,17 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.equal(
-      nextMountainIndex,
-      1,
-      'nextMountainIndex should be 1 after selecting index 0'
-    );
+    expect(nextMountainIndex).toBe(1);
   });
 
   it('all mountain names are unique', () => {
     const unique = new Set(MOUNTAIN_NAMES);
-    assert.equal(
-      unique.size,
-      MOUNTAIN_NAMES.length,
-      'all mountain names should be unique'
-    );
+    expect(unique.size).toBe(MOUNTAIN_NAMES.length);
   });
 
   it('mountain names contain only lowercase letters, digits, and hyphens', () => {
     for (const name of MOUNTAIN_NAMES) {
-      assert.ok(
-        /^[a-z0-9-]+$/.test(name),
-        `mountain name "${name}" should only contain lowercase letters, digits, and hyphens`
-      );
+      expect(/^[a-z0-9-]+$/.test(name)).toBeTruthy();
     }
   });
 });
@@ -572,19 +535,9 @@ describe('workspace name from git remote', () => {
 
     for (const { url, expected } of fixtures) {
       const name = repoNameFromRemoteUrl(url);
-      assert.equal(
-        name,
-        expected,
-        `should extract "${expected}" from "${url}"`
-      );
-      assert.ok(
-        name && name.length > 0,
-        `should extract a non-empty name from "${url}"`
-      );
-      assert.ok(
-        name && !name.includes('/'),
-        `name "${name}" from "${url}" should not contain slashes`
-      );
+      expect(name).toBe(expected);
+      expect(name && name.length > 0).toBeTruthy();
+      expect(name && !name.includes('/')).toBeTruthy();
     }
   });
 });
@@ -595,8 +548,8 @@ describe('repo-scoped tmux naming', () => {
       'relay-ide-nightly',
       'a3b4c5d6-1234-5678'
     );
-    assert.ok(name.includes('relay-ide-nightly'));
-    assert.ok(name.includes('a3b4c5d6'));
+    expect(name.includes('relay-ide-nightly')).toBeTruthy();
+    expect(name.includes('a3b4c5d6')).toBeTruthy();
   });
 
   it('sanitizes branch names with special characters', () => {
@@ -604,8 +557,8 @@ describe('repo-scoped tmux naming', () => {
       'myapp-fix-auth-flow',
       'b4c5d6e7-1234-5678'
     );
-    assert.ok(name.includes('myapp-fix-auth-flow'));
-    assert.ok(!/[^a-zA-Z0-9-]/.test(name));
+    expect(name.includes('myapp-fix-auth-flow')).toBeTruthy();
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBeTruthy();
   });
 
   it('truncates long names to 30 chars before appending id', () => {
@@ -615,10 +568,7 @@ describe('repo-scoped tmux naming', () => {
     const prefix = name
       .replace(/^(?:crcd?-)/, '')
       .replace(/-[a-zA-Z0-9]{8}$/, '');
-    assert.ok(
-      prefix.length <= 30,
-      `prefix "${prefix}" (${prefix.length} chars) exceeds 30 chars`
-    );
+    expect(prefix.length <= 30).toBeTruthy();
   });
 
   it('produces no special characters in output', () => {
@@ -626,10 +576,7 @@ describe('repo-scoped tmux naming', () => {
       'repo/with/slashes and spaces',
       'deadbeef-0000-1111'
     );
-    assert.ok(
-      !/[^a-zA-Z0-9-]/.test(name),
-      `tmux name "${name}" contains invalid characters`
-    );
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBeTruthy();
   });
 });
 
@@ -657,10 +604,10 @@ describe('findOrCreateWorktreeForBranch', () => {
       'nightly',
       exec
     );
-    assert.equal(result.existing, true);
-    assert.equal(result.isMain, true);
-    assert.equal(result.worktreePath, repoPath);
-    assert.equal(result.branchName, 'nightly');
+    expect(result.existing).toBe(true);
+    expect(result.isMain).toBe(true);
+    expect(result.worktreePath).toBe(repoPath);
+    expect(result.branchName).toBe('nightly');
   });
 
   it('returns existing worktree when branch is in a sub-worktree', async () => {
@@ -690,10 +637,9 @@ describe('findOrCreateWorktreeForBranch', () => {
       'fix/auth',
       exec
     );
-    assert.equal(result.existing, true);
-    assert.equal(result.isMain, false);
-    assert.equal(
-      result.worktreePath,
+    expect(result.existing).toBe(true);
+    expect(result.isMain).toBe(false);
+    expect(result.worktreePath).toBe(
       '/Users/me/code/my-repo/.worktrees/fix-auth'
     );
   });
@@ -726,8 +672,8 @@ describe('findOrCreateWorktreeForBranch', () => {
       'feat/new',
       exec
     );
-    assert.equal(result.existing, false);
-    assert.equal(result.isMain, false);
-    assert.equal(result.branchName, 'feat/new');
+    expect(result.existing).toBe(false);
+    expect(result.isMain).toBe(false);
+    expect(result.branchName).toBe('feat/new');
   });
 });

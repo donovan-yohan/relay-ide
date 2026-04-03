@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { listBranches, normalizeBranchNames } from '../server/git.js';
 import { ensureBranchLocal } from '../server/git.js';
 
@@ -15,7 +14,7 @@ describe('normalizeBranchNames', () => {
       '',
     ].join('\n');
 
-    assert.deepEqual(normalizeBranchNames(stdout), [
+    expect(normalizeBranchNames(stdout)).toEqual([
       'feat/local',
       'feat/remote-only',
       'main',
@@ -41,7 +40,7 @@ describe('listBranches', () => {
       },
     });
 
-    assert.deepEqual(calls, [
+    expect(calls).toEqual([
       { file: 'git', args: ['fetch', '--all', '--prune'], cwd: '/tmp/repo' },
       {
         file: 'git',
@@ -49,7 +48,7 @@ describe('listBranches', () => {
         cwd: '/tmp/repo',
       },
     ]);
-    assert.deepEqual(branches, ['feature/remote', 'main']);
+    expect(branches).toEqual(['feature/remote', 'main']);
   });
 
   it('falls back to locally-known refs if fetch fails', async () => {
@@ -66,7 +65,7 @@ describe('listBranches', () => {
       },
     });
 
-    assert.deepEqual(branches, ['feature/stale', 'main']);
+    expect(branches).toEqual(['feature/stale', 'main']);
   });
 
   it('returns an empty list when refs cannot be listed', async () => {
@@ -76,7 +75,7 @@ describe('listBranches', () => {
       },
     });
 
-    assert.deepEqual(branches, []);
+    expect(branches).toEqual([]);
   });
 });
 
@@ -92,8 +91,8 @@ describe('ensureBranchLocal', () => {
       return { stdout: 'abc123\n', stderr: '' };
     };
     const result = await ensureBranchLocal('/tmp/repo', 'main', { exec });
-    assert.equal(result.found, true);
-    assert.deepEqual(calls, [['rev-parse', '--verify', '--', 'main']]);
+    expect(result.found).toBe(true);
+    expect(calls).toEqual([['rev-parse', '--verify', '--', 'main']]);
   });
 
   it('fetches from origin if branch does not exist locally', async () => {
@@ -120,8 +119,8 @@ describe('ensureBranchLocal', () => {
     const result = await ensureBranchLocal('/tmp/repo', 'feature/remote-only', {
       exec,
     });
-    assert.equal(result.found, true);
-    assert.deepEqual(calls[1], [
+    expect(result.found).toBe(true);
+    expect(calls[1]).toEqual([
       'fetch',
       'origin',
       '--',
@@ -140,8 +139,8 @@ describe('ensureBranchLocal', () => {
     const result = await ensureBranchLocal('/tmp/repo', 'nonexistent', {
       exec,
     });
-    assert.equal(result.found, false);
-    assert.equal(result.reason, 'not_found');
+    expect(result.found).toBe(false);
+    expect(result.reason).toBe('not_found');
   });
 
   it('returns found:false with reason fetch_failed for non-ref errors on fetch', async () => {
@@ -159,17 +158,16 @@ describe('ensureBranchLocal', () => {
     const result = await ensureBranchLocal('/tmp/repo', 'some-branch', {
       exec,
     });
-    assert.equal(result.found, false);
-    assert.equal(result.reason, 'fetch_failed');
+    expect(result.found).toBe(false);
+    expect(result.reason).toBe('fetch_failed');
   });
 
   it('rethrows non-git errors from rev-parse', async () => {
     const exec = async () => {
       throw new Error('permission denied');
     };
-    await assert.rejects(
-      () => ensureBranchLocal('/tmp/repo', 'main', { exec }),
-      { message: 'permission denied' }
-    );
+    await expect(() =>
+      ensureBranchLocal('/tmp/repo', 'main', { exec })
+    ).rejects.toThrow('permission denied');
   });
 });

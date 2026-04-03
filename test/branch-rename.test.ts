@@ -1,26 +1,21 @@
-import { test, describe } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, describe, expect } from 'vitest';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 import { branchToDisplayName } from '../server/git.js';
 
 describe('MOUNTAIN_NAMES', () => {
   test('contains 30 mountain names', () => {
-    assert.equal(MOUNTAIN_NAMES.length, 30);
+    expect(MOUNTAIN_NAMES.length).toBe(30);
   });
 
   test('all names are lowercase kebab-case', () => {
     for (const name of MOUNTAIN_NAMES) {
-      assert.match(
-        name,
-        /^[a-z][a-z0-9-]*$/,
-        `Mountain name "${name}" is not kebab-case`
-      );
+      expect(name).toMatch(/^[a-z][a-z0-9-]*$/);
     }
   });
 
   test('no duplicate names', () => {
     const unique = new Set(MOUNTAIN_NAMES);
-    assert.equal(unique.size, MOUNTAIN_NAMES.length);
+    expect(unique.size).toBe(MOUNTAIN_NAMES.length);
   });
 
   test('cycling wraps around at array length', () => {
@@ -31,31 +26,30 @@ describe('MOUNTAIN_NAMES', () => {
     idx++;
     const name3 = MOUNTAIN_NAMES[idx % MOUNTAIN_NAMES.length];
 
-    assert.equal(name1, 'whitney');
-    assert.equal(name2, 'hood');
-    assert.equal(name3, 'everest'); // wraps back to start
+    expect(name1).toBe('whitney');
+    expect(name2).toBe('hood');
+    expect(name3).toBe('everest'); // wraps back to start
   });
 });
 
 describe('branchToDisplayName', () => {
   test('converts kebab-case to sentence case', () => {
-    assert.equal(
-      branchToDisplayName('fix-mobile-scroll-bug'),
+    expect(branchToDisplayName('fix-mobile-scroll-bug')).toBe(
       'Fix mobile scroll bug'
     );
   });
 
   test('strips common branch prefixes', () => {
-    assert.equal(branchToDisplayName('feature/add-auth'), 'Add auth');
-    assert.equal(branchToDisplayName('fix/api-timeout'), 'Api timeout');
-    assert.equal(branchToDisplayName('chore/update-deps'), 'Update deps');
+    expect(branchToDisplayName('feature/add-auth')).toBe('Add auth');
+    expect(branchToDisplayName('fix/api-timeout')).toBe('Api timeout');
+    expect(branchToDisplayName('chore/update-deps')).toBe('Update deps');
   });
 
   test('handles simple names', () => {
-    assert.equal(branchToDisplayName('lhotse'), 'Lhotse');
+    expect(branchToDisplayName('lhotse')).toBe('Lhotse');
   });
 
   test('handles underscores', () => {
-    assert.equal(branchToDisplayName('fix_the_thing'), 'Fix the thing');
+    expect(branchToDisplayName('fix_the_thing')).toBe('Fix the thing');
   });
 });

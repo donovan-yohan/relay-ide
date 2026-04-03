@@ -1,5 +1,4 @@
-import { test, before, afterEach, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterEach, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,10 +23,8 @@ const noopAuth = (
 
 let tmpDir: string;
 
-before(() => {
-  tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'relay-ide-telemetry-test-')
-  );
+beforeAll(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-telemetry-test-'));
 });
 
 afterEach(() => {
@@ -37,7 +34,7 @@ afterEach(() => {
   }
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -114,7 +111,7 @@ test('parses session telemetry from the statusLine file', () => {
 
   const session = getTelemetryForSession('abc-123');
   const account = getAccountTelemetry();
-  assert.deepEqual(session, {
+  expect(session).toEqual({
     sessionId: 'abc-123',
     model: 'Claude Opus 4.6',
     totalInputTokens: 12400,
@@ -128,7 +125,7 @@ test('parses session telemetry from the statusLine file', () => {
     updatedAt: session?.updatedAt,
   });
 
-  assert.deepEqual(account, {
+  expect(account).toEqual({
     fiveHourUsedPercent: 22,
     fiveHourResetsAt: '2026-03-31T19:30:00Z',
     sevenDayUsedPercent: 8,
@@ -136,14 +133,12 @@ test('parses session telemetry from the statusLine file', () => {
     updatedAt: account?.updatedAt,
   });
 
-  assert.equal(
-    events.filter((event) => event.type === 'session-telemetry').length,
-    1
-  );
-  assert.equal(
-    events.filter((event) => event.type === 'account-telemetry').length,
-    1
-  );
+  expect(
+    events.filter((event) => event.type === 'session-telemetry').length
+  ).toBe(1);
+  expect(
+    events.filter((event) => event.type === 'account-telemetry').length
+  ).toBe(1);
 });
 
 test('missing statusLine file leaves telemetry undefined', () => {
@@ -151,9 +146,9 @@ test('missing statusLine file leaves telemetry undefined', () => {
 
   startTelemetry(makeDeps(['missing-session'], events));
 
-  assert.equal(getTelemetryForSession('missing-session'), undefined);
-  assert.equal(getAccountTelemetry(), null);
-  assert.equal(events.length, 0);
+  expect(getTelemetryForSession('missing-session')).toBe(undefined);
+  expect(getAccountTelemetry()).toBe(null);
+  expect(events.length).toBe(0);
 });
 
 test('inactive sessions are pruned once active telemetry is available', () => {
@@ -181,8 +176,8 @@ test('inactive sessions are pruned once active telemetry is available', () => {
 
   startTelemetry(makeDeps(['fresh'], []));
 
-  assert.equal(getTelemetryForSession('stale'), undefined);
-  assert.ok(getTelemetryForSession('fresh'));
+  expect(getTelemetryForSession('stale')).toBe(undefined);
+  expect(getTelemetryForSession('fresh')).toBeTruthy();
 });
 
 test('malformed statusLine JSON is ignored without crashing', () => {
@@ -191,13 +186,13 @@ test('malformed statusLine JSON is ignored without crashing', () => {
   fs.mkdirSync(telemetryDir, { recursive: true });
   fs.writeFileSync(path.join(telemetryDir, 'bad-session.json'), '{"model":');
 
-  assert.doesNotThrow(() => {
+  expect(() => {
     startTelemetry(makeDeps(['bad-session'], events));
-  });
+  }).not.toThrow();
 
-  assert.equal(getTelemetryForSession('bad-session'), undefined);
-  assert.equal(getAccountTelemetry(), null);
-  assert.equal(events.length, 0);
+  expect(getTelemetryForSession('bad-session')).toBe(undefined);
+  expect(getAccountTelemetry()).toBe(null);
+  expect(events.length).toBe(0);
 });
 
 test('restores pending telemetry from disk on startup', () => {
@@ -232,7 +227,7 @@ test('restores pending telemetry from disk on startup', () => {
 
   startTelemetry(makeDeps([], events));
 
-  assert.deepEqual(getTelemetryForSession('restored'), {
+  expect(getTelemetryForSession('restored')).toEqual({
     sessionId: 'restored',
     model: 'Claude Sonnet 4',
     totalInputTokens: 10,
@@ -245,13 +240,9 @@ test('restores pending telemetry from disk on startup', () => {
     source: 'statusLine',
     updatedAt: '2026-03-31T18:00:00Z',
   });
-  assert.deepEqual(getAccountTelemetry(), restored.account);
-  assert.equal(
-    fs.existsSync(pendingPath),
-    false,
-    'pending telemetry should be cleared after restore'
-  );
-  assert.equal(events.length, 0);
+  expect(getAccountTelemetry()).toEqual(restored.account);
+  expect(fs.existsSync(pendingPath)).toBe(false);
+  expect(events.length).toBe(0);
 });
 
 test('GET /telemetry endpoints return session and account telemetry', async () => {
@@ -294,13 +285,13 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
     });
 
     const addr = server.address();
-    assert.equal(typeof addr, 'object');
-    assert.ok(addr);
+    expect(typeof addr).toBe('object');
+    expect(addr).toBeTruthy();
     const baseUrl = `http://127.0.0.1:${(addr as { port: number }).port}`;
 
     const sessionsRes = await fetch(`${baseUrl}/telemetry/sessions`);
-    assert.equal(sessionsRes.status, 200);
-    assert.deepEqual(await sessionsRes.json(), {
+    expect(sessionsRes.status).toBe(200);
+    expect(await sessionsRes.json()).toEqual({
       endpoint: {
         sessionId: 'endpoint',
         model: 'Claude Opus 4.6',
@@ -317,12 +308,12 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
     });
 
     const accountRes = await fetch(`${baseUrl}/telemetry/account`);
-    assert.equal(accountRes.status, 200);
-    assert.deepEqual(await accountRes.json(), restored.account);
+    expect(accountRes.status).toBe(200);
+    expect(await accountRes.json()).toEqual(restored.account);
 
     const setupStatusRes = await fetch(`${baseUrl}/telemetry/setup-status`);
-    assert.equal(setupStatusRes.status, 200);
-    assert.deepEqual(await setupStatusRes.json(), { installed: true });
+    expect(setupStatusRes.status).toBe(200);
+    expect(await setupStatusRes.json()).toEqual({ installed: true });
   } finally {
     await new Promise<void>((resolve) => {
       if (server) server.close(() => resolve());
@@ -337,9 +328,9 @@ test('stopTelemetry ignores pending persistence write failures', () => {
 
   startTelemetry(makeDeps([], [], blockedPath));
 
-  assert.doesNotThrow(() => {
+  expect(() => {
     stopTelemetry();
-  });
+  }).not.toThrow();
 });
 
 test('collectTelemetry reuses a single active session snapshot per poll', () => {
@@ -360,9 +351,8 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
     },
   });
 
-  assert.equal(calls, 1);
-  assert.equal(
-    events.filter((event) => event.type === 'session-telemetry').length,
-    1
-  );
+  expect(calls).toBe(1);
+  expect(
+    events.filter((event) => event.type === 'session-telemetry').length
+  ).toBe(1);
 });

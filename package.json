@@ -20,7 +20,7 @@
     "dev": "RELAY_IDE_CONFIG=./config.dev.json NO_PIN=1 RELAY_IDE_PORT=3457 node dist/server/index.js",
     "dev:vite": "vite --config frontend/vite.config.ts",
     "start": "npm run build && node dist/server/index.js",
-    "test": "rm -rf dist/ && tsc -p tsconfig.test.json && node --test --test-force-exit dist/test/*.test.js dist/test/**/*.test.js",
+    "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
@@ -99,6 +99,7 @@
     "prettier": "^3.8.1",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.58.0",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^4.1.2"
   }
 }

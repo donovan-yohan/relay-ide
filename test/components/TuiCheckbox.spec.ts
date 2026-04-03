@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import { describe, it, expect } from 'vitest';
 
 // Note: Full DOM testing would require a test runner with JSX support (e.g., Vitest + React Testing Library)
 
@@ -14,9 +13,9 @@ describe('TuiCheckbox', () => {
         className?: string;
         [key: string]: unknown;
       }
-      
+
       const validProps: TuiCheckboxProps = { checked: true };
-      assert.strictEqual(validProps.checked, true);
+      expect(validProps.checked).toBe(true);
     });
 
     it('should have optional disabled prop with default false', () => {
@@ -24,12 +23,15 @@ describe('TuiCheckbox', () => {
         checked: boolean;
         disabled?: boolean;
       }
-      
-      const propsWithDisabled: TuiCheckboxProps = { checked: false, disabled: true };
-      assert.strictEqual(propsWithDisabled.disabled, true);
-      
+
+      const propsWithDisabled: TuiCheckboxProps = {
+        checked: false,
+        disabled: true,
+      };
+      expect(propsWithDisabled.disabled).toBe(true);
+
       const propsWithoutDisabled: TuiCheckboxProps = { checked: false };
-      assert.strictEqual(propsWithoutDisabled.disabled, undefined);
+      expect(propsWithoutDisabled.disabled).toBe(undefined);
     });
 
     it('should have optional onChange callback', () => {
@@ -37,17 +39,20 @@ describe('TuiCheckbox', () => {
         checked: boolean;
         onChange?: (checked: boolean) => void;
       }
-      
+
       let calledWith: boolean | undefined;
       const handleChange = (checked: boolean) => {
         calledWith = checked;
       };
-      
-      const props: TuiCheckboxProps = { checked: false, onChange: handleChange };
-      assert.strictEqual(typeof props.onChange, 'function');
-      
+
+      const props: TuiCheckboxProps = {
+        checked: false,
+        onChange: handleChange,
+      };
+      expect(typeof props.onChange).toBe('function');
+
       props.onChange?.(true);
-      assert.strictEqual(calledWith, true);
+      expect(calledWith).toBe(true);
     });
 
     it('should support children prop', () => {
@@ -55,12 +60,12 @@ describe('TuiCheckbox', () => {
         checked: boolean;
         children?: React.ReactNode;
       }
-      
-      const props: TuiCheckboxProps = { 
-        checked: false, 
-        children: 'Label text' 
+
+      const props: TuiCheckboxProps = {
+        checked: false,
+        children: 'Label text',
       };
-      assert.strictEqual(props.children, 'Label text');
+      expect(props.children).toBe('Label text');
     });
 
     it('should support className prop', () => {
@@ -68,12 +73,12 @@ describe('TuiCheckbox', () => {
         checked: boolean;
         className?: string;
       }
-      
-      const props: TuiCheckboxProps = { 
-        checked: false, 
-        className: 'custom-class' 
+
+      const props: TuiCheckboxProps = {
+        checked: false,
+        className: 'custom-class',
       };
-      assert.strictEqual(props.className, 'custom-class');
+      expect(props.className).toBe('custom-class');
     });
 
     it('should support rest props spread', () => {
@@ -81,14 +86,14 @@ describe('TuiCheckbox', () => {
         checked: boolean;
         [key: string]: unknown;
       }
-      
-      const props: TuiCheckboxProps = { 
+
+      const props: TuiCheckboxProps = {
         checked: false,
         'data-testid': 'test-checkbox',
-        'aria-label': 'Test checkbox'
+        'aria-label': 'Test checkbox',
       };
-      assert.strictEqual(props['data-testid'], 'test-checkbox');
-      assert.strictEqual(props['aria-label'], 'Test checkbox');
+      expect(props['data-testid']).toBe('test-checkbox');
+      expect(props['aria-label']).toBe('Test checkbox');
     });
   });
 
@@ -96,25 +101,29 @@ describe('TuiCheckbox', () => {
     it('should display [x] when checked', () => {
       const checked = true;
       const displayText = checked ? '[x]' : '[ ]';
-      assert.strictEqual(displayText, '[x]');
+      expect(displayText).toBe('[x]');
     });
 
     it('should display [ ] when unchecked', () => {
       const checked = false;
       const displayText = checked ? '[x]' : '[ ]';
-      assert.strictEqual(displayText, '[ ]');
+      expect(displayText).toBe('[ ]');
     });
 
     it('should apply disabled class when disabled', () => {
       const disabled = true;
-      const classes = ['tui-checkbox', disabled && 'disabled'].filter(Boolean).join(' ');
-      assert.strictEqual(classes, 'tui-checkbox disabled');
+      const classes = ['tui-checkbox', disabled && 'disabled']
+        .filter(Boolean)
+        .join(' ');
+      expect(classes).toBe('tui-checkbox disabled');
     });
 
     it('should not apply disabled class when not disabled', () => {
       const disabled = false;
-      const classes = ['tui-checkbox', disabled && 'disabled'].filter(Boolean).join(' ');
-      assert.strictEqual(classes, 'tui-checkbox');
+      const classes = ['tui-checkbox', disabled && 'disabled']
+        .filter(Boolean)
+        .join(' ');
+      expect(classes).toBe('tui-checkbox');
     });
 
     it('should combine custom className with base classes', () => {
@@ -123,24 +132,24 @@ describe('TuiCheckbox', () => {
       const classes = ['tui-checkbox', disabled && 'disabled', className]
         .filter(Boolean)
         .join(' ');
-      assert.strictEqual(classes, 'tui-checkbox custom-class');
+      expect(classes).toBe('tui-checkbox custom-class');
     });
 
     it('should not call onChange when disabled', () => {
       const disabled = true;
       let called = false;
-      const onChange = (checked: boolean) => {
+      const onChange = () => {
         called = true;
       };
-      
+
       const handleChange = (e: { target: { checked: boolean } }) => {
         if (!disabled && onChange) {
-          onChange(e.target.checked);
+          onChange();
         }
       };
-      
+
       handleChange({ target: { checked: true } });
-      assert.strictEqual(called, false);
+      expect(called).toBe(false);
     });
 
     it('should call onChange when not disabled', () => {
@@ -149,15 +158,15 @@ describe('TuiCheckbox', () => {
       const onChange = (checked: boolean) => {
         calledWith = checked;
       };
-      
+
       const handleChange = (e: { target: { checked: boolean } }) => {
         if (!disabled && onChange) {
           onChange(e.target.checked);
         }
       };
-      
+
       handleChange({ target: { checked: true } });
-      assert.strictEqual(calledWith, true);
+      expect(calledWith).toBe(true);
     });
   });
 
@@ -166,12 +175,12 @@ describe('TuiCheckbox', () => {
       const expectedClasses = {
         container: 'tui-checkbox',
         check: 'tui-check',
-        disabled: 'disabled'
+        disabled: 'disabled',
       };
-      
-      assert.strictEqual(expectedClasses.container, 'tui-checkbox');
-      assert.strictEqual(expectedClasses.check, 'tui-check');
-      assert.strictEqual(expectedClasses.disabled, 'disabled');
+
+      expect(expectedClasses.container).toBe('tui-checkbox');
+      expect(expectedClasses.check).toBe('tui-check');
+      expect(expectedClasses.disabled).toBe('disabled');
     });
   });
 });

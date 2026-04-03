@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { getGreeting } from '../frontend/src/lib/greetings.js';
 
 const morningGreetings = [
@@ -36,27 +35,20 @@ const allGreetings = [
 describe('greetings', () => {
   it('returns a non-empty string', () => {
     const greeting = getGreeting();
-    assert.ok(greeting.length > 0, 'greeting should be non-empty');
+    expect(greeting.length > 0).toBeTruthy();
   });
 
   it('returns all lowercase text', () => {
     for (let i = 0; i < 20; i++) {
       const greeting = getGreeting();
-      assert.strictEqual(
-        greeting,
-        greeting.toLowerCase(),
-        `greeting "${greeting}" should be lowercase`
-      );
+      expect(greeting).toBe(greeting.toLowerCase());
     }
   });
 
   it('returns a known greeting when called without hour', () => {
     for (let i = 0; i < 20; i++) {
       const greeting = getGreeting();
-      assert.ok(
-        allGreetings.includes(greeting),
-        `unexpected greeting: "${greeting}"`
-      );
+      expect(allGreetings.includes(greeting)).toBeTruthy();
     }
   });
 
@@ -64,10 +56,7 @@ describe('greetings', () => {
     for (const hour of [5, 8, 11]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(
-          morningGreetings.includes(greeting),
-          `hour ${hour}: expected morning greeting, got "${greeting}"`
-        );
+        expect(morningGreetings.includes(greeting)).toBeTruthy();
       }
     }
   });
@@ -76,10 +65,7 @@ describe('greetings', () => {
     for (const hour of [12, 14, 16]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(
-          afternoonGreetings.includes(greeting),
-          `hour ${hour}: expected afternoon greeting, got "${greeting}"`
-        );
+        expect(afternoonGreetings.includes(greeting)).toBeTruthy();
       }
     }
   });
@@ -88,10 +74,7 @@ describe('greetings', () => {
     for (const hour of [17, 19, 20]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(
-          eveningGreetings.includes(greeting),
-          `hour ${hour}: expected evening greeting, got "${greeting}"`
-        );
+        expect(eveningGreetings.includes(greeting)).toBeTruthy();
       }
     }
   });
@@ -100,10 +83,7 @@ describe('greetings', () => {
     for (const hour of [0, 2, 4, 21, 23]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(
-          nightGreetings.includes(greeting),
-          `hour ${hour}: expected night greeting, got "${greeting}"`
-        );
+        expect(nightGreetings.includes(greeting)).toBeTruthy();
       }
     }
   });

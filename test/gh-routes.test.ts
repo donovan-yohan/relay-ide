@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 import { enrichBranches, type GhRouterDeps } from '../server/gh-routes.js';
 
@@ -47,9 +46,9 @@ describe('enrichBranches', () => {
     );
 
     const key = '/repos/my-repo::feat/login';
-    assert.ok(results[key], `expected key ${key} in results`);
-    assert.equal(results[key]!.pr!.number, 42);
-    assert.equal(results[key]!.stale, false);
+    expect(results[key]).toBeTruthy();
+    expect(results[key]!.pr!.number).toBe(42);
+    expect(results[key]!.stale).toBe(false);
   });
 
   it('handles partial failure (one repo fails, others succeed)', async () => {
@@ -96,12 +95,12 @@ describe('enrichBranches', () => {
     );
 
     // Good repo should have data
-    assert.ok(results['/repos/good-repo::fix/bug']);
-    assert.equal(results['/repos/good-repo::fix/bug']!.pr!.number, 1);
+    expect(results['/repos/good-repo::fix/bug']).toBeTruthy();
+    expect(results['/repos/good-repo::fix/bug']!.pr!.number).toBe(1);
 
     // Bad repo should have null pr and default stale=false
-    assert.equal(results['/repos/bad-repo::feat/x']!.pr, null);
-    assert.equal(results['/repos/bad-repo::feat/x']!.stale, false);
+    expect(results['/repos/bad-repo::feat/x']!.pr).toBe(null);
+    expect(results['/repos/bad-repo::feat/x']!.stale).toBe(false);
   });
 
   it('returns empty results for empty input', async () => {
@@ -109,7 +108,7 @@ describe('enrichBranches', () => {
       stdout: '',
       stderr: '',
     }));
-    assert.deepEqual(results, {});
+    expect(results).toEqual({});
   });
 
   it('degrades when gh CLI is missing (ENOENT)', async () => {
@@ -131,8 +130,8 @@ describe('enrichBranches', () => {
     );
 
     const entry = results['/repos/my-repo::feat/x']!;
-    assert.equal(entry.pr, null);
-    assert.equal(entry.stale, true); // 0 commits ahead = stale
+    expect(entry.pr).toBe(null);
+    expect(entry.stale).toBe(true); // 0 commits ahead = stale
   });
 
   it('batches PR lookups per unique repo (one gh call per repo)', async () => {
@@ -194,10 +193,6 @@ describe('enrichBranches', () => {
 
     // Should have exactly 1 gh pr list call for repo1 (not 2)
     const ghCalls = callLog.filter((c) => c.startsWith('gh pr list'));
-    assert.equal(
-      ghCalls.length,
-      1,
-      `expected 1 gh pr list call, got ${ghCalls.length}`
-    );
+    expect(ghCalls.length).toBe(1);
   });
 });

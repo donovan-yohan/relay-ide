@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 // Test-only boot state logic stubbed here because boot-state.svelte.ts uses Svelte
 // runes ($state) that the Node.js test runner cannot process directly.
@@ -61,17 +60,20 @@ describe('boot-state', () => {
   describe('createBootLines', () => {
     it('creates 5 lines for all services', () => {
       const lines = createBootLines();
-      assert.strictEqual(lines.length, 5);
-      assert.deepStrictEqual(
-        lines.map((l) => l.service),
-        ['auth', 'workspaces', 'sessions', 'worktrees', 'groups']
-      );
+      expect(lines.length).toBe(5);
+      expect(lines.map((l) => l.service)).toEqual([
+        'auth',
+        'workspaces',
+        'sessions',
+        'worktrees',
+        'groups',
+      ]);
     });
 
     it('all lines start as pending', () => {
       const lines = createBootLines();
       for (const line of lines) {
-        assert.strictEqual(line.status, 'pending');
+        expect(line.status).toBe('pending');
       }
     });
   });
@@ -81,7 +83,7 @@ describe('boot-state', () => {
       let lines = createBootLines();
       lines = reportFetch(lines, 'workspaces', 'loading');
       const ws = lines.find((l) => l.service === 'workspaces')!;
-      assert.strictEqual(ws.status, 'loading');
+      expect(ws.status).toBe('loading');
     });
 
     it('updates a service to ok with summary and duration', () => {
@@ -91,9 +93,9 @@ describe('boot-state', () => {
         durationMs: 42,
       });
       const sess = lines.find((l) => l.service === 'sessions')!;
-      assert.strictEqual(sess.status, 'ok');
-      assert.strictEqual(sess.summary, '2 active');
-      assert.strictEqual(sess.durationMs, 42);
+      expect(sess.status).toBe('ok');
+      expect(sess.summary).toBe('2 active');
+      expect(sess.durationMs).toBe(42);
     });
 
     it('updates a service to fail with error', () => {
@@ -103,16 +105,16 @@ describe('boot-state', () => {
         durationMs: 5000,
       });
       const wt = lines.find((l) => l.service === 'worktrees')!;
-      assert.strictEqual(wt.status, 'fail');
-      assert.strictEqual(wt.error, 'timeout');
-      assert.strictEqual(wt.durationMs, 5000);
+      expect(wt.status).toBe('fail');
+      expect(wt.error).toBe('timeout');
+      expect(wt.durationMs).toBe(5000);
     });
 
     it('ignores unknown service', () => {
       let lines = createBootLines();
       const original = [...lines];
       lines = reportFetch(lines, 'unknown-service', 'ok');
-      assert.deepStrictEqual(lines, original);
+      expect(lines).toEqual(original);
     });
 
     it('does not affect other lines', () => {
@@ -121,11 +123,7 @@ describe('boot-state', () => {
       // All other lines should still be pending
       for (const line of lines) {
         if (line.service !== 'auth') {
-          assert.strictEqual(
-            line.status,
-            'pending',
-            `${line.service} should still be pending`
-          );
+          expect(line.status).toBe('pending');
         }
       }
     });
@@ -139,7 +137,7 @@ describe('boot-state', () => {
       lines = reportFetch(lines, 'sessions', 'ok', { summary: '2 active' });
       lines = reportFetch(lines, 'worktrees', 'ok', { summary: '1 tree' });
       lines = reportFetch(lines, 'groups', 'ok', { summary: '0 groups' });
-      assert.strictEqual(derivePhaseAfterFinish(lines), 'ready');
+      expect(derivePhaseAfterFinish(lines)).toBe('ready');
     });
 
     it('returns degraded when one fetch fails', () => {
@@ -149,7 +147,7 @@ describe('boot-state', () => {
       lines = reportFetch(lines, 'sessions', 'fail', { error: 'timeout' });
       lines = reportFetch(lines, 'worktrees', 'ok', { summary: '1 tree' });
       lines = reportFetch(lines, 'groups', 'ok', { summary: '0 groups' });
-      assert.strictEqual(derivePhaseAfterFinish(lines), 'degraded');
+      expect(derivePhaseAfterFinish(lines)).toBe('degraded');
     });
 
     it('returns degraded when all fetches fail', () => {
@@ -159,7 +157,7 @@ describe('boot-state', () => {
       lines = reportFetch(lines, 'sessions', 'fail', { error: 'network' });
       lines = reportFetch(lines, 'worktrees', 'fail', { error: 'network' });
       lines = reportFetch(lines, 'groups', 'fail', { error: 'network' });
-      assert.strictEqual(derivePhaseAfterFinish(lines), 'degraded');
+      expect(derivePhaseAfterFinish(lines)).toBe('degraded');
     });
 
     it('ignores auth status when deriving phase', () => {
@@ -169,7 +167,7 @@ describe('boot-state', () => {
       lines = reportFetch(lines, 'sessions', 'ok', { summary: '0 active' });
       lines = reportFetch(lines, 'worktrees', 'ok', { summary: '0 trees' });
       lines = reportFetch(lines, 'groups', 'ok', { summary: '0 groups' });
-      assert.strictEqual(derivePhaseAfterFinish(lines), 'ready');
+      expect(derivePhaseAfterFinish(lines)).toBe('ready');
     });
   });
 });

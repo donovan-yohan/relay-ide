@@ -1,5 +1,4 @@
-import { test, before, after, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -18,7 +17,7 @@ import type { Config } from '../server/types.js';
 
 let tmpDir!: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-config-test-'));
 });
 
@@ -33,7 +32,7 @@ afterEach(() => {
   }
 });
 
-after(() => {
+afterAll(() => {
   fs.rmdirSync(tmpDir);
 });
 
@@ -43,8 +42,8 @@ test('loadConfig loads a JSON config file', () => {
   fs.writeFileSync(configPath, JSON.stringify(data), 'utf8');
 
   const config = loadConfig(configPath);
-  assert.equal(config.port, 4000);
-  assert.equal(config.host, '127.0.0.1');
+  expect(config.port).toBe(4000);
+  expect(config.host).toBe('127.0.0.1');
 });
 
 test('loadConfig merges with defaults for missing fields', () => {
@@ -52,17 +51,17 @@ test('loadConfig merges with defaults for missing fields', () => {
   fs.writeFileSync(configPath, JSON.stringify({ port: 9000 }), 'utf8');
 
   const config = loadConfig(configPath);
-  assert.equal(config.port, 9000);
-  assert.equal(config.host, DEFAULTS.host);
-  assert.equal(config.cookieTTL, DEFAULTS.cookieTTL);
-  assert.deepEqual(config.repos, DEFAULTS.repos);
-  assert.deepEqual(config.claudeArgs, DEFAULTS.claudeArgs);
-  assert.equal(config.defaultFramework, DEFAULTS.defaultFramework);
+  expect(config.port).toBe(9000);
+  expect(config.host).toBe(DEFAULTS.host);
+  expect(config.cookieTTL).toBe(DEFAULTS.cookieTTL);
+  expect(config.repos).toEqual(DEFAULTS.repos);
+  expect(config.claudeArgs).toEqual(DEFAULTS.claudeArgs);
+  expect(config.defaultFramework).toBe(DEFAULTS.defaultFramework);
 });
 
 test('loadConfig throws if config file not found', () => {
   const configPath = path.join(tmpDir, 'nonexistent.json');
-  assert.throws(() => loadConfig(configPath), /Config file not found/);
+  expect(() => loadConfig(configPath)).toThrow(/Config file not found/);
 });
 
 test('saveConfig writes JSON with 2-space indent', () => {
@@ -72,19 +71,19 @@ test('saveConfig writes JSON with 2-space indent', () => {
   saveConfig(configPath, config as Parameters<typeof saveConfig>[1]);
 
   const raw = fs.readFileSync(configPath, 'utf8');
-  assert.equal(raw, JSON.stringify(config, null, 2));
+  expect(raw).toBe(JSON.stringify(config, null, 2));
 });
 
 test('DEFAULTS has expected keys and values', () => {
-  assert.equal(DEFAULTS.host, '0.0.0.0');
-  assert.equal(DEFAULTS.port, 3456);
-  assert.equal(DEFAULTS.cookieTTL, '24h');
-  assert.deepEqual(DEFAULTS.repos, []);
-  assert.deepEqual(DEFAULTS.claudeArgs, []);
-  assert.equal(DEFAULTS.defaultFramework, 'claude');
-  assert.equal(DEFAULTS.defaultContinue, true);
-  assert.equal(DEFAULTS.defaultYolo, false);
-  assert.equal(DEFAULTS.launchInTmux, false);
+  expect(DEFAULTS.host).toBe('0.0.0.0');
+  expect(DEFAULTS.port).toBe(3456);
+  expect(DEFAULTS.cookieTTL).toBe('24h');
+  expect(DEFAULTS.repos).toEqual([]);
+  expect(DEFAULTS.claudeArgs).toEqual([]);
+  expect(DEFAULTS.defaultFramework).toBe('claude');
+  expect(DEFAULTS.defaultContinue).toBe(true);
+  expect(DEFAULTS.defaultYolo).toBe(false);
+  expect(DEFAULTS.launchInTmux).toBe(false);
 });
 
 test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and launchInTmux', () => {
@@ -92,16 +91,16 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   fs.writeFileSync(configPath, JSON.stringify({ port: 3456 }), 'utf8');
 
   const config = loadConfig(configPath);
-  assert.equal(config.defaultContinue, true);
-  assert.equal(config.defaultYolo, false);
-  assert.equal(config.launchInTmux, false);
+  expect(config.defaultContinue).toBe(true);
+  expect(config.defaultYolo).toBe(false);
+  expect(config.launchInTmux).toBe(false);
 });
 
 test('ensureMetaDir creates worktree-meta directory', () => {
   const configPath = path.join(tmpDir, 'config.json');
   ensureMetaDir(configPath);
   const metaPath = path.join(tmpDir, 'worktree-meta');
-  assert.ok(fs.existsSync(metaPath));
+  expect(fs.existsSync(metaPath)).toBeTruthy();
 });
 
 test('writeMeta creates and readMeta reads metadata file', () => {
@@ -113,13 +112,13 @@ test('writeMeta creates and readMeta reads metadata file', () => {
   };
   writeMeta(configPath, meta);
   const read = readMeta(configPath, '/tmp/test-worktree');
-  assert.deepEqual(read, meta);
+  expect(read).toEqual(meta);
 });
 
 test('readMeta returns null for non-existent metadata', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const result = readMeta(configPath, '/no/such/worktree');
-  assert.equal(result, null);
+  expect(result).toBe(null);
 });
 
 test('writeMeta overwrites existing metadata', () => {
@@ -135,8 +134,8 @@ test('writeMeta overwrites existing metadata', () => {
     lastActivity: '2026-02-22T00:00:00.000Z',
   });
   const read = readMeta(configPath, '/tmp/wt');
-  assert.equal(read!.displayName, 'New Name');
-  assert.equal(read!.lastActivity, '2026-02-22T00:00:00.000Z');
+  expect(read!.displayName).toBe('New Name');
+  expect(read!.lastActivity).toBe('2026-02-22T00:00:00.000Z');
 });
 
 test('deleteMeta removes metadata file', () => {
@@ -146,14 +145,14 @@ test('deleteMeta removes metadata file', () => {
     displayName: 'To Delete',
     lastActivity: '2026-02-22T00:00:00.000Z',
   });
-  assert.ok(readMeta(configPath, '/tmp/del-test'));
+  expect(readMeta(configPath, '/tmp/del-test')).toBeTruthy();
   deleteMeta(configPath, '/tmp/del-test');
-  assert.equal(readMeta(configPath, '/tmp/del-test'), null);
+  expect(readMeta(configPath, '/tmp/del-test')).toBe(null);
 });
 
 test('deleteMeta is a no-op for non-existent metadata', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  assert.doesNotThrow(() => deleteMeta(configPath, '/no/such/path'));
+  expect(() => deleteMeta(configPath, '/no/such/path')).not.toThrow();
 });
 
 test('resolveSessionSettings returns global defaults when no workspace or overrides', () => {
@@ -171,11 +170,11 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/some/repo', {});
-  assert.equal(result.agent, 'claude');
-  assert.equal(result.yolo, false);
-  assert.equal(result.continuePolicy, 'always');
-  assert.equal(result.useTmux, false);
-  assert.deepEqual(result.claudeArgs, []);
+  expect(result.agent).toBe('claude');
+  expect(result.yolo).toBe(false);
+  expect(result.continuePolicy).toBe('always');
+  expect(result.useTmux).toBe(false);
+  expect(result.claudeArgs).toEqual([]);
 });
 
 test('resolveSessionSettings applies workspace overrides over globals', () => {
@@ -196,9 +195,9 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {});
-  assert.equal(result.agent, 'codex');
-  assert.equal(result.yolo, true);
-  assert.equal(result.continuePolicy, 'always');
+  expect(result.agent).toBe('codex');
+  expect(result.yolo).toBe(true);
+  expect(result.continuePolicy).toBe('always');
 });
 
 test('resolveSessionSettings explicit overrides beat workspace settings', () => {
@@ -219,7 +218,7 @@ test('resolveSessionSettings explicit overrides beat workspace settings', () => 
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', { yolo: false });
-  assert.equal(result.yolo, false);
+  expect(result.yolo).toBe(false);
 });
 
 test('resolveSessionSettings uses override claudeArgs, not global', () => {
@@ -239,7 +238,7 @@ test('resolveSessionSettings uses override claudeArgs, not global', () => {
   const result = resolveSessionSettings(config, '/some/repo', {
     claudeArgs: ['--custom'],
   });
-  assert.deepEqual(result.claudeArgs, ['--custom']);
+  expect(result.claudeArgs).toEqual(['--custom']);
 });
 
 test('resolveSessionSettings falls through to globals when no workspace exists', () => {
@@ -257,11 +256,11 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/nonexistent/repo', {});
-  assert.equal(result.agent, 'codex');
-  assert.equal(result.yolo, true);
-  assert.equal(result.continuePolicy, 'never');
-  assert.equal(result.useTmux, true);
-  assert.deepEqual(result.claudeArgs, ['--verbose']);
+  expect(result.agent).toBe('codex');
+  expect(result.yolo).toBe(true);
+  expect(result.continuePolicy).toBe('never');
+  expect(result.useTmux).toBe(true);
+  expect(result.claudeArgs).toEqual(['--verbose']);
 });
 
 test('deleteRepoSettingKeys removes specified keys', () => {
@@ -281,9 +280,9 @@ test('deleteRepoSettingKeys removes specified keys', () => {
     'defaultYolo',
     'defaultFramework',
   ]);
-  assert.equal(config.repoSettings!['/my/repo']!.defaultYolo, undefined);
-  assert.equal(config.repoSettings!['/my/repo']!.defaultFramework, undefined);
-  assert.equal(config.repoSettings!['/my/repo']!.branchPrefix, 'dy/');
+  expect(config.repoSettings!['/my/repo']!.defaultYolo).toBe(undefined);
+  expect(config.repoSettings!['/my/repo']!.defaultFramework).toBe(undefined);
+  expect(config.repoSettings!['/my/repo']!.branchPrefix).toBe('dy/');
 });
 
 test('deleteRepoSettingKeys removes entire workspace entry when empty', () => {
@@ -296,16 +295,16 @@ test('deleteRepoSettingKeys removes entire workspace entry when empty', () => {
   };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
   deleteRepoSettingKeys(configPath, config, '/my/repo', ['defaultYolo']);
-  assert.equal(config.repoSettings!['/my/repo'], undefined);
+  expect(config.repoSettings!['/my/repo']).toBe(undefined);
 });
 
 test('deleteRepoSettingKeys is no-op for nonexistent workspace', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const config = { ...DEFAULTS };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  assert.doesNotThrow(() =>
+  expect(() =>
     deleteRepoSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo'])
-  );
+  ).not.toThrow();
 });
 
 // ── resolveSessionSettings workspace cascade ──
@@ -341,9 +340,9 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
   // Workspace settings should override global
-  assert.equal(result.yolo, true);
-  assert.equal(result.agent, 'codex');
-  assert.equal(result.useTmux, true);
+  expect(result.yolo).toBe(true);
+  expect(result.agent).toBe('codex');
+  expect(result.useTmux).toBe(true);
 });
 
 test('resolveSessionSettings: repo settings override workspace settings', () => {
@@ -376,8 +375,8 @@ test('resolveSessionSettings: repo settings override workspace settings', () => 
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
   // Repo settings beat workspace settings
-  assert.equal(result.yolo, false);
-  assert.equal(result.agent, 'claude');
+  expect(result.yolo).toBe(false);
+  expect(result.agent).toBe('claude');
 });
 
 test('resolveSessionSettings: overrides beat workspace and repo settings', () => {
@@ -414,7 +413,7 @@ test('resolveSessionSettings: overrides beat workspace and repo settings', () =>
     { yolo: false },
     wsId
   );
-  assert.equal(result.yolo, false);
+  expect(result.yolo).toBe(false);
 });
 
 test('resolveSessionSettings without workspaceId skips workspace cascade', () => {
@@ -443,8 +442,8 @@ test('resolveSessionSettings without workspaceId skips workspace cascade', () =>
   const config = loadConfig(configPath);
   // No workspaceId passed — workspace settings should NOT apply
   const result = resolveSessionSettings(config, '/my/repo', {});
-  assert.equal(result.yolo, false);
-  assert.equal(result.agent, 'claude');
+  expect(result.yolo).toBe(false);
+  expect(result.agent).toBe('claude');
 });
 
 test('resolveSessionSettings with unknown workspaceId falls through to global', () => {
@@ -469,8 +468,8 @@ test('resolveSessionSettings with unknown workspaceId falls through to global', 
     {},
     'no-such-workspace'
   );
-  assert.equal(result.yolo, false);
-  assert.equal(result.agent, 'claude');
+  expect(result.yolo).toBe(false);
+  expect(result.agent).toBe('claude');
 });
 
 test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always', () => {
@@ -482,7 +481,7 @@ test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always'
   );
   const config = loadConfig(configPath);
   const resolved = resolveSessionSettings(config, '/some/repo', {});
-  assert.equal(resolved.continuePolicy, 'always');
+  expect(resolved.continuePolicy).toBe('always');
 });
 
 test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never', () => {
@@ -494,7 +493,7 @@ test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never'
   );
   const config = loadConfig(configPath);
   const resolved = resolveSessionSettings(config, '/some/repo', {});
-  assert.equal(resolved.continuePolicy, 'never');
+  expect(resolved.continuePolicy).toBe('never');
 });
 
 test('resolveSessionSettings respects explicit continuePolicy override', () => {
@@ -508,7 +507,7 @@ test('resolveSessionSettings respects explicit continuePolicy override', () => {
   const resolved = resolveSessionSettings(config, '/some/repo', {
     continuePolicy: 'never',
   });
-  assert.equal(resolved.continuePolicy, 'never');
+  expect(resolved.continuePolicy).toBe('never');
 });
 
 test('resolveSessionSettings defaults continuePolicy to always when defaultContinue is missing', () => {
@@ -517,7 +516,7 @@ test('resolveSessionSettings defaults continuePolicy to always when defaultConti
   const config = loadConfig(configPath);
   const resolved = resolveSessionSettings(config, '/some/repo', {});
   // defaultContinue defaults to true via DEFAULTS, so maps to 'always'
-  assert.equal(resolved.continuePolicy, 'always');
+  expect(resolved.continuePolicy).toBe('always');
 });
 
 test('cascades workspace settings when workspaceId is provided', () => {
@@ -540,12 +539,8 @@ test('cascades workspace settings when workspaceId is provided', () => {
   } as Config;
 
   const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  assert.strictEqual(
-    result.yolo,
-    true,
-    'workspace settings should cascade yolo'
-  );
-  assert.strictEqual(result.agent, 'claude');
+  expect(result.yolo).toBe(true);
+  expect(result.agent).toBe('claude');
 });
 
 test('repo settings override workspace settings', () => {
@@ -569,11 +564,7 @@ test('repo settings override workspace settings', () => {
   } as Config;
 
   const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  assert.strictEqual(
-    result.yolo,
-    false,
-    'repo settings should override workspace'
-  );
+  expect(result.yolo).toBe(false);
 });
 
 test('resolveSessionSettings: repoSettings defaultFramework overrides global', () => {
@@ -591,5 +582,5 @@ test('resolveSessionSettings: repoSettings defaultFramework overrides global', (
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {});
-  assert.equal(result.agent, 'opencode');
+  expect(result.agent).toBe('opencode');
 });

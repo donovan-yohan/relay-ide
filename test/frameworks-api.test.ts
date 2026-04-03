@@ -1,5 +1,4 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import express from 'express';
 import http from 'node:http';
 import { BUILTIN_FRAMEWORKS } from '../server/types.js';
@@ -12,7 +11,7 @@ import { BUILTIN_FRAMEWORKS } from '../server/types.js';
 let server: http.Server;
 let port: number;
 
-before(async () => {
+beforeAll(async () => {
   const app = express();
   app.use(express.json());
 
@@ -33,7 +32,7 @@ before(async () => {
   port = (server.address() as { port: number }).port;
 });
 
-after(() => {
+afterAll(() => {
   server.close();
 });
 
@@ -44,21 +43,18 @@ function url(p: string): string {
 describe('GET /api/frameworks', () => {
   it('returns 200 with a frameworks array', async () => {
     const res = await fetch(url('/api/frameworks'));
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as { frameworks: unknown[] };
-    assert.ok(
-      Array.isArray(body.frameworks),
-      'response should have a frameworks array'
-    );
+    expect(Array.isArray(body.frameworks)).toBeTruthy();
   });
 
   it('returns all three builtin frameworks', async () => {
     const res = await fetch(url('/api/frameworks'));
     const body = (await res.json()) as { frameworks: Array<{ id: string }> };
     const ids = body.frameworks.map((f) => f.id);
-    assert.ok(ids.includes('claude'), 'should include claude');
-    assert.ok(ids.includes('codex'), 'should include codex');
-    assert.ok(ids.includes('opencode'), 'should include opencode');
+    expect(ids.includes('claude')).toBeTruthy();
+    expect(ids.includes('codex')).toBeTruthy();
+    expect(ids.includes('opencode')).toBeTruthy();
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource', async () => {
@@ -73,30 +69,21 @@ describe('GET /api/frameworks', () => {
       }>;
     };
     for (const fw of body.frameworks) {
-      assert.ok(
-        typeof fw.id === 'string',
-        `framework ${fw.id} should have string id`
-      );
-      assert.ok(
-        typeof fw.displayName === 'string',
-        `framework ${fw.id} should have displayName`
-      );
-      assert.ok(
-        typeof fw.command === 'string',
-        `framework ${fw.id} should have command`
-      );
-      assert.ok(
-        typeof fw.eventSource === 'string',
-        `framework ${fw.id} should have eventSource`
-      );
-      assert.ok(
-        fw.capabilities && typeof fw.capabilities === 'object',
-        `framework ${fw.id} should have capabilities`
-      );
-      assert.ok(typeof fw.capabilities.supportsHooks === 'boolean');
-      assert.ok(typeof fw.capabilities.supportsContinue === 'boolean');
-      assert.ok(typeof fw.capabilities.supportsYolo === 'boolean');
-      assert.ok(typeof fw.capabilities.supportsTelemetry === 'boolean');
+      expect(typeof fw.id === 'string').toBeTruthy();
+      expect(typeof fw.displayName === 'string').toBeTruthy();
+      expect(typeof fw.command === 'string').toBeTruthy();
+      expect(typeof fw.eventSource === 'string').toBeTruthy();
+      expect(
+        fw.capabilities && typeof fw.capabilities === 'object'
+      ).toBeTruthy();
+      expect(typeof fw.capabilities.supportsHooks === 'boolean').toBeTruthy();
+      expect(
+        typeof fw.capabilities.supportsContinue === 'boolean'
+      ).toBeTruthy();
+      expect(typeof fw.capabilities.supportsYolo === 'boolean').toBeTruthy();
+      expect(
+        typeof fw.capabilities.supportsTelemetry === 'boolean'
+      ).toBeTruthy();
     }
   });
 
@@ -112,12 +99,12 @@ describe('GET /api/frameworks', () => {
       }>;
     };
     const claude = body.frameworks.find((f) => f.id === 'claude');
-    assert.ok(claude, 'should have claude entry');
-    assert.equal(claude!.displayName, 'Claude Code');
-    assert.equal(claude!.command, 'claude');
-    assert.equal(claude!.eventSource, 'hooks');
-    assert.equal(claude!.capabilities.supportsHooks, true);
-    assert.equal(claude!.capabilities.supportsTelemetry, true);
+    expect(claude).toBeTruthy();
+    expect(claude!.displayName).toBe('Claude Code');
+    expect(claude!.command).toBe('claude');
+    expect(claude!.eventSource).toBe('hooks');
+    expect(claude!.capabilities.supportsHooks).toBe(true);
+    expect(claude!.capabilities.supportsTelemetry).toBe(true);
   });
 
   it('opencode framework entry has eventSource=plugin', async () => {
@@ -126,8 +113,8 @@ describe('GET /api/frameworks', () => {
       frameworks: Array<{ id: string; eventSource: string }>;
     };
     const opencode = body.frameworks.find((f) => f.id === 'opencode');
-    assert.ok(opencode, 'should have opencode entry');
-    assert.equal(opencode!.eventSource, 'plugin');
+    expect(opencode).toBeTruthy();
+    expect(opencode!.eventSource).toBe('plugin');
   });
 
   it('does not include internal fields like parserType or continueArgs', async () => {
@@ -136,17 +123,9 @@ describe('GET /api/frameworks', () => {
       frameworks: Array<Record<string, unknown>>;
     };
     for (const fw of body.frameworks) {
-      assert.equal(
-        fw.parserType,
-        undefined,
-        'parserType should not be exposed'
-      );
-      assert.equal(
-        fw.continueArgs,
-        undefined,
-        'continueArgs should not be exposed'
-      );
-      assert.equal(fw.yoloArgs, undefined, 'yoloArgs should not be exposed');
+      expect(fw.parserType).toBe(undefined);
+      expect(fw.continueArgs).toBe(undefined);
+      expect(fw.yoloArgs).toBe(undefined);
     }
   });
 });

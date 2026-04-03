@@ -1,5 +1,4 @@
-import { test, describe, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, describe, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +24,7 @@ interface ExecCall {
 let sharedTmpDir: string;
 let sharedConfigPath: string;
 
-before(() => {
+beforeAll(() => {
   sharedTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-'));
   sharedConfigPath = path.join(sharedTmpDir, 'config.json');
   const minimalConfig = {
@@ -44,7 +43,7 @@ before(() => {
   fs.writeFileSync(sharedConfigPath, JSON.stringify(minimalConfig, null, 2));
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(sharedTmpDir, { recursive: true, force: true });
 });
 
@@ -125,15 +124,9 @@ describe('ticket-transitions', () => {
           c.args.includes('--add-label') &&
           c.args.includes('in-progress')
       );
-      assert.ok(
-        addLabelCall,
-        'Should have called gh issue edit --add-label in-progress'
-      );
-      assert.equal(addLabelCall.cwd, REPO_PATH);
-      assert.ok(
-        addLabelCall.args.includes('100'),
-        'Should pass issue number 100'
-      );
+      expect(addLabelCall).toBeTruthy();
+      expect(addLabelCall.cwd).toBe(REPO_PATH);
+      expect(addLabelCall.args.includes('100')).toBeTruthy();
     });
 
     test('is idempotent — does not re-fire same transition', async () => {
@@ -145,15 +138,11 @@ describe('ticket-transitions', () => {
       // First call — should fire
       await transitionOnSessionCreate(ctx);
       const firstCallCount = calls.length;
-      assert.ok(firstCallCount > 0, 'First call should trigger gh');
+      expect(firstCallCount > 0).toBeTruthy();
 
       // Second call — should be a no-op (idempotent)
       await transitionOnSessionCreate(ctx);
-      assert.equal(
-        calls.length,
-        firstCallCount,
-        'Second call should not trigger additional gh calls'
-      );
+      expect(calls.length).toBe(firstCallCount);
     });
   });
 
@@ -177,15 +166,9 @@ describe('ticket-transitions', () => {
           c.args.includes('--add-label') &&
           c.args.includes('code-review')
       );
-      assert.ok(
-        addCodeReview,
-        'Should have called gh issue edit --add-label code-review'
-      );
-      assert.equal(addCodeReview.cwd, REPO_PATH);
-      assert.ok(
-        addCodeReview.args.includes('200'),
-        'Should pass issue number 200'
-      );
+      expect(addCodeReview).toBeTruthy();
+      expect(addCodeReview.cwd).toBe(REPO_PATH);
+      expect(addCodeReview.args.includes('200')).toBeTruthy();
 
       const removeInProgress = calls.find(
         (c) =>
@@ -193,7 +176,7 @@ describe('ticket-transitions', () => {
           c.args.includes('--remove-label') &&
           c.args.includes('in-progress')
       );
-      assert.ok(removeInProgress, 'Should have removed in-progress label');
+      expect(removeInProgress).toBeTruthy();
     });
 
     test('adds ready-for-qa label when PR is MERGED for a linked ticket', async () => {
@@ -215,15 +198,9 @@ describe('ticket-transitions', () => {
           c.args.includes('--add-label') &&
           c.args.includes('ready-for-qa')
       );
-      assert.ok(
-        addReadyForQa,
-        'Should have called gh issue edit --add-label ready-for-qa'
-      );
-      assert.equal(addReadyForQa.cwd, REPO_PATH);
-      assert.ok(
-        addReadyForQa.args.includes('300'),
-        'Should pass issue number 300'
-      );
+      expect(addReadyForQa).toBeTruthy();
+      expect(addReadyForQa.cwd).toBe(REPO_PATH);
+      expect(addReadyForQa.args.includes('300')).toBeTruthy();
 
       const removeCodeReview = calls.find(
         (c) =>
@@ -231,7 +208,7 @@ describe('ticket-transitions', () => {
           c.args.includes('--remove-label') &&
           c.args.includes('code-review')
       );
-      assert.ok(removeCodeReview, 'Should have removed code-review label');
+      expect(removeCodeReview).toBeTruthy();
     });
 
     test('is idempotent for PR transitions', async () => {
@@ -248,15 +225,11 @@ describe('ticket-transitions', () => {
       // First call — should fire
       await checkPrTransitions(prs, branchLinks);
       const firstCallCount = calls.length;
-      assert.ok(firstCallCount > 0, 'First call should trigger gh');
+      expect(firstCallCount > 0).toBeTruthy();
 
       // Second call with same PR state — should be a no-op (idempotent)
       await checkPrTransitions(prs, branchLinks);
-      assert.equal(
-        calls.length,
-        firstCallCount,
-        'Second call with same state should not trigger additional gh calls'
-      );
+      expect(calls.length).toBe(firstCallCount);
     });
 
     test('handles gh CLI errors gracefully', async () => {
@@ -271,10 +244,7 @@ describe('ticket-transitions', () => {
       const branchLinks = makeBranchLinks(ticketId, branchName);
 
       // Should not throw even when gh CLI fails
-      await assert.doesNotReject(
-        () => checkPrTransitions(prs, branchLinks),
-        'checkPrTransitions should not throw when gh CLI errors'
-      );
+      await expect(checkPrTransitions(prs, branchLinks)).resolves.not.toThrow();
     });
   });
 });
@@ -285,12 +255,12 @@ describe('ticket-transitions (Jira)', () => {
   let tmpDir: string;
   let configPath: string;
 
-  before(() => {
+  beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-jira-'));
     configPath = path.join(tmpDir, 'config.json');
   });
 
-  after(() => {
+  afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -351,14 +321,8 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('transition') &&
         c.args.includes('PROJ-123')
     );
-    assert.ok(
-      transitionCall,
-      `Expected acli jira workitem transition call, got: ${JSON.stringify(acliCalls)}`
-    );
-    assert.ok(
-      transitionCall.args.includes('In Progress'),
-      'Should pass the mapped status name'
-    );
+    expect(transitionCall).toBeTruthy();
+    expect(transitionCall.args.includes('In Progress')).toBeTruthy();
   });
 
   test('transitionOnSessionCreate skips when no status mapping configured', async () => {
@@ -382,11 +346,7 @@ describe('ticket-transitions (Jira)', () => {
     };
     await transitionOnSessionCreate(ctx);
 
-    assert.equal(
-      acliCalls.length,
-      0,
-      'Should not call acli when no status mapping exists'
-    );
+    expect(acliCalls.length).toBe(0);
   });
 
   test('transitionOnSessionCreate is idempotent — second call blocked after success', async () => {
@@ -411,15 +371,11 @@ describe('ticket-transitions (Jira)', () => {
 
     await transitionOnSessionCreate(ctx);
     const firstCallCount = acliCalls.length;
-    assert.ok(firstCallCount > 0, 'First call should trigger acli');
+    expect(firstCallCount > 0).toBeTruthy();
 
     // Second call — should be blocked by idempotency guard
     await transitionOnSessionCreate(ctx);
-    assert.equal(
-      acliCalls.length,
-      firstCallCount,
-      'Second call should be blocked by idempotency guard after success'
-    );
+    expect(acliCalls.length).toBe(firstCallCount);
   });
 
   test('checkPrTransitions calls acli jira workitem transition for OPEN PR with mapped Jira ticket', async () => {
@@ -458,13 +414,7 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('transition') &&
         c.args.includes('PROJ-789')
     );
-    assert.ok(
-      transitionCall,
-      `Expected acli jira workitem transition call, got: ${JSON.stringify(acliCalls)}`
-    );
-    assert.ok(
-      transitionCall.args.includes('Code Review'),
-      'Should use code-review status name'
-    );
+    expect(transitionCall).toBeTruthy();
+    expect(transitionCall.args.includes('Code Review')).toBeTruthy();
   });
 });

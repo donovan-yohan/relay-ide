@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   parseShortcut,
   matchesShortcut,
@@ -10,17 +9,17 @@ describe('ShortcutListener', () => {
   describe('parseShortcut', () => {
     it('parses mod+t into platform-aware key combo', () => {
       const result = parseShortcut('mod+t');
-      assert.deepStrictEqual(result, { mod: true, shift: false, key: 't' });
+      expect(result).toEqual({ mod: true, shift: false, key: 't' });
     });
 
     it('parses mod+shift+[ into key combo', () => {
       const result = parseShortcut('mod+shift+[');
-      assert.deepStrictEqual(result, { mod: true, shift: true, key: '[' });
+      expect(result).toEqual({ mod: true, shift: true, key: '[' });
     });
 
     it('parses single key', () => {
       const result = parseShortcut('escape');
-      assert.deepStrictEqual(result, {
+      expect(result).toEqual({
         mod: false,
         shift: false,
         key: 'escape',
@@ -37,7 +36,9 @@ describe('ShortcutListener', () => {
         shiftKey: false,
         key: 't',
       };
-      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, true));
+      expect(
+        matchesShortcut(event as KeyboardEvent, parsed, true)
+      ).toBeTruthy();
     });
 
     it('matches mod+t when ctrlKey is true on non-mac', () => {
@@ -48,7 +49,9 @@ describe('ShortcutListener', () => {
         shiftKey: false,
         key: 't',
       };
-      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
+      expect(
+        matchesShortcut(event as KeyboardEvent, parsed, false)
+      ).toBeTruthy();
     });
 
     it('does not match when shift is required but not pressed', () => {
@@ -59,37 +62,43 @@ describe('ShortcutListener', () => {
         shiftKey: false,
         key: '[',
       };
-      assert.ok(!matchesShortcut(event as KeyboardEvent, parsed, true));
+      expect(
+        !matchesShortcut(event as KeyboardEvent, parsed, true)
+      ).toBeTruthy();
     });
 
     it('matches mod+shift+[ when Linux/Windows produces { due to key transform', () => {
       const parsed = parseShortcut('mod+shift+[');
       const event = { metaKey: false, ctrlKey: true, shiftKey: true, key: '{' };
-      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
+      expect(
+        matchesShortcut(event as KeyboardEvent, parsed, false)
+      ).toBeTruthy();
     });
 
     it('matches mod+shift+] when Linux/Windows produces } due to key transform', () => {
       const parsed = parseShortcut('mod+shift+]');
       const event = { metaKey: false, ctrlKey: true, shiftKey: true, key: '}' };
-      assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
+      expect(
+        matchesShortcut(event as KeyboardEvent, parsed, false)
+      ).toBeTruthy();
     });
   });
 
   describe('formatShortcut', () => {
     it('formats mod+t as ⌘T on mac', () => {
-      assert.strictEqual(formatShortcut('mod+t', true), '⌘T');
+      expect(formatShortcut('mod+t', true)).toBe('⌘T');
     });
 
     it('formats mod+t as ctrl+T on non-mac', () => {
-      assert.strictEqual(formatShortcut('mod+t', false), 'ctrl+T');
+      expect(formatShortcut('mod+t', false)).toBe('ctrl+T');
     });
 
     it('formats mod+shift+[ with shift symbol on mac', () => {
-      assert.strictEqual(formatShortcut('mod+shift+[', true), '⌘⇧[');
+      expect(formatShortcut('mod+shift+[', true)).toBe('⌘⇧[');
     });
 
     it('formats mod+w on non-mac', () => {
-      assert.strictEqual(formatShortcut('mod+w', false), 'ctrl+W');
+      expect(formatShortcut('mod+w', false)).toBe('ctrl+W');
     });
   });
 });

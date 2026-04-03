@@ -1,5 +1,4 @@
-import { describe, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,7 +14,7 @@ let repoDir: string;
 let server: Server;
 let baseUrl: string;
 
-before(async () => {
+beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-files-test-'));
   configPath = path.join(tmpDir, 'config.json');
   repoDir = path.join(tmpDir, 'repo');
@@ -64,7 +63,7 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${addr.port}`;
 });
 
-after(async () => {
+afterAll(async () => {
   server?.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -74,16 +73,16 @@ describe('GET /workspaces/changed-files', () => {
     const res = await fetch(
       `${baseUrl}/workspaces/changed-files?path=${encodeURIComponent(repoDir)}`
     );
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    assert.ok(Array.isArray(data.files));
-    assert.ok(data.aggregate);
-    assert.equal(data.aggregate.fileCount, 2);
+    expect(Array.isArray(data.files)).toBeTruthy();
+    expect(data.aggregate).toBeTruthy();
+    expect(data.aggregate.fileCount).toBe(2);
   });
 
   test('returns 400 without path parameter', async () => {
     const res = await fetch(`${baseUrl}/workspaces/changed-files`);
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 });
 
@@ -92,34 +91,34 @@ describe('GET /workspaces/file-diff', () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=server/git.ts`
     );
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    assert.ok(typeof data.diff === 'string');
+    expect(typeof data.diff === 'string').toBeTruthy();
   });
 
   test('returns 400 without file parameter', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}`
     );
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 
   test('rejects absolute paths that did not start with ~', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=/etc/passwd`
     );
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const data = (await res.json()) as any;
-    assert.equal(data.error, 'invalid file path');
+    expect(data.error).toBe('invalid file path');
   });
 
   test('rejects .. traversal in relative paths', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=../../etc/passwd`
     );
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const data = (await res.json()) as any;
-    assert.equal(data.error, 'invalid file path');
+    expect(data.error).toBe('invalid file path');
   });
 
   test('reads ~/file paths directly via fs', async () => {
@@ -129,9 +128,9 @@ describe('GET /workspaces/file-diff', () => {
       const res = await fetch(
         `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-test-tilde`
       );
-      assert.equal(res.status, 200);
+      expect(res.status).toBe(200);
       const data = (await res.json()) as any;
-      assert.equal(data.diff, 'tilde-test-content');
+      expect(data.diff).toBe('tilde-test-content');
     } finally {
       fs.unlinkSync(testFile);
     }
@@ -141,16 +140,16 @@ describe('GET /workspaces/file-diff', () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/../../etc/passwd`
     );
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
     const data = (await res.json()) as any;
-    assert.equal(data.error, 'invalid file path');
+    expect(data.error).toBe('invalid file path');
   });
 
   test('returns 404 for non-existent ~/file', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-nonexistent-file`
     );
-    assert.equal(res.status, 404);
+    expect(res.status).toBe(404);
   });
 
   test('returns 400 for directory ~/path', async () => {
@@ -160,9 +159,9 @@ describe('GET /workspaces/file-diff', () => {
       const res = await fetch(
         `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-test-dir`
       );
-      assert.equal(res.status, 400);
+      expect(res.status).toBe(400);
       const data = (await res.json()) as any;
-      assert.equal(data.error, 'not a regular file');
+      expect(data.error).toBe('not a regular file');
     } finally {
       fs.rmdirSync(testDir);
     }
@@ -174,14 +173,14 @@ describe('GET /workspaces/default-branch', () => {
     const res = await fetch(
       `${baseUrl}/workspaces/default-branch?path=${encodeURIComponent(repoDir)}`
     );
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    assert.equal(typeof data.branch, 'string');
-    assert.ok(data.branch.length > 0);
+    expect(typeof data.branch).toBe('string');
+    expect(data.branch.length > 0).toBeTruthy();
   });
 
   test('returns 400 without path parameter', async () => {
     const res = await fetch(`${baseUrl}/workspaces/default-branch`);
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 });

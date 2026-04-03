@@ -1,10 +1,9 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { generateFileSummary } from '../frontend/src/lib/diff-summary.js';
 
 describe('generateFileSummary', () => {
   it('returns "deleted file" for deleted status', () => {
-    assert.equal(generateFileSummary('', 'foo.ts', 'deleted'), 'deleted file');
+    expect(generateFileSummary('', 'foo.ts', 'deleted')).toBe('deleted file');
   });
 
   it('returns "new file" for untracked with no meaningful content', () => {
@@ -13,10 +12,7 @@ describe('generateFileSummary', () => {
       '+import foo from "bar"',
       '+// just a comment',
     ].join('\n');
-    assert.equal(
-      generateFileSummary(diff, 'empty.ts', 'untracked'),
-      'new file'
-    );
+    expect(generateFileSummary(diff, 'empty.ts', 'untracked')).toBe('new file');
   });
 
   it('returns "new file: <line>" for untracked with meaningful content', () => {
@@ -26,7 +22,7 @@ describe('generateFileSummary', () => {
       '+export function handleRequest(req: Request) {',
     ].join('\n');
     const result = generateFileSummary(diff, 'handler.ts', 'untracked');
-    assert.match(result, /^new file: export function handleRequest/);
+    expect(result).toMatch(/^new file: export function handleRequest/);
   });
 
   it('detects a single added function', () => {
@@ -38,8 +34,7 @@ describe('generateFileSummary', () => {
       '+  return data != null;',
       '+}',
     ].join('\n');
-    assert.equal(
-      generateFileSummary(diff, 'server.ts', 'modified'),
+    expect(generateFileSummary(diff, 'server.ts', 'modified')).toBe(
       'added validateInput()'
     );
   });
@@ -56,8 +51,7 @@ describe('generateFileSummary', () => {
       '+  return 2;',
       '+}',
     ].join('\n');
-    assert.equal(
-      generateFileSummary(diff, 'utils.ts', 'modified'),
+    expect(generateFileSummary(diff, 'utils.ts', 'modified')).toBe(
       'added 2 functions'
     );
   });
@@ -72,7 +66,7 @@ describe('generateFileSummary', () => {
       ' return x;',
     ].join('\n');
     const result = generateFileSummary(diff, 'api.ts', 'modified');
-    assert.match(result, /modified \d+ lines? in handleRequest\(\)/);
+    expect(result).toMatch(/modified \d+ lines? in handleRequest\(\)/);
   });
 
   it('detects multiple modified functions from hunk headers', () => {
@@ -86,8 +80,7 @@ describe('generateFileSummary', () => {
       ' const a = 1;',
       '+const b = 2;',
     ].join('\n');
-    assert.equal(
-      generateFileSummary(diff, 'api.ts', 'modified'),
+    expect(generateFileSummary(diff, 'api.ts', 'modified')).toBe(
       'modified 2 functions'
     );
   });
@@ -103,8 +96,7 @@ describe('generateFileSummary', () => {
       '-  "removed": true',
       ' }',
     ].join('\n');
-    assert.equal(
-      generateFileSummary(diff, 'config.json', 'modified'),
+    expect(generateFileSummary(diff, 'config.json', 'modified')).toBe(
       '+1 -1 lines'
     );
   });
@@ -117,9 +109,6 @@ describe('generateFileSummary', () => {
       `+${longLine}`,
     ].join('\n');
     const result = generateFileSummary(diff, 'long.ts', 'untracked');
-    assert.ok(
-      result.length <= 72,
-      `Expected truncated result but got length ${result.length}`
-    );
+    expect(result.length <= 72).toBeTruthy();
   });
 });

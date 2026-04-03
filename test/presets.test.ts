@@ -1,5 +1,4 @@
-import { test, describe, before, after, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, describe, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -65,7 +64,7 @@ function validateDeletion(
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preset-test-'));
 });
 
@@ -80,7 +79,7 @@ afterEach(() => {
   }
 });
 
-after(() => {
+afterAll(() => {
   fs.rmdirSync(tmpDir);
 });
 
@@ -90,28 +89,20 @@ after(() => {
 
 describe('DEFAULT_PRESETS', () => {
   test('contains at least two built-in presets', () => {
-    assert.ok(
-      DEFAULT_PRESETS.length >= 2,
-      'should have at least 2 default presets'
-    );
+    expect(DEFAULT_PRESETS.length >= 2).toBeTruthy();
   });
 
   test('all default presets are marked builtIn', () => {
     for (const preset of DEFAULT_PRESETS) {
-      assert.equal(
-        preset.builtIn,
-        true,
-        `preset "${preset.name}" should be builtIn`
-      );
+      expect(preset.builtIn).toBe(true);
     }
   });
 
   test('all default presets have valid sort direction', () => {
     for (const preset of DEFAULT_PRESETS) {
-      assert.ok(
-        preset.sort.direction === 'asc' || preset.sort.direction === 'desc',
-        `preset "${preset.name}" has invalid sort.direction: ${preset.sort.direction}`
-      );
+      expect(
+        preset.sort.direction === 'asc' || preset.sort.direction === 'desc'
+      ).toBeTruthy();
     }
   });
 });
@@ -125,7 +116,7 @@ describe('loadConfig preset initialisation', () => {
     const configPath = makeConfigPath();
     fs.writeFileSync(configPath, JSON.stringify({ port: 3456 }), 'utf8');
     const config = loadConfig(configPath);
-    assert.deepEqual(config.filterPresets, DEFAULT_PRESETS);
+    expect(config.filterPresets).toEqual(DEFAULT_PRESETS);
   });
 
   test('preserves user-supplied filterPresets from config file', () => {
@@ -143,7 +134,7 @@ describe('loadConfig preset initialisation', () => {
       'utf8'
     );
     const config = loadConfig(configPath);
-    assert.deepEqual(config.filterPresets, userPresets);
+    expect(config.filterPresets).toEqual(userPresets);
   });
 });
 
@@ -153,43 +144,39 @@ describe('loadConfig preset initialisation', () => {
 
 describe('preset creation validation', () => {
   test('rejects missing name', () => {
-    assert.equal(
-      validatePreset({ sort: { direction: 'asc' } }),
+    expect(validatePreset({ sort: { direction: 'asc' } })).toBe(
       'name is required'
     );
   });
 
   test('rejects empty string name', () => {
-    assert.equal(validatePreset({ name: '' }), 'name is required');
+    expect(validatePreset({ name: '' })).toBe('name is required');
   });
 
   test('rejects whitespace-only name', () => {
-    assert.equal(validatePreset({ name: '   ' }), 'name is required');
+    expect(validatePreset({ name: '   ' })).toBe('name is required');
   });
 
   test('rejects invalid sort.direction', () => {
-    assert.equal(
-      validatePreset({ name: 'Valid Name', sort: { direction: 'invalid' } }),
-      'sort.direction must be "asc" or "desc"'
-    );
+    expect(
+      validatePreset({ name: 'Valid Name', sort: { direction: 'invalid' } })
+    ).toBe('sort.direction must be "asc" or "desc"');
   });
 
   test('accepts valid name with asc direction', () => {
-    assert.equal(
-      validatePreset({ name: 'My Preset', sort: { direction: 'asc' } }),
-      null
-    );
+    expect(
+      validatePreset({ name: 'My Preset', sort: { direction: 'asc' } })
+    ).toBe(null);
   });
 
   test('accepts valid name with desc direction', () => {
-    assert.equal(
-      validatePreset({ name: 'My Preset', sort: { direction: 'desc' } }),
-      null
-    );
+    expect(
+      validatePreset({ name: 'My Preset', sort: { direction: 'desc' } })
+    ).toBe(null);
   });
 
   test('accepts valid name with no sort (sort is optional)', () => {
-    assert.equal(validatePreset({ name: 'My Preset' }), null);
+    expect(validatePreset({ name: 'My Preset' })).toBe(null);
   });
 });
 
@@ -216,8 +203,8 @@ describe('preset storage', () => {
 
     const reloaded = loadConfig(configPath);
     const found = reloaded.filterPresets?.find((p) => p.name === 'Team Review');
-    assert.ok(found, 'saved preset should be present after reload');
-    assert.deepEqual(found, newPreset);
+    expect(found).toBeTruthy();
+    expect(found).toEqual(newPreset);
   });
 
   test('duplicate name can be pushed (endpoint does not deduplicate — caller responsibility)', () => {
@@ -242,7 +229,7 @@ describe('preset storage', () => {
     const reloaded = loadConfig(configPath);
     const matches =
       reloaded.filterPresets?.filter((p) => p.name === 'Dupe') ?? [];
-    assert.equal(matches.length, 2, 'both duplicate entries should be stored');
+    expect(matches.length).toBe(2);
   });
 });
 
@@ -260,8 +247,7 @@ describe('preset deletion validation', () => {
         sort: { column: 'age', direction: 'desc' },
       },
     ];
-    assert.equal(
-      validateDeletion(presets, 'All PRs'),
+    expect(validateDeletion(presets, 'All PRs')).toBe(
       'Cannot delete a built-in preset'
     );
   });
@@ -275,7 +261,7 @@ describe('preset deletion validation', () => {
         sort: { column: 'age', direction: 'desc' },
       },
     ];
-    assert.equal(validateDeletion(presets, 'Nonexistent'), 'Preset not found');
+    expect(validateDeletion(presets, 'Nonexistent')).toBe('Preset not found');
   });
 
   test('allows deletion of a user-created preset', () => {
@@ -292,7 +278,7 @@ describe('preset deletion validation', () => {
         sort: { column: 'role', direction: 'asc' },
       },
     ];
-    assert.equal(validateDeletion(presets, 'My Custom'), null);
+    expect(validateDeletion(presets, 'My Custom')).toBe(null);
   });
 
   test('deletion removes exactly the named preset and leaves others intact', () => {
@@ -315,17 +301,10 @@ describe('preset deletion validation', () => {
 
     const reloaded = loadConfig(configPath);
     const remaining = reloaded.filterPresets ?? [];
-    assert.equal(
-      remaining.find((p) => p.name === 'To Delete'),
-      undefined,
-      'deleted preset should not exist'
-    );
+    expect(remaining.find((p) => p.name === 'To Delete')).toBe(undefined);
     // Built-in presets survive
     for (const dp of DEFAULT_PRESETS) {
-      assert.ok(
-        remaining.find((p) => p.name === dp.name),
-        `built-in preset "${dp.name}" should still be present`
-      );
+      expect(remaining.find((p) => p.name === dp.name)).toBeTruthy();
     }
   });
 });

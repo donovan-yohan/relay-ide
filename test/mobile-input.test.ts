@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,10 +60,10 @@ function assertReplacementNotLost(
   expectedReplacement: string,
   fixtureName: string
 ) {
-  assert.ok(
+  expect(
     payload.includes(expectedReplacement),
     `[${fixtureName}] Payload contains only backspaces — replacement text "${expectedReplacement}" was lost. Got: ${JSON.stringify(payload)}`
-  );
+  ).toBeTruthy();
 }
 
 // ── Fixture replay tests ─────────────────────────────────────────────
@@ -78,13 +77,7 @@ describe('mobile-input-pipeline: fixture replay', () => {
     const fixture = loadFixture(file);
     it(`${fixture.name}: ${fixture.description}`, () => {
       const actualPayload = replayFixture(fixture);
-      assert.strictEqual(
-        actualPayload,
-        fixture.expectedPayload,
-        `Payload mismatch for fixture "${fixture.name}". ` +
-          `Expected: ${JSON.stringify(fixture.expectedPayload)}, ` +
-          `Got: ${JSON.stringify(actualPayload)}`
-      );
+      expect(actualPayload).toBe(fixture.expectedPayload);
     });
   }
 });
@@ -115,12 +108,7 @@ describe('mobile-input-pipeline: autocorrect always includes replacement text', 
     const payload = replayFixture(fixture);
     assertReplacementNotLost(payload, 'the', fixture.name);
     const backspaceCount = (payload.match(/\x7f/g) ?? []).length;
-    assert.strictEqual(
-      backspaceCount,
-      3,
-      `Expected 3 backspaces (for "teh") but got ${backspaceCount} — ` +
-        `pipeline is deleting more than the target word`
-    );
+    expect(backspaceCount).toBe(3);
   });
 });
 
@@ -139,8 +127,8 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'helloa'
     );
-    assert.strictEqual(result.payload, 'a');
-    assert.strictEqual(result.newInputValue, undefined);
+    expect(result.payload).toBe('a');
+    expect(result.newInputValue).toBe(undefined);
   });
 
   it('autocorrect with range sends backspaces + replacement', () => {
@@ -155,7 +143,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'the'
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
+    expect(result.payload).toBe('\x7f\x7f\x7fthe');
   });
 
   it('cursor-0 recovery: single word buffer', () => {
@@ -170,8 +158,8 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'theteh'
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
-    assert.strictEqual(result.newInputValue, 'the');
+    expect(result.payload).toBe('\x7f\x7f\x7fthe');
+    expect(result.newInputValue).toBe('the');
   });
 
   it('cursor-0 recovery: multi-word buffer only deletes last word', () => {
@@ -186,8 +174,8 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'mobile and mkbijf'
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f\x7fmobile ');
-    assert.strictEqual(result.newInputValue, 'and mobile ');
+    expect(result.payload).toBe('\x7f\x7f\x7f\x7f\x7f\x7fmobile ');
+    expect(result.newInputValue).toBe('and mobile ');
   });
 
   it('cursor-0 recovery: suffix-only data (data[0] !== firstChar)', () => {
@@ -205,8 +193,8 @@ describe('mobile-input-pipeline: processIntent', () => {
       'esting tsestin'
     );
     // data[0]='e' !== firstChar='t' → suffix mode: "t" + "esting " = "testing "
-    assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f\x7f\x7ftesting ');
-    assert.strictEqual(result.newInputValue, 'testing ');
+    expect(result.payload).toBe('\x7f\x7f\x7f\x7f\x7f\x7f\x7ftesting ');
+    expect(result.newInputValue).toBe('testing ');
   });
 
   it('cursor-0 recovery: trailing space means nothing to autocorrect', () => {
@@ -221,8 +209,8 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'the hello '
     );
-    assert.strictEqual(result.payload, '');
-    assert.strictEqual(result.newInputValue, 'hello ');
+    expect(result.payload).toBe('');
+    expect(result.newInputValue).toBe('hello ');
   });
 
   it('deleteContentBackward with range', () => {
@@ -237,7 +225,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hell'
     );
-    assert.strictEqual(result.payload, '\x7f');
+    expect(result.payload).toBe('\x7f');
   });
 
   it('deleteWordBackward with range sends correct backspace count', () => {
@@ -252,7 +240,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hello '
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f');
+    expect(result.payload).toBe('\x7f\x7f\x7f\x7f\x7f');
   });
 
   it('deleteContentBackward without range falls back to diff', () => {
@@ -267,7 +255,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hell'
     );
-    assert.strictEqual(result.payload, '\x7f');
+    expect(result.payload).toBe('\x7f');
   });
 
   it('insertReplacementText sends backspaces + replacement', () => {
@@ -282,7 +270,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'the'
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
+    expect(result.payload).toBe('\x7f\x7f\x7fthe');
   });
 
   it('insertFromPaste uses diff to extract pasted text', () => {
@@ -297,7 +285,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hello world'
     );
-    assert.strictEqual(result.payload, ' world');
+    expect(result.payload).toBe(' world');
   });
 
   it('unknown inputType falls back to diff', () => {
@@ -312,7 +300,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hello'
     );
-    assert.strictEqual(result.payload, '\x7f\x7f\x7fello');
+    expect(result.payload).toBe('\x7f\x7f\x7fello');
   });
 
   it('empty payload for no-op diff', () => {
@@ -327,7 +315,7 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'hello'
     );
-    assert.strictEqual(result.payload, '');
+    expect(result.payload).toBe('');
   });
 
   it('handles emoji codepoints correctly in autocorrect range', () => {
@@ -342,6 +330,6 @@ describe('mobile-input-pipeline: processIntent', () => {
       },
       'smile'
     );
-    assert.strictEqual(result.payload, '\x7fsmile');
+    expect(result.payload).toBe('\x7fsmile');
   });
 });

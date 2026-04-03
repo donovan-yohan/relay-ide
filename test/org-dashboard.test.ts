@@ -1,5 +1,4 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -137,12 +136,12 @@ async function getPrs(): Promise<PullRequestsResponse> {
   return res.json() as Promise<PullRequestsResponse>;
 }
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'org-dashboard-test-'));
   configPath = path.join(tmpDir, 'config.json');
 });
 
-after(async () => {
+afterAll(async () => {
   await stopServer();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -188,17 +187,13 @@ test('returns prs filtered to workspace repos', async () => {
   await startServer(exec);
 
   const data = await getPrs();
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(
-    data.prs.length,
-    2,
-    'Should return only the 2 workspace-matched PRs'
-  );
+  expect(data.error).toBe(undefined);
+  expect(data.prs.length).toBe(2);
   const numbers = data.prs.map((p) => p.number).sort((a, b) => a - b);
-  assert.deepEqual(numbers, [10, 20]);
+  expect(numbers).toEqual([10, 20]);
   // Verify repoPath is attached
   const pr10 = data.prs.find((p) => p.number === 10);
-  assert.equal(pr10?.repoPath, WORKSPACE_PATH_A);
+  expect(pr10?.repoPath).toBe(WORKSPACE_PATH_A);
 });
 
 test('returns gh_not_in_path error when gh not found', async () => {
@@ -220,8 +215,8 @@ test('returns gh_not_in_path error when gh not found', async () => {
   await startServer(exec);
 
   const data = await getPrs();
-  assert.equal(data.error, 'gh_not_in_path');
-  assert.equal(data.prs.length, 0);
+  expect(data.error).toBe('gh_not_in_path');
+  expect(data.prs.length).toBe(0);
 });
 
 test('returns gh_not_authenticated error', async () => {
@@ -243,8 +238,8 @@ test('returns gh_not_authenticated error', async () => {
   await startServer(exec);
 
   const data = await getPrs();
-  assert.equal(data.error, 'gh_not_authenticated');
-  assert.equal(data.prs.length, 0);
+  expect(data.error).toBe('gh_not_authenticated');
+  expect(data.prs.length).toBe(0);
 });
 
 test('returns empty prs with no_workspaces error when workspaces is empty', async () => {
@@ -261,8 +256,8 @@ test('returns empty prs with no_workspaces error when workspaces is empty', asyn
   await startServer(exec);
 
   const data = await getPrs();
-  assert.equal(data.error, 'no_workspaces');
-  assert.equal(data.prs.length, 0);
+  expect(data.error).toBe('no_workspaces');
+  expect(data.prs.length).toBe(0);
 });
 
 test('detects reviewer role when current user is in requested_reviewers but not the author', async () => {
@@ -291,16 +286,12 @@ test('detects reviewer role when current user is in requested_reviewers but not 
   await startServer(exec);
 
   const data = await getPrs();
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.prs.length, 1, 'Should return the reviewer PR');
+  expect(data.error).toBe(undefined);
+  expect(data.prs.length).toBe(1);
   const pr = data.prs[0];
-  assert.equal(pr?.number, 42);
-  assert.equal(pr?.role, 'reviewer', 'Role should be reviewer');
-  assert.equal(
-    pr?.author,
-    'otheruser',
-    'Author should be otheruser, not the current user'
-  );
+  expect(pr?.number).toBe(42);
+  expect(pr?.role).toBe('reviewer');
+  expect(pr?.author).toBe('otheruser');
 });
 
 test('caches results within TTL — exec called only once for two requests', async () => {
@@ -341,19 +332,15 @@ test('caches results within TTL — exec called only once for two requests', asy
 
   // First request — populates cache
   const first = await getPrs();
-  assert.equal(first.error, undefined);
-  assert.equal(first.prs.length, 1);
+  expect(first.error).toBe(undefined);
+  expect(first.prs.length).toBe(1);
 
   // Second request — should be served from cache, no additional exec call
   const second = await getPrs();
-  assert.equal(second.error, undefined);
-  assert.equal(second.prs.length, 1);
+  expect(second.error).toBe(undefined);
+  expect(second.prs.length).toBe(1);
 
-  assert.equal(
-    searchCallCount,
-    1,
-    'gh search should have been called exactly once (cache hit on second request)'
-  );
+  expect(searchCallCount).toBe(1);
 });
 
 test('uses GraphQL path when github accessToken is in config', async () => {
@@ -434,29 +421,14 @@ test('uses GraphQL path when github accessToken is in config', async () => {
     const res = await fetch(`${gqlBaseUrl!}/org-dashboard/prs`);
     const data = (await res.json()) as PullRequestsResponse;
 
-    assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-    assert.equal(data.prs.length, 1, 'Should return the GraphQL PR');
-    assert.equal(
-      data.prs[0]?.number,
-      99,
-      'PR number should match GraphQL data'
-    );
-    assert.equal(data.prs[0]?.title, 'GraphQL PR');
+    expect(data.error).toBe(undefined);
+    expect(data.prs.length).toBe(1);
+    expect(data.prs[0]?.number).toBe(99);
+    expect(data.prs[0]?.title).toBe('GraphQL PR');
 
-    assert.equal(
-      graphqlCallCount,
-      1,
-      'fetchGraphQL should have been called exactly once'
-    );
-    assert.equal(
-      capturedToken,
-      'ghp_test123',
-      'fetchGraphQL should receive the configured access token'
-    );
-    assert.ok(
-      capturedRepoMap instanceof Map,
-      'fetchGraphQL should receive the repoMap'
-    );
+    expect(graphqlCallCount).toBe(1);
+    expect(capturedToken).toBe('ghp_test123');
+    expect(capturedRepoMap instanceof Map).toBeTruthy();
   } finally {
     await new Promise<void>((resolve) => {
       if (gqlServer) gqlServer.close(() => resolve());

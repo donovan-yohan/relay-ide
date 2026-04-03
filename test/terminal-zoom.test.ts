@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 // Pure zoom functions inlined here because the frontend source imports from
 // .svelte.ts modules that the Node.js test runner cannot process.
@@ -35,52 +34,52 @@ function scaledTerminalDimensions(
 describe('terminal zoom', () => {
   describe('clampFontSize', () => {
     it('returns value within bounds', () => {
-      assert.equal(clampFontSize(14), 14);
-      assert.equal(clampFontSize(20), 20);
+      expect(clampFontSize(14)).toBe(14);
+      expect(clampFontSize(20)).toBe(20);
     });
 
     it('clamps to minimum', () => {
-      assert.equal(clampFontSize(4), MIN);
-      assert.equal(clampFontSize(0), MIN);
-      assert.equal(clampFontSize(-5), MIN);
+      expect(clampFontSize(4)).toBe(MIN);
+      expect(clampFontSize(0)).toBe(MIN);
+      expect(clampFontSize(-5)).toBe(MIN);
     });
 
     it('clamps to maximum', () => {
-      assert.equal(clampFontSize(30), MAX);
-      assert.equal(clampFontSize(100), MAX);
+      expect(clampFontSize(30)).toBe(MAX);
+      expect(clampFontSize(100)).toBe(MAX);
     });
 
     it('rounds fractional values', () => {
-      assert.equal(clampFontSize(14.6), 15);
-      assert.equal(clampFontSize(14.4), 14);
+      expect(clampFontSize(14.6)).toBe(15);
+      expect(clampFontSize(14.4)).toBe(14);
     });
 
     it('handles boundary values exactly', () => {
-      assert.equal(clampFontSize(MIN), MIN);
-      assert.equal(clampFontSize(MAX), MAX);
+      expect(clampFontSize(MIN)).toBe(MIN);
+      expect(clampFontSize(MAX)).toBe(MAX);
     });
 
     it('returns default for NaN and non-finite values', () => {
-      assert.equal(clampFontSize(NaN), DEFAULT);
-      assert.equal(clampFontSize(Infinity), DEFAULT);
-      assert.equal(clampFontSize(-Infinity), DEFAULT);
+      expect(clampFontSize(NaN)).toBe(DEFAULT);
+      expect(clampFontSize(Infinity)).toBe(DEFAULT);
+      expect(clampFontSize(-Infinity)).toBe(DEFAULT);
     });
   });
 
   describe('zoomPercentage', () => {
     it('returns 100% at default', () => {
-      assert.equal(zoomPercentage(DEFAULT), 100);
+      expect(zoomPercentage(DEFAULT)).toBe(100);
     });
 
     it('scales proportionally', () => {
-      assert.equal(zoomPercentage(28), 200);
-      assert.equal(zoomPercentage(7), 50);
-      assert.equal(zoomPercentage(21), 150);
+      expect(zoomPercentage(28)).toBe(200);
+      expect(zoomPercentage(7)).toBe(50);
+      expect(zoomPercentage(21)).toBe(150);
     });
 
     it('handles minimum and maximum', () => {
-      assert.equal(zoomPercentage(MIN), Math.round((MIN / DEFAULT) * 100));
-      assert.equal(zoomPercentage(MAX), Math.round((MAX / DEFAULT) * 100));
+      expect(zoomPercentage(MIN)).toBe(Math.round((MIN / DEFAULT) * 100));
+      expect(zoomPercentage(MAX)).toBe(Math.round((MAX / DEFAULT) * 100));
     });
   });
 
@@ -88,28 +87,28 @@ describe('terminal zoom', () => {
     it('matches original hardcoded values at default font size', () => {
       const dims = scaledTerminalDimensions(1920, 1080, DEFAULT);
       // Original formula: Math.floor((1920 - 60) / 8) = 232, Math.floor((1080 - 120) / 17) = 56
-      assert.equal(dims.cols, Math.floor((1920 - 60) / 8));
-      assert.equal(dims.rows, Math.floor((1080 - 120) / 17));
+      expect(dims.cols).toBe(Math.floor((1920 - 60) / 8));
+      expect(dims.rows).toBe(Math.floor((1080 - 120) / 17));
     });
 
     it('returns fewer cols/rows at larger font sizes', () => {
       const normal = scaledTerminalDimensions(1920, 1080, 14);
       const large = scaledTerminalDimensions(1920, 1080, 28);
-      assert.ok(large.cols < normal.cols, 'larger font should give fewer cols');
-      assert.ok(large.rows < normal.rows, 'larger font should give fewer rows');
+      expect(large.cols < normal.cols).toBeTruthy();
+      expect(large.rows < normal.rows).toBeTruthy();
     });
 
     it('returns more cols/rows at smaller font sizes', () => {
       const normal = scaledTerminalDimensions(1920, 1080, 14);
       const small = scaledTerminalDimensions(1920, 1080, 8);
-      assert.ok(small.cols > normal.cols, 'smaller font should give more cols');
-      assert.ok(small.rows > normal.rows, 'smaller font should give more rows');
+      expect(small.cols > normal.cols).toBeTruthy();
+      expect(small.rows > normal.rows).toBeTruthy();
     });
 
     it('enforces minimums on small screens', () => {
       const dims = scaledTerminalDimensions(100, 100, 28);
-      assert.ok(dims.cols >= 80, 'cols must be at least 80');
-      assert.ok(dims.rows >= 24, 'rows must be at least 24');
+      expect(dims.cols >= 80).toBeTruthy();
+      expect(dims.rows >= 24).toBeTruthy();
     });
 
     it('scales linearly with font size', () => {
@@ -118,10 +117,7 @@ describe('terminal zoom', () => {
       // At 2x font size, char width doubles, so cols should approximately halve
       // (not exactly due to the (width - 60) offset and Math.floor)
       const ratio = at14.cols / at28.cols;
-      assert.ok(
-        ratio > 1.8 && ratio < 2.2,
-        `col ratio should be ~2, got ${ratio}`
-      );
+      expect(ratio > 1.8 && ratio < 2.2).toBeTruthy();
     });
   });
 });

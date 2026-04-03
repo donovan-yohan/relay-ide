@@ -1,5 +1,4 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -121,11 +120,11 @@ function stopServer(srv: Server | undefined): Promise<void> {
 
 let tmpDir: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webhook-manager-test-'));
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -177,23 +176,19 @@ test('POST /setup — happy path creates smee channel and saves config', async (
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean; smeeUrl: string };
-    assert.equal(data.ok, true);
-    assert.equal(data.smeeUrl, 'https://smee.io/abc123def456');
+    expect(data.ok).toBe(true);
+    expect(data.smeeUrl).toBe('https://smee.io/abc123def456');
 
     // Verify config was saved
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { smeeUrl?: string; webhookSecret?: string };
     };
-    assert.equal(saved.github?.smeeUrl, 'https://smee.io/abc123def456');
-    assert.ok(saved.github?.webhookSecret, 'webhookSecret should be set');
-    assert.equal(
-      saved.github!.webhookSecret!.length,
-      40,
-      'webhookSecret should be 20 bytes hex = 40 chars'
-    );
+    expect(saved.github?.smeeUrl).toBe('https://smee.io/abc123def456');
+    expect(saved.github?.webhookSecret).toBeTruthy();
+    expect(saved.github!.webhookSecret!.length).toBe(40);
   } finally {
     await stopServer(srv);
   }
@@ -211,10 +206,10 @@ test('POST /setup — smee.io unreachable returns error', async () => {
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
-    assert.equal(res.status, 502);
+    expect(res.status).toBe(502);
 
     const data = (await res.json()) as { error: string };
-    assert.equal(data.error, 'smee_unreachable');
+    expect(data.error).toBe('smee_unreachable');
   } finally {
     await stopServer(srv);
   }
@@ -248,11 +243,11 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean; webhookId: number };
-    assert.equal(data.ok, true);
-    assert.equal(data.webhookId, 99001);
+    expect(data.ok).toBe(true);
+    expect(data.webhookId).toBe(99001);
 
     // Verify webhookId saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
@@ -261,8 +256,8 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
         { webhookId?: number; webhookEnabled?: boolean }
       >;
     };
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, 99001);
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, true);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(99001);
+    expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(true);
   } finally {
     await stopServer(srv);
   }
@@ -295,16 +290,16 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 403);
+    expect(res.status).toBe(403);
 
     const data = (await res.json()) as { error: string; webhookError: string };
-    assert.equal(data.webhookError, 'not-admin');
+    expect(data.webhookError).toBe('not-admin');
 
     // Verify webhookError saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       repoSettings?: Record<string, { webhookError?: string }>;
     };
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookError, 'not-admin');
+    expect(saved.repoSettings?.[repoDir]?.webhookError).toBe('not-admin');
   } finally {
     await stopServer(srv);
   }
@@ -343,11 +338,11 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean; webhookId: number };
-    assert.equal(data.ok, true);
-    assert.equal(data.webhookId, 77777);
+    expect(data.ok).toBe(true);
+    expect(data.webhookId).toBe(77777);
   } finally {
     await stopServer(srv);
   }
@@ -378,10 +373,10 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
 
     const data = (await res.json()) as { error: string };
-    assert.equal(data.error, 'unauthorized');
+    expect(data.error).toBe('unauthorized');
   } finally {
     await stopServer(srv);
   }
@@ -421,10 +416,10 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean };
-    assert.equal(data.ok, true);
+    expect(data.ok).toBe(true);
 
     // Verify webhookId cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
@@ -433,8 +428,8 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
         { webhookId?: number; webhookEnabled?: boolean }
       >;
     };
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, undefined);
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(undefined);
   } finally {
     await stopServer(srv);
   }
@@ -474,16 +469,16 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { ok: boolean };
-    assert.equal(data.ok, true);
+    expect(data.ok).toBe(true);
 
     // Local state cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       repoSettings?: Record<string, { webhookId?: number }>;
     };
-    assert.equal(saved.repoSettings?.[repoDir]?.webhookId, undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
   } finally {
     await stopServer(srv);
   }
@@ -504,7 +499,7 @@ test('GET /status — returns correct configured state', async () => {
   const { srv, url } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as {
       configured: boolean;
@@ -513,16 +508,12 @@ test('GET /status — returns correct configured state', async () => {
       autoProvision: boolean;
       secretPreview: string | null;
     };
-    assert.equal(data.configured, true);
-    assert.equal(typeof data.smeeConnected, 'boolean');
-    assert.equal(data.autoProvision, true);
-    assert.ok(data.secretPreview, 'secretPreview should be set');
-    assert.ok(
-      data.secretPreview!.startsWith('****'),
-      'secretPreview should start with ****'
-    );
-    assert.equal(
-      data.secretPreview!.slice(-4),
+    expect(data.configured).toBe(true);
+    expect(typeof data.smeeConnected).toBe('boolean');
+    expect(data.autoProvision).toBe(true);
+    expect(data.secretPreview).toBeTruthy();
+    expect(data.secretPreview!.startsWith('****')).toBeTruthy();
+    expect(data.secretPreview!.slice(-4)).toBe(
       'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0')
     );
   } finally {
@@ -538,14 +529,14 @@ test('GET /status — returns not configured when no webhook secret', async () =
   const { srv, url } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as {
       configured: boolean;
       secretPreview: string | null;
     };
-    assert.equal(data.configured, false);
-    assert.equal(data.secretPreview, null);
+    expect(data.configured).toBe(false);
+    expect(data.secretPreview).toBe(null);
   } finally {
     await stopServer(srv);
   }
@@ -586,7 +577,7 @@ test('POST /backfill — partial failure returns correct totals', async () => {
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/backfill`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as {
       total: number;
@@ -600,14 +591,14 @@ test('POST /backfill — partial failure returns correct totals', async () => {
       }>;
     };
 
-    assert.equal(data.total, 3);
-    assert.equal(data.success, 2);
-    assert.equal(data.failed, 1);
-    assert.equal(data.results.length, 3);
+    expect(data.total).toBe(3);
+    expect(data.success).toBe(2);
+    expect(data.failed).toBe(1);
+    expect(data.results.length).toBe(3);
 
     const failedResult = data.results.find((r) => !r.ok);
-    assert.ok(failedResult, 'Should have one failed result');
-    assert.equal(failedResult!.error, 'forbidden');
+    expect(failedResult).toBeTruthy();
+    expect(failedResult!.error).toBe('forbidden');
   } finally {
     await stopServer(srv);
   }
@@ -629,10 +620,10 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
   const { srv, url } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/ping`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const data = (await res.json()) as { error: string };
-    assert.equal(data.error, 'no_webhook');
+    expect(data.error).toBe('no_webhook');
   } finally {
     await stopServer(srv);
   }

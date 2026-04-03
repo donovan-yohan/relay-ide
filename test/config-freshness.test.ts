@@ -1,5 +1,4 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +24,7 @@ describe('config freshness', () => {
   it('loadConfig sees repos added to disk after initial load', () => {
     // Simulate: server starts, loads config
     const initial = loadConfig(configPath);
-    assert.deepEqual(initial.repos, ['/existing/workspace']);
+    expect(initial.repos).toEqual(['/existing/workspace']);
 
     // Simulate: workspace router adds a repo and saves to disk
     const updated = loadConfig(configPath);
@@ -34,19 +33,13 @@ describe('config freshness', () => {
 
     // Simulate: session handler reads config (fresh)
     const fresh = loadConfig(configPath);
-    assert.ok(
-      fresh.repos!.includes('/new/workspace'),
-      'Fresh loadConfig should see repo added after initial load'
-    );
-    assert.ok(
-      fresh.repos!.includes('/existing/workspace'),
-      'Fresh loadConfig should still see original repo'
-    );
+    expect(fresh.repos!.includes('/new/workspace')).toBeTruthy();
+    expect(fresh.repos!.includes('/existing/workspace')).toBeTruthy();
   });
 
   it('loadConfig sees repos removed from disk after initial load', () => {
     const initial = loadConfig(configPath);
-    assert.deepEqual(initial.repos, ['/existing/workspace']);
+    expect(initial.repos).toEqual(['/existing/workspace']);
 
     // Simulate: workspace router removes the repo
     const updated = loadConfig(configPath);
@@ -55,7 +48,7 @@ describe('config freshness', () => {
 
     // Fresh read should see empty list
     const fresh = loadConfig(configPath);
-    assert.deepEqual(fresh.repos, []);
+    expect(fresh.repos).toEqual([]);
   });
 
   it('loadConfig sees workspace settings changes', () => {
@@ -68,21 +61,18 @@ describe('config freshness', () => {
 
     // Fresh read should see settings
     const fresh = loadConfig(configPath);
-    assert.equal(
-      fresh.repoSettings?.['/existing/workspace']?.defaultFramework,
+    expect(fresh.repoSettings?.['/existing/workspace']?.defaultFramework).toBe(
       'codex'
     );
   });
 
   it('loadConfig throws when config file is missing', () => {
     fs.unlinkSync(configPath);
-    assert.throws(() => loadConfig(configPath), {
-      message: /Config file not found/,
-    });
+    expect(() => loadConfig(configPath)).toThrow(/Config file not found/);
   });
 
   it('loadConfig throws on corrupted JSON', () => {
     fs.writeFileSync(configPath, '{bad json');
-    assert.throws(() => loadConfig(configPath));
+    expect(() => loadConfig(configPath)).toThrow();
   });
 });

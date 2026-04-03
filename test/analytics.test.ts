@@ -1,5 +1,4 @@
-import { test, before, after, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,10 +13,8 @@ import {
 
 let tmpDir!: string;
 
-before(() => {
-  tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'relay-ide-analytics-test-')
-  );
+beforeAll(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-analytics-test-'));
 });
 
 afterEach(() => {
@@ -28,23 +25,20 @@ afterEach(() => {
   }
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
 test('initAnalytics creates database and schema', () => {
   initAnalytics(tmpDir);
   const dbPath = getDbPath(tmpDir);
-  assert.ok(fs.existsSync(dbPath), 'DB file should exist');
+  expect(fs.existsSync(dbPath)).toBeTruthy();
 
   const db = new Database(dbPath, { readonly: true });
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  assert.ok(
-    tables.some((t) => t.name === 'events'),
-    'events table should exist'
-  );
+  expect(tables.some((t) => t.name === 'events')).toBeTruthy();
   db.close();
 });
 
@@ -65,18 +59,18 @@ test('trackEvent inserts a row', () => {
     string,
     unknown
   >[];
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.category, 'session');
-  assert.equal(rows[0]!.action, 'created');
-  assert.equal(rows[0]!.target, 'session-123');
-  assert.equal(rows[0]!.device, 'desktop');
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.category).toBe('session');
+  expect(rows[0]!.action).toBe('created');
+  expect(rows[0]!.target).toBe('session-123');
+  expect(rows[0]!.device).toBe('desktop');
 
   const props = JSON.parse(rows[0]!.properties as string) as Record<
     string,
     unknown
   >;
-  assert.equal(props.workspace, '/proj');
-  assert.equal(props.agent, 'claude');
+  expect(props.workspace).toBe('/proj');
+  expect(props.agent).toBe('claude');
   db.close();
 });
 
@@ -90,11 +84,11 @@ test('trackEvent handles optional fields as null', () => {
     string,
     unknown
   >[];
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.target, null);
-  assert.equal(rows[0]!.properties, null);
-  assert.equal(rows[0]!.session_id, null);
-  assert.equal(rows[0]!.device, null);
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.target).toBe(null);
+  expect(rows[0]!.properties).toBe(null);
+  expect(rows[0]!.session_id).toBe(null);
+  expect(rows[0]!.device).toBe(null);
   db.close();
 });
 
@@ -106,18 +100,18 @@ test('trackEvent is no-op before initAnalytics', () => {
 test('getDbSize returns file size after writes', () => {
   initAnalytics(tmpDir);
   const sizeBefore = getDbSize(tmpDir);
-  assert.ok(sizeBefore > 0, 'DB file should have non-zero size after init');
+  expect(sizeBefore > 0).toBeTruthy();
 
   for (let i = 0; i < 10; i++) {
     trackEvent({ category: 'bulk', action: 'test', properties: { i } });
   }
 
   const sizeAfter = getDbSize(tmpDir);
-  assert.ok(sizeAfter >= sizeBefore, 'Size should grow after writes');
+  expect(sizeAfter >= sizeBefore).toBeTruthy();
 });
 
 test('getDbSize returns 0 for non-existent path', () => {
-  assert.equal(getDbSize('/nonexistent/path'), 0);
+  expect(getDbSize('/nonexistent/path')).toBe(0);
 });
 
 test('initAnalytics is idempotent (schema already exists)', () => {
@@ -129,7 +123,7 @@ test('initAnalytics is idempotent (schema already exists)', () => {
   initAnalytics(tmpDir);
   const db = new Database(getDbPath(tmpDir), { readonly: true });
   const rows = db.prepare('SELECT * FROM events').all();
-  assert.equal(rows.length, 1);
+  expect(rows.length).toBe(1);
   db.close();
 });
 
@@ -160,12 +154,12 @@ test('POST /analytics/events batch inserts events', async () => {
     }),
   });
   const data = (await res.json()) as { ok: boolean; count: number };
-  assert.equal(data.ok, true);
-  assert.equal(data.count, 2);
+  expect(data.ok).toBe(true);
+  expect(data.count).toBe(2);
 
   const db = new Database(getDbPath(tmpDir), { readonly: true });
   const rows = db.prepare('SELECT * FROM events').all();
-  assert.equal(rows.length, 2);
+  expect(rows.length).toBe(2);
   db.close();
 
   server.close();
@@ -181,7 +175,7 @@ test('GET /analytics/size returns bytes', async () => {
 
   const res = await fetch(`http://localhost:${port}/analytics/size`);
   const data = (await res.json()) as { bytes: number };
-  assert.ok(data.bytes > 0);
+  expect(data.bytes > 0).toBeTruthy();
 
   server.close();
 });
@@ -201,11 +195,11 @@ test('DELETE /analytics/events clears all events', async () => {
     method: 'DELETE',
   });
   const data = (await res.json()) as { ok: boolean };
-  assert.equal(data.ok, true);
+  expect(data.ok).toBe(true);
 
   const db = new Database(getDbPath(tmpDir), { readonly: true });
   const rows = db.prepare('SELECT * FROM events').all();
-  assert.equal(rows.length, 0);
+  expect(rows.length).toBe(0);
   db.close();
 
   server.close();

@@ -1,5 +1,4 @@
-import { describe, it, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -68,10 +67,10 @@ describe('BranchWatcher', () => {
     // Wait for debounce (300ms) + processing
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    assert.ok(events.length > 0, 'Expected at least one branch change event');
+    expect(events.length > 0).toBeTruthy();
     const lastEvent = events[events.length - 1]!;
-    assert.equal(lastEvent.cwdPath, repoDir);
-    assert.equal(lastEvent.newBranch, 'feature-test');
+    expect(lastEvent.cwdPath).toBe(repoDir);
+    expect(lastEvent.newBranch).toBe('feature-test');
   });
 
   it('does not fire callback if branch did not change', async () => {
@@ -96,11 +95,7 @@ describe('BranchWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    assert.equal(
-      events.length,
-      0,
-      'Should not fire callback when branch is unchanged'
-    );
+    expect(events.length).toBe(0);
   });
 
   it('detects second branch change after atomic rename (inode change)', async () => {
@@ -128,11 +123,8 @@ describe('BranchWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    assert.ok(
-      events.length >= 1,
-      'Expected at least one event after first atomic rename'
-    );
-    assert.equal(events[events.length - 1]!.newBranch, 'branch-one');
+    expect(events.length >= 1).toBeTruthy();
+    expect(events[events.length - 1]!.newBranch).toBe('branch-one');
 
     // Second change: simulate another atomic checkout — this would fail without
     // watcher recreation because the old watcher tracked the deleted inode
@@ -144,10 +136,7 @@ describe('BranchWatcher', () => {
     await new Promise((resolve) => setTimeout(resolve, 800));
 
     const secondChange = events.find((e) => e.newBranch === 'branch-two');
-    assert.ok(
-      secondChange,
-      'Expected branch-two event after second atomic rename (watcher must survive inode change)'
-    );
+    expect(secondChange).toBeTruthy();
   });
 
   it('closes cleanly', () => {

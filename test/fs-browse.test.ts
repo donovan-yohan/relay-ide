@@ -1,5 +1,4 @@
-import { describe, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,7 +13,7 @@ let configPath: string;
 let server: Server;
 let baseUrl: string;
 
-before(async () => {
+beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-browse-test-'));
   configPath = path.join(tmpDir, 'config.json');
 
@@ -63,7 +62,7 @@ before(async () => {
   }
 });
 
-after(() => {
+afterAll(() => {
   server?.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -81,7 +80,7 @@ async function browse(query: Record<string, string> = {}): Promise<{
 }> {
   const params = new URLSearchParams(query);
   const res = await fetch(`${baseUrl}/workspaces/browse?${params}`);
-  assert.equal(res.status, 200, `Expected 200 but got ${res.status}`);
+  expect(res.status).toBe(200);
   return res.json() as Promise<ReturnType<typeof browse>>;
 }
 
@@ -90,15 +89,15 @@ describe('GET /workspaces/browse', () => {
     const browsable = path.join(tmpDir, 'browsable');
     const data = await browse({ path: browsable });
 
-    assert.equal(data.resolved, browsable);
+    expect(data.resolved).toBe(browsable);
     const names = data.entries.map((e) => e.name);
 
     // Should include visible directories but not files or denylisted dirs
-    assert.ok(names.includes('visible-dir'), 'should include visible-dir');
-    assert.ok(names.includes('git-repo'), 'should include git-repo');
-    assert.ok(names.includes('empty-dir'), 'should include empty-dir');
-    assert.ok(!names.includes('file.txt'), 'should exclude files');
-    assert.ok(!names.includes('node_modules'), 'should exclude node_modules');
+    expect(names.includes('visible-dir')).toBeTruthy();
+    expect(names.includes('git-repo')).toBeTruthy();
+    expect(names.includes('empty-dir')).toBeTruthy();
+    expect(!names.includes('file.txt')).toBeTruthy();
+    expect(!names.includes('node_modules')).toBeTruthy();
   });
 
   test('hides dotfiles by default', async () => {
@@ -106,10 +105,7 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(
-      !names.includes('.hidden-dir'),
-      'should exclude hidden dirs by default'
-    );
+    expect(!names.includes('.hidden-dir')).toBeTruthy();
   });
 
   test('shows dotfiles when showHidden=true', async () => {
@@ -117,28 +113,25 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable, showHidden: 'true' });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(
-      names.includes('.hidden-dir'),
-      'should include hidden dirs when showHidden'
-    );
+    expect(names.includes('.hidden-dir')).toBeTruthy();
     // .git should still be excluded (in denylist)
-    assert.ok(!names.includes('.git'), 'should still exclude .git');
+    expect(!names.includes('.git')).toBeTruthy();
   });
 
   test('filters by prefix', async () => {
     const browsable = path.join(tmpDir, 'browsable');
     const data = await browse({ path: browsable, prefix: 'vis' });
 
-    assert.equal(data.entries.length, 1);
-    assert.equal(data.entries[0]!.name, 'visible-dir');
+    expect(data.entries.length).toBe(1);
+    expect(data.entries[0]!.name).toBe('visible-dir');
   });
 
   test('prefix filter is case-insensitive', async () => {
     const browsable = path.join(tmpDir, 'browsable');
     const data = await browse({ path: browsable, prefix: 'VIS' });
 
-    assert.equal(data.entries.length, 1);
-    assert.equal(data.entries[0]!.name, 'visible-dir');
+    expect(data.entries.length).toBe(1);
+    expect(data.entries[0]!.name).toBe('visible-dir');
   });
 
   test('detects isGitRepo correctly', async () => {
@@ -148,18 +141,10 @@ describe('GET /workspaces/browse', () => {
     const gitRepo = data.entries.find((e) => e.name === 'git-repo');
     const visibleDir = data.entries.find((e) => e.name === 'visible-dir');
 
-    assert.ok(gitRepo, 'git-repo entry should exist');
-    assert.equal(
-      gitRepo.isGitRepo,
-      true,
-      'git-repo should have isGitRepo=true'
-    );
-    assert.ok(visibleDir, 'visible-dir entry should exist');
-    assert.equal(
-      visibleDir.isGitRepo,
-      false,
-      'visible-dir should have isGitRepo=false'
-    );
+    expect(gitRepo).toBeTruthy();
+    expect(gitRepo.isGitRepo).toBe(true);
+    expect(visibleDir).toBeTruthy();
+    expect(visibleDir.isGitRepo).toBe(false);
   });
 
   test('detects hasChildren correctly', async () => {
@@ -169,27 +154,19 @@ describe('GET /workspaces/browse', () => {
     const visibleDir = data.entries.find((e) => e.name === 'visible-dir');
     const emptyDir = data.entries.find((e) => e.name === 'empty-dir');
 
-    assert.ok(visibleDir, 'visible-dir entry should exist');
-    assert.equal(
-      visibleDir.hasChildren,
-      true,
-      'visible-dir should have children'
-    );
-    assert.ok(emptyDir, 'empty-dir entry should exist');
-    assert.equal(
-      emptyDir.hasChildren,
-      false,
-      'empty-dir should not have children'
-    );
+    expect(visibleDir).toBeTruthy();
+    expect(visibleDir.hasChildren).toBe(true);
+    expect(emptyDir).toBeTruthy();
+    expect(emptyDir.hasChildren).toBe(false);
   });
 
   test('truncates at 100 entries', async () => {
     const manyDir = path.join(tmpDir, 'many');
     const data = await browse({ path: manyDir });
 
-    assert.equal(data.entries.length, 100);
-    assert.equal(data.truncated, true);
-    assert.equal(data.total, 110);
+    expect(data.entries.length).toBe(100);
+    expect(data.truncated).toBe(true);
+    expect(data.total).toBe(110);
   });
 
   test('sorts alphabetically case-insensitive', async () => {
@@ -200,7 +177,7 @@ describe('GET /workspaces/browse', () => {
     const sorted = [...names].sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase())
     );
-    assert.deepEqual(names, sorted, 'entries should be sorted alphabetically');
+    expect(names).toEqual(sorted);
   });
 
   test('returns 400 for non-existent path', async () => {
@@ -208,7 +185,7 @@ describe('GET /workspaces/browse', () => {
       path: path.join(tmpDir, 'nonexistent'),
     });
     const res = await fetch(`${baseUrl}/workspaces/browse?${params}`);
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 
   test('returns 400 for file path', async () => {
@@ -216,14 +193,14 @@ describe('GET /workspaces/browse', () => {
       path: path.join(tmpDir, 'browsable', 'file.txt'),
     });
     const res = await fetch(`${baseUrl}/workspaces/browse?${params}`);
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 
   test('defaults to home directory when no path given', async () => {
     const data = await browse();
-    assert.equal(data.resolved, os.homedir());
+    expect(data.resolved).toBe(os.homedir());
     // Should have at least some entries (home dir is not empty)
-    assert.ok(data.entries.length > 0, 'home directory should have entries');
+    expect(data.entries.length > 0).toBeTruthy();
   });
 
   test('includes files when includeFiles=true', async () => {
@@ -231,11 +208,8 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable, includeFiles: 'true' });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(names.includes('file.txt'), 'should include file.txt');
-    assert.ok(
-      names.includes('visible-dir'),
-      'should still include directories'
-    );
+    expect(names.includes('file.txt')).toBeTruthy();
+    expect(names.includes('visible-dir')).toBeTruthy();
   });
 
   test('directories sort before files with includeFiles=true', async () => {
@@ -255,10 +229,7 @@ describe('GET /workspaces/browse', () => {
       }
     }
     if (firstFileIdx !== -1 && lastDirIdx !== -1) {
-      assert.ok(
-        lastDirIdx < firstFileIdx,
-        'all directories should come before files'
-      );
+      expect(lastDirIdx < firstFileIdx).toBeTruthy();
     }
   });
 
@@ -269,14 +240,10 @@ describe('GET /workspaces/browse', () => {
       | { name: string; isDirectory?: boolean; size?: number }
       | undefined;
 
-    assert.ok(fileEntry, 'file.txt should exist');
-    assert.equal(
-      fileEntry.isDirectory,
-      false,
-      'file should have isDirectory=false'
-    );
-    assert.equal(typeof fileEntry.size, 'number', 'file should have size');
-    assert.ok(fileEntry.size! > 0, 'file should have non-zero size');
+    expect(fileEntry).toBeTruthy();
+    expect(fileEntry.isDirectory).toBe(false);
+    expect(typeof fileEntry.size).toBe('number');
+    expect(fileEntry.size! > 0).toBeTruthy();
   });
 
   test('excludes files when includeFiles is not set', async () => {
@@ -284,7 +251,7 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(!names.includes('file.txt'), 'should exclude files by default');
+    expect(!names.includes('file.txt')).toBeTruthy();
   });
 });
 
@@ -299,13 +266,13 @@ describe('POST /workspaces/bulk', () => {
       body: JSON.stringify({ paths: [dir1, dir2] }),
     });
 
-    assert.equal(res.status, 201);
+    expect(res.status).toBe(201);
     const data = (await res.json()) as {
       added: Array<{ path: string }>;
       errors: Array<{ path: string; error: string }>;
     };
-    assert.equal(data.added.length, 2);
-    assert.equal(data.errors.length, 0);
+    expect(data.added.length).toBe(2);
+    expect(data.errors.length).toBe(0);
   });
 
   test('rejects duplicate workspaces', async () => {
@@ -317,14 +284,14 @@ describe('POST /workspaces/bulk', () => {
       body: JSON.stringify({ paths: [dir1] }),
     });
 
-    assert.equal(res.status, 201);
+    expect(res.status).toBe(201);
     const data = (await res.json()) as {
       added: Array<{ path: string }>;
       errors: Array<{ path: string; error: string }>;
     };
-    assert.equal(data.added.length, 0);
-    assert.equal(data.errors.length, 1);
-    assert.ok(data.errors[0]!.error.includes('Already exists'));
+    expect(data.added.length).toBe(0);
+    expect(data.errors.length).toBe(1);
+    expect(data.errors[0]!.error.includes('Already exists')).toBeTruthy();
   });
 
   test('returns 400 for empty paths array', async () => {
@@ -334,7 +301,7 @@ describe('POST /workspaces/bulk', () => {
       body: JSON.stringify({ paths: [] }),
     });
 
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
   });
 
   test('handles mixed valid/invalid paths', async () => {
@@ -347,12 +314,12 @@ describe('POST /workspaces/bulk', () => {
       body: JSON.stringify({ paths: [validDir, invalidDir] }),
     });
 
-    assert.equal(res.status, 201);
+    expect(res.status).toBe(201);
     const data = (await res.json()) as {
       added: Array<{ path: string }>;
       errors: Array<{ path: string; error: string }>;
     };
-    assert.equal(data.added.length, 1);
-    assert.equal(data.errors.length, 1);
+    expect(data.added.length).toBe(1);
+    expect(data.errors.length).toBe(1);
   });
 });

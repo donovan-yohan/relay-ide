@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 // Sessions store has complex dependencies (api.js, notifications.js) that
 // don't resolve in the Node test runner. Instead, we test the pure state
@@ -12,10 +11,18 @@ if (typeof globalThis.localStorage === 'undefined') {
   Object.defineProperty(globalThis, 'localStorage', {
     value: {
       getItem: (key: string) => storage[key] ?? null,
-      setItem: (key: string, value: string) => { storage[key] = value; },
-      removeItem: (key: string) => { delete storage[key]; },
-      clear: () => { for (const key of Object.keys(storage)) delete storage[key]; },
-      get length() { return Object.keys(storage).length; },
+      setItem: (key: string, value: string) => {
+        storage[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete storage[key];
+      },
+      clear: () => {
+        for (const key of Object.keys(storage)) delete storage[key];
+      },
+      get length() {
+        return Object.keys(storage).length;
+      },
       key: (index: number) => Object.keys(storage)[index] ?? null,
     },
     configurable: true,
@@ -30,7 +37,10 @@ interface MinimalSession {
   workspaceId?: string;
 }
 
-function getSessionsForRepo(sessions: MinimalSession[], repoPath: string): MinimalSession[] {
+function getSessionsForRepo(
+  sessions: MinimalSession[],
+  repoPath: string
+): MinimalSession[] {
   return sessions.filter((s) => s.repoPath === repoPath);
 }
 
@@ -43,7 +53,9 @@ function getSessionsForWorkspaceGroup(
   const workspace = workspaceGroups.find((w) => w.id === workspaceId);
   if (!workspace) return directSessions;
   const repoSet = new Set(workspace.repos);
-  const repoSessions = sessions.filter((s) => !s.workspaceId && repoSet.has(s.repoPath));
+  const repoSessions = sessions.filter(
+    (s) => !s.workspaceId && repoSet.has(s.repoPath)
+  );
   return [...directSessions, ...repoSessions];
 }
 
@@ -70,11 +82,17 @@ function recallSessionForWorkspace(
   return { sessionId: id, updatedMap: map };
 }
 
-function setLoading(items: Record<string, boolean>, key: string): Record<string, boolean> {
+function setLoading(
+  items: Record<string, boolean>,
+  key: string
+): Record<string, boolean> {
   return { ...items, [key]: true };
 }
 
-function clearLoading(items: Record<string, boolean>, key: string): Record<string, boolean> {
+function clearLoading(
+  items: Record<string, boolean>,
+  key: string
+): Record<string, boolean> {
   const next = { ...items };
   delete next[key];
   return next;
@@ -120,12 +138,12 @@ describe('sessions store pure logic', () => {
 
     it('filters sessions by repoPath', () => {
       const result = getSessionsForRepo(sessions, '/repo/a');
-      assert.strictEqual(result.length, 2);
-      assert.ok(result.every((s) => s.repoPath === '/repo/a'));
+      expect(result.length).toBe(2);
+      expect(result.every((s) => s.repoPath === '/repo/a')).toBeTruthy();
     });
 
     it('returns empty for unknown repo', () => {
-      assert.strictEqual(getSessionsForRepo(sessions, '/repo/unknown').length, 0);
+      expect(getSessionsForRepo(sessions, '/repo/unknown').length).toBe(0);
     });
   });
 
@@ -140,40 +158,44 @@ describe('sessions store pure logic', () => {
 
     it('returns direct sessions + repo sessions for workspace', () => {
       const result = getSessionsForWorkspaceGroup(sessions, groups, 'ws-1');
-      assert.strictEqual(result.length, 3); // s1 (direct), s2 (repo/a), s3 (repo/b)
-      assert.ok(result.some((s) => s.id === 's1'));
-      assert.ok(result.some((s) => s.id === 's2'));
-      assert.ok(result.some((s) => s.id === 's3'));
+      expect(result.length).toBe(3); // s1 (direct), s2 (repo/a), s3 (repo/b)
+      expect(result.some((s) => s.id === 's1')).toBeTruthy();
+      expect(result.some((s) => s.id === 's2')).toBeTruthy();
+      expect(result.some((s) => s.id === 's3')).toBeTruthy();
     });
 
     it('returns only direct sessions for unknown workspace', () => {
       const result = getSessionsForWorkspaceGroup(sessions, groups, 'ws-2');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0]!.id, 's4');
+      expect(result.length).toBe(1);
+      expect(result[0]!.id).toBe('s4');
     });
   });
 
   describe('rememberSessionForWorkspace / recallSessionForWorkspace', () => {
     it('remembers and recalls a session', () => {
-      let map = rememberSessionForWorkspace({}, '/repo/a', 'session-1');
+      const map = rememberSessionForWorkspace({}, '/repo/a', 'session-1');
       const { sessionId } = recallSessionForWorkspace(
         map,
         [{ id: 'session-1', repoPath: '/repo/a' }],
         '/repo/a'
       );
-      assert.strictEqual(sessionId, 'session-1');
+      expect(sessionId).toBe('session-1');
     });
 
     it('returns null for unknown workspace', () => {
       const { sessionId } = recallSessionForWorkspace({}, [], '/repo/unknown');
-      assert.strictEqual(sessionId, null);
+      expect(sessionId).toBe(null);
     });
 
     it('prunes stale session and returns null', () => {
       const map = rememberSessionForWorkspace({}, '/repo/a', 'old-session');
-      const { sessionId, updatedMap } = recallSessionForWorkspace(map, [], '/repo/a');
-      assert.strictEqual(sessionId, null);
-      assert.strictEqual(updatedMap['/repo/a'], undefined);
+      const { sessionId, updatedMap } = recallSessionForWorkspace(
+        map,
+        [],
+        '/repo/a'
+      );
+      expect(sessionId).toBe(null);
+      expect(updatedMap['/repo/a']).toBe(undefined);
     });
 
     it('overwrites previous session for same workspace', () => {
@@ -184,62 +206,62 @@ describe('sessions store pure logic', () => {
         [{ id: 'session-2', repoPath: '/repo/a' }],
         '/repo/a'
       );
-      assert.strictEqual(sessionId, 'session-2');
+      expect(sessionId).toBe('session-2');
     });
   });
 
   describe('setLoading / clearLoading', () => {
     it('setLoading marks key as loading', () => {
       const items = setLoading({}, '/repo/a');
-      assert.strictEqual(items['/repo/a'], true);
+      expect(items['/repo/a']).toBe(true);
     });
 
     it('clearLoading removes key', () => {
       let items = setLoading({}, '/repo/a');
       items = clearLoading(items, '/repo/a');
-      assert.strictEqual(items['/repo/a'], undefined);
+      expect(items['/repo/a']).toBe(undefined);
     });
 
     it('clearLoading is a no-op for missing key', () => {
       const items = clearLoading({}, '/repo/nonexistent');
-      assert.deepStrictEqual(items, {});
+      expect(items).toEqual({});
     });
 
     it('multiple loading items coexist', () => {
       let items = setLoading({}, '/repo/a');
       items = setLoading(items, '/repo/b');
-      assert.strictEqual(items['/repo/a'], true);
-      assert.strictEqual(items['/repo/b'], true);
+      expect(items['/repo/a']).toBe(true);
+      expect(items['/repo/b']).toBe(true);
       items = clearLoading(items, '/repo/a');
-      assert.strictEqual(items['/repo/a'], undefined);
-      assert.strictEqual(items['/repo/b'], true);
+      expect(items['/repo/a']).toBe(undefined);
+      expect(items['/repo/b']).toBe(true);
     });
   });
 
   describe('getNotificationSessionIds', () => {
     it('returns only enabled session ids', () => {
       const ids = getNotificationSessionIds({
-        's1': true,
-        's2': false,
-        's3': true,
+        s1: true,
+        s2: false,
+        s3: true,
       });
-      assert.deepStrictEqual(ids.sort(), ['s1', 's3']);
+      expect(ids.sort()).toEqual(['s1', 's3']);
     });
 
     it('returns empty for no enabled sessions', () => {
-      assert.deepStrictEqual(getNotificationSessionIds({}), []);
+      expect(getNotificationSessionIds({})).toEqual([]);
     });
   });
 
   describe('pruneNotifications', () => {
     it('removes inactive session prefs', () => {
       const result = pruneNotifications(
-        { 's1': true, 's2': false, 's3': true },
+        { s1: true, s2: false, s3: true },
         new Set(['s1', 's3'])
       );
-      assert.strictEqual(result['s1'], true);
-      assert.strictEqual(result['s2'], undefined);
-      assert.strictEqual(result['s3'], true);
+      expect(result['s1']).toBe(true);
+      expect(result['s2']).toBe(undefined);
+      expect(result['s3']).toBe(true);
     });
   });
 
@@ -249,8 +271,8 @@ describe('sessions store pure logic', () => {
         { '/repo/a': 's1', '/repo/b': 's2' },
         new Set(['s1'])
       );
-      assert.strictEqual(result['/repo/a'], 's1');
-      assert.strictEqual(result['/repo/b'], undefined);
+      expect(result['/repo/a']).toBe('s1');
+      expect(result['/repo/b']).toBe(undefined);
     });
   });
 });

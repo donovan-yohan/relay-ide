@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import { createEventAdapter } from '../server/agent-events.js';
 import type { AgentEvent, AgentEventType } from '../server/agent-events.js';
 
@@ -22,8 +21,8 @@ describe('createEventAdapter', () => {
       adapter.on('session.started', (e) => received.push(e));
       const event = makeEvent({ type: 'session.started' });
       adapter.emit(event);
-      assert.strictEqual(received.length, 1);
-      assert.strictEqual(received[0], event);
+      expect(received.length).toBe(1);
+      expect(received[0]).toBe(event);
     });
 
     it('does not deliver to listeners of other event types', () => {
@@ -31,7 +30,7 @@ describe('createEventAdapter', () => {
       const received: AgentEvent[] = [];
       adapter.on('session.ended', (e) => received.push(e));
       adapter.emit(makeEvent({ type: 'session.started' }));
-      assert.strictEqual(received.length, 0);
+      expect(received.length).toBe(0);
     });
 
     it('fires multiple listeners on the same event type', () => {
@@ -41,7 +40,7 @@ describe('createEventAdapter', () => {
       adapter.on('tool.started', () => count++);
       adapter.on('tool.started', () => count++);
       adapter.emit(makeEvent({ type: 'tool.started' }));
-      assert.strictEqual(count, 3);
+      expect(count).toBe(3);
     });
   });
 
@@ -52,8 +51,8 @@ describe('createEventAdapter', () => {
       adapter.onAny((e) => received.push(e));
       const event = makeEvent({ type: 'prompt.submitted' });
       adapter.emit(event);
-      assert.strictEqual(received.length, 1);
-      assert.strictEqual(received[0], event);
+      expect(received.length).toBe(1);
+      expect(received[0]).toBe(event);
     });
 
     it('delivers every event type to wildcard listeners', () => {
@@ -70,16 +69,16 @@ describe('createEventAdapter', () => {
       for (const type of eventTypes) {
         adapter.emit(makeEvent({ type }));
       }
-      assert.deepStrictEqual(types, eventTypes);
+      expect(types).toEqual(eventTypes);
     });
   });
 
   describe('emit() with no listeners', () => {
     it('does not throw when no listeners are registered', () => {
       const adapter = createEventAdapter();
-      assert.doesNotThrow(() => {
+      expect(() => {
         adapter.emit(makeEvent({ type: 'state.changed' }));
-      });
+      }).not.toThrow();
     });
 
     it('does not throw after removeAll() is called', () => {
@@ -87,9 +86,9 @@ describe('createEventAdapter', () => {
       adapter.on('session.idle', () => {});
       adapter.onAny(() => {});
       adapter.removeAll();
-      assert.doesNotThrow(() => {
+      expect(() => {
         adapter.emit(makeEvent({ type: 'session.idle' }));
-      });
+      }).not.toThrow();
     });
   });
 
@@ -100,12 +99,12 @@ describe('createEventAdapter', () => {
       const unsub = adapter.on('tool.finished', (e) => received.push(e));
 
       adapter.emit(makeEvent({ type: 'tool.finished' }));
-      assert.strictEqual(received.length, 1);
+      expect(received.length).toBe(1);
 
       unsub();
 
       adapter.emit(makeEvent({ type: 'tool.finished' }));
-      assert.strictEqual(received.length, 1); // still 1, not 2
+      expect(received.length).toBe(1); // still 1, not 2
     });
   });
 
@@ -116,12 +115,12 @@ describe('createEventAdapter', () => {
       const unsub = adapter.onAny((e) => received.push(e));
 
       adapter.emit(makeEvent({ type: 'permission.resolved' }));
-      assert.strictEqual(received.length, 1);
+      expect(received.length).toBe(1);
 
       unsub();
 
       adapter.emit(makeEvent({ type: 'permission.resolved' }));
-      assert.strictEqual(received.length, 1); // still 1, not 2
+      expect(received.length).toBe(1); // still 1, not 2
     });
   });
 
@@ -136,15 +135,15 @@ describe('createEventAdapter', () => {
       adapter.onAny(() => anyCount++);
 
       adapter.emit(makeEvent({ type: 'session.started' }));
-      assert.strictEqual(typeCount, 1);
-      assert.strictEqual(anyCount, 1);
+      expect(typeCount).toBe(1);
+      expect(anyCount).toBe(1);
 
       adapter.removeAll();
 
       adapter.emit(makeEvent({ type: 'session.started' }));
       adapter.emit(makeEvent({ type: 'session.ended' }));
-      assert.strictEqual(typeCount, 1); // unchanged
-      assert.strictEqual(anyCount, 1); // unchanged
+      expect(typeCount).toBe(1); // unchanged
+      expect(anyCount).toBe(1); // unchanged
     });
   });
 
@@ -166,12 +165,12 @@ describe('createEventAdapter', () => {
       };
       adapter.emit(event);
 
-      assert.ok(received !== undefined);
-      assert.strictEqual(received.type, 'telemetry.updated');
-      assert.strictEqual(received.sessionId, 'session-abc');
-      assert.strictEqual(received.timestamp, now);
-      assert.strictEqual(received.source, 'parser');
-      assert.deepStrictEqual(received.data, { key: 'value', count: 42 });
+      expect(received !== undefined).toBeTruthy();
+      expect(received!.type).toBe('telemetry.updated');
+      expect(received!.sessionId).toBe('session-abc');
+      expect(received!.timestamp).toBe(now);
+      expect(received!.source).toBe('parser');
+      expect(received!.data).toEqual({ key: 'value', count: 42 });
     });
   });
 });

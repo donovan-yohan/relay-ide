@@ -1,5 +1,4 @@
-import { test, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, afterAll, expect } from 'vitest';
 import express from 'express';
 import type { Server } from 'node:http';
 
@@ -132,7 +131,7 @@ function stopServer(): Promise<void> {
 
 // ─── Suite teardown ───────────────────────────────────────────────────────────
 
-after(async () => {
+afterAll(async () => {
   await stopServer();
 });
 
@@ -164,30 +163,30 @@ test('GET /issues returns mapped JiraIssue[] from mocked acli JSON output', asyn
   await startServer(exec);
 
   const res = await fetch(`${baseUrl}/integration-jira/issues`);
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as JiraIssuesResponse;
 
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.issues.length, 2);
+  expect(data.error).toBe(undefined);
+  expect(data.issues.length).toBe(2);
 
   const issue42 = data.issues.find((i: JiraIssue) => i.key === 'PROJ-42');
-  assert.ok(issue42, 'Should contain PROJ-42');
-  assert.equal(issue42.title, 'Fix the login bug');
-  assert.equal(issue42.status, 'In Progress');
-  assert.equal(issue42.priority, 'High');
-  assert.equal(issue42.assignee, 'Alice');
-  assert.equal(issue42.url, 'https://fake-jira.atlassian.net/browse/PROJ-42');
-  assert.equal(issue42.projectKey, 'PROJ');
-  assert.equal(issue42.updatedAt, '');
-  assert.equal(issue42.sprint, null);
-  assert.equal(issue42.storyPoints, null);
+  expect(issue42).toBeTruthy();
+  expect(issue42.title).toBe('Fix the login bug');
+  expect(issue42.status).toBe('In Progress');
+  expect(issue42.priority).toBe('High');
+  expect(issue42.assignee).toBe('Alice');
+  expect(issue42.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-42');
+  expect(issue42.projectKey).toBe('PROJ');
+  expect(issue42.updatedAt).toBe('');
+  expect(issue42.sprint).toBe(null);
+  expect(issue42.storyPoints).toBe(null);
 
   const issue10 = data.issues.find((i: JiraIssue) => i.key === 'PROJ-10');
-  assert.ok(issue10, 'Should contain PROJ-10');
-  assert.equal(issue10.priority, null);
-  assert.equal(issue10.assignee, null);
-  assert.equal(issue10.url, 'https://fake-jira.atlassian.net/browse/PROJ-10');
-  assert.equal(issue10.projectKey, 'PROJ');
+  expect(issue10).toBeTruthy();
+  expect(issue10.priority).toBe(null);
+  expect(issue10.assignee).toBe(null);
+  expect(issue10.url).toBe('https://fake-jira.atlassian.net/browse/PROJ-10');
+  expect(issue10.projectKey).toBe('PROJ');
 });
 
 test('GET /issues returns acli_not_in_path when exec throws ENOENT', async () => {
@@ -200,11 +199,11 @@ test('GET /issues returns acli_not_in_path when exec throws ENOENT', async () =>
   await startServer(exec);
 
   const res = await fetch(`${baseUrl}/integration-jira/issues`);
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as JiraIssuesResponse;
 
-  assert.equal(data.error, 'acli_not_in_path');
-  assert.equal(data.issues.length, 0);
+  expect(data.error).toBe('acli_not_in_path');
+  expect(data.issues.length).toBe(0);
 });
 
 test('GET /issues returns acli_not_authenticated when exec stderr contains auth message', async () => {
@@ -218,11 +217,11 @@ test('GET /issues returns acli_not_authenticated when exec stderr contains auth 
   await startServer(exec);
 
   const res = await fetch(`${baseUrl}/integration-jira/issues`);
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as JiraIssuesResponse;
 
-  assert.equal(data.error, 'acli_not_authenticated');
-  assert.equal(data.issues.length, 0);
+  expect(data.error).toBe('acli_not_authenticated');
+  expect(data.issues.length).toBe(0);
 });
 
 test('GET /issues caches results within TTL — exec called only once for two requests', async () => {
@@ -249,24 +248,16 @@ test('GET /issues caches results within TTL — exec called only once for two re
   // First request — populates cache
   const firstRes = await fetch(`${baseUrl}/integration-jira/issues`);
   const first = (await firstRes.json()) as JiraIssuesResponse;
-  assert.equal(first.error, undefined, `Unexpected error: ${first.error}`);
-  assert.equal(first.issues.length, 1);
-  assert.equal(
-    searchCallCount,
-    1,
-    'search should be called once on first request'
-  );
+  expect(first.error).toBe(undefined);
+  expect(first.issues.length).toBe(1);
+  expect(searchCallCount).toBe(1);
 
   // Second request — should be served from cache, no additional exec call
   const secondRes = await fetch(`${baseUrl}/integration-jira/issues`);
   const second = (await secondRes.json()) as JiraIssuesResponse;
-  assert.equal(second.error, undefined, `Unexpected error: ${second.error}`);
-  assert.equal(second.issues.length, 1);
-  assert.equal(
-    searchCallCount,
-    1,
-    'search should not be called again within TTL (cache hit)'
-  );
+  expect(second.error).toBe(undefined);
+  expect(second.issues.length).toBe(1);
+  expect(searchCallCount).toBe(1);
 });
 
 test('GET /statuses?projectKey=TEST returns deduplicated statuses', async () => {
@@ -294,17 +285,17 @@ test('GET /statuses?projectKey=TEST returns deduplicated statuses', async () => 
   const res = await fetch(
     `${baseUrl}/integration-jira/statuses?projectKey=TEST`
   );
-  assert.equal(res.status, 200);
+  expect(res.status).toBe(200);
   const data = (await res.json()) as StatusesResponse;
 
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.statuses.length, 3, 'Should deduplicate statuses by id');
+  expect(data.error).toBe(undefined);
+  expect(data.statuses.length).toBe(3);
 
   const ids = data.statuses.map((s: JiraStatus) => s.id);
-  assert.deepEqual(ids, ['1', '2', '3']);
+  expect(ids).toEqual(['1', '2', '3']);
 
   const names = data.statuses.map((s: JiraStatus) => s.name);
-  assert.deepEqual(names, ['To Do', 'In Progress', 'Done']);
+  expect(names).toEqual(['To Do', 'In Progress', 'Done']);
 });
 
 test('GET /statuses returns 400 when projectKey query param is missing', async () => {
@@ -314,10 +305,10 @@ test('GET /statuses returns 400 when projectKey query param is missing', async (
   await startServer(exec);
 
   const res = await fetch(`${baseUrl}/integration-jira/statuses`);
-  assert.equal(res.status, 400);
+  expect(res.status).toBe(400);
   const data = (await res.json()) as StatusesResponse;
 
-  assert.equal(data.error, 'missing_project_key');
+  expect(data.error).toBe('missing_project_key');
 });
 
 test('GET /statuses returns 400 for invalid projectKey (lowercase or special chars)', async () => {
@@ -330,15 +321,15 @@ test('GET /statuses returns 400 for invalid projectKey (lowercase or special cha
   const resLower = await fetch(
     `${baseUrl}/integration-jira/statuses?projectKey=test`
   );
-  assert.equal(resLower.status, 400);
+  expect(resLower.status).toBe(400);
   const dataLower = (await resLower.json()) as StatusesResponse;
-  assert.equal(dataLower.error, 'invalid_project_key');
+  expect(dataLower.error).toBe('invalid_project_key');
 
   // Key with special characters
   const resSpecial = await fetch(
     `${baseUrl}/integration-jira/statuses?projectKey=TEST%20PROJ`
   );
-  assert.equal(resSpecial.status, 400);
+  expect(resSpecial.status).toBe(400);
   const dataSpecial = (await resSpecial.json()) as StatusesResponse;
-  assert.equal(dataSpecial.error, 'invalid_project_key');
+  expect(dataSpecial.error).toBe('invalid_project_key');
 });

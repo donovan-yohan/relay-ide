@@ -1,5 +1,4 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import crypto from 'node:crypto';
 import express from 'express';
 import type { Server } from 'node:http';
@@ -93,8 +92,8 @@ async function postWebhook(opts: {
 // ---------------------------------------------------------------------------
 
 describe('webhook handler', () => {
-  before(() => startServer());
-  after(() => stopServer());
+  beforeAll(() => startServer());
+  afterAll(() => stopServer());
 
   it('rejects request with missing signature (401)', async () => {
     const res = await postWebhook({
@@ -102,8 +101,8 @@ describe('webhook handler', () => {
       event: 'pull_request',
       omitSignature: true,
     });
-    assert.equal(res.status, 401);
-    assert.equal(broadcasts.length, 0);
+    expect(res.status).toBe(401);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('rejects request with invalid signature (401)', async () => {
@@ -112,53 +111,49 @@ describe('webhook handler', () => {
       event: 'pull_request',
       signature: 'sha256=invalidsignature',
     });
-    assert.equal(res.status, 401);
-    assert.equal(broadcasts.length, 0);
+    expect(res.status).toBe(401);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('accepts valid signature and broadcasts pr-updated for pull_request event', async () => {
     broadcasts = [];
     const body = { action: 'opened', number: 42 };
     const res = await postWebhook({ body, event: 'pull_request' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const json = (await res.json()) as { ok: boolean };
-    assert.equal(json.ok, true);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'pr-updated');
+    expect(json.ok).toBe(true);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('pr-updated');
   });
 
   it('broadcasts pr-updated for pull_request_review event', async () => {
     broadcasts = [];
     const body = { action: 'submitted', review: {} };
     const res = await postWebhook({ body, event: 'pull_request_review' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'pr-updated');
+    expect(res.status).toBe(200);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('pr-updated');
   });
 
   it('broadcasts ci-updated for check_suite event', async () => {
     broadcasts = [];
     const body = { action: 'completed', check_suite: {} };
     const res = await postWebhook({ body, event: 'check_suite' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'ci-updated');
+    expect(res.status).toBe(200);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('ci-updated');
   });
 
   it('returns 200 but does NOT broadcast for unknown event (star)', async () => {
     broadcasts = [];
     const body = { action: 'created' };
     const res = await postWebhook({ body, event: 'star' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
     const json = (await res.json()) as { ok: boolean };
-    assert.equal(json.ok, true);
-    assert.equal(
-      broadcasts.length,
-      0,
-      'Should not broadcast for unknown events'
-    );
+    expect(json.ok).toBe(true);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('includes repository full_name in broadcast data', async () => {
@@ -169,14 +164,14 @@ describe('webhook handler', () => {
       repository: { full_name: 'owner/repo' },
     };
     const res = await postWebhook({ body, event: 'pull_request' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts[0]?.data?.repo, 'owner/repo');
+    expect(res.status).toBe(200);
+    expect(broadcasts[0]?.data?.repo).toBe('owner/repo');
   });
 });
 
 describe('webhook merge detection', () => {
-  before(() => startServer());
-  after(() => stopServer());
+  beforeAll(() => startServer());
+  afterAll(() => stopServer());
 
   it('pull_request.closed with merged:true broadcasts pr-updated and worktrees-changed', async () => {
     broadcasts = [];
@@ -188,9 +183,9 @@ describe('webhook merge detection', () => {
       },
       event: 'pull_request',
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const types = broadcasts.map((b) => b.type);
-    assert.deepEqual(types, ['pr-updated', 'worktrees-changed']);
+    expect(types).toEqual(['pr-updated', 'worktrees-changed']);
   });
 
   it('pull_request.closed without merge does not broadcast worktrees-changed', async () => {
@@ -203,9 +198,9 @@ describe('webhook merge detection', () => {
       },
       event: 'pull_request',
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
     const types = broadcasts.map((b) => b.type);
-    assert.deepEqual(types, ['pr-updated']);
+    expect(types).toEqual(['pr-updated']);
   });
 });
 
@@ -213,7 +208,7 @@ describe('webhook handler — no secret configured', () => {
   let noSecretServer: Server;
   let noSecretBaseUrl: string;
 
-  before(
+  beforeAll(
     () =>
       new Promise<void>((resolve) => {
         const app = express();
@@ -234,7 +229,7 @@ describe('webhook handler — no secret configured', () => {
       })
   );
 
-  after(
+  afterAll(
     () =>
       new Promise<void>((resolve) => {
         if (noSecretServer) noSecretServer.close(() => resolve());
@@ -254,8 +249,8 @@ describe('webhook handler — no secret configured', () => {
       },
       body: payload,
     });
-    assert.equal(res.status, 401);
+    expect(res.status).toBe(401);
     const json = (await res.json()) as { error: string };
-    assert.equal(json.error, 'Webhooks not configured');
+    expect(json.error).toBe('Webhooks not configured');
   });
 });

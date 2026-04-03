@@ -1,5 +1,4 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 describe('toasts.store', () => {
   let useToastStore: typeof import('../../frontend/src/lib/state/toasts.store.js').useToastStore;
@@ -18,27 +17,27 @@ describe('toasts.store', () => {
 
   it('initializes with empty toasts', () => {
     const state = useToastStore.getState();
-    assert.deepStrictEqual(state.toasts, []);
+    expect(state.toasts).toEqual([]);
   });
 
   it('showToast adds a toast to the store', () => {
     showToast('Test message', 'error');
     const state = useToastStore.getState();
-    assert.strictEqual(state.toasts.length, 1);
-    assert.strictEqual(state.toasts[0]?.message, 'Test message');
-    assert.strictEqual(state.toasts[0]?.variant, 'error');
+    expect(state.toasts.length).toBe(1);
+    expect(state.toasts[0]?.message).toBe('Test message');
+    expect(state.toasts[0]?.variant).toBe('error');
   });
 
   it('showToast uses default variant', () => {
     showToast('Default test');
     const state = useToastStore.getState();
-    assert.strictEqual(state.toasts[0]?.variant, 'error');
+    expect(state.toasts[0]?.variant).toBe('error');
   });
 
   it('showToast supports info variant', () => {
     showToast('Info message', 'info');
     const state = useToastStore.getState();
-    assert.strictEqual(state.toasts[0]?.variant, 'info');
+    expect(state.toasts[0]?.variant).toBe('info');
   });
 
   it('dismissToast removes a toast by id', () => {
@@ -46,7 +45,7 @@ describe('toasts.store', () => {
     showToast('Second', 'info');
 
     let state = useToastStore.getState();
-    assert.strictEqual(state.toasts.length, 2);
+    expect(state.toasts.length).toBe(2);
 
     const firstId = state.toasts[0]?.id;
     if (firstId !== undefined) {
@@ -54,15 +53,15 @@ describe('toasts.store', () => {
     }
 
     state = useToastStore.getState();
-    assert.strictEqual(state.toasts.length, 1);
-    assert.strictEqual(state.toasts[0]?.message, 'Second');
+    expect(state.toasts.length).toBe(1);
+    expect(state.toasts[0]?.message).toBe('Second');
   });
 
   it('getToasts returns current toasts array', () => {
     showToast('Toast 1');
     showToast('Toast 2');
     const toasts = getToasts();
-    assert.strictEqual(toasts.length, 2);
+    expect(toasts.length).toBe(2);
   });
 
   it('toast ids are unique', () => {
@@ -73,6 +72,6 @@ describe('toasts.store', () => {
     const state = useToastStore.getState();
     const ids = state.toasts.map((t) => t.id);
     const uniqueIds = new Set(ids);
-    assert.strictEqual(uniqueIds.size, ids.length, 'All toast IDs should be unique');
+    expect(uniqueIds.size).toBe(ids.length);
   });
 });

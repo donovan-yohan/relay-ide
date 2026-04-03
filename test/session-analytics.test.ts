@@ -1,5 +1,4 @@
-import { test, before, after, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,7 +20,7 @@ import type { SessionEvent } from '../server/types.js';
 
 let tmpDir!: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-analytics-test-'));
 });
 
@@ -32,7 +31,7 @@ afterEach(() => {
   }
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
@@ -42,10 +41,7 @@ test('initAnalytics creates session_events table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  assert.ok(
-    tables.some((t) => t.name === 'session_events'),
-    'session_events table should exist'
-  );
+  expect(tables.some((t) => t.name === 'session_events')).toBeTruthy();
   db.close();
 });
 
@@ -55,10 +51,7 @@ test('initAnalytics creates session_rollups table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  assert.ok(
-    tables.some((t) => t.name === 'session_rollups'),
-    'session_rollups table should exist'
-  );
+  expect(tables.some((t) => t.name === 'session_rollups')).toBeTruthy();
   db.close();
 });
 
@@ -68,10 +61,7 @@ test('initAnalytics creates rate_limit_snapshots table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  assert.ok(
-    tables.some((t) => t.name === 'rate_limit_snapshots'),
-    'rate_limit_snapshots table should exist'
-  );
+  expect(tables.some((t) => t.name === 'rate_limit_snapshots')).toBeTruthy();
   db.close();
 });
 
@@ -81,14 +71,11 @@ test('initAnalytics creates schema_version table at version 2', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  assert.ok(
-    tables.some((t) => t.name === 'schema_version'),
-    'schema_version table should exist'
-  );
+  expect(tables.some((t) => t.name === 'schema_version')).toBeTruthy();
   const version = db.prepare('SELECT version FROM schema_version').get() as {
     version: number;
   };
-  assert.equal(version.version, 2);
+  expect(version.version).toBe(2);
   db.close();
 });
 
@@ -107,7 +94,7 @@ test('recordSessionEvent buffers and flushes to DB', () => {
   const before = db1
     .prepare('SELECT COUNT(*) as count FROM session_events')
     .get() as { count: number };
-  assert.equal(before.count, 0);
+  expect(before.count).toBe(0);
   db1.close();
 
   flushEventBuffer();
@@ -117,13 +104,13 @@ test('recordSessionEvent buffers and flushes to DB', () => {
   const after = db2
     .prepare('SELECT COUNT(*) as count FROM session_events')
     .get() as { count: number };
-  assert.equal(after.count, 1);
+  expect(after.count).toBe(1);
   const row = db2.prepare('SELECT * FROM session_events').get() as Record<
     string,
     unknown
   >;
-  assert.equal(row.session_id, 'sess-1');
-  assert.equal(row.event_type, 'session_start');
+  expect(row.session_id).toBe('sess-1');
+  expect(row.event_type).toBe('session_start');
   db2.close();
 });
 
@@ -144,8 +131,8 @@ test('recordSessionEvent stores event_data as JSON', () => {
     unknown
   >;
   const data = JSON.parse(row.event_data as string) as Record<string, unknown>;
-  assert.equal(data.tool, 'Read');
-  assert.equal(data.target, 'server/index.ts');
+  expect(data.tool).toBe('Read');
+  expect(data.target).toBe('server/index.ts');
   db.close();
 });
 
@@ -166,7 +153,7 @@ test('flushEventBuffer batch-inserts multiple events', () => {
   const count = db
     .prepare('SELECT COUNT(*) as count FROM session_events')
     .get() as { count: number };
-  assert.equal(count.count, 5);
+  expect(count.count).toBe(5);
   db.close();
 });
 
@@ -196,8 +183,8 @@ test('flushEventBuffer with sessionId only flushes that session', () => {
   const rows = db
     .prepare('SELECT session_id FROM session_events ORDER BY id')
     .all() as { session_id: string }[];
-  assert.equal(rows.length, 2);
-  assert.ok(rows.every((r) => r.session_id === 'sess-A'));
+  expect(rows.length).toBe(2);
+  expect(rows.every((r) => r.session_id === 'sess-A')).toBeTruthy();
   db.close();
 
   // Flush remaining
@@ -230,8 +217,8 @@ test('recordRateLimitSnapshot inserts a snapshot row', () => {
     string,
     unknown
   >;
-  assert.equal(row.five_hour_percent, 62);
-  assert.equal(row.seven_day_percent, 91);
+  expect(row.five_hour_percent).toBe(62);
+  expect(row.seven_day_percent).toBe(91);
   db.close();
 });
 
@@ -249,13 +236,13 @@ test('upsertSessionRollup creates initial rollup', () => {
   });
 
   const rollup = getSessionRollup('sess-1');
-  assert.ok(rollup, 'rollup should exist');
-  assert.equal(rollup!.sessionId, 'sess-1');
-  assert.equal(rollup!.repoName, 'my-repo');
-  assert.equal(rollup!.agentType, 'claude');
-  assert.equal(rollup!.endedAt, null);
-  assert.equal(rollup!.totalInputTokens, 0);
-  assert.equal(rollup!.recovered, false);
+  expect(rollup).toBeTruthy();
+  expect(rollup!.sessionId).toBe('sess-1');
+  expect(rollup!.repoName).toBe('my-repo');
+  expect(rollup!.agentType).toBe('claude');
+  expect(rollup!.endedAt).toBe(null);
+  expect(rollup!.totalInputTokens).toBe(0);
+  expect(rollup!.recovered).toBe(false);
 });
 
 test('upsertSessionRollup updates token counts', () => {
@@ -280,10 +267,10 @@ test('upsertSessionRollup updates token counts', () => {
   });
 
   const rollup = getSessionRollup('sess-1');
-  assert.equal(rollup!.totalInputTokens, 5000);
-  assert.equal(rollup!.totalOutputTokens, 1200);
-  assert.equal(rollup!.model, 'opus-4');
-  assert.equal(rollup!.turnCount, 3);
+  expect(rollup!.totalInputTokens).toBe(5000);
+  expect(rollup!.totalOutputTokens).toBe(1200);
+  expect(rollup!.model).toBe('opus-4');
+  expect(rollup!.turnCount).toBe(3);
 });
 
 test('upsertSessionRollup sets endedAt and duration', () => {
@@ -304,8 +291,8 @@ test('upsertSessionRollup sets endedAt and duration', () => {
   });
 
   const rollup = getSessionRollup('sess-1');
-  assert.equal(rollup!.endedAt, '2026-04-01T10:30:00.000Z');
-  assert.equal(rollup!.durationSeconds, 1800);
+  expect(rollup!.endedAt).toBe('2026-04-01T10:30:00.000Z');
+  expect(rollup!.durationSeconds).toBe(1800);
 });
 
 test('upsertSessionRollup stores recovered flag', () => {
@@ -321,12 +308,12 @@ test('upsertSessionRollup stores recovered flag', () => {
   });
 
   const rollup = getSessionRollup('sess-1');
-  assert.equal(rollup!.recovered, true);
+  expect(rollup!.recovered).toBe(true);
 });
 
 test('getSessionRollup returns null for unknown session', () => {
   initAnalytics(tmpDir);
-  assert.equal(getSessionRollup('nonexistent'), null);
+  expect(getSessionRollup('nonexistent')).toBe(null);
 });
 
 // ── Engagement Metric Tests ──
@@ -365,9 +352,9 @@ test('computeEngagementMetrics calculates human response latency', () => {
   flushEventBuffer();
 
   const metrics = computeEngagementMetrics('sess-1');
-  assert.ok(metrics);
-  assert.equal(metrics!.humanResponseLatencyAvgMs, 32000);
-  assert.equal(metrics!.humanResponseLatencyP50Ms, 32000);
+  expect(metrics).toBeTruthy();
+  expect(metrics!.humanResponseLatencyAvgMs).toBe(32000);
+  expect(metrics!.humanResponseLatencyP50Ms).toBe(32000);
 });
 
 test('computeEngagementMetrics counts rate limit encounters', () => {
@@ -402,7 +389,7 @@ test('computeEngagementMetrics counts rate limit encounters', () => {
   flushEventBuffer();
 
   const metrics = computeEngagementMetrics('sess-2');
-  assert.equal(metrics!.rateLimitEncounters, 2);
+  expect(metrics!.rateLimitEncounters).toBe(2);
 });
 
 test('computeEngagementMetrics aggregates tool use counts', () => {
@@ -443,12 +430,12 @@ test('computeEngagementMetrics aggregates tool use counts', () => {
   flushEventBuffer();
 
   const metrics = computeEngagementMetrics('sess-3');
-  assert.deepEqual(metrics!.toolUseCounts, { Read: 2, Edit: 1, Bash: 1 });
+  expect(metrics!.toolUseCounts).toEqual({ Read: 2, Edit: 1, Bash: 1 });
 });
 
 test('computeEngagementMetrics returns null for unknown session', () => {
   initAnalytics(tmpDir);
-  assert.equal(computeEngagementMetrics('nonexistent'), null);
+  expect(computeEngagementMetrics('nonexistent')).toBe(null);
 });
 
 // ── Retention + Recovery Tests ──
@@ -480,8 +467,8 @@ test('runRetentionCleanup deletes old session_events', () => {
     string,
     unknown
   >[];
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.session_id, 'new-sess');
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.session_id).toBe('new-sess');
   db.close();
 });
 
@@ -506,11 +493,11 @@ test('recoverOrphanedSessions marks stale sessions as recovered', () => {
   db.close();
 
   const recovered = recoverOrphanedSessions();
-  assert.equal(recovered, 1);
+  expect(recovered).toBe(1);
 
   const rollup = getSessionRollup('orphan-1');
-  assert.ok(rollup!.endedAt);
-  assert.equal(rollup!.recovered, true);
+  expect(rollup!.endedAt).toBeTruthy();
+  expect(rollup!.recovered).toBe(true);
 });
 
 test('recoverOrphanedSessions skips recently updated sessions', () => {
@@ -526,9 +513,9 @@ test('recoverOrphanedSessions skips recently updated sessions', () => {
   });
 
   const recovered = recoverOrphanedSessions();
-  assert.equal(recovered, 0);
+  expect(recovered).toBe(0);
 
   const rollup = getSessionRollup('active-1');
-  assert.equal(rollup!.endedAt, null);
-  assert.equal(rollup!.recovered, false);
+  expect(rollup!.endedAt).toBe(null);
+  expect(rollup!.recovered).toBe(false);
 });

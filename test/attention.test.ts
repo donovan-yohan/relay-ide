@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 import {
   computeAttentionScore,
   sortByAttention,
@@ -33,7 +32,7 @@ describe('computeAttentionScore', () => {
     const running = computeAttentionScore(
       makeScoreItem({ displayState: 'running' })
     );
-    assert.ok(permission > running);
+    expect(permission > running).toBeTruthy();
   });
 
   it('needs-answer scores above error', () => {
@@ -43,7 +42,7 @@ describe('computeAttentionScore', () => {
     const error = computeAttentionScore(
       makeScoreItem({ displayState: 'error' })
     );
-    assert.ok(needsAnswer > error);
+    expect(needsAnswer > error).toBeTruthy();
   });
 
   it('error scores above unseen-idle', () => {
@@ -53,7 +52,7 @@ describe('computeAttentionScore', () => {
     const unseen = computeAttentionScore(
       makeScoreItem({ displayState: 'unseen-idle' })
     );
-    assert.ok(error > unseen);
+    expect(error > unseen).toBeTruthy();
   });
 
   it('unseen-idle scores above running', () => {
@@ -63,7 +62,7 @@ describe('computeAttentionScore', () => {
     const running = computeAttentionScore(
       makeScoreItem({ displayState: 'running' })
     );
-    assert.ok(unseen > running);
+    expect(unseen > running).toBeTruthy();
   });
 
   it('inactive scores lowest', () => {
@@ -73,7 +72,7 @@ describe('computeAttentionScore', () => {
     const seenIdle = computeAttentionScore(
       makeScoreItem({ displayState: 'seen-idle' })
     );
-    assert.ok(inactive < seenIdle);
+    expect(inactive < seenIdle).toBeTruthy();
   });
 
   it('unread bonus stacks with state score', () => {
@@ -83,7 +82,7 @@ describe('computeAttentionScore', () => {
     const read = computeAttentionScore(
       makeScoreItem({ displayState: 'unseen-idle', isUnread: false })
     );
-    assert.ok(unread > read);
+    expect(unread > read).toBeTruthy();
   });
 
   it('changes-requested PR adds urgency', () => {
@@ -98,8 +97,8 @@ describe('computeAttentionScore', () => {
         displayState: 'running',
       })
     );
-    assert.ok(withPr > withoutPr);
-    assert.equal(withPr - withoutPr, 200);
+    expect(withPr > withoutPr).toBeTruthy();
+    expect(withPr - withoutPr).toBe(200);
   });
 
   it('review-requested PR adds urgency', () => {
@@ -114,7 +113,7 @@ describe('computeAttentionScore', () => {
         displayState: 'running',
       })
     );
-    assert.equal(withPr - withoutPr, 150);
+    expect(withPr - withoutPr).toBe(150);
   });
 
   it('recency contributes to score', () => {
@@ -130,7 +129,7 @@ describe('computeAttentionScore', () => {
         lastActivity: new Date(Date.now() - 120 * 60_000).toISOString(),
       })
     );
-    assert.ok(recent > old);
+    expect(recent > old).toBeTruthy();
   });
 });
 
@@ -141,6 +140,6 @@ describe('sortByAttention', () => {
       makeScoreItem({ id: 'b', displayState: 'permission' }),
     ];
     const sorted = sortByAttention(items);
-    assert.equal(sorted[0]!.id, 'b');
+    expect(sorted[0]!.id).toBe('b');
   });
 });
