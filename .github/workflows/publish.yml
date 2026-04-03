@@ -56,18 +56,8 @@ jobs:
           find dist/frontend -name '*.js' 2>/dev/null || echo "WARNING: dist/frontend does not exist"
           echo "::endgroup::"
 
-      - name: Debug module resolution
-        run: |
-          echo "Node: $(node -v)"
-          echo "=== Run single test WITHOUT --test flag ==="
-          node dist/test/session-intent.test.js 2>&1 || echo "WITHOUT --test: FAILED"
-          echo "=== Run single test WITH --test flag ==="
-          node --test dist/test/session-intent.test.js 2>&1 | head -5 || echo "WITH --test: FAILED"
-          echo "=== Run single test WITH --test flag + absolute path ==="
-          node --test $(pwd)/dist/test/session-intent.test.js 2>&1 | head -5 || echo "WITH --test absolute: FAILED"
-
       - name: Run tests
-        run: node --test --test-force-exit $(find dist/test -name '*.test.js')
+        run: node --test --test-force-exit --test-concurrency=1 $(find dist/test -name '*.test.js')
 
       # Stable: publish as @latest (default)
       - name: Publish stable
