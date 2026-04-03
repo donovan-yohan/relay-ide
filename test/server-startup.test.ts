@@ -11,7 +11,12 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ port: 0, host: '127.0.0.1' }));
 
-  const serverScript = path.resolve(import.meta.dirname, '..', 'server', 'index.js');
+  const serverScript = path.resolve(
+    import.meta.dirname,
+    '..',
+    'server',
+    'index.js'
+  );
 
   // Spawn server as a non-TTY child process (pipe = no TTY)
   const child = spawn(process.execPath, [serverScript], {
@@ -54,7 +59,7 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
     // Hit GET /auth/status — should work without auth
     const res = await fetch(`http://127.0.0.1:${port}/auth/status`);
     assert.equal(res.status, 200);
-    const body = await res.json() as { hasPIN: boolean };
+    const body = (await res.json()) as { hasPIN: boolean };
     assert.equal(body.hasPIN, false, 'Server should report no PIN configured');
   } finally {
     child.kill('SIGTERM');

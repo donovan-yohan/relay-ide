@@ -34,7 +34,10 @@ export interface AgentEventAdapter {
 
 /** Default in-memory implementation */
 export function createEventAdapter(): AgentEventAdapter {
-  const listeners = new Map<AgentEventType | '*', Set<(event: AgentEvent) => void>>();
+  const listeners = new Map<
+    AgentEventType | '*',
+    Set<(event: AgentEvent) => void>
+  >();
 
   return {
     emit(event: AgentEvent): void {
@@ -53,13 +56,17 @@ export function createEventAdapter(): AgentEventAdapter {
     on(type: AgentEventType, handler: (event: AgentEvent) => void): () => void {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type)!.add(handler);
-      return () => { listeners.get(type)?.delete(handler); };
+      return () => {
+        listeners.get(type)?.delete(handler);
+      };
     },
 
     onAny(handler: (event: AgentEvent) => void): () => void {
       if (!listeners.has('*')) listeners.set('*', new Set());
       listeners.get('*')!.add(handler);
-      return () => { listeners.get('*')?.delete(handler); };
+      return () => {
+        listeners.get('*')?.delete(handler);
+      };
     },
 
     removeAll(): void {

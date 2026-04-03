@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseShortcut, matchesShortcut, formatShortcut } from '../../frontend/src/lib/actions/shortcuts.js';
+import {
+  parseShortcut,
+  matchesShortcut,
+  formatShortcut,
+} from '../../frontend/src/lib/actions/shortcuts.js';
 
 describe('ShortcutListener', () => {
   describe('parseShortcut', () => {
@@ -16,26 +20,45 @@ describe('ShortcutListener', () => {
 
     it('parses single key', () => {
       const result = parseShortcut('escape');
-      assert.deepStrictEqual(result, { mod: false, shift: false, key: 'escape' });
+      assert.deepStrictEqual(result, {
+        mod: false,
+        shift: false,
+        key: 'escape',
+      });
     });
   });
 
   describe('matchesShortcut', () => {
     it('matches mod+t when metaKey is true on mac', () => {
       const parsed = parseShortcut('mod+t');
-      const event = { metaKey: true, ctrlKey: false, shiftKey: false, key: 't' };
+      const event = {
+        metaKey: true,
+        ctrlKey: false,
+        shiftKey: false,
+        key: 't',
+      };
       assert.ok(matchesShortcut(event as KeyboardEvent, parsed, true));
     });
 
     it('matches mod+t when ctrlKey is true on non-mac', () => {
       const parsed = parseShortcut('mod+t');
-      const event = { metaKey: false, ctrlKey: true, shiftKey: false, key: 't' };
+      const event = {
+        metaKey: false,
+        ctrlKey: true,
+        shiftKey: false,
+        key: 't',
+      };
       assert.ok(matchesShortcut(event as KeyboardEvent, parsed, false));
     });
 
     it('does not match when shift is required but not pressed', () => {
       const parsed = parseShortcut('mod+shift+[');
-      const event = { metaKey: true, ctrlKey: false, shiftKey: false, key: '[' };
+      const event = {
+        metaKey: true,
+        ctrlKey: false,
+        shiftKey: false,
+        key: '[',
+      };
       assert.ok(!matchesShortcut(event as KeyboardEvent, parsed, true));
     });
 

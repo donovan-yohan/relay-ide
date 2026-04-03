@@ -2,8 +2,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { CiStatus, PrInfo } from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('gh');
 
 type ExecFileAsyncResult = {
   stdout: string;
@@ -13,7 +15,7 @@ type ExecFileAsyncResult = {
 type ExecFileAsyncLike = (
   file: string,
   args: string[],
-  options: { cwd: string; timeout?: number },
+  options: { cwd: string; timeout?: number }
 ) => Promise<ExecFileAsyncResult>;
 
 // ── PR lookup cache ─────────────────────────────────────────────────────────
@@ -21,8 +23,8 @@ type ExecFileAsyncLike = (
 // request. Negative results (no PR) use a longer TTL since they only change on
 // user action (push, PR creation).
 
-const PR_CACHE_POSITIVE_TTL_MS = 60_000;   // 60s — same as org-dashboard
-const PR_CACHE_NEGATIVE_TTL_MS = 300_000;  // 5 min — "no PR" rarely changes without user action
+const PR_CACHE_POSITIVE_TTL_MS = 60_000; // 60s — same as org-dashboard
+const PR_CACHE_NEGATIVE_TTL_MS = 300_000; // 5 min — "no PR" rarely changes without user action
 
 interface PrCacheEntry {
   result: PrInfo | null;
@@ -35,11 +37,16 @@ function prCacheKey(repoPath: string, branch: string): string {
   return `${repoPath}:${branch}`;
 }
 
-function getPrCached(repoPath: string, branch: string): PrCacheEntry | undefined {
+function getPrCached(
+  repoPath: string,
+  branch: string
+): PrCacheEntry | undefined {
   const key = prCacheKey(repoPath, branch);
   const entry = prCache.get(key);
   if (!entry) return undefined;
-  const ttl = entry.result ? PR_CACHE_POSITIVE_TTL_MS : PR_CACHE_NEGATIVE_TTL_MS;
+  const ttl = entry.result
+    ? PR_CACHE_POSITIVE_TTL_MS
+    : PR_CACHE_NEGATIVE_TTL_MS;
   if (Date.now() - entry.fetchedAt > ttl) {
     prCache.delete(key);
     return undefined;
@@ -47,7 +54,11 @@ function getPrCached(repoPath: string, branch: string): PrCacheEntry | undefined
   return entry;
 }
 
-function setPrCached(repoPath: string, branch: string, result: PrInfo | null): void {
+function setPrCached(
+  repoPath: string,
+  branch: string,
+  result: PrInfo | null
+): void {
   prCache.set(prCacheKey(repoPath, branch), { result, fetchedAt: Date.now() });
 }
 
@@ -68,9 +79,10 @@ async function getCiStatus(
   branch: string,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<(CiStatus & { authError?: boolean }) | null> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   let stdout: string;
   let stderr: string;
@@ -79,11 +91,15 @@ async function getCiStatus(
     ({ stdout, stderr } = await run(
       'gh',
       ['pr', 'checks', branch, '--json', 'name,state,conclusion'],
-      { cwd: repoPath, timeout: 5000 },
+      { cwd: repoPath, timeout: 5000 }
     ));
   } catch (err: unknown) {
     if (err && typeof err === 'object') {
-      const errObj = err as { code?: string; message?: string; stderr?: string };
+      const errObj = err as {
+        code?: string;
+        message?: string;
+        stderr?: string;
+      };
       const errorText = errObj.stderr ?? errObj.message ?? '';
 
       // gh not installed
@@ -92,15 +108,23 @@ async function getCiStatus(
       // Not authenticated
       if (
         typeof errorText === 'string' &&
-        (errorText.includes('not logged into') || errorText.includes('authentication'))
+        (errorText.includes('not logged into') ||
+          errorText.includes('authentication'))
       ) {
-        return { total: 0, passing: 0, failing: 0, pending: 0, authError: true };
+        return {
+          total: 0,
+          passing: 0,
+          failing: 0,
+          pending: 0,
+          authError: true,
+        };
       }
 
       // No PR for branch
       if (
         typeof errorText === 'string' &&
-        (errorText.includes('no pull requests found') || errorText.includes('Could not find'))
+        (errorText.includes('no pull requests found') ||
+          errorText.includes('Could not find'))
       ) {
         return null;
       }
@@ -110,14 +134,18 @@ async function getCiStatus(
   }
 
   // gh may exit 0 but write errors or auth prompts to stderr
-  if (stderr && (stderr.includes('not logged into') || stderr.includes('authentication'))) {
+  if (
+    stderr &&
+    (stderr.includes('not logged into') || stderr.includes('authentication'))
+  ) {
     return { total: 0, passing: 0, failing: 0, pending: 0, authError: true };
   }
 
   if (!stdout.trim()) return null;
 
   try {
-    const checks: Array<{ name: string; state: string; conclusion: string }> = JSON.parse(stdout);
+    const checks: Array<{ name: string; state: string; conclusion: string }> =
+      JSON.parse(stdout);
 
     let passing = 0;
     let failing = 0;
@@ -127,11 +155,24 @@ async function getCiStatus(
       const conclusion = (check.conclusion ?? '').toUpperCase();
       const state = (check.state ?? '').toUpperCase();
 
-      if (conclusion === 'SUCCESS' || conclusion === 'SKIPPED' || conclusion === 'NEUTRAL') {
+      if (
+        conclusion === 'SUCCESS' ||
+        conclusion === 'SKIPPED' ||
+        conclusion === 'NEUTRAL'
+      ) {
         passing++;
-      } else if (conclusion === 'FAILURE' || conclusion === 'CANCELLED' || conclusion === 'TIMED_OUT') {
+      } else if (
+        conclusion === 'FAILURE' ||
+        conclusion === 'CANCELLED' ||
+        conclusion === 'TIMED_OUT'
+      ) {
         failing++;
-      } else if (state === 'IN_PROGRESS' || state === 'QUEUED' || state === 'PENDING' || conclusion === '') {
+      } else if (
+        state === 'IN_PROGRESS' ||
+        state === 'QUEUED' ||
+        state === 'PENDING' ||
+        conclusion === ''
+      ) {
         pending++;
       } else {
         // Unknown conclusion — treat as pending rather than silently ignoring
@@ -150,9 +191,10 @@ async function getPrForBranch(
   branch: string,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<PrInfo | null> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   let stdout: string;
 
@@ -166,7 +208,7 @@ async function getPrForBranch(
         '--json',
         'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
       ],
-      { cwd: repoPath, timeout: 5000 },
+      { cwd: repoPath, timeout: 5000 }
     ));
   } catch {
     return null;
@@ -217,22 +259,26 @@ async function getPrForBranch(
  */
 async function batchGetPrsForRepo(
   repoPath: string,
-  options: { exec?: ExecFileAsyncLike } = {},
+  options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<Map<string, PrInfo>> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
   const prMap = new Map<string, PrInfo>();
 
   try {
     const { stdout } = await run(
       'gh',
       [
-        'pr', 'list',
-        '--state', 'all',
-        '--limit', '100',
+        'pr',
+        'list',
+        '--state',
+        'all',
+        '--limit',
+        '100',
         '--json',
         'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
       ],
-      { cwd: repoPath, timeout: 10000 },
+      { cwd: repoPath, timeout: 10000 }
     );
 
     if (!stdout.trim()) return prMap;
@@ -270,7 +316,11 @@ async function batchGetPrsForRepo(
       });
     }
   } catch (err) {
-    console.warn('[gh] batchGetPrsForRepo failed for', repoPath, err instanceof Error ? err.message : err);
+    logger.warn(
+      '[gh] batchGetPrsForRepo failed for',
+      repoPath,
+      err instanceof Error ? err.message : err
+    );
   }
 
   return prMap;
@@ -281,15 +331,16 @@ async function getUnresolvedCommentCount(
   prNumber: number,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<number> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   try {
     const { stdout: repoStdout } = await run(
       'gh',
       ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-      { cwd: repoPath, timeout: 5000 },
+      { cwd: repoPath, timeout: 5000 }
     );
     const nameWithOwner = repoStdout.trim();
     if (!nameWithOwner) return 0;
@@ -310,13 +361,18 @@ async function getUnresolvedCommentCount(
     const { stdout } = await run(
       'gh',
       [
-        'api', 'graphql',
-        '-f', `query=${query}`,
-        '-f', `owner=${owner}`,
-        '-f', `repo=${repo}`,
-        '-F', `number=${prNumber}`,
+        'api',
+        'graphql',
+        '-f',
+        `query=${query}`,
+        '-f',
+        `owner=${owner}`,
+        '-f',
+        `repo=${repo}`,
+        '-F',
+        `number=${prNumber}`,
       ],
-      { cwd: repoPath, timeout: 10000 },
+      { cwd: repoPath, timeout: 10000 }
     );
 
     const result = JSON.parse(stdout) as {
@@ -331,7 +387,8 @@ async function getUnresolvedCommentCount(
       };
     };
 
-    const nodes = result?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    const nodes =
+      result?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
     return nodes.filter((n) => !n.isResolved).length;
   } catch {
     return 0;
@@ -342,16 +399,23 @@ async function changePrBase(
   repoPath: string,
   prNumber: number,
   baseBranch: string,
-  options: { exec?: ExecFileAsyncLike } = {},
+  options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<{ success: true } | { success: false; error: string }> {
-  const run = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run = options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
-    await run('gh', ['pr', 'edit', String(prNumber), '--base', baseBranch], { cwd: repoPath, timeout: 10000 });
+    await run('gh', ['pr', 'edit', String(prNumber), '--base', baseBranch], {
+      cwd: repoPath,
+      timeout: 10000,
+    });
     return { success: true };
   } catch (err: unknown) {
     const errObj = err as { stderr?: string; message?: string; code?: string };
-    if (errObj.code === 'ENOENT') return { success: false, error: 'gh CLI not installed' };
-    return { success: false, error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim() };
+    if (errObj.code === 'ENOENT')
+      return { success: false, error: 'gh CLI not installed' };
+    return {
+      success: false,
+      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+    };
   }
 }
 

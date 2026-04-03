@@ -10,7 +10,9 @@ function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
 }
 
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+function parseCookies(
+  cookieHeader: string | undefined
+): Record<string, string> {
   const cookies: Record<string, string> = {};
   if (!cookieHeader) return cookies;
   cookieHeader.split(';').forEach((part) => {
@@ -27,7 +29,7 @@ function setupWebSocket(
   server: http.Server,
   authenticatedTokens: Set<string>,
   watcher: WorktreeWatcher | null,
-  _configPath?: string,
+  _configPath?: string
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -46,12 +48,21 @@ function setupWebSocket(
   }
 
   function broadcastBranchChanged(cwdPath: string, branchName: string): void {
-    const matchingSessions = sessions.list().filter(
-      (session) => session.cwd === cwdPath || session.worktreePath === cwdPath || session.repoPath === cwdPath,
-    );
+    const matchingSessions = sessions
+      .list()
+      .filter(
+        (session) =>
+          session.cwd === cwdPath ||
+          session.worktreePath === cwdPath ||
+          session.repoPath === cwdPath
+      );
 
     for (const session of matchingSessions) {
-      broadcastEvent('session-branch-changed', { sessionId: session.id, branch: branchName, cwdPath });
+      broadcastEvent('session-branch-changed', {
+        sessionId: session.id,
+        branch: branchName,
+        cwdPath,
+      });
     }
   }
 
@@ -72,13 +83,17 @@ function setupWebSocket(
     // Event channel: /ws/events
     if (request.url === '/ws/events') {
       wss.handleUpgrade(request, socket, head, (ws) => {
-        const cleanup = () => { eventClients.delete(ws); };
+        const cleanup = () => {
+          eventClients.delete(ws);
+        };
         eventClients.add(ws);
         ws.on('message', (msg) => {
           try {
             const parsed = JSON.parse(msg.toString());
             if (parsed.type === 'ping') replyPing(ws);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         });
         ws.on('close', cleanup);
         ws.on('error', cleanup);
@@ -134,7 +149,7 @@ function setupWebSocket(
       exitDisposable = ptyProcess.onExit(() => {
         if (ws.readyState === ws.OPEN) ws.close(1000);
       });
-    }
+    };
 
     attachToPty(session.pty);
 
@@ -163,7 +178,10 @@ function setupWebSocket(
       session.lastActivity = new Date(now).toISOString();
       if (now - lastActivityBroadcast >= 2000) {
         lastActivityBroadcast = now;
-        broadcastEvent('session-activity-changed', { sessionId: session.id, timestamp: session.lastActivity });
+        broadcastEvent('session-activity-changed', {
+          sessionId: session.id,
+          timestamp: session.lastActivity,
+        });
       }
     });
 
@@ -176,9 +194,27 @@ function setupWebSocket(
   });
 
   sessions.onBackendStateChange((sessionId, state, permissionType) => {
-    broadcastEvent('session-backend-state-changed', { sessionId, state, permissionType });
-    if (state === 'idle') { trackEvent({ category: 'agent', action: 'idle', target: sessionId, session_id: sessionId }); }
-    if (state === 'permission') { trackEvent({ category: 'agent', action: 'waiting-for-input', target: sessionId, session_id: sessionId }); }
+    broadcastEvent('session-backend-state-changed', {
+      sessionId,
+      state,
+      permissionType,
+    });
+    if (state === 'idle') {
+      trackEvent({
+        category: 'agent',
+        action: 'idle',
+        target: sessionId,
+        session_id: sessionId,
+      });
+    }
+    if (state === 'permission') {
+      trackEvent({
+        category: 'agent',
+        action: 'waiting-for-input',
+        target: sessionId,
+        session_id: sessionId,
+      });
+    }
   });
 
   sessions.onSessionEnd((sessionId, cwd, branchName) => {

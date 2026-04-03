@@ -5,11 +5,13 @@ import { loadConfig, saveConfig } from './config.js';
 import { extractOwnerRepo } from './git.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import type { Config, WorkspaceSettings } from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
 
 const GH_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 300_000; // 5 minutes
+const logger = createLogger('review-poller');
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,13 +56,18 @@ export function startPolling(deps: ReviewPollerDeps): void {
   if (timer !== null) return;
 
   const config = loadConfig(deps.configPath);
-  const intervalMs = config.automations?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const intervalMs =
+    config.automations?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
   activePollPromise = pollOnce(deps);
-  activePollPromise.finally(() => { activePollPromise = null; });
+  activePollPromise.finally(() => {
+    activePollPromise = null;
+  });
   timer = setInterval(() => {
     activePollPromise = pollOnce(deps);
-    activePollPromise.finally(() => { activePollPromise = null; });
+    activePollPromise.finally(() => {
+      activePollPromise = null;
+    });
   }, intervalMs);
 }
 
@@ -94,7 +101,7 @@ function extractPrNumber(subjectUrl: string): number | null {
 async function findWorkspaceForRepo(
   ownerRepo: string,
   workspacePaths: string[],
-  exec: typeof execFileAsync,
+  exec: typeof execFileAsync
 ): Promise<string | null> {
   for (const repoPath of workspacePaths) {
     try {
@@ -103,14 +110,17 @@ async function findWorkspaceForRepo(
         timeout: GH_TIMEOUT_MS,
       });
       const remoteOwnerRepo = extractOwnerRepo(stdout.trim());
-      if (remoteOwnerRepo && remoteOwnerRepo.toLowerCase() === ownerRepo.toLowerCase()) {
+      if (
+        remoteOwnerRepo &&
+        remoteOwnerRepo.toLowerCase() === ownerRepo.toLowerCase()
+      ) {
         return repoPath;
       }
     } catch (err) {
       // Not a git repo, no remote, or timed out — skip this repo
       const error = err as NodeJS.ErrnoException;
       if (error.code && error.code !== 'ENOENT') {
-        console.warn(`[review-poller] Error checking remote for ${repoPath}:`, error.message);
+        logger.warn(`Error checking remote for ${repoPath}:`, error.message);
       }
     }
   }
@@ -130,7 +140,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
     try {
       config = loadConfig(deps.configPath);
     } catch (err) {
-      console.warn('[review-poller] Failed to load config:', err);
+      logger.warn('Failed to load config:', err);
       return;
     }
 
@@ -143,7 +153,8 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
     // First run: default to "now" so we skip all historical notifications.
     // The first poll cycle always produces zero checkouts — only notifications
     // arriving after this timestamp will be processed.
-    const lastPollTimestamp = config.automations?.lastPollTimestamp ?? new Date().toISOString();
+    const lastPollTimestamp =
+      config.automations?.lastPollTimestamp ?? new Date().toISOString();
 
     // Fetch review_requested notifications from GitHub
     let notifications: GhNotification[];
@@ -156,7 +167,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
           '--jq',
           '.[] | select(.reason == "review_requested") | {id, reason, subject, repository, updated_at}',
         ],
-        { timeout: GH_TIMEOUT_MS },
+        { timeout: GH_TIMEOUT_MS }
       );
 
       // gh --jq with select returns newline-delimited JSON objects
@@ -171,30 +182,32 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
         }
       }
       if (parseFailures > 0 && notifications.length === 0) {
-        console.warn(`[review-poller] All ${parseFailures} notification lines failed to parse — gh output format may have changed`);
+        logger.warn(
+          `All ${parseFailures} notification lines failed to parse — gh output format may have changed`
+        );
       }
     } catch (err) {
       const error = err as NodeJS.ErrnoException & { killed?: boolean };
       if (error.code === 'ENOENT') {
         if (!ghMissingWarned) {
-          console.warn('[review-poller] gh CLI not found — stopping poller');
+          logger.warn('gh CLI not found — stopping poller');
           ghMissingWarned = true;
         }
         void stopPolling();
         return;
       }
       if (error.killed) {
-        console.warn('[review-poller] gh notifications timed out, skipping cycle');
+        logger.warn('gh notifications timed out, skipping cycle');
         return;
       }
       // Auth failures and other gh errors come through stderr in the error message
-      console.warn('[review-poller] gh notifications failed, skipping cycle:', error.message);
+      logger.warn('gh notifications failed, skipping cycle:', error.message);
       return;
     }
 
     // Filter to notifications newer than the last poll
     const newNotifications = notifications.filter(
-      (n) => new Date(n.updated_at) > new Date(lastPollTimestamp),
+      (n) => new Date(n.updated_at) > new Date(lastPollTimestamp)
     );
 
     const workspacePaths = deps.getWorkspacePaths();
@@ -204,7 +217,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
 
       const prNumber = extractPrNumber(notification.subject.url);
       if (prNumber === null) {
-        console.warn('[review-poller] Could not extract PR number from:', notification.subject.url);
+        logger.warn('Could not extract PR number from:', notification.subject.url);
         continue;
       }
 
@@ -214,7 +227,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
       try {
         repoPath = await findWorkspaceForRepo(ownerRepo, workspacePaths, exec);
       } catch (err) {
-        console.warn('[review-poller] Error finding workspace for', ownerRepo, ':', err);
+        logger.warn('Error finding workspace for', ownerRepo, ':', err);
         continue;
       }
 
@@ -230,13 +243,13 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
         await exec(
           'git',
           ['fetch', 'origin', `pull/${prNumber}/head:${localBranch}`],
-          { cwd: repoPath, timeout: GH_TIMEOUT_MS },
+          { cwd: repoPath, timeout: GH_TIMEOUT_MS }
         );
       } catch (err) {
         // Branch may already exist from a prior fetch — continue to worktree creation
         const errMsg = (err as Error).message ?? '';
         if (!errMsg.includes('already exists')) {
-          console.warn(`[review-poller] Failed to fetch PR #${prNumber}:`, err);
+          logger.warn(`Failed to fetch PR #${prNumber}:`, err);
           continue;
         }
       }
@@ -244,9 +257,13 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
       // Find existing worktree for this branch or create a new one
       let result;
       try {
-        result = await findOrCreateWorktreeForBranch(repoPath, localBranch, exec);
+        result = await findOrCreateWorktreeForBranch(
+          repoPath,
+          localBranch,
+          exec
+        );
       } catch (err) {
-        console.warn(`[review-poller] Failed to create worktree for PR #${prNumber}:`, err);
+        logger.warn(`Failed to create worktree for PR #${prNumber}:`, err);
         continue;
       }
 
@@ -257,7 +274,10 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
 
       // Optionally start a review session
       const settings = deps.getRepoSettings(repoPath);
-      if (config.automations?.autoReviewOnCheckout && settings?.promptCodeReview) {
+      if (
+        config.automations?.autoReviewOnCheckout &&
+        settings?.promptCodeReview
+      ) {
         try {
           await deps.createSession({
             repoPath,
@@ -266,7 +286,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
             initialPrompt: settings.promptCodeReview,
           });
         } catch (err) {
-          console.warn(`[review-poller] Failed to create review session for PR #${prNumber}:`, err);
+          logger.warn(`Failed to create review session for PR #${prNumber}:`, err);
         }
       }
 
@@ -288,7 +308,7 @@ async function pollOnce(deps: ReviewPollerDeps): Promise<void> {
       };
       saveConfig(deps.configPath, freshConfig);
     } catch (err) {
-      console.warn('[review-poller] Failed to save config after poll:', err);
+      logger.warn('Failed to save config after poll:', err);
     }
   } finally {
     pollInFlight = false;

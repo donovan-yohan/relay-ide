@@ -6,12 +6,17 @@ import os from 'node:os';
 import express from 'express';
 import type { Server } from 'node:http';
 
-import { createOrgDashboardRouter, type OrgDashboardDeps } from '../server/org-dashboard.js';
+import {
+  createOrgDashboardRouter,
+  type OrgDashboardDeps,
+} from '../server/org-dashboard.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { PullRequestsResponse } from '../server/types.js';
 
 // Loose mock type — cast to OrgDashboardDeps['execAsync'] at call sites
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 
 let tmpDir: string;
 let configPath: string;
@@ -52,7 +57,11 @@ function makeMockExec(opts: {
       return { stdout: login + '\n', stderr: '' };
     }
 
-    if (command === 'gh' && argv[0] === 'api' && argv[1]?.startsWith('search/issues')) {
+    if (
+      command === 'gh' &&
+      argv[0] === 'api' &&
+      argv[1]?.startsWith('search/issues')
+    ) {
       if (opts.searchError) throw opts.searchError;
       const items = opts.searchItems ?? [];
       return { stdout: JSON.stringify({ items }), stderr: '' };
@@ -101,7 +110,10 @@ function startServer(execAsyncFn: MockExec): Promise<void> {
     app.use(express.json());
     // Cast through unknown: the mock satisfies the runtime contract but the
     // overloaded promisify types don't align across module instances.
-    const deps = { configPath, execAsync: execAsyncFn } as unknown as OrgDashboardDeps;
+    const deps = {
+      configPath,
+      execAsync: execAsyncFn,
+    } as unknown as OrgDashboardDeps;
     app.use('/org-dashboard', createOrgDashboardRouter(deps));
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address();
@@ -153,11 +165,23 @@ test('returns prs filtered to workspace repos', async () => {
     userLogin: 'testuser',
     searchItems: [
       // Matches WORKSPACE_PATH_A
-      makeSearchItem({ ownerRepo: 'myorg/repo-a', number: 10, author: 'testuser' }),
+      makeSearchItem({
+        ownerRepo: 'myorg/repo-a',
+        number: 10,
+        author: 'testuser',
+      }),
       // Matches WORKSPACE_PATH_B
-      makeSearchItem({ ownerRepo: 'myorg/repo-b', number: 20, author: 'testuser' }),
+      makeSearchItem({
+        ownerRepo: 'myorg/repo-b',
+        number: 20,
+        author: 'testuser',
+      }),
       // Not in any workspace — should be excluded
-      makeSearchItem({ ownerRepo: 'myorg/other-repo', number: 30, author: 'testuser' }),
+      makeSearchItem({
+        ownerRepo: 'myorg/other-repo',
+        number: 30,
+        author: 'testuser',
+      }),
     ],
   });
 
@@ -165,7 +189,11 @@ test('returns prs filtered to workspace repos', async () => {
 
   const data = await getPrs();
   assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.prs.length, 2, 'Should return only the 2 workspace-matched PRs');
+  assert.equal(
+    data.prs.length,
+    2,
+    'Should return only the 2 workspace-matched PRs'
+  );
   const numbers = data.prs.map((p) => p.number).sort((a, b) => a - b);
   assert.deepEqual(numbers, [10, 20]);
   // Verify repoPath is attached
@@ -180,10 +208,9 @@ test('returns gh_not_in_path error when gh not found', async () => {
     repos: [WORKSPACE_PATH_A],
   });
 
-  const notFoundError = Object.assign(
-    new Error('spawn gh ENOENT'),
-    { code: 'ENOENT' },
-  );
+  const notFoundError = Object.assign(new Error('spawn gh ENOENT'), {
+    code: 'ENOENT',
+  });
 
   const exec = makeMockExec({
     remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
@@ -204,7 +231,9 @@ test('returns gh_not_authenticated error', async () => {
     repos: [WORKSPACE_PATH_A],
   });
 
-  const authError = new Error('You are not logged into any GitHub hosts. Run gh auth login to authenticate.');
+  const authError = new Error(
+    'You are not logged into any GitHub hosts. Run gh auth login to authenticate.'
+  );
 
   const exec = makeMockExec({
     remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
@@ -267,7 +296,11 @@ test('detects reviewer role when current user is in requested_reviewers but not 
   const pr = data.prs[0];
   assert.equal(pr?.number, 42);
   assert.equal(pr?.role, 'reviewer', 'Role should be reviewer');
-  assert.equal(pr?.author, 'otheruser', 'Author should be otheruser, not the current user');
+  assert.equal(
+    pr?.author,
+    'otheruser',
+    'Author should be otheruser, not the current user'
+  );
 });
 
 test('caches results within TTL — exec called only once for two requests', async () => {
@@ -283,12 +316,22 @@ test('caches results within TTL — exec called only once for two requests', asy
   const baseExec = makeMockExec({
     remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
     userLogin: 'testuser',
-    searchItems: [makeSearchItem({ ownerRepo: 'myorg/repo-a', number: 1, author: 'testuser' })],
+    searchItems: [
+      makeSearchItem({
+        ownerRepo: 'myorg/repo-a',
+        number: 1,
+        author: 'testuser',
+      }),
+    ],
   });
 
   const countingExec: MockExec = async (...args: unknown[]) => {
     const [cmd, argv] = args as [string, string[], ...unknown[]];
-    if (cmd === 'gh' && typeof argv[1] === 'string' && argv[1].startsWith('search/issues')) {
+    if (
+      cmd === 'gh' &&
+      typeof argv[1] === 'string' &&
+      argv[1].startsWith('search/issues')
+    ) {
       searchCallCount++;
     }
     return baseExec(...args);
@@ -306,13 +349,19 @@ test('caches results within TTL — exec called only once for two requests', asy
   assert.equal(second.error, undefined);
   assert.equal(second.prs.length, 1);
 
-  assert.equal(searchCallCount, 1, 'gh search should have been called exactly once (cache hit on second request)');
+  assert.equal(
+    searchCallCount,
+    1,
+    'gh search should have been called exactly once (cache hit on second request)'
+  );
 });
 
 test('uses GraphQL path when github accessToken is in config', async () => {
   // Use an isolated tmp dir, config, and server so this test does not
   // interfere with the shared server used by the other tests.
-  const gqlTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'org-dashboard-gql-test-'));
+  const gqlTmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'org-dashboard-gql-test-')
+  );
   const gqlConfigPath = path.join(gqlTmpDir, 'config.json');
 
   saveConfig(gqlConfigPath, {
@@ -345,7 +394,10 @@ test('uses GraphQL path when github accessToken is in config', async () => {
   let capturedToken: string | undefined;
   let capturedRepoMap: Map<string, string> | undefined;
 
-  const mockFetchGraphQL = async (token: string, repoMap: Map<string, string>) => {
+  const mockFetchGraphQL = async (
+    token: string,
+    repoMap: Map<string, string>
+  ) => {
     graphqlCallCount++;
     capturedToken = token;
     capturedRepoMap = repoMap;
@@ -380,16 +432,31 @@ test('uses GraphQL path when github accessToken is in config', async () => {
 
   try {
     const res = await fetch(`${gqlBaseUrl!}/org-dashboard/prs`);
-    const data = await res.json() as PullRequestsResponse;
+    const data = (await res.json()) as PullRequestsResponse;
 
     assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
     assert.equal(data.prs.length, 1, 'Should return the GraphQL PR');
-    assert.equal(data.prs[0]?.number, 99, 'PR number should match GraphQL data');
+    assert.equal(
+      data.prs[0]?.number,
+      99,
+      'PR number should match GraphQL data'
+    );
     assert.equal(data.prs[0]?.title, 'GraphQL PR');
 
-    assert.equal(graphqlCallCount, 1, 'fetchGraphQL should have been called exactly once');
-    assert.equal(capturedToken, 'ghp_test123', 'fetchGraphQL should receive the configured access token');
-    assert.ok(capturedRepoMap instanceof Map, 'fetchGraphQL should receive the repoMap');
+    assert.equal(
+      graphqlCallCount,
+      1,
+      'fetchGraphQL should have been called exactly once'
+    );
+    assert.equal(
+      capturedToken,
+      'ghp_test123',
+      'fetchGraphQL should receive the configured access token'
+    );
+    assert.ok(
+      capturedRepoMap instanceof Map,
+      'fetchGraphQL should receive the repoMap'
+    );
   } finally {
     await new Promise<void>((resolve) => {
       if (gqlServer) gqlServer.close(() => resolve());

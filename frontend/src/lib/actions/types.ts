@@ -1,4 +1,14 @@
-export type ActionCategory = 'session' | 'workspace' | 'pr' | 'settings' | 'sidebar' | 'terminal' | 'navigation' | 'dashboard' | 'org' | 'ticket';
+export type ActionCategory =
+  | 'session'
+  | 'workspace'
+  | 'pr'
+  | 'settings'
+  | 'sidebar'
+  | 'terminal'
+  | 'navigation'
+  | 'dashboard'
+  | 'org'
+  | 'ticket';
 
 export type ActionContext = {
   view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';

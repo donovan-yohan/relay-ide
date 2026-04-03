@@ -16,8 +16,13 @@ export const statusColor: Record<FileChangeStatus, string> = {
   untracked: 'var(--text-muted)',
 };
 
-export function diffSourceToBase(source: DiffSource, defaultBranch: string): string | undefined {
-  return source === 'staged' ? 'cached'
-    : source === 'branch' ? defaultBranch
-    : undefined;
+export function diffSourceToBase(
+  source: DiffSource,
+  defaultBranch: string
+): string | undefined {
+  return source === 'staged'
+    ? 'cached'
+    : source === 'branch'
+      ? defaultBranch
+      : undefined;
 }

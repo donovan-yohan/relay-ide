@@ -1,0 +1,89 @@
+.session-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+  padding: 0 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-left {
+  flex: 1;
+  overflow: hidden;
+}
+
+.status-right {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.status-segment {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-model,
+.status-cost,
+.status-tokens,
+.status-activity,
+.status-rate-limits {
+  color: var(--text-muted);
+}
+
+.status-context {
+  color: var(--text);
+}
+
+.status-context--muted {
+  color: var(--text-muted);
+}
+
+.status-context--warning {
+  color: var(--status-warning);
+}
+
+.status-context--danger {
+  color: var(--status-error);
+}
+
+.status-activity {
+  min-width: 0;
+  max-width: 38vw;
+}
+
+.status-rate-limits {
+  text-align: right;
+}
+
+@media (max-width: 600px) {
+  .status-model,
+  .status-tokens,
+  .status-cost,
+  .status-rate-limits {
+    display: none;
+  }
+
+  .status-activity {
+    max-width: 48vw;
+  }
+}
+
+@media (max-width: 400px) {
+  .status-activity {
+    display: none;
+  }
+}

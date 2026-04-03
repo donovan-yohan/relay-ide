@@ -1,0 +1,30 @@
+version: 1
+tools:
+  eslint:
+    enabled: true
+    command: "npx"
+    args: ["eslint", "--max-warnings=0", "."]
+    files: ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"]
+
+  typescript:
+    enabled: true
+    command: "npx"
+    args: ["tsc", "--noEmit"]
+    files: ["src/**/*.{ts,tsx}"]
+
+  prettier:
+    enabled: true
+    command: "npx"
+    args: ["prettier", "--check", "."]
+    files: ["src/**/*.{ts,tsx,css,md}"]
+
+  vitest:
+    enabled: true
+    command: "npx"
+    args: ["vitest", "run"]
+    files: ["src/**/*.test.{ts,tsx}"]
+
+behavior:
+  fail_on_warning: true
+  stop_on_first_failure: false
+  parallel: false

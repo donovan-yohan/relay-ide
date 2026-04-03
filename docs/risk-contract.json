@@ -2,7 +2,12 @@
   "version": "1",
   "riskTierRules": {
     "critical": ["server/auth.js", "server/ws.js"],
-    "high": ["server/index.js", "server/sessions.js", "server/config.js", "bin/**"],
+    "high": [
+      "server/index.js",
+      "server/sessions.js",
+      "server/config.js",
+      "bin/**"
+    ],
     "medium": ["public/**"],
     "low": ["**"]
   },

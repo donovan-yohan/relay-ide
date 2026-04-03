@@ -11,11 +11,7 @@ const GREETINGS: Record<string, string[]> = {
     'afternoon shift',
     'back at it',
   ],
-  evening: [
-    'good evening',
-    'evening shift',
-    'winding down... or ramping up?',
-  ],
+  evening: ['good evening', 'evening shift', 'winding down... or ramping up?'],
   night: [
     'good evening',
     'burning the midnight oil',

@@ -28,13 +28,16 @@ interface MockResponse {
  * Supports `headers` override for redirect simulation (e.g., 302 with Location).
  */
 function createMockFetch(
-  urlMap: Record<string, MockResponse[]>,
+  urlMap: Record<string, MockResponse[]>
 ): typeof globalThis.fetch {
   const queues = new Map<string, MockResponse[]>(
-    Object.entries(urlMap).map(([k, v]) => [k, [...v]]),
+    Object.entries(urlMap).map(([k, v]) => [k, [...v]])
   );
 
-  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+  return async (
+    input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     const url =
       typeof input === 'string'
         ? input
@@ -46,7 +49,9 @@ function createMockFetch(
       if (url.includes(pattern)) {
         const next = queue.shift();
         if (!next) {
-          throw new Error(`Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`);
+          throw new Error(
+            `Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`
+          );
         }
         if (next.throw) {
           throw next.throw;
@@ -69,7 +74,11 @@ function createMockFetch(
 // ── Server helpers ─────────────────────────────────────────────────────────────
 
 /** No-op requireAuth middleware for testing (bypasses auth). */
-const noopAuth = (_req: express.Request, _res: express.Response, next: express.NextFunction): void => next();
+const noopAuth = (
+  _req: express.Request,
+  _res: express.Response,
+  next: express.NextFunction
+): void => next();
 
 function startServer(opts: {
   configPath: string;
@@ -81,7 +90,9 @@ function startServer(opts: {
 
     const router = createWebhookManagerRouter({
       configPath: opts.configPath,
-      broadcastEvent: () => { /* no-op */ },
+      broadcastEvent: () => {
+        /* no-op */
+      },
       ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
       requireAuth: noopAuth,
     });
@@ -131,10 +142,14 @@ function makeTempConfig(name: string, overrides: Partial<Config> = {}): string {
 function makeGitRepo(dir: string, owner: string, repo: string): void {
   fs.mkdirSync(dir, { recursive: true });
   execFileSync('git', ['init', dir], { stdio: 'ignore' });
-  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${owner}/${repo}.git`], {
-    cwd: dir,
-    stdio: 'ignore',
-  });
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', `https://github.com/${owner}/${repo}.git`],
+    {
+      cwd: dir,
+      stdio: 'ignore',
+    }
+  );
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -151,7 +166,10 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     'smee.io/new': [
       {
         status: 302,
-        headers: { location: 'https://smee.io/abc123def456', 'Content-Type': 'text/html' },
+        headers: {
+          location: 'https://smee.io/abc123def456',
+          'Content-Type': 'text/html',
+        },
       },
     ],
   });
@@ -161,7 +179,7 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean; smeeUrl: string };
+    const data = (await res.json()) as { ok: boolean; smeeUrl: string };
     assert.equal(data.ok, true);
     assert.equal(data.smeeUrl, 'https://smee.io/abc123def456');
 
@@ -171,7 +189,11 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     };
     assert.equal(saved.github?.smeeUrl, 'https://smee.io/abc123def456');
     assert.ok(saved.github?.webhookSecret, 'webhookSecret should be set');
-    assert.equal(saved.github!.webhookSecret!.length, 40, 'webhookSecret should be 20 bytes hex = 40 chars');
+    assert.equal(
+      saved.github!.webhookSecret!.length,
+      40,
+      'webhookSecret should be 20 bytes hex = 40 chars'
+    );
   } finally {
     await stopServer(srv);
   }
@@ -183,9 +205,7 @@ test('POST /setup — smee.io unreachable returns error', async () => {
   const configPath = makeTempConfig('setup-unreachable');
 
   const mockFetch = createMockFetch({
-    'smee.io/new': [
-      { throw: new Error('ECONNREFUSED') },
-    ],
+    'smee.io/new': [{ throw: new Error('ECONNREFUSED') }],
   });
 
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
@@ -193,7 +213,7 @@ test('POST /setup — smee.io unreachable returns error', async () => {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
     assert.equal(res.status, 502);
 
-    const data = await res.json() as { error: string };
+    const data = (await res.json()) as { error: string };
     assert.equal(data.error, 'smee_unreachable');
   } finally {
     await stopServer(srv);
@@ -230,13 +250,16 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
     });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean; webhookId: number };
+    const data = (await res.json()) as { ok: boolean; webhookId: number };
     assert.equal(data.ok, true);
     assert.equal(data.webhookId, 99001);
 
     // Verify webhookId saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      repoSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<
+        string,
+        { webhookId?: number; webhookEnabled?: boolean }
+      >;
     };
     assert.equal(saved.repoSettings?.[repoDir]?.webhookId, 99001);
     assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, true);
@@ -274,7 +297,7 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
     });
     assert.equal(res.status, 403);
 
-    const data = await res.json() as { error: string; webhookError: string };
+    const data = (await res.json()) as { error: string; webhookError: string };
     assert.equal(data.webhookError, 'not-admin');
 
     // Verify webhookError saved in config
@@ -307,9 +330,7 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
       { json: { message: 'Hook already exists' }, status: 422 },
       // GET /hooks → 200 with existing hook
       {
-        json: [
-          { id: 77777, config: { url: 'https://smee.io/test123' } },
-        ],
+        json: [{ id: 77777, config: { url: 'https://smee.io/test123' } }],
         status: 200,
       },
     ],
@@ -324,7 +345,7 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
     });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean; webhookId: number };
+    const data = (await res.json()) as { ok: boolean; webhookId: number };
     assert.equal(data.ok, true);
     assert.equal(data.webhookId, 77777);
   } finally {
@@ -347,9 +368,7 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
   });
 
   const mockFetch = createMockFetch({
-    'api.github.com': [
-      { json: { message: 'Bad credentials' }, status: 401 },
-    ],
+    'api.github.com': [{ json: { message: 'Bad credentials' }, status: 401 }],
   });
 
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
@@ -361,7 +380,7 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
     });
     assert.equal(res.status, 400);
 
-    const data = await res.json() as { error: string };
+    const data = (await res.json()) as { error: string };
     assert.equal(data.error, 'unauthorized');
   } finally {
     await stopServer(srv);
@@ -404,12 +423,15 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
     });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean };
+    const data = (await res.json()) as { ok: boolean };
     assert.equal(data.ok, true);
 
     // Verify webhookId cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      repoSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<
+        string,
+        { webhookId?: number; webhookEnabled?: boolean }
+      >;
     };
     assert.equal(saved.repoSettings?.[repoDir]?.webhookId, undefined);
     assert.equal(saved.repoSettings?.[repoDir]?.webhookEnabled, undefined);
@@ -454,7 +476,7 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
     });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean };
+    const data = (await res.json()) as { ok: boolean };
     assert.equal(data.ok, true);
 
     // Local state cleared
@@ -484,7 +506,7 @@ test('GET /status — returns correct configured state', async () => {
     const res = await fetch(`${url}/webhooks/status`);
     assert.equal(res.status, 200);
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       configured: boolean;
       smeeConnected: boolean;
       lastEventAt: string | null;
@@ -495,8 +517,14 @@ test('GET /status — returns correct configured state', async () => {
     assert.equal(typeof data.smeeConnected, 'boolean');
     assert.equal(data.autoProvision, true);
     assert.ok(data.secretPreview, 'secretPreview should be set');
-    assert.ok(data.secretPreview!.startsWith('****'), 'secretPreview should start with ****');
-    assert.equal(data.secretPreview!.slice(-4), 'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0'));
+    assert.ok(
+      data.secretPreview!.startsWith('****'),
+      'secretPreview should start with ****'
+    );
+    assert.equal(
+      data.secretPreview!.slice(-4),
+      'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0')
+    );
   } finally {
     await stopServer(srv);
   }
@@ -512,7 +540,10 @@ test('GET /status — returns not configured when no webhook secret', async () =
     const res = await fetch(`${url}/webhooks/status`);
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { configured: boolean; secretPreview: string | null };
+    const data = (await res.json()) as {
+      configured: boolean;
+      secretPreview: string | null;
+    };
     assert.equal(data.configured, false);
     assert.equal(data.secretPreview, null);
   } finally {
@@ -547,7 +578,9 @@ test('POST /backfill — partial failure returns correct totals', async () => {
   const mockFetch = createMockFetch({
     'ownerA/repoA': [{ json: { id: 10001 }, status: 201 }],
     'ownerB/repoB': [{ json: { id: 10002 }, status: 201 }],
-    'ownerC/repoC': [{ json: { message: 'Must have admin rights' }, status: 403 }],
+    'ownerC/repoC': [
+      { json: { message: 'Must have admin rights' }, status: 403 },
+    ],
   });
 
   const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
@@ -555,11 +588,16 @@ test('POST /backfill — partial failure returns correct totals', async () => {
     const res = await fetch(`${url}/webhooks/backfill`, { method: 'POST' });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       total: number;
       success: number;
       failed: number;
-      results: Array<{ path: string; ownerRepo: string | null; ok: boolean; error?: string }>;
+      results: Array<{
+        path: string;
+        ownerRepo: string | null;
+        ok: boolean;
+        error?: string;
+      }>;
     };
 
     assert.equal(data.total, 3);
@@ -593,7 +631,7 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
     const res = await fetch(`${url}/webhooks/ping`, { method: 'POST' });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { error: string };
+    const data = (await res.json()) as { error: string };
     assert.equal(data.error, 'no_webhook');
   } finally {
     await stopServer(srv);

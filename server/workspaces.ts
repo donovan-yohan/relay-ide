@@ -8,40 +8,87 @@ import { promisify } from 'node:util';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { loadConfig, saveConfig, getRepoSettings, setRepoSettings, deleteRepoSettingKeys, writeMeta, readMeta } from './config.js';
+import {
+  loadConfig,
+  saveConfig,
+  getRepoSettings,
+  setRepoSettings,
+  deleteRepoSettingKeys,
+  writeMeta,
+  readMeta,
+} from './config.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
-import { listBranches, getActivityFeed, switchBranch, getCurrentBranch, extractOwnerRepo, renameBranch, createBranch, pushBranch, getChangedFiles, getFileDiff, getDefaultBranch, ensureBranchLocal } from './git.js';
+import {
+  listBranches,
+  getActivityFeed,
+  switchBranch,
+  getCurrentBranch,
+  extractOwnerRepo,
+  renameBranch,
+  createBranch,
+  pushBranch,
+  getChangedFiles,
+  getFileDiff,
+  getDefaultBranch,
+  ensureBranchLocal,
+} from './git.js';
 import { clearPrCache as clearPrCacheImpl } from './gh.js';
-import type { Config, PullRequest, PullRequestsResponse, Repo } from './types.js';
+import type {
+  Config,
+  PullRequest,
+  PullRequestsResponse,
+  Repo,
+} from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('workspaces');
 
 /** Extract repo name from a git remote URL (SSH or HTTPS). */
 export function repoNameFromRemoteUrl(url: string): string | undefined {
   // Strip trailing slash before splitting so pop() gets the last real segment
-  const name = url.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/, '');
+  const name = url
+    .replace(/\/+$/, '')
+    .split('/')
+    .pop()
+    ?.replace(/\.git$/, '');
   return name || undefined;
 }
 
 const BROWSE_DENYLIST = new Set([
-  'node_modules', '.git', '.Trash', '__pycache__',
-  '.cache', '.npm', '.yarn', '.nvm',
+  'node_modules',
+  '.git',
+  '.Trash',
+  '__pycache__',
+  '.cache',
+  '.npm',
+  '.yarn',
+  '.nvm',
 ]);
 
 // ── Files-list cache (used by GET /workspaces/files-list) ──
-const filesListCache = new Map<string, { files: string[]; truncated: boolean; total: number; ts: number }>();
+const filesListCache = new Map<
+  string,
+  { files: string[]; truncated: boolean; total: number; ts: number }
+>();
 const FILES_LIST_TTL = 30_000;
 const FILES_LIST_MAX = 50_000;
 
 export function clearFilesListCache(workspacePath?: string): void {
-  if (!workspacePath) { filesListCache.clear(); return; }
+  if (!workspacePath) {
+    filesListCache.clear();
+    return;
+  }
   // Direct match (most common: watcher path = repo root)
   if (filesListCache.delete(workspacePath)) return;
   // Subdirectory match: watcher path may be a subdirectory of the cached repo root
   for (const key of filesListCache.keys()) {
-    if (workspacePath.startsWith(key + path.sep)) { filesListCache.delete(key); return; }
+    if (workspacePath.startsWith(key + path.sep)) {
+      filesListCache.delete(key);
+      return;
+    }
   }
 }
 
@@ -93,7 +140,7 @@ export async function validateWorkspacePath(rawPath: string): Promise<string> {
  */
 export async function detectGitRepo(
   dirPath: string,
-  execAsync: typeof execFileAsync = execFileAsync,
+  execAsync: typeof execFileAsync = execFileAsync
 ): Promise<{ isGitRepo: boolean; defaultBranch: string | null }> {
   try {
     await execAsync('git', ['rev-parse', '--git-dir'], { cwd: dirPath });
@@ -107,7 +154,7 @@ export async function detectGitRepo(
     const { stdout } = await execAsync(
       'git',
       ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'],
-      { cwd: dirPath },
+      { cwd: dirPath }
     );
     const trimmed = stdout.trim();
     // "origin/main" → "main"
@@ -115,7 +162,11 @@ export async function detectGitRepo(
   } catch {
     // Fall back to checking local HEAD
     try {
-      const { stdout } = await execAsync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dirPath });
+      const { stdout } = await execAsync(
+        'git',
+        ['symbolic-ref', '--short', 'HEAD'],
+        { cwd: dirPath }
+      );
       defaultBranch = stdout.trim() || null;
     } catch {
       // Cannot determine default branch
@@ -171,7 +222,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
         if (isGitRepo) {
           try {
-            const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: p });
+            const { stdout } = await exec(
+              'git',
+              ['remote', 'get-url', 'origin'],
+              { cwd: p }
+            );
             const url = stdout.trim();
             if (url) {
               const remoteName = repoNameFromRemoteUrl(url);
@@ -181,13 +236,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             // No remote configured — fall back to directory name
           }
           try {
-            const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: p });
+            const { stdout } = await exec(
+              'git',
+              ['symbolic-ref', '--short', 'HEAD'],
+              { cwd: p }
+            );
             currentBranch = stdout.trim() || null;
-          } catch { /* detached HEAD or other error */ }
+          } catch {
+            /* detached HEAD or other error */
+          }
         }
 
         return { path: p, name, isGitRepo, defaultBranch, currentBranch };
-      }),
+      })
     );
 
     res.json({ workspaces: results });
@@ -207,7 +268,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try {
       resolved = await validateWorkspacePath(rawPath);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res
+        .status(400)
+        .json({ error: err instanceof Error ? err.message : String(err) });
       return;
     }
 
@@ -233,15 +296,30 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     saveConfig(configPath, config);
-    try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
-    trackEvent({ category: 'workspace', action: 'added', target: resolved, properties: { name: path.basename(resolved) } });
+    try {
+      deps.onWorkspacesChanged?.();
+    } catch (err) {
+      logger.error('onWorkspacesChanged failed:', err);
+    }
+    trackEvent({
+      category: 'workspace',
+      action: 'added',
+      target: resolved,
+      properties: { name: path.basename(resolved) },
+    });
 
     let currentBranch: string | null = null;
     if (isGitRepo) {
       try {
-        const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: resolved });
+        const { stdout } = await exec(
+          'git',
+          ['symbolic-ref', '--short', 'HEAD'],
+          { cwd: resolved }
+        );
         currentBranch = stdout.trim() || null;
-      } catch { /* detached HEAD */ }
+      } catch {
+        /* detached HEAD */
+      }
     }
     const workspace: Repo = {
       path: resolved,
@@ -278,21 +356,31 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const wsSettings = config.repoSettings?.[resolved];
     if (wsSettings?.webhookId && config.github?.accessToken) {
       try {
-        const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], { cwd: resolved, timeout: 5000 });
+        const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], {
+          cwd: resolved,
+          timeout: 5000,
+        });
         const ownerRepo = extractOwnerRepo(stdout.trim());
         if (ownerRepo) {
-          await globalThis.fetch(`https://api.github.com/repos/${ownerRepo}/hooks/${wsSettings.webhookId}`, {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Bearer ${config.github.accessToken}`,
-              Accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
-          });
+          await globalThis.fetch(
+            `https://api.github.com/repos/${ownerRepo}/hooks/${wsSettings.webhookId}`,
+            {
+              method: 'DELETE',
+              headers: {
+                Authorization: `Bearer ${config.github.accessToken}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+              },
+            }
+          );
         }
       } catch (err) {
         // Best-effort — log but don't block workspace removal
-        console.warn('[workspaces] Failed to delete webhook for', resolved, err instanceof Error ? err.message : String(err));
+        logger.warn(
+          'Failed to delete webhook for',
+          resolved,
+          err instanceof Error ? err.message : String(err)
+        );
       }
     }
 
@@ -305,7 +393,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     config.repos = workspaces.filter((p) => p !== resolved);
     saveConfig(configPath, config);
-    try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
+    try {
+      deps.onWorkspacesChanged?.();
+    } catch (err) {
+      logger.error('onWorkspacesChanged failed:', err);
+    }
     trackEvent({ category: 'workspace', action: 'removed', target: resolved });
 
     res.json({ removed: resolved });
@@ -326,21 +418,31 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     // Validate that the submitted paths are the same set as the current workspaces
     if (rawPaths.length !== current.length) {
-      res.status(400).json({ error: 'paths must contain the same set of workspaces as the current configuration' });
+      res.status(400).json({
+        error:
+          'paths must contain the same set of workspaces as the current configuration',
+      });
       return;
     }
 
     const currentSet = new Set(current);
     for (const p of rawPaths) {
       if (typeof p !== 'string' || !currentSet.has(p)) {
-        res.status(400).json({ error: 'paths must contain the same set of workspaces as the current configuration' });
+        res.status(400).json({
+          error:
+            'paths must contain the same set of workspaces as the current configuration',
+        });
         return;
       }
     }
 
     config.repos = rawPaths as string[];
     saveConfig(configPath, config);
-    try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
+    try {
+      deps.onWorkspacesChanged?.();
+    } catch (err) {
+      logger.error('onWorkspacesChanged failed:', err);
+    }
 
     const results: Repo[] = await Promise.all(
       (rawPaths as string[]).map(async (p) => {
@@ -349,12 +451,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         let currentBranch: string | null = null;
         if (isGitRepo) {
           try {
-            const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: p });
+            const { stdout } = await exec(
+              'git',
+              ['symbolic-ref', '--short', 'HEAD'],
+              { cwd: p }
+            );
             currentBranch = stdout.trim() || null;
-          } catch { /* detached HEAD */ }
+          } catch {
+            /* detached HEAD */
+          }
         }
         return { path: p, name, isGitRepo, defaultBranch, currentBranch };
-      }),
+      })
     );
 
     res.json({ workspaces: results });
@@ -390,7 +498,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       try {
         resolved = await validateWorkspacePath(rawPath);
       } catch (err) {
-        errors.push({ path: rawPath, error: err instanceof Error ? err.message : String(err) });
+        errors.push({
+          path: rawPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
         continue;
       }
 
@@ -405,11 +516,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       let currentBranch: string | null = null;
       if (isGitRepo) {
         try {
-          const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: resolved });
+          const { stdout } = await exec(
+            'git',
+            ['symbolic-ref', '--short', 'HEAD'],
+            { cwd: resolved }
+          );
           currentBranch = stdout.trim() || null;
-        } catch { /* detached HEAD */ }
+        } catch {
+          /* detached HEAD */
+        }
       }
-      added.push({ path: resolved, name: path.basename(resolved), isGitRepo, defaultBranch, currentBranch });
+      added.push({
+        path: resolved,
+        name: path.basename(resolved),
+        isGitRepo,
+        defaultBranch,
+        currentBranch,
+      });
 
       // Store detected default branch in per-repo settings
       if (isGitRepo && defaultBranch) {
@@ -424,7 +547,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     if (added.length > 0) {
       config.repos = [...(config.repos ?? []), ...added.map((a) => a.path)];
       saveConfig(configPath, config);
-      try { deps.onWorkspacesChanged?.(); } catch (err) { console.error('onWorkspacesChanged failed:', err); }
+      try {
+        deps.onWorkspacesChanged?.();
+      } catch (err) {
+        logger.error('onWorkspacesChanged failed:', err);
+      }
     }
 
     res.status(201).json({ added, errors });
@@ -432,28 +559,41 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/dashboard — aggregated PR + activity data for a workspace
   router.get('/dashboard', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
 
-    const fields = 'number,title,url,headRefName,baseRefName,state,author,updatedAt,additions,deletions,reviewDecision,mergeable,mergeStateStatus,isDraft';
+    const fields =
+      'number,title,url,headRefName,baseRefName,state,author,updatedAt,additions,deletions,reviewDecision,mergeable,mergeStateStatus,isDraft';
 
     // Get current GitHub user
     let currentUser = '';
     try {
-      const { stdout: whoami } = await exec('gh', ['api', 'user', '--jq', '.login'], { cwd: repoPath });
+      const { stdout: whoami } = await exec(
+        'gh',
+        ['api', 'user', '--jq', '.login'],
+        { cwd: repoPath }
+      );
       currentUser = whoami.trim();
     } catch {
-      const response: PullRequestsResponse = { prs: [], error: 'gh_not_authenticated' };
+      const response: PullRequestsResponse = {
+        prs: [],
+        error: 'gh_not_authenticated',
+      };
       res.json({ pullRequests: response, branches: [] });
       return;
     }
 
     // Helper to map raw gh JSON to PullRequest
-    function mapRawPr(raw: Record<string, unknown>, role: 'author' | 'reviewer', fallbackAuthor: string): PullRequest {
+    function mapRawPr(
+      raw: Record<string, unknown>,
+      role: 'author' | 'reviewer',
+      fallbackAuthor: string
+    ): PullRequest {
       return {
         number: raw.number as number,
         title: raw.title as string,
@@ -466,8 +606,15 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         updatedAt: raw.updatedAt as string,
         additions: (raw.additions as number) ?? 0,
         deletions: (raw.deletions as number) ?? 0,
-        reviewDecision: (raw.reviewDecision as 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null) ?? null,
-        mergeable: (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
+        reviewDecision:
+          (raw.reviewDecision as
+            | 'APPROVED'
+            | 'CHANGES_REQUESTED'
+            | 'REVIEW_REQUIRED'
+            | null) ?? null,
+        mergeable:
+          (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ??
+          null,
         isDraft: (raw.isDraft as boolean) ?? false,
         ciStatus: null,
       };
@@ -479,30 +626,66 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         try {
           const { stdout } = await exec(
             'gh',
-            ['pr', 'list', '--author', currentUser, '--state', 'open', '--limit', '30', '--json', fields],
-            { cwd: repoPath },
+            [
+              'pr',
+              'list',
+              '--author',
+              currentUser,
+              '--state',
+              'open',
+              '--limit',
+              '30',
+              '--json',
+              fields,
+            ],
+            { cwd: repoPath }
           );
-          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(pr => mapRawPr(pr, 'author', currentUser));
-        } catch { return []; }
+          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(
+            (pr) => mapRawPr(pr, 'author', currentUser)
+          );
+        } catch {
+          return [];
+        }
       })(),
       (async (): Promise<PullRequest[]> => {
         try {
           const { stdout } = await exec(
             'gh',
-            ['pr', 'list', '--search', `review-requested:${currentUser}`, '--state', 'open', '--limit', '30', '--json', fields],
-            { cwd: repoPath },
+            [
+              'pr',
+              'list',
+              '--search',
+              `review-requested:${currentUser}`,
+              '--state',
+              'open',
+              '--limit',
+              '30',
+              '--json',
+              fields,
+            ],
+            { cwd: repoPath }
           );
-          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(pr => mapRawPr(pr, 'reviewer', ''));
-        } catch { return []; }
+          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(
+            (pr) => mapRawPr(pr, 'reviewer', '')
+          );
+        } catch {
+          return [];
+        }
       })(),
     ]);
 
     // Deduplicate: if a PR appears in both, keep as 'author'
     const seen = new Set(authored.map((pr) => pr.number));
-    const combined = [...authored, ...reviewing.filter((pr) => !seen.has(pr.number))];
+    const combined = [
+      ...authored,
+      ...reviewing.filter((pr) => !seen.has(pr.number)),
+    ];
 
     // Sort by updatedAt descending
-    combined.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    combined.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
 
     const pullRequests: PullRequestsResponse = { prs: combined };
 
@@ -510,13 +693,17 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     let branches: string[] = [];
     try {
       branches = await listBranches(repoPath);
-    } catch { /* not a git repo or git unavailable */ }
+    } catch {
+      /* not a git repo or git unavailable */
+    }
 
     // Fetch recent activity
     let activity: Awaited<ReturnType<typeof getActivityFeed>> = [];
     try {
       activity = await getActivityFeed(repoPath);
-    } catch { /* git log unavailable */ }
+    } catch {
+      /* git log unavailable */
+    }
 
     res.json({
       pullRequests,
@@ -525,12 +712,20 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     });
   });
 
-  function buildMergedSettings(config: Config, repoPath: string): { settings: ReturnType<typeof getRepoSettings>; overridden: string[] } {
+  function buildMergedSettings(
+    config: Config,
+    repoPath: string
+  ): { settings: ReturnType<typeof getRepoSettings>; overridden: string[] } {
     const resolved = path.resolve(repoPath);
     const wsOverrides = config.repoSettings?.[resolved] ?? {};
     const effective = getRepoSettings(config, resolved);
     const overridden: string[] = [];
-    for (const key of ['defaultAgent', 'defaultContinue', 'defaultYolo', 'launchInTmux'] as const) {
+    for (const key of [
+      'defaultAgent',
+      'defaultContinue',
+      'defaultYolo',
+      'launchInTmux',
+    ] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
     }
     return { settings: effective, overridden };
@@ -538,7 +733,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/settings — per-repo overrides only
   router.get('/settings', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
@@ -556,7 +752,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/settings/merged — effective settings with override tracking
   router.get('/settings/merged', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
@@ -566,7 +763,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // PATCH /workspaces/settings — update per-repo settings
   router.patch('/settings', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
@@ -606,7 +804,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/branch — switch branch for a workspace
   router.post('/branch', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
@@ -625,20 +824,24 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     if (result.success) {
       res.json({ path: repoPath, branch });
     } else {
-      res.status(400).json({ error: result.error ?? `Failed to switch to branch: ${branch}` });
+      res.status(400).json({
+        error: result.error ?? `Failed to switch to branch: ${branch}`,
+      });
     }
   });
 
   // POST /workspaces/worktree — create a new worktree with the next mountain name
   router.post('/worktree', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
     }
 
-    const existingBranch = typeof req.body?.branch === 'string' ? req.body.branch : undefined;
+    const existingBranch =
+      typeof req.body?.branch === 'string' ? req.body.branch : undefined;
 
     const resolved = path.resolve(repoPath);
     const config = getConfig();
@@ -651,11 +854,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     if (existingBranch) {
       // Ensure branch exists locally (fetch from remote if needed)
-      let branchResult: { found: boolean; reason?: 'not_found' | 'fetch_failed' };
+      let branchResult: {
+        found: boolean;
+        reason?: 'not_found' | 'fetch_failed';
+      };
       try {
-        branchResult = await ensureBranchLocal(resolved, existingBranch, { exec });
+        branchResult = await ensureBranchLocal(resolved, existingBranch, {
+          exec,
+        });
       } catch (err) {
-        console.error('[workspaces] ensureBranchLocal failed unexpectedly:', err instanceof Error ? err.message : err);
+        logger.error(
+          'ensureBranchLocal failed unexpectedly:',
+          err instanceof Error ? err.message : err
+        );
         res.status(500).json({ error: 'Git operation failed' });
         return;
       }
@@ -678,7 +889,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
       // Find existing checkout or create new worktree
       try {
-        const result = await findOrCreateWorktreeForBranch(resolved, existingBranch, exec);
+        const result = await findOrCreateWorktreeForBranch(
+          resolved,
+          existingBranch,
+          exec
+        );
         // For main worktree matches, return worktreePath: null to signal "use the main repo"
         // and skip writeMeta (main repo is not a disposable worktree)
         if (!result.isMain) {
@@ -717,11 +932,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         const candidateIndex = (baseIndex + attempt) % MOUNTAIN_NAMES.length;
         const candidateName = MOUNTAIN_NAMES[candidateIndex] ?? 'everest';
         const suffix = crypto.randomBytes(2).toString('hex');
-        const candidateBranch = (settings.branchPrefix ?? '') + candidateName + '-' + suffix;
+        const candidateBranch =
+          (settings.branchPrefix ?? '') + candidateName + '-' + suffix;
         const candidatePath = path.join(resolved, '.worktrees', candidateName);
 
         // Check if branch or directory already exists
-        const branchExists = await exec('git', ['rev-parse', '--verify', candidateBranch], { cwd: resolved }).then(() => true, () => false);
+        const branchExists = await exec(
+          'git',
+          ['rev-parse', '--verify', candidateBranch],
+          { cwd: resolved }
+        ).then(
+          () => true,
+          () => false
+        );
         const dirExists = fs.existsSync(candidatePath);
 
         if (!branchExists && !dirExists) {
@@ -734,7 +957,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       }
 
       if (!found) {
-        res.status(409).json({ error: 'All mountain names are taken for this workspace. Delete some worktrees first.' });
+        res.status(409).json({
+          error:
+            'All mountain names are taken for this workspace. Delete some worktrees first.',
+        });
         return;
       }
 
@@ -745,7 +971,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         baseBranch = detected.defaultBranch ?? 'main';
       }
 
-      gitArgs = ['worktree', 'add', '-b', branchName, path.join(resolved, '.worktrees', mountainName), baseBranch];
+      gitArgs = [
+        'worktree',
+        'add',
+        '-b',
+        branchName,
+        path.join(resolved, '.worktrees', mountainName),
+        baseBranch,
+      ];
     }
 
     const worktreePath = path.join(resolved, '.worktrees', mountainName);
@@ -787,7 +1020,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // GET /workspaces/current-branch — current checked-out branch for a path
   router.get('/current-branch', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
@@ -838,7 +1072,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       if (!isDir && !includeFiles) return false;
       if (BROWSE_DENYLIST.has(d.name)) return false;
       if (!showHidden && d.name.startsWith('.')) return false;
-      if (prefix && !d.name.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+      if (prefix && !d.name.toLowerCase().startsWith(prefix.toLowerCase()))
+        return false;
       return true;
     });
 
@@ -866,16 +1101,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
         if (isDir) {
           try {
-            const gitStat = await fs.promises.stat(path.join(entryPath, '.git'));
+            const gitStat = await fs.promises.stat(
+              path.join(entryPath, '.git')
+            );
             isGitRepo = gitStat.isDirectory();
           } catch {
             // not a git repo
           }
 
           try {
-            const children = await fs.promises.readdir(entryPath, { withFileTypes: true });
-            hasChildren = children.some((c) =>
-              (c.isDirectory() || includeFiles) && !BROWSE_DENYLIST.has(c.name) && (showHidden || !c.name.startsWith('.')),
+            const children = await fs.promises.readdir(entryPath, {
+              withFileTypes: true,
+            });
+            hasChildren = children.some(
+              (c) =>
+                (c.isDirectory() || includeFiles) &&
+                !BROWSE_DENYLIST.has(c.name) &&
+                (showHidden || !c.name.startsWith('.'))
             );
           } catch {
             // can't read — treat as no children
@@ -897,7 +1139,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           isDirectory: isDir,
           ...(size !== undefined ? { size } : {}),
         };
-      }),
+      })
     );
 
     res.json({ resolved, entries, truncated, total });
@@ -930,7 +1172,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     let suggestions: string[] = [];
     try {
-      const entries = await fs.promises.readdir(dirToRead, { withFileTypes: true });
+      const entries = await fs.promises.readdir(dirToRead, {
+        withFileTypes: true,
+      });
       suggestions = entries
         .filter((e) => {
           if (!e.isDirectory()) return false;
@@ -949,10 +1193,17 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/rename-branch — rename the current branch for a workspace
   router.post('/rename-branch', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     const { newName } = req.body as { newName?: string };
-    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
-    if (!newName || typeof newName !== 'string') { res.status(400).json({ error: 'newName is required' }); return; }
+    if (!repoPath) {
+      res.status(400).json({ error: 'path query parameter required' });
+      return;
+    }
+    if (!newName || typeof newName !== 'string') {
+      res.status(400).json({ error: 'newName is required' });
+      return;
+    }
 
     const result = await renameBranch(repoPath, newName);
     if (result.success) {
@@ -964,10 +1215,17 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/create-branch — create and checkout a new branch for a workspace
   router.post('/create-branch', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     const { branchName } = req.body as { branchName?: string };
-    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
-    if (!branchName || typeof branchName !== 'string') { res.status(400).json({ error: 'branchName is required' }); return; }
+    if (!repoPath) {
+      res.status(400).json({ error: 'path query parameter required' });
+      return;
+    }
+    if (!branchName || typeof branchName !== 'string') {
+      res.status(400).json({ error: 'branchName is required' });
+      return;
+    }
 
     const result = await createBranch(repoPath, branchName);
     if (result.success) {
@@ -979,10 +1237,20 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
   // POST /workspaces/push-branch — push a branch to origin for a workspace
   router.post('/push-branch', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const { branch, deleteOldBranch } = req.body as { branch?: string; deleteOldBranch?: string };
-    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
-    if (!branch || typeof branch !== 'string') { res.status(400).json({ error: 'branch is required' }); return; }
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
+    const { branch, deleteOldBranch } = req.body as {
+      branch?: string;
+      deleteOldBranch?: string;
+    };
+    if (!repoPath) {
+      res.status(400).json({ error: 'path query parameter required' });
+      return;
+    }
+    if (!branch || typeof branch !== 'string') {
+      res.status(400).json({ error: 'branch is required' });
+      return;
+    }
 
     const result = await pushBranch(repoPath, branch, deleteOldBranch);
     if (result.success) {
@@ -995,25 +1263,42 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
   function validateWorkspaceAccess(repoPath: string): string | null {
     const resolved = path.resolve(repoPath);
     const allowed = getConfig().repos ?? [];
-    return allowed.some(p => resolved === p || resolved.startsWith(p + path.sep)) ? resolved : null;
+    return allowed.some(
+      (p) => resolved === p || resolved.startsWith(p + path.sep)
+    )
+      ? resolved
+      : null;
   }
 
   // GET /workspaces/changed-files — list changed files in a repo
   router.get('/changed-files', async (req: Request, res: Response) => {
     if (typeof req.query.path !== 'string') {
-      res.status(400).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path parameter required' });
+      res.status(400).json({
+        files: [],
+        aggregate: { additions: 0, deletions: 0, fileCount: 0 },
+        error: 'path parameter required',
+      });
       return;
     }
-    const base = typeof req.query.base === 'string' ? req.query.base : undefined;
+    const base =
+      typeof req.query.base === 'string' ? req.query.base : undefined;
 
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
-      res.status(403).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'path not in configured workspaces' });
+      res.status(403).json({
+        files: [],
+        aggregate: { additions: 0, deletions: 0, fileCount: 0 },
+        error: 'path not in configured workspaces',
+      });
       return;
     }
 
     if (base && base.startsWith('-')) {
-      res.status(400).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'invalid base ref' });
+      res.status(400).json({
+        files: [],
+        aggregate: { additions: 0, deletions: 0, fileCount: 0 },
+        error: 'invalid base ref',
+      });
       return;
     }
 
@@ -1026,60 +1311,107 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       };
       res.json({ files, aggregate });
     } catch (err: unknown) {
-      console.warn('[workspaces] /changed-files failed for', resolvedRepo, err instanceof Error ? err.message : String(err));
-      res.status(500).json({ files: [], aggregate: { additions: 0, deletions: 0, fileCount: 0 }, error: 'Failed to get changed files' });
+      logger.warn(
+        '/changed-files failed for',
+        resolvedRepo,
+        err instanceof Error ? err.message : String(err)
+      );
+      res.status(500).json({
+        files: [],
+        aggregate: { additions: 0, deletions: 0, fileCount: 0 },
+        error: 'Failed to get changed files',
+      });
     }
   });
 
   // GET /workspaces/files-list — list all files in a repo for quick-open picker
   router.get('/files-list', async (req: Request, res: Response) => {
     if (typeof req.query.path !== 'string') {
-      res.status(400).json({ files: [], truncated: false, total: 0, error: 'path parameter required' });
+      res.status(400).json({
+        files: [],
+        truncated: false,
+        total: 0,
+        error: 'path parameter required',
+      });
       return;
     }
     const resolved = validateWorkspaceAccess(req.query.path);
     if (!resolved) {
-      res.status(403).json({ files: [], truncated: false, total: 0, error: 'path not in configured workspaces' });
+      res.status(403).json({
+        files: [],
+        truncated: false,
+        total: 0,
+        error: 'path not in configured workspaces',
+      });
       return;
     }
 
     const cached = filesListCache.get(resolved);
     if (cached && Date.now() - cached.ts < FILES_LIST_TTL) {
-      res.json({ files: cached.files, truncated: cached.truncated, total: cached.total });
+      res.json({
+        files: cached.files,
+        truncated: cached.truncated,
+        total: cached.total,
+      });
       return;
     }
 
     try {
-      const { stdout } = await exec('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: resolved, maxBuffer: 10 * 1024 * 1024, timeout: 15_000 });
+      const { stdout } = await exec(
+        'git',
+        ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+        { cwd: resolved, maxBuffer: 10 * 1024 * 1024, timeout: 15_000 }
+      );
       const allFiles = stdout.split('\0').filter(Boolean);
       const truncated = allFiles.length > FILES_LIST_MAX;
       const files = truncated ? allFiles.slice(0, FILES_LIST_MAX) : allFiles;
-      filesListCache.set(resolved, { files, truncated, total: allFiles.length, ts: Date.now() });
+      filesListCache.set(resolved, {
+        files,
+        truncated,
+        total: allFiles.length,
+        ts: Date.now(),
+      });
       res.json({ files, truncated, total: allFiles.length });
     } catch (err: unknown) {
-      console.warn('[workspaces] /files-list failed for', resolved, err instanceof Error ? err.message : String(err));
-      res.json({ files: [], truncated: false, total: 0, error: 'not a git repository or git not available' });
+      logger.warn('/files-list failed for', resolved, err instanceof Error ? err.message : String(err));
+      res.json({
+        files: [],
+        truncated: false,
+        total: 0,
+        error: 'not a git repository or git not available',
+      });
     }
   });
 
   // GET /workspaces/file-diff — get diff for a specific file
   router.get('/file-diff', async (req: Request, res: Response) => {
-    if (typeof req.query.path !== 'string' || typeof req.query.file !== 'string') {
-      res.status(400).json({ diff: '', error: 'path and file parameters required' });
+    if (
+      typeof req.query.path !== 'string' ||
+      typeof req.query.file !== 'string'
+    ) {
+      res
+        .status(400)
+        .json({ diff: '', error: 'path and file parameters required' });
       return;
     }
     const filePath = req.query.file;
-    const base = typeof req.query.base === 'string' ? req.query.base : undefined;
+    const base =
+      typeof req.query.base === 'string' ? req.query.base : undefined;
 
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
-      res.status(403).json({ diff: '', error: 'path not in configured workspaces' });
+      res
+        .status(403)
+        .json({ diff: '', error: 'path not in configured workspaces' });
       return;
     }
 
     const expandedFile = expandTilde(filePath);
 
-    if (expandedFile.includes('..') || (path.isAbsolute(filePath) && !filePath.startsWith('~'))) {
+    if (
+      expandedFile.includes('..') ||
+      (path.isAbsolute(filePath) && !filePath.startsWith('~'))
+    ) {
       res.status(400).json({ diff: '', error: 'invalid file path' });
       return;
     }
@@ -1117,7 +1449,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const diff = await getFileDiff(resolvedRepo, expandedFile, base, exec);
       res.json({ diff });
     } catch (err: unknown) {
-      console.warn('[workspaces] /file-diff failed for', resolvedRepo, filePath, err instanceof Error ? err.message : String(err));
+      logger.warn(
+        '/file-diff failed for',
+        resolvedRepo,
+        filePath,
+        err instanceof Error ? err.message : String(err)
+      );
       res.status(500).json({ diff: '', error: 'Failed to get file diff' });
     }
   });
@@ -1131,7 +1468,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
-      res.status(403).json({ branch: '', error: 'path not in configured workspaces' });
+      res
+        .status(403)
+        .json({ branch: '', error: 'path not in configured workspaces' });
       return;
     }
 
@@ -1139,8 +1478,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const branch = await getDefaultBranch(resolvedRepo, exec);
       res.json({ branch });
     } catch (err: unknown) {
-      console.warn('[workspaces] /default-branch failed for', resolvedRepo, err instanceof Error ? err.message : String(err));
-      res.status(500).json({ branch: 'main', error: 'Failed to detect default branch' });
+      logger.warn(
+        '/default-branch failed for',
+        resolvedRepo,
+        err instanceof Error ? err.message : String(err)
+      );
+      res
+        .status(500)
+        .json({ branch: 'main', error: 'Failed to detect default branch' });
     }
   });
 

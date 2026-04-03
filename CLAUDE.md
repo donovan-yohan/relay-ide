@@ -4,13 +4,13 @@ Remote web interface for interacting with Claude Code CLI sessions from any devi
 
 ## Quick Reference
 
-| Action | Command |
-|--------|---------|
-| Build | `npm run build` |
-| Test | `npm test` |
-| Start | `npm start` |
-| Run (global) | `claude-remote-cli` |
-| Version bump | `npm version patch\|minor\|major` |
+| Action             | Command                                                                  |
+| ------------------ | ------------------------------------------------------------------------ |
+| Build              | `npm run build`                                                          |
+| Test               | `npm test`                                                               |
+| Start              | `npm start`                                                              |
+| Run (global)       | `claude-remote-cli`                                                      |
+| Version bump       | `npm version patch\|minor\|major`                                        |
 | Mobile input tests | Add fixture to `test/fixtures/mobile-input/` before fixing keyboard bugs |
 
 ## Design System
@@ -19,15 +19,15 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 
 ## Documentation Map
 
-| Category | Path | When to look here |
-|----------|------|-------------------|
-| Architecture | `docs/ARCHITECTURE.md` | Module boundaries, data flow, API routes, ADR rules |
-| Visual Design | `DESIGN.md` | TUI aesthetic, colors, buttons, icons, border-radius rules |
-| Design | `docs/DESIGN.md` | Backend patterns, auth flow, PTY management, session types |
-| Frontend | `docs/FRONTEND.md` | Svelte 5 components, state management, UI conventions |
-| Quality | `docs/QUALITY.md` | Test runner, test files, isolation patterns |
-| References | `docs/references/` | Deployment guide, review agent setup |
-| Learnings | `docs/LEARNINGS.md` | Persistent cross-session learnings (architecture, debugging, patterns) |
+| Category      | Path                   | When to look here                                                      |
+| ------------- | ---------------------- | ---------------------------------------------------------------------- |
+| Architecture  | `docs/ARCHITECTURE.md` | Module boundaries, data flow, API routes, ADR rules                    |
+| Visual Design | `DESIGN.md`            | TUI aesthetic, colors, buttons, icons, border-radius rules             |
+| Design        | `docs/DESIGN.md`       | Backend patterns, auth flow, PTY management, session types             |
+| Frontend      | `docs/FRONTEND.md`     | Svelte 5 components, state management, UI conventions                  |
+| Quality       | `docs/QUALITY.md`      | Test runner, test files, isolation patterns                            |
+| References    | `docs/references/`     | Deployment guide, review agent setup                                   |
+| Learnings     | `docs/LEARNINGS.md`    | Persistent cross-session learnings (architecture, debugging, patterns) |
 
 ## Key Patterns
 
@@ -55,4 +55,3 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 - Use `/browse` from gstack for ALL web browsing — never use `mcp__claude-in-chrome__*` tools
 - Available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-design-review, /design-consultation, /design-shotgun, /design-html, /review, /ship, /land-and-deploy, /canary, /benchmark, /browse, /connect-chrome, /qa, /qa-only, /design-review, /setup-browser-cookies, /setup-deploy, /retro, /investigate, /document-release, /codex, /cso, /autoplan, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, /learn
 - If gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to build the binary and register skills
-

@@ -26,7 +26,11 @@ before(async () => {
   const app = express();
   app.use(express.json());
 
-  const mockExec = async (file: string, args: string[], _opts: { cwd: string }) => {
+  const mockExec = async (
+    file: string,
+    args: string[],
+    _opts: { cwd: string }
+  ) => {
     if (args[0] === 'status' && args.includes('--porcelain=v1')) {
       return { stdout: ' M server/git.ts\0?? new-file.ts\0', stderr: '' };
     }
@@ -48,7 +52,10 @@ before(async () => {
     return { stdout: '', stderr: '' };
   };
 
-  app.use('/workspaces', createWorkspaceRouter({ configPath, execAsync: mockExec as any }));
+  app.use(
+    '/workspaces',
+    createWorkspaceRouter({ configPath, execAsync: mockExec as any })
+  );
 
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -64,9 +71,11 @@ after(async () => {
 
 describe('GET /workspaces/changed-files', () => {
   test('returns changed files for a workspace', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/changed-files?path=${encodeURIComponent(repoDir)}`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/changed-files?path=${encodeURIComponent(repoDir)}`
+    );
     assert.equal(res.status, 200);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.ok(Array.isArray(data.files));
     assert.ok(data.aggregate);
     assert.equal(data.aggregate.fileCount, 2);
@@ -80,28 +89,36 @@ describe('GET /workspaces/changed-files', () => {
 
 describe('GET /workspaces/file-diff', () => {
   test('returns diff for a specific file', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=server/git.ts`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=server/git.ts`
+    );
     assert.equal(res.status, 200);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.ok(typeof data.diff === 'string');
   });
 
   test('returns 400 without file parameter', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}`
+    );
     assert.equal(res.status, 400);
   });
 
   test('rejects absolute paths that did not start with ~', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=/etc/passwd`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=/etc/passwd`
+    );
     assert.equal(res.status, 400);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.equal(data.error, 'invalid file path');
   });
 
   test('rejects .. traversal in relative paths', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=../../etc/passwd`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=../../etc/passwd`
+    );
     assert.equal(res.status, 400);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.equal(data.error, 'invalid file path');
   });
 
@@ -109,9 +126,11 @@ describe('GET /workspaces/file-diff', () => {
     const testFile = path.join(os.homedir(), '.claude-remote-cli-test-tilde');
     fs.writeFileSync(testFile, 'tilde-test-content', 'utf-8');
     try {
-      const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-tilde`);
+      const res = await fetch(
+        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-tilde`
+      );
       assert.equal(res.status, 200);
-      const data = await res.json() as any;
+      const data = (await res.json()) as any;
       assert.equal(data.diff, 'tilde-test-content');
     } finally {
       fs.unlinkSync(testFile);
@@ -119,14 +138,18 @@ describe('GET /workspaces/file-diff', () => {
   });
 
   test('rejects ~/../../ etc traversal attempts', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/../../etc/passwd`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/../../etc/passwd`
+    );
     assert.equal(res.status, 400);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.equal(data.error, 'invalid file path');
   });
 
   test('returns 404 for non-existent ~/file', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-nonexistent-file`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-nonexistent-file`
+    );
     assert.equal(res.status, 404);
   });
 
@@ -134,9 +157,11 @@ describe('GET /workspaces/file-diff', () => {
     const testDir = path.join(os.homedir(), '.claude-remote-cli-test-dir');
     fs.mkdirSync(testDir, { recursive: true });
     try {
-      const res = await fetch(`${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-dir`);
+      const res = await fetch(
+        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-dir`
+      );
       assert.equal(res.status, 400);
-      const data = await res.json() as any;
+      const data = (await res.json()) as any;
       assert.equal(data.error, 'not a regular file');
     } finally {
       fs.rmdirSync(testDir);
@@ -146,9 +171,11 @@ describe('GET /workspaces/file-diff', () => {
 
 describe('GET /workspaces/default-branch', () => {
   test('returns default branch for a workspace', async () => {
-    const res = await fetch(`${baseUrl}/workspaces/default-branch?path=${encodeURIComponent(repoDir)}`);
+    const res = await fetch(
+      `${baseUrl}/workspaces/default-branch?path=${encodeURIComponent(repoDir)}`
+    );
     assert.equal(res.status, 200);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     assert.equal(typeof data.branch, 'string');
     assert.ok(data.branch.length > 0);
   });

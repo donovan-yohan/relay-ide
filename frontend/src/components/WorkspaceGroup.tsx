@@ -69,7 +69,7 @@ function GroupBody({ workspace, repos, sessions, worktrees, launching, activeRep
         </ul>
       ) : null}
       <div className="launch-row">
-        <TuiButton variant="primary" disabled={launching} onClick={(e) => { e.stopPropagation(); onLaunchSession(workspace.id); }}>
+        <TuiButton variant="primary" disabled={launching ?? false} onClick={(e) => { e.stopPropagation(); onLaunchSession(workspace.id); }}>
           {launching ? <><TuiProgress variant="braille" />&nbsp;launching...</> : '> launch workspace session'}
         </TuiButton>
       </div>
@@ -83,7 +83,7 @@ function GroupBody({ workspace, repos, sessions, worktrees, launching, activeRep
             sessionGroups={getSessionGroupsForRepo(repo, sessions)}
             inactiveWorktrees={getInactiveWorktreesForRepo(repo, sessions, worktrees)}
             isActive={activeRepoPath === repo.path && !activeSessionId}
-            activeSessionId={activeSessionId}
+            activeSessionId={activeSessionId ?? null}
             onSelectWorkspace={onSelectWorkspace}
             onSelectSession={onSelectSession}
             onNewWorktree={onNewWorktree}
@@ -91,7 +91,7 @@ function GroupBody({ workspace, repos, sessions, worktrees, launching, activeRep
             onDeleteSession={(id) => onDeleteSession?.(id)}
             onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
             orgPrs={orgPrs ?? []}
-            loadingItems={loadingItems}
+            {...(loadingItems ? { loadingItems } : {})}
           />
         ))
       )}
@@ -121,10 +121,12 @@ export function WorkspaceGroup({ workspace, repos, sessions = [], worktrees = []
         <GroupBody
           workspace={workspace} repos={repos} sessions={sessions} worktrees={worktrees}
           launching={launching} activeRepoPath={activeRepoPath} activeSessionId={activeSessionId}
-          workspaceSessions={workspaceSessions} orgPrs={orgPrs} loadingItems={loadingItems}
+          workspaceSessions={workspaceSessions} {...(orgPrs ? { orgPrs } : {})} loadingItems={loadingItems}
           onLaunchSession={onLaunchSession} onSelectSession={onSelectSession}
           onSelectWorkspace={onSelectWorkspace} onNewWorktree={onNewWorktree}
-          onOpenSettings={onOpenSettings} onDeleteSession={onDeleteSession} onDeleteWorktree={onDeleteWorktree}
+          onOpenSettings={onOpenSettings}
+          {...(onDeleteSession ? { onDeleteSession } : {})}
+          {...(onDeleteWorktree ? { onDeleteWorktree } : {})}
           onToggleCollapse={onToggleCollapse} collapsed={collapsed} loading={loading}
         />
       ) : null}

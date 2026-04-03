@@ -5,6 +5,7 @@ You are executing an interactive release workflow. Follow each step in order. At
 ## Overview
 
 This command orchestrates:
+
 1. Pre-flight checks
 2. Code review gate
 3. Documentation review
@@ -48,6 +49,7 @@ Check for evidence that this branch's changes have been reviewed:
    - If found, report "Review evidence found in commit history" and proceed.
 
 3. **No review found:** Warn the user:
+
    > No code review approval or review evidence found for this branch.
    > Proceed without review? (yes/abort)
 
@@ -94,23 +96,28 @@ Check for any remaining uncommitted changes:
 This is a destructive operation. Confirm before proceeding.
 
 1. Show the user what will be merged:
+
    ```
    git log master..<branch> --oneline
    ```
+
    Ask: "Merge these commits to master? (yes/abort)"
 
 2. If confirmed, switch to master and pull:
+
    ```
    git checkout master
    git pull origin master
    ```
 
 3. Attempt fast-forward merge first:
+
    ```
    git merge --ff-only <branch>
    ```
 
 4. If fast-forward fails, fall back to merge commit:
+
    ```
    git merge <branch>
    ```
@@ -129,12 +136,15 @@ Report: "Branch `<branch>` merged to master."
 ## Step 6/8: Version bump
 
 1. **Find the last version tag:**
+
    ```
    git describe --tags --abbrev=0 --match "v*" 2>/dev/null
    ```
+
    If no tags exist, note "No previous version tags found — this will be the first tagged release." Default suggestion will be `patch`.
 
 2. **Analyze commits since last tag** (or all commits if no tag):
+
    ```
    git log <last-tag>..HEAD --oneline
    ```
@@ -145,6 +155,7 @@ Report: "Branch `<branch>` merged to master."
    - Otherwise → suggest **patch**
 
 4. **Present to user:**
+
    > Commits since last release:
    > {commit list}
    >
@@ -161,9 +172,11 @@ Report: "Branch `<branch>` merged to master."
 This is a destructive operation. Confirm before proceeding.
 
 1. Bump version, create commit and tag:
+
    ```
    npm version <type>
    ```
+
    This updates `package.json`, creates a commit, and creates a `v{version}` tag.
 
 2. Ask the user: "Push to origin (master + tags)? (yes/abort)"
@@ -183,10 +196,12 @@ Report: "Published v{version}. CI will handle npm publish."
 1. Ask the user: "Delete the feature branch `<branch>` locally and on remote? (yes/skip)"
 
 2. If yes:
+
    ```
    git branch -d <branch>
    git push origin --delete <branch>
    ```
+
    If the remote delete fails (branch doesn't exist on remote), that's fine — just report it.
 
 3. If skipped, report "Branch `<branch>` kept."
@@ -196,6 +211,7 @@ Report: "Published v{version}. CI will handle npm publish."
 ## Done
 
 Report a summary:
+
 - Version published: v{version}
 - Branch merged: `<branch>` → `master`
 - Branch cleanup: deleted / kept

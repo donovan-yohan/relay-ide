@@ -1,7 +1,8 @@
 import type { OutputParser, ParseResult, AgentState } from './index.js';
 
 // Duplicated from utils.ts to preserve output-parsers/ module boundary
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b\[\?[0-9;]*[hlm]|\x1b\[[0-9]*[ABCDJKH]/g;
+const ANSI_RE =
+  /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b\[\?[0-9;]*[hlm]|\x1b\[[0-9]*[ABCDJKH]/g;
 
 /**
  * OpenCode output parser.
@@ -68,11 +69,11 @@ export class OpencodeOutputParser implements OutputParser {
     // Tool icons indicating active processing (after first prompt seen)
     if (
       this.hasSeenFirstPrompt &&
-      (/^\$\s/m.test(clean) ||   // bash/shell
-        /^<-\s/m.test(clean) ||  // file edit
-        /^->\s/m.test(clean) ||  // file read
-        /^\*\s/m.test(clean) ||  // glob/grep
-        /^%\s/m.test(clean))     // webfetch
+      (/^\$\s/m.test(clean) || // bash/shell
+        /^<-\s/m.test(clean) || // file edit
+        /^->\s/m.test(clean) || // file read
+        /^\*\s/m.test(clean) || // glob/grep
+        /^%\s/m.test(clean)) // webfetch
     ) {
       return 'processing';
     }

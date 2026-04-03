@@ -11,79 +11,79 @@ Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vit
 
 ## Component Map
 
-| Component | Role |
-|-----------|------|
-| `App.svelte` | Root layout: left sidebar + SplitPaneLayout (terminal | FileViewerPane | FileTreeSidebar) for session view; dashboard / PR top bar + tabs for non-session views |
-| `Sidebar.svelte` | Flat workspace list with smart search, no tabs |
-| `WorkspaceItem.svelte` | Workspace tree item: letter icon, sessions, inactive worktrees, context menus |
-| `SmartSearch.svelte` | Terminal-style typeahead search with `>` prompt |
-| `PrTopBar.svelte` | Dynamic PR/CI bar with branch switcher, target branch switcher, hover-reveal icons (copy/rename), inline rename flow, diff stats, merge conflict detection, dual action buttons (resolve+review), archive flow |
-| `SessionTabBar.svelte` | Multi-tab session management per worktree (role=tablist) |
-| `RepoDashboard.svelte` | Workspace dashboard: PRs with merge status, activity feed, CTAs |
-| `BranchSwitcher.svelte` | Worktree-aware branch dropdown: filter, create new branch, strikethrough for checked-out branches, jump-to-session links, agent-running guard |
-| `TargetBranchSwitcher.svelte` | PR base branch dropdown: remote-only branches, changes base via `gh pr edit` |
-| `FileBrowser.svelte` | Lazy-loading tree-view filesystem browser with multi-select, filter, keyboard nav |
-| `EmptyState.svelte` | Reusable empty state with icon, heading, description, CTA |
-| `Terminal.svelte` | xterm.js terminal wrapper with WebSocket connection |
-| `Toolbar.svelte` | Mobile touch toolbar for terminal interaction |
-| `MobileHeader.svelte` | Mobile header with session info |
-| `ContextMenu.svelte` | Universal "..." dropdown menu for session/item actions |
-| `PinGate.svelte` | PIN authentication screen |
-| `ImageToast.svelte` | Clipboard image paste feedback |
-| `UpdateToast.svelte` | Version update notification |
-| `AgentBadge.svelte` | Agent type indicator badge (Claude/Codex) |
-| `SearchableSelect.svelte` | Searchable dropdown filter replacing native selects |
-| `SessionItem.svelte` | Session list item with status dot, context menu, metadata row |
-| `MobileInput.svelte` | Event-intent mobile keyboard input handler |
-| `FileTreeSidebar.svelte` | Right sidebar: changes tab (git diff tree with M/A/D badges, aggregate stats), all files tab (lazy filesystem browser), checks tab (stubbed); shared diffSource via ui.svelte.ts |
-| `FileViewerPane.svelte` | File viewer pane: independent tab bar for open files, DiffViewer for changed files, CodeBlock for raw files, send-to-agent pill, diff-to-agent bridge (click line numbers to inject filepath:linenum) |
-| `SplitPaneLayout.svelte` | Resizable 3-pane layout (terminal | file viewer | right sidebar) with draggable resize handles, localStorage-persisted widths, auto-collapse file viewer when no tabs open |
-| `ChangedFiles.svelte` | Collapsible changed files panel (superseded by FileTreeSidebar in session view, retained in codebase) |
-| `DiffViewer.svelte` | Unified diff renderer with diff2html parsing and Shiki syntax highlighting |
-| `CodeBlock.svelte` | Shared Shiki syntax highlighting wrapper component |
-| `OrgDashboard.svelte` | Cross-repo PR list and tickets panel with tab navigation |
-| `TicketsPanel.svelte` | Multi-provider ticket list: GitHub Issues, Jira, Linear tabs with skeleton loading and branch link indicators |
-| `TicketCard.svelte` | Individual ticket row: status dot, provider-native metadata (labels/sprint/cycle/priority), branch link, Start Work button |
-| `StartWorkModal.svelte` | Start Work modal: ticket info, workspace selector (for Jira/Linear), branch name input, creates worktree session with ticket context |
-| `StatusMappingModal.svelte` | Map workflow transition states (in-progress, code-review, ready-for-qa) to Jira transition IDs / Linear status IDs |
-| `dialogs/DialogShell.svelte` | Shared dialog wrapper (fullscreen/compact variants, terminal aesthetic, shared button/form CSS) |
-| `dialogs/SettingRow.svelte` | Consistent setting row (name, description, action slot) |
-| `dialogs/SettingsToc.svelte` | Settings TOC drawer with IntersectionObserver scroll tracking |
-| `dialogs/integrations/GitHubIntegration.svelte` | GitHub OAuth App connection panel within SettingsDialog |
-| `dialogs/integrations/WebhookIntegration.svelte` | GitHub webhook CRUD and smee proxy panel within SettingsDialog |
-| `dialogs/integrations/JiraIntegration.svelte` | Jira connection and project config panel within SettingsDialog |
-| `dialogs/RenameWarningModal.svelte` | Rename + PR warning: push renamed branch, ignore, or undo rename |
-| `dialogs/WorkspaceEditor.svelte` | Workspace entity editor: name, repo assignment, theme color palette, delete — used in SettingsDialog workspaces section |
-| `dialogs/` | Session customization, settings, workspace, and worktree deletion dialogs |
+| Component                                        | Role                                                                                                                                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `App.svelte`                                     | Root layout: left sidebar + SplitPaneLayout (terminal                                                                                                                                                          | FileViewerPane | FileTreeSidebar) for session view; dashboard / PR top bar + tabs for non-session views                                   |
+| `Sidebar.svelte`                                 | Flat workspace list with smart search, no tabs                                                                                                                                                                 |
+| `WorkspaceItem.svelte`                           | Workspace tree item: letter icon, sessions, inactive worktrees, context menus                                                                                                                                  |
+| `SmartSearch.svelte`                             | Terminal-style typeahead search with `>` prompt                                                                                                                                                                |
+| `PrTopBar.svelte`                                | Dynamic PR/CI bar with branch switcher, target branch switcher, hover-reveal icons (copy/rename), inline rename flow, diff stats, merge conflict detection, dual action buttons (resolve+review), archive flow |
+| `SessionTabBar.svelte`                           | Multi-tab session management per worktree (role=tablist)                                                                                                                                                       |
+| `RepoDashboard.svelte`                           | Workspace dashboard: PRs with merge status, activity feed, CTAs                                                                                                                                                |
+| `BranchSwitcher.svelte`                          | Worktree-aware branch dropdown: filter, create new branch, strikethrough for checked-out branches, jump-to-session links, agent-running guard                                                                  |
+| `TargetBranchSwitcher.svelte`                    | PR base branch dropdown: remote-only branches, changes base via `gh pr edit`                                                                                                                                   |
+| `FileBrowser.svelte`                             | Lazy-loading tree-view filesystem browser with multi-select, filter, keyboard nav                                                                                                                              |
+| `EmptyState.svelte`                              | Reusable empty state with icon, heading, description, CTA                                                                                                                                                      |
+| `Terminal.svelte`                                | xterm.js terminal wrapper with WebSocket connection                                                                                                                                                            |
+| `Toolbar.svelte`                                 | Mobile touch toolbar for terminal interaction                                                                                                                                                                  |
+| `MobileHeader.svelte`                            | Mobile header with session info                                                                                                                                                                                |
+| `ContextMenu.svelte`                             | Universal "..." dropdown menu for session/item actions                                                                                                                                                         |
+| `PinGate.svelte`                                 | PIN authentication screen                                                                                                                                                                                      |
+| `ImageToast.svelte`                              | Clipboard image paste feedback                                                                                                                                                                                 |
+| `UpdateToast.svelte`                             | Version update notification                                                                                                                                                                                    |
+| `AgentBadge.svelte`                              | Agent type indicator badge (Claude/Codex)                                                                                                                                                                      |
+| `SearchableSelect.svelte`                        | Searchable dropdown filter replacing native selects                                                                                                                                                            |
+| `SessionItem.svelte`                             | Session list item with status dot, context menu, metadata row                                                                                                                                                  |
+| `MobileInput.svelte`                             | Event-intent mobile keyboard input handler                                                                                                                                                                     |
+| `FileTreeSidebar.svelte`                         | Right sidebar: changes tab (git diff tree with M/A/D badges, aggregate stats), all files tab (lazy filesystem browser), checks tab (stubbed); shared diffSource via ui.svelte.ts                               |
+| `FileViewerPane.svelte`                          | File viewer pane: independent tab bar for open files, DiffViewer for changed files, CodeBlock for raw files, send-to-agent pill, diff-to-agent bridge (click line numbers to inject filepath:linenum)          |
+| `SplitPaneLayout.svelte`                         | Resizable 3-pane layout (terminal                                                                                                                                                                              | file viewer    | right sidebar) with draggable resize handles, localStorage-persisted widths, auto-collapse file viewer when no tabs open |
+| `ChangedFiles.svelte`                            | Collapsible changed files panel (superseded by FileTreeSidebar in session view, retained in codebase)                                                                                                          |
+| `DiffViewer.svelte`                              | Unified diff renderer with diff2html parsing and Shiki syntax highlighting                                                                                                                                     |
+| `CodeBlock.svelte`                               | Shared Shiki syntax highlighting wrapper component                                                                                                                                                             |
+| `OrgDashboard.svelte`                            | Cross-repo PR list and tickets panel with tab navigation                                                                                                                                                       |
+| `TicketsPanel.svelte`                            | Multi-provider ticket list: GitHub Issues, Jira, Linear tabs with skeleton loading and branch link indicators                                                                                                  |
+| `TicketCard.svelte`                              | Individual ticket row: status dot, provider-native metadata (labels/sprint/cycle/priority), branch link, Start Work button                                                                                     |
+| `StartWorkModal.svelte`                          | Start Work modal: ticket info, workspace selector (for Jira/Linear), branch name input, creates worktree session with ticket context                                                                           |
+| `StatusMappingModal.svelte`                      | Map workflow transition states (in-progress, code-review, ready-for-qa) to Jira transition IDs / Linear status IDs                                                                                             |
+| `dialogs/DialogShell.svelte`                     | Shared dialog wrapper (fullscreen/compact variants, terminal aesthetic, shared button/form CSS)                                                                                                                |
+| `dialogs/SettingRow.svelte`                      | Consistent setting row (name, description, action slot)                                                                                                                                                        |
+| `dialogs/SettingsToc.svelte`                     | Settings TOC drawer with IntersectionObserver scroll tracking                                                                                                                                                  |
+| `dialogs/integrations/GitHubIntegration.svelte`  | GitHub OAuth App connection panel within SettingsDialog                                                                                                                                                        |
+| `dialogs/integrations/WebhookIntegration.svelte` | GitHub webhook CRUD and smee proxy panel within SettingsDialog                                                                                                                                                 |
+| `dialogs/integrations/JiraIntegration.svelte`    | Jira connection and project config panel within SettingsDialog                                                                                                                                                 |
+| `dialogs/RenameWarningModal.svelte`              | Rename + PR warning: push renamed branch, ignore, or undo rename                                                                                                                                               |
+| `dialogs/WorkspaceEditor.svelte`                 | Workspace entity editor: name, repo assignment, theme color palette, delete — used in SettingsDialog workspaces section                                                                                        |
+| `dialogs/`                                       | Session customization, settings, workspace, and worktree deletion dialogs                                                                                                                                      |
 
 ## State Management
 
 State lives in `.svelte.ts` modules under `frontend/src/lib/state/` exporting reactive state and mutation functions. Components import state — they do not own it. PR data is managed via `@tanstack/svelte-query` v6 (cache + manual refresh), not in state modules.
 
-| Module | Role |
-|--------|------|
-| `sessions.svelte.ts` | Session list, worktrees, repos (`Repo[]`), `SidebarItem[]` with display state machine, notification preferences, loading state; `getSessionsForRepo()` helper |
-| `display-state.ts` | Pure display state machine: `transitionDisplayState(current, event) → newState`, `shouldNotify(from, to)` — 6 states: `initializing \| running \| unseen-idle \| seen-idle \| permission \| inactive` |
-| `sidebar-items.ts` | Pure `buildSidebarItems()` function: merges sessions + worktrees + workspaces into `SidebarItem[]` with reconciliation |
-| `config.svelte.ts` | Global session defaults (continue, yolo, tmux, agent, notifications); shared by SettingsDialog, SessionList, NewSessionDialog |
-| `auth.svelte.ts` | Authentication state (PIN check, cookie token) |
-| `ui.svelte.ts` | UI state: active tab, left sidebar (collapse/width), filters; right sidebar (visible, collapsed, width, active tab); file viewer (open tabs, ratio); shared `fileDiffSource`/`fileDiffDefaultBranch` synced between FileTreeSidebar and FileViewerPane |
-| `shiki.ts` | Shiki highlighter singleton, custom TUI theme, language detection, lazy grammar loading |
-| `diff-summary.ts` | Rule-based smart diff summaries (v1): function detection, hunk analysis, fallback +N/-N |
+| Module               | Role                                                                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sessions.svelte.ts` | Session list, worktrees, repos (`Repo[]`), `SidebarItem[]` with display state machine, notification preferences, loading state; `getSessionsForRepo()` helper                                                                                          |
+| `display-state.ts`   | Pure display state machine: `transitionDisplayState(current, event) → newState`, `shouldNotify(from, to)` — 6 states: `initializing \| running \| unseen-idle \| seen-idle \| permission \| inactive`                                                  |
+| `sidebar-items.ts`   | Pure `buildSidebarItems()` function: merges sessions + worktrees + workspaces into `SidebarItem[]` with reconciliation                                                                                                                                 |
+| `config.svelte.ts`   | Global session defaults (continue, yolo, tmux, agent, notifications); shared by SettingsDialog, SessionList, NewSessionDialog                                                                                                                          |
+| `auth.svelte.ts`     | Authentication state (PIN check, cookie token)                                                                                                                                                                                                         |
+| `ui.svelte.ts`       | UI state: active tab, left sidebar (collapse/width), filters; right sidebar (visible, collapsed, width, active tab); file viewer (open tabs, ratio); shared `fileDiffSource`/`fileDiffDefaultBranch` synced between FileTreeSidebar and FileViewerPane |
+| `shiki.ts`           | Shiki highlighter singleton, custom TUI theme, language detection, lazy grammar loading                                                                                                                                                                |
+| `diff-summary.ts`    | Rule-based smart diff summaries (v1): function detection, hunk analysis, fallback +N/-N                                                                                                                                                                |
 
 ### Action Registry (`frontend/src/lib/actions/`)
 
 Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.svelte` via `registerGlobal()`. CommandPalette reads commands from the registry via `getAllActions()`.
 
-| Module | Role |
-|--------|------|
-| `types.ts` | `Action`, `ActionMeta`, `ActionContext`, `ActionCategory` type definitions |
-| `registry.ts` | Pure Map-based registry — `registerGlobal`, `registerContextual`, `getAction`, `getAllActions`, `getActionsByCategory`. Testable with node:test |
-| `registry.svelte.ts` | Thin Svelte 5 wrapper — `$state` version counter for reactive invalidation |
-| `definitions/session.ts` | Session actions (new-agent, new-terminal, close, kill, start-on-repo, start-on-ticket) |
-| `definitions/workspace.ts` | Workspace actions (add, new-worktree) |
-| `definitions/pr.ts` | PR/branch actions (create, push-branch, switch-branch) |
-| `definitions/settings.ts` | Settings actions (open, connect-github, toggle-yolo, check-updates) |
+| Module                     | Role                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`                 | `Action`, `ActionMeta`, `ActionContext`, `ActionCategory` type definitions                                                                      |
+| `registry.ts`              | Pure Map-based registry — `registerGlobal`, `registerContextual`, `getAction`, `getAllActions`, `getActionsByCategory`. Testable with node:test |
+| `registry.svelte.ts`       | Thin Svelte 5 wrapper — `$state` version counter for reactive invalidation                                                                      |
+| `definitions/session.ts`   | Session actions (new-agent, new-terminal, close, kill, start-on-repo, start-on-ticket)                                                          |
+| `definitions/workspace.ts` | Workspace actions (add, new-worktree)                                                                                                           |
+| `definitions/pr.ts`        | PR/branch actions (create, push-branch, switch-branch)                                                                                          |
+| `definitions/settings.ts`  | Settings actions (open, connect-github, toggle-yolo, check-updates)                                                                             |
 
 ## Conventions
 

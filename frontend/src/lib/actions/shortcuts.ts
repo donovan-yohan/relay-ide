@@ -1,4 +1,5 @@
 import type { Action, ActionContext } from './types.js';
+import { createLogger } from '../logger.js';
 
 export type ParsedShortcut = {
   mod: boolean;
@@ -6,12 +7,16 @@ export type ParsedShortcut = {
   key: string;
 };
 
+const logger = createLogger('shortcuts');
+
 export function parseShortcut(shortcutKey: string): ParsedShortcut {
   const parts = shortcutKey.toLowerCase().split('+');
   return {
     mod: parts.includes('mod'),
     shift: parts.includes('shift'),
-    key: parts.filter(p => p !== 'mod' && p !== 'shift').join('+') || shortcutKey,
+    key:
+      parts.filter((p) => p !== 'mod' && p !== 'shift').join('+') ||
+      shortcutKey,
   };
 }
 
@@ -42,7 +47,7 @@ const SHIFTED_KEY_MAP: Record<string, string> = {
 export function matchesShortcut(
   event: KeyboardEvent,
   parsed: ParsedShortcut,
-  isMac: boolean,
+  isMac: boolean
 ): boolean {
   const modPressed = isMac ? event.metaKey : event.ctrlKey;
   if (parsed.mod && !modPressed) return false;
@@ -58,11 +63,14 @@ export function matchesShortcut(
 
 export function formatShortcut(shortcutKey: string, isMac: boolean): string {
   const parts = shortcutKey.split('+');
-  const formatted = parts.map(p => {
+  const formatted = parts.map((p) => {
     switch (p.toLowerCase()) {
-      case 'mod': return isMac ? '⌘' : 'ctrl';
-      case 'shift': return isMac ? '⇧' : 'shift';
-      default: return p.length === 1 ? p.toUpperCase() : p;
+      case 'mod':
+        return isMac ? '⌘' : 'ctrl';
+      case 'shift':
+        return isMac ? '⇧' : 'shift';
+      default:
+        return p.length === 1 ? p.toUpperCase() : p;
     }
   });
   return isMac ? formatted.join('') : formatted.join('+');
@@ -75,7 +83,7 @@ export function formatShortcut(shortcutKey: string, isMac: boolean): string {
 export function setupShortcutListener(
   getActions: () => Action[],
   getContext: () => ActionContext,
-  isMac: boolean,
+  isMac: boolean
 ): () => void {
   const onKeydown = (e: KeyboardEvent) => {
     const modPressed = isMac ? e.metaKey : e.ctrlKey;
@@ -98,7 +106,7 @@ export function setupShortcutListener(
       e.preventDefault();
       const result = action.handler(ctx);
       if (result instanceof Promise) {
-        result.catch(err => console.error(`Shortcut action "${action.id}" failed:`, err));
+        result.catch((err) => logger.error(`Shortcut action "${action.id}" failed`, err));
       }
       return;
     }

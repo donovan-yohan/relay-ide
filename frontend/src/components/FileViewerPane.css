@@ -1,0 +1,327 @@
+.file-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg, #000);
+  overflow: hidden;
+}
+
+.file-tab-bar {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border, #333);
+  min-height: 32px;
+  flex-shrink: 0;
+}
+
+.tabs-scroll {
+  display: flex;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.tabs-scroll::-webkit-scrollbar {
+  height: 2px;
+}
+
+.tabs-scroll::-webkit-scrollbar-thumb {
+  background: var(--border, #333);
+}
+
+.file-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-right: 1px solid var(--border, #333);
+  margin-bottom: -1px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.file-tab:hover {
+  color: var(--text, #e0e0e0);
+  background: var(--surface-hover, #141414);
+}
+
+.file-tab.active {
+  color: var(--text, #e0e0e0);
+  border-bottom-color: var(--accent, #d97757);
+}
+
+.tab-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-badge {
+  font-size: 0.625rem;
+  color: var(--status-warning, #fbbf24);
+}
+
+.tab-close {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-sm, 0.8125rem);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--text, #e0e0e0);
+}
+
+.tab-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.diff-mode-btn {
+  background: none;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 1px 6px;
+}
+
+.diff-mode-btn:hover {
+  color: var(--text, #e0e0e0);
+  border-color: var(--text-muted, #888);
+}
+
+.close-all-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.close-all-btn:hover {
+  color: var(--text, #e0e0e0);
+}
+
+.send-to-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border, #333);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  white-space: nowrap;
+}
+
+.send-to-pill.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.send-to-label {
+  color: var(--text-muted, #888);
+}
+
+.send-to-target {
+  color: var(--text, #e0e0e0);
+}
+
+.file-content {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.diff-wrapper {
+  position: relative;
+  height: 100%;
+  overflow: auto;
+}
+
+.diff-wrapper .diff-viewer {
+  max-height: none;
+  border: none;
+}
+
+.diff-wrapper .line-number,
+.diff-wrapper .d2h-code-linenumber {
+  position: relative;
+  cursor: pointer;
+}
+
+.diff-wrapper .line-number::before,
+.diff-wrapper .d2h-code-linenumber::before {
+  content: '+';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted, #888);
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 100ms;
+  pointer-events: none;
+}
+
+.diff-wrapper .line-number:hover::before,
+.diff-wrapper .d2h-code-linenumber:hover::before {
+  opacity: 1;
+  color: var(--accent, #d97757);
+}
+
+.diff-wrapper .line-number:hover,
+.diff-wrapper .d2h-code-linenumber:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.raw-file {
+  padding: 8px;
+}
+
+.raw-file.word-wrap pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.empty-viewer,
+.loading-viewer,
+.error-viewer {
+  padding: 24px 16px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm, 0.8125rem);
+  color: var(--text-muted, #888);
+}
+
+.error-viewer {
+  color: var(--status-error, #f87171);
+}
+
+.error-text {
+  font-size: var(--font-size-xs, 0.75rem);
+  margin-bottom: 8px;
+}
+
+.error-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.retry-btn,
+.close-btn {
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+}
+
+.retry-btn:hover,
+.close-btn:hover {
+  color: var(--text, #e0e0e0);
+  border-color: var(--text-muted, #888);
+}
+
+.spinner {
+  display: inline-block;
+  animation: braille-spin 0.8s steps(8) infinite;
+}
+
+@keyframes braille-spin {
+  to { content: '⠏'; }
+}
+
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted, #888);
+  margin-right: 4px;
+}
+
+.file-tab.active .tab-icon {
+  color: var(--text, #e0e0e0);
+}
+
+.refresh-btn {
+  background: none;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 1px 6px;
+}
+
+.refresh-btn:hover {
+  color: var(--text, #e0e0e0);
+  border-color: var(--text-muted, #888);
+}
+
+.html-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sandbox-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border, #333);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-muted, #888);
+  transition: opacity 0.3s ease-out;
+}
+
+.notice-text {
+  font-family: inherit;
+}
+
+.notice-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--font-size-sm, 0.8125rem);
+  padding: 0 4px;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notice-dismiss:hover {
+  color: var(--text, #e0e0e0);
+}
+
+.html-iframe {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: white;
+}

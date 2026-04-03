@@ -21,7 +21,10 @@ test('project root from dist/ contains frontend/ directory', () => {
 
 test('project root from dist/ contains frontend/index.html', () => {
   const indexHtml = path.join(projectRoot, 'frontend', 'index.html');
-  assert.ok(fs.existsSync(indexHtml), `Expected frontend/index.html at ${indexHtml}`);
+  assert.ok(
+    fs.existsSync(indexHtml),
+    `Expected frontend/index.html at ${indexHtml}`
+  );
 });
 
 test('dist/server/ exists after compilation', () => {
@@ -39,7 +42,7 @@ test('server index.ts uses correct path depth to reach dist/frontend/', async ()
   // Static serving must go up one level from dist/server/ to dist/, then into frontend/
   assert.ok(
     indexSource.includes("path.join(__dirname, '..', 'frontend')"),
-    "express.static must resolve dist/frontend/ one level up from dist/server/"
+    'express.static must resolve dist/frontend/ one level up from dist/server/'
   );
 
   // Config fallback must also go up two levels

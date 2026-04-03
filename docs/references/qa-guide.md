@@ -51,6 +51,7 @@ PIN: `8888`
 ## QA Checklist — Settings & Webhooks Feature
 
 ### Settings Modal
+
 - [ ] Open Settings (gear icon in sidebar footer)
 - [ ] Verify full-screen modal with slide-up animation
 - [ ] Verify 4 sections visible: GENERAL, INTEGRATIONS, ADVANCED, ABOUT
@@ -66,11 +67,13 @@ PIN: `8888`
 - [ ] Select a Spotlight settings result — verify Settings opens scrolled to section
 
 ### Settings — GENERAL Section
+
 - [ ] Change Default Coding Agent — verify persists on reopen
 - [ ] Toggle Continue/YOLO/Tmux/Notifications — verify each persists
 - [ ] Verify each setting has name + description + right-aligned action
 
 ### Settings — INTEGRATIONS Section
+
 - [ ] GitHub row shows connection status (connected/not connected)
 - [ ] Click GitHub row — verify accordion expands
 - [ ] If connected: verify username shown + Disconnect button
@@ -80,6 +83,7 @@ PIN: `8888`
 - [ ] Click Jira row — verify install instructions shown
 
 ### Settings — Webhook Setup Flow (requires GitHub connected)
+
 - [ ] Click "Setup Webhooks" — verify loading state
 - [ ] Verify smee channel + secret generated
 - [ ] Verify health indicator shows connection status
@@ -90,12 +94,14 @@ PIN: `8888`
 - [ ] Confirm removal — verify return to unconfigured state
 
 ### Compact Dialogs (verify DialogShell migration)
+
 - [ ] Open Customize Session — verify fade+scale animation, terminal aesthetic
 - [ ] Open Delete Worktree — verify same animation, outlined danger button
 - [ ] Open Add Workspace — verify same animation, file browser works
 - [ ] All dialogs: verify border-radius 0, monospace buttons, backdrop click closes
 
 ### Mobile (resize browser to <600px)
+
 - [ ] Settings modal goes full-screen
 - [ ] TOC drawer works as hamburger flyout
 - [ ] Setting rows stack vertically for wide actions
@@ -103,10 +109,12 @@ PIN: `8888`
 - [ ] Compact dialogs fill width
 
 ### Responsive (between 600px–1200px)
+
 - [ ] Settings modal fills viewport
 - [ ] Content area centered with max-width 640px
 
 ### Large screens (>1200px)
+
 - [ ] Settings modal has 24px inset from edges
 
 ## Automated QA with gstack browse

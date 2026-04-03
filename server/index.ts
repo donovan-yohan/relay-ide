@@ -10,59 +10,130 @@ import { promisify } from 'node:util';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 
-import { loadConfig, saveConfig, DEFAULTS, readMeta, writeMeta, deleteMeta, ensureMetaDir, getConfigDir, resolveSessionSettings } from './config.js';
+import {
+  loadConfig,
+  saveConfig,
+  DEFAULTS,
+  readMeta,
+  writeMeta,
+  deleteMeta,
+  ensureMetaDir,
+  getConfigDir,
+  resolveSessionSettings,
+} from './config.js';
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
-import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, serializeAll, restoreFromDisk, activeTmuxSessionNames, populateMetaCache } from './sessions.js';
+import {
+  AGENT_CONTINUE_ARGS,
+  AGENT_YOLO_ARGS,
+  serializeAll,
+  restoreFromDisk,
+  activeTmuxSessionNames,
+  populateMetaCache,
+} from './sessions.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
-import { WorktreeWatcher, BranchWatcher, RefWatcher, GitWatcher, parseAllWorktrees } from './watcher.js';
+import {
+  WorktreeWatcher,
+  BranchWatcher,
+  RefWatcher,
+  GitWatcher,
+  parseAllWorktrees,
+} from './watcher.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
 import { createGhRouter } from './gh-routes.js';
 import * as push from './push.js';
-import { initAnalytics, closeAnalytics, createAnalyticsRouter, createSessionAnalyticsRouter, flushEventBuffer, computeEngagementMetrics, upsertSessionRollup, getSessionRollup, startEventBatching, stopEventBatching, runRetentionCleanup, recoverOrphanedSessions, recordRateLimitSnapshot } from './analytics.js';
-import { createWorkspaceRouter, clearPrCache, clearFilesListCache } from './workspaces.js';
+import {
+  initAnalytics,
+  closeAnalytics,
+  createAnalyticsRouter,
+  createSessionAnalyticsRouter,
+  flushEventBuffer,
+  computeEngagementMetrics,
+  upsertSessionRollup,
+  getSessionRollup,
+  startEventBatching,
+  stopEventBatching,
+  runRetentionCleanup,
+  recoverOrphanedSessions,
+  recordRateLimitSnapshot,
+} from './analytics.js';
+import {
+  createWorkspaceRouter,
+  clearPrCache,
+  clearFilesListCache,
+} from './workspaces.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
-import { createBranchLinkerRouter, invalidateBranchLinkerCache } from './branch-linker.js';
+import {
+  createBranchLinkerRouter,
+  invalidateBranchLinkerCache,
+} from './branch-linker.js';
 import { createHooksRouter } from './hooks.js';
 import { createTicketTransitionsRouter } from './ticket-transitions.js';
 import { createIntegrationJiraRouter } from './integration-jira.js';
 import { startPolling, stopPolling } from './review-poller.js';
 import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
-import { createWebhookManagerRouter, reloadSmee, startSmartPolling } from './webhook-manager.js';
+import {
+  createWebhookManagerRouter,
+  reloadSmee,
+  startSmartPolling,
+} from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
-import { createTelemetryRouter, startTelemetry, stopTelemetry, getTelemetryForSession, getAccountTelemetry } from './telemetry.js';
-import type { AgentType, AutomationSettings, Config, ContinuePolicy } from './types.js';
+import {
+  createTelemetryRouter,
+  startTelemetry,
+  stopTelemetry,
+  getTelemetryForSession,
+  getAccountTelemetry,
+} from './telemetry.js';
+import type {
+  AgentType,
+  AutomationSettings,
+  Config,
+  ContinuePolicy,
+} from './types.js';
 import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan } from './utils.js';
-import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
+import {
+  createBrowserContentRouter,
+  generateScopedToken,
+  cleanExpiredTokens,
+} from './browser-content.js';
+import { createLogger } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
+const logger = createLogger('index');
 
 // When run via CLI bin, config lives in ~/.config/claude-remote-cli/
 // When run directly (development), fall back to local config.json
-const CONFIG_PATH = process.env.CLAUDE_REMOTE_CONFIG || path.join(__dirname, '..', '..', 'config.json');
+const CONFIG_PATH =
+  process.env.CLAUDE_REMOTE_CONFIG ||
+  path.join(__dirname, '..', '..', 'config.json');
 
 const DEFAULT_GITHUB_CLIENT_ID = 'Ov23lilheF3LelYSo0bu';
 
 const VERSION_CACHE_TTL = 5 * 60 * 1000;
-const versionCache: Map<string, { latest: string; fetchedAt: number }> = new Map();
+const versionCache: Map<string, { latest: string; fetchedAt: number }> =
+  new Map();
 
 function getCurrentVersion(): string {
   const pkgPath = path.join(__dirname, '..', '..', 'package.json');
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version: string };
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as {
+    version: string;
+  };
   return pkg.version;
 }
 
-
-async function getLatestVersion(channel: 'stable' | 'nightly' = 'stable'): Promise<string | null> {
+async function getLatestVersion(
+  channel: 'stable' | 'nightly' = 'stable'
+): Promise<string | null> {
   const now = Date.now();
   const cached = versionCache.get(channel);
   if (cached && now - cached.fetchedAt < VERSION_CACHE_TTL) {
@@ -70,9 +141,11 @@ async function getLatestVersion(channel: 'stable' | 'nightly' = 'stable'): Promi
   }
   try {
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
-    const res = await fetch(`https://registry.npmjs.org/claude-remote-cli/${tag}`);
+    const res = await fetch(
+      `https://registry.npmjs.org/claude-remote-cli/${tag}`
+    );
     if (!res.ok) return null;
-    const data = await res.json() as { version?: string };
+    const data = (await res.json()) as { version?: string };
     if (!data.version) return null;
     versionCache.set(channel, { latest: data.version, fetchedAt: now });
     return data.version;
@@ -125,24 +198,31 @@ function parseTTL(ttl: string): number {
   if (!match) return 24 * 60 * 60 * 1000;
   const value = parseInt(match[1]!, 10);
   switch (match[2]!) {
-    case 's': return value * 1000;
-    case 'm': return value * 60 * 1000;
-    case 'h': return value * 60 * 60 * 1000;
-    case 'd': return value * 24 * 60 * 60 * 1000;
-    default:  return 24 * 60 * 60 * 1000;
+    case 's':
+      return value * 1000;
+    case 'm':
+      return value * 60 * 1000;
+    case 'h':
+      return value * 60 * 60 * 1000;
+    case 'd':
+      return value * 24 * 60 * 60 * 1000;
+    default:
+      return 24 * 60 * 60 * 1000;
   }
 }
 
 function promptPin(question: string): Promise<string> {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
     rl.question(question, (answer) => {
       rl.close();
       resolve(answer.trim());
     });
   });
 }
-
 
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits
@@ -161,7 +241,10 @@ async function main(): Promise<void> {
       lastGoodConfig = fresh;
       return structuredClone(fresh);
     } catch (err) {
-      console.warn('[config] Failed to load config, using last good config:', err);
+      logger.warn(
+        '[config] Failed to load config, using last good config:',
+        err
+      );
       const fallback = lastGoodConfig ?? ({ ...DEFAULTS } as Config);
       return structuredClone(fallback);
     }
@@ -179,8 +262,10 @@ async function main(): Promise<void> {
   }
 
   // CLI flag overrides
-  if (process.env.CLAUDE_REMOTE_PORT) startupConfig.port = parseInt(process.env.CLAUDE_REMOTE_PORT, 10);
-  if (process.env.CLAUDE_REMOTE_HOST) startupConfig.host = process.env.CLAUDE_REMOTE_HOST;
+  if (process.env.CLAUDE_REMOTE_PORT)
+    startupConfig.port = parseInt(process.env.CLAUDE_REMOTE_PORT, 10);
+  if (process.env.CLAUDE_REMOTE_HOST)
+    startupConfig.host = process.env.CLAUDE_REMOTE_HOST;
 
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
@@ -189,26 +274,33 @@ async function main(): Promise<void> {
   try {
     initAnalytics(configDir);
   } catch (err) {
-    console.warn('Analytics disabled: failed to initialize:', err instanceof Error ? err.message : err);
+    logger.warn(
+      'Analytics disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
   }
 
   if (startupConfig.pinHash && auth.isLegacyHash(startupConfig.pinHash)) {
-    console.log('Migrating legacy PIN hash to scrypt. You will need to set a new PIN.');
+    logger.info(
+      'Migrating legacy PIN hash to scrypt. You will need to set a new PIN.'
+    );
     delete startupConfig.pinHash;
     saveConfig(CONFIG_PATH, startupConfig);
   }
 
   if (process.env.NO_PIN === '1') {
-    console.log('PIN disabled (NO_PIN=1).');
+    logger.info('PIN disabled (NO_PIN=1).');
     startupConfig.pinHash = startupConfig.pinHash || 'disabled';
   } else if (!startupConfig.pinHash) {
     if (process.stdin.isTTY) {
       const pin = await promptPin('Set up a PIN for claude-remote-cli:');
       startupConfig.pinHash = await auth.hashPin(pin);
       saveConfig(CONFIG_PATH, startupConfig);
-      console.log('PIN set successfully.');
+      logger.info('PIN set successfully.');
     } else {
-      console.log(`No PIN configured. Open http://localhost:${startupConfig.port} to set one.`);
+      logger.info(
+        `No PIN configured. Open http://localhost:${startupConfig.port} to set one.`
+      );
     }
   }
 
@@ -220,15 +312,24 @@ async function main(): Promise<void> {
     const packageRoot = path.join(__dirname, '..', '..');
     const viteConfig = path.join(packageRoot, 'frontend', 'vite.config.ts');
     if (fs.existsSync(viteConfig)) {
-      console.log('Frontend not built — building now...');
+      logger.info('Frontend not built — building now...');
       try {
-        await execFileAsync('npx', ['vite', 'build', '--config', 'frontend/vite.config.ts'], { cwd: packageRoot });
-        console.log('Frontend build complete.');
+        await execFileAsync(
+          'npx',
+          ['vite', 'build', '--config', 'frontend/vite.config.ts'],
+          { cwd: packageRoot }
+        );
+        logger.info('Frontend build complete.');
       } catch (err) {
-        console.error('Frontend build failed:', err instanceof Error ? err.message : err);
+        logger.error(
+          'Frontend build failed:',
+          err instanceof Error ? err.message : err
+        );
       }
     } else {
-      console.warn('Frontend assets missing and source not available — UI will not be served.');
+      logger.warn(
+        'Frontend assets missing and source not available — UI will not be served.'
+      );
     }
   }
 
@@ -236,10 +337,14 @@ async function main(): Promise<void> {
 
   // Mount webhooks BEFORE global express.json() — unconditionally.
   // Secret is validated at request time (returns 401 if not configured).
-  let broadcastEventDelegate: ((type: string, data?: Record<string, unknown>) => void) | null = null;
+  let broadcastEventDelegate:
+    | ((type: string, data?: Record<string, unknown>) => void)
+    | null = null;
   const webhookRouter = createWebhookRouter({
     secret: () => loadConfig(CONFIG_PATH).github?.webhookSecret,
-    broadcastEvent: (type, data) => { broadcastEventDelegate?.(type, data); },
+    broadcastEvent: (type, data) => {
+      broadcastEventDelegate?.(type, data);
+    },
   });
   app.use('/webhooks', webhookRouter);
 
@@ -258,32 +363,52 @@ async function main(): Promise<void> {
 
   const webhookManagerRouter = createWebhookManagerRouter({
     configPath: CONFIG_PATH,
-    broadcastEvent: (type, data) => { broadcastEventDelegate?.(type, data); },
+    broadcastEvent: (type, data) => {
+      broadcastEventDelegate?.(type, data);
+    },
     requireAuth,
   });
   app.use('/webhooks/manage', webhookManagerRouter);
 
-  function boolConfigEndpoints(name: string, defaultValue: boolean, onEnable?: () => Promise<void>) {
-    app.get(`/config/${name}`, requireAuth, (_req: express.Request, res: express.Response) => {
-      res.json({ [name]: (getConfig() as unknown as Record<string, unknown>)[name] ?? defaultValue });
-    });
-    app.patch(`/config/${name}`, requireAuth, async (req: express.Request, res: express.Response) => {
-      const value = (req.body as Record<string, unknown>)[name];
-      if (typeof value !== 'boolean') {
-        res.status(400).json({ error: `${name} must be a boolean` });
-        return;
+  function boolConfigEndpoints(
+    name: string,
+    defaultValue: boolean,
+    onEnable?: () => Promise<void>
+  ) {
+    app.get(
+      `/config/${name}`,
+      requireAuth,
+      (_req: express.Request, res: express.Response) => {
+        res.json({
+          [name]:
+            (getConfig() as unknown as Record<string, unknown>)[name] ??
+            defaultValue,
+        });
       }
-      if (value && onEnable) {
-        try { await onEnable(); } catch {
-          res.status(400).json({ error: `Validation failed for ${name}` });
+    );
+    app.patch(
+      `/config/${name}`,
+      requireAuth,
+      async (req: express.Request, res: express.Response) => {
+        const value = (req.body as Record<string, unknown>)[name];
+        if (typeof value !== 'boolean') {
+          res.status(400).json({ error: `${name} must be a boolean` });
           return;
         }
+        if (value && onEnable) {
+          try {
+            await onEnable();
+          } catch {
+            res.status(400).json({ error: `Validation failed for ${name}` });
+            return;
+          }
+        }
+        const c = getConfig();
+        (c as unknown as Record<string, unknown>)[name] = value;
+        saveConfig(CONFIG_PATH, c);
+        res.json({ [name]: value });
       }
-      const c = getConfig();
-      (c as unknown as Record<string, unknown>)[name] = value;
-      saveConfig(CONFIG_PATH, c);
-      res.json({ [name]: value });
-    });
+    );
   }
 
   const watcher = new WorktreeWatcher();
@@ -292,7 +417,12 @@ async function main(): Promise<void> {
   const gitWatcher = new GitWatcher();
 
   const server = http.createServer(app);
-  const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(server, authenticatedTokens, watcher, CONFIG_PATH);
+  const { broadcastEvent, broadcastBranchChanged } = setupWebSocket(
+    server,
+    authenticatedTokens,
+    watcher,
+    CONFIG_PATH
+  );
 
   const browserScopedToken = generateScopedToken();
   process.env['CLAUDE_REMOTE_BROWSER'] = '1';
@@ -309,10 +439,16 @@ async function main(): Promise<void> {
     broadcastEvent(type, data);
   };
 
-  gitWatcher.on('files-changed', (data: { workspacePath: string; changedFiles?: string[] }) => {
-    broadcastEvent('files-changed', { workspacePath: data.workspacePath, changedFiles: data.changedFiles });
-    clearFilesListCache(data.workspacePath);
-  });
+  gitWatcher.on(
+    'files-changed',
+    (data: { workspacePath: string; changedFiles?: string[] }) => {
+      broadcastEvent('files-changed', {
+        workspacePath: data.workspacePath,
+        changedFiles: data.changedFiles,
+      });
+      clearFilesListCache(data.workspacePath);
+    }
+  );
 
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
@@ -356,9 +492,10 @@ async function main(): Promise<void> {
     }
     refWatcherRebuildPending = true;
     refWatcherNeedsRebuild = false;
-    const entries = sessions.list()
-      .filter(s => s.branchName)
-      .map(s => ({ cwdPath: s.cwd, branch: s.branchName }));
+    const entries = sessions
+      .list()
+      .filter((s) => s.branchName)
+      .map((s) => ({ cwdPath: s.cwd, branch: s.branchName }));
     refWatcher.rebuild(entries).finally(() => {
       refWatcherRebuildPending = false;
       if (refWatcherNeedsRebuild) rebuildRefWatcher();
@@ -396,7 +533,7 @@ async function main(): Promise<void> {
           watcher.rebuild(repoPaths);
           branchWatcher.rebuild(repoPaths);
         } catch (err) {
-          console.error('Failed to rebuild workspace watchers:', err);
+          logger.error('Failed to rebuild workspace watchers:', err);
         }
       });
     },
@@ -404,26 +541,41 @@ async function main(): Promise<void> {
   app.use('/workspaces', requireAuth, workspaceRouter);
 
   // Mount git (local/fast) and gh (network/slow) routers
-  app.use('/git', requireAuth, createGitRouter({
-    configPath: CONFIG_PATH,
-    getConfig,
-    getSessions: () => sessions.list().map(s => ({ id: s.id, worktreePath: s.worktreePath ?? s.repoPath })),
-  }));
+  app.use(
+    '/git',
+    requireAuth,
+    createGitRouter({
+      configPath: CONFIG_PATH,
+      getConfig,
+      getSessions: () =>
+        sessions.list().map((s) => ({
+          id: s.id,
+          worktreePath: s.worktreePath ?? s.repoPath,
+        })),
+    })
+  );
   app.use('/gh', requireAuth, createGhRouter());
 
   // Mount workspace-groups CRUD router
-  app.use('/workspace-groups', createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
-    sessions,
-    gitWatcher,
-    configPath: CONFIG_PATH,
-  }));
+  app.use(
+    '/workspace-groups',
+    createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
+      sessions,
+      gitWatcher,
+      configPath: CONFIG_PATH,
+    })
+  );
 
   // Mount GitHub integration router
-  const integrationGitHubRouter = createIntegrationGitHubRouter({ configPath: CONFIG_PATH });
+  const integrationGitHubRouter = createIntegrationGitHubRouter({
+    configPath: CONFIG_PATH,
+  });
   app.use('/integration-github', requireAuth, integrationGitHubRouter);
 
   // Mount Jira integration router
-  const integrationJiraRouter = createIntegrationJiraRouter({ configPath: CONFIG_PATH });
+  const integrationJiraRouter = createIntegrationJiraRouter({
+    configPath: CONFIG_PATH,
+  });
   app.use('/integration-jira', requireAuth, integrationJiraRouter);
 
   // Mount branch linker router
@@ -448,7 +600,11 @@ async function main(): Promise<void> {
   app.use('/branch-linker', requireAuth, branchLinkerRouter);
 
   // Mount ticket transitions router
-  const { router: ticketTransitionsRouter, transitionOnSessionCreate, checkPrTransitions } = createTicketTransitionsRouter({ configPath: CONFIG_PATH });
+  const {
+    router: ticketTransitionsRouter,
+    transitionOnSessionCreate,
+    checkPrTransitions,
+  } = createTicketTransitionsRouter({ configPath: CONFIG_PATH });
   app.use('/ticket-transitions', requireAuth, ticketTransitionsRouter);
 
   // Mount GitHub device flow auth
@@ -456,7 +612,9 @@ async function main(): Promise<void> {
   const githubAppRouter = createGitHubAppRouter({
     configPath: CONFIG_PATH,
     clientId: process.env.GITHUB_CLIENT_ID || DEFAULT_GITHUB_CLIENT_ID,
-    onConnected: () => { reloadSmee(CONFIG_PATH, startupConfig.port); },
+    onConnected: () => {
+      reloadSmee(CONFIG_PATH, startupConfig.port);
+    },
   });
   app.use('/auth/github', requireAuth, githubAppRouter);
 
@@ -476,7 +634,7 @@ async function main(): Promise<void> {
 
   // GET /api/frameworks — returns available agent frameworks with capabilities
   app.get('/api/frameworks', requireAuth, (_req, res) => {
-    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map(f => ({
+    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map((f) => ({
       id: f.id,
       displayName: f.displayName,
       command: f.command,
@@ -487,9 +645,13 @@ async function main(): Promise<void> {
   });
 
   // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(configDir, getConfig().repos ?? [], getConfig().frameworks);
+  const restoredCount = await restoreFromDisk(
+    configDir,
+    getConfig().repos ?? [],
+    getConfig().frameworks
+  );
   if (restoredCount > 0) {
-    console.log(`Restored ${restoredCount} session(s) from previous update.`);
+    logger.info(`Restored ${restoredCount} session(s) from previous update.`);
     // Start git watching for restored sessions
     for (const session of sessions.list()) {
       gitWatcher.watch(session.cwd);
@@ -506,10 +668,11 @@ async function main(): Promise<void> {
   // Run retention cleanup and orphan recovery at startup
   try {
     const recovered = recoverOrphanedSessions();
-    if (recovered > 0) console.log(`[analytics] Recovered ${recovered} orphaned session(s).`);
+    if (recovered > 0)
+      logger.info(`[analytics] Recovered ${recovered} orphaned session(s).`);
     runRetentionCleanup();
   } catch (err) {
-    console.warn('[analytics] Retention/recovery error:', err);
+    logger.warn('[analytics] Retention/recovery error:', err);
   }
 
   // Periodic rate limit snapshot recording (every 5 minutes)
@@ -531,9 +694,16 @@ async function main(): Promise<void> {
   }, 60_000);
 
   // Schedule daily retention cleanup
-  setInterval(() => {
-    try { runRetentionCleanup(); } catch { /* non-fatal */ }
-  }, 24 * 60 * 60 * 1000);
+  setInterval(
+    () => {
+      try {
+        runRetentionCleanup();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    24 * 60 * 60 * 1000
+  );
 
   // Populate session metadata cache in background (non-blocking)
   populateMetaCache().catch(() => {});
@@ -544,9 +714,15 @@ async function main(): Promise<void> {
       configPath: CONFIG_PATH,
       getWorkspacePaths: () => getConfig().repos ?? [],
       getRepoSettings: (wsPath: string) => getConfig().repoSettings?.[wsPath],
-      createSession: async (opts: { repoPath: string; worktreePath: string; branchName: string; initialPrompt?: string }) => {
+      createSession: async (opts: {
+        repoPath: string;
+        worktreePath: string;
+        branchName: string;
+        initialPrompt?: string;
+      }) => {
         const resolved = resolveSessionSettings(getConfig(), opts.repoPath, {});
-        const repoName = opts.repoPath.split('/').filter(Boolean).pop() || 'session';
+        const repoName =
+          opts.repoPath.split('/').filter(Boolean).pop() || 'session';
         const displayName = sessions.nextAgentName();
         sessions.create({
           type: 'agent',
@@ -557,12 +733,17 @@ async function main(): Promise<void> {
           cwd: opts.worktreePath,
           branchName: opts.branchName,
           displayName,
-          args: [...resolved.claudeArgs, ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : [])],
+          args: [
+            ...resolved.claudeArgs,
+            ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : []),
+          ],
           configPath: CONFIG_PATH,
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,
-          ...(opts.initialPrompt != null && { initialPrompt: opts.initialPrompt }),
+          ...(opts.initialPrompt != null && {
+            initialPrompt: opts.initialPrompt,
+          }),
         });
       },
       broadcastEvent,
@@ -581,8 +762,13 @@ async function main(): Promise<void> {
   startSmartPolling(CONFIG_PATH, broadcastEvent);
 
   // Invalidate branch linker cache on session lifecycle changes
-  sessions.onSessionCreate(() => { invalidateBranchLinkerCache(); });
-  sessions.onSessionEnd((sessionId) => { invalidateBranchLinkerCache(); lastPushState.delete(sessionId); });
+  sessions.onSessionCreate(() => {
+    invalidateBranchLinkerCache();
+  });
+  sessions.onSessionEnd((sessionId) => {
+    invalidateBranchLinkerCache();
+    lastPushState.delete(sessionId);
+  });
 
   sessions.onSessionEnd((sessionId) => {
     // 1-second grace period for in-flight hooks before computing final metrics
@@ -605,20 +791,43 @@ async function main(): Promise<void> {
       const endedAt = new Date().toISOString();
       const existingRollup = getSessionRollup(sessionId);
       const durationSeconds = existingRollup?.startedAt
-        ? Math.round((new Date(endedAt).getTime() - new Date(existingRollup.startedAt).getTime()) / 1000)
+        ? Math.round(
+            (new Date(endedAt).getTime() -
+              new Date(existingRollup.startedAt).getTime()) /
+              1000
+          )
         : undefined;
       upsertSessionRollup({
         sessionId,
         endedAt,
         ...(durationSeconds !== undefined ? { durationSeconds } : {}),
-        ...(metrics ? {
-          ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
-          ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
-          ...(metrics.humanResponseLatencyP95Ms !== null ? { humanResponseLatencyP95Ms: metrics.humanResponseLatencyP95Ms } : {}),
-          ...(metrics.agentIdlePercent !== null ? { agentIdlePercent: metrics.agentIdlePercent } : {}),
-          rateLimitEncounters: metrics.rateLimitEncounters,
-          toolUseCounts: metrics.toolUseCounts,
-        } : {}),
+        ...(metrics
+          ? {
+              ...(metrics.humanResponseLatencyAvgMs !== null
+                ? {
+                    humanResponseLatencyAvgMs:
+                      metrics.humanResponseLatencyAvgMs,
+                  }
+                : {}),
+              ...(metrics.humanResponseLatencyP50Ms !== null
+                ? {
+                    humanResponseLatencyP50Ms:
+                      metrics.humanResponseLatencyP50Ms,
+                  }
+                : {}),
+              ...(metrics.humanResponseLatencyP95Ms !== null
+                ? {
+                    humanResponseLatencyP95Ms:
+                      metrics.humanResponseLatencyP95Ms,
+                  }
+                : {}),
+              ...(metrics.agentIdlePercent !== null
+                ? { agentIdlePercent: metrics.agentIdlePercent }
+                : {}),
+              rateLimitEncounters: metrics.rateLimitEncounters,
+              toolUseCounts: metrics.toolUseCounts,
+            }
+          : {}),
       });
     }, 1000);
   });
@@ -630,11 +839,18 @@ async function main(): Promise<void> {
     lastPushState.set(sessionId, state);
 
     // Only notify on meaningful transitions: running → idle or running → permission
-    if (prevState === 'running' && (state === 'idle' || state === 'permission')) {
+    if (
+      prevState === 'running' &&
+      (state === 'idle' || state === 'permission')
+    ) {
       const session = sessions.get(sessionId);
       if (session && session.type !== 'terminal') {
         // Dedup: if hooks fired an attention notification within last 10s, skip
-        if (session.hooksActive && session.lastAttentionNotifiedAt && Date.now() - session.lastAttentionNotifiedAt < 10000) {
+        if (
+          session.hooksActive &&
+          session.lastAttentionNotifiedAt &&
+          Date.now() - session.lastAttentionNotifiedAt < 10000
+        ) {
           return;
         }
         push.notifySessionAttention(sessionId, session);
@@ -675,7 +891,9 @@ async function main(): Promise<void> {
       // Single read — check + write atomically to avoid TOCTOU race
       const freshConfig = loadConfig(CONFIG_PATH);
       if (freshConfig.pinHash) {
-        res.status(403).json({ error: 'PIN is already configured. Use CLI to reset.' });
+        res
+          .status(403)
+          .json({ error: 'PIN is already configured. Use CLI to reset.' });
         return;
       }
       freshConfig.pinHash = await auth.hashPin(pin);
@@ -696,7 +914,7 @@ async function main(): Promise<void> {
 
       res.json({ ok: true });
     } catch (err) {
-      console.error('[auth] Unhandled error in POST /auth/setup:', err);
+      logger.error('[auth] Unhandled error in POST /auth/setup:', err);
       res.status(500).json({ error: 'Failed to set PIN' });
     }
   });
@@ -721,7 +939,9 @@ async function main(): Promise<void> {
         res.status(412).json({ error: 'No PIN configured', needsSetup: true });
         return;
       }
-      const valid = process.env.NO_PIN === '1' || await auth.verifyPin(pin, authConfig.pinHash);
+      const valid =
+        process.env.NO_PIN === '1' ||
+        (await auth.verifyPin(pin, authConfig.pinHash));
       if (!valid) {
         auth.recordFailedAttempt(ip);
         res.status(401).json({ error: 'Invalid PIN' });
@@ -743,7 +963,7 @@ async function main(): Promise<void> {
 
       res.json({ ok: true });
     } catch (err) {
-      console.error('[auth] Unhandled error in POST /auth:', err);
+      logger.error('[auth] Unhandled error in POST /auth:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
@@ -761,23 +981,31 @@ async function main(): Promise<void> {
       if (!activeIds.has(sessionId)) branchRefreshCache.delete(sessionId);
     }
 
-    await Promise.all(allSessions.map(async (s) => {
-      if (s.type !== 'agent') return;
-      if (!s.cwd) return;
-      const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
-      if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;
-      const cwd = s.cwd;
-      branchRefreshCache.set(s.id, now);
-      try {
-        const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
-        const liveBranch = stdout.trim();
-        if (liveBranch && liveBranch !== s.branchName) {
-          s.branchName = liveBranch;
-          const raw = sessions.get(s.id);
-          if (raw) raw.branchName = liveBranch;
+    await Promise.all(
+      allSessions.map(async (s) => {
+        if (s.type !== 'agent') return;
+        if (!s.cwd) return;
+        const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
+        if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;
+        const cwd = s.cwd;
+        branchRefreshCache.set(s.id, now);
+        try {
+          const { stdout } = await execFileAsync(
+            'git',
+            ['rev-parse', '--abbrev-ref', 'HEAD'],
+            { cwd }
+          );
+          const liveBranch = stdout.trim();
+          if (liveBranch && liveBranch !== s.branchName) {
+            s.branchName = liveBranch;
+            const raw = sessions.get(s.id);
+            if (raw) raw.branchName = liveBranch;
+          }
+        } catch {
+          /* non-fatal */
         }
-      } catch { /* non-fatal */ }
-    }));
+      })
+    );
     res.json(allSessions);
   });
 
@@ -794,20 +1022,27 @@ async function main(): Promise<void> {
       }
     }
     // Enrich with current branch (best-effort, parallel)
-    const enriched = await Promise.all(repos.map(async (repo) => {
-      try {
-        const { stdout } = await execFileAsync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: repo.path });
-        return { ...repo, defaultBranch: stdout.trim() };
-      } catch {
-        return { ...repo, defaultBranch: null };
-      }
-    }));
+    const enriched = await Promise.all(
+      repos.map(async (repo) => {
+        try {
+          const { stdout } = await execFileAsync(
+            'git',
+            ['symbolic-ref', '--short', 'HEAD'],
+            { cwd: repo.path }
+          );
+          return { ...repo, defaultBranch: stdout.trim() };
+        } catch {
+          return { ...repo, defaultBranch: null };
+        }
+      })
+    );
     res.json(enriched);
   });
 
   // GET /worktrees/status — pre-cleanup checks for a worktree
   app.get('/worktrees/status', requireAuth, async (req, res) => {
-    const worktreePath = typeof req.query.path === 'string' ? req.query.path : undefined;
+    const worktreePath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!worktreePath) {
       res.status(400).json({ error: 'path query parameter is required' });
       return;
@@ -823,20 +1058,29 @@ async function main(): Promise<void> {
         for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
           const fullPath = path.join(rootDir, entry.name);
-          if (fs.existsSync(path.join(fullPath, '.git'))) allRepos.push(fullPath);
+          if (fs.existsSync(path.join(fullPath, '.git')))
+            allRepos.push(fullPath);
         }
-      } catch { /* skip unreadable rootDirs */ }
+      } catch {
+        /* skip unreadable rootDirs */
+      }
     }
     let isKnownWorktree = false;
     for (const repoPath of [...new Set(allRepos)]) {
       try {
-        const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath, timeout: 5000 });
+        const { stdout } = await execFileAsync(
+          'git',
+          ['worktree', 'list', '--porcelain'],
+          { cwd: repoPath, timeout: 5000 }
+        );
         const allWt = parseAllWorktrees(stdout, repoPath);
-        if (allWt.some(wt => wt.path === resolved && !wt.isMain)) {
+        if (allWt.some((wt) => wt.path === resolved && !wt.isMain)) {
           isKnownWorktree = true;
           break;
         }
-      } catch { /* skip repos where git fails */ }
+      } catch {
+        /* skip repos where git fails */
+      }
     }
     if (!isKnownWorktree) {
       res.status(400).json({ error: 'Path is not a recognized git worktree' });
@@ -851,16 +1095,23 @@ async function main(): Promise<void> {
     // Check for active sessions in this worktree
     const allSessions = sessions.list();
     const activeSessions = allSessions
-      .filter(s => s.worktreePath === resolved || s.cwd === resolved)
-      .map(s => s.id);
+      .filter((s) => s.worktreePath === resolved || s.cwd === resolved)
+      .map((s) => s.id);
 
     // Check for uncommitted changes — default to true (safe: assume changes exist if check fails)
     let hasUncommittedChanges = true;
     try {
-      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: resolved, timeout: 5000 });
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: resolved,
+        timeout: 5000,
+      });
       hasUncommittedChanges = stdout.trim().length > 0;
     } catch (err) {
-      console.warn('[worktrees/status] git status failed for', resolved, err instanceof Error ? err.message : err);
+      logger.warn(
+        '[worktrees/status] git status failed for',
+        resolved,
+        err instanceof Error ? err.message : err
+      );
     }
 
     res.json({ activeSessions, hasUncommittedChanges });
@@ -874,8 +1125,13 @@ async function main(): Promise<void> {
   // PATCH /config/defaultAgent — set default coding agent
   app.patch('/config/defaultAgent', requireAuth, (req, res) => {
     const { defaultAgent } = req.body as { defaultAgent?: string };
-    if (!defaultAgent || (defaultAgent !== 'claude' && defaultAgent !== 'codex')) {
-      res.status(400).json({ error: 'defaultAgent must be "claude" or "codex"' });
+    if (
+      !defaultAgent ||
+      (defaultAgent !== 'claude' && defaultAgent !== 'codex')
+    ) {
+      res
+        .status(400)
+        .json({ error: 'defaultAgent must be "claude" or "codex"' });
       return;
     }
     const c = getConfig();
@@ -893,50 +1149,61 @@ async function main(): Promise<void> {
   boolConfigEndpoints('autoProvision', false);
 
   // GET /config/automations — get automation settings
-  app.get('/config/automations', requireAuth, (_req: express.Request, res: express.Response) => {
-    res.json(getConfig().automations ?? {});
-  });
+  app.get(
+    '/config/automations',
+    requireAuth,
+    (_req: express.Request, res: express.Response) => {
+      res.json(getConfig().automations ?? {});
+    }
+  );
 
   // PATCH /config/automations — update automation settings and start/stop poller
-  app.patch('/config/automations', requireAuth, (req: express.Request, res: express.Response) => {
-    const body = req.body as Partial<AutomationSettings>;
-    const c = getConfig();
-    const prev = c.automations ?? {};
-    const next: AutomationSettings = { ...prev };
+  app.patch(
+    '/config/automations',
+    requireAuth,
+    (req: express.Request, res: express.Response) => {
+      const body = req.body as Partial<AutomationSettings>;
+      const c = getConfig();
+      const prev = c.automations ?? {};
+      const next: AutomationSettings = { ...prev };
 
-    if (typeof body.autoCheckoutReviewRequests === 'boolean') {
-      next.autoCheckoutReviewRequests = body.autoCheckoutReviewRequests;
-    }
-    if (typeof body.autoReviewOnCheckout === 'boolean') {
-      next.autoReviewOnCheckout = body.autoReviewOnCheckout;
-    }
-    if (typeof body.pollIntervalMs === 'number' && body.pollIntervalMs >= 60000) {
-      next.pollIntervalMs = body.pollIntervalMs;
-    }
-
-    // Enforce: auto-review requires auto-checkout
-    if (!next.autoCheckoutReviewRequests) {
-      next.autoReviewOnCheckout = false;
-    }
-
-    c.automations = next;
-    try {
-      saveConfig(CONFIG_PATH, c);
-    } catch (err) {
-      console.error('[config] Failed to save automation settings:', err);
-      res.status(500).json({ error: 'Failed to save settings' });
-      return;
-    }
-
-    // Start or stop poller based on new setting
-    void stopPolling().then(() => {
-      if (next.autoCheckoutReviewRequests) {
-        startPolling(buildPollerDeps());
+      if (typeof body.autoCheckoutReviewRequests === 'boolean') {
+        next.autoCheckoutReviewRequests = body.autoCheckoutReviewRequests;
       }
-    });
+      if (typeof body.autoReviewOnCheckout === 'boolean') {
+        next.autoReviewOnCheckout = body.autoReviewOnCheckout;
+      }
+      if (
+        typeof body.pollIntervalMs === 'number' &&
+        body.pollIntervalMs >= 60000
+      ) {
+        next.pollIntervalMs = body.pollIntervalMs;
+      }
 
-    res.json(next);
-  });
+      // Enforce: auto-review requires auto-checkout
+      if (!next.autoCheckoutReviewRequests) {
+        next.autoReviewOnCheckout = false;
+      }
+
+      c.automations = next;
+      try {
+        saveConfig(CONFIG_PATH, c);
+      } catch (err) {
+        logger.error('[config] Failed to save automation settings:', err);
+        res.status(500).json({ error: 'Failed to save settings' });
+        return;
+      }
+
+      // Start or stop poller based on new setting
+      void stopPolling().then(() => {
+        if (next.autoCheckoutReviewRequests) {
+          startPolling(buildPollerDeps());
+        }
+      });
+
+      res.json(next);
+    }
+  );
 
   // GET /config/workspace-groups — return workspace group configuration
   app.get('/config/workspace-groups', requireAuth, (_req, res) => {
@@ -944,62 +1211,98 @@ async function main(): Promise<void> {
   });
 
   // GET /presets — return all filter presets (built-in merged with user presets)
-  app.get('/presets', requireAuth, (_req: express.Request, res: express.Response) => {
-    res.json(getConfig().filterPresets ?? []);
-  });
+  app.get(
+    '/presets',
+    requireAuth,
+    (_req: express.Request, res: express.Response) => {
+      res.json(getConfig().filterPresets ?? []);
+    }
+  );
 
   // POST /presets — add a new user filter preset
-  app.post('/presets', requireAuth, (req: express.Request, res: express.Response) => {
-    const { name, filters, sort } = req.body as { name?: string; filters?: unknown; sort?: unknown };
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      res.status(400).json({ error: 'name is required' });
-      return;
-    }
-    if (sort && typeof sort === 'object') {
-      const dir = (sort as any).direction;
-      if (dir !== 'asc' && dir !== 'desc') {
-        res.status(400).json({ error: 'sort.direction must be "asc" or "desc"' });
+  app.post(
+    '/presets',
+    requireAuth,
+    (req: express.Request, res: express.Response) => {
+      const { name, filters, sort } = req.body as {
+        name?: string;
+        filters?: unknown;
+        sort?: unknown;
+      };
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        res.status(400).json({ error: 'name is required' });
         return;
       }
-      const col = (sort as any).column;
-      if (!col || typeof col !== 'string' || !col.trim()) {
-        res.status(400).json({ error: 'sort.column must be a non-empty string' });
+      if (sort && typeof sort === 'object') {
+        const dir = (sort as any).direction;
+        if (dir !== 'asc' && dir !== 'desc') {
+          res
+            .status(400)
+            .json({ error: 'sort.direction must be "asc" or "desc"' });
+          return;
+        }
+        const col = (sort as any).column;
+        if (!col || typeof col !== 'string' || !col.trim()) {
+          res
+            .status(400)
+            .json({ error: 'sort.column must be a non-empty string' });
+          return;
+        }
+      }
+      const trimmedName = name.trim();
+      const c = getConfig();
+      const existingPresets = c.filterPresets ?? [];
+      const duplicate = existingPresets.some(
+        (p) => p.name.toLowerCase() === trimmedName.toLowerCase()
+      );
+      if (duplicate) {
+        res
+          .status(409)
+          .json({ error: `A preset named "${trimmedName}" already exists` });
         return;
       }
+      const preset = {
+        name: trimmedName,
+        filters:
+          (filters as {
+            status?: string[];
+            repo?: string[];
+            role?: string[];
+          }) ?? {},
+        sort: (sort as { column: string; direction: 'asc' | 'desc' }) ?? {
+          column: 'role',
+          direction: 'asc' as const,
+        },
+      };
+      if (!c.filterPresets) c.filterPresets = [];
+      c.filterPresets.push(preset);
+      saveConfig(CONFIG_PATH, c);
+      res.json(preset);
     }
-    const trimmedName = name.trim();
-    const c = getConfig();
-    const existingPresets = c.filterPresets ?? [];
-    const duplicate = existingPresets.some((p) => p.name.toLowerCase() === trimmedName.toLowerCase());
-    if (duplicate) {
-      res.status(409).json({ error: `A preset named "${trimmedName}" already exists` });
-      return;
-    }
-    const preset = { name: trimmedName, filters: (filters as { status?: string[]; repo?: string[]; role?: string[] }) ?? {}, sort: (sort as { column: string; direction: 'asc' | 'desc' }) ?? { column: 'role', direction: 'asc' as const } };
-    if (!c.filterPresets) c.filterPresets = [];
-    c.filterPresets.push(preset);
-    saveConfig(CONFIG_PATH, c);
-    res.json(preset);
-  });
+  );
 
   // DELETE /presets/:name — remove a user preset (built-in presets cannot be deleted)
-  app.delete('/presets/:name', requireAuth, (req: express.Request, res: express.Response) => {
-    const name = decodeURIComponent(req.params['name'] ?? '');
-    const c = getConfig();
-    const presets = c.filterPresets ?? [];
-    const target = presets.find((p) => p.name === name);
-    if (!target) {
-      res.status(404).json({ error: 'Preset not found' });
-      return;
+  app.delete(
+    '/presets/:name',
+    requireAuth,
+    (req: express.Request, res: express.Response) => {
+      const name = decodeURIComponent(req.params['name'] ?? '');
+      const c = getConfig();
+      const presets = c.filterPresets ?? [];
+      const target = presets.find((p) => p.name === name);
+      if (!target) {
+        res.status(404).json({ error: 'Preset not found' });
+        return;
+      }
+      if (target.builtIn) {
+        res.status(400).json({ error: 'Cannot delete a built-in preset' });
+        return;
+      }
+      c.filterPresets = presets.filter((p) => p.name !== name);
+      saveConfig(CONFIG_PATH, c);
+      res.json({ ok: true });
     }
-    if (target.builtIn) {
-      res.status(400).json({ error: 'Cannot delete a built-in preset' });
-      return;
-    }
-    c.filterPresets = presets.filter((p) => p.name !== name);
-    saveConfig(CONFIG_PATH, c);
-    res.json({ ok: true });
-  });
+  );
 
   // GET /push/vapid-key
   app.get('/push/vapid-key', requireAuth, (_req, res) => {
@@ -1013,7 +1316,13 @@ async function main(): Promise<void> {
 
   // POST /push/subscribe
   app.post('/push/subscribe', requireAuth, (req, res) => {
-    const { subscription, sessionIds } = req.body as { subscription?: { endpoint: string; keys: { p256dh: string; auth: string } }; sessionIds?: string[] };
+    const { subscription, sessionIds } = req.body as {
+      subscription?: {
+        endpoint: string;
+        keys: { p256dh: string; auth: string };
+      };
+      sessionIds?: string[];
+    };
     if (!subscription?.endpoint) {
       res.status(400).json({ error: 'subscription required' });
       return;
@@ -1047,23 +1356,40 @@ async function main(): Promise<void> {
 
     // Validate the path is a real git worktree (not the main worktree)
     try {
-      const { stdout: wtListOut } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
+      const { stdout: wtListOut } = await execFileAsync(
+        'git',
+        ['worktree', 'list', '--porcelain'],
+        { cwd: repoPath }
+      );
       const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
-      const isKnownWorktree = allWorktrees.some(wt => wt.path === path.resolve(worktreePath) && !wt.isMain);
+      const isKnownWorktree = allWorktrees.some(
+        (wt) => wt.path === path.resolve(worktreePath) && !wt.isMain
+      );
       if (!isKnownWorktree) {
         // Check if the path simply doesn't exist anymore (already cleaned up)
         if (!fs.existsSync(worktreePath)) {
-          res.status(404).json({ error: 'Worktree not found — may have been already cleaned up' });
+          res.status(404).json({
+            error: 'Worktree not found — may have been already cleaned up',
+          });
           return;
         }
-        res.status(400).json({ error: 'Path is not a recognized git worktree' });
+        res
+          .status(400)
+          .json({ error: 'Path is not a recognized git worktree' });
         return;
       }
     } catch (err) {
-      console.warn('[worktrees/delete] git worktree list failed for', repoPath, err instanceof Error ? err.message : err);
+      logger.warn(
+        '[worktrees/delete] git worktree list failed for',
+        repoPath,
+        err instanceof Error ? err.message : err
+      );
       // Allow force-delete when git is broken (user explicitly wants cleanup)
       if (!force) {
-        res.status(500).json({ error: 'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.' });
+        res.status(500).json({
+          error:
+            'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.',
+        });
         return;
       }
     }
@@ -1071,13 +1397,15 @@ async function main(): Promise<void> {
     // Check for active sessions in this worktree
     const allSessions = sessions.list();
     const resolvedPath = path.resolve(worktreePath);
-    const worktreeSessions = allSessions.filter(s => s.worktreePath === resolvedPath || s.cwd === resolvedPath);
+    const worktreeSessions = allSessions.filter(
+      (s) => s.worktreePath === resolvedPath || s.cwd === resolvedPath
+    );
 
     if (worktreeSessions.length > 0 && !force) {
       // Non-force delete with active sessions: reject to prevent killing PTYs unexpectedly
       res.status(409).json({
         error: 'active_sessions',
-        sessionIds: worktreeSessions.map(s => s.id),
+        sessionIds: worktreeSessions.map((s) => s.id),
       });
       return;
     }
@@ -1088,14 +1416,18 @@ async function main(): Promise<void> {
         try {
           sessions.kill(s.id);
         } catch (err) {
-          console.warn(`[worktrees] failed to kill session ${s.id}:`, err instanceof Error ? err.message : err);
+          logger.warn(
+            `[worktrees] failed to kill session ${s.id}:`,
+            err instanceof Error ? err.message : err
+          );
         }
       }
     }
 
     // Derive branch name from metadata or worktree directory name
     const meta = readMeta(CONFIG_PATH, worktreePath);
-    const branchName = (meta && meta.branchName) || worktreePath.split('/').pop() || '';
+    const branchName =
+      (meta && meta.branchName) || worktreePath.split('/').pop() || '';
 
     try {
       // Use --force when the user has confirmed via the cascade dialog
@@ -1110,7 +1442,12 @@ async function main(): Promise<void> {
         try {
           fs.rmSync(worktreePath, { recursive: true });
         } catch (rmErr: unknown) {
-          res.status(500).json({ error: execErrorMessage(rmErr, 'Failed to remove worktree directory') });
+          res.status(500).json({
+            error: execErrorMessage(
+              rmErr,
+              'Failed to remove worktree directory'
+            ),
+          });
           return;
         }
       }
@@ -1127,7 +1464,9 @@ async function main(): Promise<void> {
     if (branchName) {
       try {
         // Delete the branch
-        await execFileAsync('git', ['branch', '-D', branchName], { cwd: repoPath });
+        await execFileAsync('git', ['branch', '-D', branchName], {
+          cwd: repoPath,
+        });
       } catch (_) {
         // Non-fatal: branch may not exist or may be checked out elsewhere
       }
@@ -1145,9 +1484,22 @@ async function main(): Promise<void> {
   // POST /sessions — unified endpoint for agent and terminal sessions
   app.post('/sessions', requireAuth, async (req, res) => {
     const {
-      repoPath, worktreePath, type = 'agent', agent, yolo, useTmux,
-      claudeArgs, cols, rows, branchName: requestBranchName, needsBranchRename, branchRenamePrompt,
-      initialPrompt, continue: explicitContinue, continuePolicy: explicitContinuePolicy, ticketContext,
+      repoPath,
+      worktreePath,
+      type = 'agent',
+      agent,
+      yolo,
+      useTmux,
+      claudeArgs,
+      cols,
+      rows,
+      branchName: requestBranchName,
+      needsBranchRename,
+      branchRenamePrompt,
+      initialPrompt,
+      continue: explicitContinue,
+      continuePolicy: explicitContinuePolicy,
+      ticketContext,
     } = req.body as {
       repoPath?: string;
       worktreePath?: string | null;
@@ -1164,7 +1516,15 @@ async function main(): Promise<void> {
       initialPrompt?: string;
       continue?: boolean;
       continuePolicy?: ContinuePolicy;
-      ticketContext?: { ticketId: string; title: string; description?: string; url: string; source: 'github' | 'jira'; repoPath: string; repoName: string };
+      ticketContext?: {
+        ticketId: string;
+        title: string;
+        description?: string;
+        url: string;
+        source: 'github' | 'jira';
+        repoPath: string;
+        repoName: string;
+      };
     };
 
     if (!repoPath) {
@@ -1190,8 +1550,20 @@ async function main(): Promise<void> {
       return;
     }
 
-    const safeCols = typeof cols === 'number' && Number.isFinite(cols) && cols >= 1 && cols <= 500 ? Math.round(cols) : undefined;
-    const safeRows = typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 && rows <= 200 ? Math.round(rows) : undefined;
+    const safeCols =
+      typeof cols === 'number' &&
+      Number.isFinite(cols) &&
+      cols >= 1 &&
+      cols <= 500
+        ? Math.round(cols)
+        : undefined;
+    const safeRows =
+      typeof rows === 'number' &&
+      Number.isFinite(rows) &&
+      rows >= 1 &&
+      rows <= 200
+        ? Math.round(rows)
+        : undefined;
 
     const name = repoPath.split('/').filter(Boolean).pop() || 'session';
 
@@ -1220,18 +1592,29 @@ async function main(): Promise<void> {
 
     // Agent session
     // Map legacy boolean continue → continuePolicy for backward compat
-    const policyOverride = explicitContinuePolicy
-      ?? (explicitContinue !== undefined ? (explicitContinue ? 'always' as const : 'never' as const) : undefined);
+    const policyOverride =
+      explicitContinuePolicy ??
+      (explicitContinue !== undefined
+        ? explicitContinue
+          ? ('always' as const)
+          : ('never' as const)
+        : undefined);
     // For new worktrees, always use 'never' regardless of config
-    const effectivePolicy = needsBranchRename ? 'never' as const : policyOverride;
+    const effectivePolicy = needsBranchRename
+      ? ('never' as const)
+      : policyOverride;
 
     const resolved = resolveSessionSettings(freshConfig, repoPath, {
-      agent, yolo, useTmux, claudeArgs, continuePolicy: effectivePolicy,
+      agent,
+      yolo,
+      useTmux,
+      claudeArgs,
+      continuePolicy: effectivePolicy,
     });
     const resolvedAgent = resolved.agent;
 
     const baseArgs = [
-      ...(resolved.claudeArgs),
+      ...resolved.claudeArgs,
       ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
     ];
 
@@ -1245,28 +1628,52 @@ async function main(): Promise<void> {
     // Ticket context validation and initial prompt
     let computedInitialPrompt: string | undefined = initialPrompt;
     if (ticketContext) {
-      if (typeof ticketContext.ticketId !== 'string' || typeof ticketContext.title !== 'string' || typeof ticketContext.url !== 'string') {
-        res.status(400).json({ error: 'ticketContext requires string ticketId, title, and url' });
+      if (
+        typeof ticketContext.ticketId !== 'string' ||
+        typeof ticketContext.title !== 'string' ||
+        typeof ticketContext.url !== 'string'
+      ) {
+        res.status(400).json({
+          error: 'ticketContext requires string ticketId, title, and url',
+        });
         return;
       }
-      if (ticketContext.source !== 'github' && ticketContext.source !== 'jira') {
-        res.status(400).json({ error: "ticketContext.source must be 'github' or 'jira'" });
+      if (
+        ticketContext.source !== 'github' &&
+        ticketContext.source !== 'jira'
+      ) {
+        res
+          .status(400)
+          .json({ error: "ticketContext.source must be 'github' or 'jira'" });
         return;
       }
       if (!configuredWorkspaces.includes(ticketContext.repoPath)) {
-        res.status(400).json({ error: 'ticketContext.repoPath is not a configured workspace' });
+        res.status(400).json({
+          error: 'ticketContext.repoPath is not a configured workspace',
+        });
         return;
       }
-      if (ticketContext.source === 'github' && !/^GH-\d+$/.test(ticketContext.ticketId)) {
-        res.status(400).json({ error: 'ticketContext.ticketId for github must match GH-<number>' });
+      if (
+        ticketContext.source === 'github' &&
+        !/^GH-\d+$/.test(ticketContext.ticketId)
+      ) {
+        res.status(400).json({
+          error: 'ticketContext.ticketId for github must match GH-<number>',
+        });
         return;
       }
-      if (ticketContext.source === 'jira' && !/^[A-Z][A-Z0-9]*-\d+$/.test(ticketContext.ticketId)) {
-        res.status(400).json({ error: 'ticketContext.ticketId must match <PROJECT>-<number>' });
+      if (
+        ticketContext.source === 'jira' &&
+        !/^[A-Z][A-Z0-9]*-\d+$/.test(ticketContext.ticketId)
+      ) {
+        res.status(400).json({
+          error: 'ticketContext.ticketId must match <PROJECT>-<number>',
+        });
         return;
       }
       const settings = freshConfig.repoSettings?.[ticketContext.repoPath];
-      const template = settings?.promptStartWork ??
+      const template =
+        settings?.promptStartWork ??
         'You are working on ticket {ticketId}: {title}\n\nTicket URL: {ticketUrl}\n\nPlease start by understanding the issue and proposing an approach.';
       computedInitialPrompt = template
         .replace(/\{ticketId\}/g, ticketContext.ticketId)
@@ -1280,7 +1687,9 @@ async function main(): Promise<void> {
     // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
     // UI displayName stays as "Agent N" — tmux name and UI name are independent
     // generateTmuxSessionName handles all sanitization and truncation
-    const tmuxDisplayName = requestBranchName ? `${name}-${requestBranchName}` : name;
+    const tmuxDisplayName = requestBranchName
+      ? `${name}-${requestBranchName}`
+      : name;
 
     const session = sessions.create({
       type: 'agent',
@@ -1289,7 +1698,7 @@ async function main(): Promise<void> {
       repoPath,
       worktreePath: worktreePath ?? null,
       cwd,
-      branchName: requestBranchName || '',  // caller may provide; branch watcher enriches later
+      branchName: requestBranchName || '', // caller may provide; branch watcher enriches later
       displayName,
       tmuxDisplayName,
       args,
@@ -1302,7 +1711,9 @@ async function main(): Promise<void> {
       ...(safeRows != null && { rows: safeRows }),
       needsBranchRename: needsBranchRename ?? false,
       branchRenamePrompt: branchRenamePrompt ?? '',
-      ...(computedInitialPrompt != null && { initialPrompt: computedInitialPrompt }),
+      ...(computedInitialPrompt != null && {
+        initialPrompt: computedInitialPrompt,
+      }),
     });
 
     // Write worktree metadata if in a worktree
@@ -1319,7 +1730,7 @@ async function main(): Promise<void> {
 
     if (ticketContext) {
       transitionOnSessionCreate(ticketContext).catch((err: unknown) => {
-        console.error('[index] transition on session create failed:', err);
+        logger.error('[index] transition on session create failed:', err);
       });
     }
 
@@ -1352,7 +1763,11 @@ async function main(): Promise<void> {
       const updated = sessions.updateDisplayName(id, displayName);
       const session = sessions.get(id);
       if (session) {
-        writeMeta(CONFIG_PATH, { worktreePath: session.cwd, displayName, lastActivity: session.lastActivity });
+        writeMeta(CONFIG_PATH, {
+          worktreePath: session.cwd,
+          displayName,
+          lastActivity: session.lastActivity,
+        });
       }
       res.json(updated);
     } catch (_) {
@@ -1361,7 +1776,12 @@ async function main(): Promise<void> {
   });
 
   // POST /sessions/:id/image — upload clipboard image, proxy to system clipboard
-  const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+  const ALLOWED_IMAGE_TYPES = [
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  ];
   app.post('/sessions/:id/image', requireAuth, async (req, res) => {
     const { data, mimeType } = req.body as { data?: string; mimeType?: string };
     if (!data || !mimeType) {
@@ -1402,7 +1822,8 @@ async function main(): Promise<void> {
 
       res.json({ path: filePath, clipboardSet });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Image upload failed';
+      const message =
+        err instanceof Error ? err.message : 'Image upload failed';
       res.status(500).json({ error: message });
     }
   });
@@ -1445,7 +1866,9 @@ async function main(): Promise<void> {
   app.put('/update-channel', requireAuth, (req, res) => {
     const { channel } = req.body as { channel?: string };
     if (channel !== 'stable' && channel !== 'nightly') {
-      res.status(400).json({ error: 'Invalid channel. Must be "stable" or "nightly".' });
+      res
+        .status(400)
+        .json({ error: 'Invalid channel. Must be "stable" or "nightly".' });
       return;
     }
     startupConfig.updateChannel = channel;
@@ -1465,21 +1888,33 @@ async function main(): Promise<void> {
   // Clean up orphaned tmux sessions from previous runs (skip any adopted by restore)
   // Skip in dev mode — another server instance owns these sessions
   if (process.env.NO_PIN === '1') {
-    console.log('Dev mode: skipping orphaned tmux session cleanup.');
-  } else try {
-    const adoptedNames = activeTmuxSessionNames();
-    const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}']);
-    const tmuxPrefix = getTmuxPrefix();
-    const orphanedSessions = stdout.trim().split('\n').filter(name => name.startsWith(tmuxPrefix) && !adoptedNames.has(name));
-    for (const name of orphanedSessions) {
-      execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
+    logger.info('Dev mode: skipping orphaned tmux session cleanup.');
+  } else
+    try {
+      const adoptedNames = activeTmuxSessionNames();
+      const { stdout } = await execFileAsync('tmux', [
+        'list-sessions',
+        '-F',
+        '#{session_name}',
+      ]);
+      const tmuxPrefix = getTmuxPrefix();
+      const orphanedSessions = stdout
+        .trim()
+        .split('\n')
+        .filter(
+          (name) => name.startsWith(tmuxPrefix) && !adoptedNames.has(name)
+        );
+      for (const name of orphanedSessions) {
+        execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
+      }
+      if (orphanedSessions.length > 0) {
+        logger.info(
+          `Cleaned up ${orphanedSessions.length} orphaned tmux session(s).`
+        );
+      }
+    } catch {
+      // tmux not installed or no sessions — ignore
     }
-    if (orphanedSessions.length > 0) {
-      console.log(`Cleaned up ${orphanedSessions.length} orphaned tmux session(s).`);
-    }
-  } catch {
-    // tmux not installed or no sessions — ignore
-  }
 
   async function gracefulShutdown() {
     await stopPolling();
@@ -1494,7 +1929,11 @@ async function main(): Promise<void> {
     serializeAll(configDir);
     // Kill all active sessions (PTY + tmux)
     for (const s of sessions.list()) {
-      try { sessions.kill(s.id); } catch { /* already exiting */ }
+      try {
+        sessions.kill(s.id);
+      } catch {
+        /* already exiting */
+      }
     }
     // Brief delay to let async tmux kill-session calls fire
     setTimeout(() => process.exit(0), 200);
@@ -1504,8 +1943,10 @@ async function main(): Promise<void> {
 
   server.listen(startupConfig.port, startupConfig.host, () => {
     const addr = server.address() as import('node:net').AddressInfo;
-    console.log(`claude-remote-cli listening on ${startupConfig.host}:${addr.port}`);
+    logger.info(
+      `claude-remote-cli listening on ${startupConfig.host}:${addr.port}`
+    );
   });
 }
 
-main().catch(console.error);
+main().catch((err) => logger.error('Unhandled fatal error:', err));

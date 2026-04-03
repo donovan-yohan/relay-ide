@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "npx vigiles CLAUDE.md"
+      }
+    ]
+  }
+}

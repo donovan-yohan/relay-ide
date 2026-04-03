@@ -26,7 +26,10 @@ function makeConfigPath(): string {
  * Applies the same validation logic used in POST /presets (server/index.ts).
  * Returns an error string or null if valid.
  */
-function validatePreset(body: { name?: unknown; sort?: unknown }): string | null {
+function validatePreset(body: {
+  name?: unknown;
+  sort?: unknown;
+}): string | null {
   const { name, sort } = body;
   if (!name || typeof name !== 'string' || !name.trim()) {
     return 'name is required';
@@ -44,7 +47,10 @@ function validatePreset(body: { name?: unknown; sort?: unknown }): string | null
  * Applies the same deletion guard used in DELETE /presets/:name (server/index.ts).
  * Returns an error string or null if deletion is allowed.
  */
-function validateDeletion(presets: FilterPreset[], name: string): string | null {
+function validateDeletion(
+  presets: FilterPreset[],
+  name: string
+): string | null {
   const target = presets.find((p) => p.name === name);
   if (!target) {
     return 'Preset not found';
@@ -84,12 +90,19 @@ after(() => {
 
 describe('DEFAULT_PRESETS', () => {
   test('contains at least two built-in presets', () => {
-    assert.ok(DEFAULT_PRESETS.length >= 2, 'should have at least 2 default presets');
+    assert.ok(
+      DEFAULT_PRESETS.length >= 2,
+      'should have at least 2 default presets'
+    );
   });
 
   test('all default presets are marked builtIn', () => {
     for (const preset of DEFAULT_PRESETS) {
-      assert.equal(preset.builtIn, true, `preset "${preset.name}" should be builtIn`);
+      assert.equal(
+        preset.builtIn,
+        true,
+        `preset "${preset.name}" should be builtIn`
+      );
     }
   });
 
@@ -97,7 +110,7 @@ describe('DEFAULT_PRESETS', () => {
     for (const preset of DEFAULT_PRESETS) {
       assert.ok(
         preset.sort.direction === 'asc' || preset.sort.direction === 'desc',
-        `preset "${preset.name}" has invalid sort.direction: ${preset.sort.direction}`,
+        `preset "${preset.name}" has invalid sort.direction: ${preset.sort.direction}`
       );
     }
   });
@@ -118,9 +131,17 @@ describe('loadConfig preset initialisation', () => {
   test('preserves user-supplied filterPresets from config file', () => {
     const configPath = makeConfigPath();
     const userPresets: FilterPreset[] = [
-      { name: 'My Preset', filters: {}, sort: { column: 'age', direction: 'asc' } },
+      {
+        name: 'My Preset',
+        filters: {},
+        sort: { column: 'age', direction: 'asc' },
+      },
     ];
-    fs.writeFileSync(configPath, JSON.stringify({ port: 3456, filterPresets: userPresets }), 'utf8');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ port: 3456, filterPresets: userPresets }),
+      'utf8'
+    );
     const config = loadConfig(configPath);
     assert.deepEqual(config.filterPresets, userPresets);
   });
@@ -132,7 +153,10 @@ describe('loadConfig preset initialisation', () => {
 
 describe('preset creation validation', () => {
   test('rejects missing name', () => {
-    assert.equal(validatePreset({ sort: { direction: 'asc' } }), 'name is required');
+    assert.equal(
+      validatePreset({ sort: { direction: 'asc' } }),
+      'name is required'
+    );
   });
 
   test('rejects empty string name', () => {
@@ -146,16 +170,22 @@ describe('preset creation validation', () => {
   test('rejects invalid sort.direction', () => {
     assert.equal(
       validatePreset({ name: 'Valid Name', sort: { direction: 'invalid' } }),
-      'sort.direction must be "asc" or "desc"',
+      'sort.direction must be "asc" or "desc"'
     );
   });
 
   test('accepts valid name with asc direction', () => {
-    assert.equal(validatePreset({ name: 'My Preset', sort: { direction: 'asc' } }), null);
+    assert.equal(
+      validatePreset({ name: 'My Preset', sort: { direction: 'asc' } }),
+      null
+    );
   });
 
   test('accepts valid name with desc direction', () => {
-    assert.equal(validatePreset({ name: 'My Preset', sort: { direction: 'desc' } }), null);
+    assert.equal(
+      validatePreset({ name: 'My Preset', sort: { direction: 'desc' } }),
+      null
+    );
   });
 
   test('accepts valid name with no sort (sort is optional)', () => {
@@ -170,7 +200,10 @@ describe('preset creation validation', () => {
 describe('preset storage', () => {
   test('new preset is persisted via saveConfig and reloaded by loadConfig', () => {
     const configPath = makeConfigPath();
-    saveConfig(configPath, { ...DEFAULTS, filterPresets: [...DEFAULT_PRESETS] });
+    saveConfig(configPath, {
+      ...DEFAULTS,
+      filterPresets: [...DEFAULT_PRESETS],
+    });
 
     const config = loadConfig(configPath);
     const newPreset: FilterPreset = {
@@ -191,16 +224,24 @@ describe('preset storage', () => {
     // The server endpoint does not currently check for duplicate names,
     // so both entries will be stored. This test documents that behaviour.
     const configPath = makeConfigPath();
-    saveConfig(configPath, { ...DEFAULTS, filterPresets: [...DEFAULT_PRESETS] });
+    saveConfig(configPath, {
+      ...DEFAULTS,
+      filterPresets: [...DEFAULT_PRESETS],
+    });
 
     const config = loadConfig(configPath);
-    const preset: FilterPreset = { name: 'Dupe', filters: {}, sort: { column: 'role', direction: 'asc' } };
+    const preset: FilterPreset = {
+      name: 'Dupe',
+      filters: {},
+      sort: { column: 'role', direction: 'asc' },
+    };
     config.filterPresets!.push(preset);
     config.filterPresets!.push(preset);
     saveConfig(configPath, config);
 
     const reloaded = loadConfig(configPath);
-    const matches = reloaded.filterPresets?.filter((p) => p.name === 'Dupe') ?? [];
+    const matches =
+      reloaded.filterPresets?.filter((p) => p.name === 'Dupe') ?? [];
     assert.equal(matches.length, 2, 'both duplicate entries should be stored');
   });
 });
@@ -212,22 +253,44 @@ describe('preset storage', () => {
 describe('preset deletion validation', () => {
   test('rejects deletion of a built-in preset', () => {
     const presets: FilterPreset[] = [
-      { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
+      {
+        name: 'All PRs',
+        builtIn: true,
+        filters: {},
+        sort: { column: 'age', direction: 'desc' },
+      },
     ];
-    assert.equal(validateDeletion(presets, 'All PRs'), 'Cannot delete a built-in preset');
+    assert.equal(
+      validateDeletion(presets, 'All PRs'),
+      'Cannot delete a built-in preset'
+    );
   });
 
   test('rejects deletion of a preset that does not exist', () => {
     const presets: FilterPreset[] = [
-      { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
+      {
+        name: 'All PRs',
+        builtIn: true,
+        filters: {},
+        sort: { column: 'age', direction: 'desc' },
+      },
     ];
     assert.equal(validateDeletion(presets, 'Nonexistent'), 'Preset not found');
   });
 
   test('allows deletion of a user-created preset', () => {
     const presets: FilterPreset[] = [
-      { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
-      { name: 'My Custom', filters: {}, sort: { column: 'role', direction: 'asc' } },
+      {
+        name: 'All PRs',
+        builtIn: true,
+        filters: {},
+        sort: { column: 'age', direction: 'desc' },
+      },
+      {
+        name: 'My Custom',
+        filters: {},
+        sort: { column: 'role', direction: 'asc' },
+      },
     ];
     assert.equal(validateDeletion(presets, 'My Custom'), null);
   });
@@ -236,12 +299,18 @@ describe('preset deletion validation', () => {
     const configPath = makeConfigPath();
     const initialPresets: FilterPreset[] = [
       ...DEFAULT_PRESETS,
-      { name: 'To Delete', filters: {}, sort: { column: 'role', direction: 'asc' } },
+      {
+        name: 'To Delete',
+        filters: {},
+        sort: { column: 'role', direction: 'asc' },
+      },
     ];
     saveConfig(configPath, { ...DEFAULTS, filterPresets: initialPresets });
 
     const config = loadConfig(configPath);
-    config.filterPresets = config.filterPresets!.filter((p) => p.name !== 'To Delete');
+    config.filterPresets = config.filterPresets!.filter(
+      (p) => p.name !== 'To Delete'
+    );
     saveConfig(configPath, config);
 
     const reloaded = loadConfig(configPath);
@@ -249,13 +318,13 @@ describe('preset deletion validation', () => {
     assert.equal(
       remaining.find((p) => p.name === 'To Delete'),
       undefined,
-      'deleted preset should not exist',
+      'deleted preset should not exist'
     );
     // Built-in presets survive
     for (const dp of DEFAULT_PRESETS) {
       assert.ok(
         remaining.find((p) => p.name === dp.name),
-        `built-in preset "${dp.name}" should still be present`,
+        `built-in preset "${dp.name}" should still be present`
       );
     }
   });

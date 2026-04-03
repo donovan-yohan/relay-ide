@@ -42,14 +42,6 @@ function syncBuffer(inputEl: HTMLInputElement, dbg: (m: string) => void) {
   }
 }
 
-function useDebugPanel() {
-  const [debugVisible, setDebugVisible] = useState(false);
-  const [debugLines, setDebugLines] = useState<string[]>([]);
-  const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
-  const [mirrorValue, setMirrorValue] = useState('');
-  const [mirrorCursor, setMirrorCursor] = useState(0);
-  return { debugVisible, setDebugVisible, debugLines, setDebugLines, devtoolsEnabled, setDevtoolsEnabled, mirrorValue, setMirrorValue, mirrorCursor, setMirrorCursor };
-}
 
 function useSendBuffer(dbg: (m: string) => void) {
   const sendBufferRef = useRef('');
@@ -79,7 +71,7 @@ function useMobileEffects(
   inputRef: React.RefObject<HTMLInputElement | null>,
   isComposingRef: React.MutableRefObject<boolean>,
   dbg: (m: string) => void,
-  dp: ReturnType<typeof useDebugPanel>
+  dp: DebugPanelState
 ) {
   useEffect(() => {
     dp.setDevtoolsEnabled(localStorage.getItem('devtools-enabled') === 'true');
@@ -112,16 +104,6 @@ function useMobileEffects(
   }, [inputRef, isComposingRef, dbg, dp]);
 }
 
-function buildDbg(inputRef: React.RefObject<HTMLInputElement | null>, dp: ReturnType<typeof useDebugPanel>) {
-  return (msg: string) => {
-    const t = performance.now().toFixed(1);
-    dp.setDebugLines((prev) => [...prev.slice(-199), '[' + t + '] ' + msg]);
-    if (inputRef.current) {
-      dp.setMirrorValue(inputRef.current.value);
-      dp.setMirrorCursor(inputRef.current.selectionStart ?? 0);
-    }
-  };
-}
 
 function useKeydownHandler(
   inputRef: React.RefObject<HTMLInputElement | null>,
@@ -177,8 +159,21 @@ function useInputHandler(
   };
 }
 
+interface DebugPanelState {
+  debugVisible: boolean;
+  setDebugVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  debugLines: string[];
+  setDebugLines: React.Dispatch<React.SetStateAction<string[]>>;
+  devtoolsEnabled: boolean;
+  setDevtoolsEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+  mirrorValue: string;
+  setMirrorValue: React.Dispatch<React.SetStateAction<string>>;
+  mirrorCursor: number;
+  setMirrorCursor: React.Dispatch<React.SetStateAction<number>>;
+}
+
 interface DebugPanelProps {
-  dp: ReturnType<typeof useDebugPanel>;
+  dp: DebugPanelState;
   onToggle: (e: React.MouseEvent) => void;
   onCopy: (e: React.MouseEvent) => void;
   onClear: (e: React.MouseEvent) => void;
@@ -202,15 +197,27 @@ function DebugPanel({ dp, onToggle, onCopy, onClear }: DebugPanelProps) {
   );
 }
 
-export const MobileInput = forwardRef<MobileInputHandle, Record<string, never>>(
+export const MobileInput = forwardRef<MobileInputHandle, object>(
   function MobileInput(_props, ref) {
     const inputRef = useRef<HTMLInputElement>(null);
     const capturedIntentRef = useRef<CapturedIntent | null>(null);
     const isComposingRef = useRef(false);
     const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const dp = useDebugPanel();
+    const [debugVisible, setDebugVisible] = useState(false);
+    const [debugLines, setDebugLines] = useState<string[]>([]);
+    const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
+    const [mirrorValue, setMirrorValue] = useState('');
+    const [mirrorCursor, setMirrorCursor] = useState(0);
+    const dp = { debugVisible, setDebugVisible, debugLines, setDebugLines, devtoolsEnabled, setDevtoolsEnabled, mirrorValue, setMirrorValue, mirrorCursor, setMirrorCursor };
 
-    const dbg = useCallback(buildDbg(inputRef, dp), [inputRef, dp]); // deps are stable refs/state setters
+    const dbg = useCallback((msg: string) => {
+      const t = performance.now().toFixed(1);
+      setDebugLines((prev) => [...prev.slice(-199), '[' + t + '] ' + msg]);
+      if (inputRef.current) {
+        setMirrorValue(inputRef.current.value);
+        setMirrorCursor(inputRef.current.selectionStart ?? 0);
+      }
+    }, [inputRef, setDebugLines, setMirrorValue, setMirrorCursor]); // deps are stable refs/state setters
     const { scheduleSend, flushSendBuffer } = useSendBuffer(dbg);
 
     const flushComposedText = useCallback(() => {
@@ -240,7 +247,7 @@ export const MobileInput = forwardRef<MobileInputHandle, Record<string, never>>(
     };
     const handleBlur = () => { dbg('BLUR'); if (isComposingRef.current) isComposingRef.current = false; };
 
-    const handleBeforeInput = (e: React.FormEvent<HTMLInputElement>) => {
+    const handleBeforeInput = (e: React.SyntheticEvent<HTMLInputElement>) => {
       const ie = e as unknown as InputEvent;
       const inputEl = inputRef.current;
       if (!inputEl) return;
@@ -255,7 +262,7 @@ export const MobileInput = forwardRef<MobileInputHandle, Record<string, never>>(
     const handleInput = useInputHandler(inputRef, isComposingRef, capturedIntentRef, clearTimerRef, scheduleSend, dbg);
     const handleKeydown = useKeydownHandler(inputRef, isComposingRef, flushComposedText, dbg);
 
-    const handleFormSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    const handleFormSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
       e.preventDefault();
       const inputEl = inputRef.current;
       if (!inputEl) return;

@@ -1,23 +1,59 @@
 import type { Terminal } from '@xterm/xterm';
 import type { BackendDisplayState } from './state/display-state.js';
-import type { AccountTelemetry, CurrentActivity, SessionTelemetry } from './types.js';
+import type {
+  AccountTelemetry,
+  CurrentActivity,
+  SessionTelemetry,
+} from './types.js';
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 // Discriminated union for WebSocket event messages.
 // Each event type declares only its required fields.
 export type EventMessage =
   | { type: 'worktrees-changed' }
-  | { type: 'session-backend-state-changed'; sessionId: string; state: BackendDisplayState; permissionType?: 'approval' | 'question' }
-  | { type: 'session-renamed'; sessionId: string; branchName: string; displayName: string }
-  | { type: 'session-branch-changed'; sessionId: string; branch: string; cwdPath?: string }
-  | { type: 'session-ended'; sessionId?: string; cwd?: string; branchName?: string }
+  | {
+      type: 'session-backend-state-changed';
+      sessionId: string;
+      state: BackendDisplayState;
+      permissionType?: 'approval' | 'question';
+    }
+  | {
+      type: 'session-renamed';
+      sessionId: string;
+      branchName: string;
+      displayName: string;
+    }
+  | {
+      type: 'session-branch-changed';
+      sessionId: string;
+      branch: string;
+      cwdPath?: string;
+    }
+  | {
+      type: 'session-ended';
+      sessionId?: string;
+      cwd?: string;
+      branchName?: string;
+    }
   | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
   | { type: 'pr-updated' }
   | { type: 'ci-updated' }
   | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
-  | { type: 'session-activity-changed'; sessionId: string; timestamp?: string; currentActivity?: CurrentActivity | null }
-  | { type: 'session-telemetry'; sessionId: string; data: SessionTelemetry | Record<string, unknown> }
-  | { type: 'account-telemetry'; data: AccountTelemetry | Record<string, unknown> | null }
+  | {
+      type: 'session-activity-changed';
+      sessionId: string;
+      timestamp?: string;
+      currentActivity?: CurrentActivity | null;
+    }
+  | {
+      type: 'session-telemetry';
+      sessionId: string;
+      data: SessionTelemetry | Record<string, unknown>;
+    }
+  | {
+      type: 'account-telemetry';
+      data: AccountTelemetry | Record<string, unknown> | null;
+    }
   | { type: 'browser-tab-opened'; filePath: string; token: string }
   | { type: 'browser-tab-refreshed'; filePath: string };
 
@@ -48,14 +84,21 @@ let lastPtyOnSessionEnd: (() => void) | null = null;
 let lastEventOnMessage: EventCallback | null = null;
 let lastEventOnOpen: EventOpenCallback | null = null;
 
-const PING_INTERVAL = 30_000;   // 30s heartbeat
-const PONG_TIMEOUT = 5_000;     // 5s to respond
+const PING_INTERVAL = 30_000; // 30s heartbeat
+const PONG_TIMEOUT = 5_000; // 5s to respond
 const PING_MSG = '{"type":"ping"}';
 const PONG_MSG = '{"type":"pong"}';
 
-export function connectEventSocket(onMessage: EventCallback, onOpen?: EventOpenCallback): void {
+export function connectEventSocket(
+  onMessage: EventCallback,
+  onOpen?: EventOpenCallback
+): void {
   // Null onclose before close to prevent old socket from scheduling a reconnect
-  if (eventWs) { eventWs.onclose = null; eventWs.close(); eventWs = null; }
+  if (eventWs) {
+    eventWs.onclose = null;
+    eventWs.close();
+    eventWs = null;
+  }
   lastEventOnMessage = onMessage;
   lastEventOnOpen = onOpen ?? null;
   clearEventPing();
@@ -74,7 +117,11 @@ export function connectEventSocket(onMessage: EventCallback, onOpen?: EventOpenC
     if (eventPongPending) clearEventPongTimeout();
     // Handle pong responses silently
     if (str === PONG_MSG) return;
-    try { onMessage(JSON.parse(str)); } catch { /* ignore parse errors */ }
+    try {
+      onMessage(JSON.parse(str));
+    } catch {
+      /* ignore parse errors */
+    }
   };
 
   eventWs.onclose = () => {
@@ -89,9 +136,12 @@ export function connectPtySocket(
   sessionId: string,
   term: Terminal,
   onResize: () => void,
-  onSessionEnd: () => void,
+  onSessionEnd: () => void
 ): void {
-  if (ptyReconnectTimer) { clearTimeout(ptyReconnectTimer); ptyReconnectTimer = null; }
+  if (ptyReconnectTimer) {
+    clearTimeout(ptyReconnectTimer);
+    ptyReconnectTimer = null;
+  }
   ptyReconnectAttempt = 0;
   clearPtyPing();
 
@@ -111,7 +161,11 @@ export function connectPtySocket(
     pendingPtySocket = null;
   }
 
-  if (ptyWs) { ptyWs.onclose = null; ptyWs.close(); ptyWs = null; }
+  if (ptyWs) {
+    ptyWs.onclose = null;
+    ptyWs.close();
+    ptyWs = null;
+  }
 
   const url = wsProtocol + '//' + location.host + '/ws/' + sessionId;
   const socket = new WebSocket(url);
@@ -158,10 +212,14 @@ function scheduleReconnect(
   sessionId: string,
   term: Terminal,
   onResize: () => void,
-  onSessionEnd: () => void,
+  onSessionEnd: () => void
 ): void {
   if (ptyReconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-    term.write('\r\n[Gave up reconnecting after ' + MAX_RECONNECT_ATTEMPTS + ' attempts]\r\n');
+    term.write(
+      '\r\n[Gave up reconnecting after ' +
+        MAX_RECONNECT_ATTEMPTS +
+        ' attempts]\r\n'
+    );
     return;
   }
   const delay = Math.min(1000 * 2 ** ptyReconnectAttempt, 10000);
@@ -171,8 +229,8 @@ function scheduleReconnect(
     ptyReconnectTimer = null;
     try {
       const res = await fetch('/sessions');
-      const sessionList = await res.json() as Array<{ id: string }>;
-      if (!sessionList.some(s => s.id === sessionId)) {
+      const sessionList = (await res.json()) as Array<{ id: string }>;
+      if (!sessionList.some((s) => s.id === sessionId)) {
         term.write('\r\n[Session ended]\r\n');
         onSessionEnd();
         return;
@@ -197,7 +255,10 @@ function sendPtyPing(): void {
     forceReconnectPty();
     return;
   }
-  if (ptyPongTimeout) { clearTimeout(ptyPongTimeout); ptyPongTimeout = null; }
+  if (ptyPongTimeout) {
+    clearTimeout(ptyPongTimeout);
+    ptyPongTimeout = null;
+  }
   ptyPongTimeout = setTimeout(() => {
     ptyPongPending = false;
     forceReconnectPty();
@@ -209,21 +270,42 @@ function startPtyPing(): void {
 }
 
 function clearPtyPing(): void {
-  if (ptyPingTimer) { clearInterval(ptyPingTimer); ptyPingTimer = null; }
+  if (ptyPingTimer) {
+    clearInterval(ptyPingTimer);
+    ptyPingTimer = null;
+  }
   clearPtyPongTimeout();
 }
 
 function clearPtyPongTimeout(): void {
   ptyPongPending = false;
-  if (ptyPongTimeout) { clearTimeout(ptyPongTimeout); ptyPongTimeout = null; }
+  if (ptyPongTimeout) {
+    clearTimeout(ptyPongTimeout);
+    ptyPongTimeout = null;
+  }
 }
 
 function forceReconnectPty(): void {
   clearPtyPing();
-  if (ptyWs) { ptyWs.onclose = null; ptyWs.close(); ptyWs = null; }
-  if (lastPtySessionId && lastPtyTerm && lastPtyOnResize && lastPtyOnSessionEnd) {
-    if (ptyReconnectAttempt === 0) lastPtyTerm.write('\r\n[Reconnecting...]\r\n');
-    scheduleReconnect(lastPtySessionId, lastPtyTerm, lastPtyOnResize, lastPtyOnSessionEnd);
+  if (ptyWs) {
+    ptyWs.onclose = null;
+    ptyWs.close();
+    ptyWs = null;
+  }
+  if (
+    lastPtySessionId &&
+    lastPtyTerm &&
+    lastPtyOnResize &&
+    lastPtyOnSessionEnd
+  ) {
+    if (ptyReconnectAttempt === 0)
+      lastPtyTerm.write('\r\n[Reconnecting...]\r\n');
+    scheduleReconnect(
+      lastPtySessionId,
+      lastPtyTerm,
+      lastPtyOnResize,
+      lastPtyOnSessionEnd
+    );
   }
 }
 
@@ -237,7 +319,10 @@ function sendEventPing(): void {
     forceReconnectEvent();
     return;
   }
-  if (eventPongTimeout) { clearTimeout(eventPongTimeout); eventPongTimeout = null; }
+  if (eventPongTimeout) {
+    clearTimeout(eventPongTimeout);
+    eventPongTimeout = null;
+  }
   eventPongTimeout = setTimeout(() => {
     eventPongPending = false;
     forceReconnectEvent();
@@ -246,8 +331,13 @@ function sendEventPing(): void {
 
 function forceReconnectEvent(): void {
   clearEventPing();
-  if (eventWs) { eventWs.onclose = null; eventWs.close(); eventWs = null; }
-  if (lastEventOnMessage) connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
+  if (eventWs) {
+    eventWs.onclose = null;
+    eventWs.close();
+    eventWs = null;
+  }
+  if (lastEventOnMessage)
+    connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
 }
 
 function startEventPing(): void {
@@ -255,13 +345,19 @@ function startEventPing(): void {
 }
 
 function clearEventPing(): void {
-  if (eventPingTimer) { clearInterval(eventPingTimer); eventPingTimer = null; }
+  if (eventPingTimer) {
+    clearInterval(eventPingTimer);
+    eventPingTimer = null;
+  }
   clearEventPongTimeout();
 }
 
 function clearEventPongTimeout(): void {
   eventPongPending = false;
-  if (eventPongTimeout) { clearTimeout(eventPongTimeout); eventPongTimeout = null; }
+  if (eventPongTimeout) {
+    clearTimeout(eventPongTimeout);
+    eventPongTimeout = null;
+  }
 }
 
 // ── Visibility change — proactive reconnection on mobile wake ────────────────

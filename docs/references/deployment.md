@@ -4,10 +4,10 @@
 
 ## Branch Model
 
-| Branch | Purpose | Protection | npm tag |
-|--------|---------|------------|---------|
-| `master` | Stable releases only | PR required, no force push, no deletion, admin bypass | `latest` |
-| `nightly` | Active development (default branch) | None | `nightly` |
+| Branch    | Purpose                             | Protection                                            | npm tag   |
+| --------- | ----------------------------------- | ----------------------------------------------------- | --------- |
+| `master`  | Stable releases only                | PR required, no force push, no deletion, admin bypass | `latest`  |
+| `nightly` | Active development (default branch) | None                                                  | `nightly` |
 
 PRs target `nightly` by default. Stable releases are promoted from `nightly` to `master` via PR.
 

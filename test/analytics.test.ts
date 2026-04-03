@@ -4,12 +4,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { initAnalytics, closeAnalytics, trackEvent, getDbSize, getDbPath } from '../server/analytics.js';
+import {
+  initAnalytics,
+  closeAnalytics,
+  trackEvent,
+  getDbSize,
+  getDbPath,
+} from '../server/analytics.js';
 
 let tmpDir!: string;
 
 before(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-remote-cli-analytics-test-'));
+  tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'claude-remote-cli-analytics-test-')
+  );
 });
 
 afterEach(() => {
@@ -30,8 +38,13 @@ test('initAnalytics creates database and schema', () => {
   assert.ok(fs.existsSync(dbPath), 'DB file should exist');
 
   const db = new Database(dbPath, { readonly: true });
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
-  assert.ok(tables.some(t => t.name === 'events'), 'events table should exist');
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+    .all() as { name: string }[];
+  assert.ok(
+    tables.some((t) => t.name === 'events'),
+    'events table should exist'
+  );
   db.close();
 });
 
@@ -48,14 +61,20 @@ test('trackEvent inserts a row', () => {
   });
 
   const db = new Database(getDbPath(tmpDir), { readonly: true });
-  const rows = db.prepare('SELECT * FROM events').all() as Record<string, unknown>[];
+  const rows = db.prepare('SELECT * FROM events').all() as Record<
+    string,
+    unknown
+  >[];
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.category, 'session');
   assert.equal(rows[0]!.action, 'created');
   assert.equal(rows[0]!.target, 'session-123');
   assert.equal(rows[0]!.device, 'desktop');
 
-  const props = JSON.parse(rows[0]!.properties as string) as Record<string, unknown>;
+  const props = JSON.parse(rows[0]!.properties as string) as Record<
+    string,
+    unknown
+  >;
   assert.equal(props.workspace, '/proj');
   assert.equal(props.agent, 'claude');
   db.close();
@@ -67,7 +86,10 @@ test('trackEvent handles optional fields as null', () => {
   trackEvent({ category: 'ui', action: 'click' });
 
   const db = new Database(getDbPath(tmpDir), { readonly: true });
-  const rows = db.prepare('SELECT * FROM events').all() as Record<string, unknown>[];
+  const rows = db.prepare('SELECT * FROM events').all() as Record<
+    string,
+    unknown
+  >[];
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.target, null);
   assert.equal(rows[0]!.properties, null);
@@ -124,18 +146,20 @@ test('POST /analytics/events batch inserts events', async () => {
   app.use(express.json());
   app.use('/analytics', createAnalyticsRouter(tmpDir));
   const server = http.createServer(app);
-  await new Promise<void>(resolve => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as { port: number }).port;
 
   const res = await fetch(`http://localhost:${port}/analytics/events`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ events: [
-      { category: 'ui', action: 'click', target: 'test-btn' },
-      { category: 'session', action: 'created' },
-    ]}),
+    body: JSON.stringify({
+      events: [
+        { category: 'ui', action: 'click', target: 'test-btn' },
+        { category: 'session', action: 'created' },
+      ],
+    }),
   });
-  const data = await res.json() as { ok: boolean; count: number };
+  const data = (await res.json()) as { ok: boolean; count: number };
   assert.equal(data.ok, true);
   assert.equal(data.count, 2);
 
@@ -152,11 +176,11 @@ test('GET /analytics/size returns bytes', async () => {
   const app = express();
   app.use('/analytics', createAnalyticsRouter(tmpDir));
   const server = http.createServer(app);
-  await new Promise<void>(resolve => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as { port: number }).port;
 
   const res = await fetch(`http://localhost:${port}/analytics/size`);
-  const data = await res.json() as { bytes: number };
+  const data = (await res.json()) as { bytes: number };
   assert.ok(data.bytes > 0);
 
   server.close();
@@ -170,11 +194,13 @@ test('DELETE /analytics/events clears all events', async () => {
   app.use(express.json());
   app.use('/analytics', createAnalyticsRouter(tmpDir));
   const server = http.createServer(app);
-  await new Promise<void>(resolve => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as { port: number }).port;
 
-  const res = await fetch(`http://localhost:${port}/analytics/events`, { method: 'DELETE' });
-  const data = await res.json() as { ok: boolean };
+  const res = await fetch(`http://localhost:${port}/analytics/events`, {
+    method: 'DELETE',
+  });
+  const data = (await res.json()) as { ok: boolean };
   assert.equal(data.ok, true);
 
   const db = new Database(getDbPath(tmpDir), { readonly: true });

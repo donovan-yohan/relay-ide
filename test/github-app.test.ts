@@ -6,7 +6,10 @@ import path from 'node:path';
 import express from 'express';
 import type { Server } from 'node:http';
 
-import { createGitHubAppRouter, _getDeviceFlowState } from '../server/github-app.js';
+import {
+  createGitHubAppRouter,
+  _getDeviceFlowState,
+} from '../server/github-app.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -23,13 +26,16 @@ type MockResponse =
  * Each call to a matching URL pops the next response from the front of that sequence.
  */
 function createMockFetch(
-  urlMap: Record<string, MockResponse[]>,
+  urlMap: Record<string, MockResponse[]>
 ): typeof globalThis.fetch {
   const queues = new Map<string, MockResponse[]>(
-    Object.entries(urlMap).map(([k, v]) => [k, [...v]]),
+    Object.entries(urlMap).map(([k, v]) => [k, [...v]])
   );
 
-  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+  return async (
+    input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     const url =
       typeof input === 'string'
         ? input
@@ -41,7 +47,9 @@ function createMockFetch(
       if (url.includes(pattern)) {
         const next = queue.shift();
         if (!next) {
-          throw new Error(`Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`);
+          throw new Error(
+            `Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`
+          );
         }
         if ('throw' in next) {
           throw next.throw;
@@ -94,15 +102,26 @@ function stopServer(srv: Server | undefined): Promise<void> {
 }
 
 /** Waits for a promise to resolve within timeoutMs, otherwise rejects. */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`Timeout after ${timeoutMs}ms waiting for: ${label}`)),
-      timeoutMs,
+      () =>
+        reject(new Error(`Timeout after ${timeoutMs}ms waiting for: ${label}`)),
+      timeoutMs
     );
     promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e: unknown) => { clearTimeout(timer); reject(e); },
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      }
     );
   });
 }
@@ -119,16 +138,18 @@ function delay(ms: number): Promise<void> {
 async function waitForFlowStatus(
   url: string,
   expected: string,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await fetch(`${url}/auth/github/status`);
-    const data = await res.json() as { deviceFlowStatus?: string };
+    const data = (await res.json()) as { deviceFlowStatus?: string };
     if (data.deviceFlowStatus === expected) return;
     await delay(50);
   }
-  throw new Error(`Timeout after ${timeoutMs}ms waiting for deviceFlowStatus=${expected}`);
+  throw new Error(
+    `Timeout after ${timeoutMs}ms waiting for deviceFlowStatus=${expected}`
+  );
 }
 
 // ── Mock responses ────────────────────────────────────────────────────────────
@@ -188,7 +209,11 @@ test('GET /auth/github initiates device flow and returns userCode', async () => 
     const res = await fetch(`${url}/auth/github`);
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { userCode: string; verificationUri: string; expiresIn: number };
+    const data = (await res.json()) as {
+      userCode: string;
+      verificationUri: string;
+      expiresIn: number;
+    };
     assert.equal(data.userCode, 'ABCD-1234');
     assert.equal(data.verificationUri, 'https://github.com/login/device');
     assert.equal(data.expiresIn, 900);
@@ -201,11 +226,14 @@ test('GET /auth/github/status returns { connected: false } when no token', async
   const res = await fetch(`${defaultBaseUrl}/auth/github/status`);
   assert.equal(res.status, 200);
 
-  const data = await res.json() as { connected: boolean; username: string | null };
+  const data = (await res.json()) as {
+    connected: boolean;
+    username: string | null;
+  };
   assert.equal(data.connected, false);
   assert.ok(
     data.username === null || data.username === undefined,
-    'username should be null when not connected',
+    'username should be null when not connected'
   );
 });
 
@@ -214,7 +242,9 @@ test('Device flow poll completes and saves token to config', async () => {
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   const mockFetch = createMockFetch({
     'login/device/code': [{ json: DEVICE_CODE_RESPONSE }],
@@ -252,7 +282,9 @@ test('GET /auth/github/status returns connected after device flow', async () => 
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   const mockFetch = createMockFetch({
     'login/device/code': [{ json: DEVICE_CODE_RESPONSE }],
@@ -273,7 +305,10 @@ test('GET /auth/github/status returns connected after device flow', async () => 
     const res = await fetch(`${url}/auth/github/status`);
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { connected: boolean; username: string | null };
+    const data = (await res.json()) as {
+      connected: boolean;
+      username: string | null;
+    };
     assert.equal(data.connected, true);
     assert.equal(data.username, 'octocat');
   } finally {
@@ -302,7 +337,7 @@ test('access_denied sets deviceFlowStatus to denied', async () => {
     const statusRes = await fetch(`${url}/auth/github/status`);
     assert.equal(statusRes.status, 200);
 
-    const data = await statusRes.json() as {
+    const data = (await statusRes.json()) as {
       connected: boolean;
       username: string | null;
       deviceFlowStatus?: string;
@@ -336,7 +371,7 @@ test('expired_token sets deviceFlowStatus to expired', async () => {
     const statusRes = await fetch(`${url}/auth/github/status`);
     assert.equal(statusRes.status, 200);
 
-    const data = await statusRes.json() as {
+    const data = (await statusRes.json()) as {
       connected: boolean;
       username: string | null;
       deviceFlowStatus?: string;
@@ -363,7 +398,7 @@ test('Device code initiation failure returns 500', async () => {
     const res = await fetch(`${url}/auth/github`);
     assert.equal(res.status, 500);
 
-    const data = await res.json() as { error: string };
+    const data = (await res.json()) as { error: string };
     assert.ok(data.error, 'Response should have an error message');
   } finally {
     await stopServer(srv);
@@ -375,7 +410,9 @@ test('slow_down increases poll interval', async () => {
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   // Use interval: 1 so the first poll fires quickly, then slow_down bumps it to 6
   const deviceCodeWith1sInterval = { ...DEVICE_CODE_RESPONSE, interval: 1 };
@@ -404,7 +441,11 @@ test('slow_down increases poll interval', async () => {
     await delay(1500);
 
     const state = _getDeviceFlowState();
-    assert.equal(state.interval, 6, `Expected interval to be 6 after slow_down, got ${state.interval}`);
+    assert.equal(
+      state.interval,
+      6,
+      `Expected interval to be 6 after slow_down, got ${state.interval}`
+    );
 
     // Let the flow finish to clean up timers
     await withTimeout(connectedPromise, 15_000, 'onConnected after slow_down');
@@ -418,7 +459,9 @@ test('Network error during poll continues polling', async () => {
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   const mockFetch = createMockFetch({
     'login/device/code': [{ json: DEVICE_CODE_RESPONSE }],
@@ -439,7 +482,11 @@ test('Network error during poll continues polling', async () => {
     const res = await fetch(`${url}/auth/github`);
     assert.equal(res.status, 200);
 
-    await withTimeout(connectedPromise, 10_000, 'onConnected after network error recovery');
+    await withTimeout(
+      connectedPromise,
+      10_000,
+      'onConnected after network error recovery'
+    );
 
     const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string };
@@ -455,15 +502,23 @@ test('Concurrent flow cancels previous', async () => {
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   const firstDeviceCode = { ...DEVICE_CODE_RESPONSE, device_code: 'dc_first' };
-  const secondDeviceCode = { ...DEVICE_CODE_RESPONSE, device_code: 'dc_second' };
+  const secondDeviceCode = {
+    ...DEVICE_CODE_RESPONSE,
+    device_code: 'dc_second',
+  };
   const secondAccessToken = { access_token: 'ghs_second_token' };
 
   // The mock uses pattern matching: both calls to login/device/code consume from the same queue
   const mockFetch = createMockFetch({
-    'login/device/code': [{ json: firstDeviceCode }, { json: secondDeviceCode }],
+    'login/device/code': [
+      { json: firstDeviceCode },
+      { json: secondDeviceCode },
+    ],
     'login/oauth/access_token': [{ json: secondAccessToken }],
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
@@ -479,7 +534,11 @@ test('Concurrent flow cancels previous', async () => {
     await fetch(`${url}/auth/github`);
     await fetch(`${url}/auth/github`);
 
-    await withTimeout(connectedPromise, 10_000, 'onConnected for second (winning) flow');
+    await withTimeout(
+      connectedPromise,
+      10_000,
+      'onConnected for second (winning) flow'
+    );
 
     const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string };
@@ -487,7 +546,7 @@ test('Concurrent flow cancels previous', async () => {
     assert.equal(
       savedConfig.github?.accessToken,
       'ghs_second_token',
-      'Second flow token should be saved',
+      'Second flow token should be saved'
     );
   } finally {
     await stopServer(srv);
@@ -509,24 +568,47 @@ test('POST /disconnect preserves webhookSecret and smeeUrl', async () => {
   const { srv, url } = await startServer({ configPath });
 
   try {
-    const res = await fetch(`${url}/auth/github/disconnect`, { method: 'POST' });
+    const res = await fetch(`${url}/auth/github/disconnect`, {
+      method: 'POST',
+    });
     assert.equal(res.status, 200);
 
-    const data = await res.json() as { ok: boolean };
+    const data = (await res.json()) as { ok: boolean };
     assert.equal(data.ok, true);
 
     // Verify token and username removed, but webhook config preserved
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      github?: { accessToken?: string; username?: string; webhookSecret?: string; smeeUrl?: string };
+      github?: {
+        accessToken?: string;
+        username?: string;
+        webhookSecret?: string;
+        smeeUrl?: string;
+      };
     };
-    assert.equal(saved.github?.accessToken, undefined, 'accessToken should be removed');
-    assert.equal(saved.github?.username, undefined, 'username should be removed');
-    assert.equal(saved.github?.webhookSecret, 'whsec_keep', 'webhookSecret should be preserved');
-    assert.equal(saved.github?.smeeUrl, 'https://smee.io/keep', 'smeeUrl should be preserved');
+    assert.equal(
+      saved.github?.accessToken,
+      undefined,
+      'accessToken should be removed'
+    );
+    assert.equal(
+      saved.github?.username,
+      undefined,
+      'username should be removed'
+    );
+    assert.equal(
+      saved.github?.webhookSecret,
+      'whsec_keep',
+      'webhookSecret should be preserved'
+    );
+    assert.equal(
+      saved.github?.smeeUrl,
+      'https://smee.io/keep',
+      'smeeUrl should be preserved'
+    );
 
     // Status should show disconnected
     const statusRes = await fetch(`${url}/auth/github/status`);
-    const statusData = await statusRes.json() as { connected: boolean };
+    const statusData = (await statusRes.json()) as { connected: boolean };
     assert.equal(statusData.connected, false);
   } finally {
     await stopServer(srv);
@@ -538,7 +620,9 @@ test('Token saved without username when GraphQL fails', async () => {
   saveConfig(configPath, { ...DEFAULTS });
 
   let resolveConnected!: () => void;
-  const connectedPromise = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const connectedPromise = new Promise<void>((resolve) => {
+    resolveConnected = resolve;
+  });
 
   const mockFetch = createMockFetch({
     'login/device/code': [{ json: DEVICE_CODE_RESPONSE }],
@@ -554,13 +638,25 @@ test('Token saved without username when GraphQL fails', async () => {
 
   try {
     await fetch(`${url}/auth/github`);
-    await withTimeout(connectedPromise, 10_000, 'onConnected after GraphQL failure');
+    await withTimeout(
+      connectedPromise,
+      10_000,
+      'onConnected after GraphQL failure'
+    );
 
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { accessToken?: string; username?: string };
     };
-    assert.equal(saved.github?.accessToken, 'ghs_mock_token_123', 'Token should be saved');
-    assert.equal(saved.github?.username, undefined, 'Username should not be saved when GraphQL fails');
+    assert.equal(
+      saved.github?.accessToken,
+      'ghs_mock_token_123',
+      'Token should be saved'
+    );
+    assert.equal(
+      saved.github?.username,
+      undefined,
+      'Username should not be saved when GraphQL fails'
+    );
   } finally {
     await stopServer(srv);
   }

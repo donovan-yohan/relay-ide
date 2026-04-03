@@ -3,8 +3,15 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { Server } from 'node:http';
 
-import { createIntegrationJiraRouter, type IntegrationJiraDeps } from '../server/integration-jira.js';
-import type { JiraIssue, JiraIssuesResponse, JiraStatus } from '../server/types.js';
+import {
+  createIntegrationJiraRouter,
+  type IntegrationJiraDeps,
+} from '../server/integration-jira.js';
+import type {
+  JiraIssue,
+  JiraIssuesResponse,
+  JiraStatus,
+} from '../server/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,7 +21,9 @@ interface StatusesResponse {
 }
 
 // Loose mock type — cast to IntegrationJiraDeps['execAsync'] at call sites
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 
 // ─── Mock stdout constants ────────────────────────────────────────────────────
 
@@ -56,8 +65,12 @@ function makeAcliWorkItem(overrides: {
     fields: {
       summary,
       status: { id: statusId, name: statusName },
-      ...(priorityName !== null ? { priority: { name: priorityName } } : { priority: null }),
-      ...(assigneeDisplayName !== null ? { assignee: { displayName: assigneeDisplayName } } : { assignee: null }),
+      ...(priorityName !== null
+        ? { priority: { name: priorityName } }
+        : { priority: null }),
+      ...(assigneeDisplayName !== null
+        ? { assignee: { displayName: assigneeDisplayName } }
+        : { assignee: null }),
     },
   };
 }
@@ -95,7 +108,10 @@ function startServer(execAsyncFn: MockExec): Promise<void> {
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    const deps = { configPath: '', execAsync: execAsyncFn } as unknown as IntegrationJiraDeps;
+    const deps = {
+      configPath: '',
+      execAsync: execAsyncFn,
+    } as unknown as IntegrationJiraDeps;
     app.use('/integration-jira', createIntegrationJiraRouter(deps));
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address();
@@ -215,7 +231,9 @@ test('GET /issues caches results within TTL — exec called only once for two re
   let searchCallCount = 0;
 
   const baseExec = makeMockExec({
-    searchItems: [makeAcliWorkItem({ key: 'CACHE-1', summary: 'Cached issue' })],
+    searchItems: [
+      makeAcliWorkItem({ key: 'CACHE-1', summary: 'Cached issue' }),
+    ],
   });
 
   const countingExec: MockExec = async (...args: unknown[]) => {
@@ -233,14 +251,22 @@ test('GET /issues caches results within TTL — exec called only once for two re
   const first = (await firstRes.json()) as JiraIssuesResponse;
   assert.equal(first.error, undefined, `Unexpected error: ${first.error}`);
   assert.equal(first.issues.length, 1);
-  assert.equal(searchCallCount, 1, 'search should be called once on first request');
+  assert.equal(
+    searchCallCount,
+    1,
+    'search should be called once on first request'
+  );
 
   // Second request — should be served from cache, no additional exec call
   const secondRes = await fetch(`${baseUrl}/integration-jira/issues`);
   const second = (await secondRes.json()) as JiraIssuesResponse;
   assert.equal(second.error, undefined, `Unexpected error: ${second.error}`);
   assert.equal(second.issues.length, 1);
-  assert.equal(searchCallCount, 1, 'search should not be called again within TTL (cache hit)');
+  assert.equal(
+    searchCallCount,
+    1,
+    'search should not be called again within TTL (cache hit)'
+  );
 });
 
 test('GET /statuses?projectKey=TEST returns deduplicated statuses', async () => {
@@ -249,15 +275,25 @@ test('GET /statuses?projectKey=TEST returns deduplicated statuses', async () => 
   // Items with overlapping status IDs — deduplication should collapse to 3 unique statuses
   const searchItems = [
     makeAcliWorkItem({ key: 'TEST-1', statusId: '1', statusName: 'To Do' }),
-    makeAcliWorkItem({ key: 'TEST-2', statusId: '2', statusName: 'In Progress' }),
-    makeAcliWorkItem({ key: 'TEST-3', statusId: '2', statusName: 'In Progress' }), // duplicate
+    makeAcliWorkItem({
+      key: 'TEST-2',
+      statusId: '2',
+      statusName: 'In Progress',
+    }),
+    makeAcliWorkItem({
+      key: 'TEST-3',
+      statusId: '2',
+      statusName: 'In Progress',
+    }), // duplicate
     makeAcliWorkItem({ key: 'TEST-4', statusId: '3', statusName: 'Done' }),
   ];
 
   const exec = makeMockExec({ searchItems });
   await startServer(exec);
 
-  const res = await fetch(`${baseUrl}/integration-jira/statuses?projectKey=TEST`);
+  const res = await fetch(
+    `${baseUrl}/integration-jira/statuses?projectKey=TEST`
+  );
   assert.equal(res.status, 200);
   const data = (await res.json()) as StatusesResponse;
 
@@ -291,13 +327,17 @@ test('GET /statuses returns 400 for invalid projectKey (lowercase or special cha
   await startServer(exec);
 
   // Lowercase key
-  const resLower = await fetch(`${baseUrl}/integration-jira/statuses?projectKey=test`);
+  const resLower = await fetch(
+    `${baseUrl}/integration-jira/statuses?projectKey=test`
+  );
   assert.equal(resLower.status, 400);
   const dataLower = (await resLower.json()) as StatusesResponse;
   assert.equal(dataLower.error, 'invalid_project_key');
 
   // Key with special characters
-  const resSpecial = await fetch(`${baseUrl}/integration-jira/statuses?projectKey=TEST%20PROJ`);
+  const resSpecial = await fetch(
+    `${baseUrl}/integration-jira/statuses?projectKey=TEST%20PROJ`
+  );
   assert.equal(resSpecial.status, 400);
   const dataSpecial = (await resSpecial.json()) as StatusesResponse;
   assert.equal(dataSpecial.error, 'invalid_project_key');

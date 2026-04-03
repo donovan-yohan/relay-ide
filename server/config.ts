@@ -1,14 +1,43 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { AgentType, Config, ContinuePolicy, FilterPreset, Workspace, WorkspaceSettings, WorktreeMetadata } from './types.js';
+import type {
+  AgentType,
+  Config,
+  ContinuePolicy,
+  FilterPreset,
+  Workspace,
+  WorkspaceSettings,
+  WorktreeMetadata,
+} from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('config');
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
-  { name: 'Needs Attention', builtIn: true, filters: {}, sort: { column: 'role', direction: 'asc' } },
-  { name: 'All PRs', builtIn: true, filters: {}, sort: { column: 'age', direction: 'desc' } },
+  {
+    name: 'Needs Attention',
+    builtIn: true,
+    filters: {},
+    sort: { column: 'role', direction: 'asc' },
+  },
+  {
+    name: 'All PRs',
+    builtIn: true,
+    filters: {},
+    sort: { column: 'age', direction: 'desc' },
+  },
 ];
 
-export const DEFAULTS: Omit<Config, 'pinHash' | 'rootDirs' | 'workspaceSettings' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'> = {
+export const DEFAULTS: Omit<
+  Config,
+  | 'pinHash'
+  | 'rootDirs'
+  | 'workspaceSettings'
+  | 'repoSettings'
+  | 'vapidPublicKey'
+  | 'vapidPrivateKey'
+> = {
   host: '0.0.0.0',
   port: 3456,
   cookieTTL: '24h',
@@ -29,7 +58,8 @@ function migrateToV4(config: Config, configPath: string): void {
 
   // Step 1: Reconcile repo arrays
   const legacyWorkspaces = config.workspaces as unknown as string[] | undefined;
-  const isLegacyStringArray = Array.isArray(legacyWorkspaces) &&
+  const isLegacyStringArray =
+    Array.isArray(legacyWorkspaces) &&
     (legacyWorkspaces.length === 0 || typeof legacyWorkspaces[0] === 'string');
 
   if (isLegacyStringArray && legacyWorkspaces!.length > 0) {
@@ -56,7 +86,7 @@ function migrateToV4(config: Config, configPath: string): void {
     let order = 0;
     for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
       if (!Array.isArray(paths)) continue;
-      const validRepos = paths.filter(p => validPaths.has(p));
+      const validRepos = paths.filter((p) => validPaths.has(p));
       if (validRepos.length > 0) {
         promoted.push({
           id: crypto.randomUUID(),
@@ -116,7 +146,10 @@ function migrateToV5(config: Config, configPath: string): void {
   // Migrate workspace-level settings: defaultAgent → defaultFramework
   if (config.workspaces) {
     for (const workspace of config.workspaces) {
-      if (workspace.settings?.defaultAgent && !workspace.settings.defaultFramework) {
+      if (
+        workspace.settings?.defaultAgent &&
+        !workspace.settings.defaultFramework
+      ) {
         workspace.settings.defaultFramework = workspace.settings.defaultAgent;
       }
     }
@@ -150,33 +183,44 @@ export function loadConfig(configPath: string): Config {
   // If defaultFramework was not explicitly set in the config file, derive it from defaultAgent
   // so that legacy configs with only defaultAgent work correctly without migration
   if (parsed.defaultFramework == null) {
-    config.defaultFramework = (parsed.defaultAgent ?? DEFAULTS.defaultAgent) as string;
+    config.defaultFramework = (parsed.defaultAgent ??
+      DEFAULTS.defaultAgent) as string;
   }
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
-    config.filterPresets = DEFAULT_PRESETS.map(p => ({ ...p, filters: { ...p.filters }, sort: { ...p.sort } }));
+    config.filterPresets = DEFAULT_PRESETS.map((p) => ({
+      ...p,
+      filters: { ...p.filters },
+      sort: { ...p.sort },
+    }));
   }
 
   // Validate and clean workspaceGroups
   if (config.workspaceGroups != null) {
     // Valid paths come from repos[] and legacy workspaces[] (string array, pre-v4)
     const legacyWs = config.workspaces as unknown as string[] | undefined;
-    const legacyWsPaths = Array.isArray(legacyWs) && (legacyWs.length === 0 || typeof legacyWs[0] === 'string')
-      ? legacyWs
-      : [];
+    const legacyWsPaths =
+      Array.isArray(legacyWs) &&
+      (legacyWs.length === 0 || typeof legacyWs[0] === 'string')
+        ? legacyWs
+        : [];
     const validPaths = new Set([...(config.repos ?? []), ...legacyWsPaths]);
     const cleaned: Record<string, string[]> = {};
 
     for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
       if (!Array.isArray(paths)) {
-        console.warn(`workspaceGroups: group "${groupName}" value is not an array, skipping`);
+        logger.warn(
+          `workspaceGroups: group "${groupName}" value is not an array, skipping`
+        );
         continue;
       }
       const filteredPaths: string[] = [];
       for (const p of paths) {
         if (!validPaths.has(p)) {
-          console.warn(`workspaceGroups: path "${p}" in group "${groupName}" is not in repos[], skipping`);
+          logger.warn(
+            `workspaceGroups: path "${p}" in group "${groupName}" is not in repos[], skipping`
+          );
           continue;
         }
         filteredPaths.push(p);
@@ -209,7 +253,11 @@ function metaDir(configPath: string): string {
 }
 
 function metaFilePath(configPath: string, worktreePath: string): string {
-  const hash = crypto.createHash('sha256').update(worktreePath).digest('hex').slice(0, 16);
+  const hash = crypto
+    .createHash('sha256')
+    .update(worktreePath)
+    .digest('hex')
+    .slice(0, 16);
   return path.join(metaDir(configPath), hash + '.json');
 }
 
@@ -220,7 +268,10 @@ export function ensureMetaDir(configPath: string): void {
   }
 }
 
-export function readMeta(configPath: string, worktreePath: string): WorktreeMetadata | null {
+export function readMeta(
+  configPath: string,
+  worktreePath: string
+): WorktreeMetadata | null {
   const fp = metaFilePath(configPath, worktreePath);
   try {
     return JSON.parse(fs.readFileSync(fp, 'utf8')) as WorktreeMetadata;
@@ -244,7 +295,10 @@ export function deleteMeta(configPath: string, worktreePath: string): void {
   }
 }
 
-export function getRepoSettings(config: Config, repoPath: string): WorkspaceSettings {
+export function getRepoSettings(
+  config: Config,
+  repoPath: string
+): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
     defaultAgent: config.defaultAgent,
     defaultFramework: config.defaultFramework ?? config.defaultAgent,
@@ -253,7 +307,10 @@ export function getRepoSettings(config: Config, repoPath: string): WorkspaceSett
     launchInTmux: config.launchInTmux,
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = config.repoSettings?.[repoPath] ?? config.workspaceSettings?.[repoPath] ?? {};
+  const perWorkspace =
+    config.repoSettings?.[repoPath] ??
+    config.workspaceSettings?.[repoPath] ??
+    {};
   // Per-repo settings override global — only for defined keys
   return { ...globalDefaults, ...perWorkspace };
 }
@@ -278,7 +335,7 @@ export function resolveSessionSettings(
   config: Config,
   repoPath: string,
   overrides: SessionSettingsOverrides,
-  workspaceId?: string,
+  workspaceId?: string
 ): ResolvedSessionSettings {
   const globalDefaults: Partial<WorkspaceSettings> = {
     defaultAgent: config.defaultAgent,
@@ -291,7 +348,7 @@ export function resolveSessionSettings(
 
   let wsDefaults: Partial<WorkspaceSettings> = {};
   if (workspaceId) {
-    const workspace = config.workspaces?.find(w => w.id === workspaceId);
+    const workspace = config.workspaces?.find((w) => w.id === workspaceId);
     if (workspace?.settings) wsDefaults = workspace.settings;
   }
 
@@ -301,21 +358,26 @@ export function resolveSessionSettings(
   const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
 
   // Map boolean defaultContinue → ContinuePolicy for backward compat
-  const configPolicy: ContinuePolicy = merged.defaultContinuePolicy
-    ?? (merged.defaultContinue ? 'always' : 'never');
+  const configPolicy: ContinuePolicy =
+    merged.defaultContinuePolicy ??
+    (merged.defaultContinue ? 'always' : 'never');
 
   // Resolve agent: prefer the most specific layer's defaultFramework, falling back to
   // defaultAgent at that layer. This ensures workspace/repo defaultAgent still wins
   // over a global defaultFramework.
   const agentFromLayers = (() => {
     // Repo layer (most specific)
-    if (repoSpecific.defaultFramework) return repoSpecific.defaultFramework as AgentType;
+    if (repoSpecific.defaultFramework)
+      return repoSpecific.defaultFramework as AgentType;
     if (repoSpecific.defaultAgent) return repoSpecific.defaultAgent;
     // Workspace layer
-    if (wsDefaults.defaultFramework) return wsDefaults.defaultFramework as AgentType;
+    if (wsDefaults.defaultFramework)
+      return wsDefaults.defaultFramework as AgentType;
     if (wsDefaults.defaultAgent) return wsDefaults.defaultAgent;
     // Global layer
-    return (globalDefaults.defaultFramework ?? globalDefaults.defaultAgent ?? 'claude') as AgentType;
+    return (globalDefaults.defaultFramework ??
+      globalDefaults.defaultAgent ??
+      'claude') as AgentType;
   })();
 
   return {
@@ -331,7 +393,7 @@ export function deleteRepoSettingKeys(
   configPath: string,
   config: Config,
   repoPath: string,
-  keys: string[],
+  keys: string[]
 ): void {
   if (!config.repoSettings?.[repoPath]) return;
   for (const key of keys) {
@@ -348,7 +410,7 @@ export function setRepoSettings(
   configPath: string,
   config: Config,
   repoPath: string,
-  settings: Partial<WorkspaceSettings>,
+  settings: Partial<WorkspaceSettings>
 ): void {
   if (!config.repoSettings) config.repoSettings = {};
   config.repoSettings[repoPath] = {

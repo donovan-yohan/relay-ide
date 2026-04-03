@@ -1,9 +1,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveIntent, issueToBranchName } from '../frontend/src/lib/session-intent.js';
-import type { PickerItem, SessionIntent } from '../frontend/src/lib/session-intent.js';
+import {
+  resolveIntent,
+  issueToBranchName,
+} from '../frontend/src/lib/session-intent.js';
+import type {
+  PickerItem,
+  SessionIntent,
+} from '../frontend/src/lib/session-intent.js';
 import type { GitHubIssue } from '../frontend/src/lib/types.js';
-import type { PullRequest, SessionSummary, WorktreeInfo } from '../frontend/src/lib/types.js';
+import type {
+  PullRequest,
+  SessionSummary,
+  WorktreeInfo,
+} from '../frontend/src/lib/types.js';
 
 function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
   return {
@@ -59,7 +69,10 @@ function makeWorktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
 
 describe('resolveIntent', () => {
   it('returns review-pr intent for reviewer on open PR', () => {
-    const item: PickerItem = { kind: 'pr', pr: makePr({ role: 'reviewer', state: 'OPEN' }) };
+    const item: PickerItem = {
+      kind: 'pr',
+      pr: makePr({ role: 'reviewer', state: 'OPEN' }),
+    };
     const intents = resolveIntent(item, 'reviewer', [], []);
     assert.ok(intents.length >= 1);
     assert.equal(intents[0]!.type, 'review-pr');
@@ -68,7 +81,10 @@ describe('resolveIntent', () => {
   });
 
   it('returns merge-pr intent for author on open mergeable PR', () => {
-    const item: PickerItem = { kind: 'pr', pr: makePr({ role: 'author', mergeable: 'MERGEABLE' }) };
+    const item: PickerItem = {
+      kind: 'pr',
+      pr: makePr({ role: 'author', mergeable: 'MERGEABLE' }),
+    };
     const intents = resolveIntent(item, 'author', [], []);
     assert.ok(intents.length >= 1);
     assert.equal(intents[0]!.type, 'merge-pr');
@@ -82,7 +98,7 @@ describe('resolveIntent', () => {
     const item: PickerItem = { kind: 'pr', pr };
     const intents = resolveIntent(item, 'author', [session], []);
     // resume-session should appear in the intents
-    const resume = intents.find(i => i.type === 'resume-session');
+    const resume = intents.find((i) => i.type === 'resume-session');
     assert.ok(resume);
     assert.equal(resume!.existingSessionId, 'sess-1');
   });
@@ -138,7 +154,9 @@ describe('resolveIntent', () => {
     assert.equal(intents[0]!.type, 'start-from-issue');
     assert.ok(intents[0]!.prompt);
     assert.ok(intents[0]!.prompt!.includes('#45'));
-    assert.ok(intents[0]!.prompt!.includes('Mobile virtual keyboard covers input'));
+    assert.ok(
+      intents[0]!.prompt!.includes('Mobile virtual keyboard covers input')
+    );
   });
 
   it('returns archive for merged PR', () => {
@@ -148,7 +166,10 @@ describe('resolveIntent', () => {
   });
 
   it('returns fix-conflicts for PR with conflicts', () => {
-    const item: PickerItem = { kind: 'pr', pr: makePr({ mergeable: 'CONFLICTING' }) };
+    const item: PickerItem = {
+      kind: 'pr',
+      pr: makePr({ mergeable: 'CONFLICTING' }),
+    };
     const intents = resolveIntent(item, 'author', [], []);
     assert.equal(intents[0]!.type, 'fix-conflicts');
     assert.equal(intents[0]!.color, 'error');
@@ -190,7 +211,9 @@ describe('resolveIntent', () => {
   });
 
   it('issue branch match works for exact issue number', () => {
-    const session = makeSession({ branchName: 'feat/issue-45-mobile-keyboard' });
+    const session = makeSession({
+      branchName: 'feat/issue-45-mobile-keyboard',
+    });
     const item: PickerItem = {
       kind: 'issue',
       issue: {
@@ -229,29 +252,37 @@ describe('issueToBranchName', () => {
   }
 
   it('uses feat prefix by default', () => {
-    const name = issueToBranchName(makeIssue({ number: 10, title: 'Add dark mode support' }));
+    const name = issueToBranchName(
+      makeIssue({ number: 10, title: 'Add dark mode support' })
+    );
     assert.equal(name, 'feat/issue-10-add-dark-mode-support');
   });
 
   it('uses fix prefix for bug label', () => {
-    const name = issueToBranchName(makeIssue({
-      number: 42,
-      title: 'Button not clickable',
-      labels: [{ name: 'bug', color: 'ff0000' }],
-    }));
+    const name = issueToBranchName(
+      makeIssue({
+        number: 42,
+        title: 'Button not clickable',
+        labels: [{ name: 'bug', color: 'ff0000' }],
+      })
+    );
     assert.equal(name, 'fix/issue-42-button-not-clickable');
   });
 
   it('strips special characters from title', () => {
-    const name = issueToBranchName(makeIssue({ number: 5, title: "Can't open [modal] (broken)" }));
+    const name = issueToBranchName(
+      makeIssue({ number: 5, title: "Can't open [modal] (broken)" })
+    );
     assert.equal(name, 'feat/issue-5-cant-open-modal-broken');
   });
 
   it('truncates to 5 words', () => {
-    const name = issueToBranchName(makeIssue({
-      number: 99,
-      title: 'This is a very long issue title that goes on forever',
-    }));
+    const name = issueToBranchName(
+      makeIssue({
+        number: 99,
+        title: 'This is a very long issue title that goes on forever',
+      })
+    );
     assert.equal(name, 'feat/issue-99-this-is-a-very-long');
   });
 

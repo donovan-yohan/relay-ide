@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { derivePrAction, deriveSecondaryAction, getActionPrompt, getStatusCssVar, shouldUseDarkText } from '../frontend/src/lib/pr-state.js';
+import {
+  derivePrAction,
+  deriveSecondaryAction,
+  getActionPrompt,
+  getStatusCssVar,
+  shouldUseDarkText,
+} from '../frontend/src/lib/pr-state.js';
 import type { PrStateInput } from '../frontend/src/lib/pr-state.js';
 
 describe('derivePrAction', () => {
@@ -8,8 +14,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 0,
       prState: null,
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: null,
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'none');
@@ -21,8 +31,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 3,
       prState: null,
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: null,
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'create-pr');
@@ -34,8 +48,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 5,
       prState: 'DRAFT',
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: null,
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'ready-for-review');
@@ -47,8 +65,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 2,
       prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'merge-pr');
@@ -60,8 +82,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'merge-pr');
@@ -72,8 +98,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 2,
       prState: 'OPEN',
-      ciPassing: 6, ciFailing: 2, ciPending: 0, ciTotal: 8,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 6,
+      ciFailing: 2,
+      ciPending: 0,
+      ciTotal: 8,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'fix-errors');
@@ -85,8 +115,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 3, ciFailing: 0, ciPending: 2, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 3,
+      ciFailing: 0,
+      ciPending: 2,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'checks-running');
@@ -98,8 +132,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 3, ciFailing: 1, ciPending: 1, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 3,
+      ciFailing: 1,
+      ciPending: 1,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'fix-errors');
@@ -110,8 +148,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 0,
       prState: 'MERGED',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: null,
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'archive-merged');
@@ -123,8 +165,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 0,
       prState: 'CLOSED',
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: null,
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'archive-closed');
@@ -136,8 +182,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 2,
       prState: 'OPEN',
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: 'CONFLICTING', unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: 'CONFLICTING',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'fix-conflicts');
@@ -149,8 +199,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 2,
       prState: 'OPEN',
-      ciPassing: 0, ciFailing: 3, ciPending: 0, ciTotal: 3,
-      mergeable: 'CONFLICTING', unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 3,
+      ciPending: 0,
+      ciTotal: 3,
+      mergeable: 'CONFLICTING',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'fix-conflicts');
@@ -160,8 +214,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 3,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 3,
     };
     const action = derivePrAction(input);
     assert.equal(action.type, 'resolve-comments');
@@ -175,8 +233,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
       role: 'author',
     };
     const action = derivePrAction(input);
@@ -189,8 +251,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
       role: 'reviewer',
     };
     const action = derivePrAction(input);
@@ -203,8 +269,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 3, ciFailing: 2, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 3,
+      ciFailing: 2,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
       role: 'reviewer',
     };
     const action = derivePrAction(input);
@@ -217,8 +287,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'DRAFT',
-      ciPassing: 0, ciFailing: 0, ciPending: 0, ciTotal: 0,
-      mergeable: null, unresolvedCommentCount: 0,
+      ciPassing: 0,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 0,
+      mergeable: null,
+      unresolvedCommentCount: 0,
       role: 'reviewer',
     };
     const action = derivePrAction(input);
@@ -229,8 +303,12 @@ describe('derivePrAction', () => {
     const input: PrStateInput = {
       commitsAhead: 1,
       prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 0,
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 0,
     };
     const action = derivePrAction(input);
     // Without role, defaults to author → merge-pr
@@ -242,7 +320,7 @@ describe('getActionPrompt', () => {
   it('returns prompt for create-pr', () => {
     const prompt = getActionPrompt(
       { type: 'create-pr', color: 'accent', label: 'Create PR' },
-      { branchName: 'feat/my-feature' },
+      { branchName: 'feat/my-feature' }
     );
     assert.ok(prompt);
     assert.ok(prompt.includes('feat/my-feature'));
@@ -252,7 +330,7 @@ describe('getActionPrompt', () => {
   it('returns prompt for fix-errors', () => {
     const prompt = getActionPrompt(
       { type: 'fix-errors', color: 'error', label: 'Fix Errors 2/8' },
-      { branchName: 'bugfix/auth' },
+      { branchName: 'bugfix/auth' }
     );
     assert.ok(prompt);
     assert.ok(prompt.includes('bugfix/auth'));
@@ -262,7 +340,7 @@ describe('getActionPrompt', () => {
   it('returns prompt for review-pr', () => {
     const prompt = getActionPrompt(
       { type: 'review-pr', color: 'success', label: 'Review PR' },
-      { branchName: 'main', prNumber: 42 },
+      { branchName: 'main', prNumber: 42 }
     );
     assert.ok(prompt);
     assert.ok(prompt.includes('Review'));
@@ -271,7 +349,7 @@ describe('getActionPrompt', () => {
   it('returns prompt for fix-conflicts', () => {
     const prompt = getActionPrompt(
       { type: 'fix-conflicts', color: 'error', label: 'Fix Conflicts' },
-      { branchName: 'feat/foo', baseBranch: 'main' },
+      { branchName: 'feat/foo', baseBranch: 'main' }
     );
     assert.ok(prompt);
     assert.ok(prompt.includes('main'));
@@ -280,8 +358,12 @@ describe('getActionPrompt', () => {
 
   it('returns prompt for resolve-comments', () => {
     const prompt = getActionPrompt(
-      { type: 'resolve-comments', color: 'accent', label: 'Resolve Comments (3)' },
-      { branchName: 'feat/foo', prNumber: 7, unresolvedCommentCount: 3 },
+      {
+        type: 'resolve-comments',
+        color: 'accent',
+        label: 'Resolve Comments (3)',
+      },
+      { branchName: 'feat/foo', prNumber: 7, unresolvedCommentCount: 3 }
     );
     assert.ok(prompt);
     assert.ok(prompt.includes('3'));
@@ -290,30 +372,49 @@ describe('getActionPrompt', () => {
 
   it('returns null for archive actions', () => {
     assert.equal(
-      getActionPrompt({ type: 'archive-merged', color: 'merged', label: 'Archive' }, { branchName: 'main' }),
-      null,
+      getActionPrompt(
+        { type: 'archive-merged', color: 'merged', label: 'Archive' },
+        { branchName: 'main' }
+      ),
+      null
     );
     assert.equal(
-      getActionPrompt({ type: 'archive-closed', color: 'muted', label: 'Archive' }, { branchName: 'main' }),
-      null,
+      getActionPrompt(
+        { type: 'archive-closed', color: 'muted', label: 'Archive' },
+        { branchName: 'main' }
+      ),
+      null
     );
   });
 
   it('returns null for none and checks-running', () => {
     assert.equal(
-      getActionPrompt({ type: 'none', color: 'none', label: '' }, { branchName: 'main' }),
-      null,
+      getActionPrompt(
+        { type: 'none', color: 'none', label: '' },
+        { branchName: 'main' }
+      ),
+      null
     );
     assert.equal(
-      getActionPrompt({ type: 'checks-running', color: 'warning', label: 'Checks Running...' }, { branchName: 'main' }),
-      null,
+      getActionPrompt(
+        {
+          type: 'checks-running',
+          color: 'warning',
+          label: 'Checks Running...',
+        },
+        { branchName: 'main' }
+      ),
+      null
     );
   });
 
   it('returns null for merge-pr (GitHub link action)', () => {
     assert.equal(
-      getActionPrompt({ type: 'merge-pr', color: 'success', label: 'Merge' }, { branchName: 'main' }),
-      null,
+      getActionPrompt(
+        { type: 'merge-pr', color: 'success', label: 'Merge' },
+        { branchName: 'main' }
+      ),
+      null
     );
   });
 });
@@ -349,9 +450,14 @@ describe('shouldUseDarkText', () => {
 describe('deriveSecondaryAction', () => {
   it('returns review-pr secondary for author with unresolved comments', () => {
     const input: PrStateInput = {
-      commitsAhead: 1, prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 3,
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 3,
       role: 'author',
     };
     const primary = derivePrAction(input);
@@ -364,9 +470,14 @@ describe('deriveSecondaryAction', () => {
 
   it('returns resolve-comments secondary for reviewer with unresolved comments', () => {
     const input: PrStateInput = {
-      commitsAhead: 1, prState: 'OPEN',
-      ciPassing: 5, ciFailing: 0, ciPending: 0, ciTotal: 5,
-      mergeable: 'MERGEABLE', unresolvedCommentCount: 3,
+      commitsAhead: 1,
+      prState: 'OPEN',
+      ciPassing: 5,
+      ciFailing: 0,
+      ciPending: 0,
+      ciTotal: 5,
+      mergeable: 'MERGEABLE',
+      unresolvedCommentCount: 3,
       role: 'reviewer',
     };
     const primary = derivePrAction(input);

@@ -12,8 +12,10 @@ import { stripAnsi, cleanEnv } from './utils.js';
 import { branchToDisplayName } from './git.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('hooks');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,7 +35,10 @@ export interface HookDeps {
   getSession: (id: string) => Session | undefined;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
   fireBackendStateIfChanged: (session: Session) => void;
-  notifySessionAttention: (sessionId: string, session: { displayName: string; type: string }) => void;
+  notifySessionAttention: (
+    sessionId: string,
+    session: { displayName: string; type: string }
+  ) => void;
   configPath?: string;
 }
 
@@ -53,44 +58,68 @@ const branchCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
  * Uses trailing-edge debounce: each call resets the timer so the check runs
  * after activity settles.
  */
-function scheduleBranchCheck(session: Session, deps: HookDeps, delayMs = BRANCH_CHECK_DEBOUNCE_MS): void {
+function scheduleBranchCheck(
+  session: Session,
+  deps: HookDeps,
+  delayMs = BRANCH_CHECK_DEBOUNCE_MS
+): void {
   if (!session.cwd) return;
   const existing = branchCheckTimers.get(session.id);
   if (existing) clearTimeout(existing);
 
-  branchCheckTimers.set(session.id, setTimeout(async () => {
-    branchCheckTimers.delete(session.id);
-    if (!deps.getSession(session.id)) return; // session may have ended
-    try {
-      const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: session.cwd,
-        timeout: 5000,
-      });
-      const currentBranch = stdout.trim();
-      if (currentBranch && currentBranch !== session.branchName) {
-        session.branchName = currentBranch;
-        deps.broadcastEvent('session-renamed', {
-          sessionId: session.id,
-          branchName: currentBranch,
-          displayName: session.displayName,
-        });
+  branchCheckTimers.set(
+    session.id,
+    setTimeout(async () => {
+      branchCheckTimers.delete(session.id);
+      if (!deps.getSession(session.id)) return; // session may have ended
+      try {
+        const { stdout } = await execFileAsync(
+          'git',
+          ['rev-parse', '--abbrev-ref', 'HEAD'],
+          {
+            cwd: session.cwd,
+            timeout: 5000,
+          }
+        );
+        const currentBranch = stdout.trim();
+        if (currentBranch && currentBranch !== session.branchName) {
+          session.branchName = currentBranch;
+          deps.broadcastEvent('session-renamed', {
+            sessionId: session.id,
+            branchName: currentBranch,
+            displayName: session.displayName,
+          });
+        }
+      } catch {
+        /* non-fatal — repo may be mid-rebase or detached */
       }
-    } catch { /* non-fatal — repo may be mid-rebase or detached */ }
-  }, delayMs));
+    }, delayMs)
+  );
 }
 
-function setAgentState(session: Session, state: AgentState, deps: HookDeps): void {
+function setAgentState(
+  session: Session,
+  state: AgentState,
+  deps: HookDeps
+): void {
   session.agentState = state;
   deps.fireBackendStateIfChanged(session);
   session._lastHookTime = Date.now();
 
   // Check for branch changes on meaningful pauses (agent stopped or waiting for user)
-  if (state === 'idle' || state === 'permission-prompt' || state === 'waiting-for-input') {
+  if (
+    state === 'idle' ||
+    state === 'permission-prompt' ||
+    state === 'waiting-for-input'
+  ) {
     scheduleBranchCheck(session, deps, 0);
   }
 }
 
-function extractToolDetail(_toolName: string, toolInput: unknown): string | undefined {
+function extractToolDetail(
+  _toolName: string,
+  toolInput: unknown
+): string | undefined {
   if (toolInput && typeof toolInput === 'object') {
     const input = toolInput as Record<string, unknown>;
     if (typeof input.file_path === 'string') return input.file_path;
@@ -103,7 +132,7 @@ function extractToolDetail(_toolName: string, toolInput: unknown): string | unde
 async function spawnBranchRename(
   session: Session,
   promptText: string,
-  deps: HookDeps,
+  deps: HookDeps
 ): Promise<void> {
   const cleanedPrompt = stripAnsi(promptText).slice(0, 500);
   const renamePrompt = session.branchRenamePrompt ?? DEFAULT_RENAME_PROMPT;
@@ -115,7 +144,9 @@ async function spawnBranchRename(
     if (!deps.getSession(session.id)) return;
 
     if (attempt > 0) {
-      await new Promise<void>((resolve) => setTimeout(resolve, RENAME_RETRY_DELAY_MS));
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, RENAME_RETRY_DELAY_MS)
+      );
       // Re-check after delay
       if (!deps.getSession(session.id)) return;
     }
@@ -124,7 +155,7 @@ async function spawnBranchRename(
       const { stdout } = await execFileAsync(
         'claude',
         ['-p', '--model', 'haiku', fullPrompt],
-        { cwd: session.cwd, timeout: 30000, env },
+        { cwd: session.cwd, timeout: 30000, env }
       );
 
       // Sanitize output
@@ -141,7 +172,9 @@ async function spawnBranchRename(
       // Check session still exists before renaming
       if (!deps.getSession(session.id)) return;
 
-      await execFileAsync('git', ['branch', '-m', branchName], { cwd: session.cwd });
+      await execFileAsync('git', ['branch', '-m', branchName], {
+        cwd: session.cwd,
+      });
 
       session.branchName = branchName;
       session.displayName = branchToDisplayName(branchName);
@@ -161,9 +194,9 @@ async function spawnBranchRename(
       }
 
       return; // success
-    } catch (err) {
+      } catch (err) {
       if (attempt === 1) {
-        console.error('[hooks] branch rename failed after 2 attempts:', err);
+        logger.error('branch rename failed after 2 attempts:', err);
         session.needsBranchRename = true;
       }
     }
@@ -202,7 +235,9 @@ export function createHooksRouter(deps: HookDeps): Router {
     };
 
     if (!sessionId || !token || !eventType) {
-      res.status(400).json({ error: 'Missing required fields: sessionId, token, eventType' });
+      res.status(400).json({
+        error: 'Missing required fields: sessionId, token, eventType',
+      });
       return;
     }
 
@@ -235,7 +270,10 @@ export function createHooksRouter(deps: HookDeps): Router {
     } else if (eventType === 'permission.requested') {
       setAgentState(session, 'permission-prompt', deps);
       session.lastAttentionNotifiedAt = Date.now();
-      deps.notifySessionAttention(session.id, { displayName: session.displayName, type: session.type });
+      deps.notifySessionAttention(session.id, {
+        displayName: session.displayName,
+        type: session.type,
+      });
     } else if (eventType === 'tool.started') {
       setAgentState(session, 'processing', deps);
       if (data?.tool) {
@@ -276,7 +314,10 @@ export function createHooksRouter(deps: HookDeps): Router {
     }
     const tokenBuf = Buffer.from(token);
     const hookTokenBuf = Buffer.from(session.hookToken);
-    if (tokenBuf.length !== hookTokenBuf.length || !crypto.timingSafeEqual(tokenBuf, hookTokenBuf)) {
+    if (
+      tokenBuf.length !== hookTokenBuf.length ||
+      !crypto.timingSafeEqual(tokenBuf, hookTokenBuf)
+    ) {
       res.status(403).json({ error: 'Invalid token' });
       return;
     }
@@ -291,7 +332,8 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /stop → idle
   router.post('/stop', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     setAgentState(session, 'idle', deps);
     recordSessionEvent({
       session_id: session.id,
@@ -304,17 +346,24 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /notification → permission-prompt | waiting-for-input
   router.post('/notification', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     const type = req.query.type;
 
     if (type === 'permission_prompt') {
       setAgentState(session, 'permission-prompt', deps);
       session.lastAttentionNotifiedAt = Date.now();
-      deps.notifySessionAttention(session.id, { displayName: session.displayName, type: session.type });
+      deps.notifySessionAttention(session.id, {
+        displayName: session.displayName,
+        type: session.type,
+      });
     } else if (type === 'idle_prompt') {
       setAgentState(session, 'waiting-for-input', deps);
       session.lastAttentionNotifiedAt = Date.now();
-      deps.notifySessionAttention(session.id, { displayName: session.displayName, type: session.type });
+      deps.notifySessionAttention(session.id, {
+        displayName: session.displayName,
+        type: session.type,
+      });
     }
 
     recordSessionEvent({
@@ -329,7 +378,8 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /prompt-submit → processing (+ optional branch rename on first message)
   router.post('/prompt-submit', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     setAgentState(session, 'processing', deps);
 
     recordSessionEvent({
@@ -341,9 +391,10 @@ export function createHooksRouter(deps: HookDeps): Router {
 
     if (session.needsBranchRename === true) {
       session.needsBranchRename = false;
-      const promptText: string = typeof req.body?.prompt === 'string' ? req.body.prompt : '';
+      const promptText: string =
+        typeof req.body?.prompt === 'string' ? req.body.prompt : '';
       spawnBranchRename(session, promptText, deps).catch((err) => {
-        console.error('[hooks] spawnBranchRename error:', err);
+        logger.error('spawnBranchRename error:', err);
       });
     }
 
@@ -352,7 +403,8 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /session-end → acknowledge hook (PTY onExit owns actual cleanup and cleanedUp flag)
   router.post('/session-end', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     recordSessionEvent({
       session_id: session.id,
       repo_path: session.repoPath,
@@ -365,12 +417,14 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /tool-use → set currentActivity
   router.post('/tool-use', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     const body = req.body as Record<string, unknown> | undefined;
     const toolName = typeof body?.tool_name === 'string' ? body.tool_name : '';
     const toolInput = body?.tool_input;
     const detail = extractToolDetail(toolName, toolInput);
-    session.currentActivity = detail !== undefined ? { tool: toolName, detail } : { tool: toolName };
+    session.currentActivity =
+      detail !== undefined ? { tool: toolName, detail } : { tool: toolName };
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
     recordSessionEvent({
       session_id: session.id,
@@ -384,7 +438,8 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /tool-result → clear currentActivity + debounced branch check
   router.post('/tool-result', (req: Request, res: Response) => {
-    const session = (req as unknown as Record<string, unknown>)._hookSession as Session;
+    const session = (req as unknown as Record<string, unknown>)
+      ._hookSession as Session;
     session.currentActivity = undefined;
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
     // When a tool completes while in permission-prompt state, the user has answered

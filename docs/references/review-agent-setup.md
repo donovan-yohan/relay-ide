@@ -50,6 +50,7 @@ Edit the `reviewAgent` section in `docs/risk-contract.json`:
 ```
 
 **Config fields:**
+
 - `checkName` — The GitHub check run name the gate waits for
 - `rerunComment` — Comment text posted to trigger re-review after remediation
 - `timeoutMinutes` — Max time to wait for review completion (default: 20)

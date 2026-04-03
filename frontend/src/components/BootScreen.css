@@ -1,0 +1,75 @@
+.boot-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  background: var(--bg);
+  flex-direction: column;
+  gap: 24px;
+  font-family: var(--font-mono);
+}
+
+.boot-screen__logo {
+  font-size: 32px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  animation: boot-fade-in 0.4s ease-out;
+}
+
+.boot-screen__status {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  min-height: 20px;
+  animation: boot-fade-in 0.6s ease-out;
+}
+
+.boot-screen__progress {
+  display: flex;
+  gap: 4px;
+  animation: boot-fade-in 0.8s ease-out;
+}
+
+.boot-screen__dot {
+  width: 4px;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 50%;
+  opacity: 0.3;
+  animation: boot-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.boot-screen__dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.boot-screen__dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.boot-screen__error {
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+  text-align: center;
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+.boot-screen__error-code {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-top: 8px;
+  opacity: 0.7;
+}
+
+@keyframes boot-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes boot-dot-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}

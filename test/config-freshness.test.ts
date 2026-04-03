@@ -34,10 +34,14 @@ describe('config freshness', () => {
 
     // Simulate: session handler reads config (fresh)
     const fresh = loadConfig(configPath);
-    assert.ok(fresh.repos!.includes('/new/workspace'),
-      'Fresh loadConfig should see repo added after initial load');
-    assert.ok(fresh.repos!.includes('/existing/workspace'),
-      'Fresh loadConfig should still see original repo');
+    assert.ok(
+      fresh.repos!.includes('/new/workspace'),
+      'Fresh loadConfig should see repo added after initial load'
+    );
+    assert.ok(
+      fresh.repos!.includes('/existing/workspace'),
+      'Fresh loadConfig should still see original repo'
+    );
   });
 
   it('loadConfig sees repos removed from disk after initial load', () => {
@@ -62,21 +66,21 @@ describe('config freshness', () => {
 
     // Fresh read should see settings
     const fresh = loadConfig(configPath);
-    assert.equal(fresh.repoSettings?.['/existing/workspace']?.defaultAgent, 'codex');
+    assert.equal(
+      fresh.repoSettings?.['/existing/workspace']?.defaultAgent,
+      'codex'
+    );
   });
 
   it('loadConfig throws when config file is missing', () => {
     fs.unlinkSync(configPath);
-    assert.throws(
-      () => loadConfig(configPath),
-      { message: /Config file not found/ },
-    );
+    assert.throws(() => loadConfig(configPath), {
+      message: /Config file not found/,
+    });
   });
 
   it('loadConfig throws on corrupted JSON', () => {
     fs.writeFileSync(configPath, '{bad json');
-    assert.throws(
-      () => loadConfig(configPath),
-    );
+    assert.throws(() => loadConfig(configPath));
   });
 });

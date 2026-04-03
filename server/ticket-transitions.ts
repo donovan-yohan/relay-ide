@@ -4,9 +4,16 @@ import { promisify } from 'node:util';
 import { Router } from 'express';
 
 import { loadConfig } from './config.js';
-import type { Config, TicketContext, TransitionState, BranchLink } from './types.js';
+import type {
+  Config,
+  TicketContext,
+  TransitionState,
+  BranchLink,
+} from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('ticket-transitions');
 
 const GH_TIMEOUT_MS = 10_000;
 
@@ -32,7 +39,7 @@ async function addLabel(
   exec: typeof execFileAsync,
   repoPath: string,
   issueNumber: string,
-  label: string,
+  label: string
 ): Promise<boolean> {
   try {
     await exec('gh', ['issue', 'edit', issueNumber, '--add-label', label], {
@@ -41,7 +48,10 @@ async function addLabel(
     });
     return true;
   } catch (err) {
-    console.error(`[ticket-transitions] Failed to add label "${label}" to #${issueNumber}:`, err);
+    logger.error(
+      `[ticket-transitions] Failed to add label "${label}" to #${issueNumber}:`,
+      err
+    );
     return false;
   }
 }
@@ -50,7 +60,7 @@ async function removeLabel(
   exec: typeof execFileAsync,
   repoPath: string,
   issueNumber: string,
-  label: string,
+  label: string
 ): Promise<void> {
   try {
     await exec('gh', ['issue', 'edit', issueNumber, '--remove-label', label], {
@@ -63,12 +73,32 @@ async function removeLabel(
 }
 
 /** Call a Jira transition by name via acli. Returns true on success, false on failure. */
-async function jiraTransition(exec: typeof execFileAsync, ticketId: string, transitionName: string): Promise<boolean> {
+async function jiraTransition(
+  exec: typeof execFileAsync,
+  ticketId: string,
+  transitionName: string
+): Promise<boolean> {
   try {
-    await exec('acli', ['jira', 'workitem', 'transition', '--key', ticketId, '--status', transitionName, '--yes'], { timeout: 10_000 });
+    await exec(
+      'acli',
+      [
+        'jira',
+        'workitem',
+        'transition',
+        '--key',
+        ticketId,
+        '--status',
+        transitionName,
+        '--yes',
+      ],
+      { timeout: 10_000 }
+    );
     return true;
   } catch (err) {
-    console.error(`[ticket-transitions] Jira transition failed for ${ticketId}:`, err);
+    logger.error(
+      `[ticket-transitions] Jira transition failed for ${ticketId}:`,
+      err
+    );
     return false;
   }
 }
@@ -76,7 +106,10 @@ async function jiraTransition(exec: typeof execFileAsync, ticketId: string, tran
 /**
  * Best-effort source detection from a ticket ID pattern.
  */
-function detectTicketSource(ticketId: string, links?: BranchLink[]): 'github' | 'jira' {
+function detectTicketSource(
+  ticketId: string,
+  links?: BranchLink[]
+): 'github' | 'jira' {
   // Use explicit source from branch link if available
   if (links) {
     const linkWithSource = links.find((l) => l.source);
@@ -97,7 +130,10 @@ export function createTicketTransitionsRouter(deps: TicketTransitionsDeps) {
   const router = Router();
 
   /** Get Jira status mapping for a transition state from config */
-  function getJiraStatusMapping(config: Config, state: TransitionState): string | undefined {
+  function getJiraStatusMapping(
+    config: Config,
+    state: TransitionState
+  ): string | undefined {
     return config.integrations?.jira?.statusMappings?.[state];
   }
 
@@ -122,7 +158,7 @@ export function createTicketTransitionsRouter(deps: TicketTransitionsDeps) {
 
   async function checkPrTransitions(
     prs: PrForTransition[],
-    branchLinks: Record<string, BranchLink[]>,
+    branchLinks: Record<string, BranchLink[]>
   ): Promise<void> {
     const config = loadConfig(configPath);
     for (const pr of prs) {
@@ -133,7 +169,11 @@ export function createTicketTransitionsRouter(deps: TicketTransitionsDeps) {
         const current = transitionMap.get(ticketId);
         const source = detectTicketSource(ticketId, links);
 
-        if (pr.state === 'OPEN' && current !== 'code-review' && current !== 'ready-for-qa') {
+        if (
+          pr.state === 'OPEN' &&
+          current !== 'code-review' &&
+          current !== 'ready-for-qa'
+        ) {
           if (source === 'github') {
             const issueNum = ghIssueNumber(ticketId);
             if (!issueNum) continue;

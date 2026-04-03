@@ -6,6 +6,7 @@ import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
+import { MarqueeText } from './MarqueeText.js';
 import './WorkspaceItem.css';
 
 export interface SidebarItem {
@@ -98,7 +99,7 @@ export function WorkspaceItem({ workspace, sessionGroups, inactiveWorktrees = []
             {collapsed ? '›' : '⌄'}
           </span>
           <span className="initial-block" style={{ background: initialColor }}>{initial}</span>
-          <span className="workspace-name">{workspace.name}</span>
+          <span className="workspace-name"><MarqueeText>{workspace.name}</MarqueeText></span>
           {collapsed && totalItems > 0 ? <span className="collapse-count">{totalItems}</span> : null}
         </div>
         <div className="workspace-actions">
@@ -120,13 +121,13 @@ export function WorkspaceItem({ workspace, sessionGroups, inactiveWorktrees = []
                 <li key={groupPath} className={['session-row', isSelected && 'selected', attention && 'attention'].filter(Boolean).join(' ')} data-track="sidebar.session.click" onClick={() => onSelectSession(rep.id)} onTouchEnd={cancelLongPress} onTouchMove={cancelLongPress}>
                   <div className="session-row-primary">
                     <span className={`status-dot status-dot--${dotState}`} />
-                    <span className={['session-name', attention && 'bold'].filter(Boolean).join(' ')}>{groupDisplayName(groupPath, workspace.path, groupSessions)}</span>
+                    <span className={['session-name', attention && 'bold'].filter(Boolean).join(' ')}><MarqueeText>{groupDisplayName(groupPath, workspace.path, groupSessions)}</MarqueeText></span>
                     {groupSessions.length > 1 ? <span className="session-count-badge">{groupSessions.length}</span> : null}
                     {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
                   </div>
                   <div className="session-row-secondary">
                     <span className="secondary-time">{formatRelativeTimeCompact(rep.lastActivity)}</span>
-                    {rep.branchName ? <span className="secondary-branch">{rep.branchName}</span> : null}
+                    {rep.branchName ? <span className="secondary-branch"><MarqueeText>{rep.branchName}</MarqueeText></span> : null}
                   </div>
                 </li>
               );
@@ -137,9 +138,9 @@ export function WorkspaceItem({ workspace, sessionGroups, inactiveWorktrees = []
                 <li key={groupPath} className={['session-row', 'inactive', isLoading && 'loading'].filter(Boolean).join(' ')} data-track="sidebar.repo.click" onClick={() => { if (!isLoading) onSelectWorkspace(workspace.path); }}>
                   <div className="session-row-primary">
                     <span className="dot dot-inactive" />
-                    <span className="session-name">{isLoading ? 'starting...' : 'default'}</span>
+                    <span className="session-name"><MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText></span>
                   </div>
-                  {workspace.defaultBranch ? <div className="session-row-secondary"><span className="secondary-branch">{workspace.defaultBranch}</span></div> : null}
+                  {workspace.defaultBranch ? <div className="session-row-secondary"><span className="secondary-branch"><MarqueeText>{workspace.defaultBranch}</MarqueeText></span></div> : null}
                 </li>
               );
             }
@@ -151,11 +152,11 @@ export function WorkspaceItem({ workspace, sessionGroups, inactiveWorktrees = []
               <li key={wt.path} className={['session-row', 'inactive', isLoading && 'loading'].filter(Boolean).join(' ')} data-track="sidebar.worktree.click" onClick={() => { if (!isLoading) onResumeWorktree?.(wt); }} onTouchEnd={cancelLongPress} onTouchMove={cancelLongPress}>
                 <div className="session-row-primary">
                   <span className="dot dot-inactive" />
-                  <span className="session-name">{isLoading ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</span>
+                  <span className="session-name"><MarqueeText>{isLoading ? 'resuming...' : wt.branchName || wt.displayName || wt.name}</MarqueeText></span>
                 </div>
                 <div className="session-row-secondary">
                   <span className="secondary-time">{formatRelativeTimeCompact(wt.lastActivity)}</span>
-                  {wt.branchName ? <span className="secondary-branch">{wt.branchName}</span> : null}
+                  {wt.branchName ? <span className="secondary-branch"><MarqueeText>{wt.branchName}</MarqueeText></span> : null}
                 </div>
               </li>
             );

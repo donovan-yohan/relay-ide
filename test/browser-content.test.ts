@@ -57,7 +57,10 @@ test('resolveTokenPath serves file within baseDir', () => {
 test('resolveTokenPath serves nested file', () => {
   const filePath = path.join(tmpDir, 'index.html');
   const token = createBrowserToken(filePath);
-  assert.strictEqual(resolveTokenPath(token, 'sub/nested.js'), path.join(tmpDir, 'sub', 'nested.js'));
+  assert.strictEqual(
+    resolveTokenPath(token, 'sub/nested.js'),
+    path.join(tmpDir, 'sub', 'nested.js')
+  );
 });
 
 test('resolveTokenPath rejects path traversal', () => {

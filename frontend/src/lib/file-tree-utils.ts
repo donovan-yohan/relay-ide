@@ -61,7 +61,9 @@ export function buildChangedFilesTree(files: ChangedFile[]): FileTreeNode[] {
           depth: i,
         });
       } else {
-        let dir = current.children.find(c => c.isDirectory && c.name === part);
+        let dir = current.children.find(
+          (c) => c.isDirectory && c.name === part
+        );
         if (!dir) {
           dir = {
             name: part,
@@ -102,7 +104,7 @@ export function buildChangedFilesTree(files: ChangedFile[]): FileTreeNode[] {
   // Collapse single-child directories: if a dir has exactly one child that is also a dir,
   // merge them into "parent/child"
   function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
-    return nodes.map(node => {
+    return nodes.map((node) => {
       if (!node.isDirectory) return node;
       node.children = collapse(node.children);
       if (node.children.length === 1 && node.children[0]!.isDirectory) {
@@ -136,7 +138,10 @@ export function buildChangedFilesTree(files: ChangedFile[]): FileTreeNode[] {
 // ── flattenVisibleNodes ──
 // Flattens tree into a list of visible nodes (respecting expanded state) for rendering.
 
-export function flattenVisibleNodes(nodes: FileTreeNode[], depth = 0): FlatNode[] {
+export function flattenVisibleNodes(
+  nodes: FileTreeNode[],
+  depth = 0
+): FlatNode[] {
   const result: FlatNode[] = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
@@ -154,10 +159,10 @@ export function flattenVisibleNodes(nodes: FileTreeNode[], depth = 0): FlatNode[
 
 export function findMostRecentlyChanged(
   previousFiles: string[],
-  currentFiles: string[],
+  currentFiles: string[]
 ): string[] {
   const prevSet = new Set(previousFiles);
-  return currentFiles.filter(f => !prevSet.has(f));
+  return currentFiles.filter((f) => !prevSet.has(f));
 }
 
 // ── parseLineReference ──
@@ -165,7 +170,7 @@ export function findMostRecentlyChanged(
 
 export function parseLineReference(
   filePath: string,
-  lineNumber: number,
+  lineNumber: number
 ): string {
   return `\`${filePath}:${lineNumber}\``;
 }
@@ -175,20 +180,30 @@ export function parseLineReference(
 
 export function statusToBadge(status: FileChangeStatus): string {
   switch (status) {
-    case 'added': return 'A';
-    case 'modified': return 'M';
-    case 'deleted': return 'D';
-    case 'renamed': return 'R';
-    case 'untracked': return '?';
+    case 'added':
+      return 'A';
+    case 'modified':
+      return 'M';
+    case 'deleted':
+      return 'D';
+    case 'renamed':
+      return 'R';
+    case 'untracked':
+      return '?';
   }
 }
 
 export function statusToBadgeColor(status: FileChangeStatus): string {
   switch (status) {
-    case 'added': return 'var(--status-success)';
-    case 'modified': return 'var(--status-warning)';
-    case 'deleted': return 'var(--status-error)';
-    case 'renamed': return 'var(--status-info)';
-    case 'untracked': return 'var(--text-muted)';
+    case 'added':
+      return 'var(--status-success)';
+    case 'modified':
+      return 'var(--status-warning)';
+    case 'deleted':
+      return 'var(--status-error)';
+    case 'renamed':
+      return 'var(--status-info)';
+    case 'untracked':
+      return 'var(--text-muted)';
   }
 }

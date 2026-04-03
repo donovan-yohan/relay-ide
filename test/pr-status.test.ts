@@ -39,15 +39,24 @@ describe('derivePrDotStatus', () => {
   });
 
   it('returns changes-requested when reviewDecision is CHANGES_REQUESTED', () => {
-    assert.equal(derivePrDotStatus(makePr({ reviewDecision: 'CHANGES_REQUESTED' })), 'changes-requested');
+    assert.equal(
+      derivePrDotStatus(makePr({ reviewDecision: 'CHANGES_REQUESTED' })),
+      'changes-requested'
+    );
   });
 
   it('returns approved when reviewDecision is APPROVED', () => {
-    assert.equal(derivePrDotStatus(makePr({ reviewDecision: 'APPROVED' })), 'approved');
+    assert.equal(
+      derivePrDotStatus(makePr({ reviewDecision: 'APPROVED' })),
+      'approved'
+    );
   });
 
   it('returns review-requested for reviewers', () => {
-    assert.equal(derivePrDotStatus(makePr({ role: 'reviewer' })), 'review-requested');
+    assert.equal(
+      derivePrDotStatus(makePr({ role: 'reviewer' })),
+      'review-requested'
+    );
   });
 
   it('returns open for plain open PRs', () => {
@@ -55,23 +64,51 @@ describe('derivePrDotStatus', () => {
   });
 
   it('draft takes priority over changes-requested', () => {
-    assert.equal(derivePrDotStatus(makePr({ isDraft: true, reviewDecision: 'CHANGES_REQUESTED' })), 'draft');
+    assert.equal(
+      derivePrDotStatus(
+        makePr({ isDraft: true, reviewDecision: 'CHANGES_REQUESTED' })
+      ),
+      'draft'
+    );
   });
 
   it('merged takes priority over everything', () => {
-    assert.equal(derivePrDotStatus(makePr({ state: 'MERGED', isDraft: true, reviewDecision: 'APPROVED', role: 'reviewer' })), 'merged');
+    assert.equal(
+      derivePrDotStatus(
+        makePr({
+          state: 'MERGED',
+          isDraft: true,
+          reviewDecision: 'APPROVED',
+          role: 'reviewer',
+        })
+      ),
+      'merged'
+    );
   });
 });
 
 describe('prGlyph', () => {
   it('maps each status to a unique character', () => {
-    const statuses: PrDotStatus[] = ['draft', 'open', 'review-requested', 'changes-requested', 'approved', 'merged', 'closed', 'unknown'];
-    const chars = statuses.map(s => prGlyph(s).char);
+    const statuses: PrDotStatus[] = [
+      'draft',
+      'open',
+      'review-requested',
+      'changes-requested',
+      'approved',
+      'merged',
+      'closed',
+      'unknown',
+    ];
+    const chars = statuses.map((s) => prGlyph(s).char);
     for (const c of chars) {
       assert.ok(c.length > 0, 'each glyph should be non-empty');
     }
     // Ensure each status maps to a distinct glyph character
-    assert.equal(new Set(chars).size, statuses.length, 'all glyph characters should be unique');
+    assert.equal(
+      new Set(chars).size,
+      statuses.length,
+      'all glyph characters should be unique'
+    );
   });
 
   it('approved is green checkmark', () => {

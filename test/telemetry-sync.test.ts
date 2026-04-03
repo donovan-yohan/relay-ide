@@ -1,13 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { AccountTelemetry, SessionTelemetry } from '../frontend/src/lib/types.js';
+import type {
+  AccountTelemetry,
+  SessionTelemetry,
+} from '../frontend/src/lib/types.js';
 import {
   mergeAccountTelemetrySnapshot,
   mergeSessionTelemetrySnapshot,
 } from '../frontend/src/lib/telemetry-sync.js';
 
-function makeSessionTelemetry(overrides: Partial<SessionTelemetry> = {}): SessionTelemetry {
+function makeSessionTelemetry(
+  overrides: Partial<SessionTelemetry> = {}
+): SessionTelemetry {
   return {
     sessionId: 'session-1',
     model: 'Claude Sonnet 4',
@@ -26,7 +31,9 @@ function makeSessionTelemetry(overrides: Partial<SessionTelemetry> = {}): Sessio
   };
 }
 
-function makeAccountTelemetry(overrides: Partial<AccountTelemetry> = {}): AccountTelemetry {
+function makeAccountTelemetry(
+  overrides: Partial<AccountTelemetry> = {}
+): AccountTelemetry {
   return {
     fiveHourUsedPercent: 10,
     fiveHourResetsAt: '2026-04-01T05:00:00.000Z',
@@ -59,7 +66,7 @@ describe('mergeSessionTelemetrySnapshot', () => {
           updatedAt: '2026-04-01T00:00:05.000Z',
         }),
       ],
-      '2026-04-01T00:00:08.000Z',
+      '2026-04-01T00:00:08.000Z'
     );
     const mergedAccount = mergeAccountTelemetrySnapshot(
       currentAccount,
@@ -67,7 +74,7 @@ describe('mergeSessionTelemetrySnapshot', () => {
         fiveHourUsedPercent: 20,
         updatedAt: '2026-04-01T00:00:05.000Z',
       }),
-      '2026-04-01T00:00:08.000Z',
+      '2026-04-01T00:00:08.000Z'
     );
 
     assert.deepEqual(Object.keys(mergedSessions).sort(), ['session-1']);
@@ -84,7 +91,7 @@ describe('mergeSessionTelemetrySnapshot', () => {
     const mergedSessions = mergeSessionTelemetrySnapshot(
       { 'session-2': currentSession },
       [],
-      '2026-04-01T00:00:08.000Z',
+      '2026-04-01T00:00:08.000Z'
     );
 
     assert.deepEqual(Object.keys(mergedSessions), ['session-2']);

@@ -1,8 +1,19 @@
 import type { IPty } from 'node-pty';
 import type { OutputParser } from './output-parsers/index.js';
 
-export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
-export type BackendDisplayState = 'initializing' | 'running' | 'idle' | 'permission' | 'error';
+export type AgentState =
+  | 'initializing'
+  | 'waiting-for-input'
+  | 'processing'
+  | 'permission-prompt'
+  | 'error'
+  | 'idle';
+export type BackendDisplayState =
+  | 'initializing'
+  | 'running'
+  | 'idle'
+  | 'permission'
+  | 'error';
 
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = string;
@@ -104,17 +115,26 @@ export function resolveFramework(
   config: { frameworks?: Record<string, Partial<AgentFramework>> },
   frameworkId: string
 ): AgentFramework {
-  const builtin = BUILTIN_FRAMEWORKS[frameworkId as BuiltinFrameworkId] as AgentFramework | undefined;
+  const builtin = BUILTIN_FRAMEWORKS[frameworkId as BuiltinFrameworkId] as
+    | AgentFramework
+    | undefined;
   const override = config.frameworks?.[frameworkId];
 
   if (!builtin && !override) {
-    throw new Error(`Unknown framework: "${frameworkId}". Register it in config.frameworks.`);
+    throw new Error(
+      `Unknown framework: "${frameworkId}". Register it in config.frameworks.`
+    );
   }
 
   if (!builtin) {
     // fully custom framework from config — validate all required fields before returning
     const custom = override!;
-    const validEventSources: EventSourceType[] = ['hooks', 'plugin', 'parser', 'timer'];
+    const validEventSources: EventSourceType[] = [
+      'hooks',
+      'plugin',
+      'parser',
+      'timer',
+    ];
     if (
       !custom.id ||
       !custom.displayName ||
@@ -154,15 +174,15 @@ export function resolveFramework(
 
 // Deprecated aliases derived from BUILTIN_FRAMEWORKS for backward compatibility
 export const AGENT_COMMANDS: Record<string, string> = Object.fromEntries(
-  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.command])
+  Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.command])
 );
 
 export const AGENT_CONTINUE_ARGS: Record<string, string[]> = Object.fromEntries(
-  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.continueArgs])
+  Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.continueArgs])
 );
 
 export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
-  Object.values(BUILTIN_FRAMEWORKS).map(f => [f.id, f.yoloArgs])
+  Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.yoloArgs])
 );
 
 // Session types — discriminated union on `mode`
@@ -278,8 +298,8 @@ export interface WorktreeMetadata {
 export interface WorkspaceSettings {
   // Session defaults
   defaultAgent?: AgentType;
-  defaultFramework?: string;                      // replaces defaultAgent (v5+)
-  frameworkOverrides?: Partial<AgentFramework>;   // per-repo framework customization
+  defaultFramework?: string; // replaces defaultAgent (v5+)
+  frameworkOverrides?: Partial<AgentFramework>; // per-repo framework customization
   defaultContinue?: boolean;
   defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
@@ -303,17 +323,42 @@ export interface WorkspaceSettings {
   nextMountainIndex?: number;
 
   // Webhook tracking
-  webhookId?: number;         // GitHub webhook ID for deletion tracking
-  webhookEnabled?: boolean;   // Per-workspace webhook toggle
-  webhookError?: string;      // 'not-admin' | 'not-found' | null
+  webhookId?: number; // GitHub webhook ID for deletion tracking
+  webhookEnabled?: boolean; // Per-workspace webhook toggle
+  webhookError?: string; // 'not-admin' | 'not-found' | null
 }
 
 export const MOUNTAIN_NAMES = [
-  'everest', 'kilimanjaro', 'denali', 'fuji', 'rainier', 'matterhorn',
-  'elbrus', 'aconcagua', 'kangchenjunga', 'lhotse', 'makalu', 'cho-oyu',
-  'dhaulagiri', 'manaslu', 'annapurna', 'nanga-parbat', 'olympus',
-  'mont-blanc', 'k2', 'vinson', 'erebus', 'logan', 'puncak-jaya',
-  'wilhelm', 'cook', 'ararat', 'etna', 'shasta', 'whitney', 'hood',
+  'everest',
+  'kilimanjaro',
+  'denali',
+  'fuji',
+  'rainier',
+  'matterhorn',
+  'elbrus',
+  'aconcagua',
+  'kangchenjunga',
+  'lhotse',
+  'makalu',
+  'cho-oyu',
+  'dhaulagiri',
+  'manaslu',
+  'annapurna',
+  'nanga-parbat',
+  'olympus',
+  'mont-blanc',
+  'k2',
+  'vinson',
+  'erebus',
+  'logan',
+  'puncak-jaya',
+  'wilhelm',
+  'cook',
+  'ararat',
+  'etna',
+  'shasta',
+  'whitney',
+  'hood',
 ] as const;
 
 export interface Config {
@@ -326,7 +371,7 @@ export interface Config {
   claudeArgs: string[];
   /** @deprecated Use defaultFramework instead (v5+) */
   defaultAgent: AgentType;
-  defaultFramework: string;                             // replaces defaultAgent (v5+), defaults to 'claude'
+  defaultFramework: string; // replaces defaultAgent (v5+), defaults to 'claude'
   frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
   defaultContinue: boolean;
   defaultYolo: boolean;
@@ -342,19 +387,26 @@ export interface Config {
   debugLog?: boolean | undefined;
   forceOutputParser?: boolean | undefined;
   workspaceGroups?: Record<string, string[]> | undefined;
-  integrations?: {
-    jira?: { projectKey?: string; statusMappings?: Partial<Record<TransitionState, string>> };
-  } | undefined;
+  integrations?:
+    | {
+        jira?: {
+          projectKey?: string;
+          statusMappings?: Partial<Record<TransitionState, string>>;
+        };
+      }
+    | undefined;
   automations?: AutomationSettings | undefined;
   filterPresets?: FilterPreset[] | undefined;
-  github?: {
-    accessToken?: string;
-    username?: string;
-    webhookSecret?: string;
-    smeeUrl?: string;
-    autoProvision?: boolean;    // defaults to false
-    backfillOffered?: boolean;  // tracks if backfill prompt was shown
-  } | undefined;
+  github?:
+    | {
+        accessToken?: string;
+        username?: string;
+        webhookSecret?: string;
+        smeeUrl?: string;
+        autoProvision?: boolean; // defaults to false
+        backfillOffered?: boolean; // tracks if backfill prompt was shown
+      }
+    | undefined;
   updateChannel?: 'stable' | 'nightly' | undefined;
 }
 
@@ -488,7 +540,11 @@ export interface TicketContext {
   repoName: string;
 }
 
-export type TransitionState = 'none' | 'in-progress' | 'code-review' | 'ready-for-qa';
+export type TransitionState =
+  | 'none'
+  | 'in-progress'
+  | 'code-review'
+  | 'ready-for-qa';
 
 export interface ActivityEntry {
   hash: string;
@@ -538,7 +594,13 @@ export interface Repo {
   currentBranch: string | null;
 }
 
-export type RepoRole = 'frontend' | 'backend' | 'lib' | 'infra' | 'docs' | 'other';
+export type RepoRole =
+  | 'frontend'
+  | 'backend'
+  | 'lib'
+  | 'infra'
+  | 'docs'
+  | 'other';
 
 export interface WorkspaceTemplate {
   repoRoles?: Record<string, RepoRole>;
@@ -549,7 +611,7 @@ export interface WorkspaceTemplate {
 
 export interface WorkspaceLevelSettings {
   defaultAgent?: AgentType;
-  defaultFramework?: string;  // replaces defaultAgent (v5+)
+  defaultFramework?: string; // replaces defaultAgent (v5+)
   defaultContinue?: boolean;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
@@ -581,16 +643,21 @@ export interface InstallOpts {
 }
 
 // Changed file status from git status/diff
-export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+export type FileChangeStatus =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked';
 
 export interface ChangedFile {
   path: string;
-  oldPath?: string;          // only for renames
+  oldPath?: string; // only for renames
   status: FileChangeStatus;
   additions: number;
   deletions: number;
-  directory: string;         // parent directory for DataTable groupBy
-  summary?: string;          // rule-based summary (v1)
+  directory: string; // parent directory for DataTable groupBy
+  summary?: string; // rule-based summary (v1)
 }
 
 export interface ChangedFilesResponse {

@@ -1,9 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ActivityEntry, BranchInfo, BranchLifecycleState, ChangedFile, FileChangeStatus, PrInfo } from './types.js';
+import type {
+  ActivityEntry,
+  BranchInfo,
+  BranchLifecycleState,
+  ChangedFile,
+  FileChangeStatus,
+  PrInfo,
+} from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('git');
 
 type ExecFileAsyncResult = {
   stdout: string;
@@ -13,7 +22,7 @@ type ExecFileAsyncResult = {
 type ExecFileAsyncLike = (
   file: string,
   args: string[],
-  options: { cwd: string; timeout?: number },
+  options: { cwd: string; timeout?: number }
 ) => Promise<ExecFileAsyncResult>;
 
 function normalizeBranchNames(stdout: string): string[] {
@@ -31,9 +40,10 @@ async function listBranches(
   options: {
     refresh?: boolean;
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<string[]> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   if (options.refresh) {
     try {
@@ -44,7 +54,11 @@ async function listBranches(
   }
 
   try {
-    const { stdout } = await run('git', ['branch', '-a', '--format=%(refname:short)'], { cwd: repoPath });
+    const { stdout } = await run(
+      'git',
+      ['branch', '-a', '--format=%(refname:short)'],
+      { cwd: repoPath }
+    );
     return normalizeBranchNames(stdout);
   } catch {
     return [];
@@ -53,11 +67,14 @@ async function listBranches(
 
 async function getCurrentBranch(
   repoPath: string,
-  options: { exec?: ExecFileAsyncLike } = {},
+  options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<string | null> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
-    const { stdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath });
+    const { stdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: repoPath,
+    });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -68,9 +85,10 @@ async function getActivityFeed(
   repoPath: string,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<ActivityEntry[]> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   try {
     const { stdout } = await run(
@@ -83,7 +101,7 @@ async function getActivityFeed(
         '--max-count=50',
         '--format=%H|%h|%s|%an|%ar|%D',
       ],
-      { cwd: repoPath, timeout: 5000 },
+      { cwd: repoPath, timeout: 5000 }
     );
 
     const lines = stdout.split('\n').filter((line) => line.trim());
@@ -139,15 +157,15 @@ async function getActivityFeed(
   }
 }
 
-
 async function switchBranch(
   repoPath: string,
   branch: string,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<{ success: true } | { success: false; error: string }> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   try {
     await run('git', ['checkout', branch], { cwd: repoPath, timeout: 5000 });
@@ -168,15 +186,16 @@ async function getCommitsAhead(
   baseBranch: string,
   options: {
     exec?: ExecFileAsyncLike;
-  } = {},
+  } = {}
 ): Promise<number> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   try {
     const { stdout } = await run(
       'git',
       ['rev-list', '--count', `${baseBranch}..${branch}`],
-      { cwd: repoPath, timeout: 5000 },
+      { cwd: repoPath, timeout: 5000 }
     );
     const count = parseInt(stdout.trim(), 10);
     return Number.isFinite(count) ? count : 0;
@@ -187,10 +206,13 @@ async function getCommitsAhead(
 
 async function getWorkingTreeDiff(
   repoPath: string,
-  exec: ExecFileAsyncLike = execFileAsync,
+  exec: ExecFileAsyncLike = execFileAsync
 ): Promise<{ additions: number; deletions: number }> {
   try {
-    const { stdout } = await exec('git', ['diff', '--shortstat'], { cwd: repoPath, timeout: 5000 });
+    const { stdout } = await exec('git', ['diff', '--shortstat'], {
+      cwd: repoPath,
+      timeout: 5000,
+    });
     // Output like: " 3 files changed, 55 insertions(+), 12 deletions(-)"
     const insertions = stdout.match(/(\d+) insertion/);
     const deletions = stdout.match(/(\d+) deletion/);
@@ -209,7 +231,10 @@ async function getWorkingTreeDiff(
  * "feature/add-auth"      → "Add auth"
  */
 function branchToDisplayName(branch: string): string {
-  const stripped = branch.replace(/^(feature|fix|chore|refactor|docs|test|ci|build)\//i, '');
+  const stripped = branch.replace(
+    /^(feature|fix|chore|refactor|docs|test|ci|build)\//i,
+    ''
+  );
   const words = stripped.replace(/[-_]/g, ' ').trim();
   if (!words) return branch;
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -218,15 +243,17 @@ function branchToDisplayName(branch: string): string {
 async function isBranchStale(
   repoPath: string,
   branch: string,
-  options: { exec?: ExecFileAsyncLike } = {},
+  options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<boolean> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
     for (const base of ['main', 'master']) {
       try {
         const { stdout } = await run(
-          'git', ['rev-list', '--count', `${base}..${branch}`],
-          { cwd: repoPath, timeout: 5000 },
+          'git',
+          ['rev-list', '--count', `${base}..${branch}`],
+          { cwd: repoPath, timeout: 5000 }
         );
         const count = parseInt(stdout.trim(), 10);
         if (count === 0) return true;
@@ -250,7 +277,9 @@ function extractOwnerRepo(remoteUrl: string): string | null {
   const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
   if (sshMatch) return sshMatch[1] ?? null;
   // HTTPS: https://github.com/owner/repo.git
-  const httpsMatch = remoteUrl.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  const httpsMatch = remoteUrl.match(
+    /https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/
+  );
   if (httpsMatch) return httpsMatch[1] ?? null;
   return null;
 }
@@ -261,18 +290,17 @@ function extractOwnerRepo(remoteUrl: string): string | null {
  */
 async function buildRepoMap(
   workspacePaths: string[],
-  exec: ExecFileAsyncLike,
+  exec: ExecFileAsyncLike
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
 
   await Promise.all(
     workspacePaths.map(async (wsPath) => {
       try {
-        const { stdout } = await exec(
-          'git',
-          ['remote', 'get-url', 'origin'],
-          { cwd: wsPath, timeout: 10_000 },
-        );
+        const { stdout } = await exec('git', ['remote', 'get-url', 'origin'], {
+          cwd: wsPath,
+          timeout: 10_000,
+        });
         const ownerRepo = extractOwnerRepo(stdout.trim());
         if (ownerRepo) {
           map.set(ownerRepo.toLowerCase(), wsPath);
@@ -280,7 +308,7 @@ async function buildRepoMap(
       } catch {
         // Not a git repo or no remote — skip
       }
-    }),
+    })
   );
 
   return map;
@@ -292,9 +320,10 @@ async function listBranchesEnriched(
     refresh?: boolean;
     exec?: ExecFileAsyncLike;
     sessions?: Array<{ id: string; worktreePath: string | null }>;
-  } = {},
+  } = {}
 ): Promise<BranchInfo[]> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   if (options.refresh) {
     try {
@@ -307,7 +336,11 @@ async function listBranchesEnriched(
   // Get local branches
   let localBranches: string[] = [];
   try {
-    const { stdout } = await run('git', ['branch', '--format=%(refname:short)'], { cwd: repoPath });
+    const { stdout } = await run(
+      'git',
+      ['branch', '--format=%(refname:short)'],
+      { cwd: repoPath }
+    );
     localBranches = stdout
       .split('\n')
       .map((b) => b.trim())
@@ -319,11 +352,17 @@ async function listBranchesEnriched(
   // Get remote branches (strip origin/ prefix, skip HEAD)
   let remoteBranches: string[] = [];
   try {
-    const { stdout } = await run('git', ['branch', '-r', '--format=%(refname:short)'], { cwd: repoPath });
+    const { stdout } = await run(
+      'git',
+      ['branch', '-r', '--format=%(refname:short)'],
+      { cwd: repoPath }
+    );
     remoteBranches = stdout
       .split('\n')
       .map((b) => b.trim())
-      .filter((b) => b.length > 0 && !b.includes('HEAD') && b.startsWith('origin/'))
+      .filter(
+        (b) => b.length > 0 && !b.includes('HEAD') && b.startsWith('origin/')
+      )
       .map((b) => b.replace(/^origin\//, ''));
   } catch {
     // continue with empty list
@@ -332,10 +371,15 @@ async function listBranchesEnriched(
   // Get worktree → branch mapping via porcelain output
   const worktreeBranchMap = new Map<string, string>(); // worktreePath → branchName
   try {
-    const { stdout } = await run('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath });
+    const { stdout } = await run('git', ['worktree', 'list', '--porcelain'], {
+      cwd: repoPath,
+    });
     const blocks = stdout.split(/\n\n+/);
     for (const block of blocks) {
-      const lines = block.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+      const lines = block
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
       let worktreePath: string | null = null;
       let branchName: string | null = null;
       for (const line of lines) {
@@ -343,7 +387,9 @@ async function listBranchesEnriched(
           worktreePath = line.slice('worktree '.length);
         } else if (line.startsWith('branch ')) {
           // "branch refs/heads/branchname"
-          branchName = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+          branchName = line
+            .slice('branch '.length)
+            .replace(/^refs\/heads\//, '');
         }
       }
       if (worktreePath && branchName) {
@@ -355,13 +401,20 @@ async function listBranchesEnriched(
   }
 
   // Build reverse map: branchName → worktree info
-  const branchWorktreeMap = new Map<string, { worktreePath: string; worktreeName: string; sessionId?: string }>();
+  const branchWorktreeMap = new Map<
+    string,
+    { worktreePath: string; worktreeName: string; sessionId?: string }
+  >();
   for (const [wtPath, branchName] of worktreeBranchMap) {
     const worktreeName = wtPath.split('/').at(-1) ?? wtPath;
     const matchingSession = (options.sessions ?? []).find(
-      (s) => s.worktreePath === wtPath,
+      (s) => s.worktreePath === wtPath
     );
-    const entry: { worktreePath: string; worktreeName: string; sessionId?: string } = {
+    const entry: {
+      worktreePath: string;
+      worktreeName: string;
+      sessionId?: string;
+    } = {
       worktreePath: wtPath,
       worktreeName,
     };
@@ -392,36 +445,62 @@ async function listBranchesEnriched(
 async function renameBranch(
   repoPath: string,
   newName: string,
-  options: { exec?: ExecFileAsyncLike } = {},
-): Promise<{ success: true; oldName: string; newName: string } | { success: false; error: string }> {
-  const run = options.exec || execFileAsync as ExecFileAsyncLike;
+  options: { exec?: ExecFileAsyncLike } = {}
+): Promise<
+  | { success: true; oldName: string; newName: string }
+  | { success: false; error: string }
+> {
+  const run = options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
     // Get current branch name first
-    const { stdout: currentStdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath });
+    const { stdout: currentStdout } = await run(
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: repoPath }
+    );
     const oldName = currentStdout.trim();
-    if (!oldName) return { success: false, error: 'Could not determine current branch' };
-    if (oldName === 'HEAD') return { success: false, error: 'Cannot rename: not on a branch (detached HEAD)' };
+    if (!oldName)
+      return { success: false, error: 'Could not determine current branch' };
+    if (oldName === 'HEAD')
+      return {
+        success: false,
+        error: 'Cannot rename: not on a branch (detached HEAD)',
+      };
 
-    await run('git', ['branch', '-m', '--', newName], { cwd: repoPath, timeout: 5000 });
+    await run('git', ['branch', '-m', '--', newName], {
+      cwd: repoPath,
+      timeout: 5000,
+    });
     return { success: true, oldName, newName };
   } catch (err: unknown) {
     const errObj = err as { stderr?: string; message?: string };
-    return { success: false, error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim() };
+    return {
+      success: false,
+      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+    };
   }
 }
 
 async function createBranch(
   repoPath: string,
   branchName: string,
-  options: { exec?: ExecFileAsyncLike } = {},
-): Promise<{ success: true; branch: string } | { success: false; error: string }> {
-  const run = options.exec || execFileAsync as ExecFileAsyncLike;
+  options: { exec?: ExecFileAsyncLike } = {}
+): Promise<
+  { success: true; branch: string } | { success: false; error: string }
+> {
+  const run = options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
-    await run('git', ['checkout', '-b', '--', branchName], { cwd: repoPath, timeout: 5000 });
+    await run('git', ['checkout', '-b', '--', branchName], {
+      cwd: repoPath,
+      timeout: 5000,
+    });
     return { success: true, branch: branchName };
   } catch (err: unknown) {
     const errObj = err as { stderr?: string; message?: string };
-    return { success: false, error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim() };
+    return {
+      success: false,
+      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+    };
   }
 }
 
@@ -429,21 +508,39 @@ async function pushBranch(
   repoPath: string,
   branch: string,
   deleteOldBranch?: string,
-  options: { exec?: ExecFileAsyncLike } = {},
-): Promise<{ success: true; deleteError?: string } | { success: false; error: string }> {
-  const run = options.exec || execFileAsync as ExecFileAsyncLike;
+  options: { exec?: ExecFileAsyncLike } = {}
+): Promise<
+  { success: true; deleteError?: string } | { success: false; error: string }
+> {
+  const run = options.exec || (execFileAsync as ExecFileAsyncLike);
   try {
-    await run('git', ['push', 'origin', branch], { cwd: repoPath, timeout: 30000 });
+    await run('git', ['push', 'origin', branch], {
+      cwd: repoPath,
+      timeout: 30000,
+    });
   } catch (err: unknown) {
     const errObj = err as { stderr?: string; message?: string };
-    return { success: false, error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim() };
+    return {
+      success: false,
+      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+    };
   }
   if (deleteOldBranch) {
     try {
-      await run('git', ['push', 'origin', '--delete', deleteOldBranch], { cwd: repoPath, timeout: 10000 });
+      await run('git', ['push', 'origin', '--delete', deleteOldBranch], {
+        cwd: repoPath,
+        timeout: 10000,
+      });
     } catch (err: unknown) {
       const errObj = err as { stderr?: string; message?: string };
-      return { success: true, deleteError: (errObj.stderr ?? errObj.message ?? 'Failed to delete old branch').trim() };
+      return {
+        success: true,
+        deleteError: (
+          errObj.stderr ??
+          errObj.message ??
+          'Failed to delete old branch'
+        ).trim(),
+      };
     }
   }
   return { success: true };
@@ -451,10 +548,14 @@ async function pushBranch(
 
 function parseStatus(code: string): FileChangeStatus {
   switch (code.trim()) {
-    case 'M': return 'modified';
-    case 'A': return 'added';
-    case 'D': return 'deleted';
-    case '??': return 'untracked';
+    case 'M':
+      return 'modified';
+    case 'A':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case '??':
+      return 'untracked';
     default:
       if (code.startsWith('R')) return 'renamed';
       return 'modified';
@@ -491,35 +592,64 @@ function normalizeNumstatPath(filePath: string): string {
 async function getChangedFiles(
   repoPath: string,
   base?: string,
-  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike
 ): Promise<ChangedFile[]> {
-  let statusEntries: Array<{ path: string; oldPath?: string; status: FileChangeStatus }>;
+  let statusEntries: Array<{
+    path: string;
+    oldPath?: string;
+    status: FileChangeStatus;
+  }>;
 
   if (base === 'cached') {
     // Staged files
-    const { stdout } = await exec('git', ['diff', '--cached', '--name-status', '--find-renames'], { cwd: repoPath, timeout: 10000 });
-    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
-      const parts = line.split('\t');
-      const code = parts[0] ?? '';
-      if (code.startsWith('R')) {
-        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
-      }
-      return { path: parts[1] ?? '', status: parseStatus(code) };
-    });
+    const { stdout } = await exec(
+      'git',
+      ['diff', '--cached', '--name-status', '--find-renames'],
+      { cwd: repoPath, timeout: 10000 }
+    );
+    statusEntries = stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split('\t');
+        const code = parts[0] ?? '';
+        if (code.startsWith('R')) {
+          return {
+            path: parts[2] ?? '',
+            oldPath: parts[1] ?? '',
+            status: 'renamed' as FileChangeStatus,
+          };
+        }
+        return { path: parts[1] ?? '', status: parseStatus(code) };
+      });
   } else if (base) {
     // Branch comparison
-    const { stdout } = await exec('git', ['diff', '--name-status', '--find-renames', `${base}...HEAD`], { cwd: repoPath, timeout: 10000 });
-    statusEntries = stdout.split('\n').filter(Boolean).map(line => {
-      const parts = line.split('\t');
-      const code = parts[0] ?? '';
-      if (code.startsWith('R')) {
-        return { path: parts[2] ?? '', oldPath: parts[1] ?? '', status: 'renamed' as FileChangeStatus };
-      }
-      return { path: parts[1] ?? '', status: parseStatus(code) };
-    });
+    const { stdout } = await exec(
+      'git',
+      ['diff', '--name-status', '--find-renames', `${base}...HEAD`],
+      { cwd: repoPath, timeout: 10000 }
+    );
+    statusEntries = stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split('\t');
+        const code = parts[0] ?? '';
+        if (code.startsWith('R')) {
+          return {
+            path: parts[2] ?? '',
+            oldPath: parts[1] ?? '',
+            status: 'renamed' as FileChangeStatus,
+          };
+        }
+        return { path: parts[1] ?? '', status: parseStatus(code) };
+      });
   } else {
     // Working tree: git status --porcelain=v1 -z
-    const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], { cwd: repoPath, timeout: 10000 });
+    const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], {
+      cwd: repoPath,
+      timeout: 10000,
+    });
     statusEntries = [];
     const parts = stdout.split('\0').filter(Boolean);
     for (let i = 0; i < parts.length; i++) {
@@ -543,9 +673,15 @@ async function getChangedFiles(
   const numstatArgs = base
     ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
     : ['diff', '--numstat', '--find-renames', 'HEAD'];
-  const numstatMap = new Map<string, { additions: number; deletions: number }>();
+  const numstatMap = new Map<
+    string,
+    { additions: number; deletions: number }
+  >();
   try {
-    const { stdout: numstat } = await exec('git', numstatArgs, { cwd: repoPath, timeout: 10000 });
+    const { stdout: numstat } = await exec('git', numstatArgs, {
+      cwd: repoPath,
+      timeout: 10000,
+    });
     for (const line of numstat.split('\n').filter(Boolean)) {
       const [add, del, ...pathParts] = line.split('\t');
       const filePath = pathParts.join('\t');
@@ -556,7 +692,11 @@ async function getChangedFiles(
       });
     }
   } catch (err: unknown) {
-    console.warn('[git] numstat failed for', repoPath, err instanceof Error ? err.message : String(err));
+    logger.warn(
+      '[git] numstat failed for',
+      repoPath,
+      err instanceof Error ? err.message : String(err)
+    );
   }
 
   const files: ChangedFile[] = [];
@@ -568,7 +708,10 @@ async function getChangedFiles(
 
     if (entry.status === 'untracked' && additions === 0) {
       try {
-        const { stdout: wcOut } = await exec('wc', ['-l', '--', entry.path], { cwd: repoPath, timeout: 5000 });
+        const { stdout: wcOut } = await exec('wc', ['-l', '--', entry.path], {
+          cwd: repoPath,
+          timeout: 5000,
+        });
         const match = wcOut.trim().match(/^\s*(\d+)/);
         if (match) additions = parseInt(match[1]!, 10);
       } catch {
@@ -593,7 +736,7 @@ async function getFileDiff(
   repoPath: string,
   filePath: string,
   base?: string,
-  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike
 ): Promise<string> {
   let args: string[];
   if (!base) {
@@ -601,7 +744,14 @@ async function getFileDiff(
   } else if (base === 'cached') {
     args = ['diff', '--cached', '--unified=3', '--', filePath];
   } else {
-    args = ['diff', `${base}...HEAD`, '--unified=3', '--find-renames', '--', filePath];
+    args = [
+      'diff',
+      `${base}...HEAD`,
+      '--unified=3',
+      '--find-renames',
+      '--',
+      filePath,
+    ];
   }
 
   const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
@@ -609,7 +759,11 @@ async function getFileDiff(
   // If empty (no changes or untracked), try --no-index for new files
   if (!stdout.trim()) {
     try {
-      const { stdout: noIndexOut } = await exec('git', ['diff', '--no-index', '--', '/dev/null', filePath], { cwd: repoPath, timeout: 10000 });
+      const { stdout: noIndexOut } = await exec(
+        'git',
+        ['diff', '--no-index', '--', '/dev/null', filePath],
+        { cwd: repoPath, timeout: 10000 }
+      );
       return noIndexOut;
     } catch (err: unknown) {
       // git diff --no-index exits with code 1 when there ARE differences
@@ -623,11 +777,15 @@ async function getFileDiff(
 
 async function getDefaultBranch(
   repoPath: string,
-  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike
 ): Promise<string> {
   // Try symbolic-ref first (most repos have this set)
   try {
-    const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: repoPath, timeout: 5000 });
+    const { stdout } = await exec(
+      'git',
+      ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      { cwd: repoPath, timeout: 5000 }
+    );
     const ref = stdout.trim();
     const prefix = 'refs/remotes/origin/';
     if (ref.startsWith(prefix)) return ref.slice(prefix.length);
@@ -638,7 +796,10 @@ async function getDefaultBranch(
   // Check if main or master exists locally
   for (const candidate of ['main', 'master']) {
     try {
-      await exec('git', ['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd: repoPath, timeout: 5000 });
+      await exec('git', ['rev-parse', '--verify', `refs/heads/${candidate}`], {
+        cwd: repoPath,
+        timeout: 5000,
+      });
       return candidate;
     } catch {
       // Not found — try next
@@ -680,13 +841,17 @@ function isGitRefNotFoundError(error: unknown): boolean {
 async function ensureBranchLocal(
   repoPath: string,
   branch: string,
-  options: { exec?: ExecFileAsyncLike } = {},
+  options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<EnsureBranchResult> {
-  const run: ExecFileAsyncLike = options.exec || execFileAsync as ExecFileAsyncLike;
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
 
   // Check if branch exists locally
   try {
-    await run('git', ['rev-parse', '--verify', '--', branch], { cwd: repoPath, timeout: 5000 });
+    await run('git', ['rev-parse', '--verify', '--', branch], {
+      cwd: repoPath,
+      timeout: 5000,
+    });
     return { found: true };
   } catch (error) {
     if (!isGitRefNotFoundError(error)) {
@@ -697,7 +862,10 @@ async function ensureBranchLocal(
 
   // Fetch from origin
   try {
-    await run('git', ['fetch', 'origin', '--', `${branch}:${branch}`], { cwd: repoPath, timeout: 30000 });
+    await run('git', ['fetch', 'origin', '--', `${branch}:${branch}`], {
+      cwd: repoPath,
+      timeout: 30000,
+    });
     return { found: true };
   } catch (error) {
     if (isGitRefNotFoundError(error)) {
@@ -730,7 +898,9 @@ interface BranchLifecycleResult {
  * Compute branch lifecycle state from authoritative sources.
  * Main branch can be active/stale but never merged.
  */
-function computeBranchLifecycleState(input: BranchLifecycleInput): BranchLifecycleResult {
+function computeBranchLifecycleState(
+  input: BranchLifecycleInput
+): BranchLifecycleResult {
   const { pr, isBranchStale: stale, hasActiveSessions, isMainBranch } = input;
 
   // Merged: PR is merged AND not the main branch

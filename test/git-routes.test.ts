@@ -19,7 +19,11 @@ describe('scanWorktrees', () => {
   it('returns worktrees without PR data (no branchState, prNumber, prTitle)', async () => {
     const deps = makeDeps({
       getConfig: () => ({ rootDirs: ['/repos'], repos: [] }),
-      execFileAsync: async (file: string, args: string[], opts: { cwd: string }) => {
+      execFileAsync: async (
+        file: string,
+        args: string[],
+        opts: { cwd: string }
+      ) => {
         if (file === 'git' && args[0] === 'worktree') {
           return {
             stdout: [
@@ -49,9 +53,18 @@ describe('scanWorktrees', () => {
     assert.equal(items.length, 1);
     assert.equal(items[0]!.branchName, 'feat/login');
     for (const wt of items) {
-      assert.equal((wt as unknown as Record<string, unknown>).branchState, undefined);
-      assert.equal((wt as unknown as Record<string, unknown>).prNumber, undefined);
-      assert.equal((wt as unknown as Record<string, unknown>).prTitle, undefined);
+      assert.equal(
+        (wt as unknown as Record<string, unknown>).branchState,
+        undefined
+      );
+      assert.equal(
+        (wt as unknown as Record<string, unknown>).prNumber,
+        undefined
+      );
+      assert.equal(
+        (wt as unknown as Record<string, unknown>).prTitle,
+        undefined
+      );
       assert.ok(typeof wt.path === 'string');
       assert.ok(typeof wt.branchName === 'string');
     }
@@ -68,7 +81,11 @@ describe('scanWorktrees', () => {
 
   it('filters by repo param', async () => {
     const deps = makeDeps({
-      execFileAsync: async (file: string, args: string[], opts: { cwd: string }) => {
+      execFileAsync: async (
+        file: string,
+        args: string[],
+        opts: { cwd: string }
+      ) => {
         if (file === 'git' && args[0] === 'worktree') {
           return {
             stdout: [
@@ -102,7 +119,11 @@ describe('scanWorktrees', () => {
         rootDirs: ['/repos'],
         repos: ['/repos/my-repo'],
       }),
-      execFileAsync: async (file: string, args: string[], opts: { cwd: string }) => {
+      execFileAsync: async (
+        file: string,
+        args: string[],
+        opts: { cwd: string }
+      ) => {
         if (file === 'git' && args[0] === 'worktree') {
           return {
             stdout: [
@@ -120,16 +141,18 @@ describe('scanWorktrees', () => {
         }
         throw new Error(`unexpected: ${file} ${args.join(' ')}`);
       },
-      readdirSync: () => [
-        { name: 'my-repo', isDirectory: () => true },
-      ],
+      readdirSync: () => [{ name: 'my-repo', isDirectory: () => true }],
       statSync: () => ({ isDirectory: () => true }),
     });
 
     const items = await scanWorktrees(deps);
-    const paths = items.map(wt => wt.path);
+    const paths = items.map((wt) => wt.path);
     const uniquePaths = [...new Set(paths)];
-    assert.equal(paths.length, uniquePaths.length, 'should have no duplicate paths');
+    assert.equal(
+      paths.length,
+      uniquePaths.length,
+      'should have no duplicate paths'
+    );
   });
 
   it('falls back to directory scanning when git worktree list fails', async () => {
@@ -139,12 +162,19 @@ describe('scanWorktrees', () => {
         throw new Error('git worktree list failed');
       },
       readdirSync: (dir: string) => {
-        if (dir === '/repos') return [{ name: 'my-repo', isDirectory: () => true }];
-        if (dir.includes('.worktrees')) return [{ name: 'feat-branch', isDirectory: () => true }];
+        if (dir === '/repos')
+          return [{ name: 'my-repo', isDirectory: () => true }];
+        if (dir.includes('.worktrees'))
+          return [{ name: 'feat-branch', isDirectory: () => true }];
         return [];
       },
       statSync: () => ({ isDirectory: () => true }),
-      readMeta: () => ({ worktreePath: '/repos/my-repo/.worktrees/feat-branch', displayName: 'Feature', lastActivity: '', branchName: 'feat-branch' }),
+      readMeta: () => ({
+        worktreePath: '/repos/my-repo/.worktrees/feat-branch',
+        displayName: 'Feature',
+        lastActivity: '',
+        branchName: 'feat-branch',
+      }),
     });
 
     const items = await scanWorktrees(deps);

@@ -1,8 +1,17 @@
-import type { DisplayState, BackendDisplayState } from './state/display-state.js';
+import type {
+  DisplayState,
+  BackendDisplayState,
+} from './state/display-state.js';
 import type { PrDotStatus } from './pr-status.js';
 
 export type AgentType = string;
-export type AgentState = 'initializing' | 'waiting-for-input' | 'processing' | 'permission-prompt' | 'error' | 'idle';
+export type AgentState =
+  | 'initializing'
+  | 'waiting-for-input'
+  | 'processing'
+  | 'permission-prompt'
+  | 'error'
+  | 'idle';
 
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 
@@ -317,7 +326,12 @@ export interface SidebarItem {
 }
 
 // Changed files panel types
-export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+export type FileChangeStatus =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked';
 
 export interface ChangedFile {
   path: string;

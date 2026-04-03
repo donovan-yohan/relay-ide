@@ -6,8 +6,12 @@ import os from 'node:os';
 import express from 'express';
 import http from 'node:http';
 import {
-  initAnalytics, closeAnalytics, createSessionAnalyticsRouter,
-  recordSessionEvent, flushEventBuffer, upsertSessionRollup,
+  initAnalytics,
+  closeAnalytics,
+  createSessionAnalyticsRouter,
+  recordSessionEvent,
+  flushEventBuffer,
+  upsertSessionRollup,
   recordRateLimitSnapshot,
 } from '../server/analytics.js';
 
@@ -16,7 +20,9 @@ let server: http.Server;
 let port: number;
 
 before(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-analytics-api-test-'));
+  tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'session-analytics-api-test-')
+  );
   initAnalytics(tmpDir);
 
   // Seed test data
@@ -68,7 +74,7 @@ before(async () => {
   app.use(express.json());
   app.use('/api/analytics', createSessionAnalyticsRouter());
   server = http.createServer(app);
-  await new Promise<void>(resolve => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
   port = (server.address() as { port: number }).port;
 });
 
@@ -85,7 +91,7 @@ function url(p: string): string {
 test('GET /api/analytics/overview returns summary', async () => {
   const res = await fetch(url('/overview'));
   assert.equal(res.status, 200);
-  const data = await res.json() as Record<string, unknown>;
+  const data = (await res.json()) as Record<string, unknown>;
   assert.equal(typeof data.totalSessions, 'number');
   assert.ok((data.totalSessions as number) >= 1);
   assert.equal(typeof data.totalTokensIn, 'number');
@@ -95,7 +101,7 @@ test('GET /api/analytics/overview returns summary', async () => {
 test('GET /api/analytics/sessions returns paginated list', async () => {
   const res = await fetch(url('/sessions?limit=10'));
   assert.equal(res.status, 200);
-  const data = await res.json() as Record<string, unknown>;
+  const data = (await res.json()) as Record<string, unknown>;
   assert.ok(Array.isArray(data.sessions));
   assert.equal(typeof data.total, 'number');
   assert.equal(typeof data.offset, 'number');
@@ -105,7 +111,7 @@ test('GET /api/analytics/sessions returns paginated list', async () => {
 test('GET /api/analytics/sessions/:id returns session detail', async () => {
   const res = await fetch(url('/sessions/sess-1'));
   assert.equal(res.status, 200);
-  const data = await res.json() as Record<string, unknown>;
+  const data = (await res.json()) as Record<string, unknown>;
   assert.ok(data.session);
   assert.ok(data.toolBreakdown);
   assert.ok(Array.isArray(data.events));
@@ -120,14 +126,16 @@ test('GET /api/analytics/sessions/:id returns 404 for unknown', async () => {
 test('GET /api/analytics/trends returns daily data', async () => {
   const res = await fetch(url('/trends?days=7'));
   assert.equal(res.status, 200);
-  const data = await res.json() as Record<string, unknown>;
+  const data = (await res.json()) as Record<string, unknown>;
   assert.ok(Array.isArray(data.days));
 });
 
 test('GET /api/analytics/tools returns tool breakdown', async () => {
   const res = await fetch(url('/tools?days=7'));
   assert.equal(res.status, 200);
-  const data = await res.json() as { tools: Array<{ name: string; totalUses: number; pctOfUses: number }> };
+  const data = (await res.json()) as {
+    tools: Array<{ name: string; totalUses: number; pctOfUses: number }>;
+  };
   assert.ok(Array.isArray(data.tools));
   // We seeded 2 tool_use events (Read + Edit)
   assert.ok(data.tools.length >= 1);
@@ -136,7 +144,7 @@ test('GET /api/analytics/tools returns tool breakdown', async () => {
 test('GET /api/analytics/rate-limits returns snapshots', async () => {
   const res = await fetch(url('/rate-limits?hours=24'));
   assert.equal(res.status, 200);
-  const data = await res.json() as { snapshots: unknown[] };
+  const data = (await res.json()) as { snapshots: unknown[] };
   assert.ok(Array.isArray(data.snapshots));
   assert.ok(data.snapshots.length >= 1);
 });

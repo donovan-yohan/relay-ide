@@ -73,13 +73,18 @@ function makePrNode(overrides: {
       })),
     },
     commits: {
-      nodes: ciRollupState !== undefined
-        ? [{
-            commit: {
-              statusCheckRollup: ciRollupState ? { state: ciRollupState } : null,
-            },
-          }]
-        : [],
+      nodes:
+        ciRollupState !== undefined
+          ? [
+              {
+                commit: {
+                  statusCheckRollup: ciRollupState
+                    ? { state: ciRollupState }
+                    : null,
+                },
+              },
+            ]
+          : [],
     },
     mergeable,
     additions,
@@ -89,7 +94,7 @@ function makePrNode(overrides: {
 
 function makeGraphQLResponse(
   prNodes: Record<string, unknown>[],
-  viewerLogin = 'testuser',
+  viewerLogin = 'testuser'
 ): GraphQLResponse {
   return {
     data: {
@@ -104,7 +109,10 @@ function makeGraphQLResponse(
 describe('buildPrSearchQuery', () => {
   test('returns a non-empty query string', () => {
     const query = buildPrSearchQuery();
-    assert.ok(typeof query === 'string' && query.length > 0, 'query should be a non-empty string');
+    assert.ok(
+      typeof query === 'string' && query.length > 0,
+      'query should be a non-empty string'
+    );
   });
 
   test('contains key fields: number, title, isDraft, state', () => {
@@ -117,18 +125,30 @@ describe('buildPrSearchQuery', () => {
 
   test('contains CI status rollup field', () => {
     const query = buildPrSearchQuery();
-    assert.ok(query.includes('statusCheckRollup'), 'query should include "statusCheckRollup"');
+    assert.ok(
+      query.includes('statusCheckRollup'),
+      'query should include "statusCheckRollup"'
+    );
   });
 
   test('contains reviewDecision and reviewRequests fields', () => {
     const query = buildPrSearchQuery();
-    assert.ok(query.includes('reviewDecision'), 'query should include "reviewDecision"');
-    assert.ok(query.includes('reviewRequests'), 'query should include "reviewRequests"');
+    assert.ok(
+      query.includes('reviewDecision'),
+      'query should include "reviewDecision"'
+    );
+    assert.ok(
+      query.includes('reviewRequests'),
+      'query should include "reviewRequests"'
+    );
   });
 
   test('contains repository nameWithOwner field', () => {
     const query = buildPrSearchQuery();
-    assert.ok(query.includes('nameWithOwner'), 'query should include "nameWithOwner"');
+    assert.ok(
+      query.includes('nameWithOwner'),
+      'query should include "nameWithOwner"'
+    );
   });
 
   test('contains viewer login field', () => {
@@ -197,7 +217,11 @@ describe('mapGraphQLResponse', () => {
     const response = makeGraphQLResponse([prNode]);
     const { prs } = mapGraphQLResponse(response, repoMap);
 
-    assert.equal(prs.length, 0, 'PR where user is neither author nor reviewer should be filtered out');
+    assert.equal(
+      prs.length,
+      0,
+      'PR where user is neither author nor reviewer should be filtered out'
+    );
   });
 
   test('filters out repos not in workspace map', () => {
@@ -211,13 +235,19 @@ describe('mapGraphQLResponse', () => {
     const response = makeGraphQLResponse([prNode]);
     const { prs } = mapGraphQLResponse(response, repoMap);
 
-    assert.equal(prs.length, 0, 'PR from repo not in workspace map should be filtered out');
+    assert.equal(
+      prs.length,
+      0,
+      'PR from repo not in workspace map should be filtered out'
+    );
   });
 
   test('maps ciStatus correctly for all states', () => {
     const repoMap = makeRepoMap([['owner/repo', '/workspace/repo']]);
 
-    const testCases: Array<[string | null, 'SUCCESS' | 'FAILURE' | 'ERROR' | 'PENDING' | null]> = [
+    const testCases: Array<
+      [string | null, 'SUCCESS' | 'FAILURE' | 'ERROR' | 'PENDING' | null]
+    > = [
       ['SUCCESS', 'SUCCESS'],
       ['FAILURE', 'FAILURE'],
       ['ERROR', 'ERROR'],
@@ -235,7 +265,11 @@ describe('mapGraphQLResponse', () => {
       });
       const response = makeGraphQLResponse([prNode]);
       const { prs } = mapGraphQLResponse(response, repoMap);
-      assert.equal(prs[0]!.ciStatus, expectedCiStatus, `ciStatus should be ${expectedCiStatus} for rollup state ${rollupState}`);
+      assert.equal(
+        prs[0]!.ciStatus,
+        expectedCiStatus,
+        `ciStatus should be ${expectedCiStatus} for rollup state ${rollupState}`
+      );
     }
   });
 
@@ -261,9 +295,21 @@ describe('mapGraphQLResponse', () => {
     ]);
 
     const nodes = [
-      makePrNode({ number: 1, nameWithOwner: 'owner/repo-a', author: 'testuser' }),
-      makePrNode({ number: 2, nameWithOwner: 'owner/repo-b', author: 'testuser' }),
-      makePrNode({ number: 3, nameWithOwner: 'owner/unrelated', author: 'testuser' }),
+      makePrNode({
+        number: 1,
+        nameWithOwner: 'owner/repo-a',
+        author: 'testuser',
+      }),
+      makePrNode({
+        number: 2,
+        nameWithOwner: 'owner/repo-b',
+        author: 'testuser',
+      }),
+      makePrNode({
+        number: 3,
+        nameWithOwner: 'owner/unrelated',
+        author: 'testuser',
+      }),
     ];
 
     const response = makeGraphQLResponse(nodes);
@@ -313,11 +359,16 @@ describe('fetchPrsGraphQL', () => {
     const repoMap = makeRepoMap([]);
     await fetchPrsGraphQL('my-token', repoMap, mockFetch);
 
-    assert.equal(capturedUrl, 'https://api.github.com/graphql', 'Should call GitHub GraphQL endpoint');
+    assert.equal(
+      capturedUrl,
+      'https://api.github.com/graphql',
+      'Should call GitHub GraphQL endpoint'
+    );
     assert.ok(capturedInit?.method === 'POST', 'Should use POST method');
     assert.ok(
-      (capturedInit?.headers as Record<string, string>)?.['Authorization'] === 'Bearer my-token',
-      'Should set Bearer token in Authorization header',
+      (capturedInit?.headers as Record<string, string>)?.['Authorization'] ===
+        'Bearer my-token',
+      'Should set Bearer token in Authorization header'
     );
   });
 
@@ -334,9 +385,12 @@ describe('fetchPrsGraphQL', () => {
     await assert.rejects(
       () => fetchPrsGraphQL('bad-token', repoMap, mockFetch),
       (err: Error) => {
-        assert.ok(err.message.includes('401'), `Error should mention 401, got: ${err.message}`);
+        assert.ok(
+          err.message.includes('401'),
+          `Error should mention 401, got: ${err.message}`
+        );
         return true;
-      },
+      }
     );
   });
 
@@ -362,7 +416,11 @@ describe('fetchPrsGraphQL', () => {
     };
 
     const repoMap = makeRepoMap([['owner/repo', '/workspace/repo']]);
-    const { prs, username } = await fetchPrsGraphQL('token', repoMap, mockFetch);
+    const { prs, username } = await fetchPrsGraphQL(
+      'token',
+      repoMap,
+      mockFetch
+    );
 
     assert.equal(username, 'alice');
     assert.equal(prs.length, 1);
@@ -374,7 +432,7 @@ describe('fetchPrsGraphQL', () => {
     const mockFetch: typeof fetch = async () => {
       return new Response(
         JSON.stringify({ errors: [{ message: 'Bad credentials' }] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     };
 
@@ -385,10 +443,10 @@ describe('fetchPrsGraphQL', () => {
       (err: Error) => {
         assert.ok(
           err.message.includes('Bad credentials'),
-          `Error should include "Bad credentials", got: ${err.message}`,
+          `Error should include "Bad credentials", got: ${err.message}`
         );
         return true;
-      },
+      }
     );
   });
 });

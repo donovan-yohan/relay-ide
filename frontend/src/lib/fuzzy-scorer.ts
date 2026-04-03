@@ -45,7 +45,14 @@ const GAP_OPEN_PENALTY = -3;
 const GAP_EXTEND_PENALTY = -1;
 
 function isSeparator(ch: string): boolean {
-  return ch === '/' || ch === '\\' || ch === '-' || ch === '_' || ch === '.' || ch === ' ';
+  return (
+    ch === '/' ||
+    ch === '\\' ||
+    ch === '-' ||
+    ch === '_' ||
+    ch === '.' ||
+    ch === ' '
+  );
 }
 
 function isUpperCase(ch: string): boolean {
@@ -53,15 +60,20 @@ function isUpperCase(ch: string): boolean {
 }
 
 function charScore(
-  query: string, qi: number,
-  target: string, ti: number,
-  consecutive: number,
+  query: string,
+  qi: number,
+  target: string,
+  ti: number,
+  consecutive: number
 ): number {
   let score = 1; // base match
 
   // Consecutive bonus
   if (consecutive > 0) {
-    score += consecutive < CONSECUTIVE_THRESHOLD ? CONSECUTIVE_BONUS_FIRST : CONSECUTIVE_BONUS_AFTER;
+    score +=
+      consecutive < CONSECUTIVE_THRESHOLD
+        ? CONSECUTIVE_BONUS_FIRST
+        : CONSECUTIVE_BONUS_AFTER;
   }
 
   // Word boundary / start of string
@@ -69,11 +81,19 @@ function charScore(
     score += WORD_BOUNDARY_BONUS;
   } else if (isSeparator(target[ti - 1]!)) {
     const prev = target[ti - 1]!;
-    score += prev === '/' || prev === '\\' ? PATH_SEPARATOR_BONUS : WORD_BOUNDARY_BONUS;
+    score +=
+      prev === '/' || prev === '\\'
+        ? PATH_SEPARATOR_BONUS
+        : WORD_BOUNDARY_BONUS;
   }
 
   // CamelCase transition (uppercase after lowercase)
-  if (ti > 0 && isUpperCase(target[ti]!) && !isUpperCase(target[ti - 1]!) && !isSeparator(target[ti - 1]!)) {
+  if (
+    ti > 0 &&
+    isUpperCase(target[ti]!) &&
+    !isUpperCase(target[ti - 1]!) &&
+    !isSeparator(target[ti - 1]!)
+  ) {
     score += CAMEL_CASE_BONUS;
   }
 
@@ -121,7 +141,8 @@ function scoreString(query: string, target: string): DpResult | null {
 
       if (queryLower[i] === targetLower[j]) {
         // Match: diagonal score + char bonus
-        const prevConsec = (i > 0 && j > 0) ? (consecutive[(i - 1) * tLen + (j - 1)] ?? 0) : 0;
+        const prevConsec =
+          i > 0 && j > 0 ? (consecutive[(i - 1) * tLen + (j - 1)] ?? 0) : 0;
         const cs = charScore(query, i, target, j, prevConsec);
 
         let diagScore: number;
@@ -136,7 +157,11 @@ function scoreString(query: string, target: string): DpResult | null {
         }
 
         // Gap: skip this target char (take best from left)
-        const gapScore = j > 0 ? (scores[idx - 1] ?? 0) + (fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY) : -Infinity;
+        const gapScore =
+          j > 0
+            ? (scores[idx - 1] ?? 0) +
+              (fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY)
+            : -Infinity;
 
         if (diagScore >= gapScore) {
           scores[idx] = diagScore;
@@ -151,7 +176,9 @@ function scoreString(query: string, target: string): DpResult | null {
       } else {
         // No match: propagate from left with gap penalty
         if (j > 0) {
-          const penalty = fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY;
+          const penalty = fromDiag[idx - 1]
+            ? GAP_OPEN_PENALTY
+            : GAP_EXTEND_PENALTY;
           scores[idx] = (scores[idx - 1] ?? 0) + penalty;
         } else {
           scores[idx] = -Infinity;
@@ -221,7 +248,10 @@ function positionsToRanges(positions: number[]): [number, number][] {
   return ranges;
 }
 
-export function scorePath(query: string, filePath: string): ScoredResult | null {
+export function scorePath(
+  query: string,
+  filePath: string
+): ScoredResult | null {
   if (!query || !filePath) return null;
 
   const lastSep = filePath.lastIndexOf('/');
@@ -232,7 +262,7 @@ export function scorePath(query: string, filePath: string): ScoredResult | null 
   const fnResult = scoreString(query, filename);
   if (fnResult && fnResult.score > 0) {
     // Shift positions to be relative to the full path
-    const shiftedPositions = fnResult.positions.map(p => p + dirOffset);
+    const shiftedPositions = fnResult.positions.map((p) => p + dirOffset);
 
     // Prefix boost: if the filename starts with the query
     const isPrefix = filename.toLowerCase().startsWith(query.toLowerCase());

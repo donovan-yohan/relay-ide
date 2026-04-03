@@ -13,7 +13,10 @@ import { createWebhookRouter } from '../server/webhooks.js';
 const TEST_SECRET = 'test-webhook-secret';
 
 function signPayload(secret: string, payload: string): string {
-  return 'sha256=' + crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  return (
+    'sha256=' +
+    crypto.createHmac('sha256', secret).update(payload).digest('hex')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -22,7 +25,10 @@ function signPayload(secret: string, payload: string): string {
 
 let server: Server;
 let baseUrl: string;
-let broadcasts: Array<{ type: string; data: Record<string, unknown> | undefined }>;
+let broadcasts: Array<{
+  type: string;
+  data: Record<string, unknown> | undefined;
+}>;
 
 function startServer(): Promise<void> {
   return new Promise((resolve) => {
@@ -116,7 +122,7 @@ describe('webhook handler', () => {
     const res = await postWebhook({ body, event: 'pull_request' });
     assert.equal(res.status, 200);
 
-    const json = await res.json() as { ok: boolean };
+    const json = (await res.json()) as { ok: boolean };
     assert.equal(json.ok, true);
     assert.equal(broadcasts.length, 1);
     assert.equal(broadcasts[0]?.type, 'pr-updated');
@@ -146,14 +152,22 @@ describe('webhook handler', () => {
     const res = await postWebhook({ body, event: 'star' });
     assert.equal(res.status, 200);
 
-    const json = await res.json() as { ok: boolean };
+    const json = (await res.json()) as { ok: boolean };
     assert.equal(json.ok, true);
-    assert.equal(broadcasts.length, 0, 'Should not broadcast for unknown events');
+    assert.equal(
+      broadcasts.length,
+      0,
+      'Should not broadcast for unknown events'
+    );
   });
 
   it('includes repository full_name in broadcast data', async () => {
     broadcasts = [];
-    const body = { action: 'opened', number: 42, repository: { full_name: 'owner/repo' } };
+    const body = {
+      action: 'opened',
+      number: 42,
+      repository: { full_name: 'owner/repo' },
+    };
     const res = await postWebhook({ body, event: 'pull_request' });
     assert.equal(res.status, 200);
     assert.equal(broadcasts[0]?.data?.repo, 'owner/repo');
@@ -175,7 +189,7 @@ describe('webhook merge detection', () => {
       event: 'pull_request',
     });
     assert.equal(res.status, 200);
-    const types = broadcasts.map(b => b.type);
+    const types = broadcasts.map((b) => b.type);
     assert.deepEqual(types, ['pr-updated', 'worktrees-changed']);
   });
 
@@ -190,7 +204,7 @@ describe('webhook merge detection', () => {
       event: 'pull_request',
     });
     assert.equal(res.status, 200);
-    const types = broadcasts.map(b => b.type);
+    const types = broadcasts.map((b) => b.type);
     assert.deepEqual(types, ['pr-updated']);
   });
 });
@@ -199,25 +213,34 @@ describe('webhook handler — no secret configured', () => {
   let noSecretServer: Server;
   let noSecretBaseUrl: string;
 
-  before(() => new Promise<void>((resolve) => {
-    const app = express();
-    app.use('/webhooks', createWebhookRouter({
-      secret: () => undefined,
-      broadcastEvent: () => {},
-    }));
-    noSecretServer = app.listen(0, '127.0.0.1', () => {
-      const addr = noSecretServer.address();
-      if (typeof addr === 'object' && addr) {
-        noSecretBaseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  }));
+  before(
+    () =>
+      new Promise<void>((resolve) => {
+        const app = express();
+        app.use(
+          '/webhooks',
+          createWebhookRouter({
+            secret: () => undefined,
+            broadcastEvent: () => {},
+          })
+        );
+        noSecretServer = app.listen(0, '127.0.0.1', () => {
+          const addr = noSecretServer.address();
+          if (typeof addr === 'object' && addr) {
+            noSecretBaseUrl = `http://127.0.0.1:${addr.port}`;
+          }
+          resolve();
+        });
+      })
+  );
 
-  after(() => new Promise<void>((resolve) => {
-    if (noSecretServer) noSecretServer.close(() => resolve());
-    else resolve();
-  }));
+  after(
+    () =>
+      new Promise<void>((resolve) => {
+        if (noSecretServer) noSecretServer.close(() => resolve());
+        else resolve();
+      })
+  );
 
   it('rejects with 401 when webhook secret is not configured', async () => {
     const payload = JSON.stringify({ action: 'opened' });
@@ -232,7 +255,7 @@ describe('webhook handler — no secret configured', () => {
       body: payload,
     });
     assert.equal(res.status, 401);
-    const json = await res.json() as { error: string };
+    const json = (await res.json()) as { error: string };
     assert.equal(json.error, 'Webhooks not configured');
   });
 });

@@ -55,6 +55,6 @@ export function scrollOnHover(node: HTMLElement) {
       ro.disconnect();
       li.removeEventListener('mouseenter', onEnter);
       li.removeEventListener('mouseleave', onLeave);
-    }
+    },
   };
 }

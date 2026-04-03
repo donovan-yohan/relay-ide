@@ -5,7 +5,17 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { isBranchStale } from './git.js';
-import { batchGetPrsForRepo, getCiStatus, getPrForBranch, isStalePr, getUnresolvedCommentCount, changePrBase, getPrCached, setPrCached, clearPrCache } from './gh.js';
+import {
+  batchGetPrsForRepo,
+  getCiStatus,
+  getPrForBranch,
+  isStalePr,
+  getUnresolvedCommentCount,
+  changePrBase,
+  getPrCached,
+  setPrCached,
+  clearPrCache,
+} from './gh.js';
 import type { PrInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -13,7 +23,7 @@ const execFileAsync = promisify(execFile);
 type ExecFileAsyncLike = (
   file: string,
   args: string[],
-  options: { cwd: string; timeout?: number },
+  options: { cwd: string; timeout?: number }
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface GhRouterDeps {
@@ -28,12 +38,17 @@ interface BranchInput {
 interface EnrichResult {
   pr: PrInfo | null;
   stale: boolean;
-  ci?: { total: number; passing: number; failing: number; pending: number } | null;
+  ci?: {
+    total: number;
+    passing: number;
+    failing: number;
+    pending: number;
+  } | null;
 }
 
 export async function enrichBranches(
   branches: BranchInput[],
-  exec: ExecFileAsyncLike,
+  exec: ExecFileAsyncLike
 ): Promise<Record<string, EnrichResult>> {
   if (branches.length === 0) return {};
 
@@ -54,7 +69,7 @@ export async function enrichBranches(
       } catch {
         prMaps.set(repoPath, new Map());
       }
-    }),
+    })
   );
 
   // Enrich each branch in parallel
@@ -80,14 +95,15 @@ export async function enrichBranches(
       }
 
       results[key] = { pr, stale };
-    }),
+    })
   );
 
   return results;
 }
 
 export function createGhRouter(deps?: GhRouterDeps): Router {
-  const exec: ExecFileAsyncLike = deps?.execFileAsync ?? (execFileAsync as ExecFileAsyncLike);
+  const exec: ExecFileAsyncLike =
+    deps?.execFileAsync ?? (execFileAsync as ExecFileAsyncLike);
   const router = Router();
 
   // POST /gh/enrich-branches — batch enrichment for sidebar
@@ -99,13 +115,21 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
     }
     const branches: BranchInput[] = [];
     for (const item of (raw ?? []) as unknown[]) {
-      if (!item || typeof item !== 'object'
-        || typeof (item as Record<string, unknown>).repoPath !== 'string'
-        || typeof (item as Record<string, unknown>).branchName !== 'string') {
-        res.status(400).json({ error: 'each branch must have string repoPath and branchName' });
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        typeof (item as Record<string, unknown>).repoPath !== 'string' ||
+        typeof (item as Record<string, unknown>).branchName !== 'string'
+      ) {
+        res.status(400).json({
+          error: 'each branch must have string repoPath and branchName',
+        });
         return;
       }
-      branches.push({ repoPath: (item as BranchInput).repoPath, branchName: (item as BranchInput).branchName });
+      branches.push({
+        repoPath: (item as BranchInput).repoPath,
+        branchName: (item as BranchInput).branchName,
+      });
     }
     const results = await enrichBranches(branches, exec);
     res.json({ results });
@@ -113,11 +137,15 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
 
   // GET /gh/pr — single-branch PR detail (for PrTopBar)
   router.get('/pr', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
+    const branch =
+      typeof req.query.branch === 'string' ? req.query.branch : undefined;
 
     if (!repoPath || !branch) {
-      res.status(400).json({ error: 'path and branch query parameters are required' });
+      res
+        .status(400)
+        .json({ error: 'path and branch query parameters are required' });
       return;
     }
 
@@ -133,8 +161,14 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
         let unresolvedCommentCount = 0;
         if (pr.state === 'OPEN') {
           try {
-            unresolvedCommentCount = await getUnresolvedCommentCount(repoPath, pr.number, { exec });
-          } catch { /* degrade gracefully */ }
+            unresolvedCommentCount = await getUnresolvedCommentCount(
+              repoPath,
+              pr.number,
+              { exec }
+            );
+          } catch {
+            /* degrade gracefully */
+          }
         }
         const enriched = { ...pr, unresolvedCommentCount };
         setPrCached(repoPath, branch, enriched);
@@ -150,8 +184,10 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
 
   // GET /gh/ci-status — CI check results
   router.get('/ci-status', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const branch = typeof req.query.branch === 'string' ? req.query.branch : undefined;
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
+    const branch =
+      typeof req.query.branch === 'string' ? req.query.branch : undefined;
 
     if (!repoPath) {
       res.status(400).json({ error: 'path query parameter is required' });
@@ -168,11 +204,24 @@ export function createGhRouter(deps?: GhRouterDeps): Router {
 
   // POST /gh/pr-base — change PR base branch
   router.post('/pr-base', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.path === 'string' ? req.query.path : undefined;
-    const { prNumber, baseBranch } = req.body as { prNumber?: number; baseBranch?: string };
-    if (!repoPath) { res.status(400).json({ error: 'path query parameter required' }); return; }
-    if (!prNumber || typeof prNumber !== 'number') { res.status(400).json({ error: 'prNumber is required' }); return; }
-    if (!baseBranch || typeof baseBranch !== 'string') { res.status(400).json({ error: 'baseBranch is required' }); return; }
+    const repoPath =
+      typeof req.query.path === 'string' ? req.query.path : undefined;
+    const { prNumber, baseBranch } = req.body as {
+      prNumber?: number;
+      baseBranch?: string;
+    };
+    if (!repoPath) {
+      res.status(400).json({ error: 'path query parameter required' });
+      return;
+    }
+    if (!prNumber || typeof prNumber !== 'number') {
+      res.status(400).json({ error: 'prNumber is required' });
+      return;
+    }
+    if (!baseBranch || typeof baseBranch !== 'string') {
+      res.status(400).json({ error: 'baseBranch is required' });
+      return;
+    }
 
     const result = await changePrBase(repoPath, prNumber, baseBranch, { exec });
     if (result.success) {

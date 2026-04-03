@@ -1,0 +1,6 @@
+name: gstack
+description: Belayer framework powered by gstack skills. Uses /office-hours for intake, Claude Code for implementation, /review for gates, and /ship + /land-and-deploy for output.
+version: 0.1.0
+requires:
+  - gstack (npm i -g @anthropic/gstack or vendor into .claude/skills/gstack)
+  - claude (Claude Code CLI)

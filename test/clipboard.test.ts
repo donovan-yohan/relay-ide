@@ -11,7 +11,7 @@ describe('clipboard', () => {
   it('setClipboardImage rejects unsupported mime types', async () => {
     await assert.rejects(
       () => setClipboardImage('/tmp/test.txt', 'text/plain'),
-      /Unsupported/,
+      /Unsupported/
     );
   });
 });

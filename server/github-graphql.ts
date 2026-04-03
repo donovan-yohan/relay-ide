@@ -8,6 +8,9 @@
  */
 
 import type { PullRequest } from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('github-graphql');
 
 // ─── GraphQL query ────────────────────────────────────────────────────────────
 
@@ -133,7 +136,7 @@ export interface GraphQLResponse {
  */
 export function mapGraphQLResponse(
   response: GraphQLResponse,
-  repoMap: Map<string, string>,
+  repoMap: Map<string, string>
 ): { prs: PullRequest[]; username: string } {
   const username = response.data.viewer.login;
   const nodes = response.data.search.nodes;
@@ -155,7 +158,7 @@ export function mapGraphQLResponse(
     const isReviewer =
       !isAuthor &&
       pr.reviewRequests.nodes.some(
-        (rr) => rr.requestedReviewer?.login === username,
+        (rr) => rr.requestedReviewer?.login === username
       );
 
     if (!isAuthor && !isReviewer) continue;
@@ -169,10 +172,12 @@ export function mapGraphQLResponse(
     if (rollupState === 'SUCCESS') ciStatus = 'SUCCESS';
     else if (rollupState === 'FAILURE') ciStatus = 'FAILURE';
     else if (rollupState === 'ERROR') ciStatus = 'ERROR';
-    else if (rollupState === 'PENDING' || rollupState === 'EXPECTED') ciStatus = 'PENDING';
+    else if (rollupState === 'PENDING' || rollupState === 'EXPECTED')
+      ciStatus = 'PENDING';
 
     // Derive repoName from the nameWithOwner (the part after the slash)
-    const repoName = pr.repository.nameWithOwner.split('/')[1] ?? pr.repository.nameWithOwner;
+    const repoName =
+      pr.repository.nameWithOwner.split('/')[1] ?? pr.repository.nameWithOwner;
 
     // Map state
     let state: 'OPEN' | 'CLOSED' | 'MERGED';
@@ -220,7 +225,7 @@ const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 export async function fetchPrsGraphQL(
   token: string,
   repoMap: Map<string, string>,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = fetch
 ): Promise<{ prs: PullRequest[]; username: string }> {
   const query = buildPrSearchQuery();
   const variables = { query: 'is:pr is:open involves:@me' };
@@ -229,26 +234,36 @@ export async function fetchPrsGraphQL(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
+      Authorization: `Bearer ${token}`,
       'User-Agent': 'claude-remote-cli',
     },
     body: JSON.stringify({ query, variables }),
   });
 
   if (!response.ok) {
-    throw new Error(`GitHub GraphQL request failed: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `GitHub GraphQL request failed: ${response.status} ${response.statusText}`
+    );
   }
 
-  const json = (await response.json()) as { errors?: Array<{ message: string }>; data?: GraphQLResponse['data'] };
+  const json = (await response.json()) as {
+    errors?: Array<{ message: string }>;
+    data?: GraphQLResponse['data'];
+  };
 
   // GitHub GraphQL returns HTTP 200 even for errors (expired tokens, insufficient scopes)
   if (json.errors && !json.data) {
-    throw new Error(`GitHub GraphQL error: ${json.errors[0]?.message ?? 'unknown'}`);
+    throw new Error(
+      `GitHub GraphQL error: ${json.errors[0]?.message ?? 'unknown'}`
+    );
   }
 
   if (json.errors) {
     // Partial errors: data is present but some fields failed — log and continue
-    console.warn('[github-graphql] GraphQL returned partial errors:', json.errors.map((e: any) => e.message).join('; '));
+    logger.warn(
+      '[github-graphql] GraphQL returned partial errors:',
+      json.errors.map((e: any) => e.message).join('; ')
+    );
   }
 
   if (!json.data) {

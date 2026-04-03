@@ -7,7 +7,14 @@ import { processIntent } from '../server/mobile-input-pipeline.js';
 import type { CapturedIntent } from '../server/mobile-input-pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = join(__dirname, '..', '..', 'test', 'fixtures', 'mobile-input');
+const FIXTURES_DIR = join(
+  __dirname,
+  '..',
+  '..',
+  'test',
+  'fixtures',
+  'mobile-input'
+);
 
 interface EventStep {
   inputType: string;
@@ -49,7 +56,11 @@ function replayFixture(fixture: EventFixture): string {
   return totalPayload;
 }
 
-function assertReplacementNotLost(payload: string, expectedReplacement: string, fixtureName: string) {
+function assertReplacementNotLost(
+  payload: string,
+  expectedReplacement: string,
+  fixtureName: string
+) {
   assert.ok(
     payload.includes(expectedReplacement),
     `[${fixtureName}] Payload contains only backspaces — replacement text "${expectedReplacement}" was lost. Got: ${JSON.stringify(payload)}`
@@ -59,7 +70,9 @@ function assertReplacementNotLost(payload: string, expectedReplacement: string, 
 // ── Fixture replay tests ─────────────────────────────────────────────
 
 describe('mobile-input-pipeline: fixture replay', () => {
-  const fixtureFiles = readdirSync(FIXTURES_DIR).filter(f => f.endsWith('.json'));
+  const fixtureFiles = readdirSync(FIXTURES_DIR).filter((f) =>
+    f.endsWith('.json')
+  );
 
   for (const file of fixtureFiles) {
     const fixture = loadFixture(file);
@@ -69,8 +82,8 @@ describe('mobile-input-pipeline: fixture replay', () => {
         actualPayload,
         fixture.expectedPayload,
         `Payload mismatch for fixture "${fixture.name}". ` +
-        `Expected: ${JSON.stringify(fixture.expectedPayload)}, ` +
-        `Got: ${JSON.stringify(actualPayload)}`
+          `Expected: ${JSON.stringify(fixture.expectedPayload)}, ` +
+          `Got: ${JSON.stringify(actualPayload)}`
       );
     });
   }
@@ -102,9 +115,11 @@ describe('mobile-input-pipeline: autocorrect always includes replacement text', 
     const payload = replayFixture(fixture);
     assertReplacementNotLost(payload, 'the', fixture.name);
     const backspaceCount = (payload.match(/\x7f/g) ?? []).length;
-    assert.strictEqual(backspaceCount, 3,
+    assert.strictEqual(
+      backspaceCount,
+      3,
       `Expected 3 backspaces (for "teh") but got ${backspaceCount} — ` +
-      `pipeline is deleting more than the target word`
+        `pipeline is deleting more than the target word`
     );
   });
 });
@@ -113,40 +128,64 @@ describe('mobile-input-pipeline: autocorrect always includes replacement text', 
 
 describe('mobile-input-pipeline: processIntent', () => {
   it('normal character insertion sends data directly', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'a',
-      rangeStart: 5, rangeEnd: 5,
-      valueBefore: 'hello', cursorBefore: 5,
-    }, 'helloa');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'a',
+        rangeStart: 5,
+        rangeEnd: 5,
+        valueBefore: 'hello',
+        cursorBefore: 5,
+      },
+      'helloa'
+    );
     assert.strictEqual(result.payload, 'a');
     assert.strictEqual(result.newInputValue, undefined);
   });
 
   it('autocorrect with range sends backspaces + replacement', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'the',
-      rangeStart: 0, rangeEnd: 3,
-      valueBefore: 'teh', cursorBefore: 3,
-    }, 'the');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'the',
+        rangeStart: 0,
+        rangeEnd: 3,
+        valueBefore: 'teh',
+        cursorBefore: 3,
+      },
+      'the'
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
   });
 
   it('cursor-0 recovery: single word buffer', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'the',
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'teh', cursorBefore: 0,
-    }, 'theteh');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'the',
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'teh',
+        cursorBefore: 0,
+      },
+      'theteh'
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
     assert.strictEqual(result.newInputValue, 'the');
   });
 
   it('cursor-0 recovery: multi-word buffer only deletes last word', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'mobile ',
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'and mkbijf', cursorBefore: 0,
-    }, 'mobile and mkbijf');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'mobile ',
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'and mkbijf',
+        cursorBefore: 0,
+      },
+      'mobile and mkbijf'
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f\x7fmobile ');
     assert.strictEqual(result.newInputValue, 'and mobile ');
   });
@@ -154,95 +193,155 @@ describe('mobile-input-pipeline: processIntent', () => {
   it('cursor-0 recovery: suffix-only data (data[0] !== firstChar)', () => {
     // Gboard sends suffix "esting " instead of full word "testing "
     // because firstChar "t" was kept and data starts with "e"
-    const result = processIntent({
-      type: 'insertText', data: 'esting ',
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'tsestin', cursorBefore: 0,
-    }, 'esting tsestin');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'esting ',
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'tsestin',
+        cursorBefore: 0,
+      },
+      'esting tsestin'
+    );
     // data[0]='e' !== firstChar='t' → suffix mode: "t" + "esting " = "testing "
     assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f\x7f\x7ftesting ');
     assert.strictEqual(result.newInputValue, 'testing ');
   });
 
   it('cursor-0 recovery: trailing space means nothing to autocorrect', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'the ',
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'hello ', cursorBefore: 0,
-    }, 'the hello ');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'the ',
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'hello ',
+        cursorBefore: 0,
+      },
+      'the hello '
+    );
     assert.strictEqual(result.payload, '');
     assert.strictEqual(result.newInputValue, 'hello ');
   });
 
   it('deleteContentBackward with range', () => {
-    const result = processIntent({
-      type: 'deleteContentBackward', data: null,
-      rangeStart: 4, rangeEnd: 5,
-      valueBefore: 'hello', cursorBefore: 5,
-    }, 'hell');
+    const result = processIntent(
+      {
+        type: 'deleteContentBackward',
+        data: null,
+        rangeStart: 4,
+        rangeEnd: 5,
+        valueBefore: 'hello',
+        cursorBefore: 5,
+      },
+      'hell'
+    );
     assert.strictEqual(result.payload, '\x7f');
   });
 
   it('deleteWordBackward with range sends correct backspace count', () => {
-    const result = processIntent({
-      type: 'deleteWordBackward', data: null,
-      rangeStart: 6, rangeEnd: 11,
-      valueBefore: 'hello world', cursorBefore: 11,
-    }, 'hello ');
+    const result = processIntent(
+      {
+        type: 'deleteWordBackward',
+        data: null,
+        rangeStart: 6,
+        rangeEnd: 11,
+        valueBefore: 'hello world',
+        cursorBefore: 11,
+      },
+      'hello '
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7f\x7f\x7f');
   });
 
   it('deleteContentBackward without range falls back to diff', () => {
-    const result = processIntent({
-      type: 'deleteContentBackward', data: null,
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'hello', cursorBefore: 5,
-    }, 'hell');
+    const result = processIntent(
+      {
+        type: 'deleteContentBackward',
+        data: null,
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'hello',
+        cursorBefore: 5,
+      },
+      'hell'
+    );
     assert.strictEqual(result.payload, '\x7f');
   });
 
   it('insertReplacementText sends backspaces + replacement', () => {
-    const result = processIntent({
-      type: 'insertReplacementText', data: 'the',
-      rangeStart: 0, rangeEnd: 3,
-      valueBefore: 'teh', cursorBefore: 3,
-    }, 'the');
+    const result = processIntent(
+      {
+        type: 'insertReplacementText',
+        data: 'the',
+        rangeStart: 0,
+        rangeEnd: 3,
+        valueBefore: 'teh',
+        cursorBefore: 3,
+      },
+      'the'
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7fthe');
   });
 
   it('insertFromPaste uses diff to extract pasted text', () => {
-    const result = processIntent({
-      type: 'insertFromPaste', data: null,
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'hello', cursorBefore: 5,
-    }, 'hello world');
+    const result = processIntent(
+      {
+        type: 'insertFromPaste',
+        data: null,
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'hello',
+        cursorBefore: 5,
+      },
+      'hello world'
+    );
     assert.strictEqual(result.payload, ' world');
   });
 
   it('unknown inputType falls back to diff', () => {
-    const result = processIntent({
-      type: 'insertFromYank', data: null,
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'hllo', cursorBefore: 1,
-    }, 'hello');
+    const result = processIntent(
+      {
+        type: 'insertFromYank',
+        data: null,
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'hllo',
+        cursorBefore: 1,
+      },
+      'hello'
+    );
     assert.strictEqual(result.payload, '\x7f\x7f\x7fello');
   });
 
   it('empty payload for no-op diff', () => {
-    const result = processIntent({
-      type: 'insertText', data: null,
-      rangeStart: null, rangeEnd: null,
-      valueBefore: 'hello', cursorBefore: 5,
-    }, 'hello');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: null,
+        rangeStart: null,
+        rangeEnd: null,
+        valueBefore: 'hello',
+        cursorBefore: 5,
+      },
+      'hello'
+    );
     assert.strictEqual(result.payload, '');
   });
 
   it('handles emoji codepoints correctly in autocorrect range', () => {
-    const result = processIntent({
-      type: 'insertText', data: 'smile',
-      rangeStart: 0, rangeEnd: 2,
-      valueBefore: '😊', cursorBefore: 2,
-    }, 'smile');
+    const result = processIntent(
+      {
+        type: 'insertText',
+        data: 'smile',
+        rangeStart: 0,
+        rangeEnd: 2,
+        valueBefore: '😊',
+        cursorBefore: 2,
+      },
+      'smile'
+    );
     assert.strictEqual(result.payload, '\x7fsmile');
   });
 });

@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { DEFAULTS } from './config.js';
 import type { Platform, ServicePaths, InstallOpts } from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('service');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,20 +18,35 @@ const CONFIG_DIR = path.join(HOME, '.config', 'claude-remote-cli');
 function getPlatform(): Platform {
   if (process.platform === 'darwin') return 'macos';
   if (process.platform === 'linux') return 'linux';
-  throw new Error('Unsupported platform: ' + process.platform + '. Only macOS and Linux are supported.');
+  throw new Error(
+    'Unsupported platform: ' +
+      process.platform +
+      '. Only macOS and Linux are supported.'
+  );
 }
 
 function getServicePaths(): ServicePaths {
   const platform = getPlatform();
   if (platform === 'macos') {
     return {
-      servicePath: path.join(HOME, 'Library', 'LaunchAgents', SERVICE_LABEL + '.plist'),
+      servicePath: path.join(
+        HOME,
+        'Library',
+        'LaunchAgents',
+        SERVICE_LABEL + '.plist'
+      ),
       logDir: path.join(CONFIG_DIR, 'logs'),
       label: SERVICE_LABEL,
     };
   }
   return {
-    servicePath: path.join(HOME, '.config', 'systemd', 'user', 'claude-remote-cli.service'),
+    servicePath: path.join(
+      HOME,
+      '.config',
+      'systemd',
+      'user',
+      'claude-remote-cli.service'
+    ),
     logDir: null,
     label: 'claude-remote-cli',
   };
@@ -43,7 +61,10 @@ type ServiceFileOpts = {
   logDir: string | null;
 };
 
-function generateServiceFile(platform: Platform, opts: ServiceFileOpts): string {
+function generateServiceFile(
+  platform: Platform,
+  opts: ServiceFileOpts
+): string {
   const { nodePath, scriptPath, configPath, port, host, logDir } = opts;
 
   if (platform === 'macos') {
@@ -106,16 +127,30 @@ function install(opts: InstallOpts): void {
   const { servicePath, logDir } = getServicePaths();
 
   if (isInstalled()) {
-    throw new Error('Service is already installed. Run `claude-remote-cli uninstall` first.');
+    throw new Error(
+      'Service is already installed. Run `claude-remote-cli uninstall` first.'
+    );
   }
 
   const nodePath = process.execPath;
-  const scriptPath = path.resolve(__dirname, '..', 'bin', 'claude-remote-cli.js');
+  const scriptPath = path.resolve(
+    __dirname,
+    '..',
+    'bin',
+    'claude-remote-cli.js'
+  );
   const configPath = opts.configPath || path.join(CONFIG_DIR, 'config.json');
   const port = opts.port || String(DEFAULTS.port);
   const host = opts.host || DEFAULTS.host;
 
-  const content = generateServiceFile(platform, { nodePath, scriptPath, configPath, port, host, logDir });
+  const content = generateServiceFile(platform, {
+    nodePath,
+    scriptPath,
+    configPath,
+    port,
+    host,
+    logDir,
+  });
 
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   if (logDir) fs.mkdirSync(logDir, { recursive: true });
@@ -126,14 +161,16 @@ function install(opts: InstallOpts): void {
     execSync('launchctl load -w ' + servicePath, { stdio: 'inherit' });
   } else {
     execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
-    execSync('systemctl --user enable --now claude-remote-cli', { stdio: 'inherit' });
+    execSync('systemctl --user enable --now claude-remote-cli', {
+      stdio: 'inherit',
+    });
   }
 
-  console.log('Service installed and started.');
+  logger.info('Service installed and started.');
   if (logDir) {
-    console.log('Logs: ' + logDir);
+    logger.info('Logs: ' + logDir);
   } else {
-    console.log('Logs: journalctl --user -u claude-remote-cli -f');
+    logger.info('Logs: journalctl --user -u claude-remote-cli -f');
   }
 }
 
@@ -153,17 +190,21 @@ function uninstall(): void {
     }
   } else {
     try {
-      execSync('systemctl --user disable --now claude-remote-cli', { stdio: 'inherit' });
+      execSync('systemctl --user disable --now claude-remote-cli', {
+        stdio: 'inherit',
+      });
     } catch (_) {
       // Ignore errors from already-disabled services
     }
   }
 
   fs.unlinkSync(servicePath);
-  console.log('Service uninstalled.');
+  logger.info('Service uninstalled.');
 }
 
-type ServiceStatus = { installed: false; running: false } | { installed: true; running: boolean };
+type ServiceStatus =
+  | { installed: false; running: false }
+  | { installed: true; running: boolean };
 
 function status(): ServiceStatus {
   const platform = getPlatform();
@@ -179,7 +220,10 @@ function status(): ServiceStatus {
 function checkRunning(platform: Platform): boolean {
   if (platform === 'macos') {
     try {
-      const out = execSync('launchctl list ' + SERVICE_LABEL, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const out = execSync('launchctl list ' + SERVICE_LABEL, {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
       return !out.includes('"LastExitStatus" = -1');
     } catch (_) {
       return false;
@@ -187,11 +231,23 @@ function checkRunning(platform: Platform): boolean {
   }
 
   try {
-    execSync('systemctl --user is-active claude-remote-cli', { stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync('systemctl --user is-active claude-remote-cli', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     return true;
   } catch (_) {
     return false;
   }
 }
 
-export { getPlatform, getServicePaths, generateServiceFile, isInstalled, install, uninstall, status, SERVICE_LABEL, CONFIG_DIR };
+export {
+  getPlatform,
+  getServicePaths,
+  generateServiceFile,
+  isInstalled,
+  install,
+  uninstall,
+  status,
+  SERVICE_LABEL,
+  CONFIG_DIR,
+};

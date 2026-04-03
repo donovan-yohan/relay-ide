@@ -1,4 +1,11 @@
-import { test, describe, before, beforeEach, afterEach, after } from 'node:test';
+import {
+  test,
+  describe,
+  before,
+  beforeEach,
+  afterEach,
+  after,
+} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,7 +51,7 @@ function stopServer(): Promise<void> {
 async function req(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   url: string,
-  body?: object,
+  body?: object
 ): Promise<{ status: number; body: any }> {
   const opts: RequestInit = { method };
   if (body) {
@@ -54,7 +61,11 @@ async function req(
   const res = await fetch(`${baseUrl}${url}`, opts);
   let parsed: any;
   if (res.status !== 204) {
-    try { parsed = await res.json(); } catch { parsed = null; }
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
   }
   return { status: res.status, body: parsed };
 }
@@ -115,7 +126,10 @@ test('POST creates a workspace with generated UUID', async () => {
     repos: ['/a', '/b'],
   });
   assert.equal(status, 201);
-  assert.ok(typeof body.id === 'string' && body.id.length > 0, 'id should be a non-empty string');
+  assert.ok(
+    typeof body.id === 'string' && body.id.length > 0,
+    'id should be a non-empty string'
+  );
   assert.equal(body.name, 'My Workspace');
   assert.deepEqual(body.repos, ['/a', '/b']);
   assert.equal(body.order, 0);
@@ -156,7 +170,9 @@ test('POST rejects whitespace-only name', async () => {
 test('POST trims name', async () => {
   writeConfig({ configVersion: 4, repos: [], workspaces: [] });
   await startServer(configPath);
-  const { status, body } = await req('POST', '/workspace-groups', { name: '  Trimmed  ' });
+  const { status, body } = await req('POST', '/workspace-groups', {
+    name: '  Trimmed  ',
+  });
   assert.equal(status, 201);
   assert.equal(body.name, 'Trimmed');
 });
@@ -168,7 +184,10 @@ test('POST assigns incrementing order when workspaces already exist', async () =
     workspaces: [{ id: 'existing', name: 'Existing', repos: [], order: 0 }],
   });
   await startServer(configPath);
-  const { status, body } = await req('POST', '/workspace-groups', { name: 'New', repos: [] });
+  const { status, body } = await req('POST', '/workspace-groups', {
+    name: 'New',
+    repos: [],
+  });
   assert.equal(status, 201);
   assert.equal(body.order, 1);
 });
@@ -193,7 +212,9 @@ test('PUT /:id updates workspace name', async () => {
     workspaces: [{ id: 'ws-1', name: 'Old Name', repos: ['/a'], order: 0 }],
   });
   await startServer(configPath);
-  const { status, body } = await req('PUT', '/workspace-groups/ws-1', { name: 'New Name' });
+  const { status, body } = await req('PUT', '/workspace-groups/ws-1', {
+    name: 'New Name',
+  });
   assert.equal(status, 200);
   assert.equal(body.name, 'New Name');
   assert.equal(body.id, 'ws-1');
@@ -206,7 +227,9 @@ test('PUT /:id updates workspace repos filtered against config', async () => {
     workspaces: [{ id: 'ws-1', name: 'Ws', repos: ['/a'], order: 0 }],
   });
   await startServer(configPath);
-  const { status, body } = await req('PUT', '/workspace-groups/ws-1', { repos: ['/b', '/not-here'] });
+  const { status, body } = await req('PUT', '/workspace-groups/ws-1', {
+    repos: ['/b', '/not-here'],
+  });
   assert.equal(status, 200);
   assert.deepEqual(body.repos, ['/b']);
 });
@@ -214,7 +237,9 @@ test('PUT /:id updates workspace repos filtered against config', async () => {
 test('PUT /:id returns 404 for unknown id', async () => {
   writeConfig({ configVersion: 4, repos: [], workspaces: [] });
   await startServer(configPath);
-  const { status } = await req('PUT', '/workspace-groups/nonexistent', { name: 'Test' });
+  const { status } = await req('PUT', '/workspace-groups/nonexistent', {
+    name: 'Test',
+  });
   assert.equal(status, 404);
 });
 
@@ -233,10 +258,20 @@ test('PUT /:id preserves fields not in the update body', async () => {
   writeConfig({
     configVersion: 4,
     repos: ['/a'],
-    workspaces: [{ id: 'ws-1', name: 'Ws', repos: ['/a'], order: 2, themeColor: '#ff0000' }],
+    workspaces: [
+      {
+        id: 'ws-1',
+        name: 'Ws',
+        repos: ['/a'],
+        order: 2,
+        themeColor: '#ff0000',
+      },
+    ],
   });
   await startServer(configPath);
-  const { status, body } = await req('PUT', '/workspace-groups/ws-1', { name: 'Updated' });
+  const { status, body } = await req('PUT', '/workspace-groups/ws-1', {
+    name: 'Updated',
+  });
   assert.equal(status, 200);
   assert.equal(body.themeColor, '#ff0000');
   assert.equal(body.order, 2);
@@ -273,7 +308,9 @@ test('DELETE /:id re-normalizes order after deletion', async () => {
   await startServer(configPath);
   await req('DELETE', '/workspace-groups/ws-2');
   const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const sorted = [...saved.workspaces].sort((a: any, b: any) => a.order - b.order);
+  const sorted = [...saved.workspaces].sort(
+    (a: any, b: any) => a.order - b.order
+  );
   assert.equal(sorted[0].id, 'ws-1');
   assert.equal(sorted[0].order, 0);
   assert.equal(sorted[1].id, 'ws-3');
@@ -364,7 +401,9 @@ test('PUT /reorder returns 400 for unknown ids', async () => {
 test('PUT /reorder returns 400 when ids is not an array', async () => {
   writeConfig({ configVersion: 4, repos: [], workspaces: [] });
   await startServer(configPath);
-  const { status } = await req('PUT', '/workspace-groups/reorder', { ids: 'not-an-array' });
+  const { status } = await req('PUT', '/workspace-groups/reorder', {
+    ids: 'not-an-array',
+  });
   assert.equal(status, 400);
 });
 

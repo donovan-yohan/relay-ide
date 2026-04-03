@@ -1,5 +1,14 @@
-import type { PullRequest, SessionSummary, WorktreeInfo, GitHubIssue } from './types.js';
-import { derivePrAction, getActionPrompt, buildPrStateInput } from './pr-state.js';
+import type {
+  PullRequest,
+  SessionSummary,
+  WorktreeInfo,
+  GitHubIssue,
+} from './types.js';
+import {
+  derivePrAction,
+  getActionPrompt,
+  buildPrStateInput,
+} from './pr-state.js';
 import type { StatusColor, PrActionType } from './pr-state.js';
 
 export type SessionIntentType =
@@ -29,7 +38,14 @@ export interface SessionIntent {
 
 export type PickerItem =
   | { kind: 'pr'; pr: PullRequest }
-  | { kind: 'branch'; name: string; ahead: number; behind: number; prNumber: number | null; repoPath: string }
+  | {
+      kind: 'branch';
+      name: string;
+      ahead: number;
+      behind: number;
+      prNumber: number | null;
+      repoPath: string;
+    }
   | { kind: 'issue'; issue: GitHubIssue };
 
 /**
@@ -40,7 +56,7 @@ export function resolveIntent(
   item: PickerItem,
   _role: 'author' | 'reviewer',
   sessions: SessionSummary[],
-  worktrees: WorktreeInfo[],
+  worktrees: WorktreeInfo[]
 ): SessionIntent[] {
   switch (item.kind) {
     case 'pr':
@@ -55,12 +71,12 @@ export function resolveIntent(
 function resolvePrIntent(
   pr: PullRequest,
   sessions: SessionSummary[],
-  _worktrees: WorktreeInfo[],
+  _worktrees: WorktreeInfo[]
 ): SessionIntent[] {
   const intents: SessionIntent[] = [];
 
   // Check for existing session on this PR's branch
-  const existingSession = sessions.find(s => s.branchName === pr.headRefName);
+  const existingSession = sessions.find((s) => s.branchName === pr.headRefName);
 
   const prStateInput = buildPrStateInput(pr);
 
@@ -82,7 +98,8 @@ function resolvePrIntent(
     prompt,
   };
   if (existingSession?.id) primaryIntent.existingSessionId = existingSession.id;
-  if (existingSession?.worktreePath) primaryIntent.existingWorktreePath = existingSession.worktreePath;
+  if (existingSession?.worktreePath)
+    primaryIntent.existingWorktreePath = existingSession.worktreePath;
   intents.push(primaryIntent);
 
   // Add resume-session if session exists and primary isn't already resume
@@ -94,7 +111,8 @@ function resolvePrIntent(
       prompt: null,
       existingSessionId: existingSession.id,
     };
-    if (existingSession.worktreePath) resumeIntent.existingWorktreePath = existingSession.worktreePath;
+    if (existingSession.worktreePath)
+      resumeIntent.existingWorktreePath = existingSession.worktreePath;
     intents.push(resumeIntent);
   }
 
@@ -103,27 +121,44 @@ function resolvePrIntent(
 
 function mapPrActionToIntent(actionType: PrActionType): SessionIntentType {
   switch (actionType) {
-    case 'review-pr': return 'review-pr';
-    case 'merge-pr': return 'merge-pr';
-    case 'fix-conflicts': return 'fix-conflicts';
-    case 'fix-errors': return 'fix-errors';
-    case 'resolve-comments': return 'resolve-comments';
-    case 'create-pr': return 'create-pr';
+    case 'review-pr':
+      return 'review-pr';
+    case 'merge-pr':
+      return 'merge-pr';
+    case 'fix-conflicts':
+      return 'fix-conflicts';
+    case 'fix-errors':
+      return 'fix-errors';
+    case 'resolve-comments':
+      return 'resolve-comments';
+    case 'create-pr':
+      return 'create-pr';
     case 'archive-merged':
-    case 'archive-closed': return 'archive';
-    case 'ready-for-review': return 'open-branch';
-    case 'checks-running': return 'open-branch';
-    case 'none': return 'open-branch';
+    case 'archive-closed':
+      return 'archive';
+    case 'ready-for-review':
+      return 'open-branch';
+    case 'checks-running':
+      return 'open-branch';
+    case 'none':
+      return 'open-branch';
   }
 }
 
 function resolveBranchIntent(
-  item: { kind: 'branch'; name: string; ahead: number; behind: number; prNumber: number | null; repoPath: string },
+  item: {
+    kind: 'branch';
+    name: string;
+    ahead: number;
+    behind: number;
+    prNumber: number | null;
+    repoPath: string;
+  },
   sessions: SessionSummary[],
-  worktrees: WorktreeInfo[],
+  worktrees: WorktreeInfo[]
 ): SessionIntent[] {
-  const existingSession = sessions.find(s => s.branchName === item.name);
-  const existingWorktree = worktrees.find(w => w.branchName === item.name);
+  const existingSession = sessions.find((s) => s.branchName === item.name);
+  const existingWorktree = worktrees.find((w) => w.branchName === item.name);
 
   if (existingSession) {
     const resumeIntent: SessionIntent = {
@@ -133,7 +168,8 @@ function resolveBranchIntent(
       prompt: null,
       existingSessionId: existingSession.id,
     };
-    if (existingSession.worktreePath) resumeIntent.existingWorktreePath = existingSession.worktreePath;
+    if (existingSession.worktreePath)
+      resumeIntent.existingWorktreePath = existingSession.worktreePath;
     return [resumeIntent];
   }
 
@@ -143,18 +179,21 @@ function resolveBranchIntent(
     color: 'accent',
     prompt: `Continue working on branch "${item.name}".`,
   };
-  if (existingWorktree?.path) openIntent.existingWorktreePath = existingWorktree.path;
+  if (existingWorktree?.path)
+    openIntent.existingWorktreePath = existingWorktree.path;
   return [openIntent];
 }
 
 function resolveIssueIntent(
   issue: GitHubIssue,
-  sessions: SessionSummary[],
+  sessions: SessionSummary[]
 ): SessionIntent[] {
   // Check if a session already exists for a branch matching this issue
   // Use regex with word boundary to avoid false-positives (e.g., issue-12 matching issue-123)
   const issueBranchPattern = new RegExp(`issue-${issue.number}(?:-|$)`);
-  const existingSession = sessions.find(s => issueBranchPattern.test(s.branchName));
+  const existingSession = sessions.find((s) =>
+    issueBranchPattern.test(s.branchName)
+  );
 
   if (existingSession) {
     const resumeIntent: SessionIntent = {
@@ -164,7 +203,8 @@ function resolveIssueIntent(
       prompt: null,
       existingSessionId: existingSession.id,
     };
-    if (existingSession.worktreePath) resumeIntent.existingWorktreePath = existingSession.worktreePath;
+    if (existingSession.worktreePath)
+      resumeIntent.existingWorktreePath = existingSession.worktreePath;
     return [
       resumeIntent,
       {
@@ -176,16 +216,18 @@ function resolveIssueIntent(
     ];
   }
 
-  return [{
-    type: 'start-from-issue',
-    label: 'Start',
-    color: 'accent',
-    prompt: buildIssuePrompt(issue),
-  }];
+  return [
+    {
+      type: 'start-from-issue',
+      label: 'Start',
+      color: 'accent',
+      prompt: buildIssuePrompt(issue),
+    },
+  ];
 }
 
 function buildIssuePrompt(issue: GitHubIssue): string {
-  const labels = issue.labels.map(l => l.name).join(', ');
+  const labels = issue.labels.map((l) => l.name).join(', ');
   return `Work on issue #${issue.number}: ${issue.title}\n\nLabels: ${labels}`;
 }
 
@@ -196,7 +238,7 @@ function buildIssuePrompt(issue: GitHubIssue): string {
  * Slug is first 5 words of title, lowercased and hyphenated.
  */
 export function issueToBranchName(issue: GitHubIssue): string {
-  const labelNames = issue.labels.map(l => l.name.toLowerCase());
+  const labelNames = issue.labels.map((l) => l.name.toLowerCase());
   const type = labelNames.includes('bug') ? 'fix' : 'feat';
   const slug = issue.title
     .toLowerCase()

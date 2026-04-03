@@ -39,7 +39,10 @@ function makeBackspaces(count: number): string {
   return s;
 }
 
-function handleInsert(intent: CapturedIntent, currentValue: string): PipelineResult {
+function handleInsert(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   const { rangeStart, rangeEnd, data } = intent;
 
   if (rangeStart !== null && rangeEnd !== null && rangeStart !== rangeEnd) {
@@ -54,21 +57,30 @@ function handleInsert(intent: CapturedIntent, currentValue: string): PipelineRes
     // Gboard cursor-0 bug: keyboard loses cursor position and prepends the
     // replacement word at position 0 instead of replacing the last word in place.
     // Detect by: multi-char data, cursor was at 0, and new value = data + old value.
-    const isCursor0Prepend = data.length > 1 &&
+    const isCursor0Prepend =
+      data.length > 1 &&
       intent.cursorBefore === 0 &&
       intent.valueBefore.length > 0 &&
       currentValue === data + intent.valueBefore;
 
     if (isCursor0Prepend) {
       const lastSpaceIdx = intent.valueBefore.lastIndexOf(' ');
-      const lastWord = lastSpaceIdx >= 0 ? intent.valueBefore.slice(lastSpaceIdx + 1) : intent.valueBefore;
+      const lastWord =
+        lastSpaceIdx >= 0
+          ? intent.valueBefore.slice(lastSpaceIdx + 1)
+          : intent.valueBefore;
 
       // Buffer ends with a space — nothing to autocorrect
       if (lastWord.length === 0) {
-        return { payload: '', newInputValue: intent.valueBefore, debug: 'CURSOR0: empty lastWord, skip' };
+        return {
+          payload: '',
+          newInputValue: intent.valueBefore,
+          debug: 'CURSOR0: empty lastWord, skip',
+        };
       }
 
-      const prefix = lastSpaceIdx >= 0 ? intent.valueBefore.slice(0, lastSpaceIdx + 1) : '';
+      const prefix =
+        lastSpaceIdx >= 0 ? intent.valueBefore.slice(0, lastSpaceIdx + 1) : '';
       // Gboard sometimes sends the full replacement word (data[0] === firstChar,
       // e.g. "teh" → data="the") and sometimes only the suffix after the first
       // char (data[0] !== firstChar, e.g. "tsestin" → data="esting ").
@@ -88,7 +100,10 @@ function handleInsert(intent: CapturedIntent, currentValue: string): PipelineRes
   return handleFallbackDiff(intent, currentValue);
 }
 
-function handleDelete(intent: CapturedIntent, currentValue: string): PipelineResult {
+function handleDelete(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   const { rangeStart, rangeEnd, valueBefore } = intent;
 
   if (rangeStart !== null && rangeEnd !== null) {
@@ -103,7 +118,10 @@ function handleDelete(intent: CapturedIntent, currentValue: string): PipelineRes
   return { payload: makeBackspaces(charsToDelete) };
 }
 
-function handleReplacement(intent: CapturedIntent, currentValue: string): PipelineResult {
+function handleReplacement(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   const { rangeStart, rangeEnd, data, valueBefore } = intent;
 
   if (rangeStart !== null && rangeEnd !== null) {
@@ -116,13 +134,19 @@ function handleReplacement(intent: CapturedIntent, currentValue: string): Pipeli
   return handleFallbackDiff(intent, currentValue);
 }
 
-function handlePaste(intent: CapturedIntent, currentValue: string): PipelineResult {
+function handlePaste(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   const commonLen = commonPrefixLength(intent.valueBefore, currentValue);
   const pasted = currentValue.slice(commonLen);
   return { payload: pasted };
 }
 
-function handleFallbackDiff(intent: CapturedIntent, currentValue: string): PipelineResult {
+function handleFallbackDiff(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   const valueBefore = intent.valueBefore || '';
   if (currentValue === valueBefore) {
     return { payload: '' };
@@ -135,7 +159,10 @@ function handleFallbackDiff(intent: CapturedIntent, currentValue: string): Pipel
   return { payload };
 }
 
-export function processIntent(intent: CapturedIntent, currentValue: string): PipelineResult {
+export function processIntent(
+  intent: CapturedIntent,
+  currentValue: string
+): PipelineResult {
   switch (intent.type) {
     case 'insertText':
       return handleInsert(intent, currentValue);

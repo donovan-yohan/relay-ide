@@ -8,8 +8,10 @@ import type { Request, Response } from 'express';
 import { loadConfig } from './config.js';
 import { extractOwnerRepo, buildRepoMap } from './git.js';
 import type { Config, PullRequest, PullRequestsResponse } from './types.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('org-dashboard');
 
 const GH_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 60_000;
@@ -21,11 +23,37 @@ export interface OrgDashboardDeps {
   /** Injected so tests can override execFile calls */
   execAsync?: typeof execFileAsync;
   checkPrTransitions?: (
-    prs: Array<{ number: number; headRefName: string; state: 'OPEN' | 'CLOSED' | 'MERGED'; repoPath?: string | undefined }>,
-    branchLinks: Record<string, Array<{ repoPath: string; repoName: string; branchName: string; hasActiveSession: boolean }>>,
+    prs: Array<{
+      number: number;
+      headRefName: string;
+      state: 'OPEN' | 'CLOSED' | 'MERGED';
+      repoPath?: string | undefined;
+    }>,
+    branchLinks: Record<
+      string,
+      Array<{
+        repoPath: string;
+        repoName: string;
+        branchName: string;
+        hasActiveSession: boolean;
+      }>
+    >
   ) => Promise<void>;
-  getBranchLinks?: () => Promise<Record<string, Array<{ repoPath: string; repoName: string; branchName: string; hasActiveSession: boolean }>>>;
-  fetchGraphQL?: (token: string, repoMap: Map<string, string>) => Promise<{ prs: PullRequest[]; username: string }>;
+  getBranchLinks?: () => Promise<
+    Record<
+      string,
+      Array<{
+        repoPath: string;
+        repoName: string;
+        branchName: string;
+        hasActiveSession: boolean;
+      }>
+    >
+  >;
+  fetchGraphQL?: (
+    token: string,
+    repoMap: Map<string, string>
+  ) => Promise<{ prs: PullRequest[]; username: string }>;
 }
 
 // In-memory cache for search results
@@ -93,7 +121,10 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
     const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
-      const response: PullRequestsResponse = { prs: [], error: 'no_workspaces' };
+      const response: PullRequestsResponse = {
+        prs: [],
+        error: 'no_workspaces',
+      };
       res.json(response);
       return;
     }
@@ -109,20 +140,24 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
     // Resolve GitHub user (cached for server lifetime)
     if (!cachedUser) {
       try {
-        const { stdout } = await exec(
-          'gh',
-          ['api', 'user', '--jq', '.login'],
-          { timeout: GH_TIMEOUT_MS },
-        );
+        const { stdout } = await exec('gh', ['api', 'user', '--jq', '.login'], {
+          timeout: GH_TIMEOUT_MS,
+        });
         cachedUser = stdout.trim();
       } catch (err) {
         const errCode = (err as NodeJS.ErrnoException).code;
         if (errCode === 'ENOENT') {
-          const response: PullRequestsResponse = { prs: [], error: 'gh_not_in_path' };
+          const response: PullRequestsResponse = {
+            prs: [],
+            error: 'gh_not_in_path',
+          };
           res.json(response);
           return;
         }
-        const response: PullRequestsResponse = { prs: [], error: 'gh_not_authenticated' };
+        const response: PullRequestsResponse = {
+          prs: [],
+          error: 'gh_not_authenticated',
+        };
         res.json(response);
         return;
       }
@@ -140,12 +175,16 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
         const result = await deps.fetchGraphQL(githubToken, repoMap);
         cachedUser = result.username;
         const prs = result.prs;
-        prs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+        prs.sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        );
         cache = { prs, fetchedAt: now };
 
         // Fire ticket transitions (same best-effort as below)
         if (deps.checkPrTransitions && deps.getBranchLinks) {
-          deps.getBranchLinks()
+          deps
+            .getBranchLinks()
             .then((links) => deps.checkPrTransitions!(prs, links))
             .catch(() => {});
         }
@@ -154,7 +193,10 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
         res.json(response);
         return;
       } catch (err) {
-        console.warn('[org-dashboard] GraphQL fetch failed, falling back to gh CLI:', err instanceof Error ? err.message : String(err));
+        logger.warn(
+          '[org-dashboard] GraphQL fetch failed, falling back to gh CLI:',
+          err instanceof Error ? err.message : String(err)
+        );
       }
     }
 
@@ -164,7 +206,7 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
       const { stdout } = await exec(
         'gh',
         ['api', 'search/issues?q=is:pr+is:open+involves:@me&per_page=100'],
-        { timeout: GH_TIMEOUT_MS },
+        { timeout: GH_TIMEOUT_MS }
       );
       searchResponse = JSON.parse(stdout) as GhSearchResponse;
     } catch (err) {
@@ -176,11 +218,17 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
         return;
       }
       if (errCode === 'ENOENT') {
-        const response: PullRequestsResponse = { prs: [], error: 'gh_not_in_path' };
+        const response: PullRequestsResponse = {
+          prs: [],
+          error: 'gh_not_in_path',
+        };
         res.json(response);
         return;
       }
-      const response: PullRequestsResponse = { prs: [], error: 'gh_not_authenticated' };
+      const response: PullRequestsResponse = {
+        prs: [],
+        error: 'gh_not_authenticated',
+      };
       res.json(response);
       return;
     }
@@ -234,7 +282,10 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
     }
 
     // Sort by updatedAt descending
-    prs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    prs.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
 
     // Update cache
     cache = { prs, fetchedAt: now };
@@ -246,11 +297,16 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
 
       // Fetch recently merged PRs (last 7 days) for transition checks
       try {
-        const mergedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const mergedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split('T')[0];
         const { stdout: mergedStdout } = await exec(
           'gh',
-          ['api', `search/issues?q=is:pr+is:merged+merged:>=${mergedSince}+involves:@me&per_page=50`],
-          { timeout: GH_TIMEOUT_MS },
+          [
+            'api',
+            `search/issues?q=is:pr+is:merged+merged:>=${mergedSince}+involves:@me&per_page=50`,
+          ],
+          { timeout: GH_TIMEOUT_MS }
         );
         const mergedResponse = JSON.parse(mergedStdout) as GhSearchResponse;
         for (const item of mergedResponse.items ?? []) {
@@ -283,7 +339,8 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
         // Merged PR fetch is best-effort — don't block transitions
       }
 
-      deps.getBranchLinks()
+      deps
+        .getBranchLinks()
         .then((links) => deps.checkPrTransitions!(transitionPrs, links))
         .catch(() => {});
     }

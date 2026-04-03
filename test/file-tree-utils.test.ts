@@ -1,6 +1,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChangedFilesTree, flattenVisibleNodes, findMostRecentlyChanged, parseLineReference, statusToBadge, statusToBadgeColor } from '../frontend/src/lib/file-tree-utils.js';
+import {
+  buildChangedFilesTree,
+  flattenVisibleNodes,
+  findMostRecentlyChanged,
+  parseLineReference,
+  statusToBadge,
+  statusToBadgeColor,
+} from '../frontend/src/lib/file-tree-utils.js';
 import type { ChangedFile } from '../frontend/src/lib/types.js';
 
 describe('buildChangedFilesTree', () => {
@@ -10,8 +17,20 @@ describe('buildChangedFilesTree', () => {
 
   test('builds tree from flat file list', () => {
     const files: ChangedFile[] = [
-      { path: 'src/index.ts', status: 'modified', additions: 5, deletions: 2, directory: 'src' },
-      { path: 'src/utils.ts', status: 'added', additions: 10, deletions: 0, directory: 'src' },
+      {
+        path: 'src/index.ts',
+        status: 'modified',
+        additions: 5,
+        deletions: 2,
+        directory: 'src',
+      },
+      {
+        path: 'src/utils.ts',
+        status: 'added',
+        additions: 10,
+        deletions: 0,
+        directory: 'src',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     assert.equal(tree.length, 1); // single "src" directory
@@ -25,7 +44,13 @@ describe('buildChangedFilesTree', () => {
 
   test('collapses single-child directories', () => {
     const files: ChangedFile[] = [
-      { path: 'a/b/c/file.ts', status: 'modified', additions: 1, deletions: 0, directory: 'a/b/c' },
+      {
+        path: 'a/b/c/file.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        directory: 'a/b/c',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     // a/b/c should collapse into one node "a/b/c"
@@ -36,8 +61,20 @@ describe('buildChangedFilesTree', () => {
 
   test('sorts directories before files', () => {
     const files: ChangedFile[] = [
-      { path: 'z-file.ts', status: 'modified', additions: 1, deletions: 0, directory: '' },
-      { path: 'a-dir/inner.ts', status: 'added', additions: 1, deletions: 0, directory: 'a-dir' },
+      {
+        path: 'z-file.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        directory: '',
+      },
+      {
+        path: 'a-dir/inner.ts',
+        status: 'added',
+        additions: 1,
+        deletions: 0,
+        directory: 'a-dir',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     assert.equal(tree[0]!.isDirectory, true);
@@ -46,8 +83,20 @@ describe('buildChangedFilesTree', () => {
 
   test('aggregates stats to parent directories', () => {
     const files: ChangedFile[] = [
-      { path: 'src/a.ts', status: 'modified', additions: 3, deletions: 1, directory: 'src' },
-      { path: 'src/b.ts', status: 'added', additions: 7, deletions: 0, directory: 'src' },
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        additions: 3,
+        deletions: 1,
+        directory: 'src',
+      },
+      {
+        path: 'src/b.ts',
+        status: 'added',
+        additions: 7,
+        deletions: 0,
+        directory: 'src',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     const srcNode = tree[0]!;
@@ -64,7 +113,13 @@ describe('flattenVisibleNodes', () => {
 
   test('flattens expanded directories', () => {
     const files: ChangedFile[] = [
-      { path: 'src/index.ts', status: 'modified', additions: 1, deletions: 0, directory: 'src' },
+      {
+        path: 'src/index.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        directory: 'src',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     const flat = flattenVisibleNodes(tree);
@@ -73,7 +128,13 @@ describe('flattenVisibleNodes', () => {
 
   test('hides children of collapsed directories', () => {
     const files: ChangedFile[] = [
-      { path: 'src/index.ts', status: 'modified', additions: 1, deletions: 0, directory: 'src' },
+      {
+        path: 'src/index.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        directory: 'src',
+      },
     ];
     const tree = buildChangedFilesTree(files);
     tree[0]!.expanded = false;

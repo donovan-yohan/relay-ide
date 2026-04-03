@@ -13,7 +13,10 @@ describe('generateFileSummary', () => {
       '+import foo from "bar"',
       '+// just a comment',
     ].join('\n');
-    assert.equal(generateFileSummary(diff, 'empty.ts', 'untracked'), 'new file');
+    assert.equal(
+      generateFileSummary(diff, 'empty.ts', 'untracked'),
+      'new file'
+    );
   });
 
   it('returns "new file: <line>" for untracked with meaningful content', () => {
@@ -35,7 +38,10 @@ describe('generateFileSummary', () => {
       '+  return data != null;',
       '+}',
     ].join('\n');
-    assert.equal(generateFileSummary(diff, 'server.ts', 'modified'), 'added validateInput()');
+    assert.equal(
+      generateFileSummary(diff, 'server.ts', 'modified'),
+      'added validateInput()'
+    );
   });
 
   it('detects multiple added functions', () => {
@@ -50,7 +56,10 @@ describe('generateFileSummary', () => {
       '+  return 2;',
       '+}',
     ].join('\n');
-    assert.equal(generateFileSummary(diff, 'utils.ts', 'modified'), 'added 2 functions');
+    assert.equal(
+      generateFileSummary(diff, 'utils.ts', 'modified'),
+      'added 2 functions'
+    );
   });
 
   it('detects modified function from hunk headers', () => {
@@ -77,7 +86,10 @@ describe('generateFileSummary', () => {
       ' const a = 1;',
       '+const b = 2;',
     ].join('\n');
-    assert.equal(generateFileSummary(diff, 'api.ts', 'modified'), 'modified 2 functions');
+    assert.equal(
+      generateFileSummary(diff, 'api.ts', 'modified'),
+      'modified 2 functions'
+    );
   });
 
   it('falls back to +N -N lines when no functions detected', () => {
@@ -91,7 +103,10 @@ describe('generateFileSummary', () => {
       '-  "removed": true',
       ' }',
     ].join('\n');
-    assert.equal(generateFileSummary(diff, 'config.json', 'modified'), '+1 -1 lines');
+    assert.equal(
+      generateFileSummary(diff, 'config.json', 'modified'),
+      '+1 -1 lines'
+    );
   });
 
   it('truncates long first meaningful line for untracked files', () => {
@@ -102,6 +117,9 @@ describe('generateFileSummary', () => {
       `+${longLine}`,
     ].join('\n');
     const result = generateFileSummary(diff, 'long.ts', 'untracked');
-    assert.ok(result.length <= 72, `Expected truncated result but got length ${result.length}`);
+    assert.ok(
+      result.length <= 72,
+      `Expected truncated result but got length ${result.length}`
+    );
   });
 });

@@ -7,7 +7,11 @@ import {
   AGENT_YOLO_ARGS,
   resolveFramework,
 } from '../server/types.js';
-import type { AgentFramework, BuiltinFrameworkId, EventSourceType } from '../server/types.js';
+import type {
+  AgentFramework,
+  BuiltinFrameworkId,
+  EventSourceType,
+} from '../server/types.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 
@@ -38,7 +42,12 @@ test('codex framework has correct values', () => {
   assert.equal(codex.displayName, 'Codex');
   assert.equal(codex.command, 'codex');
   assert.deepEqual(codex.continueArgs, ['resume', '--last']);
-  assert.deepEqual(codex.yoloArgs, ['--ask-for-approval', 'never', '--sandbox', 'workspace-write']);
+  assert.deepEqual(codex.yoloArgs, [
+    '--ask-for-approval',
+    'never',
+    '--sandbox',
+    'workspace-write',
+  ]);
   assert.equal(codex.parserType, 'codex');
   assert.equal(codex.eventSource, 'hooks');
   assert.equal(codex.capabilities.supportsHooks, true);
@@ -89,7 +98,10 @@ test('resolveFramework applies top-level overrides from config.frameworks', () =
   const result = resolveFramework(
     {
       frameworks: {
-        claude: { commandOverride: '/usr/local/bin/claude', displayName: 'My Claude' },
+        claude: {
+          commandOverride: '/usr/local/bin/claude',
+          displayName: 'My Claude',
+        },
       },
     },
     'claude'
@@ -105,7 +117,11 @@ test('resolveFramework deep merges capabilities from config.frameworks', () => {
   const result = resolveFramework(
     {
       frameworks: {
-        claude: { capabilities: { supportsHooks: false } as AgentFramework['capabilities'] },
+        claude: {
+          capabilities: {
+            supportsHooks: false,
+          } as AgentFramework['capabilities'],
+        },
       },
     },
     'claude'
@@ -133,7 +149,10 @@ test('resolveFramework supports fully custom framework from config.frameworks', 
       supportsTelemetry: false,
     },
   };
-  const result = resolveFramework({ frameworks: { myagent: customFramework } }, 'myagent');
+  const result = resolveFramework(
+    { frameworks: { myagent: customFramework } },
+    'myagent'
+  );
   assert.equal(result.id, 'myagent');
   assert.equal(result.displayName, 'My Agent');
   assert.equal(result.command, 'myagent');
@@ -148,7 +167,11 @@ test('resolveFramework throws for unknown framework not in config', () => {
 
 test('resolveFramework throws for unknown framework not in config.frameworks', () => {
   assert.throws(
-    () => resolveFramework({ frameworks: { other: { id: 'other' } } }, 'nonexistent'),
+    () =>
+      resolveFramework(
+        { frameworks: { other: { id: 'other' } } },
+        'nonexistent'
+      ),
     /unknown.*framework|framework.*unknown|nonexistent/i
   );
 });
@@ -165,19 +188,40 @@ test('resolveFramework throws for custom framework missing required fields', () 
 test('AGENT_COMMANDS is derived from BUILTIN_FRAMEWORKS', () => {
   assert.equal(AGENT_COMMANDS['claude'], BUILTIN_FRAMEWORKS['claude'].command);
   assert.equal(AGENT_COMMANDS['codex'], BUILTIN_FRAMEWORKS['codex'].command);
-  assert.equal(AGENT_COMMANDS['opencode'], BUILTIN_FRAMEWORKS['opencode'].command);
+  assert.equal(
+    AGENT_COMMANDS['opencode'],
+    BUILTIN_FRAMEWORKS['opencode'].command
+  );
 });
 
 test('AGENT_CONTINUE_ARGS is derived from BUILTIN_FRAMEWORKS', () => {
-  assert.deepEqual(AGENT_CONTINUE_ARGS['claude'], BUILTIN_FRAMEWORKS['claude'].continueArgs);
-  assert.deepEqual(AGENT_CONTINUE_ARGS['codex'], BUILTIN_FRAMEWORKS['codex'].continueArgs);
-  assert.deepEqual(AGENT_CONTINUE_ARGS['opencode'], BUILTIN_FRAMEWORKS['opencode'].continueArgs);
+  assert.deepEqual(
+    AGENT_CONTINUE_ARGS['claude'],
+    BUILTIN_FRAMEWORKS['claude'].continueArgs
+  );
+  assert.deepEqual(
+    AGENT_CONTINUE_ARGS['codex'],
+    BUILTIN_FRAMEWORKS['codex'].continueArgs
+  );
+  assert.deepEqual(
+    AGENT_CONTINUE_ARGS['opencode'],
+    BUILTIN_FRAMEWORKS['opencode'].continueArgs
+  );
 });
 
 test('AGENT_YOLO_ARGS is derived from BUILTIN_FRAMEWORKS', () => {
-  assert.deepEqual(AGENT_YOLO_ARGS['claude'], BUILTIN_FRAMEWORKS['claude'].yoloArgs);
-  assert.deepEqual(AGENT_YOLO_ARGS['codex'], BUILTIN_FRAMEWORKS['codex'].yoloArgs);
-  assert.deepEqual(AGENT_YOLO_ARGS['opencode'], BUILTIN_FRAMEWORKS['opencode'].yoloArgs);
+  assert.deepEqual(
+    AGENT_YOLO_ARGS['claude'],
+    BUILTIN_FRAMEWORKS['claude'].yoloArgs
+  );
+  assert.deepEqual(
+    AGENT_YOLO_ARGS['codex'],
+    BUILTIN_FRAMEWORKS['codex'].yoloArgs
+  );
+  assert.deepEqual(
+    AGENT_YOLO_ARGS['opencode'],
+    BUILTIN_FRAMEWORKS['opencode'].yoloArgs
+  );
 });
 
 test('AGENT_COMMANDS still has claude and codex for backward compat', () => {
@@ -191,15 +235,30 @@ test('AGENT_CONTINUE_ARGS still has claude and codex for backward compat', () =>
 });
 
 test('AGENT_YOLO_ARGS still has claude and codex for backward compat', () => {
-  assert.deepEqual(AGENT_YOLO_ARGS['claude'], ['--dangerously-skip-permissions']);
-  assert.deepEqual(AGENT_YOLO_ARGS['codex'], ['--ask-for-approval', 'never', '--sandbox', 'workspace-write']);
+  assert.deepEqual(AGENT_YOLO_ARGS['claude'], [
+    '--dangerously-skip-permissions',
+  ]);
+  assert.deepEqual(AGENT_YOLO_ARGS['codex'], [
+    '--ask-for-approval',
+    'never',
+    '--sandbox',
+    'workspace-write',
+  ]);
 });
 
 // ── EventSourceType type check ──
 
 test('EventSourceType values are used correctly in BUILTIN_FRAMEWORKS', () => {
-  const validSources: EventSourceType[] = ['hooks', 'plugin', 'parser', 'timer'];
+  const validSources: EventSourceType[] = [
+    'hooks',
+    'plugin',
+    'parser',
+    'timer',
+  ];
   for (const fw of Object.values(BUILTIN_FRAMEWORKS)) {
-    assert.ok(validSources.includes(fw.eventSource), `${fw.id} eventSource should be valid`);
+    assert.ok(
+      validSources.includes(fw.eventSource),
+      `${fw.id} eventSource should be valid`
+    );
   }
 });

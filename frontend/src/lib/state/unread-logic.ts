@@ -8,7 +8,7 @@ import { isAttentionState } from './display-state.js';
 export function shouldMarkUnread(
   from: DisplayState,
   to: DisplayState,
-  isCurrentlyViewing: boolean,
+  isCurrentlyViewing: boolean
 ): boolean {
   if (isCurrentlyViewing) return false;
   if (from === to) return false;

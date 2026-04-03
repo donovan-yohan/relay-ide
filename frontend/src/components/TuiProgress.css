@@ -1,0 +1,7 @@
+.tui-progress {
+  display: inline-block;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  white-space: pre;
+}

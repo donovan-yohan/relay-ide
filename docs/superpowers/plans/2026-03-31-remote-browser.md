@@ -35,6 +35,7 @@ MODIFIED FILES:
 Refactor the bag-of-optionals `EventMessage` into a typed union. This unblocks all subsequent WS event work with compile-time safety.
 
 **Files:**
+
 - Modify: `frontend/src/lib/ws.ts:5-19`
 - Modify: `frontend/src/App.svelte:519-549`
 
@@ -50,14 +51,20 @@ import { execFileSync } from 'node:child_process';
 test('EventMessage types compile without errors', () => {
   // tsc --noEmit on the ws.ts file to verify the union compiles
   try {
-    execFileSync('npx', ['tsc', '--noEmit', '--strict', '-p', 'tsconfig.json'], {
-      cwd: process.cwd(),
-      encoding: 'utf-8',
-    });
+    execFileSync(
+      'npx',
+      ['tsc', '--noEmit', '--strict', '-p', 'tsconfig.json'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+      }
+    );
     assert.ok(true, 'TypeScript compilation succeeded');
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string };
-    assert.fail(`TypeScript compilation failed:\n${e.stdout ?? ''}\n${e.stderr ?? ''}`);
+    assert.fail(
+      `TypeScript compilation failed:\n${e.stdout ?? ''}\n${e.stderr ?? ''}`
+    );
   }
 });
 ```
@@ -76,10 +83,30 @@ Replace `frontend/src/lib/ws.ts:5-19` with:
 // Each event type declares only its required fields.
 export type EventMessage =
   | { type: 'worktrees-changed' }
-  | { type: 'session-backend-state-changed'; sessionId: string; state: BackendDisplayState; permissionType?: 'approval' | 'question' }
-  | { type: 'session-renamed'; sessionId: string; branchName: string; displayName: string }
-  | { type: 'session-branch-changed'; sessionId: string; branch: string; cwdPath?: string }
-  | { type: 'session-ended'; sessionId?: string; cwd?: string; branchName?: string }
+  | {
+      type: 'session-backend-state-changed';
+      sessionId: string;
+      state: BackendDisplayState;
+      permissionType?: 'approval' | 'question';
+    }
+  | {
+      type: 'session-renamed';
+      sessionId: string;
+      branchName: string;
+      displayName: string;
+    }
+  | {
+      type: 'session-branch-changed';
+      sessionId: string;
+      branch: string;
+      cwdPath?: string;
+    }
+  | {
+      type: 'session-ended';
+      sessionId?: string;
+      cwd?: string;
+      branchName?: string;
+    }
   | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
   | { type: 'pr-updated' }
   | { type: 'ci-updated' }
@@ -106,6 +133,7 @@ type EventCallback = (msg: EventMessage) => void;
 In `frontend/src/App.svelte:519-549`, update the `connectEventSocket` callback. The existing `msg.type === 'xxx'` checks already work as type guards with a discriminated union. The only change needed: remove optional chaining on fields that are now required by the union. For example, `msg.sessionId && msg.state` checks become unnecessary for `session-backend-state-changed` since both are required in the union type.
 
 The key changes:
+
 - `msg.sessionId && msg.state` guard on `session-backend-state-changed` — remove, both are guaranteed
 - `msg.sessionId` guard on `session-renamed` — remove, guaranteed
 - `msg.sessionId` guard on `session-branch-changed` — remove, guaranteed
@@ -131,6 +159,7 @@ git commit -m "refactor: EventMessage discriminated union for type-safe WS event
 Add the `tabType` field to `OpenFileTab` and the `openHtmlTab()`/`refreshHtmlTab()` helpers. Key tabs by `(filePath, tabType)` to prevent collision.
 
 **Files:**
+
 - Modify: `frontend/src/lib/state/ui.svelte.ts:73-77, 206-216`
 
 - [ ] **Step 1: Write the failing test**
@@ -202,23 +231,36 @@ export interface OpenFileTab {
   filePath: string;
   fileName: string;
   isChanged: boolean;
-  tabType?: FileTabType;  // undefined = legacy diff/code (backward compat)
-  token?: string;         // content token for html tabs
+  tabType?: FileTabType; // undefined = legacy diff/code (backward compat)
+  token?: string; // content token for html tabs
 }
 ```
 
 Update `openFileTab` at line 206 to key by `(filePath, tabType)`:
 
 ```typescript
-export function openFileTab(filePath: string, isChanged: boolean, tabType?: FileTabType, token?: string): void {
+export function openFileTab(
+  filePath: string,
+  isChanged: boolean,
+  tabType?: FileTabType,
+  token?: string
+): void {
   const fileName = filePath.split('/').pop() ?? filePath;
   const matchType = tabType ?? (isChanged ? 'diff' : 'code');
-  const existing = openFileTabs.find(t => t.filePath === filePath && (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType);
+  const existing = openFileTabs.find(
+    (t) =>
+      t.filePath === filePath &&
+      (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType
+  );
   if (!existing) {
-    openFileTabs = [...openFileTabs, { filePath, fileName, isChanged, tabType, token }];
+    openFileTabs = [
+      ...openFileTabs,
+      { filePath, fileName, isChanged, tabType, token },
+    ];
   } else if (existing.isChanged !== isChanged || existing.token !== token) {
-    openFileTabs = openFileTabs.map(t =>
-      t.filePath === filePath && (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType
+    openFileTabs = openFileTabs.map((t) =>
+      t.filePath === filePath &&
+      (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType
         ? { ...t, isChanged, token }
         : t
     );
@@ -236,9 +278,11 @@ export function openHtmlTab(filePath: string, token: string): void {
 
 export function refreshHtmlTab(filePath: string): void {
   // Force re-render by updating token timestamp
-  const tab = openFileTabs.find(t => t.filePath === filePath && t.tabType === 'html');
+  const tab = openFileTabs.find(
+    (t) => t.filePath === filePath && t.tabType === 'html'
+  );
   if (tab) {
-    openFileTabs = openFileTabs.map(t =>
+    openFileTabs = openFileTabs.map((t) =>
       t.filePath === filePath && t.tabType === 'html'
         ? { ...t, token: `${t.token?.split('?')[0]}?t=${Date.now()}` }
         : t
@@ -264,9 +308,10 @@ git commit -m "feat: add tabType to OpenFileTab, openHtmlTab/refreshHtmlTab help
 
 ### Task 3: Server Browser Content Module
 
-The core server module: token store, POST /browser-tabs, GET /browser-content/:token/*.
+The core server module: token store, POST /browser-tabs, GET /browser-content/:token/\*.
 
 **Files:**
+
 - Create: `server/browser-content.ts`
 - Create: `test/browser-content.test.ts`
 
@@ -463,12 +508,17 @@ export function createBrowserToken(filePath: string): string {
   return token;
 }
 
-export function validateToken(token: string): { baseDir: string; filePath: string } | null {
+export function validateToken(
+  token: string
+): { baseDir: string; filePath: string } | null {
   const entry = tokenStore.get(token);
   return entry ? { baseDir: entry.baseDir, filePath: entry.filePath } : null;
 }
 
-export function resolveTokenPath(token: string, relativePath: string): string | null {
+export function resolveTokenPath(
+  token: string,
+  relativePath: string
+): string | null {
   const entry = tokenStore.get(token);
   if (!entry) return null;
 
@@ -477,7 +527,11 @@ export function resolveTokenPath(token: string, relativePath: string): string | 
 
   const resolved = path.resolve(entry.baseDir, relativePath);
   // Ensure resolved path is within baseDir (no traversal)
-  if (!resolved.startsWith(entry.baseDir + path.sep) && resolved !== entry.baseDir) return null;
+  if (
+    !resolved.startsWith(entry.baseDir + path.sep) &&
+    resolved !== entry.baseDir
+  )
+    return null;
 
   return resolved;
 }
@@ -505,82 +559,92 @@ export function _resetForTesting(): void {
 // ── Express router ──
 
 export function createBrowserContentRouter(
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void,
+  broadcastEvent: (type: string, data?: Record<string, unknown>) => void
 ): Router {
   const router = Router();
 
   // POST /browser-tabs — create or refresh a browser tab
-  router.post('/browser-tabs', (req: express.Request, res: express.Response) => {
-    // Auth: scoped token from PTY env
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    if (!validateScopedToken(bearerToken)) {
-      res.status(401).json({ error: 'Invalid browser token' });
-      return;
-    }
-
-    const { path: filePath } = req.body as { path?: string };
-    if (!filePath || typeof filePath !== 'string') {
-      res.status(400).json({ error: 'path is required' });
-      return;
-    }
-
-    // Validate path
-    const resolved = path.resolve(filePath);
-    if (!path.isAbsolute(resolved)) {
-      res.status(400).json({ error: 'path must be absolute' });
-      return;
-    }
-
-    try {
-      const stat = fs.statSync(resolved);
-      if (!stat.isFile()) {
-        res.status(400).json({ error: 'path must be a file, not a directory' });
+  router.post(
+    '/browser-tabs',
+    (req: express.Request, res: express.Response) => {
+      // Auth: scoped token from PTY env
+      const authHeader = req.headers.authorization;
+      const bearerToken = authHeader?.startsWith('Bearer ')
+        ? authHeader.slice(7)
+        : '';
+      if (!validateScopedToken(bearerToken)) {
+        res.status(401).json({ error: 'Invalid browser token' });
         return;
       }
-    } catch {
-      res.status(404).json({ error: 'file not found' });
-      return;
-    }
 
-    // Check if already open (idempotent refresh)
-    const existingToken = getTokenForPath(resolved);
-    if (existingToken) {
-      broadcastEvent('browser-tab-refreshed', { filePath: resolved });
-      res.json({ token: existingToken, refreshed: true });
-      return;
-    }
+      const { path: filePath } = req.body as { path?: string };
+      if (!filePath || typeof filePath !== 'string') {
+        res.status(400).json({ error: 'path is required' });
+        return;
+      }
 
-    // Create new token
-    const token = createBrowserToken(resolved);
-    broadcastEvent('browser-tab-opened', { filePath: resolved, token });
-    res.json({ token, refreshed: false });
-  });
+      // Validate path
+      const resolved = path.resolve(filePath);
+      if (!path.isAbsolute(resolved)) {
+        res.status(400).json({ error: 'path must be absolute' });
+        return;
+      }
+
+      try {
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile()) {
+          res
+            .status(400)
+            .json({ error: 'path must be a file, not a directory' });
+          return;
+        }
+      } catch {
+        res.status(404).json({ error: 'file not found' });
+        return;
+      }
+
+      // Check if already open (idempotent refresh)
+      const existingToken = getTokenForPath(resolved);
+      if (existingToken) {
+        broadcastEvent('browser-tab-refreshed', { filePath: resolved });
+        res.json({ token: existingToken, refreshed: true });
+        return;
+      }
+
+      // Create new token
+      const token = createBrowserToken(resolved);
+      broadcastEvent('browser-tab-opened', { filePath: resolved, token });
+      res.json({ token, refreshed: false });
+    }
+  );
 
   // GET /browser-content/:token/* — serve file content
-  router.get('/browser-content/:token/*', (req: express.Request, res: express.Response) => {
-    const { token } = req.params;
-    // The * param captures everything after /browser-content/:token/
-    const relativePath = req.params[0] || '';
+  router.get(
+    '/browser-content/:token/*',
+    (req: express.Request, res: express.Response) => {
+      const { token } = req.params;
+      // The * param captures everything after /browser-content/:token/
+      const relativePath = req.params[0] || '';
 
-    if (!relativePath) {
-      res.status(400).send('Missing file path');
-      return;
+      if (!relativePath) {
+        res.status(400).send('Missing file path');
+        return;
+      }
+
+      const resolved = resolveTokenPath(token!, relativePath);
+      if (!resolved) {
+        res.status(403).send('Forbidden');
+        return;
+      }
+
+      if (!fs.existsSync(resolved)) {
+        res.status(404).send('Not found');
+        return;
+      }
+
+      res.sendFile(resolved);
     }
-
-    const resolved = resolveTokenPath(token!, relativePath);
-    if (!resolved) {
-      res.status(403).send('Forbidden');
-      return;
-    }
-
-    if (!fs.existsSync(resolved)) {
-      res.status(404).send('Not found');
-      return;
-    }
-
-    res.sendFile(resolved);
-  });
+  );
 
   return router;
 }
@@ -605,12 +669,17 @@ git commit -m "feat: browser-content module with token store and Express router"
 Wire the browser-content router into the Express app and generate the scoped token at startup.
 
 **Files:**
+
 - Modify: `server/index.ts`
 
 - [ ] **Step 1: Add import at top of server/index.ts**
 
 ```typescript
-import { createBrowserContentRouter, generateScopedToken, cleanExpiredTokens } from './browser-content.js';
+import {
+  createBrowserContentRouter,
+  generateScopedToken,
+  cleanExpiredTokens,
+} from './browser-content.js';
 ```
 
 - [ ] **Step 2: Generate scoped token after server setup**
@@ -671,6 +740,7 @@ git commit -m "feat: mount browser-content router with scoped token and TTL clea
 Inject `CLAUDE_REMOTE_BROWSER*` env vars into PTY sessions so agents can discover the capability.
 
 **Files:**
+
 - Modify: `server/pty-handler.ts:133`
 - Modify: `server/utils.ts:19-23` (cleanEnv)
 
@@ -682,20 +752,23 @@ Add to `test/browser-content.test.ts`:
 test('cleanEnv preserves CLAUDE_REMOTE_BROWSER vars when set', async () => {
   // Import cleanEnv
   const { cleanEnv } = await import('../server/utils.js');
-  
+
   // Set the env vars (simulating what server/index.ts does)
   process.env['CLAUDE_REMOTE_BROWSER'] = '1';
   process.env['CLAUDE_REMOTE_BROWSER_CMD'] = 'claude-remote-cli browser';
   process.env['CLAUDE_REMOTE_PORT'] = '3456';
   process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = 'test-token';
-  
+
   const env = cleanEnv();
-  
+
   assert.strictEqual(env['CLAUDE_REMOTE_BROWSER'], '1');
-  assert.strictEqual(env['CLAUDE_REMOTE_BROWSER_CMD'], 'claude-remote-cli browser');
+  assert.strictEqual(
+    env['CLAUDE_REMOTE_BROWSER_CMD'],
+    'claude-remote-cli browser'
+  );
   assert.strictEqual(env['CLAUDE_REMOTE_PORT'], '3456');
   assert.strictEqual(env['CLAUDE_REMOTE_BROWSER_TOKEN'], 'test-token');
-  
+
   // Cleanup
   delete process.env['CLAUDE_REMOTE_BROWSER'];
   delete process.env['CLAUDE_REMOTE_BROWSER_CMD'];
@@ -745,6 +818,7 @@ git commit -m "feat: inject CLAUDE_REMOTE_BROWSER env vars for PTY agent discove
 Add `claude-remote-cli browser <path>` that resolves the path and POSTs to the running server.
 
 **Files:**
+
 - Modify: `bin/claude-remote-cli.ts`
 - Create: `test/browser-cli.test.ts`
 
@@ -789,35 +863,54 @@ test('browser command resolves relative path to absolute', () => {
   // This tests the path resolution logic by checking the error message
   // when the server isn't running (the path in the error should be absolute)
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', path.join(tmpDir, 'test.html')], {
-      encoding: 'utf-8',
-      env: {
-        ...process.env,
-        CLAUDE_REMOTE_PORT: '19999',  // Port nothing listens on
-        CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
-        PATH: process.env.PATH,
-      },
-    });
+    execFileSync(
+      'node',
+      [
+        'dist/bin/claude-remote-cli.js',
+        'browser',
+        path.join(tmpDir, 'test.html'),
+      ],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDE_REMOTE_PORT: '19999', // Port nothing listens on
+          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          PATH: process.env.PATH,
+        },
+      }
+    );
     assert.fail('Should have failed (no server running)');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
     // Should fail with connection error, not path error
-    assert.ok((e.stderr ?? '').includes('connect') || (e.stderr ?? '').includes('ECONNREFUSED'),
-      `Expected connection error, got: ${e.stderr}`);
+    assert.ok(
+      (e.stderr ?? '').includes('connect') ||
+        (e.stderr ?? '').includes('ECONNREFUSED'),
+      `Expected connection error, got: ${e.stderr}`
+    );
   }
 });
 
 test('browser command fails gracefully when server is not running', () => {
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', path.join(tmpDir, 'test.html')], {
-      encoding: 'utf-8',
-      env: {
-        ...process.env,
-        CLAUDE_REMOTE_PORT: '19999',
-        CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
-        PATH: process.env.PATH,
-      },
-    });
+    execFileSync(
+      'node',
+      [
+        'dist/bin/claude-remote-cli.js',
+        'browser',
+        path.join(tmpDir, 'test.html'),
+      ],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDE_REMOTE_PORT: '19999',
+          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          PATH: process.env.PATH,
+        },
+      }
+    );
     assert.fail('Should have exited with error');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
@@ -827,10 +920,14 @@ test('browser command fails gracefully when server is not running', () => {
 
 test('browser --help shows usage', () => {
   try {
-    const output = execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', '--help'], {
-      encoding: 'utf-8',
-      env: { ...process.env, PATH: process.env.PATH },
-    });
+    const output = execFileSync(
+      'node',
+      ['dist/bin/claude-remote-cli.js', 'browser', '--help'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: process.env.PATH },
+      }
+    );
     assert.ok(output.includes('Usage') || output.includes('browser'));
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string };
@@ -852,8 +949,12 @@ In `bin/claude-remote-cli.ts`, add after the `pin` command block and before line
 ```typescript
 if (command === 'browser') {
   const browserArgs = args.slice(1);
-  
-  if (browserArgs.includes('--help') || browserArgs.includes('-h') || browserArgs.length === 0) {
+
+  if (
+    browserArgs.includes('--help') ||
+    browserArgs.includes('-h') ||
+    browserArgs.length === 0
+  ) {
     console.error(`Usage: claude-remote-cli browser <path>
 
 Opens an HTML file in the remote browser viewer tab.
@@ -864,41 +965,45 @@ Arguments:
 Environment:
   CLAUDE_REMOTE_PORT            Server port (default: 3456)
   CLAUDE_REMOTE_BROWSER_TOKEN   Auth token for browser tab API`);
-    process.exit(browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1);
+    process.exit(
+      browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1
+    );
   }
-  
+
   const filePath = path.resolve(browserArgs[0]!);
-  
+
   if (!fs.existsSync(filePath)) {
     console.error(`Error: file not found: ${filePath}`);
     process.exit(1);
   }
-  
+
   const port = process.env['CLAUDE_REMOTE_PORT'] ?? String(DEFAULTS.port);
   const token = process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] ?? '';
-  
+
   if (!token) {
-    console.error('Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?');
+    console.error(
+      'Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?'
+    );
     process.exit(1);
   }
-  
+
   try {
     const res = await fetch(`http://127.0.0.1:${port}/browser-tabs`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ path: filePath }),
     });
-    
+
     if (!res.ok) {
       const body = await res.text();
       console.error(`Error: server returned ${res.status}: ${body}`);
       process.exit(1);
     }
-    
-    const data = await res.json() as { token: string; refreshed: boolean };
+
+    const data = (await res.json()) as { token: string; refreshed: boolean };
     if (data.refreshed) {
       console.log(`Refreshed: ${filePath}`);
     } else {
@@ -939,6 +1044,7 @@ git commit -m "feat: add 'browser' CLI sub-command for agent HTML file viewing"
 Add the iframe render branch, diff-fetch gate, `[refresh]` button, sandbox notice, and SVG globe icon.
 
 **Files:**
+
 - Modify: `frontend/src/components/FileViewerPane.svelte`
 
 - [ ] **Step 1: Gate the diff-fetch $effect**
@@ -1022,7 +1128,13 @@ function handleRefresh(): void {
 Import `refreshHtmlTab` from the ui state:
 
 ```typescript
-import { getUi, closeFileTab, closeAllFileTabs, refreshHtmlTab, type OpenFileTab } from '../lib/state/ui.svelte.js';
+import {
+  getUi,
+  closeFileTab,
+  closeAllFileTabs,
+  refreshHtmlTab,
+  type OpenFileTab,
+} from '../lib/state/ui.svelte.js';
 ```
 
 - [ ] **Step 5: Add iframe render branch + sandbox notice in content area**
@@ -1054,7 +1166,9 @@ let sandboxDismissed = $state(false);
 // Auto-dismiss sandbox notice after 4 seconds
 $effect(() => {
   if (activeTab?.tabType === 'html' && !sandboxDismissed) {
-    const timer = setTimeout(() => { sandboxDismissed = true; }, 4000);
+    const timer = setTimeout(() => {
+      sandboxDismissed = true;
+    }, 4000);
     return () => clearTimeout(timer);
   }
 });
@@ -1113,7 +1227,9 @@ Add to the `<style>` block:
   border-bottom: 1px solid var(--border, #333);
   font-size: var(--font-size-xs, 0.75rem);
   color: var(--text-muted, #888);
-  transition: opacity 0.3s ease-out, max-height 0.3s ease-out;
+  transition:
+    opacity 0.3s ease-out,
+    max-height 0.3s ease-out;
   max-height: 28px;
   overflow: hidden;
 }
@@ -1175,6 +1291,7 @@ git commit -m "feat: HTML tab rendering with iframe, globe icon, refresh, sandbo
 Wire up `browser-tab-opened` and `browser-tab-refreshed` events.
 
 **Files:**
+
 - Modify: `frontend/src/App.svelte:519-549`
 
 - [ ] **Step 1: Add imports**

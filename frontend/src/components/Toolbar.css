@@ -1,0 +1,44 @@
+.toolbar {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 4px;
+  padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  flex-shrink: 0;
+}
+
+.toolbar-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.tb-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  padding: 8px 4px;
+  cursor: pointer;
+  touch-action: manipulation;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tb-btn:active {
+  background: var(--border);
+}
+
+.tb-enter {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tb-enter:active {
+  opacity: 0.8;
+}

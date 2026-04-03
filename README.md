@@ -4,12 +4,12 @@ Control Claude Code from your phone or any browser — manage multiple terminal 
 
 ## Prerequisites
 
-| Dependency | Why |
-|------------|-----|
-| **[Node.js 24+](https://nodejs.org/)** | Runtime for the server |
-| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH` |
-| **[Codex CLI](https://github.com/openai/codex)** | *Optional* — alternative coding agent. Install if you want to use Codex sessions |
-| **[GitHub CLI (`gh`)](https://cli.github.com/)** | *Optional* — required for the **PRs tab**. Run `gh auth login` after installing. |
+| Dependency                                                            | Why                                                                              |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **[Node.js 24+](https://nodejs.org/)**                                | Runtime for the server                                                           |
+| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH`                                    |
+| **[Codex CLI](https://github.com/openai/codex)**                      | _Optional_ — alternative coding agent. Install if you want to use Codex sessions |
+| **[GitHub CLI (`gh`)](https://cli.github.com/)**                      | _Optional_ — required for the **PRs tab**. Run `gh auth login` after installing. |
 
 ## Getting Started
 
@@ -138,15 +138,15 @@ Config is stored at `~/.config/claude-remote-cli/config.json` (created on first 
 
 When running from source, it uses `./config.json` in the project root instead.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address |
-| `port` | `3456` | Server port |
-| `cookieTTL` | `24h` | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`) |
-| `rootDirs` | `[]` | Directories containing your git repos (scanned one level deep) |
-| `claudeCommand` | `claude` | Path to the Claude Code CLI binary |
-| `claudeArgs` | `[]` | Extra arguments passed to every session |
-| `defaultAgent` | `claude` | Default coding agent CLI (`claude` or `codex`) |
+| Field           | Default   | Description                                                    |
+| --------------- | --------- | -------------------------------------------------------------- |
+| `host`          | `0.0.0.0` | Bind address                                                   |
+| `port`          | `3456`    | Server port                                                    |
+| `cookieTTL`     | `24h`     | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`)                 |
+| `rootDirs`      | `[]`      | Directories containing your git repos (scanned one level deep) |
+| `claudeCommand` | `claude`  | Path to the Claude Code CLI binary                             |
+| `claudeArgs`    | `[]`      | Extra arguments passed to every session                        |
+| `defaultAgent`  | `claude`  | Default coding agent CLI (`claude` or `codex`)                 |
 
 Root directories can also be managed from the **Settings** button in the app.
 
@@ -171,6 +171,7 @@ This requires an interactive terminal. You'll be asked to verify your current PI
 ## Features
 
 ### Session Management
+
 - **Multi-agent support** — choose between Claude Code and Codex as the coding agent per session, with a configurable default in Settings
 - **Repo sessions** — click any idle repo to instantly open Claude with `--continue` (no dialog), or start fresh from the new-session dialog
 - **Branch-aware worktrees** — create worktrees from new or existing branches with a type-to-search branch picker
@@ -182,6 +183,7 @@ This requires an interactive terminal. You'll be asked to verify your current PI
 - **Worktree cleanup** — delete inactive worktrees via the trash pill button (removes worktree, prunes refs, deletes branch)
 
 ### Pull Requests
+
 - **Pull requests tab** — view your open PRs (authored and review-requested) via `gh` CLI, organized in collapsible per-repo groups with count badges, Author/Reviewer filter, and one-click session creation from any PR branch
 
 ### GitHub Webhooks (real-time PR / CI updates)
@@ -195,6 +197,7 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 > No public server is required. The smee.io proxy forwards GitHub webhook payloads to your local instance over a persistent SSE connection.
 
 ### UI
+
 - **Tabbed sidebar** — switch between Repos, Worktrees, and PRs views with shared filters and item counts
 - **Sidebar filters** — filter by root directory, repo, or text search
 - **Inline actions** — pill buttons on session cards for rename, YOLO, worktree creation, and delete (hover on desktop, long-press on mobile)
@@ -204,12 +207,14 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 - **Clipboard image paste** — paste screenshots directly into remote terminal sessions (macOS clipboard + xclip on Linux)
 
 ### Settings
+
 - **Full-screen Settings dialog** — redesigned as a scrollable full-screen modal with a table-of-contents drawer for quick section navigation
 - **GitHub integration** — connect via OAuth App (Device Flow) for PR data, CI status, and webhook management
 - **Webhook management** — self-service webhook CRUD per repo with smee.io proxy, health state, and auto-provision backfill
 - **Jira integration** — connect Jira and configure project mappings for the org dashboard tickets panel
 
 ### Operations
+
 - **PIN-protected access** with rate limiting
 - **Real-time updates** — worktree changes on disk are pushed to the browser instantly via WebSocket
 - **Smart polling** — falls back to 30-second polling for repos without webhooks; switches off automatically once a webhook is active

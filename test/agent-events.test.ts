@@ -152,7 +152,9 @@ describe('createEventAdapter', () => {
     it('events have the correct shape: type, sessionId, timestamp, source, data', () => {
       const adapter = createEventAdapter();
       let received: AgentEvent | undefined;
-      adapter.on('telemetry.updated', (e) => { received = e; });
+      adapter.on('telemetry.updated', (e) => {
+        received = e;
+      });
 
       const now = new Date().toISOString();
       const event: AgentEvent = {

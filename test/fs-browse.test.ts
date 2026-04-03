@@ -30,7 +30,9 @@ before(async () => {
   //       node_modules/
   //       file.txt
   const browsable = path.join(tmpDir, 'browsable');
-  fs.mkdirSync(path.join(browsable, 'visible-dir', 'nested'), { recursive: true });
+  fs.mkdirSync(path.join(browsable, 'visible-dir', 'nested'), {
+    recursive: true,
+  });
   fs.mkdirSync(path.join(browsable, '.hidden-dir'), { recursive: true });
   fs.mkdirSync(path.join(browsable, 'git-repo', '.git'), { recursive: true });
   fs.mkdirSync(path.join(browsable, 'empty-dir'), { recursive: true });
@@ -68,7 +70,12 @@ after(() => {
 
 async function browse(query: Record<string, string> = {}): Promise<{
   resolved: string;
-  entries: Array<{ name: string; path: string; isGitRepo: boolean; hasChildren: boolean }>;
+  entries: Array<{
+    name: string;
+    path: string;
+    isGitRepo: boolean;
+    hasChildren: boolean;
+  }>;
   truncated: boolean;
   total: number;
 }> {
@@ -99,7 +106,10 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(!names.includes('.hidden-dir'), 'should exclude hidden dirs by default');
+    assert.ok(
+      !names.includes('.hidden-dir'),
+      'should exclude hidden dirs by default'
+    );
   });
 
   test('shows dotfiles when showHidden=true', async () => {
@@ -107,7 +117,10 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable, showHidden: 'true' });
     const names = data.entries.map((e) => e.name);
 
-    assert.ok(names.includes('.hidden-dir'), 'should include hidden dirs when showHidden');
+    assert.ok(
+      names.includes('.hidden-dir'),
+      'should include hidden dirs when showHidden'
+    );
     // .git should still be excluded (in denylist)
     assert.ok(!names.includes('.git'), 'should still exclude .git');
   });
@@ -136,9 +149,17 @@ describe('GET /workspaces/browse', () => {
     const visibleDir = data.entries.find((e) => e.name === 'visible-dir');
 
     assert.ok(gitRepo, 'git-repo entry should exist');
-    assert.equal(gitRepo.isGitRepo, true, 'git-repo should have isGitRepo=true');
+    assert.equal(
+      gitRepo.isGitRepo,
+      true,
+      'git-repo should have isGitRepo=true'
+    );
     assert.ok(visibleDir, 'visible-dir entry should exist');
-    assert.equal(visibleDir.isGitRepo, false, 'visible-dir should have isGitRepo=false');
+    assert.equal(
+      visibleDir.isGitRepo,
+      false,
+      'visible-dir should have isGitRepo=false'
+    );
   });
 
   test('detects hasChildren correctly', async () => {
@@ -149,9 +170,17 @@ describe('GET /workspaces/browse', () => {
     const emptyDir = data.entries.find((e) => e.name === 'empty-dir');
 
     assert.ok(visibleDir, 'visible-dir entry should exist');
-    assert.equal(visibleDir.hasChildren, true, 'visible-dir should have children');
+    assert.equal(
+      visibleDir.hasChildren,
+      true,
+      'visible-dir should have children'
+    );
     assert.ok(emptyDir, 'empty-dir entry should exist');
-    assert.equal(emptyDir.hasChildren, false, 'empty-dir should not have children');
+    assert.equal(
+      emptyDir.hasChildren,
+      false,
+      'empty-dir should not have children'
+    );
   });
 
   test('truncates at 100 entries', async () => {
@@ -168,18 +197,24 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    const sorted = [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    const sorted = [...names].sort((a, b) =>
+      a.toLowerCase().localeCompare(b.toLowerCase())
+    );
     assert.deepEqual(names, sorted, 'entries should be sorted alphabetically');
   });
 
   test('returns 400 for non-existent path', async () => {
-    const params = new URLSearchParams({ path: path.join(tmpDir, 'nonexistent') });
+    const params = new URLSearchParams({
+      path: path.join(tmpDir, 'nonexistent'),
+    });
     const res = await fetch(`${baseUrl}/workspaces/browse?${params}`);
     assert.equal(res.status, 400);
   });
 
   test('returns 400 for file path', async () => {
-    const params = new URLSearchParams({ path: path.join(tmpDir, 'browsable', 'file.txt') });
+    const params = new URLSearchParams({
+      path: path.join(tmpDir, 'browsable', 'file.txt'),
+    });
     const res = await fetch(`${baseUrl}/workspaces/browse?${params}`);
     assert.equal(res.status, 400);
   });
@@ -197,31 +232,49 @@ describe('GET /workspaces/browse', () => {
     const names = data.entries.map((e) => e.name);
 
     assert.ok(names.includes('file.txt'), 'should include file.txt');
-    assert.ok(names.includes('visible-dir'), 'should still include directories');
+    assert.ok(
+      names.includes('visible-dir'),
+      'should still include directories'
+    );
   });
 
   test('directories sort before files with includeFiles=true', async () => {
     const browsable = path.join(tmpDir, 'browsable');
     const data = await browse({ path: browsable, includeFiles: 'true' });
-    const entries = data.entries as Array<{ name: string; isDirectory?: boolean }>;
+    const entries = data.entries as Array<{
+      name: string;
+      isDirectory?: boolean;
+    }>;
 
     const firstFileIdx = entries.findIndex((e) => e.isDirectory === false);
     let lastDirIdx = -1;
     for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i]!.isDirectory === true) { lastDirIdx = i; break; }
+      if (entries[i]!.isDirectory === true) {
+        lastDirIdx = i;
+        break;
+      }
     }
     if (firstFileIdx !== -1 && lastDirIdx !== -1) {
-      assert.ok(lastDirIdx < firstFileIdx, 'all directories should come before files');
+      assert.ok(
+        lastDirIdx < firstFileIdx,
+        'all directories should come before files'
+      );
     }
   });
 
   test('files have isDirectory=false and size field with includeFiles=true', async () => {
     const browsable = path.join(tmpDir, 'browsable');
     const data = await browse({ path: browsable, includeFiles: 'true' });
-    const fileEntry = data.entries.find((e) => e.name === 'file.txt') as { name: string; isDirectory?: boolean; size?: number } | undefined;
+    const fileEntry = data.entries.find((e) => e.name === 'file.txt') as
+      | { name: string; isDirectory?: boolean; size?: number }
+      | undefined;
 
     assert.ok(fileEntry, 'file.txt should exist');
-    assert.equal(fileEntry.isDirectory, false, 'file should have isDirectory=false');
+    assert.equal(
+      fileEntry.isDirectory,
+      false,
+      'file should have isDirectory=false'
+    );
     assert.equal(typeof fileEntry.size, 'number', 'file should have size');
     assert.ok(fileEntry.size! > 0, 'file should have non-zero size');
   });
@@ -247,7 +300,10 @@ describe('POST /workspaces/bulk', () => {
     });
 
     assert.equal(res.status, 201);
-    const data = await res.json() as { added: Array<{ path: string }>; errors: Array<{ path: string; error: string }> };
+    const data = (await res.json()) as {
+      added: Array<{ path: string }>;
+      errors: Array<{ path: string; error: string }>;
+    };
     assert.equal(data.added.length, 2);
     assert.equal(data.errors.length, 0);
   });
@@ -262,7 +318,10 @@ describe('POST /workspaces/bulk', () => {
     });
 
     assert.equal(res.status, 201);
-    const data = await res.json() as { added: Array<{ path: string }>; errors: Array<{ path: string; error: string }> };
+    const data = (await res.json()) as {
+      added: Array<{ path: string }>;
+      errors: Array<{ path: string; error: string }>;
+    };
     assert.equal(data.added.length, 0);
     assert.equal(data.errors.length, 1);
     assert.ok(data.errors[0]!.error.includes('Already exists'));
@@ -289,7 +348,10 @@ describe('POST /workspaces/bulk', () => {
     });
 
     assert.equal(res.status, 201);
-    const data = await res.json() as { added: Array<{ path: string }>; errors: Array<{ path: string; error: string }> };
+    const data = (await res.json()) as {
+      added: Array<{ path: string }>;
+      errors: Array<{ path: string; error: string }>;
+    };
     assert.equal(data.added.length, 1);
     assert.equal(data.errors.length, 1);
   });

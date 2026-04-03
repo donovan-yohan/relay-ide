@@ -6,10 +6,12 @@ import type { ScoredResult } from '../frontend/src/lib/fuzzy-scorer.js';
 // Helper: score multiple paths and return them sorted by score descending
 function rank(query: string, paths: string[]): string[] {
   const scored = paths
-    .map(p => ({ path: p, result: scorePath(query, p) }))
-    .filter((s): s is { path: string; result: ScoredResult } => s.result !== null)
+    .map((p) => ({ path: p, result: scorePath(query, p) }))
+    .filter(
+      (s): s is { path: string; result: ScoredResult } => s.result !== null
+    )
     .sort((a, b) => b.result.score - a.result.score);
-  return scored.map(s => s.path);
+  return scored.map((s) => s.path);
 }
 
 describe('scorePath', () => {
@@ -90,7 +92,10 @@ describe('scorePath', () => {
     // "src/" is 4 chars, so "A" is at index 4
     assert.ok(result.matches.length > 0);
     const firstStart = result.matches[0]![0];
-    assert.ok(firstStart >= 4, `expected match start >= 4 (in filename), got ${firstStart}`);
+    assert.ok(
+      firstStart >= 4,
+      `expected match start >= 4 (in filename), got ${firstStart}`
+    );
   });
 
   test('match positions are correct for path match', () => {
@@ -141,22 +146,19 @@ describe('ranking stability', () => {
     // AppLayout.svelte before src/app/index.ts (filename match > path match)
     const appLayoutIdx = ranked.indexOf('AppLayout.svelte');
     const srcAppIdx = ranked.indexOf('src/app/index.ts');
-    assert.ok(appLayoutIdx < srcAppIdx, `AppLayout.svelte (${appLayoutIdx}) should rank above src/app/index.ts (${srcAppIdx})`);
+    assert.ok(
+      appLayoutIdx < srcAppIdx,
+      `AppLayout.svelte (${appLayoutIdx}) should rank above src/app/index.ts (${srcAppIdx})`
+    );
   });
 
   test('exact filename beats deep path', () => {
-    const ranked = rank('readme', [
-      'README.md',
-      'src/lib/readme-utils.ts',
-    ]);
+    const ranked = rank('readme', ['README.md', 'src/lib/readme-utils.ts']);
     assert.equal(ranked[0], 'README.md');
   });
 
   test('shallow path beats deep path for same filename', () => {
-    const ranked = rank('deep', [
-      'a/b/c/deep.ts',
-      'deep.ts',
-    ]);
+    const ranked = rank('deep', ['a/b/c/deep.ts', 'deep.ts']);
     assert.equal(ranked[0], 'deep.ts');
   });
 

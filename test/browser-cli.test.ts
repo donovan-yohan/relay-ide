@@ -32,10 +32,14 @@ test('browser command with no args prints usage and exits 1', () => {
 
 test('browser --help shows usage and exits 0', () => {
   try {
-    const output = execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', '--help'], {
-      encoding: 'utf-8',
-      env: { ...process.env, PATH: process.env.PATH },
-    });
+    const output = execFileSync(
+      'node',
+      ['dist/bin/claude-remote-cli.js', 'browser', '--help'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: process.env.PATH },
+      }
+    );
     assert.ok(output.includes('Usage') || output.includes('browser'));
   } catch (err) {
     const e = err as { status?: number; stdout?: string; stderr?: string };
@@ -47,34 +51,54 @@ test('browser --help shows usage and exits 0', () => {
 
 test('browser command fails gracefully when server is not running', () => {
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', path.join(tmpDir, 'test.html')], {
-      encoding: 'utf-8',
-      env: {
-        ...process.env,
-        CLAUDE_REMOTE_PORT: '19999',
-        CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
-        PATH: process.env.PATH,
-      },
-    });
+    execFileSync(
+      'node',
+      [
+        'dist/bin/claude-remote-cli.js',
+        'browser',
+        path.join(tmpDir, 'test.html'),
+      ],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDE_REMOTE_PORT: '19999',
+          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          PATH: process.env.PATH,
+        },
+      }
+    );
     assert.fail('Should have exited with error');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
     assert.ok(e.status !== 0);
-    assert.ok((e.stderr ?? '').includes('connect') || (e.stderr ?? '').includes('ECONNREFUSED') || (e.stderr ?? '').includes('Error'));
+    assert.ok(
+      (e.stderr ?? '').includes('connect') ||
+        (e.stderr ?? '').includes('ECONNREFUSED') ||
+        (e.stderr ?? '').includes('Error')
+    );
   }
 });
 
 test('browser command fails when token not set', () => {
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser', path.join(tmpDir, 'test.html')], {
-      encoding: 'utf-8',
-      env: {
-        ...process.env,
-        CLAUDE_REMOTE_PORT: '19999',
-        CLAUDE_REMOTE_BROWSER_TOKEN: '', // empty token
-        PATH: process.env.PATH,
-      },
-    });
+    execFileSync(
+      'node',
+      [
+        'dist/bin/claude-remote-cli.js',
+        'browser',
+        path.join(tmpDir, 'test.html'),
+      ],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDE_REMOTE_PORT: '19999',
+          CLAUDE_REMOTE_BROWSER_TOKEN: '', // empty token
+          PATH: process.env.PATH,
+        },
+      }
+    );
     assert.fail('Should have exited with error');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };

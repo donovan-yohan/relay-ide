@@ -1,18 +1,33 @@
 import { fetchVapidKey, pushSubscribe } from './api.js';
+import { createLogger } from './logger.js';
 
-type NotificationClickHandler = (sessionId: string, sessionType: string) => void;
+type NotificationClickHandler = (
+  sessionId: string,
+  sessionType: string
+) => void;
 
 let clickHandler: NotificationClickHandler | null = null;
 let swRegistration: ServiceWorkerRegistration | null = null;
+const logger = createLogger('notifications');
 
-export function initNotifications(onNotificationClick: NotificationClickHandler): void {
+export function initNotifications(
+  onNotificationClick: NotificationClickHandler
+): void {
   clickHandler = onNotificationClick;
 
   // Listen for messages from service worker (notification clicks)
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', (event) => {
-      const data = event.data as { type?: string; sessionId?: string; sessionType?: string };
-      if (data.type === 'notification-click' && data.sessionId && clickHandler) {
+      const data = event.data as {
+        type?: string;
+        sessionId?: string;
+        sessionType?: string;
+      };
+      if (
+        data.type === 'notification-click' &&
+        data.sessionId &&
+        clickHandler
+      ) {
         clickHandler(data.sessionId, data.sessionType || 'repo');
       }
     });
@@ -24,7 +39,9 @@ export function getPermissionState(): NotificationPermission | 'unsupported' {
   return Notification.permission;
 }
 
-export async function requestPermission(): Promise<NotificationPermission | 'unsupported'> {
+export async function requestPermission(): Promise<
+  NotificationPermission | 'unsupported'
+> {
   if (typeof Notification === 'undefined') return 'unsupported';
   return Notification.requestPermission();
 }
@@ -33,14 +50,25 @@ export function shouldFireNotification(): boolean {
   return document.hidden || !document.hasFocus();
 }
 
-export function fireNotification(session: { id: string; displayName: string; type: string }): void {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+export function fireNotification(session: {
+  id: string;
+  displayName: string;
+  type: string;
+}): void {
+  if (
+    typeof Notification === 'undefined' ||
+    Notification.permission !== 'granted'
+  )
+    return;
 
-  const notification = new Notification(session.displayName || 'Claude Remote CLI', {
-    body: 'Session needs your input',
-    tag: 'session-' + session.id,
-    data: { sessionId: session.id, sessionType: session.type },
-  });
+  const notification = new Notification(
+    session.displayName || 'Claude Remote CLI',
+    {
+      body: 'Session needs your input',
+      tag: 'session-' + session.id,
+      data: { sessionId: session.id, sessionType: session.type },
+    }
+  );
 
   notification.onclick = () => {
     window.focus();
@@ -61,12 +89,14 @@ export async function initPushNotifications(): Promise<void> {
   try {
     swRegistration = await navigator.serviceWorker.register('/sw.js');
   } catch (err) {
-    console.warn('Service worker registration failed:', err);
+    logger.warn('Service worker registration failed', err);
     return;
   }
 }
 
-export async function syncPushSubscription(sessionIds: string[]): Promise<void> {
+export async function syncPushSubscription(
+  sessionIds: string[]
+): Promise<void> {
   // Fall back to navigator.serviceWorker.ready if initPushNotifications hasn't completed yet
   if (!swRegistration) {
     if (!hasPushSupport()) return;
@@ -80,7 +110,8 @@ export async function syncPushSubscription(sessionIds: string[]): Promise<void> 
       const vapidKey = await fetchVapidKey();
       if (!vapidKey) return;
 
-      const applicationServerKey = urlBase64ToUint8Array(vapidKey).buffer as ArrayBuffer;
+      const applicationServerKey = urlBase64ToUint8Array(vapidKey)
+        .buffer as ArrayBuffer;
       subscription = await swRegistration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey,
@@ -89,7 +120,7 @@ export async function syncPushSubscription(sessionIds: string[]): Promise<void> 
 
     await pushSubscribe(subscription.toJSON(), sessionIds);
   } catch (err) {
-    console.warn('Push subscription failed:', err);
+    logger.warn('Push subscription failed', err);
   }
 }
 
@@ -103,7 +134,7 @@ export async function resubscribeIfNeeded(sessionIds: string[]): Promise<void> {
       await pushSubscribe(subscription.toJSON(), sessionIds);
     }
   } catch (err) {
-    console.warn('Push re-subscription failed:', err);
+    logger.warn('Push re-subscription failed', err);
   }
 }
 

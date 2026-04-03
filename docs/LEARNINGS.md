@@ -8,6 +8,7 @@ Categories: `architecture` | `testing` | `patterns` | `workflow` | `debugging` |
 ---
 
 ### L-20260320-alternate-screen-scroll: Non-tmux alternate screen sessions need a viewport freeze layer to support scroll during streaming
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-20
@@ -18,6 +19,7 @@ When building terminal features for alternate screen apps (Claude Code, vim), re
 ---
 
 ### L-20260321-mobile-ws-reconnect: Mobile WebSocket reconnection must not rely solely on `onclose` — use `visibilitychange` + heartbeat
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-21
@@ -28,6 +30,7 @@ When a mobile browser backgrounds an app, the OS silently kills TCP connections 
 ---
 
 ### L-20260321-nav-model-ui-flows: UI flows must be updated when the navigation model changes — dead code paths become user-facing bugs
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-21
@@ -38,6 +41,7 @@ When migrating from a selection-based model (user picks repo/worktree at creatio
 ---
 
 ### L-20260322-session-state-refresh: Session state derived from external systems (git, filesystem) must have a refresh mechanism — snapshot-at-creation is insufficient
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -48,6 +52,7 @@ When storing state that mirrors an external system (e.g., `session.branchName` f
 ---
 
 ### L-20260321-execfile-err-code: Check `err.code` not `err.message` for Node.js execFile errors
+
 - status: active
 - category: debugging
 - source: /harness:loop Phase 1 org-dashboard 2026-03-21
@@ -57,6 +62,7 @@ Node.js `child_process.execFile` throws with `code: 'ENOENT'` and message `'spaw
 ---
 
 ### L-20260321-github-search-pr-filter: GitHub Search API returns issues AND PRs — filter on `pull_request` field
+
 - status: active
 - category: patterns
 - source: /harness:loop Phase 1 org-dashboard 2026-03-21
@@ -66,6 +72,7 @@ Node.js `child_process.execFile` throws with `code: 'ENOENT'` and message `'spaw
 ---
 
 ### L-20260321-github-search-reviewers: GitHub Search API does not return `requested_reviewers` — reviewer detection is best-effort
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -75,6 +82,7 @@ The `search/issues` endpoint returns a subset of PR metadata. Notably, `requeste
 ---
 
 ### L-20260321-github-search-review-decision: GitHub Search API does not return `reviewDecision` — PR status dot defaults to success
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -84,6 +92,7 @@ The `search/issues` endpoint does not include `reviewDecision` (APPROVED, CHANGE
 ---
 
 ### L-20260321-github-search-open-only: Org dashboard "All" filter operates on `is:open` backend data — cannot show closed PRs
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -93,6 +102,7 @@ The org dashboard backend queries `is:open` in its GitHub search. The frontend "
 ---
 
 ### L-20260322-sidebar-group-identity: Sidebar group rows must derive identity from the group, not from individual sessions within it
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -103,6 +113,7 @@ When a sidebar row represents a group of sessions (e.g., all tabs for a worktree
 ---
 
 ### L-20260322-session-creation-params: Session creation parameters must be stored on the session object if they need to survive restarts
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -113,6 +124,7 @@ When session creation accepts flags that affect runtime behavior (yolo mode, cus
 ---
 
 ### L-20260323-tanstack-query-untrack: Never call `.refetch()` on a TanStack Query store inside a Svelte 5 `$effect` without `untrack()`
+
 - status: active
 - category: debugging
 - source: /harness:bug 2026-03-23
@@ -123,6 +135,7 @@ TanStack Query's `createQuery` returns a Svelte 5 reactive proxy. Accessing `.re
 ---
 
 ### L-20260324-config-stale-read: When one module mutates shared config on disk, all modules that read that config must reload — never validate against a startup snapshot
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-24
@@ -133,6 +146,7 @@ When multiple server modules access the same config file, ensure they all use th
 ---
 
 ### L-20260323-shared-naming-counter: When multiple code paths create the same resource type, they must share a single counter/naming mechanism
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-23
@@ -143,6 +157,7 @@ When multiple server modules access the same config file, ensure they all use th
 ---
 
 ### L-20260324-fixed-in-dialog: `position: fixed` inside a `<dialog>` top-layer element uses the dialog as the containing block, not the viewport
+
 - status: active
 - category: debugging
 - source: commit f88d830 (settings-webhooks branch, 2026-03-24)
@@ -153,6 +168,7 @@ When an element with `position: fixed` is a descendant of a `<dialog>` that is i
 ---
 
 ### L-20260324-exact-optional-types: `exactOptionalPropertyTypes: true` requires explicit `| undefined` in object spread and partial-init assignments
+
 - status: active
 - category: patterns
 - source: settings-webhooks branch, frontend tsconfig.json
@@ -163,6 +179,7 @@ The frontend tsconfig enables `exactOptionalPropertyTypes: true`. Under this set
 ---
 
 ### L-20260325-browser-permission-ui: Features gated by browser permissions must surface the permission state in the UI — a settings toggle is not a permission request
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -173,6 +190,7 @@ When a feature depends on a browser permission (Notifications, Geolocation, Came
 ---
 
 ### L-20260325-silent-catch-blocks: Silent catch blocks on browser API calls hide broken features — always log or surface permission/subscription failures
+
 - status: active
 - category: debugging
 - source: /harness:bug 2026-03-25
@@ -183,6 +201,7 @@ When calling browser APIs that can fail due to missing permissions (e.g., `pushM
 ---
 
 ### L-20260325-dnd-device-aware: DnD `dragDisabled` must be device-aware — always-on for mouse, gated for touch
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -193,6 +212,7 @@ When using `svelte-dnd-action` on a scrollable container, `dragDisabled` must us
 ---
 
 ### L-20260325-library-flag-coupling: Never couple a library's technical enable/disable flag to unrelated UI visibility changes
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -203,6 +223,7 @@ When a library provides a boolean to enable/disable its event handling (e.g., `s
 ---
 
 ### L-20260325-resource-name-uniqueness: Auto-generated resource names that interact with external systems must include a uniqueness token
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -213,6 +234,7 @@ When generating names for resources (branches, worktrees, containers) that inter
 ---
 
 ### L-20260325-bug-fix-tracking: When a bug analysis recommends both a short-term and long-term fix, the long-term fix needs a tracking mechanism or it will be forgotten
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -223,6 +245,7 @@ The 2026-03-19 stale-PR bug analysis recommended (1) filter merged/closed PRs (s
 ---
 
 ### L-20260324-status-state-machine: UI status indicators derived from multiple signal sources need a formal state machine — not ad-hoc guards
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-24
@@ -233,6 +256,7 @@ When a display status (e.g., session dot color) is derived from multiple indepen
 ---
 
 ### L-20260325-ws-query-invalidation: WebSocket-driven query invalidation should be scoped to the affected resource — blanket-invalidation is strongly discouraged
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -243,6 +267,7 @@ When WebSocket events carry a payload identifying which resource changed (e.g., 
 ---
 
 ### L-20260325-negative-cache-ttl: Negative query results from external systems need longer cache TTLs than positive results — "nothing exists" rarely changes without user action
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -253,6 +278,7 @@ When a query to an external system (GitHub API, database, etc.) returns "not fou
 ---
 
 ### L-20260325-dual-mobile-mechanism: Never use dual mechanisms (CSS media query + JS matchMedia) to implement mobile-specific behavior — use CSS alone for visibility
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -263,6 +289,7 @@ When a UI element needs different visibility on mobile vs desktop (e.g., "always
 ---
 
 ### L-20260325-template-state-chain: When a template adds explicit checks for a state already handled by a state machine, use `{:else if}` — never independent `{#if}` blocks for mutually exclusive states
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -273,6 +300,7 @@ When a pure-function state machine (e.g., `derivePrAction()`) already maps input
 ---
 
 ### L-20260327-api-error-body-parse: Never call `.json()` on error responses without try-catch — non-JSON error bodies turn server errors into client TypeErrors
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-27
@@ -283,6 +311,7 @@ When parsing error response bodies from API calls, always wrap `.json()` in a tr
 ---
 
 ### L-20260327-express4-async-errors: Express 4 does NOT catch async route handler errors — unhandled throws leave responses hanging
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-27
@@ -293,6 +322,7 @@ Express 4's `Layer.prototype.handle_request` only has a sync try-catch around `f
 ---
 
 ### L-20260326-repo-source-unification: Any endpoint that needs "all repos" must merge config.workspaces and config.rootDirs — never rely on just one
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-26
@@ -303,6 +333,7 @@ The server has two sources of repo paths: `config.workspaces[]` (directly added)
 ---
 
 ### L-20260328-startup-gate-web-setup: When adding a web-based setup flow for a resource that had a CLI-only gate, relax the CLI gate to trust the web layer
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-28
@@ -313,6 +344,7 @@ When a server startup gate (hard exit if precondition not met) is the only way t
 ---
 
 ### L-20260328-service-install-preconditions: Service install commands must verify all runtime preconditions before installing — the service process cannot prompt
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-28
@@ -323,6 +355,7 @@ When a CLI command installs a background service (launchd, systemd) that starts 
 ---
 
 ### L-20260328-svelte-runes-testability: Split .svelte.ts modules into pure .ts logic + thin .svelte.ts wrapper for node:test compatibility
+
 - status: active
 - category: testing
 - source: /harness:reflect 2026-03-28
@@ -333,6 +366,7 @@ Svelte 5 runes (`$state`, `$derived`) are compiler macros that only work when pr
 ---
 
 ### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
+
 - status: active
 - category: architecture
 - source: /harness:reflect 2026-03-28
@@ -343,6 +377,7 @@ When a config field changes its type (e.g., `Config.workspaces` from `string[]` 
 ---
 
 ### L-20260328-serialization-whitelist-audit: When adding properties to a long-lived object, check whether it needs serialization — whitelist-based serialization silently drops new fields
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-28
@@ -353,6 +388,7 @@ When a system uses whitelist-based serialization (`SerializedPtySession` manuall
 ---
 
 ### L-20260328-surviving-process-stale-config: When a process survives a restart of its parent, the parent must accept the process's stale credentials — not just its own fresh ones
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-28
@@ -363,6 +399,7 @@ When process A (server) spawns process B (Claude Code in tmux) with credentials 
 ---
 
 ### L-20260328-module-level-env-eval: Module-level constants derived from `process.env` are evaluated once at import time — they cannot be overridden in tests and leak across process boundaries
+
 - status: active
 - category: testing
 - source: /harness:bug 2026-03-28
@@ -373,6 +410,7 @@ When process A (server) spawns process B (Claude Code in tmux) with credentials 
 ---
 
 ### L-20260328-settings-file-recreation: When restoring a process with preserved credentials, the credential FILE must also be re-created — token preservation alone is insufficient
+
 - status: active
 - category: architecture
 - source: /harness:reflect 2026-03-28
@@ -383,6 +421,7 @@ When a server serializes a session's authentication token (e.g., hookToken) and 
 ---
 
 ### L-20260329-nullish-override-shadow: Never pass global defaults as explicit overrides when a server-side merge cascade exists — `false ?? true` evaluates to `false`
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-29
@@ -393,6 +432,7 @@ When a server function uses nullish coalescing (`??`) to merge settings from mul
 ---
 
 ### L-20260329-settings-resolution-boundary: Session settings resolution should happen at one layer — don't pre-resolve on the frontend what the server already resolves
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-29

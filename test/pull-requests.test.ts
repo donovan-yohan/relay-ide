@@ -57,23 +57,25 @@ describe('PullRequest types', () => {
 
   it('constructs a valid response without error', () => {
     const response: PullRequestsResponse = {
-      prs: [{
-        number: 1,
-        title: 'Test',
-        url: 'https://github.com/o/r/pull/1',
-        headRefName: 'test',
-        baseRefName: 'main',
-        state: 'OPEN',
-        author: 'user',
-        role: 'author',
-        updatedAt: '2026-02-24T00:00:00Z',
-        additions: 0,
-        deletions: 0,
-        reviewDecision: null,
-        mergeable: null,
-        isDraft: false,
-        ciStatus: null,
-      }],
+      prs: [
+        {
+          number: 1,
+          title: 'Test',
+          url: 'https://github.com/o/r/pull/1',
+          headRefName: 'test',
+          baseRefName: 'main',
+          state: 'OPEN',
+          author: 'user',
+          role: 'author',
+          updatedAt: '2026-02-24T00:00:00Z',
+          additions: 0,
+          deletions: 0,
+          reviewDecision: null,
+          mergeable: null,
+          isDraft: false,
+          ciStatus: null,
+        },
+      ],
     };
     assert.equal(response.prs.length, 1);
     assert.equal(response.error, undefined);

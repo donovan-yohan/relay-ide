@@ -30,7 +30,10 @@ describe('stripAnsi', () => {
   });
 
   it('strips multiple sequences in one string', () => {
-    assert.equal(stripAnsi('\x1b[32mfoo\x1b[0m and \x1b[1mbar\x1b[0m'), 'foo and bar');
+    assert.equal(
+      stripAnsi('\x1b[32mfoo\x1b[0m and \x1b[1mbar\x1b[0m'),
+      'foo and bar'
+    );
   });
 });
 
@@ -78,7 +81,10 @@ describe('cleanEnv', () => {
     process.env.CLAUDECODE = 'some-value';
     try {
       const env = cleanEnv();
-      assert.equal(Object.prototype.hasOwnProperty.call(env, 'CLAUDECODE'), false);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(env, 'CLAUDECODE'),
+        false
+      );
     } finally {
       if (originalValue === undefined) {
         delete process.env.CLAUDECODE;
@@ -129,14 +135,23 @@ describe('fireStateChange callbacks', () => {
 
     fireStateChange('test-session-id', 'processing');
 
-    const match = received.find(e => e.sessionId === 'test-session-id' && e.state === 'processing');
-    assert.ok(match, 'callback should have been called with the expected sessionId and state');
+    const match = received.find(
+      (e) => e.sessionId === 'test-session-id' && e.state === 'processing'
+    );
+    assert.ok(
+      match,
+      'callback should have been called with the expected sessionId and state'
+    );
   });
 
   it('fires multiple registered callbacks', () => {
     let count = 0;
-    onStateChange(() => { count++; });
-    onStateChange(() => { count++; });
+    onStateChange(() => {
+      count++;
+    });
+    onStateChange(() => {
+      count++;
+    });
 
     fireStateChange('multi-cb-session', 'idle');
 
@@ -145,7 +160,9 @@ describe('fireStateChange callbacks', () => {
 
   it('passes idle state to callback', () => {
     let received: AgentState | undefined;
-    onStateChange((_, state) => { received = state; });
+    onStateChange((_, state) => {
+      received = state;
+    });
 
     fireStateChange('some-session', 'idle');
 
@@ -154,7 +171,9 @@ describe('fireStateChange callbacks', () => {
 
   it('passes permission-prompt state to callback', () => {
     let received: AgentState | undefined;
-    onStateChange((_, state) => { received = state; });
+    onStateChange((_, state) => {
+      received = state;
+    });
 
     fireStateChange('some-session', 'permission-prompt');
 
@@ -163,7 +182,9 @@ describe('fireStateChange callbacks', () => {
 
   it('passes waiting-for-input state to callback', () => {
     let received: AgentState | undefined;
-    onStateChange((_, state) => { received = state; });
+    onStateChange((_, state) => {
+      received = state;
+    });
 
     fireStateChange('some-session', 'waiting-for-input');
 

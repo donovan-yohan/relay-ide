@@ -4,9 +4,11 @@ import Database from 'better-sqlite3';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { SessionEvent, RateLimitSnapshot } from './types.js';
+import { createLogger } from './logger.js';
 
 let db: Database.Database | null = null;
 let insertStmt: Database.Statement | null = null;
+const logger = createLogger('analytics');
 
 let eventBuffer: SessionEvent[] = [];
 let batchTimer: ReturnType<typeof setInterval> | null = null;
@@ -89,7 +91,8 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 2, sql: SCHEMA_V2 },
 ];
 
-const INSERT_SQL = 'INSERT INTO events (category, action, target, properties, session_id, device) VALUES (?, ?, ?, ?, ?, ?)';
+const INSERT_SQL =
+  'INSERT INTO events (category, action, target, properties, session_id, device) VALUES (?, ?, ?, ?, ?, ?)';
 
 export interface AnalyticsEvent {
   category: string;
@@ -109,8 +112,12 @@ export function initAnalytics(configDir: string): void {
   db.pragma('journal_mode = WAL');
 
   // Schema version tracking
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
-  const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`
+  );
+  const row = db.prepare('SELECT version FROM schema_version').get() as
+    | { version: number }
+    | undefined;
   let currentVersion = row?.version ?? 0;
 
   const hadRow = row !== undefined;
@@ -123,7 +130,9 @@ export function initAnalytics(configDir: string): void {
         if (hadRow || currentVersion > 0) {
           db!.prepare('UPDATE schema_version SET version = ?').run(ver);
         } else {
-          db!.prepare('INSERT INTO schema_version (version) VALUES (?)').run(ver);
+          db!
+            .prepare('INSERT INTO schema_version (version) VALUES (?)')
+            .run(ver);
         }
       })();
       currentVersion = ver;
@@ -158,7 +167,7 @@ export function flushEventBuffer(sessionId?: string): void {
   if (!insertSessionEventStmt) return;
 
   const toFlush = sessionId
-    ? eventBuffer.filter(e => e.session_id === sessionId)
+    ? eventBuffer.filter((e) => e.session_id === sessionId)
     : [...eventBuffer];
 
   if (toFlush.length === 0) return;
@@ -171,7 +180,7 @@ export function flushEventBuffer(sessionId?: string): void {
         e.repo_path ?? null,
         e.event_type,
         e.event_data ? JSON.stringify(e.event_data) : null,
-        e.timestamp,
+        e.timestamp
       );
     }
   });
@@ -179,11 +188,11 @@ export function flushEventBuffer(sessionId?: string): void {
   try {
     insertMany(toFlush);
   } catch (err) {
-    console.warn('[analytics] Failed to flush event buffer:', err);
+    logger.warn('Failed to flush event buffer:', err);
   }
 
   if (sessionId) {
-    eventBuffer = eventBuffer.filter(e => e.session_id !== sessionId);
+    eventBuffer = eventBuffer.filter((e) => e.session_id !== sessionId);
   } else {
     eventBuffer = [];
   }
@@ -199,10 +208,10 @@ export function recordRateLimitSnapshot(snapshot: RateLimitSnapshot): void {
       snapshot.fiveHourResetsAt,
       snapshot.sevenDayPercent,
       snapshot.sevenDayResetsAt,
-      snapshot.timestamp,
+      snapshot.timestamp
     );
   } catch (err) {
-    console.warn('[analytics] Failed to record rate limit snapshot:', err);
+    logger.warn('Failed to record rate limit snapshot:', err);
   }
 }
 
@@ -237,7 +246,7 @@ function runInsert(stmt: Database.Statement, event: AnalyticsEvent): void {
     event.target ?? null,
     event.properties ? JSON.stringify(event.properties) : null,
     event.session_id ?? null,
-    event.device ?? null,
+    event.device ?? null
   );
 }
 
@@ -310,7 +319,11 @@ export function createAnalyticsRouter(configDir: string): Router {
     }
     try {
       db.exec('DELETE FROM events');
-      try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+      try {
+        db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch {
+        /* best-effort */
+      }
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: 'Failed to clear analytics' });
@@ -345,16 +358,20 @@ export function upsertSessionRollup(data: {
 }): void {
   if (!db) return;
 
-  const existing = db.prepare('SELECT session_id FROM session_rollups WHERE session_id = ?').get(data.sessionId);
+  const existing = db
+    .prepare('SELECT session_id FROM session_rollups WHERE session_id = ?')
+    .get(data.sessionId);
 
   if (!existing) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO session_rollups (session_id, repo_path, repo_name, agent_type, model, started_at, ended_at, duration_seconds,
         total_input_tokens, total_output_tokens, total_cache_read, total_cache_write,
         turn_count, subagent_count, human_response_latency_avg_ms, human_response_latency_p50_ms,
         human_response_latency_p95_ms, agent_idle_percent, rate_limit_encounters, tool_use_counts, recovered, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
+    `
+    ).run(
       data.sessionId,
       data.repoPath ?? null,
       data.repoName ?? null,
@@ -375,7 +392,7 @@ export function upsertSessionRollup(data: {
       data.agentIdlePercent ?? null,
       data.rateLimitEncounters ?? 0,
       data.toolUseCounts ? JSON.stringify(data.toolUseCounts) : null,
-      data.recovered ? 1 : 0,
+      data.recovered ? 1 : 0
     );
   } else {
     const sets: string[] = ["updated_at = datetime('now')"];
@@ -419,13 +436,19 @@ export function upsertSessionRollup(data: {
     }
 
     values.push(data.sessionId);
-    db.prepare(`UPDATE session_rollups SET ${sets.join(', ')} WHERE session_id = ?`).run(...values);
+    db.prepare(
+      `UPDATE session_rollups SET ${sets.join(', ')} WHERE session_id = ?`
+    ).run(...values);
   }
 }
 
-export function getSessionRollup(sessionId: string): import('./types.js').SessionRollup | null {
+export function getSessionRollup(
+  sessionId: string
+): import('./types.js').SessionRollup | null {
   if (!db) return null;
-  const row = db.prepare('SELECT * FROM session_rollups WHERE session_id = ?').get(sessionId) as Record<string, unknown> | undefined;
+  const row = db
+    .prepare('SELECT * FROM session_rollups WHERE session_id = ?')
+    .get(sessionId) as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
     sessionId: row.session_id as string,
@@ -442,12 +465,20 @@ export function getSessionRollup(sessionId: string): import('./types.js').Sessio
     totalCacheWrite: row.total_cache_write as number,
     turnCount: row.turn_count as number,
     subagentCount: row.subagent_count as number,
-    humanResponseLatencyAvgMs: row.human_response_latency_avg_ms as number | null,
-    humanResponseLatencyP50Ms: row.human_response_latency_p50_ms as number | null,
-    humanResponseLatencyP95Ms: row.human_response_latency_p95_ms as number | null,
+    humanResponseLatencyAvgMs: row.human_response_latency_avg_ms as
+      | number
+      | null,
+    humanResponseLatencyP50Ms: row.human_response_latency_p50_ms as
+      | number
+      | null,
+    humanResponseLatencyP95Ms: row.human_response_latency_p95_ms as
+      | number
+      | null,
     agentIdlePercent: row.agent_idle_percent as number | null,
     rateLimitEncounters: row.rate_limit_encounters as number,
-    toolUseCounts: row.tool_use_counts ? JSON.parse(row.tool_use_counts as string) as Record<string, number> : null,
+    toolUseCounts: row.tool_use_counts
+      ? (JSON.parse(row.tool_use_counts as string) as Record<string, number>)
+      : null,
     recovered: (row.recovered as number) === 1,
   };
 }
@@ -468,9 +499,15 @@ export function computeEngagementMetrics(sessionId: string): {
 } | null {
   if (!db) return null;
 
-  const events = db.prepare(
-    'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
-  ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
+  const events = db
+    .prepare(
+      'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
+    )
+    .all(sessionId) as Array<{
+    event_type: string;
+    event_data: string | null;
+    timestamp: string;
+  }>;
 
   if (events.length === 0) return null;
 
@@ -496,9 +533,12 @@ export function computeEngagementMetrics(sessionId: string): {
   }
 
   const sortedLatency = [...latencySamples].sort((a, b) => a - b);
-  const avgLatency = sortedLatency.length > 0
-    ? Math.round(sortedLatency.reduce((a, b) => a + b, 0) / sortedLatency.length)
-    : null;
+  const avgLatency =
+    sortedLatency.length > 0
+      ? Math.round(
+          sortedLatency.reduce((a, b) => a + b, 0) / sortedLatency.length
+        )
+      : null;
 
   // 2. Agent idle %
   const firstTs = new Date(events[0]!.timestamp).getTime();
@@ -506,14 +546,18 @@ export function computeEngagementMetrics(sessionId: string): {
   const totalDuration = lastTs - firstTs;
 
   const stopFailureTimes = events
-    .filter(e => e.event_type === 'stop_failure')
-    .map(e => ({
+    .filter((e) => e.event_type === 'stop_failure')
+    .map((e) => ({
       timestamp: new Date(e.timestamp).getTime(),
       isRateLimit: (() => {
         try {
-          const data = e.event_data ? JSON.parse(e.event_data) as Record<string, unknown> : {};
+          const data = e.event_data
+            ? (JSON.parse(e.event_data) as Record<string, unknown>)
+            : {};
           return data.error === 'rate_limit';
-        } catch { return false; }
+        } catch {
+          return false;
+        }
       })(),
     }));
 
@@ -537,8 +581,9 @@ export function computeEngagementMetrics(sessionId: string): {
         }
         if (idleStart !== null) {
           const idleMs = ts - idleStart;
-          const hasRateLimit = stopFailureTimes.some(sf =>
-            sf.isRateLimit && sf.timestamp >= idleStart! && sf.timestamp <= ts
+          const hasRateLimit = stopFailureTimes.some(
+            (sf) =>
+              sf.isRateLimit && sf.timestamp >= idleStart! && sf.timestamp <= ts
           );
           if (!hasRateLimit) {
             waitingForHumanMs += idleMs;
@@ -549,12 +594,15 @@ export function computeEngagementMetrics(sessionId: string): {
     }
   }
 
-  const agentIdlePercent = totalDuration > 0
-    ? Math.round((waitingForHumanMs / totalDuration) * 1000) / 10
-    : null;
+  const agentIdlePercent =
+    totalDuration > 0
+      ? Math.round((waitingForHumanMs / totalDuration) * 1000) / 10
+      : null;
 
   // 3. Rate limit encounters
-  const rateLimitEncounters = stopFailureTimes.filter(sf => sf.isRateLimit).length;
+  const rateLimitEncounters = stopFailureTimes.filter(
+    (sf) => sf.isRateLimit
+  ).length;
 
   // 4. Tool use counts
   const toolUseCounts: Record<string, number> = {};
@@ -564,14 +612,18 @@ export function computeEngagementMetrics(sessionId: string): {
         const data = JSON.parse(e.event_data) as Record<string, unknown>;
         const tool = typeof data.tool === 'string' ? data.tool : 'unknown';
         toolUseCounts[tool] = (toolUseCounts[tool] ?? 0) + 1;
-      } catch { /* malformed */ }
+      } catch {
+        /* malformed */
+      }
     }
   }
 
   return {
     humanResponseLatencyAvgMs: avgLatency,
-    humanResponseLatencyP50Ms: sortedLatency.length > 0 ? percentile(sortedLatency, 50) : null,
-    humanResponseLatencyP95Ms: sortedLatency.length > 0 ? percentile(sortedLatency, 95) : null,
+    humanResponseLatencyP50Ms:
+      sortedLatency.length > 0 ? percentile(sortedLatency, 50) : null,
+    humanResponseLatencyP95Ms:
+      sortedLatency.length > 0 ? percentile(sortedLatency, 95) : null,
     agentIdlePercent,
     rateLimitEncounters,
     toolUseCounts,
@@ -583,17 +635,24 @@ export function computeEngagementMetrics(sessionId: string): {
 export function runRetentionCleanup(retentionDays = 90): void {
   if (!db) return;
 
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(
+    Date.now() - retentionDays * 24 * 60 * 60 * 1000
+  ).toISOString();
 
   // Delete old session events
   db.prepare('DELETE FROM session_events WHERE timestamp < ?').run(cutoff);
 
   // Downsample rate_limit_snapshots: after 7 days keep hourly, after 30 days keep daily
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = new Date(
+    Date.now() - 7 * 24 * 60 * 60 * 1000
+  ).toISOString();
+  const thirtyDaysAgo = new Date(
+    Date.now() - 30 * 24 * 60 * 60 * 1000
+  ).toISOString();
 
   // Keep first snapshot per hour for entries older than 7 days but newer than 30 days
-  db.prepare(`
+  db.prepare(
+    `
     DELETE FROM rate_limit_snapshots
     WHERE timestamp < ? AND timestamp >= ?
     AND id NOT IN (
@@ -601,10 +660,12 @@ export function runRetentionCleanup(retentionDays = 90): void {
       WHERE timestamp < ? AND timestamp >= ?
       GROUP BY strftime('%Y-%m-%d %H', timestamp)
     )
-  `).run(sevenDaysAgo, thirtyDaysAgo, sevenDaysAgo, thirtyDaysAgo);
+  `
+  ).run(sevenDaysAgo, thirtyDaysAgo, sevenDaysAgo, thirtyDaysAgo);
 
   // Keep first snapshot per day for entries older than 30 days
-  db.prepare(`
+  db.prepare(
+    `
     DELETE FROM rate_limit_snapshots
     WHERE timestamp < ?
     AND id NOT IN (
@@ -612,7 +673,8 @@ export function runRetentionCleanup(retentionDays = 90): void {
       WHERE timestamp < ?
       GROUP BY strftime('%Y-%m-%d', timestamp)
     )
-  `).run(thirtyDaysAgo, thirtyDaysAgo);
+  `
+  ).run(thirtyDaysAgo, thirtyDaysAgo);
 }
 
 // ── Orphaned Session Recovery ──
@@ -625,15 +687,21 @@ export function recoverOrphanedSessions(): number {
   // 'YYYY-MM-DDTHH:MM:SS.mmmZ'. We use datetime() on both sides to normalize.
   const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
-  const orphans = db.prepare(`
+  const orphans = db
+    .prepare(
+      `
     SELECT session_id FROM session_rollups
     WHERE ended_at IS NULL AND datetime(updated_at) < datetime(?)
-  `).all(staleThreshold) as Array<{ session_id: string }>;
+  `
+    )
+    .all(staleThreshold) as Array<{ session_id: string }>;
 
   for (const { session_id } of orphans) {
-    const lastEvent = db.prepare(
-      'SELECT timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1'
-    ).get(session_id) as { timestamp: string } | undefined;
+    const lastEvent = db
+      .prepare(
+        'SELECT timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1'
+      )
+      .get(session_id) as { timestamp: string } | undefined;
 
     const endedAt = lastEvent?.timestamp ?? new Date().toISOString();
     const metrics = computeEngagementMetrics(session_id);
@@ -643,10 +711,18 @@ export function recoverOrphanedSessions(): number {
         sessionId: session_id,
         endedAt,
         recovered: true,
-        ...(metrics.humanResponseLatencyAvgMs !== null ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs } : {}),
-        ...(metrics.humanResponseLatencyP50Ms !== null ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms } : {}),
-        ...(metrics.humanResponseLatencyP95Ms !== null ? { humanResponseLatencyP95Ms: metrics.humanResponseLatencyP95Ms } : {}),
-        ...(metrics.agentIdlePercent !== null ? { agentIdlePercent: metrics.agentIdlePercent } : {}),
+        ...(metrics.humanResponseLatencyAvgMs !== null
+          ? { humanResponseLatencyAvgMs: metrics.humanResponseLatencyAvgMs }
+          : {}),
+        ...(metrics.humanResponseLatencyP50Ms !== null
+          ? { humanResponseLatencyP50Ms: metrics.humanResponseLatencyP50Ms }
+          : {}),
+        ...(metrics.humanResponseLatencyP95Ms !== null
+          ? { humanResponseLatencyP95Ms: metrics.humanResponseLatencyP95Ms }
+          : {}),
+        ...(metrics.agentIdlePercent !== null
+          ? { agentIdlePercent: metrics.agentIdlePercent }
+          : {}),
         rateLimitEncounters: metrics.rateLimitEncounters,
         toolUseCounts: metrics.toolUseCounts,
       });
@@ -669,11 +745,16 @@ export function createSessionAnalyticsRouter(): Router {
 
   // GET /overview
   router.get('/overview', (_req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const days = parseInt(_req.query.days as string) || 7;
     const repoFilter = _req.query.repo as string | undefined;
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const since = new Date(
+      Date.now() - days * 24 * 60 * 60 * 1000
+    ).toISOString();
 
     let query = `SELECT * FROM session_rollups WHERE started_at >= ?`;
     const params: unknown[] = [since];
@@ -682,22 +763,46 @@ export function createSessionAnalyticsRouter(): Router {
       params.push(repoFilter);
     }
 
-    const rollups = db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+    const rollups = db.prepare(query).all(...params) as Array<
+      Record<string, unknown>
+    >;
 
-    let totalTokensIn = 0, totalTokensOut = 0, totalCacheRead = 0;
-    let totalDuration = 0, durationCount = 0;
-    let totalLatency = 0, latencyCount = 0;
-    let totalIdle = 0, idleCount = 0;
+    let totalTokensIn = 0,
+      totalTokensOut = 0,
+      totalCacheRead = 0;
+    let totalDuration = 0,
+      durationCount = 0;
+    let totalLatency = 0,
+      latencyCount = 0;
+    let totalIdle = 0,
+      idleCount = 0;
     let totalRateLimits = 0;
-    const byRepo = new Map<string, { repoName: string; sessions: number; tokensIn: number; tokensOut: number }>();
+    const byRepo = new Map<
+      string,
+      {
+        repoName: string;
+        sessions: number;
+        tokensIn: number;
+        tokensOut: number;
+      }
+    >();
 
     for (const r of rollups) {
       totalTokensIn += r.total_input_tokens as number;
       totalTokensOut += r.total_output_tokens as number;
       totalCacheRead += r.total_cache_read as number;
-      if (r.duration_seconds != null) { totalDuration += r.duration_seconds as number; durationCount++; }
-      if (r.human_response_latency_avg_ms != null) { totalLatency += r.human_response_latency_avg_ms as number; latencyCount++; }
-      if (r.agent_idle_percent != null) { totalIdle += r.agent_idle_percent as number; idleCount++; }
+      if (r.duration_seconds != null) {
+        totalDuration += r.duration_seconds as number;
+        durationCount++;
+      }
+      if (r.human_response_latency_avg_ms != null) {
+        totalLatency += r.human_response_latency_avg_ms as number;
+        latencyCount++;
+      }
+      if (r.agent_idle_percent != null) {
+        totalIdle += r.agent_idle_percent as number;
+        idleCount++;
+      }
       totalRateLimits += r.rate_limit_encounters as number;
 
       const rp = (r.repo_path as string) ?? 'unknown';
@@ -717,10 +822,15 @@ export function createSessionAnalyticsRouter(): Router {
     }
 
     const totalTokens = totalTokensIn + totalTokensOut;
-    const byRepoArr = [...byRepo.entries()].map(([_, v]) => ({
-      ...v,
-      pctOfTotal: totalTokens > 0 ? Math.round(((v.tokensIn + v.tokensOut) / totalTokens) * 1000) / 10 : 0,
-    })).sort((a, b) => b.tokensIn - a.tokensIn);
+    const byRepoArr = [...byRepo.entries()]
+      .map(([_, v]) => ({
+        ...v,
+        pctOfTotal:
+          totalTokens > 0
+            ? Math.round(((v.tokensIn + v.tokensOut) / totalTokens) * 1000) / 10
+            : 0,
+      }))
+      .sort((a, b) => b.tokensIn - a.tokensIn);
 
     res.json({
       timeWindow: { start: since, end: new Date().toISOString() },
@@ -728,9 +838,12 @@ export function createSessionAnalyticsRouter(): Router {
       totalTokensIn,
       totalTokensOut,
       totalCacheRead,
-      avgSessionDuration: durationCount > 0 ? Math.round(totalDuration / durationCount) : 0,
-      avgHumanResponseLatency: latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0,
-      avgAgentIdlePercent: idleCount > 0 ? Math.round(totalIdle / idleCount * 10) / 10 : 0,
+      avgSessionDuration:
+        durationCount > 0 ? Math.round(totalDuration / durationCount) : 0,
+      avgHumanResponseLatency:
+        latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0,
+      avgAgentIdlePercent:
+        idleCount > 0 ? Math.round((totalIdle / idleCount) * 10) / 10 : 0,
       totalRateLimitEncounters: totalRateLimits,
       byRepo: byRepoArr,
     });
@@ -738,10 +851,16 @@ export function createSessionAnalyticsRouter(): Router {
 
   // GET /sessions
   router.get('/sessions', (_req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const offset = Math.max(parseInt(_req.query.offset as string) || 0, 0);
-    const limit = Math.min(Math.max(parseInt(_req.query.limit as string) || 20, 1), 100);
+    const limit = Math.min(
+      Math.max(parseInt(_req.query.limit as string) || 20, 1),
+      100
+    );
     const repoFilter = _req.query.repo as string | undefined;
     const agentFilter = _req.query.agent as string | undefined;
     const sort = (_req.query.sort as string) || 'started_at';
@@ -755,16 +874,28 @@ export function createSessionAnalyticsRouter(): Router {
 
     let where = 'WHERE 1=1';
     const params: unknown[] = [];
-    if (repoFilter) { where += ' AND repo_path = ?'; params.push(repoFilter); }
-    if (agentFilter) { where += ' AND agent_type = ?'; params.push(agentFilter); }
+    if (repoFilter) {
+      where += ' AND repo_path = ?';
+      params.push(repoFilter);
+    }
+    if (agentFilter) {
+      where += ' AND agent_type = ?';
+      params.push(agentFilter);
+    }
 
-    const total = (db.prepare(`SELECT COUNT(*) as count FROM session_rollups ${where}`).get(...params) as { count: number }).count;
+    const total = (
+      db
+        .prepare(`SELECT COUNT(*) as count FROM session_rollups ${where}`)
+        .get(...params) as { count: number }
+    ).count;
 
-    const rows = db.prepare(
-      `SELECT * FROM session_rollups ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`
-    ).all(...params, limit, offset) as Array<Record<string, unknown>>;
+    const rows = db
+      .prepare(
+        `SELECT * FROM session_rollups ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset) as Array<Record<string, unknown>>;
 
-    const sessions = rows.map(r => ({
+    const sessions = rows.map((r) => ({
       sessionId: r.session_id,
       repoName: r.repo_name,
       repoPath: r.repo_path,
@@ -781,9 +912,19 @@ export function createSessionAnalyticsRouter(): Router {
       rateLimitEncounters: r.rate_limit_encounters,
       topTools: (() => {
         try {
-          const counts = r.tool_use_counts ? JSON.parse(r.tool_use_counts as string) as Record<string, number> : {};
-          return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name]) => name);
-        } catch { return []; }
+          const counts = r.tool_use_counts
+            ? (JSON.parse(r.tool_use_counts as string) as Record<
+                string,
+                number
+              >)
+            : {};
+          return Object.entries(counts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([name]) => name);
+        } catch {
+          return [];
+        }
       })(),
       recovered: (r.recovered as number) === 1,
     }));
@@ -793,16 +934,31 @@ export function createSessionAnalyticsRouter(): Router {
 
   // GET /sessions/:id
   router.get('/sessions/:id', (req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const sessionId = req.params['id'];
-    if (!sessionId) { res.status(400).json({ error: 'Missing session ID' }); return; }
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing session ID' });
+      return;
+    }
     const rollup = getSessionRollup(sessionId);
-    if (!rollup) { res.status(404).json({ error: 'Session not found' }); return; }
+    if (!rollup) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
 
-    const events = db.prepare(
-      'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
-    ).all(sessionId) as Array<{ event_type: string; event_data: string | null; timestamp: string }>;
+    const events = db
+      .prepare(
+        'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
+      )
+      .all(sessionId) as Array<{
+      event_type: string;
+      event_data: string | null;
+      timestamp: string;
+    }>;
 
     const toolBreakdown: Record<string, { count: number }> = {};
     if (rollup.toolUseCounts) {
@@ -811,14 +967,20 @@ export function createSessionAnalyticsRouter(): Router {
       }
     }
 
-    let agentActiveTime = 0, waitingForHumanTime = 0, rateLimitTime = 0;
+    let agentActiveTime = 0,
+      waitingForHumanTime = 0,
+      rateLimitTime = 0;
     if (events.length >= 2) {
       const firstTs = new Date(events[0]!.timestamp).getTime();
       const lastTs = new Date(events[events.length - 1]!.timestamp).getTime();
       const totalMs = lastTs - firstTs;
       if (rollup.agentIdlePercent !== null && totalMs > 0) {
-        waitingForHumanTime = Math.round(totalMs * (rollup.agentIdlePercent / 100) / 1000);
-        agentActiveTime = Math.round((totalMs - waitingForHumanTime * 1000) / 1000);
+        waitingForHumanTime = Math.round(
+          (totalMs * (rollup.agentIdlePercent / 100)) / 1000
+        );
+        agentActiveTime = Math.round(
+          (totalMs - waitingForHumanTime * 1000) / 1000
+        );
       } else {
         agentActiveTime = Math.round(totalMs / 1000);
       }
@@ -827,27 +989,46 @@ export function createSessionAnalyticsRouter(): Router {
     res.json({
       session: rollup,
       toolBreakdown,
-      events: events.map(e => ({
+      events: events.map((e) => ({
         type: e.event_type,
         timestamp: e.timestamp,
-        data: e.event_data ? (() => { try { return JSON.parse(e.event_data!); } catch { return {}; } })() : {},
+        data: e.event_data
+          ? (() => {
+              try {
+                return JSON.parse(e.event_data!);
+              } catch {
+                return {};
+              }
+            })()
+          : {},
       })),
       engagementBreakdown: {
         agentActiveTime,
         waitingForHumanTime,
         rateLimitTime,
-        otherTime: Math.max(0, (rollup.durationSeconds ?? 0) - agentActiveTime - waitingForHumanTime - rateLimitTime),
+        otherTime: Math.max(
+          0,
+          (rollup.durationSeconds ?? 0) -
+            agentActiveTime -
+            waitingForHumanTime -
+            rateLimitTime
+        ),
       },
     });
   });
 
   // GET /trends
   router.get('/trends', (_req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const days = parseInt(_req.query.days as string) || 30;
     const repoFilter = _req.query.repo as string | undefined;
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const since = new Date(
+      Date.now() - days * 24 * 60 * 60 * 1000
+    ).toISOString();
 
     let query = `
       SELECT
@@ -862,19 +1043,28 @@ export function createSessionAnalyticsRouter(): Router {
       WHERE started_at >= ?
     `;
     const params: unknown[] = [since];
-    if (repoFilter) { query += ' AND repo_path = ?'; params.push(repoFilter); }
+    if (repoFilter) {
+      query += ' AND repo_path = ?';
+      params.push(repoFilter);
+    }
     query += ' GROUP BY date(started_at) ORDER BY date ASC';
 
-    const rows = db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+    const rows = db.prepare(query).all(...params) as Array<
+      Record<string, unknown>
+    >;
 
     res.json({
-      days: rows.map(r => ({
+      days: rows.map((r) => ({
         date: r.date,
         sessions: r.sessions,
         tokensIn: r.tokens_in ?? 0,
         tokensOut: r.tokens_out ?? 0,
-        avgHumanLatency: r.avg_human_latency ? Math.round(r.avg_human_latency as number) : 0,
-        avgAgentIdle: r.avg_agent_idle ? Math.round((r.avg_agent_idle as number) * 10) / 10 : 0,
+        avgHumanLatency: r.avg_human_latency
+          ? Math.round(r.avg_human_latency as number)
+          : 0,
+        avgAgentIdle: r.avg_agent_idle
+          ? Math.round((r.avg_agent_idle as number) * 10) / 10
+          : 0,
         rateLimitEncounters: r.rate_limit_encounters ?? 0,
       })),
     });
@@ -882,19 +1072,32 @@ export function createSessionAnalyticsRouter(): Router {
 
   // GET /tools
   router.get('/tools', (_req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const days = parseInt(_req.query.days as string) || 7;
     const repoFilter = _req.query.repo as string | undefined;
     const sessionFilter = _req.query.session as string | undefined;
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const since = new Date(
+      Date.now() - days * 24 * 60 * 60 * 1000
+    ).toISOString();
 
     let query = `SELECT event_data FROM session_events WHERE event_type = 'tool_use' AND timestamp >= ?`;
     const params: unknown[] = [since];
-    if (repoFilter) { query += ' AND repo_path = ?'; params.push(repoFilter); }
-    if (sessionFilter) { query += ' AND session_id = ?'; params.push(sessionFilter); }
+    if (repoFilter) {
+      query += ' AND repo_path = ?';
+      params.push(repoFilter);
+    }
+    if (sessionFilter) {
+      query += ' AND session_id = ?';
+      params.push(sessionFilter);
+    }
 
-    const rows = db.prepare(query).all(...params) as Array<{ event_data: string | null }>;
+    const rows = db.prepare(query).all(...params) as Array<{
+      event_data: string | null;
+    }>;
 
     const counts = new Map<string, number>();
     let totalUses = 0;
@@ -905,14 +1108,17 @@ export function createSessionAnalyticsRouter(): Router {
         const tool = typeof data.tool === 'string' ? data.tool : 'unknown';
         counts.set(tool, (counts.get(tool) ?? 0) + 1);
         totalUses++;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     const tools = [...counts.entries()]
       .map(([name, count]) => ({
         name,
         totalUses: count,
-        pctOfUses: totalUses > 0 ? Math.round((count / totalUses) * 1000) / 10 : 0,
+        pctOfUses:
+          totalUses > 0 ? Math.round((count / totalUses) * 1000) / 10 : 0,
       }))
       .sort((a, b) => b.totalUses - a.totalUses);
 
@@ -921,17 +1127,22 @@ export function createSessionAnalyticsRouter(): Router {
 
   // GET /rate-limits
   router.get('/rate-limits', (_req: Request, res: Response) => {
-    if (!db) { res.status(503).json({ error: 'Analytics not initialized' }); return; }
+    if (!db) {
+      res.status(503).json({ error: 'Analytics not initialized' });
+      return;
+    }
 
     const hours = parseInt(_req.query.hours as string) || 24;
     const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
-    const rows = db.prepare(
-      'SELECT * FROM rate_limit_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC'
-    ).all(since) as Array<Record<string, unknown>>;
+    const rows = db
+      .prepare(
+        'SELECT * FROM rate_limit_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC'
+      )
+      .all(since) as Array<Record<string, unknown>>;
 
     res.json({
-      snapshots: rows.map(r => ({
+      snapshots: rows.map((r) => ({
         timestamp: r.timestamp,
         fiveHourPercent: r.five_hour_percent,
         sevenDayPercent: r.seven_day_percent,

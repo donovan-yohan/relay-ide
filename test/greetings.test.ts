@@ -3,19 +3,35 @@ import assert from 'node:assert/strict';
 import { getGreeting } from '../frontend/src/lib/greetings.js';
 
 const morningGreetings = [
-  'good morning', 'rise and shine', 'early bird gets the worm', 'coffee first, code second',
+  'good morning',
+  'rise and shine',
+  'early bird gets the worm',
+  'coffee first, code second',
 ];
 const afternoonGreetings = [
-  'good afternoon', "it's high noon", 'afternoon shift', 'back at it',
+  'good afternoon',
+  "it's high noon",
+  'afternoon shift',
+  'back at it',
 ];
 const eveningGreetings = [
-  'good evening', 'evening shift', 'winding down... or ramping up?',
+  'good evening',
+  'evening shift',
+  'winding down... or ramping up?',
 ];
 const nightGreetings = [
-  'good evening', 'burning the midnight oil', 'the witching hour', 'night owl mode',
+  'good evening',
+  'burning the midnight oil',
+  'the witching hour',
+  'night owl mode',
   'the city sleeps but the terminal glows',
 ];
-const allGreetings = [...morningGreetings, ...afternoonGreetings, ...eveningGreetings, ...nightGreetings];
+const allGreetings = [
+  ...morningGreetings,
+  ...afternoonGreetings,
+  ...eveningGreetings,
+  ...nightGreetings,
+];
 
 describe('greetings', () => {
   it('returns a non-empty string', () => {
@@ -26,14 +42,21 @@ describe('greetings', () => {
   it('returns all lowercase text', () => {
     for (let i = 0; i < 20; i++) {
       const greeting = getGreeting();
-      assert.strictEqual(greeting, greeting.toLowerCase(), `greeting "${greeting}" should be lowercase`);
+      assert.strictEqual(
+        greeting,
+        greeting.toLowerCase(),
+        `greeting "${greeting}" should be lowercase`
+      );
     }
   });
 
   it('returns a known greeting when called without hour', () => {
     for (let i = 0; i < 20; i++) {
       const greeting = getGreeting();
-      assert.ok(allGreetings.includes(greeting), `unexpected greeting: "${greeting}"`);
+      assert.ok(
+        allGreetings.includes(greeting),
+        `unexpected greeting: "${greeting}"`
+      );
     }
   });
 
@@ -41,7 +64,10 @@ describe('greetings', () => {
     for (const hour of [5, 8, 11]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(morningGreetings.includes(greeting), `hour ${hour}: expected morning greeting, got "${greeting}"`);
+        assert.ok(
+          morningGreetings.includes(greeting),
+          `hour ${hour}: expected morning greeting, got "${greeting}"`
+        );
       }
     }
   });
@@ -50,7 +76,10 @@ describe('greetings', () => {
     for (const hour of [12, 14, 16]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(afternoonGreetings.includes(greeting), `hour ${hour}: expected afternoon greeting, got "${greeting}"`);
+        assert.ok(
+          afternoonGreetings.includes(greeting),
+          `hour ${hour}: expected afternoon greeting, got "${greeting}"`
+        );
       }
     }
   });
@@ -59,7 +88,10 @@ describe('greetings', () => {
     for (const hour of [17, 19, 20]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(eveningGreetings.includes(greeting), `hour ${hour}: expected evening greeting, got "${greeting}"`);
+        assert.ok(
+          eveningGreetings.includes(greeting),
+          `hour ${hour}: expected evening greeting, got "${greeting}"`
+        );
       }
     }
   });
@@ -68,7 +100,10 @@ describe('greetings', () => {
     for (const hour of [0, 2, 4, 21, 23]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        assert.ok(nightGreetings.includes(greeting), `hour ${hour}: expected night greeting, got "${greeting}"`);
+        assert.ok(
+          nightGreetings.includes(greeting),
+          `hour ${hour}: expected night greeting, got "${greeting}"`
+        );
       }
     }
   });

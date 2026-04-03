@@ -1,11 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSidebarItems } from '../frontend/src/lib/state/sidebar-items.js';
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../frontend/src/lib/types.js';
+import type {
+  SessionSummary,
+  WorktreeInfo,
+  Repo,
+  SidebarItem,
+} from '../frontend/src/lib/types.js';
 
 // ─── Minimal mock helpers ────────────────────────────────────────────────────
 
-function makeSession(overrides: Partial<SessionSummary> & { id: string; repoPath: string }): SessionSummary {
+function makeSession(
+  overrides: Partial<SessionSummary> & { id: string; repoPath: string }
+): SessionSummary {
   return {
     type: 'agent',
     agent: 'claude',
@@ -22,7 +29,9 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string; repoPath
   };
 }
 
-function makeWorktree(overrides: Partial<WorktreeInfo> & { path: string; repoPath: string }): WorktreeInfo {
+function makeWorktree(
+  overrides: Partial<WorktreeInfo> & { path: string; repoPath: string }
+): WorktreeInfo {
   return {
     name: 'worktree',
     repoName: 'repo',
@@ -43,7 +52,9 @@ function makeWorkspace(overrides: Partial<Repo> & { path: string }): Repo {
   };
 }
 
-function makeItem(overrides: Partial<SidebarItem> & { id: string }): SidebarItem {
+function makeItem(
+  overrides: Partial<SidebarItem> & { id: string }
+): SidebarItem {
   return {
     kind: 'worktree',
     path: overrides.id,
@@ -93,8 +104,17 @@ describe('buildSidebarItems', () => {
   });
 
   it('two sessions with same worktreePath produce a single SidebarItem', () => {
-    const s1 = makeSession({ id: 's1', repoPath: '/repo', worktreePath: '/repo/wt1' });
-    const s2 = makeSession({ id: 's2', repoPath: '/repo', worktreePath: '/repo/wt1', branchName: 'feat' });
+    const s1 = makeSession({
+      id: 's1',
+      repoPath: '/repo',
+      worktreePath: '/repo/wt1',
+    });
+    const s2 = makeSession({
+      id: 's2',
+      repoPath: '/repo',
+      worktreePath: '/repo/wt1',
+      branchName: 'feat',
+    });
     const items = buildSidebarItems([s1, s2], [], [], []);
 
     const grouped = items.filter((i) => i.id === '/repo/wt1');
@@ -103,7 +123,11 @@ describe('buildSidebarItems', () => {
   });
 
   it('workspace defaultBranch is used as branchName for inactive repo root', () => {
-    const workspace = makeWorkspace({ path: '/repo', defaultBranch: 'feature-x', currentBranch: null });
+    const workspace = makeWorkspace({
+      path: '/repo',
+      defaultBranch: 'feature-x',
+      currentBranch: null,
+    });
     const items = buildSidebarItems([], [], [workspace], []);
 
     assert.equal(items.length, 1);
@@ -111,8 +135,18 @@ describe('buildSidebarItems', () => {
   });
 
   it('reconciliation: seen-idle preserved when backend state unchanged', () => {
-    const session = makeSession({ id: 's1', repoPath: '/repo', idle: true, agentState: 'idle' });
-    const existing = makeItem({ id: '/repo', kind: 'repo', displayState: 'seen-idle', lastKnownBackendState: 'idle' });
+    const session = makeSession({
+      id: 's1',
+      repoPath: '/repo',
+      idle: true,
+      agentState: 'idle',
+    });
+    const existing = makeItem({
+      id: '/repo',
+      kind: 'repo',
+      displayState: 'seen-idle',
+      lastKnownBackendState: 'idle',
+    });
     const items = buildSidebarItems([session], [], [], [existing]);
 
     const item = items.find((i) => i.id === '/repo');
@@ -121,9 +155,19 @@ describe('buildSidebarItems', () => {
   });
 
   it('reconciliation: running→idle backend change transitions displayState to unseen-idle', () => {
-    const session = makeSession({ id: 's1', repoPath: '/repo', idle: true, agentState: 'idle' });
+    const session = makeSession({
+      id: 's1',
+      repoPath: '/repo',
+      idle: true,
+      agentState: 'idle',
+    });
     // Existing item thinks backend is running; new data says idle
-    const existing = makeItem({ id: '/repo', kind: 'repo', displayState: 'running', lastKnownBackendState: 'running' });
+    const existing = makeItem({
+      id: '/repo',
+      kind: 'repo',
+      displayState: 'running',
+      lastKnownBackendState: 'running',
+    });
     const items = buildSidebarItems([session], [], [], [existing]);
 
     const item = items.find((i) => i.id === '/repo');
@@ -137,7 +181,9 @@ describe('buildSidebarItems', () => {
       kind: 'worktree',
       displayState: 'running',
       lastKnownBackendState: 'running',
-      sessions: [makeSession({ id: 's1', repoPath: '/repo', worktreePath: '/repo/wt1' })],
+      sessions: [
+        makeSession({ id: 's1', repoPath: '/repo', worktreePath: '/repo/wt1' }),
+      ],
     });
     // No sessions in new data
     const workspace = makeWorkspace({ path: '/repo' });

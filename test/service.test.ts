@@ -4,8 +4,10 @@ import * as service from '../server/service.js';
 
 test('getPlatform returns macos or linux', () => {
   const platform = service.getPlatform();
-  assert.ok(platform === 'macos' || platform === 'linux',
-    'Expected macos or linux, got ' + platform);
+  assert.ok(
+    platform === 'macos' || platform === 'linux',
+    'Expected macos or linux, got ' + platform
+  );
 });
 
 test('getServicePaths returns expected keys', () => {
@@ -18,7 +20,8 @@ test('getServicePaths returns expected keys', () => {
 test('generateServiceFile for macos contains plist XML', () => {
   const content = service.generateServiceFile('macos', {
     nodePath: '/usr/local/bin/node',
-    scriptPath: '/usr/local/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
+    scriptPath:
+      '/usr/local/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
     configPath: '/Users/test/.config/claude-remote-cli/config.json',
     port: '3456',
     host: '0.0.0.0',
@@ -34,7 +37,8 @@ test('generateServiceFile for macos contains plist XML', () => {
 test('generateServiceFile for linux contains systemd unit', () => {
   const content = service.generateServiceFile('linux', {
     nodePath: '/usr/bin/node',
-    scriptPath: '/usr/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
+    scriptPath:
+      '/usr/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
     configPath: '/home/test/.config/claude-remote-cli/config.json',
     port: '3456',
     host: '0.0.0.0',

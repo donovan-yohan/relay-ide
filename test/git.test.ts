@@ -43,7 +43,11 @@ describe('listBranches', () => {
 
     assert.deepEqual(calls, [
       { file: 'git', args: ['fetch', '--all', '--prune'], cwd: '/tmp/repo' },
-      { file: 'git', args: ['branch', '-a', '--format=%(refname:short)'], cwd: '/tmp/repo' },
+      {
+        file: 'git',
+        args: ['branch', '-a', '--format=%(refname:short)'],
+        cwd: '/tmp/repo',
+      },
     ]);
     assert.deepEqual(branches, ['feature/remote', 'main']);
   });
@@ -79,7 +83,11 @@ describe('listBranches', () => {
 describe('ensureBranchLocal', () => {
   it('returns true immediately if branch exists locally', async () => {
     const calls: string[][] = [];
-    const exec = async (_cmd: string, args: string[], _opts: { cwd: string; timeout?: number }) => {
+    const exec = async (
+      _cmd: string,
+      args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
       calls.push(args);
       return { stdout: 'abc123\n', stderr: '' };
     };
@@ -91,40 +99,66 @@ describe('ensureBranchLocal', () => {
   it('fetches from origin if branch does not exist locally', async () => {
     const calls: string[][] = [];
     let revParseCount = 0;
-    const exec = async (_cmd: string, args: string[], _opts: { cwd: string; timeout?: number }) => {
+    const exec = async (
+      _cmd: string,
+      args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
       calls.push(args);
       if (args[0] === 'rev-parse') {
         revParseCount++;
         if (revParseCount === 1) {
-          const err = new Error('unknown revision or path not in the working tree');
+          const err = new Error(
+            'unknown revision or path not in the working tree'
+          );
           throw err;
         }
         return { stdout: 'abc123\n', stderr: '' };
       }
       return { stdout: '', stderr: '' };
     };
-    const result = await ensureBranchLocal('/tmp/repo', 'feature/remote-only', { exec });
+    const result = await ensureBranchLocal('/tmp/repo', 'feature/remote-only', {
+      exec,
+    });
     assert.equal(result.found, true);
-    assert.deepEqual(calls[1], ['fetch', 'origin', '--', 'feature/remote-only:feature/remote-only']);
+    assert.deepEqual(calls[1], [
+      'fetch',
+      'origin',
+      '--',
+      'feature/remote-only:feature/remote-only',
+    ]);
   });
 
   it('returns found:false with reason not_found if branch does not exist anywhere', async () => {
-    const exec = async (_cmd: string, _args: string[], _opts: { cwd: string; timeout?: number }) => {
+    const exec = async (
+      _cmd: string,
+      _args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
       throw new Error("couldn't find remote ref");
     };
-    const result = await ensureBranchLocal('/tmp/repo', 'nonexistent', { exec });
+    const result = await ensureBranchLocal('/tmp/repo', 'nonexistent', {
+      exec,
+    });
     assert.equal(result.found, false);
     assert.equal(result.reason, 'not_found');
   });
 
   it('returns found:false with reason fetch_failed for non-ref errors on fetch', async () => {
     let callCount = 0;
-    const exec = async (_cmd: string, _args: string[], _opts: { cwd: string; timeout?: number }) => {
+    const exec = async (
+      _cmd: string,
+      _args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
       callCount++;
-      if (callCount === 1) throw new Error('unknown revision or path not in the working tree');
+      if (callCount === 1)
+        throw new Error('unknown revision or path not in the working tree');
       throw new Error('network timeout');
     };
-    const result = await ensureBranchLocal('/tmp/repo', 'some-branch', { exec });
+    const result = await ensureBranchLocal('/tmp/repo', 'some-branch', {
+      exec,
+    });
     assert.equal(result.found, false);
     assert.equal(result.reason, 'fetch_failed');
   });
@@ -135,7 +169,7 @@ describe('ensureBranchLocal', () => {
     };
     await assert.rejects(
       () => ensureBranchLocal('/tmp/repo', 'main', { exec }),
-      { message: 'permission denied' },
+      { message: 'permission denied' }
     );
   });
 });

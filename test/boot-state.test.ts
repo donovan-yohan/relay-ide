@@ -17,15 +17,24 @@ interface BootLine {
   error?: string | undefined;
 }
 
-const SERVICES = ['auth', 'workspaces', 'sessions', 'worktrees', 'groups'] as const;
+const SERVICES = [
+  'auth',
+  'workspaces',
+  'sessions',
+  'worktrees',
+  'groups',
+] as const;
 
 function createBootLines(): BootLine[] {
-  return SERVICES.map(service => ({ service, status: 'pending' as FetchStatus }));
+  return SERVICES.map((service) => ({
+    service,
+    status: 'pending' as FetchStatus,
+  }));
 }
 
 function derivePhaseAfterFinish(lines: BootLine[]): 'ready' | 'degraded' {
-  const fetchLines = lines.filter(l => l.service !== 'auth');
-  const anyFailed = fetchLines.some(l => l.status === 'fail');
+  const fetchLines = lines.filter((l) => l.service !== 'auth');
+  const anyFailed = fetchLines.some((l) => l.status === 'fail');
   return anyFailed ? 'degraded' : 'ready';
 }
 
@@ -33,9 +42,9 @@ function reportFetch(
   lines: BootLine[],
   service: string,
   status: 'loading' | 'ok' | 'fail',
-  opts?: { summary?: string; durationMs?: number; error?: string },
+  opts?: { summary?: string; durationMs?: number; error?: string }
 ): BootLine[] {
-  const idx = lines.findIndex(l => l.service === service);
+  const idx = lines.findIndex((l) => l.service === service);
   if (idx === -1) return lines;
   const updated = [...lines];
   updated[idx] = {
@@ -53,7 +62,10 @@ describe('boot-state', () => {
     it('creates 5 lines for all services', () => {
       const lines = createBootLines();
       assert.strictEqual(lines.length, 5);
-      assert.deepStrictEqual(lines.map(l => l.service), ['auth', 'workspaces', 'sessions', 'worktrees', 'groups']);
+      assert.deepStrictEqual(
+        lines.map((l) => l.service),
+        ['auth', 'workspaces', 'sessions', 'worktrees', 'groups']
+      );
     });
 
     it('all lines start as pending', () => {
@@ -68,14 +80,17 @@ describe('boot-state', () => {
     it('updates a known service to loading', () => {
       let lines = createBootLines();
       lines = reportFetch(lines, 'workspaces', 'loading');
-      const ws = lines.find(l => l.service === 'workspaces')!;
+      const ws = lines.find((l) => l.service === 'workspaces')!;
       assert.strictEqual(ws.status, 'loading');
     });
 
     it('updates a service to ok with summary and duration', () => {
       let lines = createBootLines();
-      lines = reportFetch(lines, 'sessions', 'ok', { summary: '2 active', durationMs: 42 });
-      const sess = lines.find(l => l.service === 'sessions')!;
+      lines = reportFetch(lines, 'sessions', 'ok', {
+        summary: '2 active',
+        durationMs: 42,
+      });
+      const sess = lines.find((l) => l.service === 'sessions')!;
       assert.strictEqual(sess.status, 'ok');
       assert.strictEqual(sess.summary, '2 active');
       assert.strictEqual(sess.durationMs, 42);
@@ -83,8 +98,11 @@ describe('boot-state', () => {
 
     it('updates a service to fail with error', () => {
       let lines = createBootLines();
-      lines = reportFetch(lines, 'worktrees', 'fail', { error: 'timeout', durationMs: 5000 });
-      const wt = lines.find(l => l.service === 'worktrees')!;
+      lines = reportFetch(lines, 'worktrees', 'fail', {
+        error: 'timeout',
+        durationMs: 5000,
+      });
+      const wt = lines.find((l) => l.service === 'worktrees')!;
       assert.strictEqual(wt.status, 'fail');
       assert.strictEqual(wt.error, 'timeout');
       assert.strictEqual(wt.durationMs, 5000);
@@ -103,7 +121,11 @@ describe('boot-state', () => {
       // All other lines should still be pending
       for (const line of lines) {
         if (line.service !== 'auth') {
-          assert.strictEqual(line.status, 'pending', `${line.service} should still be pending`);
+          assert.strictEqual(
+            line.status,
+            'pending',
+            `${line.service} should still be pending`
+          );
         }
       }
     });

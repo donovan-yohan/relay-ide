@@ -7,7 +7,11 @@ import { buildStatusLineRelayScript } from '../server/pty-handler.js';
 
 describe('status-line relay script', () => {
   it('writes telemetry via a temp file while streaming stdin once', () => {
-    const script = buildStatusLineRelayScript('session-123', '/tmp/claude-remote-config', '/usr/local/bin/status-line');
+    const script = buildStatusLineRelayScript(
+      'session-123',
+      '/tmp/claude-remote-config',
+      '/usr/local/bin/status-line'
+    );
 
     assert.match(script, /mktemp/);
     assert.match(script, /tee "\$tmp_file"/);
@@ -24,7 +28,9 @@ describe('framework-driven PTY handler', () => {
       try {
         const session = sessions.get(id);
         if (session) sessions.kill(id);
-      } catch { /* already cleaned up */ }
+      } catch {
+        /* already cleaned up */
+      }
     }
     createdIds.length = 0;
   });

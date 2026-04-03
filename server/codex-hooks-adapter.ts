@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('codex-hooks-adapter');
 
 interface CodexHook {
   type: 'command';
@@ -12,7 +15,13 @@ interface CodexHooksConfig {
 }
 
 // Codex hook event names that we relay
-const CODEX_EVENTS = ['SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse'] as const;
+const CODEX_EVENTS = [
+  'SessionStart',
+  'Stop',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+] as const;
 
 // Map codex events to our canonical event types
 const EVENT_MAP: Record<string, string> = {
@@ -31,9 +40,13 @@ export function writeCodexHooksAdapter(
   sessionId: string,
   port: number,
   hookToken: string,
-  _configDir: string,
+  _configDir: string
 ): string {
-  const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', `codex-hooks-${sessionId}`);
+  const tmpDir = path.join(
+    os.tmpdir(),
+    'claude-remote-cli',
+    `codex-hooks-${sessionId}`
+  );
   fs.mkdirSync(tmpDir, { recursive: true });
 
   // Write session config for the relay script to read
@@ -43,6 +56,7 @@ export function writeCodexHooksAdapter(
     JSON.stringify({ sessionId, port, hookToken }),
     'utf-8'
   );
+  logger.debug('Wrote Codex session config', configPath);
 
   // Write relay script — reads config from file to avoid shell injection
   // Parse session.json once (single node invocation) to extract all values at once for performance.
@@ -60,7 +74,7 @@ case "$EVENT" in
   *) CANONICAL_EVENT="$EVENT" ;;
 esac
 CONFIG_FILE="${configPath}"
-read -r SESSION_ID PORT TOKEN < <(node -e "const fs=require('node:fs');const{sessionId,port,hookToken}=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));console.log(sessionId,port,hookToken);" "$CONFIG_FILE")
+  read -r SESSION_ID PORT TOKEN < <(node -e "const fs=require('node:fs');const{sessionId,port,hookToken}=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write([sessionId,port,hookToken].join(' ')+'\\n');" "$CONFIG_FILE")
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PAYLOAD=$(printf '{"sessionId":"%s","token":"%s","eventType":"%s","data":%s,"timestamp":"%s"}' "$SESSION_ID" "$TOKEN" "$CANONICAL_EVENT" "$INPUT" "$TIMESTAMP")
 curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
@@ -76,7 +90,9 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
   const userHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
   try {
     existingHooks = JSON.parse(fs.readFileSync(userHooksPath, 'utf-8'));
-  } catch { /* no existing hooks */ }
+  } catch {
+    /* no existing hooks */
+  }
 
   // Build merged hooks: append our relay to each event
   const relayHook: CodexHook = { type: 'command', command: relayPath };
@@ -86,7 +102,10 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
     mergedHooks[event] = [...existing, relayHook];
   }
 
-  fs.writeFileSync(path.join(tmpDir, 'hooks.json'), JSON.stringify(mergedHooks, null, 2));
+  fs.writeFileSync(
+    path.join(tmpDir, 'hooks.json'),
+    JSON.stringify(mergedHooks, null, 2)
+  );
 
   return tmpDir;
 }
@@ -96,9 +115,14 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
  * Called when the session ends to avoid leaking temp files.
  */
 export function cleanupCodexHooksAdapter(sessionId: string): void {
-  const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', `codex-hooks-${sessionId}`);
+  const tmpDir = path.join(
+    os.tmpdir(),
+    'claude-remote-cli',
+    `codex-hooks-${sessionId}`
+  );
   try {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    logger.debug('Cleaned up Codex hooks adapter', tmpDir);
   } catch {
     // Non-fatal — temp dir may not exist or already be cleaned up
   }

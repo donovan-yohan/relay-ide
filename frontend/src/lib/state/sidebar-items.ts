@@ -1,4 +1,9 @@
-import type { SessionSummary, WorktreeInfo, Repo, SidebarItem } from '../types.js';
+import type {
+  SessionSummary,
+  WorktreeInfo,
+  Repo,
+  SidebarItem,
+} from '../types.js';
 import type { BackendDisplayState, DisplayState } from './display-state.js';
 import { transitionDisplayState } from './display-state.js';
 import { sortByAttention } from './attention.js';
@@ -27,7 +32,9 @@ function sessionToBackendState(session: SessionSummary): BackendDisplayState {
  *
  * Priority order (highest first): permission > error > running > initializing > idle
  */
-export function deriveBackendState(sessions: SessionSummary[]): BackendDisplayState {
+export function deriveBackendState(
+  sessions: SessionSummary[]
+): BackendDisplayState {
   const priority: Record<BackendDisplayState, number> = {
     permission: 4,
     error: 3,
@@ -53,10 +60,14 @@ export function deriveBackendState(sessions: SessionSummary[]): BackendDisplaySt
 function initialDisplayState(sessions: SessionSummary[]): DisplayState {
   if (sessions.length === 0) return 'inactive';
   switch (deriveBackendState(sessions)) {
-    case 'permission':   return 'permission';
-    case 'error':        return 'error';
-    case 'running':      return 'running';
-    case 'initializing': return 'initializing';
+    case 'permission':
+      return 'permission';
+    case 'error':
+      return 'error';
+    case 'running':
+      return 'running';
+    case 'initializing':
+      return 'initializing';
     case 'idle':
     default:
       // Safe default on initial load — don't spam notifications for already-idle sessions
@@ -69,7 +80,10 @@ function initialDisplayState(sessions: SessionSummary[]): DisplayState {
  */
 function mostRecentActivity(sessions: SessionSummary[]): string {
   if (sessions.length === 0) return '';
-  return sessions.reduce((best, s) => (s.lastActivity > best ? s.lastActivity : best), sessions[0]!.lastActivity);
+  return sessions.reduce(
+    (best, s) => (s.lastActivity > best ? s.lastActivity : best),
+    sessions[0]!.lastActivity
+  );
 }
 
 /**
@@ -81,7 +95,7 @@ export function buildSidebarItems(
   worktrees: WorktreeInfo[],
   workspaces: Repo[],
   existingItems: SidebarItem[],
-  checkUnread?: (id: string) => boolean,
+  checkUnread?: (id: string) => boolean
 ): SidebarItem[] {
   // Build lookup from id → existing item for O(1) reconciliation
   const existingById = new Map<string, SidebarItem>();
@@ -111,7 +125,10 @@ export function buildSidebarItems(
     // Collect group paths that belong to this workspace
     const workspaceGroupPaths: string[] = [];
     for (const [groupPath] of sessionsByGroup) {
-      if (groupPath === workspace.path || groupPath.startsWith(workspace.path + '/')) {
+      if (
+        groupPath === workspace.path ||
+        groupPath.startsWith(workspace.path + '/')
+      ) {
         workspaceGroupPaths.push(groupPath);
         handledGroupPaths.add(groupPath);
       }
@@ -123,10 +140,15 @@ export function buildSidebarItems(
       const groupSessions = sessionsByGroup.get(groupPath) ?? [];
       const firstSession = groupSessions[0];
       if (!firstSession) continue;
-      const kind: 'repo' | 'worktree' = groupPath === workspace.path ? 'repo' : 'worktree';
+      const kind: 'repo' | 'worktree' =
+        groupPath === workspace.path ? 'repo' : 'worktree';
 
       const newBackendState = deriveBackendState(groupSessions);
-      const displayState = reconcileDisplayState(existingById.get(groupPath), newBackendState, groupSessions);
+      const displayState = reconcileDisplayState(
+        existingById.get(groupPath),
+        newBackendState,
+        groupSessions
+      );
 
       result.push({
         id: groupPath,
@@ -139,7 +161,10 @@ export function buildSidebarItems(
         displayState,
         lastKnownBackendState: newBackendState,
         sessions: groupSessions,
-        isUnread: existingById.get(groupPath)?.isUnread ?? checkUnread?.(groupPath) ?? false,
+        isUnread:
+          existingById.get(groupPath)?.isUnread ??
+          checkUnread?.(groupPath) ??
+          false,
       });
       coveredPaths.add(groupPath);
     }
@@ -157,10 +182,17 @@ export function buildSidebarItems(
         displayName: worktree.displayName,
         branchName: worktree.branchName,
         lastActivity: worktree.lastActivity,
-        displayState: reconcileDisplayState(existingById.get(worktree.path), null, []),
+        displayState: reconcileDisplayState(
+          existingById.get(worktree.path),
+          null,
+          []
+        ),
         lastKnownBackendState: null,
         sessions: [],
-        isUnread: existingById.get(worktree.path)?.isUnread ?? checkUnread?.(worktree.path) ?? false,
+        isUnread:
+          existingById.get(worktree.path)?.isUnread ??
+          checkUnread?.(worktree.path) ??
+          false,
       });
       coveredPaths.add(worktree.path);
     }
@@ -176,10 +208,17 @@ export function buildSidebarItems(
         displayName: workspace.name,
         branchName: workspace.currentBranch ?? workspace.defaultBranch ?? '',
         lastActivity: '',
-        displayState: reconcileDisplayState(existingById.get(workspace.path), null, []),
+        displayState: reconcileDisplayState(
+          existingById.get(workspace.path),
+          null,
+          []
+        ),
         lastKnownBackendState: null,
         sessions: [],
-        isUnread: existingById.get(workspace.path)?.isUnread ?? checkUnread?.(workspace.path) ?? false,
+        isUnread:
+          existingById.get(workspace.path)?.isUnread ??
+          checkUnread?.(workspace.path) ??
+          false,
       });
     }
   }
@@ -200,10 +239,17 @@ export function buildSidebarItems(
       displayName: firstSession.displayName,
       branchName: firstSession.branchName,
       lastActivity: mostRecentActivity(groupSessions),
-      displayState: reconcileDisplayState(existingById.get(groupPath), newBackendState, groupSessions),
+      displayState: reconcileDisplayState(
+        existingById.get(groupPath),
+        newBackendState,
+        groupSessions
+      ),
       lastKnownBackendState: newBackendState,
       sessions: groupSessions,
-      isUnread: existingById.get(groupPath)?.isUnread ?? checkUnread?.(groupPath) ?? false,
+      isUnread:
+        existingById.get(groupPath)?.isUnread ??
+        checkUnread?.(groupPath) ??
+        false,
     });
   }
 
@@ -221,24 +267,32 @@ export function buildSidebarItems(
 function reconcileDisplayState(
   existing: SidebarItem | undefined,
   newBackendState: BackendDisplayState | null,
-  sessions: SessionSummary[],
+  sessions: SessionSummary[]
 ): DisplayState {
   // No sessions → always inactive regardless of history
   if (sessions.length === 0) return 'inactive';
 
-  if (!existing || existing.displayState === 'inactive') return initialDisplayState(sessions);
+  if (!existing || existing.displayState === 'inactive')
+    return initialDisplayState(sessions);
 
   // Backend state unchanged — preserve the existing display state
-  if (existing.lastKnownBackendState === newBackendState) return existing.displayState;
+  if (existing.lastKnownBackendState === newBackendState)
+    return existing.displayState;
 
   // Backend state changed — apply transition
   if (newBackendState) {
     // Preserve needs-answer: reconciliation doesn't have permissionType, so
     // transitionDisplayState would downgrade needs-answer → permission.
-    if (newBackendState === 'permission' && existing.displayState === 'needs-answer') {
+    if (
+      newBackendState === 'permission' &&
+      existing.displayState === 'needs-answer'
+    ) {
       return 'needs-answer';
     }
-    return transitionDisplayState(existing.displayState, { type: 'backend-state-changed', state: newBackendState });
+    return transitionDisplayState(existing.displayState, {
+      type: 'backend-state-changed',
+      state: newBackendState,
+    });
   }
   return existing.displayState;
 }

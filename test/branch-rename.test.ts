@@ -10,7 +10,11 @@ describe('MOUNTAIN_NAMES', () => {
 
   test('all names are lowercase kebab-case', () => {
     for (const name of MOUNTAIN_NAMES) {
-      assert.match(name, /^[a-z][a-z0-9-]*$/, `Mountain name "${name}" is not kebab-case`);
+      assert.match(
+        name,
+        /^[a-z][a-z0-9-]*$/,
+        `Mountain name "${name}" is not kebab-case`
+      );
     }
   });
 
@@ -35,7 +39,10 @@ describe('MOUNTAIN_NAMES', () => {
 
 describe('branchToDisplayName', () => {
   test('converts kebab-case to sentence case', () => {
-    assert.equal(branchToDisplayName('fix-mobile-scroll-bug'), 'Fix mobile scroll bug');
+    assert.equal(
+      branchToDisplayName('fix-mobile-scroll-bug'),
+      'Fix mobile scroll bug'
+    );
   });
 
   test('strips common branch prefixes', () => {

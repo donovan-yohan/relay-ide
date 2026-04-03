@@ -148,6 +148,10 @@ export interface UiState {
   closeAllFileTabs: () => void;
   openHtmlTab: (filePath: string, token: string) => void;
   refreshHtmlTab: (filePath: string) => void;
+  setRightSidebarTab: (tab: RightSidebarTab) => void;
+  setFileDiffSource: (source: 'working' | 'staged' | 'branch') => void;
+  setFileDiffDefaultBranch: (branch: string) => void;
+  setLastChangedFiles: (files: string[]) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
 }
@@ -218,6 +222,11 @@ export const useUiStore = create<UiState>()((set, get) => ({
     lsSave(RIGHT_SIDEBAR_COLLAPSED_KEY, String(next));
     set({ rightSidebarCollapsed: next });
   },
+
+  setRightSidebarTab: (tab) => set({ rightSidebarTab: tab }),
+  setFileDiffSource: (source) => set({ fileDiffSource: source }),
+  setFileDiffDefaultBranch: (branch) => set({ fileDiffDefaultBranch: branch }),
+  setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
 
   saveRightSidebarWidth: () => lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
 

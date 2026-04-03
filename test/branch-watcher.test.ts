@@ -8,9 +8,24 @@ import { BranchWatcher } from '../server/watcher.js';
 
 function makeTempGitRepo(): string {
   // Resolve symlinks (macOS /var → /private/var) so paths match git output
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'branch-watcher-test-')));
+  const dir = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'branch-watcher-test-'))
+  );
   execFileSync('git', ['init', '-b', 'main'], { cwd: dir });
-  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@test.com', 'commit', '--allow-empty', '-m', 'init'], { cwd: dir });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@test.com',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'init',
+    ],
+    { cwd: dir }
+  );
   return dir;
 }
 
@@ -19,7 +34,11 @@ describe('BranchWatcher', () => {
 
   afterEach(() => {
     for (const fn of cleanups) {
-      try { fn(); } catch { /* ignore */ }
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
     }
     cleanups.length = 0;
   });
@@ -38,7 +57,7 @@ describe('BranchWatcher', () => {
     watcher.rebuild([parentDir]);
 
     // Let fs.watch initialize
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // Create the branch first, then simulate checkout by writing HEAD directly
     // (more deterministic than git checkout which uses lock+rename)
@@ -47,7 +66,7 @@ describe('BranchWatcher', () => {
     fs.writeFileSync(headPath, 'ref: refs/heads/feature-test\n');
 
     // Wait for debounce (300ms) + processing
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     assert.ok(events.length > 0, 'Expected at least one branch change event');
     const lastEvent = events[events.length - 1]!;
@@ -68,16 +87,20 @@ describe('BranchWatcher', () => {
 
     watcher.rebuild([parentDir]);
 
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // Touch the HEAD file without changing the branch content
     const headPath = path.join(repoDir, '.git', 'HEAD');
     const content = fs.readFileSync(headPath, 'utf-8');
     fs.writeFileSync(headPath, content);
 
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    assert.equal(events.length, 0, 'Should not fire callback when branch is unchanged');
+    assert.equal(
+      events.length,
+      0,
+      'Should not fire callback when branch is unchanged'
+    );
   });
 
   it('detects second branch change after atomic rename (inode change)', async () => {
@@ -92,7 +115,7 @@ describe('BranchWatcher', () => {
     cleanups.push(() => watcher.close());
 
     watcher.rebuild([parentDir]);
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     const headPath = path.join(repoDir, '.git', 'HEAD');
 
@@ -103,9 +126,12 @@ describe('BranchWatcher', () => {
     fs.writeFileSync(lockPath, 'ref: refs/heads/branch-one\n');
     fs.renameSync(lockPath, headPath);
 
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    assert.ok(events.length >= 1, 'Expected at least one event after first atomic rename');
+    assert.ok(
+      events.length >= 1,
+      'Expected at least one event after first atomic rename'
+    );
     assert.equal(events[events.length - 1]!.newBranch, 'branch-one');
 
     // Second change: simulate another atomic checkout — this would fail without
@@ -115,10 +141,13 @@ describe('BranchWatcher', () => {
     fs.writeFileSync(lockPath2, 'ref: refs/heads/branch-two\n');
     fs.renameSync(lockPath2, headPath);
 
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    const secondChange = events.find(e => e.newBranch === 'branch-two');
-    assert.ok(secondChange, 'Expected branch-two event after second atomic rename (watcher must survive inode change)');
+    const secondChange = events.find((e) => e.newBranch === 'branch-two');
+    assert.ok(
+      secondChange,
+      'Expected branch-two event after second atomic rename (watcher must survive inode change)'
+    );
   });
 
   it('closes cleanly', () => {

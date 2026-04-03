@@ -3,13 +3,25 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DEFAULTS, loadConfig, saveConfig, ensureMetaDir, readMeta, writeMeta, deleteMeta, resolveSessionSettings, deleteRepoSettingKeys } from '../server/config.js';
+import {
+  DEFAULTS,
+  loadConfig,
+  saveConfig,
+  ensureMetaDir,
+  readMeta,
+  writeMeta,
+  deleteMeta,
+  resolveSessionSettings,
+  deleteRepoSettingKeys,
+} from '../server/config.js';
 import type { Config } from '../server/types.js';
 
 let tmpDir!: string;
 
 before(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-remote-cli-config-test-'));
+  tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'claude-remote-cli-config-test-')
+  );
 });
 
 afterEach(() => {
@@ -98,7 +110,11 @@ test('ensureMetaDir creates worktree-meta directory', () => {
 
 test('writeMeta creates and readMeta reads metadata file', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  const meta = { worktreePath: '/tmp/test-worktree', displayName: 'My Feature', lastActivity: '2026-02-22T00:00:00.000Z' };
+  const meta = {
+    worktreePath: '/tmp/test-worktree',
+    displayName: 'My Feature',
+    lastActivity: '2026-02-22T00:00:00.000Z',
+  };
   writeMeta(configPath, meta);
   const read = readMeta(configPath, '/tmp/test-worktree');
   assert.deepEqual(read, meta);
@@ -112,8 +128,16 @@ test('readMeta returns null for non-existent metadata', () => {
 
 test('writeMeta overwrites existing metadata', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  writeMeta(configPath, { worktreePath: '/tmp/wt', displayName: 'Old Name', lastActivity: '2026-01-01T00:00:00.000Z' });
-  writeMeta(configPath, { worktreePath: '/tmp/wt', displayName: 'New Name', lastActivity: '2026-02-22T00:00:00.000Z' });
+  writeMeta(configPath, {
+    worktreePath: '/tmp/wt',
+    displayName: 'Old Name',
+    lastActivity: '2026-01-01T00:00:00.000Z',
+  });
+  writeMeta(configPath, {
+    worktreePath: '/tmp/wt',
+    displayName: 'New Name',
+    lastActivity: '2026-02-22T00:00:00.000Z',
+  });
   const read = readMeta(configPath, '/tmp/wt');
   assert.equal(read!.displayName, 'New Name');
   assert.equal(read!.lastActivity, '2026-02-22T00:00:00.000Z');
@@ -121,7 +145,11 @@ test('writeMeta overwrites existing metadata', () => {
 
 test('deleteMeta removes metadata file', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  writeMeta(configPath, { worktreePath: '/tmp/del-test', displayName: 'To Delete', lastActivity: '2026-02-22T00:00:00.000Z' });
+  writeMeta(configPath, {
+    worktreePath: '/tmp/del-test',
+    displayName: 'To Delete',
+    lastActivity: '2026-02-22T00:00:00.000Z',
+  });
   assert.ok(readMeta(configPath, '/tmp/del-test'));
   deleteMeta(configPath, '/tmp/del-test');
   assert.equal(readMeta(configPath, '/tmp/del-test'), null);
@@ -134,13 +162,17 @@ test('deleteMeta is a no-op for non-existent metadata', () => {
 
 test('resolveSessionSettings returns global defaults when no workspace or overrides', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    defaultAgent: 'claude',
-    defaultContinue: true,
-    defaultYolo: false,
-    launchInTmux: false,
-    claudeArgs: [],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultAgent: 'claude',
+      defaultContinue: true,
+      defaultYolo: false,
+      launchInTmux: false,
+      claudeArgs: [],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(result.agent, 'claude');
@@ -152,16 +184,20 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
 
 test('resolveSessionSettings applies workspace overrides over globals', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repoSettings: {
-      '/my/repo': { defaultYolo: true, defaultAgent: 'codex' },
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repoSettings: {
+        '/my/repo': { defaultYolo: true, defaultAgent: 'codex' },
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {});
   assert.equal(result.agent, 'codex');
@@ -171,16 +207,20 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
 
 test('resolveSessionSettings explicit overrides beat workspace settings', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    defaultAgent: 'claude',
-    defaultYolo: true,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repoSettings: {
-      '/my/repo': { defaultYolo: true },
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultAgent: 'claude',
+      defaultYolo: true,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repoSettings: {
+        '/my/repo': { defaultYolo: true },
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', { yolo: false });
   assert.equal(result.yolo, false);
@@ -188,27 +228,37 @@ test('resolveSessionSettings explicit overrides beat workspace settings', () => 
 
 test('resolveSessionSettings uses override claudeArgs, not global', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: ['--global-arg'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: ['--global-arg'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', { claudeArgs: ['--custom'] });
+  const result = resolveSessionSettings(config, '/some/repo', {
+    claudeArgs: ['--custom'],
+  });
   assert.deepEqual(result.claudeArgs, ['--custom']);
 });
 
 test('resolveSessionSettings falls through to globals when no workspace exists', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    defaultAgent: 'codex',
-    defaultYolo: true,
-    defaultContinue: false,
-    launchInTmux: true,
-    claudeArgs: ['--verbose'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultAgent: 'codex',
+      defaultYolo: true,
+      defaultContinue: false,
+      launchInTmux: true,
+      claudeArgs: ['--verbose'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/nonexistent/repo', {});
   assert.equal(result.agent, 'codex');
@@ -223,11 +273,18 @@ test('deleteRepoSettingKeys removes specified keys', () => {
   const config = {
     ...DEFAULTS,
     repoSettings: {
-      '/my/repo': { defaultYolo: true, defaultAgent: 'codex' as const, branchPrefix: 'dy/' },
+      '/my/repo': {
+        defaultYolo: true,
+        defaultAgent: 'codex' as const,
+        branchPrefix: 'dy/',
+      },
     },
   };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  deleteRepoSettingKeys(configPath, config, '/my/repo', ['defaultYolo', 'defaultAgent']);
+  deleteRepoSettingKeys(configPath, config, '/my/repo', [
+    'defaultYolo',
+    'defaultAgent',
+  ]);
   assert.equal(config.repoSettings!['/my/repo']!.defaultYolo, undefined);
   assert.equal(config.repoSettings!['/my/repo']!.defaultAgent, undefined);
   assert.equal(config.repoSettings!['/my/repo']!.branchPrefix, 'dy/');
@@ -250,18 +307,24 @@ test('deleteRepoSettingKeys is no-op for nonexistent workspace', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const config = { ...DEFAULTS };
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
-  assert.doesNotThrow(() => deleteRepoSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo']));
+  assert.doesNotThrow(() =>
+    deleteRepoSettingKeys(configPath, config, '/no/such/repo', ['defaultYolo'])
+  );
 });
 
 test('workspaceGroups with valid paths loads cleanly', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/a/repo', '/b/repo'],
-    workspaceGroups: {
-      'Group A': ['/a/repo'],
-      'Group B': ['/b/repo'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/a/repo', '/b/repo'],
+      workspaceGroups: {
+        'Group A': ['/a/repo'],
+        'Group B': ['/b/repo'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
   const workspaces = config.workspaces as any[];
@@ -273,27 +336,37 @@ test('workspaceGroups with valid paths loads cleanly', () => {
 
 test('workspaceGroups with invalid path filters it out', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/valid/repo'],
-    workspaceGroups: {
-      'My Group': ['/valid/repo', '/not/in/workspaces'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/valid/repo'],
+      workspaceGroups: {
+        'My Group': ['/valid/repo', '/not/in/workspaces'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
-  const myGroup = (config.workspaces as any[])?.find((w: any) => w.name === 'My Group');
+  const myGroup = (config.workspaces as any[])?.find(
+    (w: any) => w.name === 'My Group'
+  );
   assert.deepEqual(myGroup?.repos, ['/valid/repo']);
 });
 
 test('workspaceGroups with duplicate path allows many-to-many', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/shared/repo'],
-    workspaceGroups: {
-      'First': ['/shared/repo'],
-      'Second': ['/shared/repo'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/shared/repo'],
+      workspaceGroups: {
+        First: ['/shared/repo'],
+        Second: ['/shared/repo'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
   const workspaces = config.workspaces as any[];
@@ -306,9 +379,13 @@ test('workspaceGroups with duplicate path allows many-to-many', () => {
 
 test('workspaceGroups undefined produces no errors', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/some/repo'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/some/repo'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
   assert.deepEqual(config.workspaces as any[], []);
@@ -316,12 +393,16 @@ test('workspaceGroups undefined produces no errors', () => {
 
 test('workspaceGroups with all-invalid paths removes empty group', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/valid/repo'],
-    workspaceGroups: {
-      'Ghost Group': ['/not/here', '/also/not/here'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/valid/repo'],
+      workspaceGroups: {
+        'Ghost Group': ['/not/here', '/also/not/here'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaceGroups, undefined);
   const workspaces = config.workspaces as any[];
@@ -358,9 +439,13 @@ test('migrateToV4: v4 config upgrades to v5 preserving data', () => {
 
 test('migrateToV4: reconciles legacy workspaces string[] into repos', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    workspaces: ['/old/repo1', '/old/repo2'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspaces: ['/old/repo1', '/old/repo2'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.ok(config.configVersion != null && config.configVersion >= 4);
   assert.ok(config.repos.includes('/old/repo1'));
@@ -369,20 +454,30 @@ test('migrateToV4: reconciles legacy workspaces string[] into repos', () => {
 
 test('migrateToV4: merges workspaces and repos arrays with dedup', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/a', '/b'],
-    workspaces: ['/b', '/c'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/a', '/b'],
+      workspaces: ['/b', '/c'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.deepEqual(config.repos, ['/a', '/b', '/c']);
 });
 
 test('migrateToV4: renames workspaceSettings to repoSettings', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/my/repo'],
-    workspaceSettings: { '/my/repo': { defaultYolo: true, branchPrefix: 'dy/' } },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/my/repo'],
+      workspaceSettings: {
+        '/my/repo': { defaultYolo: true, branchPrefix: 'dy/' },
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.ok(config.repoSettings?.['/my/repo']?.defaultYolo);
   assert.equal(config.repoSettings?.['/my/repo']?.branchPrefix, 'dy/');
@@ -391,13 +486,17 @@ test('migrateToV4: renames workspaceSettings to repoSettings', () => {
 
 test('migrateToV4: promotes workspaceGroups to Workspace entities', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/frontend', '/backend', '/shared'],
-    workspaceGroups: {
-      'My App': ['/frontend', '/backend'],
-      'Infra': ['/shared'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/frontend', '/backend', '/shared'],
+      workspaceGroups: {
+        'My App': ['/frontend', '/backend'],
+        Infra: ['/shared'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const workspaces = config.workspaces as any[];
   assert.equal(workspaces?.length, 2);
@@ -415,14 +514,20 @@ test('migrateToV4: promotes workspaceGroups to Workspace entities', () => {
 
 test('migrateToV4: workspaceGroups promotion validates against repos[]', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/valid'],
-    workspaceGroups: {
-      'Mixed': ['/valid', '/not-in-repos'],
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/valid'],
+      workspaceGroups: {
+        Mixed: ['/valid', '/not-in-repos'],
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  const mixed = (config.workspaces as any[])?.find((w: any) => w.name === 'Mixed');
+  const mixed = (config.workspaces as any[])?.find(
+    (w: any) => w.name === 'Mixed'
+  );
   assert.ok(mixed);
   assert.deepEqual(mixed.repos, ['/valid']);
 });
@@ -432,24 +537,32 @@ test('migrateToV4: workspaceGroups promotion validates against repos[]', () => {
 test('resolveSessionSettings with workspaceId applies workspace settings between global and repo', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const wsId = 'ws-cascade-1';
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repos: ['/my/repo'],
-    workspaces: [
-      {
-        id: wsId,
-        name: 'My Workspace',
-        repos: ['/my/repo'],
-        order: 0,
-        settings: { defaultYolo: true, defaultAgent: 'codex', launchInTmux: true },
-      },
-    ],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: wsId,
+          name: 'My Workspace',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: {
+            defaultYolo: true,
+            defaultAgent: 'codex',
+            launchInTmux: true,
+          },
+        },
+      ],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
   // Workspace settings should override global
@@ -461,27 +574,31 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
 test('resolveSessionSettings: repo settings override workspace settings', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const wsId = 'ws-cascade-2';
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repos: ['/my/repo'],
-    workspaces: [
-      {
-        id: wsId,
-        name: 'My Workspace',
-        repos: ['/my/repo'],
-        order: 0,
-        settings: { defaultYolo: true, defaultAgent: 'codex' },
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: wsId,
+          name: 'My Workspace',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: { defaultYolo: true, defaultAgent: 'codex' },
+        },
+      ],
+      repoSettings: {
+        '/my/repo': { defaultYolo: false, defaultAgent: 'claude' },
       },
-    ],
-    repoSettings: {
-      '/my/repo': { defaultYolo: false, defaultAgent: 'claude' },
-    },
-  }), 'utf8');
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
   // Repo settings beat workspace settings
@@ -492,52 +609,65 @@ test('resolveSessionSettings: repo settings override workspace settings', () => 
 test('resolveSessionSettings: overrides beat workspace and repo settings', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const wsId = 'ws-cascade-3';
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repos: ['/my/repo'],
-    workspaces: [
-      {
-        id: wsId,
-        name: 'My Workspace',
-        repos: ['/my/repo'],
-        order: 0,
-        settings: { defaultYolo: true },
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: wsId,
+          name: 'My Workspace',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: { defaultYolo: true },
+        },
+      ],
+      repoSettings: {
+        '/my/repo': { defaultYolo: true },
       },
-    ],
-    repoSettings: {
-      '/my/repo': { defaultYolo: true },
-    },
-  }), 'utf8');
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', { yolo: false }, wsId);
+  const result = resolveSessionSettings(
+    config,
+    '/my/repo',
+    { yolo: false },
+    wsId
+  );
   assert.equal(result.yolo, false);
 });
 
 test('resolveSessionSettings without workspaceId skips workspace cascade', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repos: ['/my/repo'],
-    workspaces: [
-      {
-        id: 'ws-x',
-        name: 'My Workspace',
-        repos: ['/my/repo'],
-        order: 0,
-        settings: { defaultYolo: true, defaultAgent: 'codex' },
-      },
-    ],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: 'ws-x',
+          name: 'My Workspace',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: { defaultYolo: true, defaultAgent: 'codex' },
+        },
+      ],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   // No workspaceId passed — workspace settings should NOT apply
   const result = resolveSessionSettings(config, '/my/repo', {});
@@ -547,18 +677,27 @@ test('resolveSessionSettings without workspaceId skips workspace cascade', () =>
 
 test('resolveSessionSettings with unknown workspaceId falls through to global', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    defaultYolo: false,
-    defaultContinue: true,
-    launchInTmux: false,
-    claudeArgs: [],
-    repos: ['/my/repo'],
-    workspaces: [],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/my/repo', {}, 'no-such-workspace');
+  const result = resolveSessionSettings(
+    config,
+    '/my/repo',
+    {},
+    'no-such-workspace'
+  );
   assert.equal(result.yolo, false);
   assert.equal(result.agent, 'claude');
 });
@@ -572,11 +711,15 @@ test('migrateToV4: empty config gets migrated to latest version', () => {
 
 test('migrateToV4: persists migrated config to disk', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/a'],
-    workspaceSettings: { '/a': { defaultYolo: true } },
-    workspaceGroups: { 'G': ['/a'] },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/a'],
+      workspaceSettings: { '/a': { defaultYolo: true } },
+      workspaceGroups: { G: ['/a'] },
+    }),
+    'utf8'
+  );
   loadConfig(configPath);
   const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   // After v4+v5 migrations, configVersion is at least 4
@@ -588,7 +731,11 @@ test('migrateToV4: persists migrated config to disk', () => {
 
 test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: true }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ defaultContinue: true }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const resolved = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(resolved.continuePolicy, 'always');
@@ -596,7 +743,11 @@ test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always'
 
 test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: false }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ defaultContinue: false }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const resolved = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(resolved.continuePolicy, 'never');
@@ -604,9 +755,15 @@ test('resolveSessionSettings maps defaultContinue:false to continuePolicy:never'
 
 test('resolveSessionSettings respects explicit continuePolicy override', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ defaultContinue: true }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ defaultContinue: true }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  const resolved = resolveSessionSettings(config, '/some/repo', { continuePolicy: 'never' });
+  const resolved = resolveSessionSettings(config, '/some/repo', {
+    continuePolicy: 'never',
+  });
   assert.equal(resolved.continuePolicy, 'never');
 });
 
@@ -624,21 +781,27 @@ test('cascades workspace settings when workspaceId is provided', () => {
     ...DEFAULTS,
     configVersion: 4,
     repos: ['/tmp/test-repo'],
-    workspaces: [{
-      id: 'ws-1',
-      name: 'test workspace',
-      repos: ['/tmp/test-repo'],
-      order: 0,
-      settings: {
-        defaultYolo: true,
-        defaultAgent: 'claude',
+    workspaces: [
+      {
+        id: 'ws-1',
+        name: 'test workspace',
+        repos: ['/tmp/test-repo'],
+        order: 0,
+        settings: {
+          defaultYolo: true,
+          defaultAgent: 'claude',
+        },
       },
-    }],
+    ],
     repoSettings: {},
   } as Config;
 
   const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  assert.strictEqual(result.yolo, true, 'workspace settings should cascade yolo');
+  assert.strictEqual(
+    result.yolo,
+    true,
+    'workspace settings should cascade yolo'
+  );
   assert.strictEqual(result.agent, 'claude');
 });
 
@@ -647,106 +810,153 @@ test('repo settings override workspace settings', () => {
     ...DEFAULTS,
     configVersion: 4,
     repos: ['/tmp/test-repo'],
-    workspaces: [{
-      id: 'ws-1',
-      name: 'test workspace',
-      repos: ['/tmp/test-repo'],
-      order: 0,
-      settings: {
-        defaultYolo: true,
+    workspaces: [
+      {
+        id: 'ws-1',
+        name: 'test workspace',
+        repos: ['/tmp/test-repo'],
+        order: 0,
+        settings: {
+          defaultYolo: true,
+        },
       },
-    }],
+    ],
     repoSettings: {
       '/tmp/test-repo': { defaultYolo: false },
     },
   } as Config;
 
   const result = resolveSessionSettings(config, '/tmp/test-repo', {}, 'ws-1');
-  assert.strictEqual(result.yolo, false, 'repo settings should override workspace');
+  assert.strictEqual(
+    result.yolo,
+    false,
+    'repo settings should override workspace'
+  );
 });
 
 // ── Config v5 migration ──
 
 test('migrateToV5: sets configVersion to 5', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ configVersion: 4, repos: ['/a'] }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ configVersion: 4, repos: ['/a'] }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.configVersion, 5);
 });
 
 test('migrateToV5: maps defaultAgent to defaultFramework', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'codex',
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'codex',
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.defaultFramework, 'codex');
 });
 
 test('migrateToV5: maps claudeCommand to frameworks.claude.commandOverride when non-default', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    claudeCommand: '/usr/local/bin/claude',
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      claudeCommand: '/usr/local/bin/claude',
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  assert.equal(config.frameworks?.['claude']?.commandOverride, '/usr/local/bin/claude');
+  assert.equal(
+    config.frameworks?.['claude']?.commandOverride,
+    '/usr/local/bin/claude'
+  );
 });
 
 test('migrateToV5: does NOT set frameworks.claude.commandOverride when claudeCommand is default', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    claudeCommand: 'claude',
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      claudeCommand: 'claude',
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.frameworks?.['claude']?.commandOverride, undefined);
 });
 
 test('migrateToV5: maps claudeArgs to frameworks.claude.extraArgs when non-empty', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    claudeArgs: ['--verbose', '--no-update-check'],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      claudeArgs: ['--verbose', '--no-update-check'],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
-  assert.deepEqual(config.frameworks?.['claude']?.extraArgs, ['--verbose', '--no-update-check']);
+  assert.deepEqual(config.frameworks?.['claude']?.extraArgs, [
+    '--verbose',
+    '--no-update-check',
+  ]);
 });
 
 test('migrateToV5: does NOT set frameworks.claude.extraArgs when claudeArgs is empty', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    claudeArgs: [],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      claudeArgs: [],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.frameworks?.['claude']?.extraArgs, undefined);
 });
 
 test('migrateToV5: preserves existing v5 config (no double-migration)', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 5,
-    defaultFramework: 'opencode',
-    defaultAgent: 'claude',   // should NOT overwrite defaultFramework
-    frameworks: { claude: { commandOverride: '/existing/path' } },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 5,
+      defaultFramework: 'opencode',
+      defaultAgent: 'claude', // should NOT overwrite defaultFramework
+      frameworks: { claude: { commandOverride: '/existing/path' } },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.configVersion, 5);
   assert.equal(config.defaultFramework, 'opencode');
-  assert.equal(config.frameworks?.['claude']?.commandOverride, '/existing/path');
+  assert.equal(
+    config.frameworks?.['claude']?.commandOverride,
+    '/existing/path'
+  );
 });
 
 test('migrateToV5: migrates repoSettings defaultAgent to defaultFramework', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    repos: ['/my/repo'],
-    repoSettings: {
-      '/my/repo': { defaultAgent: 'codex', defaultYolo: true },
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      repos: ['/my/repo'],
+      repoSettings: {
+        '/my/repo': { defaultAgent: 'codex', defaultYolo: true },
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.repoSettings?.['/my/repo']?.defaultFramework, 'codex');
   // defaultAgent remains for backward-compat
@@ -755,14 +965,18 @@ test('migrateToV5: migrates repoSettings defaultAgent to defaultFramework', () =
 
 test('migrateToV5: persists migrated config to disk', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    defaultAgent: 'claude',
-    claudeCommand: '/custom/claude',
-    claudeArgs: ['--arg1'],
-    repos: ['/a'],
-    repoSettings: { '/a': { defaultAgent: 'codex' } },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      defaultAgent: 'claude',
+      claudeCommand: '/custom/claude',
+      claudeArgs: ['--arg1'],
+      repos: ['/a'],
+      repoSettings: { '/a': { defaultAgent: 'codex' } },
+    }),
+    'utf8'
+  );
   loadConfig(configPath);
   const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   assert.equal(raw.configVersion, 5);
@@ -775,12 +989,16 @@ test('migrateToV5: persists migrated config to disk', () => {
 test('loadConfig applies v5 migration after v4 migration', () => {
   const configPath = path.join(tmpDir, 'config.json');
   // Simulate an old v3-ish config with legacy fields that needs both migrations
-  fs.writeFileSync(configPath, JSON.stringify({
-    repos: ['/a'],
-    workspaces: ['/a'],       // triggers v4 migration
-    defaultAgent: 'codex',    // triggers v5 migration
-    claudeCommand: '/alt/claude',
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      repos: ['/a'],
+      workspaces: ['/a'], // triggers v4 migration
+      defaultAgent: 'codex', // triggers v5 migration
+      claudeCommand: '/alt/claude',
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.configVersion, 5);
   assert.equal(config.defaultFramework, 'codex');
@@ -789,22 +1007,38 @@ test('loadConfig applies v5 migration after v4 migration', () => {
 
 test('migrateToV5: migrates workspace-level settings defaultAgent to defaultFramework', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 4,
-    repos: ['/my/repo'],
-    workspaces: [{ id: 'ws1', name: 'Test', repos: ['/my/repo'], order: 0, settings: { defaultAgent: 'codex' } }],
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 4,
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: 'ws1',
+          name: 'Test',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: { defaultAgent: 'codex' },
+        },
+      ],
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   assert.equal(config.workspaces?.[0]?.settings?.defaultFramework, 'codex');
 });
 
 test('resolveSessionSettings uses defaultFramework over defaultAgent', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 5,
-    defaultFramework: 'opencode',
-    defaultAgent: 'claude',   // should be overridden by defaultFramework
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 5,
+      defaultFramework: 'opencode',
+      defaultAgent: 'claude', // should be overridden by defaultFramework
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(result.agent, 'opencode');
@@ -812,11 +1046,15 @@ test('resolveSessionSettings uses defaultFramework over defaultAgent', () => {
 
 test('resolveSessionSettings falls back to defaultAgent when defaultFramework absent', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 5,
-    defaultAgent: 'codex',
-    // no defaultFramework
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 5,
+      defaultAgent: 'codex',
+      // no defaultFramework
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/some/repo', {});
   assert.equal(result.agent, 'codex');
@@ -824,14 +1062,18 @@ test('resolveSessionSettings falls back to defaultAgent when defaultFramework ab
 
 test('resolveSessionSettings: repoSettings defaultFramework overrides global', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({
-    configVersion: 5,
-    defaultFramework: 'claude',
-    repos: ['/my/repo'],
-    repoSettings: {
-      '/my/repo': { defaultFramework: 'opencode' },
-    },
-  }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: 5,
+      defaultFramework: 'claude',
+      repos: ['/my/repo'],
+      repoSettings: {
+        '/my/repo': { defaultFramework: 'opencode' },
+      },
+    }),
+    'utf8'
+  );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {});
   assert.equal(result.agent, 'opencode');

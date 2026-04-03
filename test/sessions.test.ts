@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as sessions from '../server/sessions.js';
-import { resolveTmuxSpawn, generateTmuxSessionName, getTmuxPrefix } from '../server/pty-handler.js';
+import {
+  resolveTmuxSpawn,
+  generateTmuxSessionName,
+  getTmuxPrefix,
+} from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
@@ -102,23 +106,27 @@ describe('sessions', () => {
     createdIds.splice(createdIds.indexOf(result.id), 1);
 
     const session = sessions.get(result.id);
-    assert.strictEqual(session, undefined, 'session should be removed after kill');
+    assert.strictEqual(
+      session,
+      undefined,
+      'session should be removed after kill'
+    );
 
     const list = sessions.list();
-    assert.ok(!list.some((s) => s.id === result.id), 'killed session should not appear in list');
+    assert.ok(
+      !list.some((s) => s.id === result.id),
+      'killed session should not appear in list'
+    );
   });
 
   it('kill throws for nonexistent session', () => {
-    assert.throws(
-      () => sessions.kill('nonexistent-id'),
-      /Session not found/,
-    );
+    assert.throws(() => sessions.kill('nonexistent-id'), /Session not found/);
   });
 
   it('resize throws for nonexistent session', () => {
     assert.throws(
       () => sessions.resize('nonexistent-id', 100, 40),
-      /Session not found/,
+      /Session not found/
     );
   });
 
@@ -155,7 +163,7 @@ describe('sessions', () => {
   it('write throws for nonexistent session', () => {
     assert.throws(
       () => sessions.write('nonexistent-id', 'data'),
-      /Session not found/,
+      /Session not found/
     );
   });
 
@@ -248,8 +256,12 @@ describe('sessions', () => {
     createdIds.push(r2.id);
 
     const list = sessions.list();
-    const s1 = list.find(function (s) { return s.id === r1.id; });
-    const s2 = list.find(function (s) { return s.id === r2.id; });
+    const s1 = list.find(function (s) {
+      return s.id === r1.id;
+    });
+    const s2 = list.find(function (s) {
+      return s.id === r2.id;
+    });
 
     assert.ok(s1);
     assert.strictEqual(s1.type, 'agent');
@@ -270,10 +282,13 @@ describe('sessions', () => {
     createdIds.push(result.id);
 
     const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
+    const session = list.find((s) => s.id === result.id);
     assert.ok(session);
     assert.strictEqual(session.repoPath, '/tmp/workspace');
-    assert.strictEqual(session.worktreePath, '/tmp/workspace/.worktrees/my-branch');
+    assert.strictEqual(
+      session.worktreePath,
+      '/tmp/workspace/.worktrees/my-branch'
+    );
     assert.strictEqual(session.cwd, '/tmp/workspace/.worktrees/my-branch');
   });
 
@@ -296,10 +311,25 @@ describe('sessions', () => {
     assert.deepStrictEqual(result, {
       command: 'tmux',
       args: [
-        '-u', 'new-session', '-s', 'test-session', '--', 'claude', '--continue',
-        ';', 'set', 'set-clipboard', 'on',
-        ';', 'set', 'allow-passthrough', 'on',
-        ';', 'set', 'mode-keys', 'vi',
+        '-u',
+        'new-session',
+        '-s',
+        'test-session',
+        '--',
+        'claude',
+        '--continue',
+        ';',
+        'set',
+        'set-clipboard',
+        'on',
+        ';',
+        'set',
+        'allow-passthrough',
+        'on',
+        ';',
+        'set',
+        'mode-keys',
+        'vi',
       ],
     });
   });
@@ -319,8 +349,14 @@ describe('sessions', () => {
     const original = process.env.NO_PIN;
     delete process.env.NO_PIN;
     try {
-      const name = generateTmuxSessionName('feat/auth-flow', 'abcdef1234567890');
-      assert.ok(name.startsWith('crc-feat-auth-flow-'), `expected sanitized name, got: ${name}`);
+      const name = generateTmuxSessionName(
+        'feat/auth-flow',
+        'abcdef1234567890'
+      );
+      assert.ok(
+        name.startsWith('crc-feat-auth-flow-'),
+        `expected sanitized name, got: ${name}`
+      );
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -330,7 +366,8 @@ describe('sessions', () => {
     const original = process.env.NO_PIN;
     delete process.env.NO_PIN;
     try {
-      const longName = 'a-very-long-display-name-that-exceeds-thirty-characters';
+      const longName =
+        'a-very-long-display-name-that-exceeds-thirty-characters';
       const id = 'abcdef1234567890';
       const name = generateTmuxSessionName(longName, id);
       // Format is crc-<sanitized up to 30>-<8 char id>
@@ -338,8 +375,14 @@ describe('sessions', () => {
       const withoutPrefix = name.slice('crc-'.length);
       const parts = withoutPrefix.split('-');
       const idPart = parts[parts.length - 1];
-      const displayPart = withoutPrefix.slice(0, withoutPrefix.length - idPart!.length - 1);
-      assert.ok(displayPart.length <= 30, `display portion should be <= 30 chars, got: ${displayPart.length}`);
+      const displayPart = withoutPrefix.slice(
+        0,
+        withoutPrefix.length - idPart!.length - 1
+      );
+      assert.ok(
+        displayPart.length <= 30,
+        `display portion should be <= 30 chars, got: ${displayPart.length}`
+      );
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -348,14 +391,23 @@ describe('sessions', () => {
   it('generateTmuxSessionName uses 8 chars from the provided id', () => {
     const id = 'abcdef1234567890';
     const name = generateTmuxSessionName('my-session', id);
-    assert.ok(name.endsWith(id.slice(0, 8)), `expected name to end with ${id.slice(0, 8)}, got: ${name}`);
+    assert.ok(
+      name.endsWith(id.slice(0, 8)),
+      `expected name to end with ${id.slice(0, 8)}, got: ${name}`
+    );
   });
 
   it('prod prefix (crc-) does not match dev prefix (crcd-)', () => {
     const prodPrefix = 'crc-';
     const devPrefix = 'crcd-';
-    assert.ok(!devPrefix.startsWith(prodPrefix), `dev prefix '${devPrefix}' must not start with prod prefix '${prodPrefix}'`);
-    assert.ok(!prodPrefix.startsWith(devPrefix), `prod prefix '${prodPrefix}' must not start with dev prefix '${devPrefix}'`);
+    assert.ok(
+      !devPrefix.startsWith(prodPrefix),
+      `dev prefix '${devPrefix}' must not start with prod prefix '${prodPrefix}'`
+    );
+    assert.ok(
+      !prodPrefix.startsWith(devPrefix),
+      `prod prefix '${prodPrefix}' must not start with dev prefix '${devPrefix}'`
+    );
   });
 
   it('getTmuxPrefix returns crc- when NO_PIN is not set', () => {
@@ -421,7 +473,7 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
     const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
+    const session = list.find((s) => s.id === result.id);
     assert.ok(session);
     assert.strictEqual(session.agent, 'codex');
   });
@@ -467,7 +519,7 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
     const list = sessions.list();
-    const session = list.find(s => s.id === result.id);
+    const session = list.find((s) => s.id === result.id);
     assert.ok(session);
     assert.strictEqual(session.useTmux, false);
     assert.strictEqual(session.tmuxSessionName, '');
@@ -491,7 +543,11 @@ describe('sessions', () => {
 
     ptySession.onPtyReplacedCallbacks.push((newPty) => {
       assert.ok(newPty, 'should receive new PTY');
-      assert.strictEqual(ptySession.pty, newPty, 'session.pty should be updated to new PTY');
+      assert.strictEqual(
+        ptySession.pty,
+        newPty,
+        'session.pty should be updated to new PTY'
+      );
       done();
     });
   });
@@ -537,7 +593,11 @@ describe('sessions', () => {
 
     ptySession.onPtyReplacedCallbacks.push((newPty) => {
       assert.ok(newPty, 'should receive new PTY even with exit code 0');
-      assert.strictEqual(ptySession.pty, newPty, 'session.pty should be updated');
+      assert.strictEqual(
+        ptySession.pty,
+        newPty,
+        'session.pty should be updated'
+      );
       const stillExists = sessions.get(result.id);
       assert.ok(stillExists, 'session should still exist after retry');
       done();
@@ -575,7 +635,10 @@ describe('sessions', () => {
     assert.ok(session);
     assert.strictEqual(session.mode, 'pty');
     assert.ok((session as PtySession).scrollback.length >= 1);
-    assert.strictEqual((session as PtySession).scrollback[0], 'prior output\r\n');
+    assert.strictEqual(
+      (session as PtySession).scrollback[0],
+      'prior output\r\n'
+    );
   });
 });
 
@@ -585,11 +648,19 @@ describe('session persistence', () => {
   afterEach(() => {
     // Clean up any sessions created during tests
     for (const s of sessions.list()) {
-      try { sessions.kill(s.id); } catch { /* ignore */ }
+      try {
+        sessions.kill(s.id);
+      } catch {
+        /* ignore */
+      }
     }
     // Clean up temp directory
     if (tmpDir) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   });
 
@@ -676,7 +747,10 @@ describe('session persistence', () => {
     // Scrollback should be restored
     assert.strictEqual(restoredSession.mode, 'pty');
     assert.ok((restoredSession as PtySession).scrollback.length >= 1);
-    assert.strictEqual((restoredSession as PtySession).scrollback[0], 'saved output');
+    assert.strictEqual(
+      (restoredSession as PtySession).scrollback[0],
+      'saved output'
+    );
 
     // pending-sessions.json should be cleaned up
     assert.ok(!fs.existsSync(path.join(configDir, 'pending-sessions.json')));
@@ -690,13 +764,36 @@ describe('session persistence', () => {
     const pending = {
       version: 3,
       timestamp: staleTime,
-      sessions: [{ id: 'stale-id', type: 'agent', agent: 'claude', workspacePath: '/tmp', worktreePath: null, cwd: '/tmp', repoName: 'test', branchName: '', displayName: 'test', createdAt: staleTime, lastActivity: staleTime, useTmux: false, tmuxSessionName: '', customCommand: null }],
+      sessions: [
+        {
+          id: 'stale-id',
+          type: 'agent',
+          agent: 'claude',
+          workspacePath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test',
+          branchName: '',
+          displayName: 'test',
+          createdAt: staleTime,
+          lastActivity: staleTime,
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: null,
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 0, 'should not restore stale sessions');
-    assert.ok(!fs.existsSync(path.join(configDir, 'pending-sessions.json')), 'stale file should be deleted');
+    assert.ok(
+      !fs.existsSync(path.join(configDir, 'pending-sessions.json')),
+      'stale file should be deleted'
+    );
   });
 
   it('restoreFromDisk handles missing scrollback gracefully', async () => {
@@ -716,7 +813,11 @@ describe('session persistence', () => {
 
     // Delete scrollback file
     const scrollbackPath = path.join(configDir, 'scrollback', s.id + '.buf');
-    try { fs.unlinkSync(scrollbackPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(scrollbackPath);
+    } catch {
+      /* ignore */
+    }
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1, 'should still restore without scrollback');
@@ -735,24 +836,29 @@ describe('session persistence', () => {
     const pending = {
       version: 3,
       timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'tmux-test-id',
-        type: 'agent' as const,
-        agent: 'claude' as const,
-        workspacePath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'my-branch',
-        displayName: 'my-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: true,
-        tmuxSessionName: 'crc-my-session-tmux-tes',
-        customCommand: '/bin/cat', // Use /bin/cat to avoid spawning real claude binary in test
-      }],
+      sessions: [
+        {
+          id: 'tmux-test-id',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          workspacePath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test-repo',
+          branchName: 'my-branch',
+          displayName: 'my-session',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: true,
+          tmuxSessionName: 'crc-my-session-tmux-tes',
+          customCommand: '/bin/cat', // Use /bin/cat to avoid spawning real claude binary in test
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1);
@@ -760,7 +866,11 @@ describe('session persistence', () => {
     const session = sessions.get('tmux-test-id');
     assert.ok(session, 'restored session should exist');
     assert.strictEqual(session.mode, 'pty');
-    assert.strictEqual((session as PtySession).tmuxSessionName, 'crc-my-session-tmux-tes', 'tmuxSessionName should be preserved from serialized data');
+    assert.strictEqual(
+      (session as PtySession).tmuxSessionName,
+      'crc-my-session-tmux-tes',
+      'tmuxSessionName should be preserved from serialized data'
+    );
   });
 
   it('restored session remains in list after PTY exits (disconnected status)', async () => {
@@ -769,33 +879,38 @@ describe('session persistence', () => {
     const pending = {
       version: 3,
       timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'restore-exit-test',
-        type: 'agent' as const,
-        agent: 'claude' as const,
-        workspacePath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'my-branch',
-        displayName: 'restored-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/false',
-      }],
+      sessions: [
+        {
+          id: 'restore-exit-test',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          workspacePath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test-repo',
+          branchName: 'my-branch',
+          displayName: 'restored-session',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: '/bin/false',
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     await restoreFromDisk(configDir);
 
     // Wait for PTY to exit
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     // Session should still be in the list with disconnected status
     const list = sessions.list();
-    const found = list.find(s => s.id === 'restore-exit-test');
+    const found = list.find((s) => s.id === 'restore-exit-test');
     assert.ok(found, 'restored session should remain in list after PTY exit');
     assert.strictEqual(found.status, 'disconnected');
   });
@@ -863,13 +978,13 @@ describe('session persistence', () => {
     const list = sessions.list();
     assert.strictEqual(list.length, 3);
 
-    const restoredAgent = list.find(s => s.id === agentSession.id);
+    const restoredAgent = list.find((s) => s.id === agentSession.id);
     assert.ok(restoredAgent);
     assert.strictEqual(restoredAgent.type, 'agent');
     assert.strictEqual(restoredAgent.displayName, 'My Agent');
     assert.strictEqual(restoredAgent.status, 'active');
 
-    const restoredTerminal = list.find(s => s.id === terminal.id);
+    const restoredTerminal = list.find((s) => s.id === terminal.id);
     assert.ok(restoredTerminal);
     assert.strictEqual(restoredTerminal.type, 'terminal');
     assert.strictEqual(restoredTerminal.displayName, 'Terminal 1');
@@ -878,7 +993,10 @@ describe('session persistence', () => {
     const restoredTmux = sessions.get('tmux-roundtrip-id');
     assert.ok(restoredTmux);
     assert.strictEqual(restoredTmux.mode, 'pty');
-    assert.strictEqual((restoredTmux as PtySession).tmuxSessionName, 'crc-tmux-session-tmux-rou');
+    assert.strictEqual(
+      (restoredTmux as PtySession).tmuxSessionName,
+      'crc-tmux-session-tmux-rou'
+    );
     assert.strictEqual(restoredTmux.displayName, 'Tmux Session');
   });
 
@@ -903,7 +1021,9 @@ describe('session persistence', () => {
     sessions.kill(s.id);
 
     // Verify yolo is in the serialized JSON
-    const pending = JSON.parse(fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8'));
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
     assert.strictEqual(pending.version, 4);
     assert.strictEqual(pending.sessions[0].yolo, true);
 
@@ -914,10 +1034,12 @@ describe('session persistence', () => {
   });
 
   it('maps codex yolo to no-approval workspace-write args', () => {
-    assert.deepStrictEqual(
-      AGENT_YOLO_ARGS.codex,
-      ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'],
-    );
+    assert.deepStrictEqual(AGENT_YOLO_ARGS.codex, [
+      '--ask-for-approval',
+      'never',
+      '--sandbox',
+      'workspace-write',
+    ]);
   });
 
   it('serialize/restore preserves claudeArgs', async () => {
@@ -935,7 +1057,11 @@ describe('session persistence', () => {
 
     const session = sessions.get(s.id);
     assert.ok(session);
-    assert.deepStrictEqual((session as PtySession).claudeArgs, ['--model', 'opus', '--verbose']);
+    assert.deepStrictEqual((session as PtySession).claudeArgs, [
+      '--model',
+      'opus',
+      '--verbose',
+    ]);
 
     serializeAll(configDir);
     sessions.kill(s.id);
@@ -943,7 +1069,11 @@ describe('session persistence', () => {
     await restoreFromDisk(configDir);
     const restored = sessions.get(s.id);
     assert.ok(restored);
-    assert.deepStrictEqual((restored as PtySession).claudeArgs, ['--model', 'opus', '--verbose']);
+    assert.deepStrictEqual((restored as PtySession).claudeArgs, [
+      '--model',
+      'opus',
+      '--verbose',
+    ]);
   });
 
   it('serialize/restore preserves hookToken and hooksActive', async () => {
@@ -967,7 +1097,9 @@ describe('session persistence', () => {
     serializeAll(configDir);
 
     // Verify hookToken is in the serialized JSON
-    const pending = JSON.parse(fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8'));
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
     assert.strictEqual(pending.sessions[0].hookToken, 'abc123deadbeef');
     assert.strictEqual(pending.sessions[0].hooksActive, true);
 
@@ -1005,7 +1137,10 @@ describe('session persistence', () => {
     const restored = sessions.get(s.id);
     assert.ok(restored);
     assert.strictEqual(restored.needsBranchRename, true);
-    assert.strictEqual((restored as PtySession).branchRenamePrompt, 'Name this feature branch:');
+    assert.strictEqual(
+      (restored as PtySession).branchRenamePrompt,
+      'Name this feature branch:'
+    );
   });
 
   it('restoreFromDisk handles v1/v2 pending files (v2→v3 migration)', async () => {
@@ -1016,25 +1151,30 @@ describe('session persistence', () => {
     const pending = {
       version: 2,
       timestamp: v2Timestamp,
-      sessions: [{
-        id: 'v2-migration-test',
-        type: 'repo',
-        agent: 'claude',
-        root: '',
-        repoName: 'test-repo',
-        repoPath: '/tmp/my-repo',
-        worktreeName: '',
-        branchName: 'main',
-        displayName: 'v2-session',
-        createdAt: v2Timestamp,
-        lastActivity: v2Timestamp,
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/cat',
-        cwd: '/tmp/my-repo',
-      }],
+      sessions: [
+        {
+          id: 'v2-migration-test',
+          type: 'repo',
+          agent: 'claude',
+          root: '',
+          repoName: 'test-repo',
+          repoPath: '/tmp/my-repo',
+          worktreeName: '',
+          branchName: 'main',
+          displayName: 'v2-session',
+          createdAt: v2Timestamp,
+          lastActivity: v2Timestamp,
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: '/bin/cat',
+          cwd: '/tmp/my-repo',
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1);
@@ -1042,13 +1182,29 @@ describe('session persistence', () => {
     const session = sessions.get('v2-migration-test');
     assert.ok(session, 'restored session should exist');
     // type should be migrated from 'repo' to 'agent'
-    assert.strictEqual(session.type, 'agent', 'type should be migrated to agent');
+    assert.strictEqual(
+      session.type,
+      'agent',
+      'type should be migrated to agent'
+    );
     // cwd should equal the old repoPath
-    assert.strictEqual(session.cwd, '/tmp/my-repo', 'cwd should be set from old repoPath');
+    assert.strictEqual(
+      session.cwd,
+      '/tmp/my-repo',
+      'cwd should be set from old repoPath'
+    );
     // repoPath should be derived from cwd (no configured workspaces, so falls back to cwd)
-    assert.strictEqual(session.repoPath, '/tmp/my-repo', 'repoPath should be derived');
+    assert.strictEqual(
+      session.repoPath,
+      '/tmp/my-repo',
+      'repoPath should be derived'
+    );
     // worktreePath should be null since cwd === repoPath
-    assert.strictEqual(session.worktreePath, null, 'worktreePath should be null for main repo sessions');
+    assert.strictEqual(
+      session.worktreePath,
+      null,
+      'worktreePath should be null for main repo sessions'
+    );
   });
 
   it('restoreFromDisk handles v3 pending files (v3→v4 migration: workspacePath→repoPath)', async () => {
@@ -1058,24 +1214,29 @@ describe('session persistence', () => {
     const pending = {
       version: 3,
       timestamp: v3Timestamp,
-      sessions: [{
-        id: 'v3-migration-test',
-        type: 'agent' as const,
-        agent: 'claude' as const,
-        workspacePath: '/tmp/my-v3-repo',
-        worktreePath: null,
-        cwd: '/tmp/my-v3-repo',
-        repoName: 'v3-repo',
-        branchName: 'main',
-        displayName: 'v3-session',
-        createdAt: v3Timestamp,
-        lastActivity: v3Timestamp,
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/cat',
-      }],
+      sessions: [
+        {
+          id: 'v3-migration-test',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          workspacePath: '/tmp/my-v3-repo',
+          worktreePath: null,
+          cwd: '/tmp/my-v3-repo',
+          repoName: 'v3-repo',
+          branchName: 'main',
+          displayName: 'v3-session',
+          createdAt: v3Timestamp,
+          lastActivity: v3Timestamp,
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: '/bin/cat',
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1);
@@ -1083,8 +1244,16 @@ describe('session persistence', () => {
     const session = sessions.get('v3-migration-test');
     assert.ok(session, 'restored session should exist');
     // repoPath should be migrated from v3 workspacePath
-    assert.strictEqual(session.repoPath, '/tmp/my-v3-repo', 'repoPath should be set from v3 workspacePath');
-    assert.strictEqual(session.cwd, '/tmp/my-v3-repo', 'cwd should be preserved');
+    assert.strictEqual(
+      session.repoPath,
+      '/tmp/my-v3-repo',
+      'repoPath should be set from v3 workspacePath'
+    );
+    assert.strictEqual(
+      session.cwd,
+      '/tmp/my-v3-repo',
+      'cwd should be preserved'
+    );
     createdIds.push('v3-migration-test');
   });
 
@@ -1106,9 +1275,20 @@ describe('session persistence', () => {
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     assert.ok(fs.existsSync(pendingPath), 'pending-sessions.json should exist');
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    assert.strictEqual(pending.version, 4, 'serializeAll should write version 4');
-    assert.strictEqual(pending.sessions[0].repoPath, '/tmp', 'repoPath field should be present');
-    assert.ok(!('workspacePath' in pending.sessions[0]), 'workspacePath field should not be present in v4');
+    assert.strictEqual(
+      pending.version,
+      4,
+      'serializeAll should write version 4'
+    );
+    assert.strictEqual(
+      pending.sessions[0].repoPath,
+      '/tmp',
+      'repoPath field should be present'
+    );
+    assert.ok(
+      !('workspacePath' in pending.sessions[0]),
+      'workspacePath field should not be present in v4'
+    );
   });
 
   it('serializeAll captures session state before kill', () => {
@@ -1149,26 +1329,31 @@ describe('session persistence', () => {
     const pending = {
       version: 4,
       timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'framework-continue-claude',
-        type: 'agent' as const,
-        agent: 'claude',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'main',
-        displayName: 'claude-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/cat', // use /bin/cat so session doesn't error out
-        yolo: false,
-        claudeArgs: [],
-      }],
+      sessions: [
+        {
+          id: 'framework-continue-claude',
+          type: 'agent' as const,
+          agent: 'claude',
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test-repo',
+          branchName: 'main',
+          displayName: 'claude-session',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: '/bin/cat', // use /bin/cat so session doesn't error out
+          yolo: false,
+          claudeArgs: [],
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1);
@@ -1186,26 +1371,31 @@ describe('session persistence', () => {
     const pending = {
       version: 4,
       timestamp: new Date().toISOString(),
-      sessions: [{
-        id: 'framework-continue-codex',
-        type: 'agent' as const,
-        agent: 'codex',
-        repoPath: '/tmp',
-        worktreePath: null,
-        cwd: '/tmp',
-        repoName: 'test-repo',
-        branchName: 'main',
-        displayName: 'codex-session',
-        createdAt: new Date().toISOString(),
-        lastActivity: new Date().toISOString(),
-        useTmux: false,
-        tmuxSessionName: '',
-        customCommand: '/bin/cat',
-        yolo: false,
-        claudeArgs: [],
-      }],
+      sessions: [
+        {
+          id: 'framework-continue-codex',
+          type: 'agent' as const,
+          agent: 'codex',
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test-repo',
+          branchName: 'main',
+          displayName: 'codex-session',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: false,
+          tmuxSessionName: '',
+          customCommand: '/bin/cat',
+          yolo: false,
+          claudeArgs: [],
+        },
+      ],
     };
-    fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending));
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
 
     const restored = await restoreFromDisk(configDir);
     assert.strictEqual(restored, 1);

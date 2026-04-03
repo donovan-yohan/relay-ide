@@ -67,12 +67,19 @@ export interface ActionPromptContext {
 }
 
 /** Build PrStateInput from a PullRequest, mapping ciStatus/reviewDecision to the state machine's numeric fields. */
-export function buildPrStateInput(pr: { isDraft: boolean; state: string; ciStatus: string | null; mergeable: string | null; reviewDecision: string | null; role: 'author' | 'reviewer' }): PrStateInput {
+export function buildPrStateInput(pr: {
+  isDraft: boolean;
+  state: string;
+  ciStatus: string | null;
+  mergeable: string | null;
+  reviewDecision: string | null;
+  role: 'author' | 'reviewer';
+}): PrStateInput {
   return {
     commitsAhead: 1,
-    prState: pr.isDraft ? 'DRAFT' : pr.state as PrStateInput['prState'],
+    prState: pr.isDraft ? 'DRAFT' : (pr.state as PrStateInput['prState']),
     ciPassing: pr.ciStatus === 'SUCCESS' ? 1 : 0,
-    ciFailing: (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR') ? 1 : 0,
+    ciFailing: pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR' ? 1 : 0,
     ciPending: pr.ciStatus === 'PENDING' ? 1 : 0,
     ciTotal: pr.ciStatus ? 1 : 0,
     mergeable: (pr.mergeable as PrStateInput['mergeable']) ?? null,
@@ -83,7 +90,15 @@ export function buildPrStateInput(pr: { isDraft: boolean; state: string; ciStatu
 }
 
 export function derivePrAction(input: PrStateInput): PrAction {
-  const { commitsAhead, prState, ciFailing, ciPending, ciTotal, mergeable, unresolvedCommentCount } = input;
+  const {
+    commitsAhead,
+    prState,
+    ciFailing,
+    ciPending,
+    ciTotal,
+    mergeable,
+    unresolvedCommentCount,
+  } = input;
   const role = input.role ?? 'author';
 
   // No commits ahead of base — nothing to do
@@ -101,7 +116,11 @@ export function derivePrAction(input: PrStateInput): PrAction {
     if (role === 'reviewer') {
       return { type: 'none', color: 'none', label: '' };
     }
-    return { type: 'ready-for-review', color: 'muted', label: 'Ready for Review' };
+    return {
+      type: 'ready-for-review',
+      color: 'muted',
+      label: 'Ready for Review',
+    };
   }
 
   // PR is merged — offer cleanup
@@ -135,7 +154,11 @@ export function derivePrAction(input: PrStateInput): PrAction {
 
     // CI checks are still running (some pending, none failing)
     if (ciPending > 0) {
-      return { type: 'checks-running', color: 'warning', label: 'Checks Running...' };
+      return {
+        type: 'checks-running',
+        color: 'warning',
+        label: 'Checks Running...',
+      };
     }
 
     // Unresolved review comments
@@ -161,7 +184,10 @@ export function derivePrAction(input: PrStateInput): PrAction {
   return { type: 'none', color: 'none', label: '' };
 }
 
-export function deriveSecondaryAction(primary: PrAction, input: PrStateInput): PrAction | null {
+export function deriveSecondaryAction(
+  primary: PrAction,
+  input: PrStateInput
+): PrAction | null {
   const role = input.role ?? 'author';
 
   // Author primary = resolve-comments → secondary = review-pr (muted)
@@ -170,7 +196,11 @@ export function deriveSecondaryAction(primary: PrAction, input: PrStateInput): P
   }
 
   // Reviewer primary = review-pr + unresolved comments → secondary = resolve-comments
-  if (primary.type === 'review-pr' && role === 'reviewer' && input.unresolvedCommentCount > 0) {
+  if (
+    primary.type === 'review-pr' &&
+    role === 'reviewer' &&
+    input.unresolvedCommentCount > 0
+  ) {
     return {
       type: 'resolve-comments',
       color: 'accent',
@@ -181,7 +211,10 @@ export function deriveSecondaryAction(primary: PrAction, input: PrStateInput): P
   return null;
 }
 
-export function getActionPrompt(action: PrAction, ctx: ActionPromptContext): string | null {
+export function getActionPrompt(
+  action: PrAction,
+  ctx: ActionPromptContext
+): string | null {
   switch (action.type) {
     case 'create-pr':
       return `Create a pull request for the branch "${ctx.branchName}". Write a clear title and description based on the changes.`;
@@ -208,14 +241,22 @@ export function getActionPrompt(action: PrAction, ctx: ActionPromptContext): str
 
 export function getStatusCssVar(color: StatusColor): string {
   switch (color) {
-    case 'accent': return 'var(--accent)';
-    case 'success': return 'var(--status-success)';
-    case 'error': return 'var(--status-error)';
-    case 'warning': return 'var(--status-warning)';
-    case 'merged': return 'var(--status-merged)';
-    case 'muted': return 'var(--border)';
-    case 'info': return 'var(--status-info)';
-    case 'none': return 'transparent';
+    case 'accent':
+      return 'var(--accent)';
+    case 'success':
+      return 'var(--status-success)';
+    case 'error':
+      return 'var(--status-error)';
+    case 'warning':
+      return 'var(--status-warning)';
+    case 'merged':
+      return 'var(--status-merged)';
+    case 'muted':
+      return 'var(--border)';
+    case 'info':
+      return 'var(--status-info)';
+    case 'none':
+      return 'transparent';
   }
 }
 

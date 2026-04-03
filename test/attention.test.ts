@@ -1,9 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeAttentionScore, sortByAttention } from '../frontend/src/lib/state/attention.js';
+import {
+  computeAttentionScore,
+  sortByAttention,
+} from '../frontend/src/lib/state/attention.js';
 import type { SidebarItem } from '../frontend/src/lib/types.js';
 
-function makeScoreItem(overrides: Partial<SidebarItem> & { displayState: SidebarItem['displayState'] }): SidebarItem {
+function makeScoreItem(
+  overrides: Partial<SidebarItem> & {
+    displayState: SidebarItem['displayState'];
+  }
+): SidebarItem {
   return {
     id: 'test',
     kind: 'worktree',
@@ -20,73 +27,109 @@ function makeScoreItem(overrides: Partial<SidebarItem> & { displayState: Sidebar
 
 describe('computeAttentionScore', () => {
   it('permission scores highest', () => {
-    const permission = computeAttentionScore(makeScoreItem({ displayState: 'permission' }));
-    const running = computeAttentionScore(makeScoreItem({ displayState: 'running' }));
+    const permission = computeAttentionScore(
+      makeScoreItem({ displayState: 'permission' })
+    );
+    const running = computeAttentionScore(
+      makeScoreItem({ displayState: 'running' })
+    );
     assert.ok(permission > running);
   });
 
   it('needs-answer scores above error', () => {
-    const needsAnswer = computeAttentionScore(makeScoreItem({ displayState: 'needs-answer' }));
-    const error = computeAttentionScore(makeScoreItem({ displayState: 'error' }));
+    const needsAnswer = computeAttentionScore(
+      makeScoreItem({ displayState: 'needs-answer' })
+    );
+    const error = computeAttentionScore(
+      makeScoreItem({ displayState: 'error' })
+    );
     assert.ok(needsAnswer > error);
   });
 
   it('error scores above unseen-idle', () => {
-    const error = computeAttentionScore(makeScoreItem({ displayState: 'error' }));
-    const unseen = computeAttentionScore(makeScoreItem({ displayState: 'unseen-idle' }));
+    const error = computeAttentionScore(
+      makeScoreItem({ displayState: 'error' })
+    );
+    const unseen = computeAttentionScore(
+      makeScoreItem({ displayState: 'unseen-idle' })
+    );
     assert.ok(error > unseen);
   });
 
   it('unseen-idle scores above running', () => {
-    const unseen = computeAttentionScore(makeScoreItem({ displayState: 'unseen-idle' }));
-    const running = computeAttentionScore(makeScoreItem({ displayState: 'running' }));
+    const unseen = computeAttentionScore(
+      makeScoreItem({ displayState: 'unseen-idle' })
+    );
+    const running = computeAttentionScore(
+      makeScoreItem({ displayState: 'running' })
+    );
     assert.ok(unseen > running);
   });
 
   it('inactive scores lowest', () => {
-    const inactive = computeAttentionScore(makeScoreItem({ displayState: 'inactive' }));
-    const seenIdle = computeAttentionScore(makeScoreItem({ displayState: 'seen-idle' }));
+    const inactive = computeAttentionScore(
+      makeScoreItem({ displayState: 'inactive' })
+    );
+    const seenIdle = computeAttentionScore(
+      makeScoreItem({ displayState: 'seen-idle' })
+    );
     assert.ok(inactive < seenIdle);
   });
 
   it('unread bonus stacks with state score', () => {
-    const unread = computeAttentionScore(makeScoreItem({ displayState: 'unseen-idle', isUnread: true }));
-    const read = computeAttentionScore(makeScoreItem({ displayState: 'unseen-idle', isUnread: false }));
+    const unread = computeAttentionScore(
+      makeScoreItem({ displayState: 'unseen-idle', isUnread: true })
+    );
+    const read = computeAttentionScore(
+      makeScoreItem({ displayState: 'unseen-idle', isUnread: false })
+    );
     assert.ok(unread > read);
   });
 
   it('changes-requested PR adds urgency', () => {
-    const withPr = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-      prStatus: 'changes-requested',
-    }));
-    const withoutPr = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-    }));
+    const withPr = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+        prStatus: 'changes-requested',
+      })
+    );
+    const withoutPr = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+      })
+    );
     assert.ok(withPr > withoutPr);
     assert.equal(withPr - withoutPr, 200);
   });
 
   it('review-requested PR adds urgency', () => {
-    const withPr = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-      prStatus: 'review-requested',
-    }));
-    const withoutPr = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-    }));
+    const withPr = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+        prStatus: 'review-requested',
+      })
+    );
+    const withoutPr = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+      })
+    );
     assert.equal(withPr - withoutPr, 150);
   });
 
   it('recency contributes to score', () => {
-    const recent = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-      lastActivity: new Date().toISOString(),
-    }));
-    const old = computeAttentionScore(makeScoreItem({
-      displayState: 'running',
-      lastActivity: new Date(Date.now() - 120 * 60_000).toISOString(),
-    }));
+    const recent = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+        lastActivity: new Date().toISOString(),
+      })
+    );
+    const old = computeAttentionScore(
+      makeScoreItem({
+        displayState: 'running',
+        lastActivity: new Date(Date.now() - 120 * 60_000).toISOString(),
+      })
+    );
     assert.ok(recent > old);
   });
 });

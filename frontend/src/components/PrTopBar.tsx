@@ -16,6 +16,7 @@ import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
 import BranchSwitcher from './BranchSwitcher.js';
 import TargetBranchSwitcher from './TargetBranchSwitcher.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import './PrTopBar.css';
 
 export interface PrTopBarProps {
@@ -143,24 +144,6 @@ function useRename(workspacePath: string, currentBranch: string, agentRunning: b
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-interface RenameInputProps {
-  value: string;
-  onChange: (v: string) => void;
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-  onBlur: () => void;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-}
-
-function RenameInput({ value, onChange, onKeyDown, onBlur, inputRef }: RenameInputProps) {
-  return (
-    <div className="rename-input-wrap">
-      <span className="branch-icon">⑂</span>
-      <input ref={inputRef} type="text" className="rename-input" value={value}
-        onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKeyDown} onBlur={onBlur} />
-    </div>
-  );
-}
-
 const COPY_SVG_CHECK = (
   <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
     <path d="M3 8l3 3 7-7" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -195,9 +178,11 @@ function BranchSection({ workspacePath, currentBranch, agentRunning, pr, rename,
   return (
     <div className="bar-left">
       {rename.renaming ? (
-        <RenameInput value={rename.renameValue} onChange={rename.setRenameValue}
-          onKeyDown={rename.handleRenameKeydown} onBlur={rename.cancelRename}
-          inputRef={rename.renameInputRef} />
+        <div className="rename-input-wrap">
+          <span className="branch-icon">⑂</span>
+          <input ref={rename.renameInputRef} type="text" className="rename-input" value={rename.renameValue}
+            onChange={(e) => rename.setRenameValue(e.currentTarget.value)} onKeyDown={rename.handleRenameKeydown} onBlur={rename.cancelRename} />
+        </div>
       ) : (
         <div className="branch-with-actions">
           <BranchSwitcher repoPath={workspacePath} currentWorktreePath={workspacePath}
@@ -229,26 +214,6 @@ function BranchSection({ workspacePath, currentBranch, agentRunning, pr, rename,
   );
 }
 
-function PrMiddleSection({ pr }: { pr: PrInfo }) {
-  return (
-    <>
-      <div className="bar-middle" aria-label="pull request">
-        <a className="pr-link" href={pr.url} target="_blank" rel="noopener noreferrer"
-          data-track="pr-top-bar.open-pr" aria-label={`PR #${pr.number}: ${pr.title}`}>
-          PR #{pr.number}
-          <svg className="pr-ext-icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M1 9L9 1M9 1H4M9 1V6" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </a>
-      </div>
-      <span className="diff-stats">
-        <span className="diff-add">+{pr.additions}</span>
-        <span className="diff-del">-{pr.deletions}</span>
-      </span>
-    </>
-  );
-}
-
 interface PrActionsProps {
   isRefreshing: boolean;
   prLoading: boolean;
@@ -259,6 +224,9 @@ interface PrActionsProps {
 }
 
 function PrActions({ isRefreshing, prLoading, prAction, secondaryAction, onRefresh, onAction }: PrActionsProps) {
+  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
+  const toggleRightSidebarCollapsed = useUiStore((s) => s.toggleRightSidebarCollapsed);
+
   return (
     <div className="bar-right">
       <button className={['refresh-btn', isRefreshing && 'refreshing'].filter(Boolean).join(' ')}
@@ -284,6 +252,14 @@ function PrActions({ isRefreshing, prLoading, prAction, secondaryAction, onRefre
           ) : null}
         </>
       )}
+      <button className="sidebar-toggle-btn" onClick={toggleRightSidebarCollapsed}
+        aria-label={rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'}
+        title={rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'} type="button">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="1" y="2" width="14" height="12" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="square" />
+          <line x1="10" y1="2" x2="10" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -353,7 +329,23 @@ export function PrTopBar({ workspacePath, branchName, sessionId, agentRunning = 
       <BranchSection workspacePath={workspacePath} currentBranch={currentBranch}
         agentRunning={agentRunning} pr={pr} rename={rename} copyFeedback={copyFeedback}
         onBranchSwitch={setCurrentBranch} onCopy={() => void handleCopy()} onBaseChanged={refresh} />
-      {pr ? <PrMiddleSection pr={pr} /> : null}
+      {pr ? (
+        <>
+          <div className="bar-middle" aria-label="pull request">
+            <a className="pr-link" href={pr.url} target="_blank" rel="noopener noreferrer"
+              data-track="pr-top-bar.open-pr" aria-label={`PR #${pr.number}: ${pr.title}`}>
+              PR #{pr.number}
+              <svg className="pr-ext-icon" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M1 9L9 1M9 1H4M9 1V6" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </a>
+          </div>
+          <span className="diff-stats">
+            <span className="diff-add">+{pr.additions}</span>
+            <span className="diff-del">-{pr.deletions}</span>
+          </span>
+        </>
+      ) : null}
       <PrActions isRefreshing={isRefreshing} prLoading={prLoading}
         prAction={prAction} secondaryAction={secondaryAction}
         onRefresh={refresh} onAction={handleActionClick} />

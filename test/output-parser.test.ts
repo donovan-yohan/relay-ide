@@ -44,7 +44,10 @@ describe('ClaudeOutputParser', () => {
   it('detects permission prompt', () => {
     const parser = new ClaudeOutputParser();
     parser.onData('>\n', []);
-    const result = parser.onData('Allow tool access to /usr/bin? Allow / Deny', []);
+    const result = parser.onData(
+      'Allow tool access to /usr/bin? Allow / Deny',
+      []
+    );
     assert.deepEqual(result, { state: 'permission-prompt' });
   });
 
@@ -152,7 +155,10 @@ describe('OpencodeOutputParser', () => {
 
   it('detects permission prompt from ! permission requested line', () => {
     const parser = new OpencodeOutputParser();
-    const result = parser.onData('! permission requested: bash (*); allow this tool?', []);
+    const result = parser.onData(
+      '! permission requested: bash (*); allow this tool?',
+      []
+    );
     assert.deepEqual(result, { state: 'permission-prompt' });
   });
 
@@ -228,7 +234,10 @@ describe('OpencodeOutputParser', () => {
     const parser = new OpencodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     // Even if there is tool-like content, the permission pattern wins
-    const result = parser.onData('! permission requested: bash (*); $ npm run test', []);
+    const result = parser.onData(
+      '! permission requested: bash (*); $ npm run test',
+      []
+    );
     assert.deepEqual(result, { state: 'permission-prompt' });
   });
 

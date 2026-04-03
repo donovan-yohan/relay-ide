@@ -5,7 +5,9 @@ import { enrichBranches, type GhRouterDeps } from '../server/gh-routes.js';
 
 type ExecFn = GhRouterDeps['execFileAsync'];
 
-function makeExec(responses: Record<string, { stdout: string; stderr?: string }>): ExecFn {
+function makeExec(
+  responses: Record<string, { stdout: string; stderr?: string }>
+): ExecFn {
   return async (file: string, args: string[], _opts: { cwd: string }) => {
     const key = `${file} ${args.slice(0, 3).join(' ')}`;
     for (const [pattern, response] of Object.entries(responses)) {
@@ -21,10 +23,18 @@ describe('enrichBranches', () => {
   it('returns PR + staleness per branch keyed by repoPath::branchName', async () => {
     const prList = JSON.stringify([
       {
-        number: 42, title: 'Add login', url: 'https://github.com/o/r/pull/42',
-        state: 'OPEN', headRefName: 'feat/login', baseRefName: 'main',
-        isDraft: false, reviewDecision: 'APPROVED', additions: 10, deletions: 2,
-        mergeable: 'MERGEABLE', updatedAt: new Date().toISOString(),
+        number: 42,
+        title: 'Add login',
+        url: 'https://github.com/o/r/pull/42',
+        state: 'OPEN',
+        headRefName: 'feat/login',
+        baseRefName: 'main',
+        isDraft: false,
+        reviewDecision: 'APPROVED',
+        additions: 10,
+        deletions: 2,
+        mergeable: 'MERGEABLE',
+        updatedAt: new Date().toISOString(),
       },
     ]);
 
@@ -33,7 +43,7 @@ describe('enrichBranches', () => {
       makeExec({
         'gh pr list': { stdout: prList },
         'git rev-list': { stdout: '3\n' },
-      }),
+      })
     );
 
     const key = '/repos/my-repo::feat/login';
@@ -45,14 +55,26 @@ describe('enrichBranches', () => {
   it('handles partial failure (one repo fails, others succeed)', async () => {
     const prList = JSON.stringify([
       {
-        number: 1, title: 'Fix', url: 'https://github.com/o/r/pull/1',
-        state: 'OPEN', headRefName: 'fix/bug', baseRefName: 'main',
-        isDraft: false, reviewDecision: null, additions: 1, deletions: 1,
-        mergeable: 'MERGEABLE', updatedAt: new Date().toISOString(),
+        number: 1,
+        title: 'Fix',
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        headRefName: 'fix/bug',
+        baseRefName: 'main',
+        isDraft: false,
+        reviewDecision: null,
+        additions: 1,
+        deletions: 1,
+        mergeable: 'MERGEABLE',
+        updatedAt: new Date().toISOString(),
       },
     ]);
 
-    const exec: ExecFn = async (file: string, args: string[], opts: { cwd: string }) => {
+    const exec: ExecFn = async (
+      file: string,
+      args: string[],
+      opts: { cwd: string }
+    ) => {
       if (opts.cwd === '/repos/bad-repo' && file === 'gh') {
         throw new Error('gh: not logged in');
       }
@@ -70,7 +92,7 @@ describe('enrichBranches', () => {
         { repoPath: '/repos/good-repo', branchName: 'fix/bug' },
         { repoPath: '/repos/bad-repo', branchName: 'feat/x' },
       ],
-      exec,
+      exec
     );
 
     // Good repo should have data
@@ -83,10 +105,10 @@ describe('enrichBranches', () => {
   });
 
   it('returns empty results for empty input', async () => {
-    const results = await enrichBranches(
-      [],
-      async () => ({ stdout: '', stderr: '' }),
-    );
+    const results = await enrichBranches([], async () => ({
+      stdout: '',
+      stderr: '',
+    }));
     assert.deepEqual(results, {});
   });
 
@@ -105,7 +127,7 @@ describe('enrichBranches', () => {
 
     const results = await enrichBranches(
       [{ repoPath: '/repos/my-repo', branchName: 'feat/x' }],
-      exec,
+      exec
     );
 
     const entry = results['/repos/my-repo::feat/x']!;
@@ -118,18 +140,40 @@ describe('enrichBranches', () => {
 
     const prList = JSON.stringify([
       {
-        number: 1, title: 'A', url: 'u', state: 'OPEN', headRefName: 'a',
-        baseRefName: 'main', isDraft: false, reviewDecision: null,
-        additions: 0, deletions: 0, mergeable: 'MERGEABLE', updatedAt: new Date().toISOString(),
+        number: 1,
+        title: 'A',
+        url: 'u',
+        state: 'OPEN',
+        headRefName: 'a',
+        baseRefName: 'main',
+        isDraft: false,
+        reviewDecision: null,
+        additions: 0,
+        deletions: 0,
+        mergeable: 'MERGEABLE',
+        updatedAt: new Date().toISOString(),
       },
       {
-        number: 2, title: 'B', url: 'u', state: 'OPEN', headRefName: 'b',
-        baseRefName: 'main', isDraft: false, reviewDecision: null,
-        additions: 0, deletions: 0, mergeable: 'MERGEABLE', updatedAt: new Date().toISOString(),
+        number: 2,
+        title: 'B',
+        url: 'u',
+        state: 'OPEN',
+        headRefName: 'b',
+        baseRefName: 'main',
+        isDraft: false,
+        reviewDecision: null,
+        additions: 0,
+        deletions: 0,
+        mergeable: 'MERGEABLE',
+        updatedAt: new Date().toISOString(),
       },
     ]);
 
-    const exec: ExecFn = async (file: string, args: string[], opts: { cwd: string }) => {
+    const exec: ExecFn = async (
+      file: string,
+      args: string[],
+      opts: { cwd: string }
+    ) => {
       callLog.push(`${file} ${args[0]} ${args[1] ?? ''} [${opts.cwd}]`);
       if (file === 'gh' && args[0] === 'pr' && args[1] === 'list') {
         return { stdout: prList, stderr: '' };
@@ -145,11 +189,15 @@ describe('enrichBranches', () => {
         { repoPath: '/repos/repo1', branchName: 'a' },
         { repoPath: '/repos/repo1', branchName: 'b' },
       ],
-      exec,
+      exec
     );
 
     // Should have exactly 1 gh pr list call for repo1 (not 2)
-    const ghCalls = callLog.filter(c => c.startsWith('gh pr list'));
-    assert.equal(ghCalls.length, 1, `expected 1 gh pr list call, got ${ghCalls.length}`);
+    const ghCalls = callLog.filter((c) => c.startsWith('gh pr list'));
+    assert.equal(
+      ghCalls.length,
+      1,
+      `expected 1 gh pr list call, got ${ghCalls.length}`
+    );
   });
 });

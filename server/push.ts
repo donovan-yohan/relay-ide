@@ -20,14 +20,14 @@ const MAX_PAYLOAD_SIZE = 4 * 1024; // 4KB
 export function ensureVapidKeys(
   config: Config,
   configPath: string,
-  save: (path: string, config: Config) => void,
+  save: (path: string, config: Config) => void
 ): void {
   if (config.vapidPublicKey && config.vapidPrivateKey) {
     vapidPublicKey = config.vapidPublicKey;
     webpush.setVapidDetails(
       'mailto:noreply@claude-remote-cli.local',
       config.vapidPublicKey,
-      config.vapidPrivateKey,
+      config.vapidPrivateKey
     );
     return;
   }
@@ -42,7 +42,7 @@ export function ensureVapidKeys(
     webpush.setVapidDetails(
       'mailto:noreply@claude-remote-cli.local',
       keys.publicKey,
-      keys.privateKey,
+      keys.privateKey
     );
   } catch {
     // VAPID key generation failed — push will be unavailable
@@ -56,7 +56,7 @@ export function getVapidPublicKey(): string | null {
 
 export function subscribe(
   subscription: PushSubscriptionData,
-  sessionIds: string[],
+  sessionIds: string[]
 ): void {
   // Replace the full session list for this endpoint — the client sends
   // the complete set of sessions it wants notifications for.
@@ -65,7 +65,6 @@ export function subscribe(
     sessionIds: new Set(sessionIds),
   });
 }
-
 
 export function unsubscribe(endpoint: string): void {
   subscriptions.delete(endpoint);
@@ -82,8 +81,12 @@ function truncatePayload(payload: string): string {
   // Try to parse, truncate text fields, and re-serialize
   try {
     const obj = JSON.parse(payload) as Record<string, unknown>;
-    if (typeof obj.enrichedMessage === 'string' && obj.enrichedMessage.length > 100) {
-      obj.enrichedMessage = (obj.enrichedMessage as string).slice(0, 100) + '...';
+    if (
+      typeof obj.enrichedMessage === 'string' &&
+      obj.enrichedMessage.length > 100
+    ) {
+      obj.enrichedMessage =
+        (obj.enrichedMessage as string).slice(0, 100) + '...';
     }
     const truncated = JSON.stringify(obj);
     if (truncated.length <= MAX_PAYLOAD_SIZE) return truncated;
@@ -95,7 +98,7 @@ function truncatePayload(payload: string): string {
 
 export function notifySessionAttention(
   sessionId: string,
-  session: { displayName: string; type: string },
+  session: { displayName: string; type: string }
 ): void {
   if (!vapidPublicKey) return;
 
@@ -111,10 +114,12 @@ export function notifySessionAttention(
   for (const [endpoint, entry] of subscriptions) {
     if (!entry.sessionIds.has(sessionId)) continue;
 
-    webpush.sendNotification(entry.subscription, payload).catch((err: { statusCode?: number }) => {
-      if (err.statusCode === 410 || err.statusCode === 404) {
-        subscriptions.delete(endpoint);
-      }
-    });
+    webpush
+      .sendNotification(entry.subscription, payload)
+      .catch((err: { statusCode?: number }) => {
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          subscriptions.delete(endpoint);
+        }
+      });
   }
 }

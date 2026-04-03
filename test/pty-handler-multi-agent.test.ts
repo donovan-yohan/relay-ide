@@ -12,7 +12,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForScrollbackContains(sessionId: string, needle: string, timeoutMs = 4000): Promise<string> {
+async function waitForScrollbackContains(
+  sessionId: string,
+  needle: string,
+  timeoutMs = 4000
+): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const session = sessions.get(sessionId) as PtySession | undefined;
@@ -75,8 +79,14 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     });
     createdIds.push(result.id);
 
-    const output = await waitForScrollbackContains(result.id, 'PLUGIN_EXISTS=true');
-    assert.match(output, new RegExp(`CRC_RELAY_URL=http://127\\.0\\.0\\.1:${port}`));
+    const output = await waitForScrollbackContains(
+      result.id,
+      'PLUGIN_EXISTS=true'
+    );
+    assert.match(
+      output,
+      new RegExp(`CRC_RELAY_URL=http://127\\.0\\.0\\.1:${port}`)
+    );
     assert.match(output, new RegExp(`CRC_SESSION_ID=${result.id}`));
     assert.match(output, new RegExp(`CRC_RELAY_TOKEN=${hookToken}`));
   });
@@ -107,7 +117,10 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     });
     createdIds.push(result.id);
 
-    const output = await waitForScrollbackContains(result.id, 'HAS_RELAY_SH=true');
+    const output = await waitForScrollbackContains(
+      result.id,
+      'HAS_RELAY_SH=true'
+    );
     assert.match(output, /CODEX_CONFIG_DIR=\/.*codex-hooks-/);
     assert.match(output, /HAS_HOOKS_JSON=true/);
   });
@@ -156,7 +169,10 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     });
     createdIds.push(result.id);
 
-    const output = await waitForScrollbackContains(result.id, 'OPENCODE_CONFIG_CONTENT=');
+    const output = await waitForScrollbackContains(
+      result.id,
+      'OPENCODE_CONFIG_CONTENT='
+    );
     assert.match(output, /OPENCODE_CONFIG_CONTENT=.*"permission"/);
   });
 });

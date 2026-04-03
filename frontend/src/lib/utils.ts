@@ -1,4 +1,4 @@
-import { getUi } from './state/ui.svelte.js';
+import { useUiStore } from './stores/ui.js';
 import { scaledTerminalDimensions } from './terminal-zoom.js';
 
 export function rootShortName(path: string): string {
@@ -19,7 +19,20 @@ export function formatRelativeTime(isoString: string): string {
   if (diffDay === 1) return 'yesterday';
   if (diffDay < 7) return diffDay + 'd ago';
   const d = new Date(isoString);
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
   return months[d.getMonth()] + ' ' + d.getDate();
 }
 
@@ -51,21 +64,29 @@ export const isMac =
   !/iPhone|iPad|iPod/.test(navigator.platform || '');
 
 export function estimateTerminalDimensions(): { cols: number; rows: number } {
-  const fontSize = isMobileDevice ? 12 : getUi().terminalFontSize;
-  return scaledTerminalDimensions(window.innerWidth, window.innerHeight, fontSize);
+  const fontSize = isMobileDevice ? 12 : useUiStore.getState().terminalFontSize;
+  return scaledTerminalDimensions(
+    window.innerWidth,
+    window.innerHeight,
+    fontSize
+  );
 }
 
 export function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '---';
+  if (value === null || value === undefined || Number.isNaN(value))
+    return '---';
   const abs = Math.abs(value);
   if (abs < 1000) return String(Math.round(value));
-  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
-  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs < 1_000_000)
+    return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  if (abs < 1_000_000_000)
+    return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
   return `${(value / 1_000_000_000).toFixed(1)}B`;
 }
 
 export function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '---';
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds))
+    return '---';
   const s = Math.round(seconds);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);

@@ -21,7 +21,7 @@ function zoomPercentage(fontSize: number): number {
 function scaledTerminalDimensions(
   windowWidth: number,
   windowHeight: number,
-  fontSize: number,
+  fontSize: number
 ): { cols: number; rows: number } {
   const ratio = fontSize / DEFAULT;
   const charWidth = 8 * ratio;
@@ -118,7 +118,10 @@ describe('terminal zoom', () => {
       // At 2x font size, char width doubles, so cols should approximately halve
       // (not exactly due to the (width - 60) offset and Math.floor)
       const ratio = at14.cols / at28.cols;
-      assert.ok(ratio > 1.8 && ratio < 2.2, `col ratio should be ~2, got ${ratio}`);
+      assert.ok(
+        ratio > 1.8 && ratio < 2.2,
+        `col ratio should be ~2, got ${ratio}`
+      );
     });
   });
 });

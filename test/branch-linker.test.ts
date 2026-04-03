@@ -15,7 +15,9 @@ import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { BranchLinksResponse } from '../server/types.js';
 
 // Loose mock type — cast to BranchLinkerDeps['execAsync'] at call sites
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 
 let tmpDir: string;
 let configPath: string;
@@ -50,7 +52,7 @@ function makeMockExec(opts: {
 
 function startServer(
   execAsyncFn: MockExec,
-  getActiveBranchNames?: BranchLinkerDeps['getActiveBranchNames'],
+  getActiveBranchNames?: BranchLinkerDeps['getActiveBranchNames']
 ): Promise<void> {
   return new Promise((resolve) => {
     const app = express();
@@ -148,11 +150,11 @@ test('extracts GH issue IDs from gh-N branches', async () => {
   assert.ok(links.length >= 1, 'Should have at least one GH-42 link');
   assert.ok(
     links.every((l) => l.branchName === 'gh-42-login-fix'),
-    'All links should reference the correct branch',
+    'All links should reference the correct branch'
   );
   assert.ok(
     links.every((l) => l.repoPath === WORKSPACE_PATH_A),
-    'All links should reference the correct repo',
+    'All links should reference the correct repo'
   );
 });
 
@@ -176,7 +178,11 @@ test('same ticket in two repos yields array of 2 BranchLinks', async () => {
   const data = await getLinks();
   assert.ok('PROJ-99' in data, 'Should have PROJ-99 key');
   const links = data['PROJ-99']!;
-  assert.equal(links.length, 2, 'Should have 2 BranchLinks for the same ticket across 2 repos');
+  assert.equal(
+    links.length,
+    2,
+    'Should have 2 BranchLinks for the same ticket across 2 repos'
+  );
 
   const repoPaths = links.map((l) => l.repoPath).sort();
   assert.deepEqual(repoPaths, [WORKSPACE_PATH_A, WORKSPACE_PATH_B].sort());
@@ -192,14 +198,23 @@ test('ignores branches without ticket IDs', async () => {
 
   const exec = makeMockExec({
     branchesByPath: {
-      [WORKSPACE_PATH_A]: ['main', 'develop', 'chore/cleanup', 'feature/new-ui'],
+      [WORKSPACE_PATH_A]: [
+        'main',
+        'develop',
+        'chore/cleanup',
+        'feature/new-ui',
+      ],
     },
   });
 
   await startServer(exec);
 
   const data = await getLinks();
-  assert.equal(Object.keys(data).length, 0, 'Plain branches should produce no ticket links');
+  assert.equal(
+    Object.keys(data).length,
+    0,
+    'Plain branches should produce no ticket links'
+  );
 });
 
 test('hasActiveSession true when branch is in active set', async () => {
@@ -229,11 +244,19 @@ test('hasActiveSession true when branch is in active set', async () => {
   const activeLinks = data['ACTIVE-1'];
   assert.ok(activeLinks, 'Should have ACTIVE-1 ticket');
   assert.equal(activeLinks.length, 1);
-  assert.equal(activeLinks[0]!.hasActiveSession, true, 'Active branch should have hasActiveSession true');
+  assert.equal(
+    activeLinks[0]!.hasActiveSession,
+    true,
+    'Active branch should have hasActiveSession true'
+  );
 
   const inactiveLinks = data['INACTIVE-2'];
   assert.ok(inactiveLinks, 'Should have INACTIVE-2 ticket');
-  assert.equal(inactiveLinks[0]!.hasActiveSession, false, 'Inactive branch should have hasActiveSession false');
+  assert.equal(
+    inactiveLinks[0]!.hasActiveSession,
+    false,
+    'Inactive branch should have hasActiveSession false'
+  );
 });
 
 test('invalidateBranchLinkerCache forces fresh scan', async () => {
@@ -276,7 +299,11 @@ test('invalidateBranchLinkerCache forces fresh scan', async () => {
   // Third request — cache is cleared, should fetch fresh
   const third = await getLinks();
   assert.ok('SCAN-1' in third);
-  assert.equal(gitCallCount, 2, 'git should be called again after cache invalidation');
+  assert.equal(
+    gitCallCount,
+    2,
+    'git should be called again after cache invalidation'
+  );
 });
 
 test('returns empty object when no workspaces', async () => {
@@ -293,5 +320,9 @@ test('returns empty object when no workspaces', async () => {
   await startServer(exec);
 
   const data = await getLinks();
-  assert.equal(Object.keys(data).length, 0, 'Should return empty object when no workspaces configured');
+  assert.equal(
+    Object.keys(data).length,
+    0,
+    'Should return empty object when no workspaces configured'
+  );
 });

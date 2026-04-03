@@ -16,12 +16,18 @@ import {
 } from '../server/telemetry.js';
 import type { Session } from '../server/types.js';
 
-const noopAuth = (_req: express.Request, _res: express.Response, next: express.NextFunction): void => next();
+const noopAuth = (
+  _req: express.Request,
+  _res: express.Response,
+  next: express.NextFunction
+): void => next();
 
 let tmpDir: string;
 
 before(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-remote-cli-telemetry-test-'));
+  tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'claude-remote-cli-telemetry-test-')
+  );
 });
 
 afterEach(() => {
@@ -42,7 +48,7 @@ function makeSession(id: string): Session {
 function makeDeps(
   sessionIds: string[],
   events: Array<{ type: string; data?: Record<string, unknown> }>,
-  configDir = tmpDir,
+  configDir = tmpDir
 ): TelemetryDeps {
   return {
     configDir,
@@ -54,7 +60,11 @@ function makeDeps(
   };
 }
 
-function writeStatusLineFile(sessionId: string, payload: unknown, configDir = tmpDir): string {
+function writeStatusLineFile(
+  sessionId: string,
+  payload: unknown,
+  configDir = tmpDir
+): string {
   const telemetryDir = path.join(configDir, 'telemetry');
   fs.mkdirSync(telemetryDir, { recursive: true });
   const filePath = path.join(telemetryDir, `${sessionId}.json`);
@@ -62,7 +72,10 @@ function writeStatusLineFile(sessionId: string, payload: unknown, configDir = tm
   return filePath;
 }
 
-function writePendingTelemetryFile(configDir: string, payload: unknown): string {
+function writePendingTelemetryFile(
+  configDir: string,
+  payload: unknown
+): string {
   const filePath = path.join(configDir, 'pending-telemetry.json');
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
   return filePath;
@@ -123,8 +136,14 @@ test('parses session telemetry from the statusLine file', () => {
     updatedAt: account?.updatedAt,
   });
 
-  assert.equal(events.filter((event) => event.type === 'session-telemetry').length, 1);
-  assert.equal(events.filter((event) => event.type === 'account-telemetry').length, 1);
+  assert.equal(
+    events.filter((event) => event.type === 'session-telemetry').length,
+    1
+  );
+  assert.equal(
+    events.filter((event) => event.type === 'account-telemetry').length,
+    1
+  );
 });
 
 test('missing statusLine file leaves telemetry undefined', () => {
@@ -227,7 +246,11 @@ test('restores pending telemetry from disk on startup', () => {
     updatedAt: '2026-03-31T18:00:00Z',
   });
   assert.deepEqual(getAccountTelemetry(), restored.account);
-  assert.equal(fs.existsSync(pendingPath), false, 'pending telemetry should be cleared after restore');
+  assert.equal(
+    fs.existsSync(pendingPath),
+    false,
+    'pending telemetry should be cleared after restore'
+  );
   assert.equal(events.length, 0);
 });
 
@@ -338,5 +361,8 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
   });
 
   assert.equal(calls, 1);
-  assert.equal(events.filter((event) => event.type === 'session-telemetry').length, 1);
+  assert.equal(
+    events.filter((event) => event.type === 'session-telemetry').length,
+    1
+  );
 });

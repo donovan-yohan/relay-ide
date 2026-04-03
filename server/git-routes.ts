@@ -16,16 +16,24 @@ const execFileAsync = promisify(execFile);
 type ExecFileAsyncLike = (
   file: string,
   args: string[],
-  options: { cwd: string; timeout?: number },
+  options: { cwd: string; timeout?: number }
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface GitRouterDeps {
-  getConfig: () => { rootDirs?: string[] | undefined; repos?: string[] | undefined };
+  getConfig: () => {
+    rootDirs?: string[] | undefined;
+    repos?: string[] | undefined;
+  };
   configPath: string;
   execFileAsync: ExecFileAsyncLike;
-  readdirSync: (dir: string) => Array<{ name: string; isDirectory: () => boolean }>;
+  readdirSync: (
+    dir: string
+  ) => Array<{ name: string; isDirectory: () => boolean }>;
   statSync: (path: string) => { isDirectory: () => boolean };
-  readMeta: (configPath: string, worktreePath: string) => WorktreeMetadata | null;
+  readMeta: (
+    configPath: string,
+    worktreePath: string
+  ) => WorktreeMetadata | null;
 }
 
 interface RepoEntry {
@@ -47,7 +55,7 @@ interface WorktreeResult {
 
 export async function scanWorktrees(
   deps: GitRouterDeps,
-  repoParam?: string,
+  repoParam?: string
 ): Promise<WorktreeResult[]> {
   const config = deps.getConfig();
   const roots = config.rootDirs || [];
@@ -55,8 +63,14 @@ export async function scanWorktrees(
 
   let reposToScan: RepoEntry[];
   if (repoParam) {
-    const root = roots.find(r => repoParam.startsWith(r)) || '';
-    reposToScan = [{ path: repoParam, name: repoParam.split('/').filter(Boolean).pop() || '', root }];
+    const root = roots.find((r) => repoParam.startsWith(r)) || '';
+    reposToScan = [
+      {
+        path: repoParam,
+        name: repoParam.split('/').filter(Boolean).pop() || '',
+        root,
+      },
+    ];
   } else {
     reposToScan = [];
     for (const rootDir of roots) {
@@ -72,7 +86,11 @@ export async function scanWorktrees(
         const dotGit = path.join(fullPath, '.git');
         try {
           if (deps.statSync(dotGit).isDirectory()) {
-            reposToScan.push({ name: entry.name, path: fullPath, root: rootDir });
+            reposToScan.push({
+              name: entry.name,
+              path: fullPath,
+              root: rootDir,
+            });
           }
         } catch {
           // .git doesn't exist — not a repo
@@ -82,17 +100,25 @@ export async function scanWorktrees(
 
     // Also include directly-configured repos (may not be under any rootDir)
     const configRepos = config.repos ?? [];
-    const scannedPaths = new Set(reposToScan.map(r => r.path));
+    const scannedPaths = new Set(reposToScan.map((r) => r.path));
     for (const wp of configRepos) {
       if (scannedPaths.has(wp)) continue;
-      const root = roots.find(r => wp.startsWith(r)) || '';
-      reposToScan.push({ path: wp, name: wp.split('/').filter(Boolean).pop() || '', root });
+      const root = roots.find((r) => wp.startsWith(r)) || '';
+      reposToScan.push({
+        path: wp,
+        name: wp.split('/').filter(Boolean).pop() || '',
+        root,
+      });
     }
   }
 
   for (const repo of reposToScan) {
     try {
-      const { stdout } = await deps.execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repo.path });
+      const { stdout } = await deps.execFileAsync(
+        'git',
+        ['worktree', 'list', '--porcelain'],
+        { cwd: repo.path }
+      );
       const parsed = parseWorktreeListPorcelain(stdout, repo.path);
       for (const wt of parsed) {
         const dirName = wt.path.split('/').pop() || '';
@@ -139,7 +165,7 @@ export async function scanWorktrees(
 
   // Deduplicate by path
   const seen = new Set<string>();
-  return worktrees.filter(wt => {
+  return worktrees.filter((wt) => {
     if (seen.has(wt.path)) return false;
     seen.add(wt.path);
     return true;
@@ -148,7 +174,10 @@ export async function scanWorktrees(
 
 export interface CreateGitRouterDeps {
   configPath: string;
-  getConfig: () => { rootDirs?: string[] | undefined; repos?: string[] | undefined };
+  getConfig: () => {
+    rootDirs?: string[] | undefined;
+    repos?: string[] | undefined;
+  };
   getSessions: () => Array<{ id: string; worktreePath: string | null }>;
 }
 
@@ -161,19 +190,22 @@ export function createGitRouter(deps: CreateGitRouterDeps): Router {
     execFileAsync: execFileAsync as ExecFileAsyncLike,
     readdirSync: (dir: string) => fs.readdirSync(dir, { withFileTypes: true }),
     statSync: (p: string) => fs.statSync(p),
-    readMeta: (configPath: string, worktreePath: string) => readMeta(configPath, worktreePath),
+    readMeta: (configPath: string, worktreePath: string) =>
+      readMeta(configPath, worktreePath),
   };
 
   // GET /git/worktrees — pure git worktree list, no enrichment
   router.get('/worktrees', async (req: Request, res: Response) => {
-    const repoParam = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+    const repoParam =
+      typeof req.query.repo === 'string' ? req.query.repo : undefined;
     const items = await scanWorktrees(routerDeps, repoParam);
     res.json(items);
   });
 
   // GET /git/branches — branch list with local-only data
   router.get('/branches', async (req: Request, res: Response) => {
-    const repoPath = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+    const repoPath =
+      typeof req.query.repo === 'string' ? req.query.repo : undefined;
     const refresh = req.query.refresh === '1';
     if (!repoPath) {
       res.status(400).json({ error: 'repo query parameter is required' });
@@ -181,7 +213,9 @@ export function createGitRouter(deps: CreateGitRouterDeps): Router {
     }
 
     const sessionList = deps.getSessions();
-    res.json(await listBranchesEnriched(repoPath, { refresh, sessions: sessionList }));
+    res.json(
+      await listBranchesEnriched(repoPath, { refresh, sessions: sessionList })
+    );
   });
 
   return router;

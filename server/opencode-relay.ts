@@ -45,7 +45,8 @@ export default async () => {
  * @returns The path to the written plugin file.
  */
 export function installOpencodeRelayPlugin(pluginDir?: string): string {
-  const dir = pluginDir ?? path.join(os.homedir(), '.config', 'opencode', 'plugins');
+  const dir =
+    pluginDir ?? path.join(os.homedir(), '.config', 'opencode', 'plugins');
   fs.mkdirSync(dir, { recursive: true });
   const pluginPath = path.join(dir, 'crc-relay.ts');
   fs.writeFileSync(pluginPath, RELAY_PLUGIN_SOURCE, 'utf-8');

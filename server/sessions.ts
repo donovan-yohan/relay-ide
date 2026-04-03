@@ -3,17 +3,37 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AgentType, AgentState, BackendDisplayState, ContinuePolicy, Session, SessionSummary, SessionMeta, SessionType } from './types.js';
+import type {
+  AgentType,
+  AgentState,
+  BackendDisplayState,
+  ContinuePolicy,
+  Session,
+  SessionSummary,
+  SessionMeta,
+  SessionType,
+} from './types.js';
 export type { BackendDisplayState };
-import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS, resolveFramework } from './types.js';
+import {
+  AGENT_COMMANDS,
+  AGENT_CONTINUE_ARGS,
+  AGENT_YOLO_ARGS,
+  resolveFramework,
+} from './types.js';
 import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
 import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
-import { trackEvent, recordSessionEvent, upsertSessionRollup } from './analytics.js';
+import {
+  trackEvent,
+  recordSessionEvent,
+  upsertSessionRollup,
+} from './analytics.js';
+import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger('sessions');
 
 interface SerializedPtySession {
   id: string;
@@ -42,7 +62,7 @@ interface SerializedPtySession {
 }
 
 interface PendingSessionsFile {
-  version: number;  // now 4
+  version: number; // now 4
   timestamp: string;
   sessions: SerializedPtySession[];
 }
@@ -71,7 +91,11 @@ let defaultPort: number | undefined;
 let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
 
-function configure(opts: { port?: number; forceOutputParser?: boolean; configDir?: string }): void {
+function configure(opts: {
+  port?: number;
+  forceOutputParser?: boolean;
+  configDir?: string;
+}): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
@@ -87,31 +111,53 @@ function onStateChange(cb: StateChangeCallback): void {
   stateChangeCallbacks.push(cb);
 }
 
-type SessionCreateCallback = (sessionId: string, cwd: string, branchName?: string) => void;
+type SessionCreateCallback = (
+  sessionId: string,
+  cwd: string,
+  branchName?: string
+) => void;
 const sessionCreateCallbacks: SessionCreateCallback[] = [];
 
 function onSessionCreate(cb: SessionCreateCallback): void {
   sessionCreateCallbacks.push(cb);
 }
 
-function fireSessionCreate(sessionId: string, cwd: string, branchName?: string): void {
+function fireSessionCreate(
+  sessionId: string,
+  cwd: string,
+  branchName?: string
+): void {
   for (const cb of sessionCreateCallbacks) {
-    try { cb(sessionId, cwd, branchName); }
-    catch (err) { console.error('[sessions] sessionCreate callback error:', err); }
+    try {
+      cb(sessionId, cwd, branchName);
+    } catch (err) {
+      logger.error('sessionCreate callback error:', err);
+    }
   }
 }
 
-type SessionEndCallback = (sessionId: string, cwd: string, branchName?: string) => void;
+type SessionEndCallback = (
+  sessionId: string,
+  cwd: string,
+  branchName?: string
+) => void;
 const sessionEndCallbacks: SessionEndCallback[] = [];
 
 function onSessionEnd(cb: SessionEndCallback): void {
   sessionEndCallbacks.push(cb);
 }
 
-function fireSessionEnd(sessionId: string, cwd: string, branchName?: string): void {
+function fireSessionEnd(
+  sessionId: string,
+  cwd: string,
+  branchName?: string
+): void {
   for (const cb of sessionEndCallbacks) {
-    try { cb(sessionId, cwd, branchName); }
-    catch (err) { console.error('[sessions] sessionEnd callback error:', err); }
+    try {
+      cb(sessionId, cwd, branchName);
+    } catch (err) {
+      logger.error('sessionEnd callback error:', err);
+    }
   }
 }
 
@@ -119,7 +165,10 @@ export function fireStateChange(sessionId: string, state: AgentState): void {
   for (const cb of [...stateChangeCallbacks]) cb(sessionId, state);
 }
 
-export function computeBackendState(session: { agentState: AgentState; idle: boolean }): BackendDisplayState {
+export function computeBackendState(session: {
+  agentState: AgentState;
+  idle: boolean;
+}): BackendDisplayState {
   // permission-prompt takes highest priority
   if (session.agentState === 'permission-prompt') return 'permission';
   // error
@@ -129,12 +178,20 @@ export function computeBackendState(session: { agentState: AgentState; idle: boo
   // initializing
   if (session.agentState === 'initializing') return 'initializing';
   // idle or waiting-for-input = idle (explicitly idle-like agent states)
-  if (session.agentState === 'idle' || session.agentState === 'waiting-for-input') return 'idle';
+  if (
+    session.agentState === 'idle' ||
+    session.agentState === 'waiting-for-input'
+  )
+    return 'idle';
   // For sessions without a recognized agentState (terminal/custom), fall back to idle flag
   return session.idle ? 'idle' : 'running';
 }
 
-type BackendStateChangeCallback = (sessionId: string, state: BackendDisplayState, permissionType?: 'approval' | 'question') => void;
+type BackendStateChangeCallback = (
+  sessionId: string,
+  state: BackendDisplayState,
+  permissionType?: 'approval' | 'question'
+) => void;
 const backendStateChangeCallbacks: BackendStateChangeCallback[] = [];
 
 export function onBackendStateChange(cb: BackendStateChangeCallback): void {
@@ -146,20 +203,45 @@ export function fireBackendStateIfChanged(session: Session): void {
 
   let permissionType: 'approval' | 'question' | undefined;
   if (newState === 'permission') {
-    permissionType = session.currentActivity?.tool === 'AskUserQuestion' ? 'question' : 'approval';
+    permissionType =
+      session.currentActivity?.tool === 'AskUserQuestion'
+        ? 'question'
+        : 'approval';
   }
 
-  if (session._lastEmittedBackendState === newState && session._lastEmittedPermissionType === permissionType) return;
+  if (
+    session._lastEmittedBackendState === newState &&
+    session._lastEmittedPermissionType === permissionType
+  )
+    return;
   session._lastEmittedBackendState = newState;
   session._lastEmittedPermissionType = permissionType;
 
   for (const cb of [...backendStateChangeCallbacks]) {
-    try { cb(session.id, newState, permissionType); }
-    catch (err) { console.error('[sessions] backendStateChange callback error:', err); }
+    try {
+      cb(session.id, newState, permissionType);
+    } catch (err) {
+      logger.error('backendStateChange callback error:', err);
+    }
   }
 }
 
-function create({ id: providedId, needsBranchRename, branchRenamePrompt, initialPrompt, workspaceId, additionalDirs, agent = 'claude', cols = 80, rows = 24, args = [], port, forceOutputParser, frameworks, ...rest }: CreateParams): CreateResult {
+function create({
+  id: providedId,
+  needsBranchRename,
+  branchRenamePrompt,
+  initialPrompt,
+  workspaceId,
+  additionalDirs,
+  agent = 'claude',
+  cols = 80,
+  rows = 24,
+  args = [],
+  port,
+  forceOutputParser,
+  frameworks,
+  ...rest
+}: CreateParams): CreateResult {
   const id = providedId || crypto.randomBytes(8).toString('hex');
 
   const ptyParams: CreatePtyParams = {
@@ -175,7 +257,13 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
     frameworks,
   };
 
-  const { session: ptySession, result } = createPtySession(ptyParams, sessions, stateChangeCallbacks, sessionEndCallbacks, fireBackendStateIfChanged);
+  const { session: ptySession, result } = createPtySession(
+    ptyParams,
+    sessions,
+    stateChangeCallbacks,
+    sessionEndCallbacks,
+    fireBackendStateIfChanged
+  );
   trackEvent({
     category: 'session',
     action: 'created',
@@ -220,13 +308,20 @@ function create({ id: providedId, needsBranchRename, branchRenamePrompt, initial
   });
   if (initialPrompt) {
     const promptHandler = (changedId: string, state: AgentState) => {
-      if (changedId === id && state === 'waiting-for-input' && ptySession.initialPrompt) {
+      if (
+        changedId === id &&
+        state === 'waiting-for-input' &&
+        ptySession.initialPrompt
+      ) {
         const prompt = ptySession.initialPrompt;
         ptySession.initialPrompt = undefined; // one-shot
         // Small delay to ensure the agent's input handler is ready
         setTimeout(() => {
-          try { ptySession.pty.write(prompt + '\n'); }
-          catch (err) { console.error('[sessions] Failed to inject initial prompt:', err); }
+          try {
+            ptySession.pty.write(prompt + '\n');
+          } catch (err) {
+            logger.error('Failed to inject initial prompt:', err);
+          }
         }, 500);
         // Remove this handler after firing
         const idx = stateChangeCallbacks.indexOf(promptHandler);
@@ -244,35 +339,42 @@ function get(id: string): Session | undefined {
 
 function list(): SessionSummary[] {
   return Array.from(sessions.values())
-    .map((s): SessionSummary => ({
-      id: s.id,
-      type: s.type,
-      agent: s.agent,
-      mode: s.mode,
-      repoPath: s.repoPath,
-      worktreePath: s.worktreePath,
-      cwd: s.cwd,
-      repoName: s.repoName,
-      branchName: s.branchName,
-      displayName: s.displayName,
-      createdAt: s.createdAt,
-      lastActivity: s.lastActivity,
-      idle: s.idle,
-      customCommand: s.customCommand,
-      useTmux: s.useTmux,
-      tmuxSessionName: s.tmuxSessionName,
-      status: s.status,
-      needsBranchRename: !!s.needsBranchRename,
-      agentState: s.agentState,
-      currentActivity: s.currentActivity,
-      ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-      ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
-      ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
-    }))
+    .map(
+      (s): SessionSummary => ({
+        id: s.id,
+        type: s.type,
+        agent: s.agent,
+        mode: s.mode,
+        repoPath: s.repoPath,
+        worktreePath: s.worktreePath,
+        cwd: s.cwd,
+        repoName: s.repoName,
+        branchName: s.branchName,
+        displayName: s.displayName,
+        createdAt: s.createdAt,
+        lastActivity: s.lastActivity,
+        idle: s.idle,
+        customCommand: s.customCommand,
+        useTmux: s.useTmux,
+        tmuxSessionName: s.tmuxSessionName,
+        status: s.status,
+        needsBranchRename: !!s.needsBranchRename,
+        agentState: s.agentState,
+        currentActivity: s.currentActivity,
+        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+        ...(s.additionalDirs?.length
+          ? { additionalDirs: s.additionalDirs }
+          : {}),
+        ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
+      })
+    )
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
 
-function updateDisplayName(id: string, displayName: string): { id: string; displayName: string } {
+function updateDisplayName(
+  id: string,
+  displayName: string
+): { id: string; displayName: string } {
   const session = sessions.get(id);
   if (!session) throw new Error('Session not found: ' + id);
   session.displayName = displayName;
@@ -292,7 +394,9 @@ function kill(id: string): void {
   if (session.tmuxSessionName) {
     execFile('tmux', ['kill-session', '-t', session.tmuxSessionName], () => {});
   }
-  const durationS = Math.round((Date.now() - new Date(session.createdAt).getTime()) / 1000);
+  const durationS = Math.round(
+    (Date.now() - new Date(session.createdAt).getTime()) / 1000
+  );
   trackEvent({
     category: 'session',
     action: 'ended',
@@ -318,7 +422,11 @@ function kill(id: string): void {
 function killAllTmuxSessions(): void {
   for (const session of sessions.values()) {
     if (session.tmuxSessionName) {
-      execFile('tmux', ['kill-session', '-t', session.tmuxSessionName], () => {});
+      execFile(
+        'tmux',
+        ['kill-session', '-t', session.tmuxSessionName],
+        () => {}
+      );
     }
   }
 }
@@ -378,10 +486,16 @@ function serializeAll(configDir: string): void {
       hookToken: session.hookToken,
       hooksActive: session.hooksActive,
       continuePolicy: session.continuePolicy,
-      ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
-      ...(session.branchRenamePrompt ? { branchRenamePrompt: session.branchRenamePrompt } : {}),
+      ...(session.needsBranchRename
+        ? { needsBranchRename: true as const }
+        : {}),
+      ...(session.branchRenamePrompt
+        ? { branchRenamePrompt: session.branchRenamePrompt }
+        : {}),
       ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
-      ...(session.additionalDirs?.length ? { additionalDirs: session.additionalDirs } : {}),
+      ...(session.additionalDirs?.length
+        ? { additionalDirs: session.additionalDirs }
+        : {}),
     });
   }
 
@@ -391,16 +505,26 @@ function serializeAll(configDir: string): void {
     sessions: serializedPty,
   };
 
-  fs.writeFileSync(path.join(configDir, 'pending-sessions.json'), JSON.stringify(pending, null, 2), 'utf-8');
+  fs.writeFileSync(
+    path.join(configDir, 'pending-sessions.json'),
+    JSON.stringify(pending, null, 2),
+    'utf-8'
+  );
 }
 
-async function restoreFromDisk(configDir: string, workspaces?: string[], frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>): Promise<number> {
+async function restoreFromDisk(
+  configDir: string,
+  workspaces?: string[],
+  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+): Promise<number> {
   const pendingPath = path.join(configDir, 'pending-sessions.json');
   if (!fs.existsSync(pendingPath)) return 0;
 
   let pending: PendingSessionsFile;
   try {
-    pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8')) as PendingSessionsFile;
+    pending = JSON.parse(
+      fs.readFileSync(pendingPath, 'utf-8')
+    ) as PendingSessionsFile;
   } catch {
     fs.unlinkSync(pendingPath);
     return 0;
@@ -415,9 +539,15 @@ async function restoreFromDisk(configDir: string, workspaces?: string[], framewo
   // v2 → v3 migration
   if (pending.version <= 2) {
     for (const s of pending.sessions) {
-      const legacy = s as SerializedPtySession & { legacyCwd?: string; root?: string; worktreeName?: string };
+      const legacy = s as SerializedPtySession & {
+        legacyCwd?: string;
+        root?: string;
+        worktreeName?: string;
+      };
       // In v2 format, the field was called "repoPath" and stored the CWD
-      const v2Cwd: string | undefined = (s as unknown as Record<string, unknown>)['repoPath'] as string | undefined;
+      const v2Cwd: string | undefined = (
+        s as unknown as Record<string, unknown>
+      )['repoPath'] as string | undefined;
       if (!('cwd' in s) && v2Cwd) {
         (s as any).cwd = v2Cwd;
       }
@@ -425,9 +555,13 @@ async function restoreFromDisk(configDir: string, workspaces?: string[], framewo
         // Derive repoPath from the configured workspaces (it's different from the old cwd meaning)
         const configuredWorkspaces = workspaces ?? [];
         const cwd = (s as any).cwd ?? v2Cwd ?? '';
-        const matchedWorkspace = configuredWorkspaces.find(w => cwd === w || cwd.startsWith(w + '/'));
+        const matchedWorkspace = configuredWorkspaces.find(
+          (w) => cwd === w || cwd.startsWith(w + '/')
+        );
         if (!matchedWorkspace) {
-          console.warn(`[sessions] v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`);
+          logger.warn(
+            `v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`
+          );
         }
         (s as any).repoPath = matchedWorkspace ?? cwd;
       }
@@ -500,7 +634,10 @@ async function restoreFromDisk(configDir: string, workspaces?: string[], framewo
         // Upgrade hooks-settings.json to include statusLine if missing (migration for pre-telemetry sessions)
         if (s.hooksActive && defaultConfigDir) {
           const upgraded = upgradeHooksSettings(s.id, defaultConfigDir);
-          if (upgraded) console.log(`[sessions] Upgraded hooks settings for session ${s.id} (added statusLine relay)`);
+          if (upgraded)
+            logger.info(
+              `Upgraded hooks settings for session ${s.id} (added statusLine relay)`
+            );
         }
       } else {
         // Tmux session died — fall back to agent with continue args + preserved flags
@@ -508,7 +645,10 @@ async function restoreFromDisk(configDir: string, workspaces?: string[], framewo
         let continueArgsList: string[];
         let yoloArgsList: string[];
         try {
-          const framework = resolveFramework(frameworks ? { frameworks } : {}, s.agent);
+          const framework = resolveFramework(
+            frameworks ? { frameworks } : {},
+            s.agent
+          );
           continueArgsList = framework.continueArgs;
           yoloArgsList = framework.yoloArgs;
         } catch {
@@ -564,32 +704,50 @@ async function restoreFromDisk(configDir: string, workspaces?: string[], framewo
         hooksActive: s.hooksActive,
         continuePolicy: s.continuePolicy ?? 'never',
         ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
-        ...(s.branchRenamePrompt ? { branchRenamePrompt: s.branchRenamePrompt } : {}),
+        ...(s.branchRenamePrompt
+          ? { branchRenamePrompt: s.branchRenamePrompt }
+          : {}),
         ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-        ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+        ...(s.additionalDirs?.length
+          ? { additionalDirs: s.additionalDirs }
+          : {}),
       };
       if (command) createParams.command = command;
       if (initialScrollback) createParams.initialScrollback = initialScrollback;
       create(createParams);
       restored++;
     } catch (err) {
-      console.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
+      logger.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
     }
 
     // Clean up scrollback file
-    try { fs.unlinkSync(scrollbackPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(scrollbackPath);
+    } catch {
+      /* ignore */
+    }
   }
 
   // Clean up
-  try { fs.unlinkSync(pendingPath); } catch { /* ignore */ }
-  try { fs.rmdirSync(path.join(configDir, 'scrollback')); } catch { /* ignore — may not be empty */ }
+  try {
+    fs.unlinkSync(pendingPath);
+  } catch {
+    /* ignore */
+  }
+  try {
+    fs.rmdirSync(path.join(configDir, 'scrollback'));
+  } catch {
+    /* ignore — may not be empty */
+  }
 
   // Sync counters to avoid duplicate display names after restore
   for (const s of sessions.values()) {
     const agentMatch = s.displayName?.match(/^Agent (\d+)$/);
-    if (agentMatch) agentCounter = Math.max(agentCounter, parseInt(agentMatch[1]!, 10));
+    if (agentMatch)
+      agentCounter = Math.max(agentCounter, parseInt(agentMatch[1]!, 10));
     const termMatch = s.displayName?.match(/^Terminal (\d+)$/);
-    if (termMatch) terminalCounter = Math.max(terminalCounter, parseInt(termMatch[1]!, 10));
+    if (termMatch)
+      terminalCounter = Math.max(terminalCounter, parseInt(termMatch[1]!, 10));
   }
 
   return restored;
@@ -604,7 +762,9 @@ function activeTmuxSessionNames(): Set<string> {
   return names;
 }
 
-async function fetchMetaForSession(session: SessionSummary): Promise<SessionMeta> {
+async function fetchMetaForSession(
+  session: SessionSummary
+): Promise<SessionMeta> {
   const repoPath = session.cwd;
   const branch = session.branchName;
 
@@ -620,7 +780,9 @@ async function fetchMetaForSession(session: SessionSummary): Promise<SessionMeta
         additions = pr.additions;
         deletions = pr.deletions;
       }
-    } catch { /* gh CLI unavailable */ }
+    } catch {
+      /* gh CLI unavailable */
+    }
   }
 
   // Fallback to working tree diff if no PR data
@@ -630,16 +792,24 @@ async function fetchMetaForSession(session: SessionSummary): Promise<SessionMeta
     deletions = diff.deletions;
   }
 
-  return { prNumber, additions, deletions, fetchedAt: new Date().toISOString() };
+  return {
+    prNumber,
+    additions,
+    deletions,
+    fetchedAt: new Date().toISOString(),
+  };
 }
 
-async function getSessionMeta(id: string, refresh = false): Promise<SessionMeta | null> {
+async function getSessionMeta(
+  id: string,
+  refresh = false
+): Promise<SessionMeta | null> {
   if (!refresh && metaCache.has(id)) return metaCache.get(id)!;
 
   const session = sessions.get(id);
   if (!session) return metaCache.get(id) ?? null;
 
-  const summary = list().find(s => s.id === id);
+  const summary = list().find((s) => s.id === id);
   if (!summary) return null;
 
   const meta = await fetchMetaForSession(summary);
@@ -664,8 +834,32 @@ async function populateMetaCache(): Promise<void> {
         const meta = await fetchMetaForSession(s);
         metaCache.set(s.id, meta);
       }
-    }),
+    })
   );
 }
 
-export { configure, create, get, list, kill, killAllTmuxSessions, resize, updateDisplayName, write, onStateChange, onSessionCreate, onSessionEnd, nextTerminalName, nextAgentName, serializeAll, restoreFromDisk, activeTmuxSessionNames, getSessionMeta, getAllSessionMeta, populateMetaCache, AGENT_COMMANDS, AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS };
+export {
+  configure,
+  create,
+  get,
+  list,
+  kill,
+  killAllTmuxSessions,
+  resize,
+  updateDisplayName,
+  write,
+  onStateChange,
+  onSessionCreate,
+  onSessionEnd,
+  nextTerminalName,
+  nextAgentName,
+  serializeAll,
+  restoreFromDisk,
+  activeTmuxSessionNames,
+  getSessionMeta,
+  getAllSessionMeta,
+  populateMetaCache,
+  AGENT_COMMANDS,
+  AGENT_CONTINUE_ARGS,
+  AGENT_YOLO_ARGS,
+};

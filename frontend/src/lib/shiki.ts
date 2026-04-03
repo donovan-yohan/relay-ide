@@ -1,7 +1,14 @@
-import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki';
+import {
+  createHighlighter,
+  type Highlighter,
+  type BundledLanguage,
+} from 'shiki';
 import type { ThemedToken } from 'shiki';
+import { createLogger } from './logger.js';
 
 export type { ThemedToken };
+
+const logger = createLogger('shiki');
 
 // Custom TUI syntax highlighting theme. Background is transparent to inherit the terminal surface.
 // Token colors complement the DESIGN.md palette but are not formally defined there.
@@ -13,18 +20,39 @@ const tuiTheme = {
     'editor.foreground': '#e0e0e0',
   },
   tokenColors: [
-    { scope: ['keyword', 'storage.type', 'storage.modifier'], settings: { foreground: '#c792ea' } },
-    { scope: ['entity.name.function', 'support.function'], settings: { foreground: '#82aaff' } },
+    {
+      scope: ['keyword', 'storage.type', 'storage.modifier'],
+      settings: { foreground: '#c792ea' },
+    },
+    {
+      scope: ['entity.name.function', 'support.function'],
+      settings: { foreground: '#82aaff' },
+    },
     { scope: ['string', 'string.quoted'], settings: { foreground: '#c3e88d' } },
-    { scope: ['entity.name.type', 'support.type'], settings: { foreground: '#ffcb6b' } },
-    { scope: ['comment', 'punctuation.definition.comment'], settings: { foreground: '#888888' } },
+    {
+      scope: ['entity.name.type', 'support.type'],
+      settings: { foreground: '#ffcb6b' },
+    },
+    {
+      scope: ['comment', 'punctuation.definition.comment'],
+      settings: { foreground: '#888888' },
+    },
     { scope: ['constant.numeric'], settings: { foreground: '#f78c6c' } },
-    { scope: ['variable', 'variable.other'], settings: { foreground: '#e0e0e0' } },
+    {
+      scope: ['variable', 'variable.other'],
+      settings: { foreground: '#e0e0e0' },
+    },
     { scope: ['punctuation'], settings: { foreground: '#888888' } },
   ],
 };
 
-const PRELOAD_LANGS: BundledLanguage[] = ['typescript', 'javascript', 'json', 'css', 'svelte'];
+const PRELOAD_LANGS: BundledLanguage[] = [
+  'typescript',
+  'javascript',
+  'json',
+  'css',
+  'svelte',
+];
 
 let highlighterPromise: Promise<Highlighter> | null = null;
 
@@ -65,7 +93,10 @@ export function detectLanguage(filePath: string): string {
   return map[ext] ?? 'javascript';
 }
 
-export async function tokenizeCode(code: string, lang: string): Promise<ThemedToken[][]> {
+export async function tokenizeCode(
+  code: string,
+  lang: string
+): Promise<ThemedToken[][]> {
   const highlighter = await getHighlighter();
 
   const loadedLangs = highlighter.getLoadedLanguages();
@@ -74,7 +105,7 @@ export async function tokenizeCode(code: string, lang: string): Promise<ThemedTo
     try {
       await highlighter.loadLanguage(resolvedLang);
     } catch (err: unknown) {
-      console.warn(`[shiki] Failed to load "${resolvedLang}", falling back to javascript:`, err);
+      logger.warn(`Failed to load "${resolvedLang}", falling back to javascript`, err);
       resolvedLang = 'javascript';
     }
   }

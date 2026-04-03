@@ -1,0 +1,50 @@
+name: gstack
+
+# Trigger contract: how intake signals "ready to build"
+# Checks for APPROVED design docs in ~/.gstack/projects/
+# Can also be invoked explicitly: belayer submit --spec <path>
+intake:
+  - name: design-doc
+    type: trigger
+    check: .belayer/scripts/check-ready.sh
+
+nodes:
+  # Implementation phase: self-resolving loop
+  # implement ↔ review is the build loop. Gates are implementation primitives.
+  - name: implement
+    type: agent
+    vendor: claude
+    prompt: 'Implement the design specification at %{INPUT}'
+    input: { type: file, key: design_doc }
+    output: { type: commit }
+    on_pass: review
+    on_fail: stop
+
+  - name: review
+    type: gate
+    vendor: codex
+    prompt: '$review'
+    input: { type: commit }
+    output: { type: gate_result }
+    dimensions:
+      - { name: code_quality, weight: 0.35 }
+      - { name: scope_compliance, weight: 0.30 }
+      - { name: production_readiness, weight: 0.35 }
+    thresholds: { pass: 7.0, retry: 4.0 }
+    on_pass: ship
+    on_retry: implement
+    on_fail: stop
+    max_retries: 2
+
+  # Output phase: shipping
+  - name: ship
+    type: agent
+    vendor: claude
+    prompt: 'Create a pull request for the changes on this branch. Include a summary of what was implemented, run any tests, and push to remote. Write the PR URL to .belayer/.internal/output/pr.json as {"url": "...", "number": N}.'
+    input: { type: commit }
+    output: { type: pr, path: .belayer/.internal/output/pr.json }
+    on_pass: stop
+    on_fail: stop
+
+safety:
+  max_concurrent_runs: 3

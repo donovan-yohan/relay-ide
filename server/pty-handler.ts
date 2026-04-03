@@ -3,39 +3,76 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentFramework, AgentType, AgentState, ContinuePolicy, EventSourceType, PtySession, SessionStatus, SessionSummary, SessionType } from './types.js';
-import { AGENT_COMMANDS, AGENT_CONTINUE_ARGS, resolveFramework } from './types.js';
+import type {
+  AgentFramework,
+  AgentType,
+  AgentState,
+  ContinuePolicy,
+  EventSourceType,
+  PtySession,
+  SessionStatus,
+  SessionSummary,
+  SessionType,
+} from './types.js';
+import {
+  AGENT_COMMANDS,
+  AGENT_CONTINUE_ARGS,
+  resolveFramework,
+} from './types.js';
 import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
 import type { OutputParser } from './output-parsers/index.js';
 import { installOpencodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
+import { createLogger } from './logger.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
+const logger = createLogger('pty');
 
 export function getTmuxPrefix(): string {
   return process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
 }
 
-export function generateTmuxSessionName(displayName: string, id: string): string {
-  const sanitized = displayName.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
+export function generateTmuxSessionName(
+  displayName: string,
+  id: string
+): string {
+  const sanitized = displayName
+    .replace(/[^a-zA-Z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 30);
   return `${getTmuxPrefix()}${sanitized}-${id.slice(0, 8)}`;
 }
 
 export function resolveTmuxSpawn(
   command: string,
   args: string[],
-  tmuxSessionName: string,
+  tmuxSessionName: string
 ): { command: string; args: string[] } {
   return {
     command: 'tmux',
     args: [
-      '-u', 'new-session', '-s', tmuxSessionName, '--', command, ...args,
-      ';', 'set', 'set-clipboard', 'on',
-      ';', 'set', 'allow-passthrough', 'on',
-      ';', 'set', 'mode-keys', 'vi',
+      '-u',
+      'new-session',
+      '-s',
+      tmuxSessionName,
+      '--',
+      command,
+      ...args,
+      ';',
+      'set',
+      'set-clipboard',
+      'on',
+      ';',
+      'set',
+      'allow-passthrough',
+      'on',
+      ';',
+      'set',
+      'mode-keys',
+      'vi',
     ],
   };
 }
@@ -49,13 +86,19 @@ function readGlobalStatusLineCommand(): string {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     const raw = fs.readFileSync(settingsPath, 'utf-8');
     const parsed = JSON.parse(raw) as { statusLine?: { command?: string } };
-    return typeof parsed.statusLine?.command === 'string' ? parsed.statusLine.command : '';
+    return typeof parsed.statusLine?.command === 'string'
+      ? parsed.statusLine.command
+      : '';
   } catch {
     return '';
   }
 }
 
-export function buildStatusLineRelayScript(sessionId: string, configDir: string, globalCmd: string): string {
+export function buildStatusLineRelayScript(
+  sessionId: string,
+  configDir: string,
+  globalCmd: string
+): string {
   const telemetryDir = path.join(configDir, 'telemetry');
   const telemetryPath = path.join(telemetryDir, `${sessionId}.json`);
   const tempPattern = `${telemetryPath}.tmp.XXXXXX`;
@@ -72,7 +115,7 @@ if [ -n "$GLOBAL_CMD" ] && [ -x "$GLOBAL_CMD" ]; then
   tee "$tmp_file" | "$GLOBAL_CMD"
   pipeline_statuses=("\${PIPESTATUS[@]}")
 else
-  tee "$tmp_file" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; console.log(\`\${model} | \${remaining}% ctx\`); } catch { console.log("Claude | ?% ctx"); } });'
+  tee "$tmp_file" | node -e 'let raw="";process.stdin.setEncoding("utf8");process.stdin.on("data", (chunk) => raw += chunk);process.stdin.on("end", () => { try { const data = JSON.parse(raw); const model = data?.model?.display_name ?? "Claude"; const remaining = data?.context_window?.remaining_percentage ?? "?"; process.stdout.write(model + " | " + remaining + "% ctx\n"); } catch { process.stdout.write("Claude | ?% ctx\n"); } });'
   pipeline_statuses=("\${PIPESTATUS[@]}")
 fi
 
@@ -92,9 +135,17 @@ exit "$pipeline_status"
 `;
 }
 
-function writeStatusLineScript(sessionId: string, dir: string, configDir: string): string {
+function writeStatusLineScript(
+  sessionId: string,
+  dir: string,
+  configDir: string
+): string {
   const scriptPath = path.join(dir, 'relay-statusline.sh');
-  const script = buildStatusLineRelayScript(sessionId, configDir, readGlobalStatusLineCommand());
+  const script = buildStatusLineRelayScript(
+    sessionId,
+    configDir,
+    readGlobalStatusLineCommand()
+  );
   fs.writeFileSync(scriptPath, script, 'utf-8');
   fs.chmodSync(scriptPath, 0o755);
   return scriptPath;
@@ -106,7 +157,10 @@ function writeStatusLineScript(sessionId: string, dir: string, configDir: string
  * get the relay script written to disk. The running Claude process will pick this
  * up on its next statusLine poll cycle (Claude re-reads the settings file).
  */
-export function upgradeHooksSettings(sessionId: string, configDir: string): boolean {
+export function upgradeHooksSettings(
+  sessionId: string,
+  configDir: string
+): boolean {
   const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
   const filePath = path.join(dir, 'hooks-settings.json');
 
@@ -126,13 +180,18 @@ export function upgradeHooksSettings(sessionId: string, configDir: string): bool
     settings.statusLine = { type: 'command', command: statusLinePath };
     fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
     return true;
-  } catch (err) {
-    console.warn(`[pty-handler] Failed to upgrade hooks settings for session ${sessionId}:`, err);
-    return false;
-  }
+    } catch (err) {
+      logger.warn(`Failed to upgrade hooks settings for session ${sessionId}:`, err);
+      return false;
+    }
 }
 
-function writeHooksSettingsFile(sessionId: string, port: number, token: string, configDir: string): string {
+function writeHooksSettingsFile(
+  sessionId: string,
+  port: number,
+  token: string,
+  configDir: string
+): string {
   const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const filePath = path.join(dir, 'hooks-settings.json');
@@ -141,15 +200,65 @@ function writeHooksSettingsFile(sessionId: string, port: number, token: string, 
   const q = `sessionId=${sessionId}&token=${token}`;
   const settings = {
     hooks: {
-      Stop: [{ hooks: [{ type: 'http', url: `${base}/hooks/stop?${q}`, timeout: 5 }] }],
-      Notification: [
-        { matcher: 'permission_prompt', hooks: [{ type: 'http', url: `${base}/hooks/notification?${q}&type=permission_prompt`, timeout: 5 }] },
-        { matcher: 'idle_prompt', hooks: [{ type: 'http', url: `${base}/hooks/notification?${q}&type=idle_prompt`, timeout: 5 }] },
+      Stop: [
+        {
+          hooks: [{ type: 'http', url: `${base}/hooks/stop?${q}`, timeout: 5 }],
+        },
       ],
-      UserPromptSubmit: [{ hooks: [{ type: 'http', url: `${base}/hooks/prompt-submit?${q}`, timeout: 5 }] }],
-      SessionEnd: [{ hooks: [{ type: 'http', url: `${base}/hooks/session-end?${q}`, timeout: 5 }] }],
-      PreToolUse: [{ hooks: [{ type: 'http', url: `${base}/hooks/tool-use?${q}`, timeout: 5 }] }],
-      PostToolUse: [{ hooks: [{ type: 'http', url: `${base}/hooks/tool-result?${q}`, timeout: 5 }] }],
+      Notification: [
+        {
+          matcher: 'permission_prompt',
+          hooks: [
+            {
+              type: 'http',
+              url: `${base}/hooks/notification?${q}&type=permission_prompt`,
+              timeout: 5,
+            },
+          ],
+        },
+        {
+          matcher: 'idle_prompt',
+          hooks: [
+            {
+              type: 'http',
+              url: `${base}/hooks/notification?${q}&type=idle_prompt`,
+              timeout: 5,
+            },
+          ],
+        },
+      ],
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: 'http',
+              url: `${base}/hooks/prompt-submit?${q}`,
+              timeout: 5,
+            },
+          ],
+        },
+      ],
+      SessionEnd: [
+        {
+          hooks: [
+            { type: 'http', url: `${base}/hooks/session-end?${q}`, timeout: 5 },
+          ],
+        },
+      ],
+      PreToolUse: [
+        {
+          hooks: [
+            { type: 'http', url: `${base}/hooks/tool-use?${q}`, timeout: 5 },
+          ],
+        },
+      ],
+      PostToolUse: [
+        {
+          hooks: [
+            { type: 'http', url: `${base}/hooks/tool-result?${q}`, timeout: 5 },
+          ],
+        },
+      ],
     },
     statusLine: {
       type: 'command',
@@ -197,9 +306,13 @@ export type CreatePtyResult = SessionSummary & { pid: number | undefined };
 export function createPtySession(
   params: CreatePtyParams,
   sessionsMap: Map<string, import('./types.js').Session>,
-  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void> = [],
-  sessionEndCallbacks: Array<(sessionId: string, cwd: string, branchName?: string) => void> = [],
-  fireBackendStateIfChanged?: (session: import('./types.js').Session) => void,
+  stateChangeCallbacks: Array<
+    (sessionId: string, state: AgentState) => void
+  > = [],
+  sessionEndCallbacks: Array<
+    (sessionId: string, cwd: string, branchName?: string) => void
+  > = [],
+  fireBackendStateIfChanged?: (session: import('./types.js').Session) => void
 ): { session: PtySession; result: CreatePtyResult } {
   const {
     id,
@@ -237,10 +350,7 @@ export function createPtySession(
   // Falls back to a minimal stub using deprecated aliases when agent is not a known framework.
   let framework: import('./types.js').AgentFramework;
   try {
-    framework = resolveFramework(
-      frameworks ? { frameworks } : {},
-      agent
-    );
+    framework = resolveFramework(frameworks ? { frameworks } : {}, agent);
   } catch {
     // Unknown agent — synthesize a minimal framework from deprecated aliases for backward compat
     framework = {
@@ -260,7 +370,8 @@ export function createPtySession(
     };
   }
 
-  const resolvedCommand = command || framework.commandOverride || framework.command;
+  const resolvedCommand =
+    command || framework.commandOverride || framework.command;
 
   const env = cleanEnv();
 
@@ -274,7 +385,9 @@ export function createPtySession(
   let hookToken = paramHookToken ?? '';
   let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
-  const effectiveEventSource: EventSourceType = forceOutputParser ? 'parser' : framework.eventSource;
+  const effectiveEventSource: EventSourceType = forceOutputParser
+    ? 'parser'
+    : framework.eventSource;
 
   if (paramYolo && framework.yoloEnv) {
     Object.assign(env, framework.yoloEnv);
@@ -291,7 +404,7 @@ export function createPtySession(
       env.CRC_RELAY_TOKEN = hookToken;
       hooksActive = true;
     } catch (err) {
-      console.warn(`[pty-handler] Failed to install opencode relay plugin for session ${id}:`, err);
+      logger.warn(`Failed to install opencode relay plugin for session ${id}:`, err);
     }
   }
 
@@ -300,26 +413,41 @@ export function createPtySession(
       hookToken = crypto.randomBytes(32).toString('hex');
     }
     try {
-      const codexConfigDir = writeCodexHooksAdapter(id, port, hookToken, configDir ?? process.cwd());
+      const codexConfigDir = writeCodexHooksAdapter(
+        id,
+        port,
+        hookToken,
+        configDir ?? process.cwd()
+      );
       env.CODEX_CONFIG_DIR = codexConfigDir;
       hooksActive = true;
     } catch (err) {
-      console.warn(`[pty-handler] Failed to write codex hooks adapter for session ${id}:`, err);
+      logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
     }
   }
 
   // Only inject --settings for claude; codex and opencode have their own hook injection paths
-  const shouldInjectHooks = framework.id === 'claude' && framework.capabilities.supportsHooks && effectiveEventSource === 'hooks' && !command && port !== undefined;
+  const shouldInjectHooks =
+    framework.id === 'claude' &&
+    framework.capabilities.supportsHooks &&
+    effectiveEventSource === 'hooks' &&
+    !command &&
+    port !== undefined;
   if (shouldInjectHooks) {
     if (!hookToken) {
       hookToken = crypto.randomBytes(32).toString('hex');
     }
     try {
-      settingsPath = writeHooksSettingsFile(id, port, hookToken, configDir ?? process.cwd());
+      settingsPath = writeHooksSettingsFile(
+        id,
+        port,
+        hookToken,
+        configDir ?? process.cwd()
+      );
       args = ['--settings', settingsPath, ...args];
       hooksActive = true;
     } catch (err) {
-      console.warn(`[pty-handler] Failed to generate hooks settings for session ${id}:`, err);
+      logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
       hooksActive = false;
       hookToken = '';
     }
@@ -328,7 +456,18 @@ export function createPtySession(
   const useTmux = !command && !!paramUseTmux;
   let spawnCommand = resolvedCommand;
   let spawnArgs = args;
-  const tmuxSessionName = paramTmuxSessionName || (useTmux ? generateTmuxSessionName(params.tmuxDisplayName || displayName || repoName || path.basename(cwd) || 'session', id) : '');
+  const tmuxSessionName =
+    paramTmuxSessionName ||
+    (useTmux
+      ? generateTmuxSessionName(
+          params.tmuxDisplayName ||
+            displayName ||
+            repoName ||
+            path.basename(cwd) ||
+            'session',
+          id
+        )
+      : '');
 
   if (useTmux) {
     const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);
@@ -346,12 +485,15 @@ export function createPtySession(
 
   // Scrollback buffer: stores all PTY output so we can replay on WebSocket (re)connect
   const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
-  let scrollbackBytes = initialScrollback ? initialScrollback.reduce((sum, s) => sum + s.length, 0) : 0;
+  let scrollbackBytes = initialScrollback
+    ? initialScrollback.reduce((sum, s) => sum + s.length, 0)
+    : 0;
 
   // Instantiate vendor-specific output parser dispatched by framework.parserType
   // Falls back to 'none' parser for unknown parserType values
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const parserFactory = outputParsers[framework.parserType] ?? outputParsers['none'];
+  const parserFactory =
+    outputParsers[framework.parserType] ?? outputParsers['none'];
   const parser: OutputParser = parserFactory!();
   const session: PtySession = {
     id,
@@ -383,7 +525,7 @@ export function createPtySession(
     cleanedUp: false,
     yolo: paramYolo ?? false,
     sessionArgs: paramClaudeArgs ?? [],
-    claudeArgs: paramClaudeArgs ?? [],  // keep for backward compat
+    claudeArgs: paramClaudeArgs ?? [], // keep for backward compat
     continuePolicy: params.continuePolicy ?? 'never',
     // Derive dataQuality from what actually got enabled, not just the configured framework eventSource.
     // If hook/plugin injection failed, hooksActive is false → downgrade to 'parser' for accuracy.
@@ -398,7 +540,11 @@ export function createPtySession(
     if (existing && existing.displayName) {
       session.displayName = existing.displayName;
     }
-    writeMeta(configPath, { worktreePath, displayName: session.displayName, lastActivity: createdAt });
+    writeMeta(configPath, {
+      worktreePath,
+      displayName: session.displayName,
+      lastActivity: createdAt,
+    });
   }
 
   let metaFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -423,7 +569,11 @@ export function createPtySession(
   function attachHandlers(proc: pty.IPty, canRetry: boolean): void {
     const spawnTime = Date.now();
     // Clear restored flag after 3s of running — means the PTY is healthy
-    const restoredClearTimer = session.restored ? setTimeout(() => { session.restored = false; }, 3000) : null;
+    const restoredClearTimer = session.restored
+      ? setTimeout(() => {
+          session.restored = false;
+        }, 3000)
+      : null;
 
     proc.onData((data) => {
       session.lastActivity = new Date().toISOString();
@@ -437,12 +587,19 @@ export function createPtySession(
       if (configPath && worktreePath && !metaFlushTimer) {
         metaFlushTimer = setTimeout(() => {
           metaFlushTimer = null;
-          writeMeta(configPath, { worktreePath, displayName: session.displayName, lastActivity: session.lastActivity });
+          writeMeta(configPath, {
+            worktreePath,
+            displayName: session.displayName,
+            lastActivity: session.lastActivity,
+          });
         }, 5000);
       }
 
       // Vendor-specific output parsing for semantic state detection
-      const parseResult = session.outputParser.onData(data, scrollback.slice(-20));
+      const parseResult = session.outputParser.onData(
+        data,
+        scrollback.slice(-20)
+      );
       if (parseResult && parseResult.state !== session.agentState) {
         if (session.hooksActive) {
           // Hooks are authoritative — check 30s reconciliation timeout
@@ -451,32 +608,36 @@ export function createPtySession(
           if (lastHook && Date.now() - lastHook > 30000) {
             // No hook for 30s and parser disagrees — parser overrides
             session.agentState = parseResult.state;
-            for (const cb of stateChangeCallbacks) cb(session.id, parseResult.state);
+            for (const cb of stateChangeCallbacks)
+              cb(session.id, parseResult.state);
             fireBackendStateIfChanged?.(session);
           } else if (!lastHook && sessionAge > 30000) {
             // Hooks active but never fired in 30s — allow parser to override to prevent permanent suppression
             session.agentState = parseResult.state;
-            for (const cb of stateChangeCallbacks) cb(session.id, parseResult.state);
+            for (const cb of stateChangeCallbacks)
+              cb(session.id, parseResult.state);
             fireBackendStateIfChanged?.(session);
           }
           // else: suppress parser — hooks are still fresh
         } else {
           // No hooks — parser is primary (current behavior)
           session.agentState = parseResult.state;
-          for (const cb of stateChangeCallbacks) cb(session.id, parseResult.state);
+          for (const cb of stateChangeCallbacks)
+            cb(session.id, parseResult.state);
           fireBackendStateIfChanged?.(session);
         }
       }
     });
 
     proc.onExit(() => {
-      if (canRetry && (Date.now() - spawnTime) < 3000) {
-        let retryArgs = rawArgs.filter(a => !continueArgs.includes(a));
+      if (canRetry && Date.now() - spawnTime < 3000) {
+        let retryArgs = rawArgs.filter((a) => !continueArgs.includes(a));
         // Re-inject hooks settings if active (settingsPath captured from outer scope)
         if (session.hooksActive && settingsPath) {
           retryArgs = ['--settings', settingsPath, ...retryArgs];
         }
-        const retryNotice = '\r\n[claude-remote-cli] --continue not available; starting new session...\r\n';
+        const retryNotice =
+          '\r\n[claude-remote-cli] --continue not available; starting new session...\r\n';
         scrollback.length = 0;
         scrollbackBytes = 0;
         scrollback.push(retryNotice);
@@ -486,7 +647,11 @@ export function createPtySession(
         if (useTmux && tmuxSessionName) {
           const retryTmuxName = tmuxSessionName + '-retry';
           session.tmuxSessionName = retryTmuxName;
-          const tmux = resolveTmuxSpawn(resolvedCommand, retryArgs, retryTmuxName);
+          const tmux = resolveTmuxSpawn(
+            resolvedCommand,
+            retryArgs,
+            retryTmuxName
+          );
           retryCommand = tmux.command;
           retrySpawnArgs = tmux.args;
         }
@@ -530,11 +695,18 @@ export function createPtySession(
       if (idleTimer) clearTimeout(idleTimer);
       if (metaFlushTimer) clearTimeout(metaFlushTimer);
       if (configPath && worktreePath) {
-        writeMeta(configPath, { worktreePath, displayName: session.displayName, lastActivity: session.lastActivity });
+        writeMeta(configPath, {
+          worktreePath,
+          displayName: session.displayName,
+          lastActivity: session.lastActivity,
+        });
       }
       for (const cb of sessionEndCallbacks) {
-        try { cb(id, cwd, session.branchName); }
-        catch (err) { console.error('[pty-handler] sessionEnd callback error:', err); }
+        try {
+          cb(id, cwd, session.branchName);
+        } catch (err) {
+          logger.error('sessionEnd callback error:', err);
+        }
       }
       sessionsMap.delete(id);
       const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', id);
@@ -542,7 +714,10 @@ export function createPtySession(
     });
   }
 
-  attachHandlers(ptyProcess, continueArgs.some(a => args.includes(a)));
+  attachHandlers(
+    ptyProcess,
+    continueArgs.some((a) => args.includes(a))
+  );
 
   const result: CreatePtyResult = {
     id,

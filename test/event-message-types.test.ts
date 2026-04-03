@@ -26,6 +26,8 @@ test('EventMessage types compile without errors', () => {
     assert.ok(true, 'TypeScript compilation succeeded');
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string };
-    assert.fail(`TypeScript compilation failed:\n${e.stdout ?? ''}\n${e.stderr ?? ''}`);
+    assert.fail(
+      `TypeScript compilation failed:\n${e.stdout ?? ''}\n${e.stderr ?? ''}`
+    );
   }
 });

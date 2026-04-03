@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-console -- CLI entry point, user-facing stdout/stderr output */
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
@@ -6,10 +7,12 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as service from '../server/service.js';
 import { DEFAULTS } from '../server/config.js';
+import { createLogger } from '../server/logger.js';
 
 const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logger = createLogger('cli');
 
 function execErrorMessage(err: unknown, fallback: string): string {
   const e = err as { stderr?: string; message?: string };
@@ -20,7 +23,7 @@ function execErrorMessage(err: unknown, fallback: string): string {
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: claude-remote-cli [options]
+  logger.info(`Usage: claude-remote-cli [options]
        claude-remote-cli <command>
 
 Commands:
@@ -50,7 +53,9 @@ Options:
 }
 
 if (args.includes('--version') || args.includes('-v')) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
+  ) as { version: string };
   console.log(pkg.version);
   process.exit(0);
 }
@@ -71,7 +76,7 @@ function runServiceCommand(fn: () => void): never {
   try {
     fn();
   } catch (e) {
-    console.error((e as Error).message);
+    logger.error((e as Error).message);
     process.exit(1);
   }
   process.exit(0);
@@ -80,37 +85,46 @@ function runServiceCommand(fn: () => void): never {
 const command = args[0];
 if (command === 'update') {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
-    console.log(`Current version: ${pkg.version}`);
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
+    ) as { version: string };
+    logger.info(`Current version: ${pkg.version}`);
     const configPath = resolveConfigPath();
     let channel = 'stable';
     if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { updateChannel?: string };
-      if (config.updateChannel === 'nightly' || config.updateChannel === 'stable') {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        updateChannel?: string;
+      };
+      if (
+        config.updateChannel === 'nightly' ||
+        config.updateChannel === 'stable'
+      ) {
         channel = config.updateChannel;
       }
     }
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
-    console.log(`Updating claude-remote-cli from ${channel} channel...`);
+    logger.info(`Updating claude-remote-cli from ${channel} channel...`);
     await execFileAsync('npm', ['install', '-g', `claude-remote-cli@${tag}`]);
-    const updatedPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
+    const updatedPkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
+    ) as { version: string };
     if (updatedPkg.version === pkg.version) {
-      console.log(`Already on the latest version (${pkg.version}).`);
+      logger.info(`Already on the latest version (${pkg.version}).`);
     } else {
-      console.log(`Updated to ${updatedPkg.version}.`);
+      logger.info(`Updated to ${updatedPkg.version}.`);
       if (service.isInstalled()) {
-        console.log('Background service detected — restarting...');
+        logger.info('Background service detected — restarting...');
         service.uninstall();
         service.install({
           configPath: resolveConfigPath(),
           port: getArg('--port') ?? String(DEFAULTS.port),
           host: getArg('--host') ?? DEFAULTS.host,
         });
-        console.log('Service restarted.');
+        logger.info('Service restarted.');
       }
     }
   } catch (e) {
-    console.error('Update failed:', (e as Error).message);
+    logger.error(`Update failed: ${(e as Error).message}`);
     process.exit(1);
   }
   process.exit(0);
@@ -121,7 +135,9 @@ if (command === 'worktree') {
   const subCommand = wtArgs[0];
 
   if (!subCommand) {
-    console.error('Usage: claude-remote-cli worktree <add|remove|list> [options]');
+    logger.error(
+      'Usage: claude-remote-cli worktree <add|remove|list> [options]'
+    );
     process.exit(1);
   }
 
@@ -130,7 +146,7 @@ if (command === 'worktree') {
       const result = await execFileAsync('git', ['worktree', ...wtArgs]);
       if (result.stdout) console.log(result.stdout.trimEnd());
     } catch (err: unknown) {
-      console.error(execErrorMessage(err, 'git worktree failed'));
+      logger.error(execErrorMessage(err, 'git worktree failed'));
       process.exit(1);
     }
     process.exit(0);
@@ -138,20 +154,28 @@ if (command === 'worktree') {
 
   // Handle 'add' -- strip --yolo, determine path, forward to git, then launch claude
   const hasYolo = wtArgs.includes('--yolo');
-  const gitWtArgs = wtArgs.filter(function (a) { return a !== '--yolo'; });
+  const gitWtArgs = wtArgs.filter(function (a) {
+    return a !== '--yolo';
+  });
   const addSubArgs = gitWtArgs.slice(1);
   let targetDir: string | undefined;
 
   const bIdx = gitWtArgs.indexOf('-b');
-  const branchForDefault = bIdx !== -1 && bIdx + 1 < gitWtArgs.length ? gitWtArgs[bIdx + 1]! : undefined;
+  const branchForDefault =
+    bIdx !== -1 && bIdx + 1 < gitWtArgs.length
+      ? gitWtArgs[bIdx + 1]!
+      : undefined;
 
   if (addSubArgs.length === 0 || addSubArgs[0]!.startsWith('-')) {
     let repoRoot: string;
     try {
-      const result = await execFileAsync('git', ['rev-parse', '--show-toplevel']);
+      const result = await execFileAsync('git', [
+        'rev-parse',
+        '--show-toplevel',
+      ]);
       repoRoot = result.stdout.trim();
     } catch {
-      console.error('Not inside a git repository.');
+      logger.error('Not inside a git repository.');
       process.exit(1);
     }
     const dirName = branchForDefault
@@ -167,16 +191,18 @@ if (command === 'worktree') {
     const result = await execFileAsync('git', ['worktree', ...gitWtArgs]);
     if (result.stdout) console.log(result.stdout.trimEnd());
   } catch (err: unknown) {
-    console.error(execErrorMessage(err, 'git worktree add failed'));
+    logger.error(execErrorMessage(err, 'git worktree add failed'));
     process.exit(1);
   }
 
-  console.log(`Worktree created at ${targetDir}`);
+  logger.info(`Worktree created at ${targetDir}`);
 
   const claudeArgs: string[] = [];
   if (hasYolo) claudeArgs.push('--dangerously-skip-permissions');
 
-  console.log(`Launching claude${hasYolo ? ' (yolo mode)' : ''} in ${targetDir}...`);
+  logger.info(
+    `Launching claude${hasYolo ? ' (yolo mode)' : ''} in ${targetDir}...`
+  );
 
   const child = spawn('claude', claudeArgs, {
     cwd: targetDir,
@@ -195,22 +221,25 @@ if (command === 'worktree') {
 if (command === 'pin') {
   const subCommand = args[1];
   if (subCommand !== 'reset') {
-    console.error('Usage: claude-remote-cli pin reset');
+    logger.error('Usage: claude-remote-cli pin reset');
     process.exit(1);
   }
 
   if (!process.stdin.isTTY) {
-    console.error('PIN reset requires an interactive terminal.');
+    logger.error('PIN reset requires an interactive terminal.');
     process.exit(1);
   }
 
   const configPath = resolveConfigPath();
   if (!fs.existsSync(configPath)) {
-    console.error('No config file found. Run claude-remote-cli first to create one.');
+    logger.error(
+      'No config file found. Run claude-remote-cli first to create one.'
+    );
     process.exit(1);
   }
 
-  const { loadConfig: loadCfg, saveConfig: saveCfg } = await import('../server/config.js');
+  const { loadConfig: loadCfg, saveConfig: saveCfg } =
+    await import('../server/config.js');
   const { hashPin, verifyPin } = await import('../server/auth.js');
 
   const config = loadCfg(configPath);
@@ -243,8 +272,14 @@ if (command === 'pin') {
         };
         stdin.on('data', onData);
       } else {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        rl.question(query, (answer) => { rl.close(); resolve(answer); });
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        rl.question(query, (answer) => {
+          rl.close();
+          resolve(answer);
+        });
       }
     });
   }
@@ -257,7 +292,7 @@ if (command === 'pin') {
     if (current) {
       const valid = await verifyPin(current, config.pinHash);
       if (!valid) {
-        console.error('Current PIN is incorrect.');
+        logger.error('Current PIN is incorrect.');
         process.exit(1);
       }
     }
@@ -265,34 +300,43 @@ if (command === 'pin') {
 
   const newPin = await prompt('New PIN: ', true);
   if (!newPin || newPin.length < 4) {
-    console.error('PIN must be at least 4 characters.');
+    logger.error('PIN must be at least 4 characters.');
     process.exit(1);
   }
 
   const confirmPin = await prompt('Confirm new PIN: ', true);
   if (newPin !== confirmPin) {
-    console.error('PINs do not match.');
+    logger.error('PINs do not match.');
     process.exit(1);
   }
 
   config.pinHash = await hashPin(newPin);
   saveCfg(configPath, config);
-  console.log('PIN updated successfully. All existing sessions will need to re-authenticate.');
+  logger.info(
+    'PIN updated successfully. All existing sessions will need to re-authenticate.'
+  );
   process.exit(0);
 }
 
-if (command === 'install' || command === 'uninstall' || command === 'status' || args.includes('--bg')) {
+if (
+  command === 'install' ||
+  command === 'uninstall' ||
+  command === 'status' ||
+  args.includes('--bg')
+) {
   if (command === 'uninstall') {
-    runServiceCommand(() => { service.uninstall(); });
+    runServiceCommand(() => {
+      service.uninstall();
+    });
   } else if (command === 'status') {
     runServiceCommand(() => {
       const st = service.status();
       if (!st.installed) {
-        console.log('Service is not installed.');
+        logger.info('Service is not installed.');
       } else if (st.running) {
-        console.log('Service is installed and running.');
+        logger.info('Service is installed and running.');
       } else {
-        console.log('Service is installed but not running.');
+        logger.info('Service is installed but not running.');
       }
     });
   } else {
@@ -309,8 +353,12 @@ if (command === 'install' || command === 'uninstall' || command === 'status' || 
 if (command === 'browser') {
   const browserArgs = args.slice(1);
 
-  if (browserArgs.includes('--help') || browserArgs.includes('-h') || browserArgs.length === 0) {
-    console.error(`Usage: claude-remote-cli browser <path>
+  if (
+    browserArgs.includes('--help') ||
+    browserArgs.includes('-h') ||
+    browserArgs.length === 0
+  ) {
+    logger.error(`Usage: claude-remote-cli browser <path>
 
 Opens an HTML file in the remote browser viewer tab.
 
@@ -320,13 +368,15 @@ Arguments:
 Environment:
   CLAUDE_REMOTE_PORT            Server port (default: 3456)
   CLAUDE_REMOTE_BROWSER_TOKEN   Auth token for browser tab API`);
-    process.exit(browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1);
+    process.exit(
+      browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1
+    );
   }
 
   const filePath = path.resolve(browserArgs[0]!);
 
   if (!fs.existsSync(filePath)) {
-    console.error(`Error: file not found: ${filePath}`);
+    logger.error(`Error: file not found: ${filePath}`);
     process.exit(1);
   }
 
@@ -334,7 +384,9 @@ Environment:
   const token = process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] ?? '';
 
   if (!token) {
-    console.error('Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?');
+    logger.error(
+      'Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?'
+    );
     process.exit(1);
   }
 
@@ -343,27 +395,27 @@ Environment:
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ path: filePath }),
     });
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(`Error: server returned ${res.status}: ${body}`);
+      logger.error(`Error: server returned ${res.status}: ${body}`);
       process.exit(1);
     }
 
-    const data = await res.json() as { token: string; refreshed: boolean };
+    const data = (await res.json()) as { token: string; refreshed: boolean };
     if (data.refreshed) {
-      console.log(`Refreshed: ${filePath}`);
+      logger.info(`Refreshed: ${filePath}`);
     } else {
-      console.log(`Opened: ${filePath}`);
+      logger.info(`Opened: ${filePath}`);
     }
     process.exit(0);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Error: could not connect to server on port ${port}: ${msg}`);
+    logger.error(`Error: could not connect to server on port ${port}: ${msg}`);
     process.exit(1);
   }
 }

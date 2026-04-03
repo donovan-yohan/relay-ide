@@ -111,15 +111,25 @@ describe('Action Coverage', () => {
   });
 
   it('all allowlist IDs have corresponding definitions', () => {
-    const definedIds = new Set(ALL_META.map(a => a.id));
-    const missing = ACTION_ALLOWLIST.filter(id => !definedIds.has(id));
-    assert.deepStrictEqual(missing, [], `Missing action definitions: ${missing.join(', ')}`);
+    const definedIds = new Set(ALL_META.map((a) => a.id));
+    const missing = ACTION_ALLOWLIST.filter((id) => !definedIds.has(id));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `Missing action definitions: ${missing.join(', ')}`
+    );
   });
 
   it('all defined actions are in the allowlist', () => {
     const allowedIds = new Set<string>(ACTION_ALLOWLIST);
-    const extra = ALL_META.filter(a => !allowedIds.has(a.id)).map(a => a.id);
-    assert.deepStrictEqual(extra, [], `Defined actions not in allowlist: ${extra.join(', ')}`);
+    const extra = ALL_META.filter((a) => !allowedIds.has(a.id)).map(
+      (a) => a.id
+    );
+    assert.deepStrictEqual(
+      extra,
+      [],
+      `Defined actions not in allowlist: ${extra.join(', ')}`
+    );
   });
 
   it('all registered action IDs are unique', () => {
@@ -127,27 +137,40 @@ describe('Action Coverage', () => {
     const all = getAllActions();
     const ids = all.map((a: Action) => a.id);
     const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
-    assert.deepStrictEqual(dupes, [], `Duplicate action IDs: ${dupes.join(', ')}`);
+    assert.deepStrictEqual(
+      dupes,
+      [],
+      `Duplicate action IDs: ${dupes.join(', ')}`
+    );
   });
 
   it('all required Action fields are present and well-formed', () => {
     for (const meta of ALL_META) {
       assert.ok(meta.id, `Action missing id`);
-      assert.ok(meta.id.includes('.'), `Action id "${meta.id}" must use category.verb-noun format`);
+      assert.ok(
+        meta.id.includes('.'),
+        `Action id "${meta.id}" must use category.verb-noun format`
+      );
       assert.ok(meta.label, `Action "${meta.id}" missing label`);
       assert.ok(meta.category, `Action "${meta.id}" missing category`);
-      assert.strictEqual(meta.label, meta.label.toLowerCase(), `Action "${meta.id}" label must be lowercase`);
+      assert.strictEqual(
+        meta.label,
+        meta.label.toLowerCase(),
+        `Action "${meta.id}" label must be lowercase`
+      );
     }
   });
 
   it('no conflicting keyboard shortcuts', () => {
-    const shortcuts = ALL_META
-      .filter((a: ActionMeta) => a.shortcut)
-      .map((a: ActionMeta) => ({ id: a.id, key: a.shortcut!.key }));
+    const shortcuts = ALL_META.filter((a: ActionMeta) => a.shortcut).map(
+      (a: ActionMeta) => ({ id: a.id, key: a.shortcut!.key })
+    );
     const seen = new Map<string, string>();
     for (const { id, key } of shortcuts) {
       if (seen.has(key)) {
-        assert.fail(`Shortcut conflict: "${key}" claimed by both "${seen.get(key)}" and "${id}"`);
+        assert.fail(
+          `Shortcut conflict: "${key}" claimed by both "${seen.get(key)}" and "${id}"`
+        );
       }
       seen.set(key, id);
     }

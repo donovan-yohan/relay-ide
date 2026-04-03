@@ -4,6 +4,9 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('telemetry');
 
 const POLL_INTERVAL_MS = 2_000;
 const PERSIST_INTERVAL_MS = 60_000;
@@ -51,29 +54,42 @@ function telemetryToObject(): Record<string, TelemetryData> {
   return Object.fromEntries(sessionTelemetry.entries());
 }
 
-function sameTelemetry(a: TelemetryData | undefined, b: IncomingTelemetryData): boolean {
+function sameTelemetry(
+  a: TelemetryData | undefined,
+  b: IncomingTelemetryData
+): boolean {
   if (!a) return false;
-  return a.sessionId === b.sessionId
-    && a.model === b.model
-    && a.totalInputTokens === b.totalInputTokens
-    && a.totalOutputTokens === b.totalOutputTokens
-    && a.totalCacheRead === b.totalCacheRead
-    && a.totalCacheWrite === b.totalCacheWrite
-    && a.contextPercent === b.contextPercent
-    && a.contextWindowSize === b.contextWindowSize
-    && a.costUsd === b.costUsd
-    && a.source === b.source;
+  return (
+    a.sessionId === b.sessionId &&
+    a.model === b.model &&
+    a.totalInputTokens === b.totalInputTokens &&
+    a.totalOutputTokens === b.totalOutputTokens &&
+    a.totalCacheRead === b.totalCacheRead &&
+    a.totalCacheWrite === b.totalCacheWrite &&
+    a.contextPercent === b.contextPercent &&
+    a.contextWindowSize === b.contextWindowSize &&
+    a.costUsd === b.costUsd &&
+    a.source === b.source
+  );
 }
 
-function sameAccountTelemetry(a: AccountTelemetry | null, b: Omit<AccountTelemetry, 'updatedAt'>): boolean {
+function sameAccountTelemetry(
+  a: AccountTelemetry | null,
+  b: Omit<AccountTelemetry, 'updatedAt'>
+): boolean {
   if (!a) return false;
-  return a.fiveHourUsedPercent === b.fiveHourUsedPercent
-    && a.fiveHourResetsAt === b.fiveHourResetsAt
-    && a.sevenDayUsedPercent === b.sevenDayUsedPercent
-    && a.sevenDayResetsAt === b.sevenDayResetsAt;
+  return (
+    a.fiveHourUsedPercent === b.fiveHourUsedPercent &&
+    a.fiveHourResetsAt === b.fiveHourResetsAt &&
+    a.sevenDayUsedPercent === b.sevenDayUsedPercent &&
+    a.sevenDayResetsAt === b.sevenDayResetsAt
+  );
 }
 
-function extractTelemetry(sessionId: string, payload: unknown): {
+function extractTelemetry(
+  sessionId: string,
+  payload: unknown
+): {
   session: IncomingTelemetryData;
   account: Omit<AccountTelemetry, 'updatedAt'> | null;
 } | null {
@@ -81,7 +97,10 @@ function extractTelemetry(sessionId: string, payload: unknown): {
 
   const data = payload as Record<string, unknown>;
   const contextWindow = (data.context_window ?? {}) as Record<string, unknown>;
-  const currentUsage = (contextWindow.current_usage ?? {}) as Record<string, unknown>;
+  const currentUsage = (contextWindow.current_usage ?? {}) as Record<
+    string,
+    unknown
+  >;
   const cost = (data.cost ?? {}) as Record<string, unknown>;
   const rateLimits = (data.rate_limits ?? {}) as Record<string, unknown>;
   const fiveHour = (rateLimits.five_hour ?? {}) as Record<string, unknown>;
@@ -97,21 +116,23 @@ function extractTelemetry(sessionId: string, payload: unknown): {
     totalCacheWrite: asNumber(currentUsage.cache_creation_input_tokens, 0),
     contextPercent: asNumber(contextWindow.used_percentage, -1),
     contextWindowSize: asNumber(contextWindow.context_window_size, 0),
-    costUsd: typeof cost.total_cost_usd === 'number' ? cost.total_cost_usd : null,
+    costUsd:
+      typeof cost.total_cost_usd === 'number' ? cost.total_cost_usd : null,
     source: 'statusLine',
   };
 
-  const account = (
-    typeof fiveHour.used_percentage === 'number'
-    || typeof sevenDay.used_percentage === 'number'
-    || typeof fiveHour.resets_at === 'string'
-    || typeof sevenDay.resets_at === 'string'
-  ) ? {
-    fiveHourUsedPercent: asNumber(fiveHour.used_percentage, -1),
-    fiveHourResetsAt: asString(fiveHour.resets_at),
-    sevenDayUsedPercent: asNumber(sevenDay.used_percentage, -1),
-    sevenDayResetsAt: asString(sevenDay.resets_at),
-  } : null;
+  const account =
+    typeof fiveHour.used_percentage === 'number' ||
+    typeof sevenDay.used_percentage === 'number' ||
+    typeof fiveHour.resets_at === 'string' ||
+    typeof sevenDay.resets_at === 'string'
+      ? {
+          fiveHourUsedPercent: asNumber(fiveHour.used_percentage, -1),
+          fiveHourResetsAt: asString(fiveHour.resets_at),
+          sevenDayUsedPercent: asNumber(sevenDay.used_percentage, -1),
+          sevenDayResetsAt: asString(sevenDay.resets_at),
+        }
+      : null;
 
   return { session, account };
 }
@@ -121,7 +142,9 @@ function restorePendingTelemetry(configDir: string): void {
   if (!fs.existsSync(pendingPath)) return;
 
   try {
-    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8')) as PendingTelemetryFile;
+    const pending = JSON.parse(
+      fs.readFileSync(pendingPath, 'utf-8')
+    ) as PendingTelemetryFile;
     const ageMs = Date.now() - new Date(pending.timestamp).getTime();
     if (!Number.isFinite(ageMs) || ageMs > STALE_THRESHOLD_MS) {
       fs.unlinkSync(pendingPath);
@@ -130,10 +153,15 @@ function restorePendingTelemetry(configDir: string): void {
 
     sessionTelemetry = new Map(Object.entries(pending.sessions ?? {}));
     accountTelemetry = pending.account ?? null;
-    restoredPendingOnly = sessionTelemetry.size > 0 || accountTelemetry !== null;
+    restoredPendingOnly =
+      sessionTelemetry.size > 0 || accountTelemetry !== null;
     fs.unlinkSync(pendingPath);
   } catch {
-    try { fs.unlinkSync(pendingPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(pendingPath);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -150,7 +178,7 @@ function persistPendingTelemetry(configDir: string): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (err) {
-    console.warn('[telemetry] Failed to persist pending telemetry:', err);
+    logger.warn('Failed to persist pending telemetry:', err);
   }
 }
 
@@ -172,14 +200,20 @@ function collectTelemetry(): void {
   }
 
   for (const session of activeSessions) {
-    const filePath = path.join(telemetryDir(activeDeps.configDir), `${session.id}.json`);
+    const filePath = path.join(
+      telemetryDir(activeDeps.configDir),
+      `${session.id}.json`
+    );
     let raw: string;
     try {
       raw = fs.readFileSync(filePath, 'utf-8');
     } catch (err) {
       const error = err as NodeJS.ErrnoException;
       if (error.code !== 'ENOENT') {
-        console.warn(`[telemetry] Failed to read telemetry for session ${session.id}:`, err);
+        logger.warn(
+          `[telemetry] Failed to read telemetry for session ${session.id}:`,
+          err
+        );
       }
       continue;
     }
@@ -188,7 +222,10 @@ function collectTelemetry(): void {
     try {
       payload = JSON.parse(raw);
     } catch (err) {
-      console.warn(`[telemetry] Malformed telemetry JSON for session ${session.id}:`, err);
+      logger.warn(
+        `[telemetry] Malformed telemetry JSON for session ${session.id}:`,
+        err
+      );
       continue;
     }
 
@@ -201,15 +238,23 @@ function collectTelemetry(): void {
         updatedAt: new Date().toISOString(),
       };
       sessionTelemetry.set(session.id, nextSessionTelemetry);
-      activeDeps.broadcastEvent('session-telemetry', { sessionId: session.id, data: nextSessionTelemetry });
+      activeDeps.broadcastEvent('session-telemetry', {
+        sessionId: session.id,
+        data: nextSessionTelemetry,
+      });
     }
 
-    if (extracted.account && !sameAccountTelemetry(accountTelemetry, extracted.account)) {
+    if (
+      extracted.account &&
+      !sameAccountTelemetry(accountTelemetry, extracted.account)
+    ) {
       accountTelemetry = {
         ...extracted.account,
         updatedAt: new Date().toISOString(),
       };
-      activeDeps.broadcastEvent('account-telemetry', { data: accountTelemetry });
+      activeDeps.broadcastEvent('account-telemetry', {
+        data: accountTelemetry,
+      });
     }
   }
 }
@@ -220,7 +265,10 @@ export function startTelemetry(deps: TelemetryDeps): void {
   restorePendingTelemetry(deps.configDir);
   collectTelemetry();
   pollTimer = setInterval(collectTelemetry, POLL_INTERVAL_MS);
-  persistTimer = setInterval(() => persistPendingTelemetry(deps.configDir), PERSIST_INTERVAL_MS);
+  persistTimer = setInterval(
+    () => persistPendingTelemetry(deps.configDir),
+    PERSIST_INTERVAL_MS
+  );
 }
 
 export function stopTelemetry(): void {
@@ -241,7 +289,9 @@ export function stopTelemetry(): void {
   restoredPendingOnly = false;
 }
 
-export function getTelemetryForSession(sessionId: string): TelemetryData | undefined {
+export function getTelemetryForSession(
+  sessionId: string
+): TelemetryData | undefined {
   return sessionTelemetry.get(sessionId);
 }
 

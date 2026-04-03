@@ -36,7 +36,10 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     tmuxSessionName: '',
     onPtyReplacedCallbacks: [],
     restored: false,
-    outputParser: { feed: () => undefined, reset: () => undefined } as unknown as Session['outputParser'],
+    outputParser: {
+      feed: () => undefined,
+      reset: () => undefined,
+    } as unknown as Session['outputParser'],
     hookToken: 'valid-token',
     hooksActive: true,
     cleanedUp: false,
@@ -59,7 +62,10 @@ let port: number;
 let sessions: Map<string, Session>;
 let broadcastCalls: Array<{ type: string; data?: Record<string, unknown> }>;
 let backendStateCalls: Session[];
-let attentionCalls: Array<{ sessionId: string; session: { displayName: string; type: string } }>;
+let attentionCalls: Array<{
+  sessionId: string;
+  session: { displayName: string; type: string };
+}>;
 
 function getSession(id: string): Session | undefined {
   return sessions.get(id);
@@ -79,16 +85,18 @@ before(async () => {
   // to allow the /api/frameworks route body parsing — not needed here but consistent.
   const hooksRouter = createHooksRouter({
     getSession,
-    broadcastEvent: (type, data) => broadcastCalls.push({ type, ...(data !== undefined && { data }) }),
+    broadcastEvent: (type, data) =>
+      broadcastCalls.push({ type, ...(data !== undefined && { data }) }),
     fireBackendStateIfChanged: (s) => backendStateCalls.push(s),
-    notifySessionAttention: (sessionId, session) => attentionCalls.push({ sessionId, session }),
+    notifySessionAttention: (sessionId, session) =>
+      attentionCalls.push({ sessionId, session }),
   });
 
   // Mount at /hooks — same as real server
   app.use('/hooks', hooksRouter);
 
   server = http.createServer(app);
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = (server.address() as { port: number }).port;
 });
 
@@ -120,7 +128,7 @@ describe('POST /hooks/agent-event — validation', () => {
       body: JSON.stringify({ token: 'tok', eventType: 'session.started' }),
     });
     assert.equal(res.status, 400);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     assert.ok(body.error, 'should have error message');
   });
 
@@ -128,10 +136,13 @@ describe('POST /hooks/agent-event — validation', () => {
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-001', eventType: 'session.started' }),
+      body: JSON.stringify({
+        sessionId: 'sess-001',
+        eventType: 'session.started',
+      }),
     });
     assert.equal(res.status, 400);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     assert.ok(body.error);
   });
 
@@ -142,7 +153,7 @@ describe('POST /hooks/agent-event — validation', () => {
       body: JSON.stringify({ sessionId: 'sess-001', token: 'tok' }),
     });
     assert.equal(res.status, 400);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     assert.ok(body.error);
   });
 
@@ -159,22 +170,33 @@ describe('POST /hooks/agent-event — validation', () => {
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'nonexistent', token: 'tok', eventType: 'session.started' }),
+      body: JSON.stringify({
+        sessionId: 'nonexistent',
+        token: 'tok',
+        eventType: 'session.started',
+      }),
     });
     assert.equal(res.status, 404);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     assert.ok(body.error);
   });
 
   it('returns 401 when token does not match session hookToken', async () => {
-    sessions.set('sess-001', makeSession({ id: 'sess-001', hookToken: 'correct-token' }));
+    sessions.set(
+      'sess-001',
+      makeSession({ id: 'sess-001', hookToken: 'correct-token' })
+    );
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-001', token: 'wrong-token', eventType: 'session.started' }),
+      body: JSON.stringify({
+        sessionId: 'sess-001',
+        token: 'wrong-token',
+        eventType: 'session.started',
+      }),
     });
     assert.equal(res.status, 401);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     assert.ok(body.error);
     sessions.delete('sess-001');
   });
@@ -186,7 +208,10 @@ describe('POST /hooks/agent-event — validation', () => {
 
 describe('POST /hooks/agent-event — successful events', () => {
   before(() => {
-    sessions.set('sess-002', makeSession({ id: 'sess-002', hookToken: 'valid-token-2' }));
+    sessions.set(
+      'sess-002',
+      makeSession({ id: 'sess-002', hookToken: 'valid-token-2' })
+    );
   });
 
   after(() => {
@@ -198,76 +223,138 @@ describe('POST /hooks/agent-event — successful events', () => {
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-002', token: 'valid-token-2', eventType: 'some.custom.event' }),
+      body: JSON.stringify({
+        sessionId: 'sess-002',
+        token: 'valid-token-2',
+        eventType: 'some.custom.event',
+      }),
     });
     assert.equal(res.status, 204);
   });
 
   it('maps session.started to processing state', async () => {
-    const session = makeSession({ id: 'sess-003', hookToken: 'tok-003', agentState: 'idle' });
+    const session = makeSession({
+      id: 'sess-003',
+      hookToken: 'tok-003',
+      agentState: 'idle',
+    });
     sessions.set('sess-003', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-003', token: 'tok-003', eventType: 'session.started' }),
+      body: JSON.stringify({
+        sessionId: 'sess-003',
+        token: 'tok-003',
+        eventType: 'session.started',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'processing', 'session.started should transition state to processing');
-    assert.ok(backendStateCalls.length > 0, 'fireBackendStateIfChanged should have been called');
+    assert.equal(
+      session.agentState,
+      'processing',
+      'session.started should transition state to processing'
+    );
+    assert.ok(
+      backendStateCalls.length > 0,
+      'fireBackendStateIfChanged should have been called'
+    );
     sessions.delete('sess-003');
   });
 
   it('maps session.idle to idle state', async () => {
-    const session = makeSession({ id: 'sess-004', hookToken: 'tok-004', agentState: 'processing' });
+    const session = makeSession({
+      id: 'sess-004',
+      hookToken: 'tok-004',
+      agentState: 'processing',
+    });
     sessions.set('sess-004', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-004', token: 'tok-004', eventType: 'session.idle' }),
+      body: JSON.stringify({
+        sessionId: 'sess-004',
+        token: 'tok-004',
+        eventType: 'session.idle',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'idle', 'session.idle should transition state to idle');
+    assert.equal(
+      session.agentState,
+      'idle',
+      'session.idle should transition state to idle'
+    );
     sessions.delete('sess-004');
   });
 
   it('maps session.ended to idle state', async () => {
-    const session = makeSession({ id: 'sess-005', hookToken: 'tok-005', agentState: 'processing' });
+    const session = makeSession({
+      id: 'sess-005',
+      hookToken: 'tok-005',
+      agentState: 'processing',
+    });
     sessions.set('sess-005', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-005', token: 'tok-005', eventType: 'session.ended' }),
+      body: JSON.stringify({
+        sessionId: 'sess-005',
+        token: 'tok-005',
+        eventType: 'session.ended',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'idle', 'session.ended should transition state to idle');
+    assert.equal(
+      session.agentState,
+      'idle',
+      'session.ended should transition state to idle'
+    );
     sessions.delete('sess-005');
   });
 
   it('maps permission.requested to permission-prompt state and notifies attention', async () => {
-    const session = makeSession({ id: 'sess-006', hookToken: 'tok-006', agentState: 'processing' });
+    const session = makeSession({
+      id: 'sess-006',
+      hookToken: 'tok-006',
+      agentState: 'processing',
+    });
     sessions.set('sess-006', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-006', token: 'tok-006', eventType: 'permission.requested' }),
+      body: JSON.stringify({
+        sessionId: 'sess-006',
+        token: 'tok-006',
+        eventType: 'permission.requested',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'permission-prompt', 'permission.requested should transition to permission-prompt');
-    assert.ok(attentionCalls.length > 0, 'notifySessionAttention should have been called');
+    assert.equal(
+      session.agentState,
+      'permission-prompt',
+      'permission.requested should transition to permission-prompt'
+    );
+    assert.ok(
+      attentionCalls.length > 0,
+      'notifySessionAttention should have been called'
+    );
     assert.equal(attentionCalls[0]?.sessionId, 'sess-006');
     sessions.delete('sess-006');
   });
 
   it('maps tool.started to processing state and sets currentActivity', async () => {
-    const session = makeSession({ id: 'sess-007', hookToken: 'tok-007', agentState: 'idle' });
+    const session = makeSession({
+      id: 'sess-007',
+      hookToken: 'tok-007',
+      agentState: 'idle',
+    });
     sessions.set('sess-007', session);
     clearTracking();
 
@@ -282,7 +369,11 @@ describe('POST /hooks/agent-event — successful events', () => {
       }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'processing', 'tool.started should transition to processing');
+    assert.equal(
+      session.agentState,
+      'processing',
+      'tool.started should transition to processing'
+    );
     assert.ok(session.currentActivity, 'currentActivity should be set');
     assert.equal(session.currentActivity?.tool, 'Read');
     sessions.delete('sess-007');
@@ -301,30 +392,54 @@ describe('POST /hooks/agent-event — successful events', () => {
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-008', token: 'tok-008', eventType: 'tool.finished' }),
+      body: JSON.stringify({
+        sessionId: 'sess-008',
+        token: 'tok-008',
+        eventType: 'tool.finished',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.currentActivity, undefined, 'tool.finished should clear currentActivity');
+    assert.equal(
+      session.currentActivity,
+      undefined,
+      'tool.finished should clear currentActivity'
+    );
     sessions.delete('sess-008');
   });
 
   it('maps prompt.submitted to processing state', async () => {
-    const session = makeSession({ id: 'sess-009', hookToken: 'tok-009', agentState: 'idle' });
+    const session = makeSession({
+      id: 'sess-009',
+      hookToken: 'tok-009',
+      agentState: 'idle',
+    });
     sessions.set('sess-009', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-009', token: 'tok-009', eventType: 'prompt.submitted' }),
+      body: JSON.stringify({
+        sessionId: 'sess-009',
+        token: 'tok-009',
+        eventType: 'prompt.submitted',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'processing', 'prompt.submitted should transition to processing');
+    assert.equal(
+      session.agentState,
+      'processing',
+      'prompt.submitted should transition to processing'
+    );
     sessions.delete('sess-009');
   });
 
   it('maps state.changed with status=error to error state', async () => {
-    const session = makeSession({ id: 'sess-010', hookToken: 'tok-010', agentState: 'processing' });
+    const session = makeSession({
+      id: 'sess-010',
+      hookToken: 'tok-010',
+      agentState: 'processing',
+    });
     sessions.set('sess-010', session);
     clearTracking();
 
@@ -339,7 +454,11 @@ describe('POST /hooks/agent-event — successful events', () => {
       }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'error', 'state.changed with status=error should set error state');
+    assert.equal(
+      session.agentState,
+      'error',
+      'state.changed with status=error should set error state'
+    );
     sessions.delete('sess-010');
   });
 
@@ -363,17 +482,29 @@ describe('POST /hooks/agent-event — successful events', () => {
   });
 
   it('does not change state for unrecognized eventType', async () => {
-    const session = makeSession({ id: 'sess-012', hookToken: 'tok-012', agentState: 'idle' });
+    const session = makeSession({
+      id: 'sess-012',
+      hookToken: 'tok-012',
+      agentState: 'idle',
+    });
     sessions.set('sess-012', session);
     clearTracking();
 
     const res = await fetch(url('/agent-event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'sess-012', token: 'tok-012', eventType: 'custom.unknown.event' }),
+      body: JSON.stringify({
+        sessionId: 'sess-012',
+        token: 'tok-012',
+        eventType: 'custom.unknown.event',
+      }),
     });
     assert.equal(res.status, 204);
-    assert.equal(session.agentState, 'idle', 'unrecognized eventType should not change state');
+    assert.equal(
+      session.agentState,
+      'idle',
+      'unrecognized eventType should not change state'
+    );
     sessions.delete('sess-012');
   });
 });

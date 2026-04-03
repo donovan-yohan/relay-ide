@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './SplitPaneLayout.css';
 
 const MIN_RIGHT_SIDEBAR_WIDTH = 200;
@@ -44,50 +44,61 @@ export function SplitPaneLayout({
 
   const rightSidebarEffectiveWidth = rightSidebarCollapsed ? 0 : rightSidebarWidthValue;
 
+  // Use refs for values needed in document-level listeners
+  const draggingRef = useRef(dragging);
+  draggingRef.current = dragging;
+  const rightSidebarEffectiveWidthRef = useRef(rightSidebarEffectiveWidth);
+  rightSidebarEffectiveWidthRef.current = rightSidebarEffectiveWidth;
+
   const handlePointerDown = useCallback(
     (handle: 'right-sidebar' | 'file-viewer', e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       setDragging(handle);
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     []
   );
 
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!dragging || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+  // Document-level listeners for drag — avoids pointer capture + React delegation issues
+  useEffect(() => {
+    if (!dragging) return;
 
-      if (dragging === 'right-sidebar') {
-        const rightEdge = rect.right;
-        const newRightWidth = rightEdge - e.clientX;
+    function onMove(e: PointerEvent) {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const currentDragging = draggingRef.current;
+
+      if (currentDragging === 'right-sidebar') {
+        const newRightWidth = rect.right - e.clientX;
         const clamped = Math.max(MIN_RIGHT_SIDEBAR_WIDTH, Math.min(MAX_RIGHT_SIDEBAR_WIDTH, newRightWidth));
         setInternalRightSidebarWidth(clamped);
         onRightSidebarWidthChange?.(clamped);
-      } else if (dragging === 'file-viewer') {
-        const available = rect.width - rightSidebarEffectiveWidth;
-        const fileViewerWidth = rect.right - rightSidebarEffectiveWidth - e.clientX;
+      } else if (currentDragging === 'file-viewer') {
+        const rsw = rightSidebarEffectiveWidthRef.current;
+        const available = rect.width - rsw;
+        const fileViewerWidth = rect.right - rsw - e.clientX;
         const terminalWidth = e.clientX - rect.left;
         if (terminalWidth < MIN_TERMINAL_WIDTH || fileViewerWidth < MIN_FILE_VIEWER_WIDTH) return;
         const ratio = fileViewerWidth / available;
         setInternalFileViewerRatio(ratio);
         onFileViewerRatioChange?.(ratio);
       }
-    },
-    [dragging, rightSidebarEffectiveWidth, onRightSidebarWidthChange, onFileViewerRatioChange]
-  );
+    }
 
-  const handlePointerUp = useCallback(() => {
-    setDragging(null);
-  }, []);
+    function onUp() {
+      setDragging(null);
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    };
+  }, [dragging, onRightSidebarWidthChange, onFileViewerRatioChange]);
 
   return (
-    <div
-      className="split-pane-layout"
-      ref={containerRef}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-    >
+    <div className="split-pane-layout" ref={containerRef}>
       <div
         className="pane-terminal"
         style={{ flex: fileViewerOpen ? String(1 - fileViewerRatioValue) : '1' }}
