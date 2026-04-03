@@ -251,7 +251,7 @@ describe('POST /hooks/agent-event — successful events', () => {
     });
     expect(res.status).toBe(204);
     expect(session.agentState).toBe('processing');
-    expect(backendStateCalls.length > 0).toBeTruthy();
+    expect(backendStateCalls.length).toBeGreaterThan(0);
     sessions.delete('sess-003');
   });
 
@@ -321,7 +321,7 @@ describe('POST /hooks/agent-event — successful events', () => {
     });
     expect(res.status).toBe(204);
     expect(session.agentState).toBe('permission-prompt');
-    expect(attentionCalls.length > 0).toBeTruthy();
+    expect(attentionCalls.length).toBeGreaterThan(0);
     expect(attentionCalls[0]?.sessionId).toBe('sess-006');
     sessions.delete('sess-006');
   });

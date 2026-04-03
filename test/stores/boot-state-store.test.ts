@@ -46,7 +46,7 @@ describe('boot-state Zustand store', () => {
       const state = useBootStateStore.getState();
       expect(state.phase).toBe('greeting');
       expect(state.lines.length).toBe(5);
-      expect(state.greeting.length > 0).toBeTruthy();
+      expect(state.greeting.length).toBeGreaterThan(0);
     });
 
     it('creates 5 boot lines for all services', () => {

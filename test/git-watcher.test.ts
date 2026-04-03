@@ -94,7 +94,7 @@ describe('GitWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    expect(!emitted).toBeTruthy();
+    expect(emitted).toBeFalsy();
 
     watcher.close();
   });

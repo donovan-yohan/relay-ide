@@ -25,7 +25,7 @@ test('browser command with no args prints usage and exits 1', () => {
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
     expect(e.status).toBe(1);
-    expect((e.stderr ?? '').includes('Usage')).toBeTruthy();
+    expect(e.stderr ?? '').toContain('Usage');
   }
 });
 
@@ -39,12 +39,12 @@ test('browser --help shows usage and exits 0', () => {
         env: { ...process.env, PATH: process.env.PATH },
       }
     );
-    expect(output.includes('Usage') || output.includes('browser')).toBeTruthy();
+    expect(output.includes('Usage') || output.includes('browser')).toBe(true);
   } catch (err) {
     const e = err as { status?: number; stdout?: string; stderr?: string };
     // --help may print to stderr
     const out = (e.stdout ?? '') + (e.stderr ?? '');
-    expect(out.includes('Usage') || out.includes('browser')).toBeTruthy();
+    expect(out.includes('Usage') || out.includes('browser')).toBe(true);
   }
 });
 
@@ -66,12 +66,12 @@ test('browser command fails gracefully when server is not running', () => {
     throw new Error('Should have exited with error');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
-    expect(e.status !== 0).toBeTruthy();
+    expect(e.status).not.toBe(0);
     expect(
       (e.stderr ?? '').includes('connect') ||
         (e.stderr ?? '').includes('ECONNREFUSED') ||
         (e.stderr ?? '').includes('Error')
-    ).toBeTruthy();
+    ).toBe(true);
   }
 });
 
@@ -93,7 +93,7 @@ test('browser command fails when token not set', () => {
     throw new Error('Should have exited with error');
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
-    expect(e.status !== 0).toBeTruthy();
-    expect((e.stderr ?? '').includes('RELAY_IDE_BROWSER_TOKEN')).toBeTruthy();
+    expect(e.status).not.toBe(0);
+    expect(e.stderr ?? '').toContain('RELAY_IDE_BROWSER_TOKEN');
   }
 });

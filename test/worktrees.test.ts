@@ -37,20 +37,6 @@ describe('isValidWorktreePath', () => {
   });
 });
 
-describe('branch name to directory name', () => {
-  it('should replace slashes with dashes', () => {
-    const branchName = 'dy/feat/my-feature';
-    const dirName = branchName.replace(/\//g, '-');
-    expect(dirName).toBe('dy-feat-my-feature');
-  });
-
-  it('should leave flat branch names unchanged', () => {
-    const branchName = 'my-feature';
-    const dirName = branchName.replace(/\//g, '-');
-    expect(dirName).toBe('my-feature');
-  });
-});
-
 describe('parseWorktreeListPorcelain', () => {
   const repoPath = '/Users/me/code/my-repo';
 
@@ -413,18 +399,18 @@ describe('CLI worktree arg parsing', () => {
 
 describe('mountain name collision retry', () => {
   it('MOUNTAIN_NAMES is a non-empty array of strings', () => {
-    expect(Array.isArray(MOUNTAIN_NAMES)).toBeTruthy();
-    expect(MOUNTAIN_NAMES.length > 0).toBeTruthy();
+    expect(MOUNTAIN_NAMES).toBeInstanceOf(Array);
+    expect(MOUNTAIN_NAMES.length).toBeGreaterThan(0);
     for (const name of MOUNTAIN_NAMES) {
       expect(typeof name).toBe('string');
-      expect(name.length > 0).toBeTruthy();
+      expect(name.length).toBeGreaterThan(0);
     }
   });
 
   it('MOUNTAIN_NAMES contains expected well-known peaks', () => {
-    expect(MOUNTAIN_NAMES.includes('everest')).toBeTruthy();
-    expect(MOUNTAIN_NAMES.includes('k2')).toBeTruthy();
-    expect(MOUNTAIN_NAMES.includes('fuji')).toBeTruthy();
+    expect(MOUNTAIN_NAMES).toContain('everest');
+    expect(MOUNTAIN_NAMES).toContain('k2');
+    expect(MOUNTAIN_NAMES).toContain('fuji');
   });
 
   it('collision retry logic skips taken names and selects the next available one', () => {
@@ -445,7 +431,7 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    expect(selected !== null).toBeTruthy();
+    expect(selected).not.toBe(null);
     expect(selected).toBe(MOUNTAIN_NAMES[2]);
     expect(selectedIndex).toBe(2);
   });
@@ -467,7 +453,7 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    expect(selected !== null).toBeTruthy();
+    expect(selected).not.toBe(null);
     // The first candidate tried was lastIndex (taken), so the next is index 0
     expect(selected).toBe(MOUNTAIN_NAMES[0]);
   });
@@ -536,8 +522,8 @@ describe('workspace name from git remote', () => {
     for (const { url, expected } of fixtures) {
       const name = repoNameFromRemoteUrl(url);
       expect(name).toBe(expected);
-      expect(name && name.length > 0).toBeTruthy();
-      expect(name && !name.includes('/')).toBeTruthy();
+      expect(name!.length).toBeGreaterThan(0);
+      expect(name).not.toContain('/');
     }
   });
 });
@@ -548,8 +534,8 @@ describe('repo-scoped tmux naming', () => {
       'relay-ide-nightly',
       'a3b4c5d6-1234-5678'
     );
-    expect(name.includes('relay-ide-nightly')).toBeTruthy();
-    expect(name.includes('a3b4c5d6')).toBeTruthy();
+    expect(name).toContain('relay-ide-nightly');
+    expect(name).toContain('a3b4c5d6');
   });
 
   it('sanitizes branch names with special characters', () => {
@@ -557,8 +543,8 @@ describe('repo-scoped tmux naming', () => {
       'myapp-fix-auth-flow',
       'b4c5d6e7-1234-5678'
     );
-    expect(name.includes('myapp-fix-auth-flow')).toBeTruthy();
-    expect(!/[^a-zA-Z0-9-]/.test(name)).toBeTruthy();
+    expect(name).toContain('myapp-fix-auth-flow');
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBe(true);
   });
 
   it('truncates long names to 30 chars before appending id', () => {
@@ -568,7 +554,7 @@ describe('repo-scoped tmux naming', () => {
     const prefix = name
       .replace(/^(?:crcd?-)/, '')
       .replace(/-[a-zA-Z0-9]{8}$/, '');
-    expect(prefix.length <= 30).toBeTruthy();
+    expect(prefix.length).toBeLessThanOrEqual(30);
   });
 
   it('produces no special characters in output', () => {
@@ -576,7 +562,7 @@ describe('repo-scoped tmux naming', () => {
       'repo/with/slashes and spaces',
       'deadbeef-0000-1111'
     );
-    expect(!/[^a-zA-Z0-9-]/.test(name)).toBeTruthy();
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBe(true);
   });
 });
 

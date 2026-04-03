@@ -97,10 +97,10 @@ describe('getFileDiff', () => {
       undefined,
       async (_file, args) => {
         expect(args[0]).toBe('diff');
-        expect(args.includes('--unified=3')).toBeTruthy();
-        expect(args.includes('--find-renames')).toBeTruthy();
-        expect(args.includes('--')).toBeTruthy();
-        expect(args.includes('server/git.ts')).toBeTruthy();
+        expect(args).toContain('--unified=3');
+        expect(args).toContain('--find-renames');
+        expect(args).toContain('--');
+        expect(args).toContain('server/git.ts');
         return {
           stdout:
             'diff --git a/server/git.ts b/server/git.ts\n--- a/server/git.ts\n+++ b/server/git.ts\n@@ -1,3 +1,4 @@\n+new line\n old\n',
@@ -108,7 +108,7 @@ describe('getFileDiff', () => {
         };
       }
     );
-    expect(diff.includes('new line')).toBeTruthy();
+    expect(diff).toContain('new line');
   });
 
   it('returns staged diff when base is "cached"', async () => {
@@ -117,7 +117,7 @@ describe('getFileDiff', () => {
       'file.ts',
       'cached',
       async (_file, args) => {
-        expect(args.includes('--cached')).toBeTruthy();
+        expect(args).toContain('--cached');
         return { stdout: 'staged diff output', stderr: '' };
       }
     );
@@ -130,7 +130,7 @@ describe('getFileDiff', () => {
       'file.ts',
       'main',
       async (_file, args) => {
-        expect(args.includes('main...HEAD')).toBeTruthy();
+        expect(args).toContain('main...HEAD');
         return { stdout: 'branch diff output', stderr: '' };
       }
     );
@@ -150,14 +150,14 @@ describe('getFileDiff', () => {
           return { stdout: '', stderr: '' };
         }
         // Second call: git diff --no-index exits with code 1 but has stdout
-        expect(args.includes('--no-index')).toBeTruthy();
+        expect(args).toContain('--no-index');
         const err = new Error('exit code 1') as Error & { stdout: string };
         err.stdout =
           'diff --git a/dev/null b/new-file.ts\n+++ b/new-file.ts\n+content\n';
         throw err;
       }
     );
-    expect(diff.includes('+content')).toBeTruthy();
+    expect(diff).toContain('+content');
     expect(callCount).toBe(2);
   });
 

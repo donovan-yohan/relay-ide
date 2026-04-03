@@ -31,7 +31,7 @@ describe('CODEX_EVENTS', () => {
     ];
     expect(CODEX_EVENTS.length).toBe(5);
     for (const ev of expected) {
-      expect((CODEX_EVENTS as readonly string[]).includes(ev)).toBeTruthy();
+      expect(CODEX_EVENTS as readonly string[]).toContain(ev);
     }
   });
 });
@@ -70,7 +70,7 @@ describe('writeCodexHooksAdapter', () => {
       'tok-abc',
       tmpConfigDir
     );
-    expect(typeof result === 'string').toBeTruthy();
+    expect(result).toBeTypeOf('string');
   });
 
   it('creates the temp directory', () => {
@@ -104,7 +104,7 @@ describe('writeCodexHooksAdapter', () => {
     const relayPath = path.join(dir, 'relay.sh');
     const stat = fs.statSync(relayPath);
     // Check owner execute bit (0o100)
-    expect((stat.mode & 0o100) !== 0).toBeTruthy();
+    expect(stat.mode & 0o100).not.toBe(0);
   });
 
   it('creates hooks.json in the temp directory', () => {
@@ -135,7 +135,7 @@ describe('writeCodexHooksAdapter', () => {
       'PostToolUse',
     ];
     for (const ev of expected) {
-      expect(ev in hooks).toBeTruthy();
+      expect(hooks).toHaveProperty(ev);
     }
   });
 
@@ -158,8 +158,8 @@ describe('writeCodexHooksAdapter', () => {
     ];
     for (const ev of expected) {
       const entries = hooks[ev];
-      expect(Array.isArray(entries)).toBeTruthy();
-      expect(entries.length >= 1).toBeTruthy();
+      expect(entries).toBeInstanceOf(Array);
+      expect(entries.length).toBeGreaterThanOrEqual(1);
       const last = entries[entries.length - 1];
       expect(last.type).toBe('command');
       expect(last.command).toBe(relayPath);
@@ -189,8 +189,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('session.json')).toBeTruthy();
-    expect(content.includes('CONFIG_FILE=')).toBeTruthy();
+    expect(content).toContain('session.json');
+    expect(content).toContain('CONFIG_FILE=');
   });
 
   it('relay.sh posts to /hooks/agent-event', () => {
@@ -202,7 +202,7 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('/hooks/agent-event')).toBeTruthy();
+    expect(content).toContain('/hooks/agent-event');
   });
 
   it('relay.sh uses best-effort delivery (|| true)', () => {
@@ -214,7 +214,7 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('|| true')).toBeTruthy();
+    expect(content).toContain('|| true');
   });
 
   it('relay.sh maps SessionStart to session.started in the case statement', () => {
@@ -226,8 +226,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('SessionStart')).toBeTruthy();
-    expect(content.includes('session.started')).toBeTruthy();
+    expect(content).toContain('SessionStart');
+    expect(content).toContain('session.started');
   });
 
   it('relay.sh maps Stop to session.ended in the case statement', () => {
@@ -239,8 +239,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('Stop')).toBeTruthy();
-    expect(content.includes('session.ended')).toBeTruthy();
+    expect(content).toContain('Stop');
+    expect(content).toContain('session.ended');
   });
 
   it('relay.sh maps UserPromptSubmit to prompt.submitted in the case statement', () => {
@@ -252,8 +252,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('UserPromptSubmit')).toBeTruthy();
-    expect(content.includes('prompt.submitted')).toBeTruthy();
+    expect(content).toContain('UserPromptSubmit');
+    expect(content).toContain('prompt.submitted');
   });
 
   it('relay.sh maps PreToolUse to tool.started in the case statement', () => {
@@ -265,8 +265,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('PreToolUse')).toBeTruthy();
-    expect(content.includes('tool.started')).toBeTruthy();
+    expect(content).toContain('PreToolUse');
+    expect(content).toContain('tool.started');
   });
 
   it('relay.sh maps PostToolUse to tool.finished in the case statement', () => {
@@ -278,8 +278,8 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('PostToolUse')).toBeTruthy();
-    expect(content.includes('tool.finished')).toBeTruthy();
+    expect(content).toContain('PostToolUse');
+    expect(content).toContain('tool.finished');
   });
 
   it('relay.sh has a shebang line', () => {
@@ -291,7 +291,7 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.startsWith('#!/usr/bin/env bash')).toBeTruthy();
+    expect(content.startsWith('#!/usr/bin/env bash')).toBe(true);
   });
 
   it('temp directory path includes the sessionId', () => {
@@ -302,7 +302,7 @@ describe('writeCodexHooksAdapter', () => {
       'tok-abc',
       tmpConfigDir
     );
-    expect(dir.includes(sessionId)).toBeTruthy();
+    expect(dir).toContain(sessionId);
   });
 
   it('is idempotent — calling twice for same sessionId returns consistent results', () => {
@@ -362,8 +362,8 @@ describe('writeCodexHooksAdapter', () => {
         'PostToolUse',
       ];
       for (const ev of expected) {
-        expect(Array.isArray(hooks[ev])).toBeTruthy();
-        expect(hooks[ev].length >= 1).toBeTruthy();
+        expect(hooks[ev]).toBeInstanceOf(Array);
+        expect(hooks[ev].length).toBeGreaterThanOrEqual(1);
       }
     } finally {
       fs.rmSync(fakeHomeDir, { recursive: true, force: true });
@@ -379,7 +379,7 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('INPUT=$(cat)')).toBeTruthy();
+    expect(content).toContain('INPUT=$(cat)');
   });
 
   it('relay.sh reads HOOK_EVENT_NAME env var', () => {
@@ -391,6 +391,6 @@ describe('writeCodexHooksAdapter', () => {
     );
     const relayPath = path.join(dir, 'relay.sh');
     const content = fs.readFileSync(relayPath, 'utf-8');
-    expect(content.includes('HOOK_EVENT_NAME')).toBeTruthy();
+    expect(content).toContain('HOOK_EVENT_NAME');
   });
 });

@@ -134,7 +134,7 @@ describe('Action Coverage', () => {
   it('all required Action fields are present and well-formed', () => {
     for (const meta of ALL_META) {
       expect(meta.id).toBeTruthy();
-      expect(meta.id.includes('.')).toBeTruthy();
+      expect(meta.id).toContain('.');
       expect(meta.label).toBeTruthy();
       expect(meta.category).toBeTruthy();
       expect(meta.label).toBe(meta.label.toLowerCase());

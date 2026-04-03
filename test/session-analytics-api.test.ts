@@ -92,16 +92,16 @@ test('GET /api/analytics/overview returns summary', async () => {
   expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
   expect(typeof data.totalSessions).toBe('number');
-  expect((data.totalSessions as number) >= 1).toBeTruthy();
+  expect(data.totalSessions as number).toBeGreaterThanOrEqual(1);
   expect(typeof data.totalTokensIn).toBe('number');
-  expect(Array.isArray(data.byRepo)).toBeTruthy();
+  expect(data.byRepo).toBeInstanceOf(Array);
 });
 
 test('GET /api/analytics/sessions returns paginated list', async () => {
   const res = await fetch(url('/sessions?limit=10'));
   expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  expect(Array.isArray(data.sessions)).toBeTruthy();
+  expect(data.sessions).toBeInstanceOf(Array);
   expect(typeof data.total).toBe('number');
   expect(typeof data.offset).toBe('number');
   expect(typeof data.limit).toBe('number');
@@ -113,7 +113,7 @@ test('GET /api/analytics/sessions/:id returns session detail', async () => {
   const data = (await res.json()) as Record<string, unknown>;
   expect(data.session).toBeTruthy();
   expect(data.toolBreakdown).toBeTruthy();
-  expect(Array.isArray(data.events)).toBeTruthy();
+  expect(data.events).toBeInstanceOf(Array);
   expect(data.engagementBreakdown).toBeTruthy();
 });
 
@@ -126,7 +126,7 @@ test('GET /api/analytics/trends returns daily data', async () => {
   const res = await fetch(url('/trends?days=7'));
   expect(res.status).toBe(200);
   const data = (await res.json()) as Record<string, unknown>;
-  expect(Array.isArray(data.days)).toBeTruthy();
+  expect(data.days).toBeInstanceOf(Array);
 });
 
 test('GET /api/analytics/tools returns tool breakdown', async () => {
@@ -135,15 +135,15 @@ test('GET /api/analytics/tools returns tool breakdown', async () => {
   const data = (await res.json()) as {
     tools: Array<{ name: string; totalUses: number; pctOfUses: number }>;
   };
-  expect(Array.isArray(data.tools)).toBeTruthy();
+  expect(data.tools).toBeInstanceOf(Array);
   // We seeded 2 tool_use events (Read + Edit)
-  expect(data.tools.length >= 1).toBeTruthy();
+  expect(data.tools.length).toBeGreaterThanOrEqual(1);
 });
 
 test('GET /api/analytics/rate-limits returns snapshots', async () => {
   const res = await fetch(url('/rate-limits?hours=24'));
   expect(res.status).toBe(200);
   const data = (await res.json()) as { snapshots: unknown[] };
-  expect(Array.isArray(data.snapshots)).toBeTruthy();
-  expect(data.snapshots.length >= 1).toBeTruthy();
+  expect(data.snapshots).toBeInstanceOf(Array);
+  expect(data.snapshots.length).toBeGreaterThanOrEqual(1);
 });

@@ -94,21 +94,21 @@ describe('terminal zoom', () => {
     it('returns fewer cols/rows at larger font sizes', () => {
       const normal = scaledTerminalDimensions(1920, 1080, 14);
       const large = scaledTerminalDimensions(1920, 1080, 28);
-      expect(large.cols < normal.cols).toBeTruthy();
-      expect(large.rows < normal.rows).toBeTruthy();
+      expect(large.cols).toBeLessThan(normal.cols);
+      expect(large.rows).toBeLessThan(normal.rows);
     });
 
     it('returns more cols/rows at smaller font sizes', () => {
       const normal = scaledTerminalDimensions(1920, 1080, 14);
       const small = scaledTerminalDimensions(1920, 1080, 8);
-      expect(small.cols > normal.cols).toBeTruthy();
-      expect(small.rows > normal.rows).toBeTruthy();
+      expect(small.cols).toBeGreaterThan(normal.cols);
+      expect(small.rows).toBeGreaterThan(normal.rows);
     });
 
     it('enforces minimums on small screens', () => {
       const dims = scaledTerminalDimensions(100, 100, 28);
-      expect(dims.cols >= 80).toBeTruthy();
-      expect(dims.rows >= 24).toBeTruthy();
+      expect(dims.cols).toBeGreaterThanOrEqual(80);
+      expect(dims.rows).toBeGreaterThanOrEqual(24);
     });
 
     it('scales linearly with font size', () => {
@@ -117,7 +117,8 @@ describe('terminal zoom', () => {
       // At 2x font size, char width doubles, so cols should approximately halve
       // (not exactly due to the (width - 60) offset and Math.floor)
       const ratio = at14.cols / at28.cols;
-      expect(ratio > 1.8 && ratio < 2.2).toBeTruthy();
+      expect(ratio).toBeGreaterThan(1.8);
+      expect(ratio).toBeLessThan(2.2);
     });
   });
 });

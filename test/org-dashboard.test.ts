@@ -11,6 +11,7 @@ import {
 } from '../server/org-dashboard.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { PullRequestsResponse } from '../server/types.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // Loose mock type — cast to OrgDashboardDeps['execAsync'] at call sites
 type MockExec = (
@@ -103,32 +104,26 @@ function makeSearchItem(overrides: {
   };
 }
 
-function startServer(execAsyncFn: MockExec): Promise<void> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
-    // Cast through unknown: the mock satisfies the runtime contract but the
-    // overloaded promisify types don't align across module instances.
-    const deps = {
-      configPath,
-      execAsync: execAsyncFn,
-    } as unknown as OrgDashboardDeps;
-    app.use('/org-dashboard', createOrgDashboardRouter(deps));
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+async function startServer(execAsyncFn: MockExec): Promise<void> {
+  const app = express();
+  app.use(express.json());
+  // Cast through unknown: the mock satisfies the runtime contract but the
+  // overloaded promisify types don't align across module instances.
+  const deps = {
+    configPath,
+    execAsync: execAsyncFn,
+  } as unknown as OrgDashboardDeps;
+  app.use('/org-dashboard', createOrgDashboardRouter(deps));
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function getPrs(): Promise<PullRequestsResponse> {
@@ -396,29 +391,18 @@ test('uses GraphQL path when github accessToken is in config', async () => {
     remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
   });
 
-  let gqlServer: Server | undefined;
-  let gqlBaseUrl: string;
-
-  await new Promise<void>((resolve) => {
-    const app = express();
-    app.use(express.json());
-    const deps = {
-      configPath: gqlConfigPath,
-      execAsync: exec,
-      fetchGraphQL: mockFetchGraphQL,
-    } as unknown as OrgDashboardDeps;
-    app.use('/org-dashboard', createOrgDashboardRouter(deps));
-    gqlServer = app.listen(0, '127.0.0.1', () => {
-      const addr = gqlServer!.address();
-      if (typeof addr === 'object' && addr) {
-        gqlBaseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+  const gqlApp = express();
+  gqlApp.use(express.json());
+  const deps = {
+    configPath: gqlConfigPath,
+    execAsync: exec,
+    fetchGraphQL: mockFetchGraphQL,
+  } as unknown as OrgDashboardDeps;
+  gqlApp.use('/org-dashboard', createOrgDashboardRouter(deps));
+  const { url: gqlBaseUrl, close: closeGql } = await createTestServer(gqlApp);
 
   try {
-    const res = await fetch(`${gqlBaseUrl!}/org-dashboard/prs`);
+    const res = await fetch(`${gqlBaseUrl}/org-dashboard/prs`);
     const data = (await res.json()) as PullRequestsResponse;
 
     expect(data.error).toBe(undefined);
@@ -430,10 +414,7 @@ test('uses GraphQL path when github accessToken is in config', async () => {
     expect(capturedToken).toBe('ghp_test123');
     expect(capturedRepoMap instanceof Map).toBeTruthy();
   } finally {
-    await new Promise<void>((resolve) => {
-      if (gqlServer) gqlServer.close(() => resolve());
-      else resolve();
-    });
+    await closeGql();
     fs.rmSync(gqlTmpDir, { recursive: true, force: true });
   }
 });

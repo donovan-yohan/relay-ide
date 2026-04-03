@@ -41,7 +41,7 @@ test('initAnalytics creates session_events table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  expect(tables.some((t) => t.name === 'session_events')).toBeTruthy();
+  expect(tables.some((t) => t.name === 'session_events')).toBe(true);
   db.close();
 });
 
@@ -51,7 +51,7 @@ test('initAnalytics creates session_rollups table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  expect(tables.some((t) => t.name === 'session_rollups')).toBeTruthy();
+  expect(tables.some((t) => t.name === 'session_rollups')).toBe(true);
   db.close();
 });
 
@@ -61,7 +61,7 @@ test('initAnalytics creates rate_limit_snapshots table', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  expect(tables.some((t) => t.name === 'rate_limit_snapshots')).toBeTruthy();
+  expect(tables.some((t) => t.name === 'rate_limit_snapshots')).toBe(true);
   db.close();
 });
 
@@ -71,7 +71,7 @@ test('initAnalytics creates schema_version table at version 2', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  expect(tables.some((t) => t.name === 'schema_version')).toBeTruthy();
+  expect(tables.some((t) => t.name === 'schema_version')).toBe(true);
   const version = db.prepare('SELECT version FROM schema_version').get() as {
     version: number;
   };

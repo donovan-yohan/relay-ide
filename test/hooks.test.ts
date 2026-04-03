@@ -149,7 +149,7 @@ describe('fireStateChange callbacks', () => {
 
     fireStateChange('multi-cb-session', 'idle');
 
-    expect(count >= 2).toBeTruthy();
+    expect(count).toBeGreaterThanOrEqual(2);
   });
 
   it('passes idle state to callback', () => {

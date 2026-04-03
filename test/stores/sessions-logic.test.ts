@@ -159,9 +159,9 @@ describe('sessions store pure logic', () => {
     it('returns direct sessions + repo sessions for workspace', () => {
       const result = getSessionsForWorkspaceGroup(sessions, groups, 'ws-1');
       expect(result.length).toBe(3); // s1 (direct), s2 (repo/a), s3 (repo/b)
-      expect(result.some((s) => s.id === 's1')).toBeTruthy();
-      expect(result.some((s) => s.id === 's2')).toBeTruthy();
-      expect(result.some((s) => s.id === 's3')).toBeTruthy();
+      expect(result.some((s) => s.id === 's1')).toBe(true);
+      expect(result.some((s) => s.id === 's2')).toBe(true);
+      expect(result.some((s) => s.id === 's3')).toBe(true);
     });
 
     it('returns only direct sessions for unknown workspace', () => {

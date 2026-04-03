@@ -241,6 +241,6 @@ test('EventSourceType values are used correctly in BUILTIN_FRAMEWORKS', () => {
     'timer',
   ];
   for (const fw of Object.values(BUILTIN_FRAMEWORKS)) {
-    expect(validSources.includes(fw.eventSource)).toBeTruthy();
+    expect(validSources).toContain(fw.eventSource);
   }
 });

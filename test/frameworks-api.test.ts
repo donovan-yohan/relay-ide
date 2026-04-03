@@ -1,15 +1,15 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import express from 'express';
-import http from 'node:http';
 import { BUILTIN_FRAMEWORKS } from '../server/types.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
 // Minimal express app that mounts just the /api/frameworks route
 // (mirrors how server/index.ts registers it, without the full server bootstrap)
 // ---------------------------------------------------------------------------
 
-let server: http.Server;
-let port: number;
+let baseUrl: string;
+let closeServer: () => Promise<void>;
 
 beforeAll(async () => {
   const app = express();
@@ -27,17 +27,15 @@ beforeAll(async () => {
     res.json({ frameworks });
   });
 
-  server = http.createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  port = (server.address() as { port: number }).port;
+  const result = await createTestServer(app);
+  baseUrl = result.url;
+  closeServer = result.close;
 });
 
-afterAll(() => {
-  server.close();
-});
+afterAll(() => closeServer());
 
 function url(p: string): string {
-  return `http://127.0.0.1:${port}${p}`;
+  return `${baseUrl}${p}`;
 }
 
 describe('GET /api/frameworks', () => {
@@ -45,16 +43,16 @@ describe('GET /api/frameworks', () => {
     const res = await fetch(url('/api/frameworks'));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { frameworks: unknown[] };
-    expect(Array.isArray(body.frameworks)).toBeTruthy();
+    expect(body.frameworks).toBeInstanceOf(Array);
   });
 
   it('returns all three builtin frameworks', async () => {
     const res = await fetch(url('/api/frameworks'));
     const body = (await res.json()) as { frameworks: Array<{ id: string }> };
     const ids = body.frameworks.map((f) => f.id);
-    expect(ids.includes('claude')).toBeTruthy();
-    expect(ids.includes('codex')).toBeTruthy();
-    expect(ids.includes('opencode')).toBeTruthy();
+    expect(ids).toContain('claude');
+    expect(ids).toContain('codex');
+    expect(ids).toContain('opencode');
   });
 
   it('each framework entry has id, displayName, command, capabilities, eventSource', async () => {
@@ -69,21 +67,17 @@ describe('GET /api/frameworks', () => {
       }>;
     };
     for (const fw of body.frameworks) {
-      expect(typeof fw.id === 'string').toBeTruthy();
-      expect(typeof fw.displayName === 'string').toBeTruthy();
-      expect(typeof fw.command === 'string').toBeTruthy();
-      expect(typeof fw.eventSource === 'string').toBeTruthy();
+      expect(fw.id).toBeTypeOf('string');
+      expect(fw.displayName).toBeTypeOf('string');
+      expect(fw.command).toBeTypeOf('string');
+      expect(fw.eventSource).toBeTypeOf('string');
       expect(
         fw.capabilities && typeof fw.capabilities === 'object'
       ).toBeTruthy();
-      expect(typeof fw.capabilities.supportsHooks === 'boolean').toBeTruthy();
-      expect(
-        typeof fw.capabilities.supportsContinue === 'boolean'
-      ).toBeTruthy();
-      expect(typeof fw.capabilities.supportsYolo === 'boolean').toBeTruthy();
-      expect(
-        typeof fw.capabilities.supportsTelemetry === 'boolean'
-      ).toBeTruthy();
+      expect(fw.capabilities.supportsHooks).toBeTypeOf('boolean');
+      expect(fw.capabilities.supportsContinue).toBeTypeOf('boolean');
+      expect(fw.capabilities.supportsYolo).toBeTypeOf('boolean');
+      expect(fw.capabilities.supportsTelemetry).toBeTypeOf('boolean');
     }
   });
 

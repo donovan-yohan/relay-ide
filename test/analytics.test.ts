@@ -38,7 +38,7 @@ test('initAnalytics creates database and schema', () => {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all() as { name: string }[];
-  expect(tables.some((t) => t.name === 'events')).toBeTruthy();
+  expect(tables.some((t) => t.name === 'events')).toBe(true);
   db.close();
 });
 
@@ -100,14 +100,14 @@ test('trackEvent is no-op before initAnalytics', () => {
 test('getDbSize returns file size after writes', () => {
   initAnalytics(tmpDir);
   const sizeBefore = getDbSize(tmpDir);
-  expect(sizeBefore > 0).toBeTruthy();
+  expect(sizeBefore).toBeGreaterThan(0);
 
   for (let i = 0; i < 10; i++) {
     trackEvent({ category: 'bulk', action: 'test', properties: { i } });
   }
 
   const sizeAfter = getDbSize(tmpDir);
-  expect(sizeAfter >= sizeBefore).toBeTruthy();
+  expect(sizeAfter).toBeGreaterThanOrEqual(sizeBefore);
 });
 
 test('getDbSize returns 0 for non-existent path', () => {
@@ -175,7 +175,7 @@ test('GET /analytics/size returns bytes', async () => {
 
   const res = await fetch(`http://localhost:${port}/analytics/size`);
   const data = (await res.json()) as { bytes: number };
-  expect(data.bytes > 0).toBeTruthy();
+  expect(data.bytes).toBeGreaterThan(0);
 
   server.close();
 });

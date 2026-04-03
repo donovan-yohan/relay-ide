@@ -54,8 +54,8 @@ describe('buildChangedFilesTree', () => {
     const tree = buildChangedFilesTree(files);
     // a/b/c should collapse into one node "a/b/c"
     expect(tree.length).toBe(1);
-    expect(tree[0]!.name.includes('a')).toBeTruthy();
-    expect(tree[0]!.name.includes('c')).toBeTruthy();
+    expect(tree[0]!.name).toContain('a');
+    expect(tree[0]!.name).toContain('c');
   });
 
   test('sorts directories before files', () => {

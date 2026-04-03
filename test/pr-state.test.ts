@@ -322,8 +322,8 @@ describe('getActionPrompt', () => {
       { branchName: 'feat/my-feature' }
     );
     expect(prompt).toBeTruthy();
-    expect(prompt!.includes('feat/my-feature')).toBeTruthy();
-    expect(prompt!.includes('pull request')).toBeTruthy();
+    expect(prompt!).toContain('feat/my-feature');
+    expect(prompt!).toContain('pull request');
   });
 
   it('returns prompt for fix-errors', () => {
@@ -332,8 +332,8 @@ describe('getActionPrompt', () => {
       { branchName: 'bugfix/auth' }
     );
     expect(prompt).toBeTruthy();
-    expect(prompt!.includes('bugfix/auth')).toBeTruthy();
-    expect(prompt!.includes('failing')).toBeTruthy();
+    expect(prompt!).toContain('bugfix/auth');
+    expect(prompt!).toContain('failing');
   });
 
   it('returns prompt for review-pr', () => {
@@ -342,7 +342,7 @@ describe('getActionPrompt', () => {
       { branchName: 'main', prNumber: 42 }
     );
     expect(prompt).toBeTruthy();
-    expect(prompt!.includes('Review')).toBeTruthy();
+    expect(prompt!).toContain('Review');
   });
 
   it('returns prompt for fix-conflicts', () => {
@@ -351,8 +351,8 @@ describe('getActionPrompt', () => {
       { branchName: 'feat/foo', baseBranch: 'main' }
     );
     expect(prompt).toBeTruthy();
-    expect(prompt!.includes('main')).toBeTruthy();
-    expect(prompt!.includes('conflict')).toBeTruthy();
+    expect(prompt!).toContain('main');
+    expect(prompt!).toContain('conflict');
   });
 
   it('returns prompt for resolve-comments', () => {
@@ -365,8 +365,8 @@ describe('getActionPrompt', () => {
       { branchName: 'feat/foo', prNumber: 7, unresolvedCommentCount: 3 }
     );
     expect(prompt).toBeTruthy();
-    expect(prompt!.includes('3')).toBeTruthy();
-    expect(prompt!.includes('#7')).toBeTruthy();
+    expect(prompt!).toContain('3');
+    expect(prompt!).toContain('#7');
   });
 
   it('returns null for archive actions', () => {

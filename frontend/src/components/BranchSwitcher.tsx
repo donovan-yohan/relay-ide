@@ -1,6 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { fetchBranches, switchBranch } from '../lib/api.js';
 import type { BranchInfo } from '../lib/types.js';
+import useClickOutside from '../lib/hooks/useClickOutside.js';
 import CipherText from './CipherText';
 import TuiMenuItem from './TuiMenuItem';
 import TuiMenuPanel from './TuiMenuPanel';
@@ -69,25 +76,18 @@ export function BranchSwitcher({
     return () => window.cancelAnimationFrame(raf);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-
-    const handleWindowClick = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (target && wrapperRef.current && !wrapperRef.current.contains(target)) {
-        setOpen(false);
-        setFilterText('');
-      }
-    };
-
-    window.addEventListener('click', handleWindowClick);
-    return () => window.removeEventListener('click', handleWindowClick);
-  }, [open]);
+  const handleClickOutside = useCallback(() => {
+    setOpen(false);
+    setFilterText('');
+  }, []);
+  useClickOutside(wrapperRef, handleClickOutside, open);
 
   const filteredBranches = useMemo(() => {
     if (!filterText.trim()) return branches;
     const lower = filterText.toLowerCase();
-    return branches.filter((branch) => branch.name.toLowerCase().includes(lower));
+    return branches.filter((branch) =>
+      branch.name.toLowerCase().includes(lower)
+    );
   }, [branches, filterText]);
 
   const showCreateOption = useMemo(() => {
@@ -137,7 +137,10 @@ export function BranchSwitcher({
     return branch.checkedOutIn.worktreePath !== currentWorktreePath;
   };
 
-  const handleJump = (branch: BranchInfo, event: React.MouseEvent<HTMLButtonElement>) => {
+  const handleJump = (
+    branch: BranchInfo,
+    event: React.MouseEvent<HTMLButtonElement>
+  ) => {
     event.stopPropagation();
     event.preventDefault();
     if (!branch.checkedOutIn) return;
@@ -149,7 +152,9 @@ export function BranchSwitcher({
     }
   };
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement | HTMLInputElement>) => {
+  const onKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement | HTMLInputElement>
+  ) => {
     if (event.key === 'Escape' && open) {
       closeDropdown();
       event.stopPropagation();
@@ -169,13 +174,31 @@ export function BranchSwitcher({
       >
         <span className="branch-icon">⑂</span>
         <span className="branch-name">{currentBranch}</span>
-        <svg className="branch-caret" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" />
+        <svg
+          className="branch-caret"
+          width="10"
+          height="6"
+          viewBox="0 0 10 6"
+          aria-hidden="true"
+        >
+          <path
+            d="M1 1l4 4 4-4"
+            stroke="currentColor"
+            fill="none"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
         </svg>
       </button>
 
       {open ? (
-        <div className="branch-dropdown" role="listbox" tabIndex={-1} aria-label="Branches" onKeyDown={onKeyDown}>
+        <div
+          className="branch-dropdown"
+          role="listbox"
+          tabIndex={-1}
+          aria-label="Branches"
+          onKeyDown={onKeyDown}
+        >
           <TuiMenuPanel>
             <div className="branch-filter-wrap">
               <input
@@ -190,7 +213,9 @@ export function BranchSwitcher({
               />
             </div>
 
-            {switchError ? <div className="branch-error">{switchError}</div> : null}
+            {switchError ? (
+              <div className="branch-error">{switchError}</div>
+            ) : null}
 
             {showCreateOption && onCreateBranch ? (
               <div
@@ -223,12 +248,18 @@ export function BranchSwitcher({
                       key={branch.name}
                       role="option"
                       ariaSelected={branch.name === currentBranch}
-                      disabled={checkedOutElsewhere || switching === branch.name}
+                      disabled={
+                        checkedOutElsewhere || switching === branch.name
+                      }
                       onMouseDown={() => void handleSelect(branch.name)}
                     >
                       <>
                         <span className="branch-check">
-                          {branch.name === currentBranch ? '✓' : <span className="branch-check--empty" />}
+                          {branch.name === currentBranch ? (
+                            '✓'
+                          ) : (
+                            <span className="branch-check--empty" />
+                          )}
                         </span>
                         <span
                           className={`branch-option-name${branch.name === currentBranch ? ' branch-current' : ''}${checkedOutElsewhere ? ' branch-checked-out' : ''}`}
@@ -236,25 +267,53 @@ export function BranchSwitcher({
                           {branch.name}
                         </span>
 
-                        {checkedOutElsewhere && branch.checkedOutIn && (onJumpToSession || onStartSession) ? (
+                        {checkedOutElsewhere &&
+                        branch.checkedOutIn &&
+                        (onJumpToSession || onStartSession) ? (
                           <>
-                            <span className="branch-worktree-name">({branch.checkedOutIn.worktreeName})</span>
+                            <span className="branch-worktree-name">
+                              ({branch.checkedOutIn.worktreeName})
+                            </span>
                             <button
                               className="branch-jump-btn"
                               title="Jump to worktree"
                               type="button"
                               onMouseDown={(event) => handleJump(branch, event)}
                             >
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                                <path d="M4.5 2H2.5C2.22 2 2 2.22 2 2.5V9.5C2 9.78 2.22 10 2.5 10H9.5C9.78 10 10 9.78 10 9.5V7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                                <path d="M7 2H10V5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                                <path d="M10 2L5.5 6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                              <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 12 12"
+                                fill="none"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M4.5 2H2.5C2.22 2 2 2.22 2 2.5V9.5C2 9.78 2.22 10 2.5 10H9.5C9.78 10 10 9.78 10 9.5V7.5"
+                                  stroke="currentColor"
+                                  strokeWidth="1.2"
+                                  strokeLinecap="round"
+                                />
+                                <path
+                                  d="M7 2H10V5"
+                                  stroke="currentColor"
+                                  strokeWidth="1.2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path
+                                  d="M10 2L5.5 6.5"
+                                  stroke="currentColor"
+                                  strokeWidth="1.2"
+                                  strokeLinecap="round"
+                                />
                               </svg>
                             </button>
                           </>
                         ) : null}
 
-                        {switching === branch.name ? <span className="branch-spinner">&hellip;</span> : null}
+                        {switching === branch.name ? (
+                          <span className="branch-spinner">&hellip;</span>
+                        ) : null}
                       </>
                     </TuiMenuItem>
                   );

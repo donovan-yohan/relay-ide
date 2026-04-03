@@ -47,7 +47,7 @@ describe('scanWorktrees', () => {
     });
 
     const items = await scanWorktrees(deps);
-    expect(Array.isArray(items)).toBeTruthy();
+    expect(items).toBeInstanceOf(Array);
     // parseWorktreeListPorcelain excludes the main worktree, so only child worktrees are returned
     expect(items.length).toBe(1);
     expect(items[0]!.branchName).toBe('feat/login');
@@ -61,8 +61,8 @@ describe('scanWorktrees', () => {
       expect((wt as unknown as Record<string, unknown>).prTitle).toBe(
         undefined
       );
-      expect(typeof wt.path === 'string').toBeTruthy();
-      expect(typeof wt.branchName === 'string').toBeTruthy();
+      expect(wt.path).toBeTypeOf('string');
+      expect(wt.branchName).toBeTypeOf('string');
     }
   });
 
@@ -103,7 +103,7 @@ describe('scanWorktrees', () => {
 
     // parseWorktreeListPorcelain excludes the main worktree, so only the child is returned
     const items = await scanWorktrees(deps, '/repos/my-repo');
-    expect(Array.isArray(items)).toBeTruthy();
+    expect(items).toBeInstanceOf(Array);
     expect(items.length).toBe(1);
     expect(items[0]!.branchName).toBe('feat/x');
   });
@@ -170,6 +170,6 @@ describe('scanWorktrees', () => {
     });
 
     const items = await scanWorktrees(deps);
-    expect(items.length > 0).toBeTruthy();
+    expect(items.length).toBeGreaterThan(0);
   });
 });

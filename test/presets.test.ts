@@ -89,7 +89,7 @@ afterAll(() => {
 
 describe('DEFAULT_PRESETS', () => {
   test('contains at least two built-in presets', () => {
-    expect(DEFAULT_PRESETS.length >= 2).toBeTruthy();
+    expect(DEFAULT_PRESETS.length).toBeGreaterThanOrEqual(2);
   });
 
   test('all default presets are marked builtIn', () => {
@@ -102,7 +102,7 @@ describe('DEFAULT_PRESETS', () => {
     for (const preset of DEFAULT_PRESETS) {
       expect(
         preset.sort.direction === 'asc' || preset.sort.direction === 'desc'
-      ).toBeTruthy();
+      ).toBe(true);
     }
   });
 });

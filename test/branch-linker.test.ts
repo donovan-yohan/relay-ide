@@ -12,6 +12,7 @@ import {
 } from '../server/branch-linker.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { BranchLinksResponse } from '../server/types.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // Loose mock type — cast to BranchLinkerDeps['execAsync'] at call sites
 type MockExec = (
@@ -49,34 +50,28 @@ function makeMockExec(opts: {
   };
 }
 
-function startServer(
+async function startServer(
   execAsyncFn: MockExec,
   getActiveBranchNames?: BranchLinkerDeps['getActiveBranchNames']
 ): Promise<void> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
-    const deps = {
-      configPath,
-      execAsync: execAsyncFn,
-      ...(getActiveBranchNames ? { getActiveBranchNames } : {}),
-    } as unknown as BranchLinkerDeps;
-    app.use('/branch-linker', createBranchLinkerRouter(deps));
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+  const app = express();
+  app.use(express.json());
+  const deps = {
+    configPath,
+    execAsync: execAsyncFn,
+    ...(getActiveBranchNames ? { getActiveBranchNames } : {}),
+  } as unknown as BranchLinkerDeps;
+  app.use('/branch-linker', createBranchLinkerRouter(deps));
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function getLinks(): Promise<BranchLinksResponse> {
@@ -146,7 +141,7 @@ test('extracts GH issue IDs from gh-N branches', async () => {
   const links = data['GH-42']!;
   // Only the GH regex matches this branch — the Jira regex explicitly excludes 'GH'
   // to avoid double-matching. Verify all links point to the correct branch and repo.
-  expect(links.length >= 1).toBeTruthy();
+  expect(links.length).toBeGreaterThanOrEqual(1);
   expect(links.every((l) => l.branchName === 'gh-42-login-fix')).toBeTruthy();
   expect(links.every((l) => l.repoPath === WORKSPACE_PATH_A)).toBeTruthy();
 });

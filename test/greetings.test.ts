@@ -35,7 +35,7 @@ const allGreetings = [
 describe('greetings', () => {
   it('returns a non-empty string', () => {
     const greeting = getGreeting();
-    expect(greeting.length > 0).toBeTruthy();
+    expect(greeting.length).toBeGreaterThan(0);
   });
 
   it('returns all lowercase text', () => {
@@ -48,7 +48,7 @@ describe('greetings', () => {
   it('returns a known greeting when called without hour', () => {
     for (let i = 0; i < 20; i++) {
       const greeting = getGreeting();
-      expect(allGreetings.includes(greeting)).toBeTruthy();
+      expect(allGreetings).toContain(greeting);
     }
   });
 
@@ -56,7 +56,7 @@ describe('greetings', () => {
     for (const hour of [5, 8, 11]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        expect(morningGreetings.includes(greeting)).toBeTruthy();
+        expect(morningGreetings).toContain(greeting);
       }
     }
   });
@@ -65,7 +65,7 @@ describe('greetings', () => {
     for (const hour of [12, 14, 16]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        expect(afternoonGreetings.includes(greeting)).toBeTruthy();
+        expect(afternoonGreetings).toContain(greeting);
       }
     }
   });
@@ -74,7 +74,7 @@ describe('greetings', () => {
     for (const hour of [17, 19, 20]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        expect(eveningGreetings.includes(greeting)).toBeTruthy();
+        expect(eveningGreetings).toContain(greeting);
       }
     }
   });
@@ -83,7 +83,7 @@ describe('greetings', () => {
     for (const hour of [0, 2, 4, 21, 23]) {
       for (let i = 0; i < 20; i++) {
         const greeting = getGreeting(hour);
-        expect(nightGreetings.includes(greeting)).toBeTruthy();
+        expect(nightGreetings).toContain(greeting);
       }
     }
   });

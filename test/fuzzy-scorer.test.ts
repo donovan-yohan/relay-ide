@@ -36,17 +36,17 @@ describe('scorePath', () => {
 
   test('exact filename match scores highest', () => {
     const result = scorePath('App.svelte', 'frontend/src/App.svelte');
-    expect(result !== null).toBeTruthy();
-    expect(result.score > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.score).toBeGreaterThan(0);
   });
 
   test('filename prefix match gets boost', () => {
     const prefixResult = scorePath('App', 'frontend/src/App.svelte')!;
     const substringResult = scorePath('vel', 'frontend/src/App.svelte');
-    expect(prefixResult !== null).toBeTruthy();
+    expect(prefixResult).not.toBe(null);
     // prefix match should score substantially higher
     if (substringResult) {
-      expect(prefixResult.score > substringResult.score).toBeTruthy();
+      expect(prefixResult.score).toBeGreaterThan(substringResult.score);
     }
   });
 
@@ -58,14 +58,14 @@ describe('scorePath', () => {
 
   test('camelCase matching works', () => {
     const result = scorePath('CP', 'CommandPalette.svelte');
-    expect(result !== null).toBeTruthy();
-    expect(result.score > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.score).toBeGreaterThan(0);
   });
 
   test('word boundary matching works', () => {
     const result = scorePath('fs', 'file-scorer.ts');
-    expect(result !== null).toBeTruthy();
-    expect(result.score > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.score).toBeGreaterThan(0);
   });
 
   test('path separator bonus works', () => {
@@ -76,9 +76,9 @@ describe('scorePath', () => {
   test('scattered match scores lower than compact', () => {
     const compact = scorePath('app', 'App.svelte')!;
     const scattered = scorePath('app', 'a_p_p.svelte');
-    expect(compact !== null).toBeTruthy();
+    expect(compact).not.toBe(null);
     if (scattered) {
-      expect(compact.score > scattered.score).toBeTruthy();
+      expect(compact.score).toBeGreaterThan(scattered.score);
     }
   });
 
@@ -86,18 +86,18 @@ describe('scorePath', () => {
 
   test('match positions are correct for filename match', () => {
     const result = scorePath('App', 'src/App.svelte')!;
-    expect(result !== null).toBeTruthy();
+    expect(result).not.toBe(null);
     // matches should be in the "App" portion of "src/App.svelte"
     // "src/" is 4 chars, so "A" is at index 4
-    expect(result.matches.length > 0).toBeTruthy();
+    expect(result.matches.length).toBeGreaterThan(0);
     const firstStart = result.matches[0]![0];
-    expect(firstStart >= 4).toBeTruthy();
+    expect(firstStart).toBeGreaterThanOrEqual(4);
   });
 
   test('match positions are correct for path match', () => {
     const result = scorePath('src', 'src/App.svelte')!;
-    expect(result !== null).toBeTruthy();
-    expect(result.matches.length > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.matches.length).toBeGreaterThan(0);
     // "src" should match at the beginning
     expect(result.matches[0]![0]).toBe(0);
   });
@@ -108,7 +108,7 @@ describe('scorePath', () => {
     const result = scorePath('readme', 'docs/日本語/readme.md');
     // should either match or return null, but not throw
     if (result) {
-      expect(result.score > 0).toBeTruthy();
+      expect(result.score).toBeGreaterThan(0);
     }
   });
 
@@ -119,14 +119,14 @@ describe('scorePath', () => {
 
   test('single character query works', () => {
     const result = scorePath('a', 'App.svelte');
-    expect(result !== null).toBeTruthy();
-    expect(result.score > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.score).toBeGreaterThan(0);
   });
 
   test('case-insensitive matching works', () => {
     const result = scorePath('app', 'App.svelte');
-    expect(result !== null).toBeTruthy();
-    expect(result.score > 0).toBeTruthy();
+    expect(result).not.toBe(null);
+    expect(result.score).toBeGreaterThan(0);
   });
 });
 
@@ -142,7 +142,7 @@ describe('ranking stability', () => {
     // AppLayout.svelte before src/app/index.ts (filename match > path match)
     const appLayoutIdx = ranked.indexOf('AppLayout.svelte');
     const srcAppIdx = ranked.indexOf('src/app/index.ts');
-    expect(appLayoutIdx < srcAppIdx).toBeTruthy();
+    expect(appLayoutIdx).toBeLessThan(srcAppIdx);
   });
 
   test('exact filename beats deep path', () => {

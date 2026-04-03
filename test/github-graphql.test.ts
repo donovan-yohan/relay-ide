@@ -108,37 +108,38 @@ function makeGraphQLResponse(
 describe('buildPrSearchQuery', () => {
   test('returns a non-empty query string', () => {
     const query = buildPrSearchQuery();
-    expect(typeof query === 'string' && query.length > 0).toBeTruthy();
+    expect(query).toBeTypeOf('string');
+    expect(query.length).toBeGreaterThan(0);
   });
 
   test('contains key fields: number, title, isDraft, state', () => {
     const query = buildPrSearchQuery();
-    expect(query.includes('number')).toBeTruthy();
-    expect(query.includes('title')).toBeTruthy();
-    expect(query.includes('isDraft')).toBeTruthy();
-    expect(query.includes('state')).toBeTruthy();
+    expect(query).toContain('number');
+    expect(query).toContain('title');
+    expect(query).toContain('isDraft');
+    expect(query).toContain('state');
   });
 
   test('contains CI status rollup field', () => {
     const query = buildPrSearchQuery();
-    expect(query.includes('statusCheckRollup')).toBeTruthy();
+    expect(query).toContain('statusCheckRollup');
   });
 
   test('contains reviewDecision and reviewRequests fields', () => {
     const query = buildPrSearchQuery();
-    expect(query.includes('reviewDecision')).toBeTruthy();
-    expect(query.includes('reviewRequests')).toBeTruthy();
+    expect(query).toContain('reviewDecision');
+    expect(query).toContain('reviewRequests');
   });
 
   test('contains repository nameWithOwner field', () => {
     const query = buildPrSearchQuery();
-    expect(query.includes('nameWithOwner')).toBeTruthy();
+    expect(query).toContain('nameWithOwner');
   });
 
   test('contains viewer login field', () => {
     const query = buildPrSearchQuery();
-    expect(query.includes('viewer')).toBeTruthy();
-    expect(query.includes('login')).toBeTruthy();
+    expect(query).toContain('viewer');
+    expect(query).toContain('login');
   });
 });
 
@@ -332,11 +333,10 @@ describe('fetchPrsGraphQL', () => {
     await fetchPrsGraphQL('my-token', repoMap, mockFetch);
 
     expect(capturedUrl).toBe('https://api.github.com/graphql');
-    expect(capturedInit?.method === 'POST').toBeTruthy();
+    expect(capturedInit?.method).toBe('POST');
     expect(
-      (capturedInit?.headers as Record<string, string>)?.['Authorization'] ===
-        'Bearer my-token'
-    ).toBeTruthy();
+      (capturedInit?.headers as Record<string, string>)?.['Authorization']
+    ).toBe('Bearer my-token');
   });
 
   test('throws on 401 Unauthorized response', async () => {

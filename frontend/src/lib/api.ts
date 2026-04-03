@@ -1073,3 +1073,69 @@ export async function fetchFrameworks(): Promise<FrameworkInfo[]> {
   );
   return data.frameworks;
 }
+
+// ── Workspace branch operations ───────────────────────────────────────────────
+
+export async function renameBranch(
+  path: string,
+  newName: string
+): Promise<{
+  success?: boolean;
+  oldName?: string;
+  newName?: string;
+  error?: string;
+}> {
+  const res = await fetch(
+    '/workspaces/rename-branch?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newName }),
+    }
+  );
+  return res.json() as Promise<{
+    success?: boolean;
+    oldName?: string;
+    newName?: string;
+    error?: string;
+  }>;
+}
+
+export async function pushBranch(
+  path: string,
+  branch: string,
+  deleteOldBranch: string
+): Promise<{ success?: boolean; error?: string }> {
+  const res = await fetch(
+    '/workspaces/push-branch?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch, deleteOldBranch }),
+    }
+  );
+  return res.json() as Promise<{ success?: boolean; error?: string }>;
+}
+
+export async function setPrBase(
+  path: string,
+  prNumber: number,
+  baseBranch: string
+): Promise<{ success?: boolean; error?: string }> {
+  const res = await fetch(
+    '/workspaces/pr-base?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prNumber, baseBranch }),
+    }
+  );
+  return res.json() as Promise<{ success?: boolean; error?: string }>;
+}
+
+export async function fetchWorkspaceBranches(
+  path: string
+): Promise<BranchInfo[]> {
+  const res = await fetch('/branches?path=' + encodeURIComponent(path));
+  return res.json() as Promise<BranchInfo[]>;
+}

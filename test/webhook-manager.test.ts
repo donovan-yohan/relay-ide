@@ -4,71 +4,11 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import type { Server } from 'node:http';
-
 import { createWebhookManagerRouter } from '../server/webhook-manager.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { Config } from '../server/types.js';
-
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-interface MockResponse {
-  json?: unknown;
-  status?: number;
-  headers?: Record<string, string>;
-  throw?: Error;
-}
-
-// ── Mock fetch ─────────────────────────────────────────────────────────────────
-
-/**
- * Creates a mock fetch function from a map of URL substrings → response sequences.
- * Each call to a matching URL pops the next response from the front of that sequence.
- * Supports `headers` override for redirect simulation (e.g., 302 with Location).
- */
-function createMockFetch(
-  urlMap: Record<string, MockResponse[]>
-): typeof globalThis.fetch {
-  const queues = new Map<string, MockResponse[]>(
-    Object.entries(urlMap).map(([k, v]) => [k, [...v]])
-  );
-
-  return async (
-    input: RequestInfo | URL,
-    _init?: RequestInit
-  ): Promise<Response> => {
-    const url =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : (input as Request).url;
-
-    for (const [pattern, queue] of queues) {
-      if (url.includes(pattern)) {
-        const next = queue.shift();
-        if (!next) {
-          throw new Error(
-            `Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`
-          );
-        }
-        if (next.throw) {
-          throw next.throw;
-        }
-
-        const status = next.status ?? 200;
-        const body = next.json != null ? JSON.stringify(next.json) : '';
-        const responseHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-          ...next.headers,
-        };
-        return new Response(body, { status, headers: responseHeaders });
-      }
-    }
-
-    throw new Error(`Mock fetch: no pattern matched url: ${url}`);
-  };
-}
+import { createMockFetch } from './helpers/mock-fetch.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // ── Server helpers ─────────────────────────────────────────────────────────────
 
@@ -79,41 +19,26 @@ const noopAuth = (
   next: express.NextFunction
 ): void => next();
 
-function startServer(opts: {
+async function startServer(opts: {
   configPath: string;
   fetchFn?: typeof globalThis.fetch;
-}): Promise<{ srv: Server; url: string }> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
+}): Promise<{ url: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
 
-    const router = createWebhookManagerRouter({
-      configPath: opts.configPath,
-      broadcastEvent: () => {
-        /* no-op */
-      },
-      ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
-      requireAuth: noopAuth,
-    });
-
-    app.use('/webhooks', router);
-
-    const srv = app.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      let url = '';
-      if (typeof addr === 'object' && addr) {
-        url = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve({ srv, url });
-    });
+  const router = createWebhookManagerRouter({
+    configPath: opts.configPath,
+    broadcastEvent: () => {
+      /* no-op */
+    },
+    ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+    requireAuth: noopAuth,
   });
-}
 
-function stopServer(srv: Server | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    if (srv) srv.close(() => resolve());
-    else resolve();
-  });
+  app.use('/webhooks', router);
+
+  const { url, close } = await createTestServer(app);
+  return { url, close };
 }
 
 // ── Shared state ───────────────────────────────────────────────────────────────
@@ -173,7 +98,7 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -190,7 +115,7 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     expect(saved.github?.webhookSecret).toBeTruthy();
     expect(saved.github!.webhookSecret!.length).toBe(40);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -203,7 +128,7 @@ test('POST /setup — smee.io unreachable returns error', async () => {
     'smee.io/new': [{ throw: new Error('ECONNREFUSED') }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
     expect(res.status).toBe(502);
@@ -211,7 +136,7 @@ test('POST /setup — smee.io unreachable returns error', async () => {
     const data = (await res.json()) as { error: string };
     expect(data.error).toBe('smee_unreachable');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -236,7 +161,7 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
@@ -259,7 +184,7 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
     expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(99001);
     expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(true);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -283,7 +208,7 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
@@ -301,7 +226,7 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
     };
     expect(saved.repoSettings?.[repoDir]?.webhookError).toBe('not-admin');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -331,7 +256,7 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
@@ -344,7 +269,7 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
     expect(data.ok).toBe(true);
     expect(data.webhookId).toBe(77777);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -366,7 +291,7 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
     'api.github.com': [{ json: { message: 'Bad credentials' }, status: 401 }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
@@ -378,7 +303,7 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
     const data = (await res.json()) as { error: string };
     expect(data.error).toBe('unauthorized');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -409,7 +334,7 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos/remove`, {
       method: 'POST',
@@ -431,7 +356,7 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
     expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
     expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(undefined);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -462,7 +387,7 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos/remove`, {
       method: 'POST',
@@ -480,7 +405,7 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
     };
     expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -496,7 +421,7 @@ test('GET /status — returns correct configured state', async () => {
     },
   });
 
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
     expect(res.status).toBe(200);
@@ -512,12 +437,12 @@ test('GET /status — returns correct configured state', async () => {
     expect(typeof data.smeeConnected).toBe('boolean');
     expect(data.autoProvision).toBe(true);
     expect(data.secretPreview).toBeTruthy();
-    expect(data.secretPreview!.startsWith('****')).toBeTruthy();
+    expect(data.secretPreview!.startsWith('****')).toBe(true);
     expect(data.secretPreview!.slice(-4)).toBe(
       'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0')
     );
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -526,7 +451,7 @@ test('GET /status — returns not configured when no webhook secret', async () =
     github: { accessToken: 'ghs_token' },
   });
 
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
     expect(res.status).toBe(200);
@@ -538,7 +463,7 @@ test('GET /status — returns not configured when no webhook secret', async () =
     expect(data.configured).toBe(false);
     expect(data.secretPreview).toBe(null);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -574,7 +499,7 @@ test('POST /backfill — partial failure returns correct totals', async () => {
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/backfill`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -600,7 +525,7 @@ test('POST /backfill — partial failure returns correct totals', async () => {
     expect(failedResult).toBeTruthy();
     expect(failedResult!.error).toBe('forbidden');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -617,7 +542,7 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
   });
 
   // No mock fetch needed — shouldn't call GitHub API
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/ping`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -625,6 +550,6 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
     const data = (await res.json()) as { error: string };
     expect(data.error).toBe('no_webhook');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });

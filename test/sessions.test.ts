@@ -33,7 +33,7 @@ afterEach(() => {
 describe('sessions', () => {
   it('list returns empty array initially', () => {
     const result = sessions.list();
-    expect(Array.isArray(result)).toBeTruthy();
+    expect(result).toBeInstanceOf(Array);
     expect(result.length).toBe(0);
   });
 
@@ -54,7 +54,7 @@ describe('sessions', () => {
     expect(result.id).toBeTruthy();
     expect(result.repoName).toBe('test-repo');
     expect(result.cwd).toBe('/tmp');
-    expect(typeof result.pid === 'number').toBeTruthy();
+    expect(result.pid).toBeTypeOf('number');
     expect(result.createdAt).toBeTruthy();
     expect('pty' in result).toBe(false);
 
@@ -108,7 +108,7 @@ describe('sessions', () => {
     expect(session).toBe(undefined);
 
     const list = sessions.list();
-    expect(!list.some((s) => s.id === result.id)).toBeTruthy();
+    expect(list.some((s) => s.id === result.id)).toBe(false);
   });
 
   it('kill throws for nonexistent session', () => {
@@ -327,7 +327,7 @@ describe('sessions', () => {
     delete process.env.NO_PIN;
     try {
       const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
-      expect(name.startsWith('crc-')).toBeTruthy();
+      expect(name.startsWith('crc-')).toBe(true);
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -341,7 +341,7 @@ describe('sessions', () => {
         'feat/auth-flow',
         'abcdef1234567890'
       );
-      expect(name.startsWith('crc-feat-auth-flow-')).toBeTruthy();
+      expect(name.startsWith('crc-feat-auth-flow-')).toBe(true);
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -364,7 +364,7 @@ describe('sessions', () => {
         0,
         withoutPrefix.length - idPart!.length - 1
       );
-      expect(displayPart.length <= 30).toBeTruthy();
+      expect(displayPart.length).toBeLessThanOrEqual(30);
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -373,14 +373,14 @@ describe('sessions', () => {
   it('generateTmuxSessionName uses 8 chars from the provided id', () => {
     const id = 'abcdef1234567890';
     const name = generateTmuxSessionName('my-session', id);
-    expect(name.endsWith(id.slice(0, 8))).toBeTruthy();
+    expect(name.endsWith(id.slice(0, 8))).toBe(true);
   });
 
   it('prod prefix (crc-) does not match dev prefix (crcd-)', () => {
     const prodPrefix = 'crc-';
     const devPrefix = 'crcd-';
-    expect(!devPrefix.startsWith(prodPrefix)).toBeTruthy();
-    expect(!prodPrefix.startsWith(devPrefix)).toBeTruthy();
+    expect(devPrefix.startsWith(prodPrefix)).toBe(false);
+    expect(prodPrefix.startsWith(devPrefix)).toBe(false);
   });
 
   it('getTmuxPrefix returns crc- when NO_PIN is not set', () => {
@@ -606,7 +606,7 @@ describe('sessions', () => {
     const session = sessions.get(result.id);
     expect(session).toBeTruthy();
     expect(session!.mode).toBe('pty');
-    expect((session as PtySession).scrollback.length >= 1).toBeTruthy();
+    expect((session as PtySession).scrollback.length).toBeGreaterThanOrEqual(1);
     expect((session as PtySession).scrollback[0]).toBe('prior output\r\n');
   });
 });
@@ -673,7 +673,7 @@ describe('session persistence', () => {
     const scrollbackPath = path.join(configDir, 'scrollback', s.id + '.buf');
     expect(fs.existsSync(scrollbackPath)).toBeTruthy();
     const scrollbackData = fs.readFileSync(scrollbackPath, 'utf-8');
-    expect(scrollbackData.includes('hello world')).toBeTruthy();
+    expect(scrollbackData).toContain('hello world');
   });
 
   it('restoreFromDisk restores sessions with original IDs', async () => {
@@ -715,13 +715,15 @@ describe('session persistence', () => {
 
     // Scrollback should be restored
     expect(restoredSession!.mode).toBe('pty');
-    expect((restoredSession as PtySession).scrollback.length >= 1).toBeTruthy();
+    expect(
+      (restoredSession as PtySession).scrollback.length
+    ).toBeGreaterThanOrEqual(1);
     expect((restoredSession as PtySession).scrollback[0]).toBe('saved output');
 
     // pending-sessions.json should be cleaned up
-    expect(
-      !fs.existsSync(path.join(configDir, 'pending-sessions.json'))
-    ).toBeTruthy();
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
   });
 
   it('restoreFromDisk ignores stale files (>5 min old)', async () => {
@@ -758,9 +760,9 @@ describe('session persistence', () => {
 
     const restored = await restoreFromDisk(configDir);
     expect(restored).toBe(0);
-    expect(
-      !fs.existsSync(path.join(configDir, 'pending-sessions.json'))
-    ).toBeTruthy();
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
   });
 
   it('restoreFromDisk handles missing scrollback gracefully', async () => {
@@ -1216,7 +1218,7 @@ describe('session persistence', () => {
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
     expect(pending.version).toBe(4);
     expect(pending.sessions[0].repoPath).toBe('/tmp');
-    expect(!('workspacePath' in pending.sessions[0])).toBeTruthy();
+    expect('workspacePath' in pending.sessions[0]).toBe(false);
   });
 
   it('serializeAll captures session state before kill', () => {

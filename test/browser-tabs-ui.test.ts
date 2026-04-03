@@ -39,6 +39,6 @@ test('refreshHtmlTab logic uses version counter', () => {
   const baseUrl = '/browser-content/abc123/design-board.html';
   const refreshVersion = 1;
   const refreshed = `${baseUrl}?v=${refreshVersion}`;
-  expect(refreshed.includes('?v=')).toBeTruthy();
-  expect(refreshed.startsWith(baseUrl)).toBeTruthy();
+  expect(refreshed).toContain('?v=');
+  expect(refreshed.startsWith(baseUrl)).toBe(true);
 });

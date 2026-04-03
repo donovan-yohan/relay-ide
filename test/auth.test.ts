@@ -12,7 +12,7 @@ import {
 test('hashPin returns scrypt hash with expected format', async () => {
   _resetForTesting();
   const hash = await hashPin('1234');
-  expect(hash.startsWith('scrypt:')).toBeTruthy();
+  expect(hash.startsWith('scrypt:')).toBe(true);
   const parts = hash.split(':');
   expect(parts.length).toBe(3);
 });
@@ -121,7 +121,8 @@ test('isLegacyHash returns false for empty string', () => {
 test('generateCookieToken returns non-empty string', () => {
   _resetForTesting();
   const token = generateCookieToken();
-  expect(typeof token === 'string' && token.length > 0).toBeTruthy();
+  expect(token).toBeTypeOf('string');
+  expect(token.length).toBeGreaterThan(0);
 });
 
 test('verifyPin returns false for undefined hash', async () => {

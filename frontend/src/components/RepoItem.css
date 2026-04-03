@@ -1,9 +1,9 @@
-.workspace-item {
+.repo-item {
   display: flex;
   flex-direction: column;
 }
 
-.workspace-header {
+.repo-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -13,15 +13,15 @@
   transition: background 0.12s;
 }
 
-.workspace-header:hover {
+.repo-header:hover {
   background: var(--surface-hover);
 }
 
-.workspace-item.active .workspace-header {
+.repo-item.active .repo-header {
   background: var(--surface-hover);
 }
 
-.workspace-left {
+.repo-left {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -71,7 +71,7 @@
   line-height: 1;
 }
 
-.workspace-name {
+.repo-name {
   font-size: var(--font-size-sm);
   font-weight: 700;
   color: var(--text);
@@ -82,7 +82,7 @@
   min-width: 0;
 }
 
-.workspace-actions {
+.repo-actions {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -91,7 +91,7 @@
   flex-shrink: 0;
 }
 
-.workspace-header:hover .workspace-actions {
+.repo-header:hover .repo-actions {
   opacity: 1;
 }
 
@@ -106,7 +106,9 @@
   color: var(--text-muted);
   cursor: pointer;
   font-family: var(--font-mono);
-  transition: background 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    color 0.1s;
   background: none;
   border: none;
   padding: 0;
@@ -207,9 +209,15 @@
   margin-left: 4px;
 }
 
-.ci-pass { color: var(--status-success); }
-.ci-fail { color: var(--status-error); }
-.ci-pending { color: var(--status-warning); }
+.ci-pass {
+  color: var(--status-success);
+}
+.ci-fail {
+  color: var(--status-error);
+}
+.ci-pending {
+  color: var(--status-warning);
+}
 
 .session-count-badge {
   display: inline-flex;
@@ -235,44 +243,56 @@
   flex-shrink: 0;
 }
 
-.status-dot--running      { background: var(--status-success); }
-.status-dot--initializing { background: #6b7280; }
-.status-dot--unseen-idle  {
+.status-dot--running {
+  background: var(--status-success);
+}
+.status-dot--initializing {
+  background: #6b7280;
+}
+.status-dot--unseen-idle {
   background: var(--status-warning);
   box-shadow: 0 0 5px 1px rgba(251, 191, 36, 0.45);
   animation: attention-glow 2s ease-in-out infinite;
 }
-.status-dot--seen-idle    { background: var(--status-info); }
-.status-dot--permission   {
-  background: #eab308;
-  box-shadow: 0 0 5px 1px rgba(234, 179, 8, 0.45);
-  animation: attention-glow 1.5s ease-in-out infinite;
+.status-dot--seen-idle {
+  background: var(--status-info);
 }
-.status-dot--inactive     { background: transparent; border: 1.5px solid var(--border); }
+.status-dot--permission,
 .status-dot--needs-answer {
   background: #eab308;
   box-shadow: 0 0 5px 1px rgba(234, 179, 8, 0.45);
   animation: attention-glow 1.5s ease-in-out infinite;
 }
-.status-dot--error        { background: var(--status-error); }
-
-.dot-inactive {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+.status-dot--inactive {
   background: transparent;
   border: 1.5px solid var(--border);
-  flex-shrink: 0;
+}
+.status-dot--error {
+  background: var(--status-error);
 }
 
-.session-row.inactive .session-name { color: var(--text-muted); }
-.session-row.inactive:hover .session-name { color: var(--text); }
-.session-row.loading { pointer-events: none; opacity: 0.7; }
-.session-row.loading .session-name { color: var(--accent); }
+.session-row.inactive .session-name {
+  color: var(--text-muted);
+}
+.session-row.inactive:hover .session-name {
+  color: var(--text);
+}
+.session-row.loading {
+  pointer-events: none;
+  opacity: 0.7;
+}
+.session-row.loading .session-name {
+  color: var(--accent);
+}
 
 @keyframes attention-glow {
-  0%, 100% { box-shadow: 0 0 3px 1px rgba(251, 191, 36, 0.3); }
-  50%       { box-shadow: 0 0 7px 2px rgba(251, 191, 36, 0.6); }
+  0%,
+  100% {
+    box-shadow: 0 0 3px 1px rgba(251, 191, 36, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 7px 2px rgba(251, 191, 36, 0.6);
+  }
 }
 
 .session-name {
@@ -297,7 +317,9 @@
   color: var(--text-muted);
   opacity: 0.5;
   cursor: pointer;
-  transition: opacity 0.1s, color 0.1s;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
   background: none;
   border: none;
   padding: 0;
@@ -317,14 +339,14 @@
   color: var(--accent);
 }
 
-.workspace-divider {
+.repo-divider {
   height: 1px;
   background: var(--border);
   margin: 0;
 }
 
 @media (max-width: 600px) {
-  .workspace-header {
+  .repo-header {
     min-height: 48px;
   }
 
@@ -332,7 +354,7 @@
     min-height: 48px;
   }
 
-  .workspace-actions {
+  .repo-actions {
     opacity: 1;
   }
 

@@ -126,7 +126,7 @@ describe('ticket-transitions', () => {
       );
       expect(addLabelCall).toBeTruthy();
       expect(addLabelCall.cwd).toBe(REPO_PATH);
-      expect(addLabelCall.args.includes('100')).toBeTruthy();
+      expect(addLabelCall.args).toContain('100');
     });
 
     test('is idempotent — does not re-fire same transition', async () => {
@@ -138,7 +138,7 @@ describe('ticket-transitions', () => {
       // First call — should fire
       await transitionOnSessionCreate(ctx);
       const firstCallCount = calls.length;
-      expect(firstCallCount > 0).toBeTruthy();
+      expect(firstCallCount).toBeGreaterThan(0);
 
       // Second call — should be a no-op (idempotent)
       await transitionOnSessionCreate(ctx);
@@ -168,7 +168,7 @@ describe('ticket-transitions', () => {
       );
       expect(addCodeReview).toBeTruthy();
       expect(addCodeReview.cwd).toBe(REPO_PATH);
-      expect(addCodeReview.args.includes('200')).toBeTruthy();
+      expect(addCodeReview.args).toContain('200');
 
       const removeInProgress = calls.find(
         (c) =>
@@ -200,7 +200,7 @@ describe('ticket-transitions', () => {
       );
       expect(addReadyForQa).toBeTruthy();
       expect(addReadyForQa.cwd).toBe(REPO_PATH);
-      expect(addReadyForQa.args.includes('300')).toBeTruthy();
+      expect(addReadyForQa.args).toContain('300');
 
       const removeCodeReview = calls.find(
         (c) =>
@@ -225,7 +225,7 @@ describe('ticket-transitions', () => {
       // First call — should fire
       await checkPrTransitions(prs, branchLinks);
       const firstCallCount = calls.length;
-      expect(firstCallCount > 0).toBeTruthy();
+      expect(firstCallCount).toBeGreaterThan(0);
 
       // Second call with same PR state — should be a no-op (idempotent)
       await checkPrTransitions(prs, branchLinks);
@@ -322,7 +322,7 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('PROJ-123')
     );
     expect(transitionCall).toBeTruthy();
-    expect(transitionCall.args.includes('In Progress')).toBeTruthy();
+    expect(transitionCall.args).toContain('In Progress');
   });
 
   test('transitionOnSessionCreate skips when no status mapping configured', async () => {
@@ -371,7 +371,7 @@ describe('ticket-transitions (Jira)', () => {
 
     await transitionOnSessionCreate(ctx);
     const firstCallCount = acliCalls.length;
-    expect(firstCallCount > 0).toBeTruthy();
+    expect(firstCallCount).toBeGreaterThan(0);
 
     // Second call — should be blocked by idempotency guard
     await transitionOnSessionCreate(ctx);
@@ -415,6 +415,6 @@ describe('ticket-transitions (Jira)', () => {
         c.args.includes('PROJ-789')
     );
     expect(transitionCall).toBeTruthy();
-    expect(transitionCall.args.includes('Code Review')).toBeTruthy();
+    expect(transitionCall.args).toContain('Code Review');
   });
 });

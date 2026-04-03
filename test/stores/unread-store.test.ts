@@ -73,7 +73,7 @@ describe('unread Zustand store', () => {
       useUnreadStore.getState().markRead('item-1');
       const stored = JSON.parse(storage['claude-remote-unread']!) as string[];
       expect(stored.length).toBe(1);
-      expect(stored.includes('item-2')).toBeTruthy();
+      expect(stored).toContain('item-2');
     });
   });
 

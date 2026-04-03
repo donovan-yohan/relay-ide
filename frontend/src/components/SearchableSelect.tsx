@@ -1,4 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import useClickOutside from '../lib/hooks/useClickOutside.js';
 import TuiMenuItem from './TuiMenuItem.js';
 import TuiMenuPanel from './TuiMenuPanel.js';
 import './SearchableSelect.css';
@@ -28,7 +35,7 @@ export function SearchableSelect({
 
   const selectedLabel = useMemo(
     () => options.find((o) => o.value === value)?.label ?? '',
-    [options, value],
+    [options, value]
   );
 
   const filteredOptions = useMemo(() => {
@@ -43,17 +50,10 @@ export function SearchableSelect({
     return () => window.cancelAnimationFrame(raf);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleWindowClick = (e: MouseEvent) => {
-      const target = e.target as Node | null;
-      if (target && wrapperRef.current && !wrapperRef.current.contains(target)) {
-        close();
-      }
-    };
-    window.addEventListener('click', handleWindowClick);
-    return () => window.removeEventListener('click', handleWindowClick);
-  }, [open]);
+  const handleClickOutside = useCallback(() => {
+    close();
+  }, []);
+  useClickOutside(wrapperRef, handleClickOutside, open);
 
   function openDropdown() {
     setOpen(true);
@@ -92,14 +92,31 @@ export function SearchableSelect({
           />
           <div className="ss-dropdown" role="listbox">
             <TuiMenuPanel>
-              <TuiMenuItem role="option" ariaSelected={!value} onmousedown={() => select('')}>
-                <span className={['ss-option--reset', !value && 'ss-selected'].filter(Boolean).join(' ')}>
+              <TuiMenuItem
+                role="option"
+                ariaSelected={!value}
+                onmousedown={() => select('')}
+              >
+                <span
+                  className={['ss-option--reset', !value && 'ss-selected']
+                    .filter(Boolean)
+                    .join(' ')}
+                >
                   {placeholder}
                 </span>
               </TuiMenuItem>
               {filteredOptions.map((opt) => (
-                <TuiMenuItem key={opt.value} role="option" ariaSelected={opt.value === value} onmousedown={() => select(opt.value)}>
-                  <span className={opt.value === value ? 'ss-selected' : undefined}>{opt.label}</span>
+                <TuiMenuItem
+                  key={opt.value}
+                  role="option"
+                  ariaSelected={opt.value === value}
+                  onmousedown={() => select(opt.value)}
+                >
+                  <span
+                    className={opt.value === value ? 'ss-selected' : undefined}
+                  >
+                    {opt.label}
+                  </span>
                 </TuiMenuItem>
               ))}
               {filteredOptions.length === 0 ? (
@@ -112,11 +129,20 @@ export function SearchableSelect({
         </>
       ) : (
         <button type="button" className="ss-trigger" onClick={openDropdown}>
-          <span className={['ss-trigger-text', !value && 'ss-placeholder'].filter(Boolean).join(' ')}>
+          <span
+            className={['ss-trigger-text', !value && 'ss-placeholder']
+              .filter(Boolean)
+              .join(' ')}
+          >
             {selectedLabel || placeholder}
           </span>
           <svg className="ss-arrow" width="12" height="8" viewBox="0 0 12 8">
-            <path d="M1 1l5 5 5-5" stroke="currentColor" fill="none" strokeWidth="1.5" />
+            <path
+              d="M1 1l5 5 5-5"
+              stroke="currentColor"
+              fill="none"
+              strokeWidth="1.5"
+            />
           </svg>
         </button>
       )}

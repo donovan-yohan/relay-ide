@@ -11,7 +11,11 @@
   padding: 8px 16px;
   line-height: 1.4;
   white-space: nowrap;
-  transition: border-style 0.1s, filter 0.1s, background 0.1s;
+  text-transform: lowercase;
+  transition:
+    border-style 0.1s,
+    filter 0.1s,
+    background 0.1s;
 }
 
 /* Hover: double border + lighten color */

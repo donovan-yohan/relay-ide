@@ -8,7 +8,11 @@ import { useConfigStore } from './lib/stores/config.js';
 import { useBootStateStore } from './lib/stores/boot-state.js';
 import { useTelemetryStore } from './lib/stores/telemetry.js';
 import { sendPtyData } from './lib/ws.js';
-import { initNotifications, initPushNotifications, resubscribeIfNeeded } from './lib/notifications.js';
+import {
+  initNotifications,
+  initPushNotifications,
+  resubscribeIfNeeded,
+} from './lib/notifications.js';
 import type { Repo, PullRequest } from './lib/types.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
 import type { ActionContext } from './lib/actions/types.js';
@@ -52,7 +56,10 @@ import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
 import FileViewerPane from './components/FileViewerPane.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
-import { FileTreeSidebar, type FileTreeSidebarHandle } from './components/FileTreeSidebar.js';
+import {
+  FileTreeSidebar,
+  type FileTreeSidebarHandle,
+} from './components/FileTreeSidebar.js';
 
 import './App.css';
 
@@ -71,7 +78,9 @@ const queryClient = new QueryClient({
 
 // initNotifications is called at module level.
 // We forward calls to the live navigateToSession function via a ref.
-let _navigateToSessionFn: ((sessionId: string, sessionType: string) => void) | null = null;
+let _navigateToSessionFn:
+  | ((sessionId: string, sessionType: string) => void)
+  | null = null;
 initNotifications((sessionId: string, sessionType: string) => {
   _navigateToSessionFn?.(sessionId, sessionType);
 });
@@ -82,7 +91,9 @@ initNotifications((sessionId: string, sessionType: string) => {
 
 interface TerminalAreaContentProps {
   analyticsView: 'dashboard' | { sessionId: string } | null;
-  setAnalyticsView: React.Dispatch<React.SetStateAction<'dashboard' | { sessionId: string } | null>>;
+  setAnalyticsView: React.Dispatch<
+    React.SetStateAction<'dashboard' | { sessionId: string } | null>
+  >;
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
   changedFilesData: string[];
   terminalRef: React.RefObject<TerminalHandle | null>;
@@ -134,7 +145,9 @@ function TerminalAreaContent({
   const openFileTab = useUiStore((s) => s.openFileTab);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
-  const recallSessionForWorkspace = useSessionsStore((s) => s.recallSessionForWorkspace);
+  const recallSessionForWorkspace = useSessionsStore(
+    (s) => s.recallSessionForWorkspace
+  );
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -143,18 +156,25 @@ function TerminalAreaContent({
   const [copyModeActive, setCopyModeActive] = useState(false);
 
   const activeWorkspace = useMemo(
-    () => (activeRepoPath ? repos.find((w) => w.path === activeRepoPath) : undefined),
-    [activeRepoPath, repos],
+    () =>
+      activeRepoPath ? repos.find((w) => w.path === activeRepoPath) : undefined,
+    [activeRepoPath, repos]
   );
 
   const activeSession = useMemo(
-    () => (activeSessionId ? sessions.find((s) => s.id === activeSessionId) : undefined),
-    [activeSessionId, sessions],
+    () =>
+      activeSessionId
+        ? sessions.find((s) => s.id === activeSessionId)
+        : undefined,
+    [activeSessionId, sessions]
   );
 
   const allWorkspaceSessions = useMemo(
-    () => (activeRepoPath ? useSessionsStore.getState().getSessionsForRepo(activeRepoPath) : []),
-    [activeRepoPath, sessions],
+    () =>
+      activeRepoPath
+        ? useSessionsStore.getState().getSessionsForRepo(activeRepoPath)
+        : [],
+    [activeRepoPath, sessions]
   );
 
   const workspaceSessions = useMemo(
@@ -162,28 +182,39 @@ function TerminalAreaContent({
       (activeSession
         ? allWorkspaceSessions.filter((s) => s.cwd === activeSession.cwd)
         : allWorkspaceSessions
-      ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    [activeSession, allWorkspaceSessions],
+      ).toSorted(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      ),
+    [activeSession, allWorkspaceSessions]
   );
 
   const hasActiveSession = useMemo(
-    () => !!activeSession && !!activeRepoPath && activeSession.repoPath === activeRepoPath,
-    [activeSession, activeRepoPath],
+    () =>
+      !!activeSession &&
+      !!activeRepoPath &&
+      activeSession.repoPath === activeRepoPath,
+    [activeSession, activeRepoPath]
   );
 
   const sessionTitle = useMemo(
     () => activeSession?.displayName || activeWorkspace?.name || 'Relay',
-    [activeSession, activeWorkspace],
+    [activeSession, activeWorkspace]
   );
 
-  const activeSessionUseTmux = useMemo(() => activeSession?.useTmux ?? false, [activeSession]);
+  const activeSessionUseTmux = useMemo(
+    () => activeSession?.useTmux ?? false,
+    [activeSession]
+  );
   const activeWorkspaceCwd = useMemo(
     () => activeSession?.worktreePath ?? activeSession?.repoPath ?? '',
-    [activeSession],
+    [activeSession]
   );
   const fileViewerOpen = useMemo(() => openFileTabs.length > 0, [openFileTabs]);
 
-  const viewMode = useMemo<'empty' | 'org' | 'dashboard' | 'session' | 'analytics'>(() => {
+  const viewMode = useMemo<
+    'empty' | 'org' | 'dashboard' | 'session' | 'analytics'
+  >(() => {
     if (analyticsView !== null) return 'analytics';
     if (!repos.length) return 'empty';
     if (!activeRepoPath) return 'org';
@@ -191,13 +222,27 @@ function TerminalAreaContent({
     return 'session';
   }, [analyticsView, repos.length, activeRepoPath, hasActiveSession]);
 
-  const handleSendKey = useCallback((key: string) => { sendPtyData(key); }, []);
-  const handleFlushComposedText = useCallback(() => { /* xterm.js handles natively */ }, []);
-  const handleClearInput = useCallback(() => { /* xterm.js manages textarea */ }, []);
-  const handleInjectReference = useCallback((reference: string) => { sendPtyData(reference + ' '); }, []);
-  const handleCopyModeChange = useCallback((active: boolean) => { setCopyModeActive(active); }, []);
-  const handleExitCopyMode = useCallback(() => { terminalRef.current?.exitCopyMode(); }, [terminalRef]);
-  const handleRefocusMobileInput = useCallback(() => { terminalRef.current?.focusTerm(); }, [terminalRef]);
+  const handleSendKey = useCallback((key: string) => {
+    sendPtyData(key);
+  }, []);
+  const handleFlushComposedText = useCallback(() => {
+    /* xterm.js handles natively */
+  }, []);
+  const handleClearInput = useCallback(() => {
+    /* xterm.js manages textarea */
+  }, []);
+  const handleInjectReference = useCallback((reference: string) => {
+    sendPtyData(reference + ' ');
+  }, []);
+  const handleCopyModeChange = useCallback((active: boolean) => {
+    setCopyModeActive(active);
+  }, []);
+  const handleExitCopyMode = useCallback(() => {
+    terminalRef.current?.exitCopyMode();
+  }, [terminalRef]);
+  const handleRefocusMobileInput = useCallback(() => {
+    terminalRef.current?.focusTerm();
+  }, [terminalRef]);
   const handleUploadImage = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -209,16 +254,24 @@ function TerminalAreaContent({
     input.click();
   }, [terminalRef]);
   const handleFileSelect = useCallback(
-    (filePath: string, isChanged: boolean) => { openFileTab(filePath, isChanged); },
-    [openFileTab],
+    (filePath: string, isChanged: boolean) => {
+      openFileTab(filePath, isChanged);
+    },
+    [openFileTab]
   );
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
-      const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+      const currentActiveSessionId =
+        useSessionsStore.getState().activeSessionId;
       const currentActiveSession = currentActiveSessionId
-        ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+        ? useSessionsStore
+            .getState()
+            .sessions.find((s) => s.id === currentActiveSessionId)
         : undefined;
-      const cwd = currentActiveSession?.worktreePath ?? currentActiveSession?.repoPath ?? '';
+      const cwd =
+        currentActiveSession?.worktreePath ??
+        currentActiveSession?.repoPath ??
+        '';
       if (!cwd) return;
       let relative = clickedPath;
       if (clickedPath.startsWith(cwd + '/')) {
@@ -233,7 +286,7 @@ function TerminalAreaContent({
       }
       openFileTab(relative, false);
     },
-    [openFileTab],
+    [openFileTab]
   );
 
   return (
@@ -247,9 +300,9 @@ function TerminalAreaContent({
 
       {viewMode === 'empty' && (
         <EmptyState
-          heading="Add a workspace to get started"
-          description="Point to any folder on your machine. Git repos get PR tracking and branch management."
-          actionLabel="+ Add Workspace"
+          heading="add a repo to get started"
+          description="point to any folder on your machine. git repos get pr tracking and branch management."
+          actionLabel="+ add repo"
           onAction={onAddWorkspace}
         />
       )}
@@ -290,7 +343,9 @@ function TerminalAreaContent({
         <RepoDashboard
           repoPath={activeRepoPath ?? ''}
           workspaceName={activeWorkspace?.name ?? ''}
-          creatingWorktree={isItemLoading(`new-worktree:${activeRepoPath ?? ''}`)}
+          creatingWorktree={isItemLoading(
+            `new-worktree:${activeRepoPath ?? ''}`
+          )}
           onNewSession={() => onQuickAgent()}
           onNewWorktree={() => {
             if (activeWorkspace) onNewWorktree(activeWorkspace);
@@ -404,7 +459,9 @@ export default function App() {
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
-  const recallSessionForWorkspace = useSessionsStore((s) => s.recallSessionForWorkspace);
+  const recallSessionForWorkspace = useSessionsStore(
+    (s) => s.recallSessionForWorkspace
+  );
 
   // ── Boot store ─────────────────────────────────────────────────────────────
   const bootComplete = useBootStateStore((s) => s.bootComplete);
@@ -418,7 +475,9 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [changedFilesData, setChangedFilesData] = useState<string[]>([]);
-  const [analyticsView, setAnalyticsView] = useState<'dashboard' | { sessionId: string } | null>(null);
+  const [analyticsView, setAnalyticsView] = useState<
+    'dashboard' | { sessionId: string } | null
+  >(null);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
   const terminalRef = useRef<TerminalHandle>(null);
@@ -427,29 +486,38 @@ export default function App() {
   const settingsDialogRef = useRef<SettingsDialogHandle>(null);
   const deleteWorktreeDialogRef = useRef<DeleteWorktreeDialogHandle>(null);
   const addWorkspaceDialogRef = useRef<AddWorkspaceDialogHandle>(null);
-  const workspaceSettingsDialogRef = useRef<WorkspaceSettingsDialogHandle>(null);
+  const workspaceSettingsDialogRef =
+    useRef<WorkspaceSettingsDialogHandle>(null);
   const mainAppRef = useRef<HTMLDivElement>(null);
   const fileTreeSidebarRef = useRef<FileTreeSidebarHandle>(null);
-  const changedFilesThrottleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const changedFilesThrottleTimer = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const bootRefreshDone = useRef(false);
 
   // ── Derived state ──────────────────────────────────────────────────────────
   // activeSession and activeWorkspaceCwd are needed for FilePicker
   const activeSession = useMemo(
-    () => (activeSessionId ? sessions.find((s) => s.id === activeSessionId) : undefined),
-    [activeSessionId, sessions],
+    () =>
+      activeSessionId
+        ? sessions.find((s) => s.id === activeSessionId)
+        : undefined,
+    [activeSessionId, sessions]
   );
 
   // Active workspace cwd — use worktreePath/repoPath (stable root), not cwd which can drift
   const activeWorkspaceCwd = useMemo(
     () => activeSession?.worktreePath ?? activeSession?.repoPath ?? '',
-    [activeSession],
+    [activeSession]
   );
 
   // ── Action context ─────────────────────────────────────────────────────────
   const actionContext = useMemo<ActionContext>(() => {
     if (activeSessionId) {
-      const ctx: ActionContext = { view: 'session', sessionId: activeSessionId };
+      const ctx: ActionContext = {
+        view: 'session',
+        sessionId: activeSessionId,
+      };
       if (activeRepoPath) ctx.workspacePath = activeRepoPath;
       return ctx;
     }
@@ -477,6 +545,7 @@ export default function App() {
     handleOpenSettings,
     handleNewWorktree,
     handleLaunchWorkspaceSession,
+    handleLaunchRepoSession,
     handleFixConflicts,
     handleOpenPrBranch,
     handleArchive,
@@ -503,12 +572,15 @@ export default function App() {
     };
   }, [navigateToSession]);
 
-  const handleImageUpload = useCallback((text: string, showInsert: boolean, path?: string) => {
-    imageToastRef.current?.show(text, showInsert, path);
-    if (!showInsert) {
-      imageToastRef.current?.autoDismiss(3000);
-    }
-  }, []);
+  const handleImageUpload = useCallback(
+    (text: string, showInsert: boolean, path?: string) => {
+      imageToastRef.current?.show(text, showInsert, path);
+      if (!showInsert) {
+        imageToastRef.current?.autoDismiss(3000);
+      }
+    },
+    []
+  );
 
   const handlePaletteSelectPr = useCallback(
     (pr: PullRequest) => {
@@ -518,7 +590,7 @@ export default function App() {
       }
       handleOpenPrBranch(pr);
     },
-    [handleOpenPrBranch],
+    [handleOpenPrBranch]
   );
 
   const handleAddWorkspace = useCallback(() => {
@@ -614,8 +686,13 @@ export default function App() {
 
       // Auto-select if exactly one session exists and none is selected
       const currentSessions = useSessionsStore.getState().sessions;
-      const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
-      if (!currentActiveSessionId && !sessionParam && currentSessions.length === 1) {
+      const currentActiveSessionId =
+        useSessionsStore.getState().activeSessionId;
+      if (
+        !currentActiveSessionId &&
+        !sessionParam &&
+        currentSessions.length === 1
+      ) {
         handleSelectSession(currentSessions[0]!.id);
       }
 
@@ -623,16 +700,20 @@ export default function App() {
       for (const s of useSessionsStore.getState().sessions) {
         useSessionsStore
           .getState()
-          .initSessionNotification(s.id, useConfigStore.getState().defaultNotifications);
+          .initSessionNotification(
+            s.id,
+            useConfigStore.getState().defaultNotifications
+          );
       }
 
       initPushNotifications().then(() => {
-        resubscribeIfNeeded(useSessionsStore.getState().getNotificationSessionIds());
+        resubscribeIfNeeded(
+          useSessionsStore.getState().getNotificationSessionIds()
+        );
       });
     };
 
     runRefresh();
-
   }, [authAuthenticated]);
 
   // ── Event socket ───────────────────────────────────────────────────────────
@@ -682,7 +763,6 @@ export default function App() {
     return () => {
       destroyAnalytics();
     };
-
   }, []);
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -710,6 +790,7 @@ export default function App() {
           onDeleteSession={handleCloseSession}
           onDeleteWorktree={handleDeleteWorktree}
           onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
+          onLaunchRepoSession={handleLaunchRepoSession}
           onOpenAnalytics={openAnalytics}
         />
 
@@ -742,7 +823,10 @@ export default function App() {
       />
       <SettingsDialog ref={settingsDialogRef} />
       <DeleteWorktreeDialog ref={deleteWorktreeDialogRef} />
-      <AddWorkspaceDialog ref={addWorkspaceDialogRef} onWorkspacesAdded={handleWorkspacesAdded} />
+      <AddWorkspaceDialog
+        ref={addWorkspaceDialogRef}
+        onWorkspacesAdded={handleWorkspacesAdded}
+      />
       <WorkspaceSettingsDialog
         ref={workspaceSettingsDialogRef}
         onRemoveWorkspace={async (p) => {
@@ -763,8 +847,12 @@ export default function App() {
         <div className="full-page-diff-overlay">
           <FullPageDiff
             workspacePath={fullPageDiff.workspacePath}
-            {...(fullPageDiff.file !== undefined ? { initialFile: fullPageDiff.file } : {})}
-            {...(fullPageDiff.base !== undefined ? { initialBase: fullPageDiff.base } : {})}
+            {...(fullPageDiff.file !== undefined
+              ? { initialFile: fullPageDiff.file }
+              : {})}
+            {...(fullPageDiff.base !== undefined
+              ? { initialBase: fullPageDiff.base }
+              : {})}
             onClose={() => useUiStore.setState({ fullPageDiff: null })}
           />
         </div>

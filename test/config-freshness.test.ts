@@ -33,8 +33,8 @@ describe('config freshness', () => {
 
     // Simulate: session handler reads config (fresh)
     const fresh = loadConfig(configPath);
-    expect(fresh.repos!.includes('/new/workspace')).toBeTruthy();
-    expect(fresh.repos!.includes('/existing/workspace')).toBeTruthy();
+    expect(fresh.repos).toContain('/new/workspace');
+    expect(fresh.repos).toContain('/existing/workspace');
   });
 
   it('loadConfig sees repos removed from disk after initial load', () => {

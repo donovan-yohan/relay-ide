@@ -11,6 +11,7 @@ import {
 } from '../server/integration-github.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { GitHubIssuesResponse } from '../server/types.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // Loose mock type — cast to IntegrationGitHubDeps['execAsync'] at call sites
 type MockExec = (
@@ -80,30 +81,24 @@ function makeMockExec(opts: {
   };
 }
 
-function startServer(execAsyncFn: MockExec): Promise<void> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
-    const deps = {
-      configPath,
-      execAsync: execAsyncFn,
-    } as unknown as IntegrationGitHubDeps;
-    app.use('/integration-github', createIntegrationGitHubRouter(deps));
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+async function startServer(execAsyncFn: MockExec): Promise<void> {
+  const app = express();
+  app.use(express.json());
+  const deps = {
+    configPath,
+    execAsync: execAsyncFn,
+  } as unknown as IntegrationGitHubDeps;
+  app.use('/integration-github', createIntegrationGitHubRouter(deps));
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function getIssues(): Promise<GitHubIssuesResponse> {

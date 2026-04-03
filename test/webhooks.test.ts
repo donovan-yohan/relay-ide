@@ -4,6 +4,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 
 import { createWebhookRouter } from '../server/webhooks.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -29,35 +30,29 @@ let broadcasts: Array<{
   data: Record<string, unknown> | undefined;
 }>;
 
-function startServer(): Promise<void> {
-  return new Promise((resolve) => {
-    broadcasts = [];
+async function startServer(): Promise<void> {
+  broadcasts = [];
 
-    const deps = {
-      secret: () => TEST_SECRET,
-      broadcastEvent: (type: string, data?: Record<string, unknown>) => {
-        broadcasts.push({ type, data });
-      },
-    };
+  const deps = {
+    secret: () => TEST_SECRET,
+    broadcastEvent: (type: string, data?: Record<string, unknown>) => {
+      broadcasts.push({ type, data });
+    },
+  };
 
-    const app = express();
-    app.use('/webhooks', createWebhookRouter(deps));
+  const app = express();
+  app.use('/webhooks', createWebhookRouter(deps));
 
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function postWebhook(opts: {
@@ -205,37 +200,24 @@ describe('webhook merge detection', () => {
 });
 
 describe('webhook handler — no secret configured', () => {
-  let noSecretServer: Server;
   let noSecretBaseUrl: string;
+  let closeNoSecret: () => Promise<void>;
 
-  beforeAll(
-    () =>
-      new Promise<void>((resolve) => {
-        const app = express();
-        app.use(
-          '/webhooks',
-          createWebhookRouter({
-            secret: () => undefined,
-            broadcastEvent: () => {},
-          })
-        );
-        noSecretServer = app.listen(0, '127.0.0.1', () => {
-          const addr = noSecretServer.address();
-          if (typeof addr === 'object' && addr) {
-            noSecretBaseUrl = `http://127.0.0.1:${addr.port}`;
-          }
-          resolve();
-        });
+  beforeAll(async () => {
+    const app = express();
+    app.use(
+      '/webhooks',
+      createWebhookRouter({
+        secret: () => undefined,
+        broadcastEvent: () => {},
       })
-  );
+    );
+    const result = await createTestServer(app);
+    noSecretBaseUrl = result.url;
+    closeNoSecret = result.close;
+  });
 
-  afterAll(
-    () =>
-      new Promise<void>((resolve) => {
-        if (noSecretServer) noSecretServer.close(() => resolve());
-        else resolve();
-      })
-  );
+  afterAll(() => closeNoSecret());
 
   it('rejects with 401 when webhook secret is not configured', async () => {
     const payload = JSON.stringify({ action: 'opened' });

@@ -3,101 +3,31 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import type { Server } from 'node:http';
 
 import {
   createGitHubAppRouter,
   _getDeviceFlowState,
 } from '../server/github-app.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
+import { createMockFetch } from './helpers/mock-fetch.js';
+import { createTestServer } from './helpers/test-server.js';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-type MockResponse =
-  | { json: unknown; status?: number }
-  | { error: unknown; status?: number }
-  | { throw: Error };
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Creates a mock fetch function from a map of URL substrings to response sequences.
- * Each call to a matching URL pops the next response from the front of that sequence.
- */
-function createMockFetch(
-  urlMap: Record<string, MockResponse[]>
-): typeof globalThis.fetch {
-  const queues = new Map<string, MockResponse[]>(
-    Object.entries(urlMap).map(([k, v]) => [k, [...v]])
-  );
-
-  return async (
-    input: RequestInfo | URL,
-    _init?: RequestInit
-  ): Promise<Response> => {
-    const url =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : (input as Request).url;
-
-    for (const [pattern, queue] of queues) {
-      if (url.includes(pattern)) {
-        const next = queue.shift();
-        if (!next) {
-          throw new Error(
-            `Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`
-          );
-        }
-        if ('throw' in next) {
-          throw next.throw;
-        }
-        const status = next.status ?? 200;
-        const body = 'error' in next ? next.error : next.json;
-        return new Response(JSON.stringify(body), {
-          status,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    throw new Error(`Mock fetch: no pattern matched url: ${url}`);
-  };
-}
-
-function startServer(opts: {
+async function startServer(opts: {
   configPath: string;
   clientId?: string;
   fetchFn?: typeof globalThis.fetch;
   onConnected?: () => void;
-}): Promise<{ srv: Server; url: string }> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
-    const routerDeps: Parameters<typeof createGitHubAppRouter>[0] = {
-      configPath: opts.configPath,
-      clientId: opts.clientId ?? 'test-client-id',
-      ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
-      ...(opts.onConnected ? { onConnected: opts.onConnected } : {}),
-    };
-    app.use('/auth/github', createGitHubAppRouter(routerDeps));
-    const srv = app.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      let url = '';
-      if (typeof addr === 'object' && addr) {
-        url = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve({ srv, url });
-    });
-  });
-}
-
-function stopServer(srv: Server | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    if (srv) srv.close(() => resolve());
-    else resolve();
-  });
+}): Promise<{ url: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
+  const routerDeps: Parameters<typeof createGitHubAppRouter>[0] = {
+    configPath: opts.configPath,
+    clientId: opts.clientId ?? 'test-client-id',
+    ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+    ...(opts.onConnected ? { onConnected: opts.onConnected } : {}),
+  };
+  app.use('/auth/github', createGitHubAppRouter(routerDeps));
+  return createTestServer(app);
 }
 
 /** Waits for a promise to resolve within timeoutMs, otherwise rejects. */
@@ -173,8 +103,8 @@ let tmpDir: string;
 let baseConfigPath: string;
 
 /** Default server (no mock fetch — for the "no token" status test) */
-let defaultServer: Server;
 let defaultBaseUrl: string;
+let closeDefaultServer: () => Promise<void>;
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
 
@@ -184,12 +114,12 @@ beforeAll(async () => {
   saveConfig(baseConfigPath, { ...DEFAULTS });
 
   const result = await startServer({ configPath: baseConfigPath });
-  defaultServer = result.srv;
   defaultBaseUrl = result.url;
+  closeDefaultServer = result.close;
 });
 
 afterAll(async () => {
-  await stopServer(defaultServer);
+  await closeDefaultServer();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -203,7 +133,7 @@ test('GET /auth/github initiates device flow and returns userCode', async () => 
     'login/device/code': [{ json: DEVICE_CODE_RESPONSE_5S }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/auth/github`);
     expect(res.status).toBe(200);
@@ -217,7 +147,7 @@ test('GET /auth/github initiates device flow and returns userCode', async () => 
     expect(data.verificationUri).toBe('https://github.com/login/device');
     expect(data.expiresIn).toBe(900);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -251,7 +181,7 @@ test('Device flow poll completes and saves token to config', async () => {
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -269,7 +199,7 @@ test('Device flow poll completes and saves token to config', async () => {
     expect(savedConfig.github?.accessToken).toBe('ghs_mock_token_123');
     expect(savedConfig.github?.username).toBe('octocat');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -288,7 +218,7 @@ test('GET /auth/github/status returns connected after device flow', async () => 
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -308,7 +238,7 @@ test('GET /auth/github/status returns connected after device flow', async () => 
     expect(data.connected).toBe(true);
     expect(data.username).toBe('octocat');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -321,7 +251,7 @@ test('access_denied sets deviceFlowStatus to denied', async () => {
     'login/oauth/access_token': [{ json: { error: 'access_denied' } }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
 
   try {
     const res = await fetch(`${url}/auth/github`);
@@ -342,7 +272,7 @@ test('access_denied sets deviceFlowStatus to denied', async () => {
     expect(data.username).toBe(null);
     expect(data.deviceFlowStatus).toBe('denied');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -355,7 +285,7 @@ test('expired_token sets deviceFlowStatus to expired', async () => {
     'login/oauth/access_token': [{ json: { error: 'expired_token' } }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
 
   try {
     const res = await fetch(`${url}/auth/github`);
@@ -376,7 +306,7 @@ test('expired_token sets deviceFlowStatus to expired', async () => {
     expect(data.username).toBe(null);
     expect(data.deviceFlowStatus).toBe('expired');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -388,7 +318,7 @@ test('Device code initiation failure returns 500', async () => {
     'login/device/code': [{ json: { error: 'server_error' }, status: 500 }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
 
   try {
     const res = await fetch(`${url}/auth/github`);
@@ -397,7 +327,7 @@ test('Device code initiation failure returns 500', async () => {
     const data = (await res.json()) as { error: string };
     expect(data.error).toBeTruthy();
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -423,7 +353,7 @@ test('slow_down increases poll interval', async () => {
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -442,7 +372,7 @@ test('slow_down increases poll interval', async () => {
     // Let the flow finish to clean up timers
     await withTimeout(connectedPromise, 15_000, 'onConnected after slow_down');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -464,7 +394,7 @@ test('Network error during poll continues polling', async () => {
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -485,7 +415,7 @@ test('Network error during poll continues polling', async () => {
     };
     expect(savedConfig.github?.accessToken).toBe('ghs_mock_token_123');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -515,7 +445,7 @@ test('Concurrent flow cancels previous', async () => {
     'api.github.com/graphql': [{ json: GRAPHQL_RESPONSE }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -537,7 +467,7 @@ test('Concurrent flow cancels previous', async () => {
     };
     expect(savedConfig.github?.accessToken).toBe('ghs_second_token');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -553,7 +483,7 @@ test('POST /disconnect preserves webhookSecret and smeeUrl', async () => {
     },
   });
 
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
 
   try {
     const res = await fetch(`${url}/auth/github/disconnect`, {
@@ -583,7 +513,7 @@ test('POST /disconnect preserves webhookSecret and smeeUrl', async () => {
     const statusData = (await statusRes.json()) as { connected: boolean };
     expect(statusData.connected).toBe(false);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -602,7 +532,7 @@ test('Token saved without username when GraphQL fails', async () => {
     'api.github.com/graphql': [{ json: {}, status: 500 }],
   });
 
-  const { srv, url } = await startServer({
+  const { url, close } = await startServer({
     configPath,
     fetchFn: mockFetch,
     onConnected: resolveConnected,
@@ -622,6 +552,6 @@ test('Token saved without username when GraphQL fails', async () => {
     expect(saved.github?.accessToken).toBe('ghs_mock_token_123');
     expect(saved.github?.username).toBe(undefined);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });

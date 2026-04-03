@@ -75,7 +75,7 @@ describe('GET /workspaces/changed-files', () => {
     );
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    expect(Array.isArray(data.files)).toBeTruthy();
+    expect(data.files).toBeInstanceOf(Array);
     expect(data.aggregate).toBeTruthy();
     expect(data.aggregate.fileCount).toBe(2);
   });
@@ -93,7 +93,7 @@ describe('GET /workspaces/file-diff', () => {
     );
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    expect(typeof data.diff === 'string').toBeTruthy();
+    expect(data.diff).toBeTypeOf('string');
   });
 
   test('returns 400 without file parameter', async () => {
@@ -176,7 +176,7 @@ describe('GET /workspaces/default-branch', () => {
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
     expect(typeof data.branch).toBe('string');
-    expect(data.branch.length > 0).toBeTruthy();
+    expect(data.branch.length).toBeGreaterThan(0);
   });
 
   test('returns 400 without path parameter', async () => {

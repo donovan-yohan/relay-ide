@@ -1,4 +1,9 @@
-import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import React, {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import FileBrowser, { type FileBrowserHandle } from '../FileBrowser.js';
@@ -44,7 +49,9 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
         const result = await addWorkspacesBulk(selectedPaths);
 
         if (result.errors.length > 0 && result.added.length === 0) {
-          setError(result.errors.map((e) => `${e.path}: ${e.error}`).join('; '));
+          setError(
+            result.errors.map((e) => `${e.path}: ${e.error}`).join('; ')
+          );
           setSubmitting(false);
           return;
         }
@@ -80,18 +87,24 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             disabled={selectedPaths.length === 0 || submitting}
           >
             {submitting
-              ? 'Adding...'
-              : `Add Workspace${selectedPaths.length > 1 ? 's' : ''}`}
+              ? 'adding...'
+              : `add repo${selectedPaths.length > 1 ? 's' : ''}`}
           </TuiButton>
         </div>
       </div>
     );
 
     return (
-      <DialogShell ref={shellRef} width="520px" title="Add Workspace" footer={footer}>
+      <DialogShell
+        ref={shellRef}
+        width="520px"
+        title="add repo"
+        footer={footer}
+      >
         <div className="add-workspace-body-content">
           <p className="add-workspace-dialog-desc">
-            Browse for folders on your machine. Git repos get PR tracking and branch management.
+            browse for folders on your machine. git repos get pr tracking and
+            branch management.
           </p>
 
           <FileBrowser
@@ -104,7 +117,7 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
         </div>
       </DialogShell>
     );
-  },
+  }
 );
 
 export default AddWorkspaceDialog;

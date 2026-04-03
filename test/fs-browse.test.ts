@@ -7,6 +7,7 @@ import type { Server } from 'node:http';
 
 import { createWorkspaceRouter } from '../server/workspaces.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
+import { createTestServer } from './helpers/test-server.js';
 
 let tmpDir: string;
 let configPath: string;
@@ -53,13 +54,9 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/workspaces', createWorkspaceRouter({ configPath }));
 
-  await new Promise<void>((resolve) => {
-    server = app.listen(0, '127.0.0.1', () => resolve());
-  });
-  const addr = server.address();
-  if (typeof addr === 'object' && addr) {
-    baseUrl = `http://127.0.0.1:${addr.port}`;
-  }
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 });
 
 afterAll(() => {
@@ -93,11 +90,11 @@ describe('GET /workspaces/browse', () => {
     const names = data.entries.map((e) => e.name);
 
     // Should include visible directories but not files or denylisted dirs
-    expect(names.includes('visible-dir')).toBeTruthy();
-    expect(names.includes('git-repo')).toBeTruthy();
-    expect(names.includes('empty-dir')).toBeTruthy();
-    expect(!names.includes('file.txt')).toBeTruthy();
-    expect(!names.includes('node_modules')).toBeTruthy();
+    expect(names).toContain('visible-dir');
+    expect(names).toContain('git-repo');
+    expect(names).toContain('empty-dir');
+    expect(names).not.toContain('file.txt');
+    expect(names).not.toContain('node_modules');
   });
 
   test('hides dotfiles by default', async () => {
@@ -105,7 +102,7 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    expect(!names.includes('.hidden-dir')).toBeTruthy();
+    expect(names).not.toContain('.hidden-dir');
   });
 
   test('shows dotfiles when showHidden=true', async () => {
@@ -113,9 +110,9 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable, showHidden: 'true' });
     const names = data.entries.map((e) => e.name);
 
-    expect(names.includes('.hidden-dir')).toBeTruthy();
+    expect(names).toContain('.hidden-dir');
     // .git should still be excluded (in denylist)
-    expect(!names.includes('.git')).toBeTruthy();
+    expect(names).not.toContain('.git');
   });
 
   test('filters by prefix', async () => {
@@ -200,7 +197,7 @@ describe('GET /workspaces/browse', () => {
     const data = await browse();
     expect(data.resolved).toBe(os.homedir());
     // Should have at least some entries (home dir is not empty)
-    expect(data.entries.length > 0).toBeTruthy();
+    expect(data.entries.length).toBeGreaterThan(0);
   });
 
   test('includes files when includeFiles=true', async () => {
@@ -208,8 +205,8 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable, includeFiles: 'true' });
     const names = data.entries.map((e) => e.name);
 
-    expect(names.includes('file.txt')).toBeTruthy();
-    expect(names.includes('visible-dir')).toBeTruthy();
+    expect(names).toContain('file.txt');
+    expect(names).toContain('visible-dir');
   });
 
   test('directories sort before files with includeFiles=true', async () => {
@@ -229,7 +226,7 @@ describe('GET /workspaces/browse', () => {
       }
     }
     if (firstFileIdx !== -1 && lastDirIdx !== -1) {
-      expect(lastDirIdx < firstFileIdx).toBeTruthy();
+      expect(lastDirIdx).toBeLessThan(firstFileIdx);
     }
   });
 
@@ -243,7 +240,7 @@ describe('GET /workspaces/browse', () => {
     expect(fileEntry).toBeTruthy();
     expect(fileEntry.isDirectory).toBe(false);
     expect(typeof fileEntry.size).toBe('number');
-    expect(fileEntry.size! > 0).toBeTruthy();
+    expect(fileEntry.size!).toBeGreaterThan(0);
   });
 
   test('excludes files when includeFiles is not set', async () => {
@@ -251,7 +248,7 @@ describe('GET /workspaces/browse', () => {
     const data = await browse({ path: browsable });
     const names = data.entries.map((e) => e.name);
 
-    expect(!names.includes('file.txt')).toBeTruthy();
+    expect(names).not.toContain('file.txt');
   });
 });
 
@@ -291,7 +288,7 @@ describe('POST /workspaces/bulk', () => {
     };
     expect(data.added.length).toBe(0);
     expect(data.errors.length).toBe(1);
-    expect(data.errors[0]!.error.includes('Already exists')).toBeTruthy();
+    expect(data.errors[0]!.error).toContain('Already exists');
   });
 
   test('returns 400 for empty paths array', async () => {

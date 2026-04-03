@@ -31,8 +31,8 @@ afterEach(() => {
 // Content token tests
 test('createBrowserToken returns a token string', () => {
   const token = createBrowserToken(path.join(tmpDir, 'index.html'));
-  expect(typeof token === 'string').toBeTruthy();
-  expect(token.length > 0).toBeTruthy();
+  expect(token).toBeTypeOf('string');
+  expect(token.length).toBeGreaterThan(0);
 });
 
 test('validateToken returns baseDir for valid token', () => {

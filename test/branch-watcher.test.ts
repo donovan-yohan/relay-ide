@@ -67,7 +67,7 @@ describe('BranchWatcher', () => {
     // Wait for debounce (300ms) + processing
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    expect(events.length > 0).toBeTruthy();
+    expect(events.length).toBeGreaterThan(0);
     const lastEvent = events[events.length - 1]!;
     expect(lastEvent.cwdPath).toBe(repoDir);
     expect(lastEvent.newBranch).toBe('feature-test');
@@ -123,7 +123,7 @@ describe('BranchWatcher', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    expect(events.length >= 1).toBeTruthy();
+    expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events[events.length - 1]!.newBranch).toBe('branch-one');
 
     // Second change: simulate another atomic checkout — this would fail without

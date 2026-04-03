@@ -126,7 +126,8 @@ test('POST creates a workspace with generated UUID', async () => {
     repos: ['/a', '/b'],
   });
   expect(status).toBe(201);
-  expect(typeof body.id === 'string' && body.id.length > 0).toBeTruthy();
+  expect(body.id).toBeTypeOf('string');
+  expect(body.id.length).toBeGreaterThan(0);
   expect(body.name).toBe('My Workspace');
   expect(body.repos).toEqual(['/a', '/b']);
   expect(body.order).toBe(0);
@@ -427,7 +428,7 @@ test('same repo can appear in multiple workspaces', async () => {
   // Verify both stored correctly
   const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   expect(saved.workspaces.length).toBe(2);
-  expect(
-    saved.workspaces.every((w: any) => w.repos.includes('/shared'))
-  ).toBeTruthy();
+  expect(saved.workspaces.every((w: any) => w.repos.includes('/shared'))).toBe(
+    true
+  );
 });

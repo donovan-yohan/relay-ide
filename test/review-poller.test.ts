@@ -197,7 +197,7 @@ test('startPolling() is idempotent — calling twice does not create two timers'
 
   // Two timer cycles elapsed. If only one timer exists, gh was called ~2 times.
   // If startPolling were NOT idempotent (two timers), we would see ~4 calls.
-  expect(callCount <= 3).toBeTruthy();
+  expect(callCount).toBeLessThanOrEqual(3);
 });
 
 test('first-run guard — when lastPollTimestamp is absent, no notifications are processed', async () => {
@@ -372,7 +372,7 @@ test('stopPolling() awaits the in-flight poll before resolving', async () => {
   const checkoutEvents = (broadcastedEvents as Array<{ event: string }>).filter(
     (e) => e.event === 'review-checkout'
   );
-  expect(checkoutEvents.length >= 1).toBeTruthy();
+  expect(checkoutEvents.length).toBeGreaterThanOrEqual(1);
 });
 
 test('poll-start watermark: lastPollTimestamp saved is the time before the fetch, not after', async () => {
@@ -413,17 +413,17 @@ test('poll-start watermark: lastPollTimestamp saved is the time before the fetch
   };
 
   const savedTs = savedConfig.automations?.lastPollTimestamp;
-  expect(savedTs !== undefined).toBeTruthy();
+  expect(savedTs).not.toBe(undefined);
 
   const savedMs = new Date(savedTs!).getTime();
-  expect(savedMs >= beforePoll).toBeTruthy();
-  expect(savedMs <= afterPoll).toBeTruthy();
+  expect(savedMs).toBeGreaterThanOrEqual(beforePoll);
+  expect(savedMs).toBeLessThanOrEqual(afterPoll);
 
   // The key invariant: the saved timestamp is the poll-START watermark, not poll-end.
   // We verify this by confirming it precedes the time after stopPolling returned.
   // Because exec has a deliberate delay, a poll-END timestamp would be noticeably later.
   // We simply confirm the saved value is a valid ISO string within the expected window.
-  expect(!isNaN(savedMs)).toBeTruthy();
+  expect(isNaN(savedMs)).toBe(false);
 });
 
 test('pollInFlight guard prevents overlapping poll cycles', async () => {
@@ -466,6 +466,6 @@ test('pollInFlight guard prevents overlapping poll cycles', async () => {
   // Without the pollInFlight guard, 150ms / 10ms = ~15 timer fires would each spawn a poll,
   // meaning gh could be called ~15 times. With the guard, at most 2 polls can complete
   // in 150ms (one starting at t=0 finishing at ~100ms, one starting at ~100ms finishing at ~200ms).
-  expect(ghCallCount <= 3).toBeTruthy();
-  expect(ghCallCount >= 1).toBeTruthy();
+  expect(ghCallCount).toBeLessThanOrEqual(3);
+  expect(ghCallCount).toBeGreaterThanOrEqual(1);
 });

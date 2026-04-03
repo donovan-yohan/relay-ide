@@ -59,8 +59,8 @@ describe('ActionRegistry', () => {
     registerContextual([makeAction({ id: 'session.b' })]);
     const all = getAllActions();
     expect(all.length).toBe(2);
-    expect(all.some((a: Action) => a.id === 'session.a')).toBeTruthy();
-    expect(all.some((a: Action) => a.id === 'session.b')).toBeTruthy();
+    expect(all.some((a: Action) => a.id === 'session.a')).toBe(true);
+    expect(all.some((a: Action) => a.id === 'session.b')).toBe(true);
   });
 
   it('getActionsByCategory filters correctly', () => {
