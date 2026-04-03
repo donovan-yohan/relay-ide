@@ -17,10 +17,11 @@ export interface AddWorkspaceDialogHandle {
 
 interface Props {
   onWorkspacesAdded: (paths: string[]) => void;
+  onClose?: (() => void) | undefined;
 }
 
 const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
-  function AddWorkspaceDialog({ onWorkspacesAdded }, ref) {
+  function AddWorkspaceDialog({ onWorkspacesAdded, onClose }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
     const fileBrowserRef = useRef<FileBrowserHandle>(null);
     const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
@@ -100,6 +101,7 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
         width="520px"
         title="add repo"
         footer={footer}
+        onClose={onClose}
       >
         <div className="add-workspace-body-content">
           <p className="add-workspace-dialog-desc">

@@ -26,9 +26,7 @@ import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
 import type { TerminalHandle } from '../components/Terminal.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
-import type { SettingsDialogHandle } from '../components/dialogs/SettingsDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
-import type { AddWorkspaceDialogHandle } from '../components/dialogs/AddWorkspaceDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
 
 const logger = createLogger('useSessionHandlers');
@@ -36,21 +34,15 @@ const logger = createLogger('useSessionHandlers');
 export interface UseSessionHandlersParams {
   terminalRef: React.RefObject<TerminalHandle | null>;
   customizeDialogRef: React.RefObject<CustomizeSessionDialogHandle | null>;
-  settingsDialogRef: React.RefObject<SettingsDialogHandle | null>;
   deleteWorktreeDialogRef: React.RefObject<DeleteWorktreeDialogHandle | null>;
-  addWorkspaceDialogRef: React.RefObject<AddWorkspaceDialogHandle | null>;
   workspaceSettingsDialogRef: React.RefObject<WorkspaceSettingsDialogHandle | null>;
-  setAnalyticsView: React.Dispatch<
-    React.SetStateAction<'dashboard' | { sessionId: string } | null>
-  >;
+  setAnalyticsView: (v: 'dashboard' | { sessionId: string } | null) => void;
 }
 
 export function useSessionHandlers({
   terminalRef,
   customizeDialogRef,
-  settingsDialogRef,
   deleteWorktreeDialogRef,
-  addWorkspaceDialogRef,
   workspaceSettingsDialogRef,
   setAnalyticsView,
 }: UseSessionHandlersParams) {
@@ -293,10 +285,10 @@ export function useSessionHandlers({
           workspace.name
         );
       } else {
-        settingsDialogRef.current?.open();
+        useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: null });
       }
     },
-    [workspaceSettingsDialogRef, settingsDialogRef]
+    [workspaceSettingsDialogRef]
   );
 
   const handleNewWorktree = useCallback(

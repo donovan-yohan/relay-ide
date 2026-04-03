@@ -124,7 +124,11 @@ function useConfigHandlers(config: ConfigState, setConfig: React.Dispatch<React.
   return { handleAgentChange, handleContinueChange, handleYoloChange, handleTmuxChange, handleNotifChange };
 }
 
-const SettingsDialog = forwardRef<SettingsDialogHandle>(function SettingsDialog(_props, ref) {
+interface SettingsDialogProps {
+  onClose?: () => void;
+}
+
+const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(function SettingsDialog({ onClose }, ref) {
   const shellRef = useRef<DialogShellHandle>(null);
   const contentElRef = useRef<HTMLDivElement | null>(null);
   const [contentEl, setContentEl] = useState<HTMLDivElement | undefined>(undefined);
@@ -193,7 +197,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle>(function SettingsDialog(
   );
 
   return (
-    <DialogShell ref={shellRef} title="settings" variant="fullscreen" headerExtra={headerExtra}>
+    <DialogShell ref={shellRef} title="settings" variant="fullscreen" headerExtra={headerExtra} onClose={onClose}>
       <div className="settings-dialog-content" ref={contentRefCallback}>
         {error && <p className="error-msg">{error}</p>}
         <SettingsToc open={tocOpen} onclose={() => setTocOpen(false)} {...(contentEl ? { contentEl } : {})} sections={TOC_SECTIONS} />

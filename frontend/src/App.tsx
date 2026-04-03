@@ -20,6 +20,7 @@ import { useEventSocket } from './hooks/useEventSocket.js';
 import { useAppShortcuts } from './hooks/useAppShortcuts.js';
 import { useActionRegistry } from './hooks/useActionRegistry.js';
 import { useSessionHandlers } from './hooks/useSessionHandlers.js';
+import { useUrlNav } from './hooks/useUrlNav.js';
 
 import BootScreen from './components/BootScreen.js';
 import PinGate from './components/PinGate.js';
@@ -90,10 +91,6 @@ initNotifications((sessionId: string, sessionType: string) => {
 // directly to avoid a large prop surface; only truly local state/refs are passed.
 
 interface TerminalAreaContentProps {
-  analyticsView: 'dashboard' | { sessionId: string } | null;
-  setAnalyticsView: React.Dispatch<
-    React.SetStateAction<'dashboard' | { sessionId: string } | null>
-  >;
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
   changedFilesData: string[];
   terminalRef: React.RefObject<TerminalHandle | null>;
@@ -113,8 +110,6 @@ interface TerminalAreaContentProps {
 }
 
 function TerminalAreaContent({
-  analyticsView,
-  setAnalyticsView,
   setSpotlightOpen,
   changedFilesData,
   terminalRef,
@@ -143,6 +138,8 @@ function TerminalAreaContent({
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const openFileTab = useUiStore((s) => s.openFileTab);
+  const analyticsView = useUiStore((s) => s.analyticsView);
+  const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const recallSessionForWorkspace = useSessionsStore(
@@ -475,9 +472,9 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [changedFilesData, setChangedFilesData] = useState<string[]>([]);
-  const [analyticsView, setAnalyticsView] = useState<
-    'dashboard' | { sessionId: string } | null
-  >(null);
+  const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
+  const activeModal = useUiStore((s) => s.activeModal);
+  const setActiveModal = useUiStore((s) => s.setActiveModal);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
   const terminalRef = useRef<TerminalHandle>(null);
@@ -557,12 +554,30 @@ export default function App() {
   } = useSessionHandlers({
     terminalRef,
     customizeDialogRef,
-    settingsDialogRef,
     deleteWorktreeDialogRef,
-    addWorkspaceDialogRef,
     workspaceSettingsDialogRef,
     setAnalyticsView,
   });
+
+  const { restoreFromUrl } = useUrlNav();
+
+  // ── Drive dialogs from activeModal store state ─────────────────────────────
+  useEffect(() => {
+    if (activeModal?.modal === 'settings') {
+      settingsDialogRef.current?.open(activeModal.scrollToId ?? undefined);
+    } else if (activeModal?.modal === 'add-repo') {
+      addWorkspaceDialogRef.current?.open();
+    } else {
+      settingsDialogRef.current?.close();
+      addWorkspaceDialogRef.current?.close();
+    }
+  }, [activeModal]);
+
+  const handleModalClose = useCallback(() => {
+    if (useUiStore.getState().activeModal !== null) {
+      useUiStore.getState().setActiveModal(null);
+    }
+  }, []);
 
   // Wire the module-level notifications forwarder to the live navigateToSession
   useEffect(() => {
@@ -594,8 +609,8 @@ export default function App() {
   );
 
   const handleAddWorkspace = useCallback(() => {
-    addWorkspaceDialogRef.current?.open();
-  }, []);
+    setActiveModal({ modal: 'add-repo' });
+  }, [setActiveModal]);
 
   const handleWorkspacesAdded = useCallback(async (paths: string[]) => {
     await useSessionsStore.getState().refreshAll();
@@ -677,11 +692,14 @@ export default function App() {
         useSessionsStore.getState().enrichSidebarBranches();
       }
 
+      // Restore navigation state from the URL path (or fall back to ?session= for legacy links)
       const params = new URLSearchParams(window.location.search);
       const sessionParam = params.get('session');
       if (sessionParam) {
         window.history.replaceState({}, '', '/');
         navigateToSession(sessionParam, 'repo');
+      } else {
+        restoreFromUrl();
       }
 
       // Auto-select if exactly one session exists and none is selected
@@ -736,9 +754,7 @@ export default function App() {
     handleArchive,
     navigateToDashboard,
     customizeDialogRef,
-    settingsDialogRef,
     deleteWorktreeDialogRef,
-    addWorkspaceDialogRef,
     workspaceSettingsDialogRef,
     terminalRef,
     setFilePickerOpen,
@@ -795,8 +811,6 @@ export default function App() {
         />
 
         <TerminalAreaContent
-          analyticsView={analyticsView}
-          setAnalyticsView={setAnalyticsView}
           setSpotlightOpen={setSpotlightOpen}
           changedFilesData={changedFilesData}
           terminalRef={terminalRef}
@@ -821,11 +835,12 @@ export default function App() {
         ref={customizeDialogRef}
         onSessionCreated={handleNewSessionCreated}
       />
-      <SettingsDialog ref={settingsDialogRef} />
+      <SettingsDialog ref={settingsDialogRef} onClose={handleModalClose} />
       <DeleteWorktreeDialog ref={deleteWorktreeDialogRef} />
       <AddWorkspaceDialog
         ref={addWorkspaceDialogRef}
         onWorkspacesAdded={handleWorkspacesAdded}
+        onClose={handleModalClose}
       />
       <WorkspaceSettingsDialog
         ref={workspaceSettingsDialogRef}
@@ -874,7 +889,7 @@ export default function App() {
         onSelectPr={handlePaletteSelectPr}
         onOpenSettings={(sectionId) => {
           setSpotlightOpen(false);
-          settingsDialogRef.current?.open(sectionId);
+          setActiveModal({ modal: 'settings', scrollToId: sectionId ?? null });
         }}
       />
 

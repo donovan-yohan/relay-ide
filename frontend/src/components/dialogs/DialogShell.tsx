@@ -19,6 +19,7 @@ interface DialogShellProps {
   children: React.ReactNode;
   headerExtra?: React.ReactNode;
   footer?: React.ReactNode;
+  onClose?: (() => void) | undefined;
 }
 
 const FOCUSABLE_SELECTOR =
@@ -74,6 +75,7 @@ export const DialogShell = forwardRef<DialogShellHandle, DialogShellProps>(
       children,
       headerExtra,
       footer,
+      onClose,
     },
     ref
   ) {
@@ -119,6 +121,7 @@ export const DialogShell = forwardRef<DialogShellHandle, DialogShellProps>(
         className={dialogClass}
         style={dialogStyle}
         onClick={handleDialogClick}
+        onClose={onClose}
         aria-modal="true"
         aria-label={title}
       >

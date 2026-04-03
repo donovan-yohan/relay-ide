@@ -86,9 +86,7 @@ import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
-import type { SettingsDialogHandle } from '../components/dialogs/SettingsDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
-import type { AddWorkspaceDialogHandle } from '../components/dialogs/AddWorkspaceDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
 import type { TerminalHandle } from '../components/Terminal.js';
 
@@ -105,9 +103,7 @@ export interface UseActionRegistryParams {
   handleArchive: () => void;
   navigateToDashboard: () => void;
   customizeDialogRef: React.RefObject<CustomizeSessionDialogHandle | null>;
-  settingsDialogRef: React.RefObject<SettingsDialogHandle | null>;
   deleteWorktreeDialogRef: React.RefObject<DeleteWorktreeDialogHandle | null>;
-  addWorkspaceDialogRef: React.RefObject<AddWorkspaceDialogHandle | null>;
   workspaceSettingsDialogRef: React.RefObject<WorkspaceSettingsDialogHandle | null>;
   terminalRef: React.RefObject<TerminalHandle | null>;
   setFilePickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -124,9 +120,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
     handleRenameActiveSession,
     navigateToDashboard,
     customizeDialogRef,
-    settingsDialogRef,
     deleteWorktreeDialogRef,
-    addWorkspaceDialogRef,
     workspaceSettingsDialogRef,
     terminalRef,
     setFilePickerOpen,
@@ -152,7 +146,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
 
     const settingsActions = settingsSectionActions.map(([def, section]) => ({
       ...def,
-      handler: () => settingsDialogRef.current?.open(section),
+      handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: section }),
     }));
 
     // ── Noop placeholders ────────────────────────────────────────────────────
@@ -212,7 +206,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       { ...sessionRename, handler: () => handleRenameActiveSession() },
 
       // ── Workspace ───────────────────────────────────────────────────────────
-      { ...workspaceAdd, handler: () => addWorkspaceDialogRef.current?.open() },
+      { ...workspaceAdd, handler: () => useUiStore.getState().setActiveModal({ modal: 'add-repo' }) },
       {
         ...workspaceNewWorktree,
         handler: () => {
@@ -264,7 +258,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       { ...settingsOpen, handler: () => handleOpenSettings() },
       {
         ...settingsConnectGithub,
-        handler: () => settingsDialogRef.current?.open('section-integrations'),
+        handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: 'section-integrations' }),
       },
       {
         ...settingsToggleYolo,
@@ -281,7 +275,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       },
       {
         ...settingsCheckUpdates,
-        handler: () => settingsDialogRef.current?.open('section-about'),
+        handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: 'section-about' }),
       },
       ...settingsActions,
 

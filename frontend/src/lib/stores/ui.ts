@@ -104,6 +104,11 @@ function loadCollapsedWorkspaces(): Set<string> {
   return new Set();
 }
 
+export type AnalyticsView = 'dashboard' | { sessionId: string } | null;
+
+import type { ModalRoute } from '../url-nav.js';
+export type ActiveModal = ModalRoute;
+
 // ── State interface ────────────────────────────────────────────────────────
 export interface UiState {
   sidebarOpen: boolean;
@@ -129,6 +134,8 @@ export interface UiState {
   fileViewerRatio: number;
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
+  analyticsView: AnalyticsView;
+  activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   // Actions
   openSidebar: () => void;
@@ -152,6 +159,8 @@ export interface UiState {
   setFileDiffSource: (source: 'working' | 'staged' | 'branch') => void;
   setFileDiffDefaultBranch: (branch: string) => void;
   setLastChangedFiles: (files: string[]) => void;
+  setAnalyticsView: (v: AnalyticsView) => void;
+  setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
 }
@@ -179,6 +188,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   activeFileTabKey: null,
   fileViewerRatio: loadFileViewerRatio(),
   sendToTargetSessionId: null,
+  analyticsView: null,
+  activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
 
@@ -227,6 +238,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setFileDiffSource: (source) => set({ fileDiffSource: source }),
   setFileDiffDefaultBranch: (branch) => set({ fileDiffDefaultBranch: branch }),
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
+  setAnalyticsView: (v) => set({ analyticsView: v }),
+  setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () => lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
 
