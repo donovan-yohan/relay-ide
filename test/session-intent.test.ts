@@ -1,27 +1,5 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-/* eslint-disable no-console -- temporary CI debug */
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const targetPath = path.resolve(
-  __dirname,
-  '../frontend/src/lib/session-intent.js'
-);
-console.error(`[DEBUG] __dirname=${__dirname}`);
-console.error(`[DEBUG] target=${targetPath}`);
-console.error(`[DEBUG] exists=${fs.existsSync(targetPath)}`);
-console.error(`[DEBUG] cwd=${process.cwd()}`);
-if (fs.existsSync(path.resolve(__dirname, '../frontend'))) {
-  console.error(
-    `[DEBUG] frontend dir contents: ${fs.readdirSync(path.resolve(__dirname, '../frontend/src/lib')).join(', ')}`
-  );
-}
-/* eslint-enable no-console */
-
 import {
   resolveIntent,
   issueToBranchName,
