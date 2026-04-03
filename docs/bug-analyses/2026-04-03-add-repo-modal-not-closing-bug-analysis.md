@@ -22,7 +22,7 @@
 
 ## Root Cause
 
-**CSS specificity conflict with native `<dialog>` element behavior.**
+**Author stylesheet overriding the browser's default `<dialog>` hiding behavior.**
 
 In commit `3e7e737`, `display: flex` and `flex-direction: column` were added directly to the `.dialog-shell` selector in `frontend/src/components/dialogs/DialogShell.css`:
 
@@ -42,7 +42,7 @@ dialog:not([open]) {
 }
 ```
 
-The `.dialog-shell` class selector has higher specificity than the UA `dialog:not([open])` type+pseudo selector. When `dialog.close()` is called, the browser removes the `open` attribute and removes the dialog from the top layer (hiding the `::backdrop`), but the element remains visible because `display: flex` overrides the browser's `display: none`.
+In the CSS cascade, author stylesheets take precedence over user-agent stylesheets regardless of specificity. (In fact, `dialog:not([open])` has _higher_ specificity than `.dialog-shell`, but specificity only applies within the same cascade origin.) Because `.dialog-shell { display: flex }` is an author rule, it wins over the UA rule unconditionally. When `dialog.close()` is called, the browser removes the `open` attribute and removes the dialog from the top layer (hiding the `::backdrop`), but the element remains visible because the author `display: flex` rule overrides the UA `display: none`.
 
 **Evidence:**
 
@@ -71,4 +71,4 @@ Move `display: flex` and `flex-direction: column` to a `.dialog-shell[open]` rul
 
 ## Architecture Review
 
-The `DialogShell` component correctly delegates open/close to the native `<dialog>` API (`showModal()` / `close()`). The `AddWorkspaceDialog` submit handler correctly calls `shellRef.current?.close()` after a successful API response. No logic changes were needed -- the fix is purely CSS specificity.
+The `DialogShell` component correctly delegates open/close to the native `<dialog>` API (`showModal()` / `close()`). The `AddWorkspaceDialog` submit handler correctly calls `shellRef.current?.close()` after a successful API response. No logic changes were needed -- the fix is purely CSS: scoping `display: flex` to `.dialog-shell[open]` so the author rule no longer overrides the browser's UA `display: none` when the dialog is closed.

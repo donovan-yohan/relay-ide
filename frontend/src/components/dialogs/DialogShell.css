@@ -14,9 +14,10 @@
 }
 
 /* Apply flex layout only when the dialog is open.
-   Without the [open] qualifier, display:flex overrides the browser's
-   built-in dialog:not([open]) { display:none } rule, preventing the
-   dialog from hiding when .close() is called. */
+   Without the [open] qualifier, this author rule would apply
+   display:flex even when the dialog is closed, overriding the
+   browser's default dialog:not([open]) { display:none } behavior
+   and preventing the dialog from hiding when .close() is called. */
 .dialog-shell[open] {
   display: flex;
   flex-direction: column;
