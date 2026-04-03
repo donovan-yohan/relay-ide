@@ -8,9 +8,12 @@ import './BootScreen.css';
 
 function badgeText(line: BootLine): string {
   switch (line.status) {
-    case 'ok': return '[ok]';
-    case 'fail': return '[fail]';
-    default: return '';
+    case 'ok':
+      return '[ok]';
+    case 'fail':
+      return '[fail]';
+    default:
+      return '';
   }
 }
 
@@ -76,7 +79,9 @@ export function BootScreen() {
               }
             >
               <span className="service-name">{line.service}</span>
-              <span className={`badge${line.status === 'ok' ? ' badge-ok' : ''}${line.status === 'fail' ? ' badge-fail' : ''}`}>
+              <span
+                className={`badge${line.status === 'ok' ? ' badge-ok' : ''}${line.status === 'fail' ? ' badge-fail' : ''}`}
+              >
                 {line.status === 'loading' ? (
                   <TuiProgress variant="braille" />
                 ) : line.status === 'pending' ? (
@@ -94,7 +99,9 @@ export function BootScreen() {
                       ? line.error
                       : null}
               </span>
-              <span className="duration">{formatDuration(line.durationMs)}</span>
+              <span className="duration">
+                {formatDuration(line.durationMs)}
+              </span>
             </div>
           ))}
         </div>
@@ -106,7 +113,11 @@ export function BootScreen() {
         ) : allFailed ? (
           <div className="retry-line">
             connection failed.
-            <button className="retry-btn" onClick={handleRetry} disabled={retrying}>
+            <button
+              className="retry-btn"
+              onClick={handleRetry}
+              disabled={retrying}
+            >
               {retrying ? '[retrying...]' : '[retry]'}
             </button>
           </div>
