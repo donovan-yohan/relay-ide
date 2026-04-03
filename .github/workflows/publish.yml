@@ -58,12 +58,13 @@ jobs:
 
       - name: Debug module resolution
         run: |
-          echo "pwd: $(pwd)"
-          ls -la dist/frontend/src/lib/session-intent.js
-          head -3 dist/frontend/src/lib/session-intent.js
-          head -3 dist/test/session-intent.test.js
-          node -e "import('../dist/frontend/src/lib/session-intent.js').then(() => console.log('direct import OK')).catch(e => console.error('direct import FAIL:', e.code))"
-          cd dist/test && node -e "import('../frontend/src/lib/session-intent.js').then(() => console.log('relative import OK')).catch(e => console.error('relative import FAIL:', e.code))" && cd ../..
+          echo "Node: $(node -v)"
+          echo "=== Run single test WITHOUT --test flag ==="
+          node dist/test/session-intent.test.js 2>&1 || echo "WITHOUT --test: FAILED"
+          echo "=== Run single test WITH --test flag ==="
+          node --test dist/test/session-intent.test.js 2>&1 | head -5 || echo "WITH --test: FAILED"
+          echo "=== Run single test WITH --test flag + absolute path ==="
+          node --test $(pwd)/dist/test/session-intent.test.js 2>&1 | head -5 || echo "WITH --test absolute: FAILED"
 
       - name: Run tests
         run: node --test --test-force-exit $(find dist/test -name '*.test.js')
