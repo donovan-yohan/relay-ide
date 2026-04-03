@@ -19,9 +19,7 @@ import type { Config } from '../server/types.js';
 let tmpDir!: string;
 
 before(() => {
-  tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'relay-ide-config-test-')
-  );
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-config-test-'));
 });
 
 afterEach(() => {
@@ -58,9 +56,8 @@ test('loadConfig merges with defaults for missing fields', () => {
   assert.equal(config.host, DEFAULTS.host);
   assert.equal(config.cookieTTL, DEFAULTS.cookieTTL);
   assert.deepEqual(config.repos, DEFAULTS.repos);
-  assert.equal(config.claudeCommand, DEFAULTS.claudeCommand);
   assert.deepEqual(config.claudeArgs, DEFAULTS.claudeArgs);
-  assert.equal(config.defaultAgent, DEFAULTS.defaultAgent);
+  assert.equal(config.defaultFramework, DEFAULTS.defaultFramework);
 });
 
 test('loadConfig throws if config file not found', () => {
@@ -83,9 +80,8 @@ test('DEFAULTS has expected keys and values', () => {
   assert.equal(DEFAULTS.port, 3456);
   assert.equal(DEFAULTS.cookieTTL, '24h');
   assert.deepEqual(DEFAULTS.repos, []);
-  assert.equal(DEFAULTS.claudeCommand, 'claude');
   assert.deepEqual(DEFAULTS.claudeArgs, []);
-  assert.equal(DEFAULTS.defaultAgent, 'claude');
+  assert.equal(DEFAULTS.defaultFramework, 'claude');
   assert.equal(DEFAULTS.defaultContinue, true);
   assert.equal(DEFAULTS.defaultYolo, false);
   assert.equal(DEFAULTS.launchInTmux, false);
@@ -165,7 +161,7 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultContinue: true,
       defaultYolo: false,
       launchInTmux: false,
@@ -187,13 +183,13 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
       claudeArgs: [],
       repoSettings: {
-        '/my/repo': { defaultYolo: true, defaultAgent: 'codex' },
+        '/my/repo': { defaultYolo: true, defaultFramework: 'codex' },
       },
     }),
     'utf8'
@@ -210,7 +206,7 @@ test('resolveSessionSettings explicit overrides beat workspace settings', () => 
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: true,
       defaultContinue: true,
       launchInTmux: false,
@@ -231,7 +227,7 @@ test('resolveSessionSettings uses override claudeArgs, not global', () => {
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -251,7 +247,7 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAgent: 'codex',
+      defaultFramework: 'codex',
       defaultYolo: true,
       defaultContinue: false,
       launchInTmux: true,
@@ -275,7 +271,7 @@ test('deleteRepoSettingKeys removes specified keys', () => {
     repoSettings: {
       '/my/repo': {
         defaultYolo: true,
-        defaultAgent: 'codex' as const,
+        defaultFramework: 'codex',
         branchPrefix: 'dy/',
       },
     },
@@ -283,10 +279,10 @@ test('deleteRepoSettingKeys removes specified keys', () => {
   fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
   deleteRepoSettingKeys(configPath, config, '/my/repo', [
     'defaultYolo',
-    'defaultAgent',
+    'defaultFramework',
   ]);
   assert.equal(config.repoSettings!['/my/repo']!.defaultYolo, undefined);
-  assert.equal(config.repoSettings!['/my/repo']!.defaultAgent, undefined);
+  assert.equal(config.repoSettings!['/my/repo']!.defaultFramework, undefined);
   assert.equal(config.repoSettings!['/my/repo']!.branchPrefix, 'dy/');
 });
 
@@ -312,226 +308,6 @@ test('deleteRepoSettingKeys is no-op for nonexistent workspace', () => {
   );
 });
 
-test('workspaceGroups with valid paths loads cleanly', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/a/repo', '/b/repo'],
-      workspaceGroups: {
-        'Group A': ['/a/repo'],
-        'Group B': ['/b/repo'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups, undefined);
-  const workspaces = config.workspaces as any[];
-  const groupA = workspaces?.find((w: any) => w.name === 'Group A');
-  const groupB = workspaces?.find((w: any) => w.name === 'Group B');
-  assert.deepEqual(groupA?.repos, ['/a/repo']);
-  assert.deepEqual(groupB?.repos, ['/b/repo']);
-});
-
-test('workspaceGroups with invalid path filters it out', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/valid/repo'],
-      workspaceGroups: {
-        'My Group': ['/valid/repo', '/not/in/workspaces'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups, undefined);
-  const myGroup = (config.workspaces as any[])?.find(
-    (w: any) => w.name === 'My Group'
-  );
-  assert.deepEqual(myGroup?.repos, ['/valid/repo']);
-});
-
-test('workspaceGroups with duplicate path allows many-to-many', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/shared/repo'],
-      workspaceGroups: {
-        First: ['/shared/repo'],
-        Second: ['/shared/repo'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups, undefined);
-  const workspaces = config.workspaces as any[];
-  const first = workspaces?.find((w: any) => w.name === 'First');
-  const second = workspaces?.find((w: any) => w.name === 'Second');
-  // Many-to-many: both groups can contain the same repo
-  assert.deepEqual(first?.repos, ['/shared/repo']);
-  assert.deepEqual(second?.repos, ['/shared/repo']);
-});
-
-test('workspaceGroups undefined produces no errors', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/some/repo'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups, undefined);
-  assert.deepEqual(config.workspaces as any[], []);
-});
-
-test('workspaceGroups with all-invalid paths removes empty group', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/valid/repo'],
-      workspaceGroups: {
-        'Ghost Group': ['/not/here', '/also/not/here'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaceGroups, undefined);
-  const workspaces = config.workspaces as any[];
-  assert.ok(!workspaces?.find((w: any) => w.name === 'Ghost Group'));
-});
-
-// ── Config v4 migration ──
-
-test('migrateToV4: sets configVersion (migrates to latest)', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ repos: ['/a'] }), 'utf8');
-  const config = loadConfig(configPath);
-  // v4 migration runs first, then v5 — final version is 5
-  assert.ok(config.configVersion != null && config.configVersion >= 4);
-});
-
-test('migrateToV4: v4 config upgrades to v5 preserving data', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  const v4Config = {
-    configVersion: 4,
-    repos: ['/a', '/b'],
-    repoSettings: { '/a': { defaultYolo: true } },
-    workspaces: [{ id: 'ws-1', name: 'My App', repos: ['/a', '/b'], order: 0 }],
-  };
-  fs.writeFileSync(configPath, JSON.stringify(v4Config), 'utf8');
-  const config = loadConfig(configPath);
-  // v4 data is preserved after v5 migration
-  assert.equal(config.configVersion, 5);
-  assert.deepEqual(config.repos, ['/a', '/b']);
-  assert.ok(config.repoSettings?.['/a']?.defaultYolo);
-  assert.equal((config.workspaces as any[])?.length, 1);
-  assert.equal((config.workspaces as any[])?.[0]?.name, 'My App');
-});
-
-test('migrateToV4: reconciles legacy workspaces string[] into repos', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      workspaces: ['/old/repo1', '/old/repo2'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.ok(config.configVersion != null && config.configVersion >= 4);
-  assert.ok(config.repos.includes('/old/repo1'));
-  assert.ok(config.repos.includes('/old/repo2'));
-});
-
-test('migrateToV4: merges workspaces and repos arrays with dedup', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/a', '/b'],
-      workspaces: ['/b', '/c'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.deepEqual(config.repos, ['/a', '/b', '/c']);
-});
-
-test('migrateToV4: renames workspaceSettings to repoSettings', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/my/repo'],
-      workspaceSettings: {
-        '/my/repo': { defaultYolo: true, branchPrefix: 'dy/' },
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.ok(config.repoSettings?.['/my/repo']?.defaultYolo);
-  assert.equal(config.repoSettings?.['/my/repo']?.branchPrefix, 'dy/');
-  assert.equal(config.workspaceSettings, undefined);
-});
-
-test('migrateToV4: promotes workspaceGroups to Workspace entities', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/frontend', '/backend', '/shared'],
-      workspaceGroups: {
-        'My App': ['/frontend', '/backend'],
-        Infra: ['/shared'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const workspaces = config.workspaces as any[];
-  assert.equal(workspaces?.length, 2);
-  const myApp = workspaces?.find((w: any) => w.name === 'My App');
-  assert.ok(myApp);
-  assert.ok(myApp.id);
-  assert.deepEqual(myApp.repos, ['/frontend', '/backend']);
-  assert.equal(myApp.order, 0);
-  const infra = workspaces?.find((w: any) => w.name === 'Infra');
-  assert.ok(infra);
-  assert.deepEqual(infra.repos, ['/shared']);
-  assert.equal(infra.order, 1);
-  assert.equal(config.workspaceGroups, undefined);
-});
-
-test('migrateToV4: workspaceGroups promotion validates against repos[]', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/valid'],
-      workspaceGroups: {
-        Mixed: ['/valid', '/not-in-repos'],
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const mixed = (config.workspaces as any[])?.find(
-    (w: any) => w.name === 'Mixed'
-  );
-  assert.ok(mixed);
-  assert.deepEqual(mixed.repos, ['/valid']);
-});
-
 // ── resolveSessionSettings workspace cascade ──
 
 test('resolveSessionSettings with workspaceId applies workspace settings between global and repo', () => {
@@ -540,8 +316,7 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -555,7 +330,7 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
           order: 0,
           settings: {
             defaultYolo: true,
-            defaultAgent: 'codex',
+            defaultFramework: 'codex',
             launchInTmux: true,
           },
         },
@@ -577,8 +352,7 @@ test('resolveSessionSettings: repo settings override workspace settings', () => 
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -590,11 +364,11 @@ test('resolveSessionSettings: repo settings override workspace settings', () => 
           name: 'My Workspace',
           repos: ['/my/repo'],
           order: 0,
-          settings: { defaultYolo: true, defaultAgent: 'codex' },
+          settings: { defaultYolo: true, defaultFramework: 'codex' },
         },
       ],
       repoSettings: {
-        '/my/repo': { defaultYolo: false, defaultAgent: 'claude' },
+        '/my/repo': { defaultYolo: false, defaultFramework: 'claude' },
       },
     }),
     'utf8'
@@ -612,8 +386,7 @@ test('resolveSessionSettings: overrides beat workspace and repo settings', () =>
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -649,8 +422,7 @@ test('resolveSessionSettings without workspaceId skips workspace cascade', () =>
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -662,7 +434,7 @@ test('resolveSessionSettings without workspaceId skips workspace cascade', () =>
           name: 'My Workspace',
           repos: ['/my/repo'],
           order: 0,
-          settings: { defaultYolo: true, defaultAgent: 'codex' },
+          settings: { defaultYolo: true, defaultFramework: 'codex' },
         },
       ],
     }),
@@ -680,8 +452,7 @@ test('resolveSessionSettings with unknown workspaceId falls through to global', 
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
+      defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
       launchInTmux: false,
@@ -700,33 +471,6 @@ test('resolveSessionSettings with unknown workspaceId falls through to global', 
   );
   assert.equal(result.yolo, false);
   assert.equal(result.agent, 'claude');
-});
-
-test('migrateToV4: empty config gets migrated to latest version', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
-  const config = loadConfig(configPath);
-  assert.ok(config.configVersion != null && config.configVersion >= 4);
-});
-
-test('migrateToV4: persists migrated config to disk', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/a'],
-      workspaceSettings: { '/a': { defaultYolo: true } },
-      workspaceGroups: { G: ['/a'] },
-    }),
-    'utf8'
-  );
-  loadConfig(configPath);
-  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  // After v4+v5 migrations, configVersion is at least 4
-  assert.ok(raw.configVersion != null && raw.configVersion >= 4);
-  assert.ok(raw.repoSettings);
-  assert.equal(raw.workspaceSettings, undefined);
-  assert.equal(raw.workspaceGroups, undefined);
 });
 
 test('resolveSessionSettings maps defaultContinue:true to continuePolicy:always', () => {
@@ -779,7 +523,6 @@ test('resolveSessionSettings defaults continuePolicy to always when defaultConti
 test('cascades workspace settings when workspaceId is provided', () => {
   const config = {
     ...DEFAULTS,
-    configVersion: 4,
     repos: ['/tmp/test-repo'],
     workspaces: [
       {
@@ -789,7 +532,7 @@ test('cascades workspace settings when workspaceId is provided', () => {
         order: 0,
         settings: {
           defaultYolo: true,
-          defaultAgent: 'claude',
+          defaultFramework: 'claude',
         },
       },
     ],
@@ -808,7 +551,6 @@ test('cascades workspace settings when workspaceId is provided', () => {
 test('repo settings override workspace settings', () => {
   const config = {
     ...DEFAULTS,
-    configVersion: 4,
     repos: ['/tmp/test-repo'],
     workspaces: [
       {
@@ -834,238 +576,11 @@ test('repo settings override workspace settings', () => {
   );
 });
 
-// ── Config v5 migration ──
-
-test('migrateToV5: sets configVersion to 5', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ configVersion: 4, repos: ['/a'] }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 5);
-});
-
-test('migrateToV5: maps defaultAgent to defaultFramework', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'codex',
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.defaultFramework, 'codex');
-});
-
-test('migrateToV5: maps claudeCommand to frameworks.claude.commandOverride when non-default', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      claudeCommand: '/usr/local/bin/claude',
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(
-    config.frameworks?.['claude']?.commandOverride,
-    '/usr/local/bin/claude'
-  );
-});
-
-test('migrateToV5: does NOT set frameworks.claude.commandOverride when claudeCommand is default', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      claudeCommand: 'claude',
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.frameworks?.['claude']?.commandOverride, undefined);
-});
-
-test('migrateToV5: maps claudeArgs to frameworks.claude.extraArgs when non-empty', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      claudeArgs: ['--verbose', '--no-update-check'],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.deepEqual(config.frameworks?.['claude']?.extraArgs, [
-    '--verbose',
-    '--no-update-check',
-  ]);
-});
-
-test('migrateToV5: does NOT set frameworks.claude.extraArgs when claudeArgs is empty', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      claudeArgs: [],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.frameworks?.['claude']?.extraArgs, undefined);
-});
-
-test('migrateToV5: preserves existing v5 config (no double-migration)', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 5,
-      defaultFramework: 'opencode',
-      defaultAgent: 'claude', // should NOT overwrite defaultFramework
-      frameworks: { claude: { commandOverride: '/existing/path' } },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 5);
-  assert.equal(config.defaultFramework, 'opencode');
-  assert.equal(
-    config.frameworks?.['claude']?.commandOverride,
-    '/existing/path'
-  );
-});
-
-test('migrateToV5: migrates repoSettings defaultAgent to defaultFramework', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      repos: ['/my/repo'],
-      repoSettings: {
-        '/my/repo': { defaultAgent: 'codex', defaultYolo: true },
-      },
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.repoSettings?.['/my/repo']?.defaultFramework, 'codex');
-  // defaultAgent remains for backward-compat
-  assert.equal(config.repoSettings?.['/my/repo']?.defaultYolo, true);
-});
-
-test('migrateToV5: persists migrated config to disk', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      defaultAgent: 'claude',
-      claudeCommand: '/custom/claude',
-      claudeArgs: ['--arg1'],
-      repos: ['/a'],
-      repoSettings: { '/a': { defaultAgent: 'codex' } },
-    }),
-    'utf8'
-  );
-  loadConfig(configPath);
-  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  assert.equal(raw.configVersion, 5);
-  assert.equal(raw.defaultFramework, 'claude');
-  assert.equal(raw.frameworks?.claude?.commandOverride, '/custom/claude');
-  assert.deepEqual(raw.frameworks?.claude?.extraArgs, ['--arg1']);
-  assert.equal(raw.repoSettings?.['/a']?.defaultFramework, 'codex');
-});
-
-test('loadConfig applies v5 migration after v4 migration', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  // Simulate an old v3-ish config with legacy fields that needs both migrations
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      repos: ['/a'],
-      workspaces: ['/a'], // triggers v4 migration
-      defaultAgent: 'codex', // triggers v5 migration
-      claudeCommand: '/alt/claude',
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.configVersion, 5);
-  assert.equal(config.defaultFramework, 'codex');
-  assert.equal(config.frameworks?.['claude']?.commandOverride, '/alt/claude');
-});
-
-test('migrateToV5: migrates workspace-level settings defaultAgent to defaultFramework', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 4,
-      repos: ['/my/repo'],
-      workspaces: [
-        {
-          id: 'ws1',
-          name: 'Test',
-          repos: ['/my/repo'],
-          order: 0,
-          settings: { defaultAgent: 'codex' },
-        },
-      ],
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  assert.equal(config.workspaces?.[0]?.settings?.defaultFramework, 'codex');
-});
-
-test('resolveSessionSettings uses defaultFramework over defaultAgent', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 5,
-      defaultFramework: 'opencode',
-      defaultAgent: 'claude', // should be overridden by defaultFramework
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', {});
-  assert.equal(result.agent, 'opencode');
-});
-
-test('resolveSessionSettings falls back to defaultAgent when defaultFramework absent', () => {
-  const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      configVersion: 5,
-      defaultAgent: 'codex',
-      // no defaultFramework
-    }),
-    'utf8'
-  );
-  const config = loadConfig(configPath);
-  const result = resolveSessionSettings(config, '/some/repo', {});
-  assert.equal(result.agent, 'codex');
-});
-
 test('resolveSessionSettings: repoSettings defaultFramework overrides global', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
     JSON.stringify({
-      configVersion: 5,
       defaultFramework: 'claude',
       repos: ['/my/repo'],
       repoSettings: {

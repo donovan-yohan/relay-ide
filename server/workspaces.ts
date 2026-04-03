@@ -468,6 +468,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     res.json({ workspaces: results });
   });
 
+  // Helper: get current branch for a repo path, returns null for detached HEAD
+  async function getCurrentBranchForRepo(
+    repoPath: string
+  ): Promise<string | null> {
+    try {
+      const { stdout } = await exec(
+        'git',
+        ['symbolic-ref', '--short', 'HEAD'],
+        { cwd: repoPath }
+      );
+      return stdout.trim() || null;
+    } catch {
+      /* detached HEAD */
+      return null;
+    }
+  }
+
   // POST /workspaces/bulk — add multiple workspaces at once
   router.post('/bulk', async (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>;
@@ -513,19 +530,9 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const { isGitRepo, defaultBranch } = await detectGitRepo(resolved, exec);
 
       existing.add(resolved);
-      let currentBranch: string | null = null;
-      if (isGitRepo) {
-        try {
-          const { stdout } = await exec(
-            'git',
-            ['symbolic-ref', '--short', 'HEAD'],
-            { cwd: resolved }
-          );
-          currentBranch = stdout.trim() || null;
-        } catch {
-          /* detached HEAD */
-        }
-      }
+      const currentBranch = isGitRepo
+        ? await getCurrentBranchForRepo(resolved)
+        : null;
       added.push({
         path: resolved,
         name: path.basename(resolved),
@@ -721,7 +728,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const effective = getRepoSettings(config, resolved);
     const overridden: string[] = [];
     for (const key of [
-      'defaultAgent',
+      'defaultFramework',
       'defaultContinue',
       'defaultYolo',
       'launchInTmux',
@@ -830,6 +837,163 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
+  // Helper: ensure .worktrees/ is listed in .gitignore
+  async function ensureGitignoreHasWorktrees(repoRoot: string): Promise<void> {
+    const gitignorePath = path.join(repoRoot, '.gitignore');
+    try {
+      const existing = await fs.promises.readFile(gitignorePath, 'utf8');
+      if (!existing.includes('.worktrees/')) {
+        await fs.promises.appendFile(gitignorePath, '\n.worktrees/\n');
+      }
+    } catch {
+      await fs.promises.writeFile(gitignorePath, '.worktrees/\n');
+    }
+  }
+
+  // Helper: resolve a new mountain-name + branch for a fresh worktree.
+  // Returns null and sends a 409 response if all names are taken.
+  async function resolveNewBranchName(
+    res: Response,
+    resolved: string,
+    settings: ReturnType<typeof getRepoSettings>
+  ): Promise<{
+    branchName: string;
+    mountainName: string;
+    nextMountainIndex: number;
+    gitArgs: string[];
+  } | null> {
+    const baseIndex = settings.nextMountainIndex ?? 0;
+    let found = false;
+    let mountainName = '';
+    let branchName = '';
+    let nextMountainIndex = 0;
+
+    for (let attempt = 0; attempt < MOUNTAIN_NAMES.length; attempt++) {
+      const candidateIndex = (baseIndex + attempt) % MOUNTAIN_NAMES.length;
+      const candidateName = MOUNTAIN_NAMES[candidateIndex] ?? 'everest';
+      const suffix = crypto.randomBytes(2).toString('hex');
+      const candidateBranch =
+        (settings.branchPrefix ?? '') + candidateName + '-' + suffix;
+      const candidatePath = path.join(resolved, '.worktrees', candidateName);
+
+      const branchExists = await exec(
+        'git',
+        ['rev-parse', '--verify', candidateBranch],
+        { cwd: resolved }
+      ).then(
+        () => true,
+        () => false
+      );
+      const dirExists = fs.existsSync(candidatePath);
+
+      if (!branchExists && !dirExists) {
+        mountainName = candidateName;
+        branchName = candidateBranch;
+        nextMountainIndex = candidateIndex + 1;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      res.status(409).json({
+        error:
+          'All mountain names are taken for this workspace. Delete some worktrees first.',
+      });
+      return null;
+    }
+
+    let baseBranch = settings.defaultBranch;
+    if (!baseBranch) {
+      const detected = await detectGitRepo(resolved);
+      baseBranch = detected.defaultBranch ?? 'main';
+    }
+
+    const gitArgs = [
+      'worktree',
+      'add',
+      '-b',
+      branchName,
+      path.join(resolved, '.worktrees', mountainName),
+      baseBranch,
+    ];
+
+    return { branchName, mountainName, nextMountainIndex, gitArgs };
+  }
+
+  // Helper: handle the existingBranch path of POST /worktree.
+  // Sends response and returns true; returns false if caller should continue.
+  async function handleExistingBranchWorktree(
+    res: Response,
+    resolved: string,
+    existingBranch: string
+  ): Promise<boolean> {
+    let branchResult: { found: boolean; reason?: 'not_found' | 'fetch_failed' };
+    try {
+      branchResult = await ensureBranchLocal(resolved, existingBranch, {
+        exec,
+      });
+    } catch (err) {
+      logger.error(
+        'ensureBranchLocal failed unexpectedly:',
+        err instanceof Error ? err.message : err
+      );
+      res.status(500).json({ error: 'Git operation failed' });
+      return true;
+    }
+
+    if (!branchResult.found) {
+      if (branchResult.reason === 'fetch_failed') {
+        res.status(502).json({
+          error: 'fetch_failed',
+          branch: existingBranch,
+          remote: 'origin',
+        });
+      } else {
+        res.status(404).json({
+          error: 'branch_not_found',
+          branch: existingBranch,
+          remote: 'origin',
+        });
+      }
+      return true;
+    }
+
+    try {
+      const result = await findOrCreateWorktreeForBranch(
+        resolved,
+        existingBranch,
+        exec
+      );
+      if (!result.isMain) {
+        const meta = readMeta(configPath, result.worktreePath);
+        writeMeta(configPath, {
+          worktreePath: result.worktreePath,
+          displayName: meta?.displayName || result.dirName,
+          lastActivity: new Date().toISOString(),
+          branchName: result.branchName,
+        });
+        res.json({
+          branchName: result.branchName,
+          mountainName: meta?.displayName || result.dirName,
+          worktreePath: result.worktreePath,
+          existing: result.existing,
+        });
+      } else {
+        res.json({
+          branchName: result.branchName,
+          mountainName: result.dirName,
+          worktreePath: null,
+          existing: true,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to create worktree: ${msg}` });
+    }
+    return true;
+  }
+
   // POST /workspaces/worktree — create a new worktree with the next mountain name
   router.post('/worktree', async (req: Request, res: Response) => {
     const repoPath =
@@ -847,154 +1011,20 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const config = getConfig();
     const settings = getRepoSettings(config, resolved);
 
-    let branchName = '';
-    let mountainName = '';
-    let gitArgs: string[];
-    let nextMountainIndex: number | undefined;
-
     if (existingBranch) {
-      // Ensure branch exists locally (fetch from remote if needed)
-      let branchResult: {
-        found: boolean;
-        reason?: 'not_found' | 'fetch_failed';
-      };
-      try {
-        branchResult = await ensureBranchLocal(resolved, existingBranch, {
-          exec,
-        });
-      } catch (err) {
-        logger.error(
-          'ensureBranchLocal failed unexpectedly:',
-          err instanceof Error ? err.message : err
-        );
-        res.status(500).json({ error: 'Git operation failed' });
-        return;
-      }
-      if (!branchResult.found) {
-        if (branchResult.reason === 'fetch_failed') {
-          res.status(502).json({
-            error: 'fetch_failed',
-            branch: existingBranch,
-            remote: 'origin',
-          });
-          return;
-        }
-        res.status(404).json({
-          error: 'branch_not_found',
-          branch: existingBranch,
-          remote: 'origin',
-        });
-        return;
-      }
-
-      // Find existing checkout or create new worktree
-      try {
-        const result = await findOrCreateWorktreeForBranch(
-          resolved,
-          existingBranch,
-          exec
-        );
-        // For main worktree matches, return worktreePath: null to signal "use the main repo"
-        // and skip writeMeta (main repo is not a disposable worktree)
-        if (!result.isMain) {
-          const meta = readMeta(configPath, result.worktreePath);
-          writeMeta(configPath, {
-            worktreePath: result.worktreePath,
-            displayName: meta?.displayName || result.dirName,
-            lastActivity: new Date().toISOString(),
-            branchName: result.branchName,
-          });
-          res.json({
-            branchName: result.branchName,
-            mountainName: meta?.displayName || result.dirName,
-            worktreePath: result.worktreePath,
-            existing: result.existing,
-          });
-        } else {
-          res.json({
-            branchName: result.branchName,
-            mountainName: result.dirName,
-            worktreePath: null,
-            existing: true,
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ error: `Failed to create worktree: ${msg}` });
-      }
+      await handleExistingBranchWorktree(res, resolved, existingBranch);
       return;
-    } else {
-      // Create a new branch: <mountain>-<hex-suffix> — with retry if directory is taken
-      const baseIndex = settings.nextMountainIndex ?? 0;
-      let found = false;
-
-      for (let attempt = 0; attempt < MOUNTAIN_NAMES.length; attempt++) {
-        const candidateIndex = (baseIndex + attempt) % MOUNTAIN_NAMES.length;
-        const candidateName = MOUNTAIN_NAMES[candidateIndex] ?? 'everest';
-        const suffix = crypto.randomBytes(2).toString('hex');
-        const candidateBranch =
-          (settings.branchPrefix ?? '') + candidateName + '-' + suffix;
-        const candidatePath = path.join(resolved, '.worktrees', candidateName);
-
-        // Check if branch or directory already exists
-        const branchExists = await exec(
-          'git',
-          ['rev-parse', '--verify', candidateBranch],
-          { cwd: resolved }
-        ).then(
-          () => true,
-          () => false
-        );
-        const dirExists = fs.existsSync(candidatePath);
-
-        if (!branchExists && !dirExists) {
-          mountainName = candidateName;
-          branchName = candidateBranch;
-          nextMountainIndex = candidateIndex + 1;
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        res.status(409).json({
-          error:
-            'All mountain names are taken for this workspace. Delete some worktrees first.',
-        });
-        return;
-      }
-
-      // Detect base branch (keep existing logic)
-      let baseBranch = settings.defaultBranch;
-      if (!baseBranch) {
-        const detected = await detectGitRepo(resolved);
-        baseBranch = detected.defaultBranch ?? 'main';
-      }
-
-      gitArgs = [
-        'worktree',
-        'add',
-        '-b',
-        branchName,
-        path.join(resolved, '.worktrees', mountainName),
-        baseBranch,
-      ];
     }
 
+    // Create a new branch: <mountain>-<hex-suffix> — with retry if directory is taken
+    const newBranch = await resolveNewBranchName(res, resolved, settings);
+    if (!newBranch) return; // 409 already sent
+
+    const { branchName, mountainName, nextMountainIndex, gitArgs } = newBranch;
     const worktreePath = path.join(resolved, '.worktrees', mountainName);
 
     try {
-      // Ensure .worktrees/ is in .gitignore
-      const gitignorePath = path.join(resolved, '.gitignore');
-      try {
-        const existing = await fs.promises.readFile(gitignorePath, 'utf8');
-        if (!existing.includes('.worktrees/')) {
-          await fs.promises.appendFile(gitignorePath, '\n.worktrees/\n');
-        }
-      } catch {
-        await fs.promises.writeFile(gitignorePath, '.worktrees/\n');
-      }
-
+      await ensureGitignoreHasWorktrees(resolved);
       await exec('git', gitArgs, { cwd: resolved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1003,9 +1033,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
 
     // Increment mountain counter AFTER successful creation (don't skip names on failure)
-    if (nextMountainIndex !== undefined) {
-      setRepoSettings(configPath, config, resolved, { nextMountainIndex });
-    }
+    setRepoSettings(configPath, config, resolved, { nextMountainIndex });
 
     // Write metadata so DELETE /worktrees can find the suffixed branch name
     writeMeta(configPath, {
@@ -1373,7 +1401,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       });
       res.json({ files, truncated, total: allFiles.length });
     } catch (err: unknown) {
-      logger.warn('/files-list failed for', resolved, err instanceof Error ? err.message : String(err));
+      logger.warn(
+        '/files-list failed for',
+        resolved,
+        err instanceof Error ? err.message : String(err)
+      );
       res.json({
         files: [],
         truncated: false,

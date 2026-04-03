@@ -6,13 +6,9 @@ import type {
   Config,
   ContinuePolicy,
   FilterPreset,
-  Workspace,
   WorkspaceSettings,
   WorktreeMetadata,
 } from './types.js';
-import { createLogger } from './logger.js';
-
-const logger = createLogger('config');
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   {
@@ -31,20 +27,13 @@ export const DEFAULT_PRESETS: FilterPreset[] = [
 
 export const DEFAULTS: Omit<
   Config,
-  | 'pinHash'
-  | 'rootDirs'
-  | 'workspaceSettings'
-  | 'repoSettings'
-  | 'vapidPublicKey'
-  | 'vapidPrivateKey'
+  'pinHash' | 'rootDirs' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'
 > = {
   host: '0.0.0.0',
   port: 3456,
   cookieTTL: '24h',
   repos: [],
-  claudeCommand: 'claude',
   claudeArgs: [],
-  defaultAgent: 'claude',
   defaultFramework: 'claude',
   defaultContinue: true,
   defaultYolo: false,
@@ -52,125 +41,6 @@ export const DEFAULTS: Omit<
   defaultNotifications: true,
   updateChannel: 'stable',
 };
-
-function migrateToV4(config: Config, configPath: string): void {
-  if (config.configVersion != null && config.configVersion >= 4) return;
-
-  // Step 1: Reconcile repo arrays
-  const legacyWorkspaces = config.workspaces as unknown as string[] | undefined;
-  const isLegacyStringArray =
-    Array.isArray(legacyWorkspaces) &&
-    (legacyWorkspaces.length === 0 || typeof legacyWorkspaces[0] === 'string');
-
-  if (isLegacyStringArray && legacyWorkspaces!.length > 0) {
-    if (!config.repos) config.repos = [];
-    const repoSet = new Set(config.repos);
-    for (const w of legacyWorkspaces!) {
-      if (!repoSet.has(w)) {
-        config.repos.push(w);
-        repoSet.add(w);
-      }
-    }
-  }
-
-  // Step 2: Rename workspaceSettings → repoSettings
-  if (config.workspaceSettings != null && config.repoSettings == null) {
-    config.repoSettings = config.workspaceSettings;
-    delete config.workspaceSettings;
-  }
-
-  // Step 3: Promote workspaceGroups → workspaces (Workspace[])
-  const promoted: Workspace[] = [];
-  if (config.workspaceGroups != null) {
-    const validPaths = new Set(config.repos ?? []);
-    let order = 0;
-    for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
-      if (!Array.isArray(paths)) continue;
-      const validRepos = paths.filter((p) => validPaths.has(p));
-      if (validRepos.length > 0) {
-        promoted.push({
-          id: crypto.randomUUID(),
-          name: groupName,
-          repos: validRepos,
-          order: order++,
-        });
-      }
-    }
-    delete config.workspaceGroups;
-  }
-
-  // Set workspaces to promoted entities (or empty array if nothing was promoted)
-  config.workspaces = promoted;
-
-  // Step 4: Set version
-  config.configVersion = 4;
-
-  // Persist migrated config
-  saveConfig(configPath, config);
-}
-
-function migrateToV5(config: Config, configPath: string): void {
-  if (config.configVersion != null && config.configVersion >= 5) return;
-
-  // Map defaultAgent → defaultFramework, preserving any explicit defaultFramework
-  if (config.defaultAgent && !config.defaultFramework) {
-    config.defaultFramework = config.defaultAgent;
-  }
-
-  // Map claudeCommand → frameworks.claude.commandOverride (only if non-default)
-  if (config.claudeCommand && config.claudeCommand !== 'claude') {
-    if (!config.frameworks) config.frameworks = {};
-    if (!config.frameworks['claude']) config.frameworks['claude'] = {};
-    if (!config.frameworks['claude'].commandOverride) {
-      config.frameworks['claude'].commandOverride = config.claudeCommand;
-    }
-  }
-
-  // Map claudeArgs → frameworks.claude.extraArgs (only if non-empty)
-  if (Array.isArray(config.claudeArgs) && config.claudeArgs.length > 0) {
-    if (!config.frameworks) config.frameworks = {};
-    if (!config.frameworks['claude']) config.frameworks['claude'] = {};
-    config.frameworks['claude'].extraArgs = config.claudeArgs;
-  }
-
-  // Migrate repoSettings: defaultAgent → defaultFramework per repo
-  if (config.repoSettings) {
-    for (const repoPath of Object.keys(config.repoSettings)) {
-      const repoSettings = config.repoSettings[repoPath];
-      if (repoSettings?.defaultAgent && !repoSettings.defaultFramework) {
-        repoSettings.defaultFramework = repoSettings.defaultAgent;
-      }
-    }
-  }
-
-  // Migrate workspace-level settings: defaultAgent → defaultFramework
-  if (config.workspaces) {
-    for (const workspace of config.workspaces) {
-      if (
-        workspace.settings?.defaultAgent &&
-        !workspace.settings.defaultFramework
-      ) {
-        workspace.settings.defaultFramework = workspace.settings.defaultAgent;
-      }
-    }
-  }
-
-  config.configVersion = 5;
-
-  // Persist migrated config
-  saveConfig(configPath, config);
-}
-
-function migrateToV6(config: Config, configPath: string): void {
-  if (config.configVersion != null && config.configVersion >= 6) return;
-
-  if (!config.updateChannel) {
-    config.updateChannel = 'stable';
-  }
-
-  config.configVersion = 6;
-  saveConfig(configPath, config);
-}
 
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
@@ -180,13 +50,6 @@ export function loadConfig(configPath: string): Config {
   const parsed = JSON.parse(raw) as Partial<Config>;
   const config: Config = { ...DEFAULTS, ...parsed };
 
-  // If defaultFramework was not explicitly set in the config file, derive it from defaultAgent
-  // so that legacy configs with only defaultAgent work correctly without migration
-  if (parsed.defaultFramework == null) {
-    config.defaultFramework = (parsed.defaultAgent ??
-      DEFAULTS.defaultAgent) as string;
-  }
-
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
     config.filterPresets = DEFAULT_PRESETS.map((p) => ({
@@ -195,47 +58,6 @@ export function loadConfig(configPath: string): Config {
       sort: { ...p.sort },
     }));
   }
-
-  // Validate and clean workspaceGroups
-  if (config.workspaceGroups != null) {
-    // Valid paths come from repos[] and legacy workspaces[] (string array, pre-v4)
-    const legacyWs = config.workspaces as unknown as string[] | undefined;
-    const legacyWsPaths =
-      Array.isArray(legacyWs) &&
-      (legacyWs.length === 0 || typeof legacyWs[0] === 'string')
-        ? legacyWs
-        : [];
-    const validPaths = new Set([...(config.repos ?? []), ...legacyWsPaths]);
-    const cleaned: Record<string, string[]> = {};
-
-    for (const [groupName, paths] of Object.entries(config.workspaceGroups)) {
-      if (!Array.isArray(paths)) {
-        logger.warn(
-          `workspaceGroups: group "${groupName}" value is not an array, skipping`
-        );
-        continue;
-      }
-      const filteredPaths: string[] = [];
-      for (const p of paths) {
-        if (!validPaths.has(p)) {
-          logger.warn(
-            `workspaceGroups: path "${p}" in group "${groupName}" is not in repos[], skipping`
-          );
-          continue;
-        }
-        filteredPaths.push(p);
-      }
-      if (filteredPaths.length > 0) {
-        cleaned[groupName] = filteredPaths;
-      }
-    }
-
-    config.workspaceGroups = cleaned;
-  }
-
-  migrateToV4(config, configPath);
-  migrateToV5(config, configPath);
-  migrateToV6(config, configPath);
 
   return config;
 }
@@ -300,17 +122,13 @@ export function getRepoSettings(
   repoPath: string
 ): WorkspaceSettings {
   const globalDefaults: WorkspaceSettings = {
-    defaultAgent: config.defaultAgent,
-    defaultFramework: config.defaultFramework ?? config.defaultAgent,
+    defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: config.launchInTmux,
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace =
-    config.repoSettings?.[repoPath] ??
-    config.workspaceSettings?.[repoPath] ??
-    {};
+  const perWorkspace = config.repoSettings?.[repoPath] ?? {};
   // Per-repo settings override global — only for defined keys
   return { ...globalDefaults, ...perWorkspace };
 }
@@ -338,8 +156,7 @@ export function resolveSessionSettings(
   workspaceId?: string
 ): ResolvedSessionSettings {
   const globalDefaults: Partial<WorkspaceSettings> = {
-    defaultAgent: config.defaultAgent,
-    defaultFramework: config.defaultFramework ?? config.defaultAgent,
+    defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: config.launchInTmux,
@@ -362,22 +179,16 @@ export function resolveSessionSettings(
     merged.defaultContinuePolicy ??
     (merged.defaultContinue ? 'always' : 'never');
 
-  // Resolve agent: prefer the most specific layer's defaultFramework, falling back to
-  // defaultAgent at that layer. This ensures workspace/repo defaultAgent still wins
-  // over a global defaultFramework.
+  // Resolve agent: prefer the most specific layer's defaultFramework
   const agentFromLayers = (() => {
     // Repo layer (most specific)
     if (repoSpecific.defaultFramework)
       return repoSpecific.defaultFramework as AgentType;
-    if (repoSpecific.defaultAgent) return repoSpecific.defaultAgent;
     // Workspace layer
     if (wsDefaults.defaultFramework)
       return wsDefaults.defaultFramework as AgentType;
-    if (wsDefaults.defaultAgent) return wsDefaults.defaultAgent;
     // Global layer
-    return (globalDefaults.defaultFramework ??
-      globalDefaults.defaultAgent ??
-      'claude') as AgentType;
+    return (globalDefaults.defaultFramework ?? 'claude') as AgentType;
   })();
 
   return {

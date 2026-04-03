@@ -297,8 +297,7 @@ export interface WorktreeMetadata {
 
 export interface WorkspaceSettings {
   // Session defaults
-  defaultAgent?: AgentType;
-  defaultFramework?: string; // replaces defaultAgent (v5+)
+  defaultFramework?: string; // canonical agent framework (v5+)
   frameworkOverrides?: Partial<AgentFramework>; // per-repo framework customization
   defaultContinue?: boolean;
   defaultContinuePolicy?: ContinuePolicy;
@@ -362,16 +361,12 @@ export const MOUNTAIN_NAMES = [
 ] as const;
 
 export interface Config {
-  configVersion?: number | undefined;
   host: string;
   port: number;
   cookieTTL: string;
   repos: string[];
-  claudeCommand: string;
   claudeArgs: string[];
-  /** @deprecated Use defaultFramework instead (v5+) */
-  defaultAgent: AgentType;
-  defaultFramework: string; // replaces defaultAgent (v5+), defaults to 'claude'
+  defaultFramework: string; // canonical agent framework, defaults to 'claude'
   frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
   defaultContinue: boolean;
   defaultYolo: boolean;
@@ -380,13 +375,11 @@ export interface Config {
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
   workspaces?: Workspace[] | undefined;
-  workspaceSettings?: Record<string, WorkspaceSettings> | undefined;
   repoSettings?: Record<string, WorkspaceSettings> | undefined;
   vapidPublicKey?: string | undefined;
   vapidPrivateKey?: string | undefined;
   debugLog?: boolean | undefined;
   forceOutputParser?: boolean | undefined;
-  workspaceGroups?: Record<string, string[]> | undefined;
   integrations?:
     | {
         jira?: {
@@ -610,8 +603,7 @@ export interface WorkspaceTemplate {
 }
 
 export interface WorkspaceLevelSettings {
-  defaultAgent?: AgentType;
-  defaultFramework?: string; // replaces defaultAgent (v5+)
+  defaultFramework?: string; // canonical agent framework (v5+)
   defaultContinue?: boolean;
   defaultYolo?: boolean;
   launchInTmux?: boolean;

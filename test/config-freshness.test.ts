@@ -13,7 +13,7 @@ describe('config freshness', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-config-test-'));
     configPath = path.join(tmpDir, 'config.json');
-    const initial: Config = { ...DEFAULTS, configVersion: 4 } as Config;
+    const initial: Config = { ...DEFAULTS } as Config;
     initial.repos = ['/existing/workspace'];
     fs.writeFileSync(configPath, JSON.stringify(initial, null, 2));
   });
@@ -61,13 +61,15 @@ describe('config freshness', () => {
   it('loadConfig sees workspace settings changes', () => {
     // Add repo settings to disk
     const config = loadConfig(configPath);
-    config.repoSettings = { '/existing/workspace': { defaultAgent: 'codex' } };
+    config.repoSettings = {
+      '/existing/workspace': { defaultFramework: 'codex' },
+    };
     saveConfig(configPath, config);
 
     // Fresh read should see settings
     const fresh = loadConfig(configPath);
     assert.equal(
-      fresh.repoSettings?.['/existing/workspace']?.defaultAgent,
+      fresh.repoSettings?.['/existing/workspace']?.defaultFramework,
       'codex'
     );
   });

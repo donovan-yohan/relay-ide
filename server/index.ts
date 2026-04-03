@@ -31,6 +31,7 @@ import {
   activeTmuxSessionNames,
   populateMetaCache,
 } from './sessions.js';
+import type { CreateResult } from './sessions.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import {
@@ -96,6 +97,8 @@ import type {
   AutomationSettings,
   Config,
   ContinuePolicy,
+  TicketContext,
+  WorkspaceSettings,
 } from './types.js';
 import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan } from './utils.js';
@@ -141,9 +144,7 @@ async function getLatestVersion(
   }
   try {
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
-    const res = await fetch(
-      `https://registry.npmjs.org/relay-ide/${tag}`
-    );
+    const res = await fetch(`https://registry.npmjs.org/relay-ide/${tag}`);
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: string };
     if (!data.version) return null;
@@ -224,6 +225,347 @@ function promptPin(question: string): Promise<string> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Module-level helpers extracted to reduce main() / route handler complexity
+// ---------------------------------------------------------------------------
+
+function runStartupRetentionCleanup(): void {
+  try {
+    const recovered = recoverOrphanedSessions();
+    if (recovered > 0)
+      logger.info(`[analytics] Recovered ${recovered} orphaned session(s).`);
+    runRetentionCleanup();
+  } catch (err) {
+    logger.warn('[analytics] Retention/recovery error:', err);
+  }
+}
+
+async function cleanupOrphanedTmuxSessions(
+  adoptedNames: Set<string>
+): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync('tmux', [
+      'list-sessions',
+      '-F',
+      '#{session_name}',
+    ]);
+    const tmuxPrefix = getTmuxPrefix();
+    const orphanedSessions = stdout
+      .trim()
+      .split('\n')
+      .filter((name) => name.startsWith(tmuxPrefix) && !adoptedNames.has(name));
+    for (const name of orphanedSessions) {
+      execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
+    }
+    if (orphanedSessions.length > 0) {
+      logger.info(
+        `Cleaned up ${orphanedSessions.length} orphaned tmux session(s).`
+      );
+    }
+  } catch {
+    // tmux not installed or no sessions — ignore
+  }
+}
+
+async function ensureFrontendBuilt(
+  frontendDir: string,
+  packageRoot: string
+): Promise<void> {
+  if (fs.existsSync(path.join(frontendDir, 'index.html'))) return;
+  const viteConfig = path.join(packageRoot, 'frontend', 'vite.config.ts');
+  if (!fs.existsSync(viteConfig)) {
+    logger.warn(
+      'Frontend assets missing and source not available — UI will not be served.'
+    );
+    return;
+  }
+  logger.info('Frontend not built — building now...');
+  try {
+    await execFileAsync(
+      'npx',
+      ['vite', 'build', '--config', 'frontend/vite.config.ts'],
+      { cwd: packageRoot }
+    );
+    logger.info('Frontend build complete.');
+  } catch (err) {
+    logger.error(
+      'Frontend build failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+/** Returns a validation error string, or null if the ticket context is valid. */
+function validateTicketContext(
+  ticketContext: TicketContext,
+  configuredWorkspaces: string[]
+): string | null {
+  if (
+    typeof ticketContext.ticketId !== 'string' ||
+    typeof ticketContext.title !== 'string' ||
+    typeof ticketContext.url !== 'string'
+  ) {
+    return 'ticketContext requires string ticketId, title, and url';
+  }
+  if (ticketContext.source !== 'github' && ticketContext.source !== 'jira') {
+    return "ticketContext.source must be 'github' or 'jira'";
+  }
+  if (!configuredWorkspaces.includes(ticketContext.repoPath)) {
+    return 'ticketContext.repoPath is not a configured workspace';
+  }
+  if (
+    ticketContext.source === 'github' &&
+    !/^GH-\d+$/.test(ticketContext.ticketId)
+  ) {
+    return 'ticketContext.ticketId for github must match GH-<number>';
+  }
+  if (
+    ticketContext.source === 'jira' &&
+    !/^[A-Z][A-Z0-9]*-\d+$/.test(ticketContext.ticketId)
+  ) {
+    return 'ticketContext.ticketId must match <PROJECT>-<number>';
+  }
+  return null;
+}
+
+/** Builds the initial prompt string from a ticket context and repo settings. */
+function buildTicketInitialPrompt(
+  ticketContext: TicketContext,
+  repoSettings: WorkspaceSettings | undefined
+): string {
+  const template =
+    repoSettings?.promptStartWork ??
+    'You are working on ticket {ticketId}: {title}\n\nTicket URL: {ticketUrl}\n\nPlease start by understanding the issue and proposing an approach.';
+  return template
+    .replace(/\{ticketId\}/g, ticketContext.ticketId)
+    .replace(/\{title\}/g, ticketContext.title)
+    .replace(/\{ticketUrl\}/g, ticketContext.url)
+    .replace(/\{description\}/g, ticketContext.description ?? '');
+}
+
+type WorktreeValidationError = {
+  status: number;
+  error: string;
+  sessionIds?: string[];
+};
+
+/** Validates that a worktree can be deleted. Returns an error descriptor or null. */
+async function validateWorktreeForDelete(
+  worktreePath: string,
+  repoPath: string,
+  force: boolean,
+  activeSessions: string[]
+): Promise<WorktreeValidationError | null> {
+  try {
+    const { stdout: wtListOut } = await execFileAsync(
+      'git',
+      ['worktree', 'list', '--porcelain'],
+      { cwd: repoPath }
+    );
+    const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
+    const isKnownWorktree = allWorktrees.some(
+      (wt) => wt.path === path.resolve(worktreePath) && !wt.isMain
+    );
+    if (!isKnownWorktree) {
+      if (!fs.existsSync(worktreePath)) {
+        return {
+          status: 404,
+          error: 'Worktree not found — may have been already cleaned up',
+        };
+      }
+      return { status: 400, error: 'Path is not a recognized git worktree' };
+    }
+  } catch (err) {
+    logger.warn(
+      '[worktrees/delete] git worktree list failed for',
+      repoPath,
+      err instanceof Error ? err.message : err
+    );
+    if (!force) {
+      return {
+        status: 500,
+        error:
+          'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.',
+      };
+    }
+  }
+
+  if (activeSessions.length > 0 && !force) {
+    return {
+      status: 409,
+      error: 'active_sessions',
+      sessionIds: activeSessions,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Clamps a terminal dimension (cols or rows) to a valid range.
+ * Returns the rounded value if valid, or undefined if invalid/unset.
+ */
+function clampDimension(
+  value: number | undefined,
+  min: number,
+  max: number
+): number | undefined {
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max
+  ) {
+    return Math.round(value);
+  }
+  return undefined;
+}
+
+/**
+ * Builds the CLI args array for an agent session based on resolved settings.
+ */
+function buildAgentArgs(
+  resolvedAgent: AgentType,
+  claudeArgs: string[],
+  yolo: boolean,
+  continuePolicy: ContinuePolicy | undefined
+): string[] {
+  const baseArgs = [
+    ...claudeArgs,
+    ...(yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
+  ];
+  const useContinue = continuePolicy === 'always';
+  return useContinue
+    ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
+    : [...baseArgs];
+}
+
+/**
+ * Resolves the effective continue policy for an agent session.
+ * For new worktrees (needsBranchRename), always returns 'never'.
+ */
+function resolveContinuePolicy(
+  explicitContinuePolicy: ContinuePolicy | undefined,
+  explicitContinue: boolean | undefined,
+  needsBranchRename: boolean | undefined
+): ContinuePolicy | undefined {
+  if (needsBranchRename) return 'never';
+  if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
+  if (explicitContinue === undefined) return undefined;
+  return explicitContinue ? 'always' : 'never';
+}
+
+/** Removes a worktree from disk, falling back to rmSync if git fails. Returns error string or null. */
+async function removeWorktreeFromDisk(
+  worktreePath: string,
+  repoPath: string,
+  force: boolean
+): Promise<string | null> {
+  try {
+    const removeArgs = force
+      ? ['worktree', 'remove', '--force', worktreePath]
+      : ['worktree', 'remove', worktreePath];
+    await execFileAsync('git', removeArgs, { cwd: repoPath });
+  } catch {
+    if (fs.existsSync(worktreePath)) {
+      try {
+        fs.rmSync(worktreePath, { recursive: true });
+      } catch (rmErr: unknown) {
+        return execErrorMessage(rmErr, 'Failed to remove worktree directory');
+      }
+    }
+    // directory already gone — that's fine, continue to cleanup
+  }
+  return null;
+}
+
+type AgentSessionParams = {
+  repoName: string;
+  repoPath: string;
+  worktreePath: string | null | undefined;
+  cwd: string;
+  requestBranchName: string | undefined;
+  displayName: string;
+  tmuxDisplayName: string;
+  args: string[];
+  resolvedAgent: AgentType;
+  resolvedUseTmux: boolean;
+  resolvedYolo: boolean;
+  resolvedClaudeArgs: string[];
+  resolvedContinuePolicy: ContinuePolicy | undefined;
+  safeCols: number | undefined;
+  safeRows: number | undefined;
+  needsBranchRename: boolean;
+  branchRenamePrompt: string;
+  computedInitialPrompt: string | undefined;
+};
+
+/** Creates an agent session record and writes worktree metadata if applicable. */
+function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
+  const session = sessions.create({
+    type: 'agent',
+    agent: params.resolvedAgent,
+    repoName: params.repoName,
+    repoPath: params.repoPath,
+    worktreePath: params.worktreePath ?? null,
+    cwd: params.cwd,
+    branchName: params.requestBranchName ?? '',
+    displayName: params.displayName,
+    tmuxDisplayName: params.tmuxDisplayName,
+    args: params.args,
+    configPath: CONFIG_PATH,
+    useTmux: params.resolvedUseTmux,
+    yolo: params.resolvedYolo,
+    claudeArgs: params.resolvedClaudeArgs,
+    continuePolicy: params.resolvedContinuePolicy,
+    ...(params.safeCols != null && { cols: params.safeCols }),
+    ...(params.safeRows != null && { rows: params.safeRows }),
+    needsBranchRename: params.needsBranchRename,
+    branchRenamePrompt: params.branchRenamePrompt,
+    ...(params.computedInitialPrompt != null && {
+      initialPrompt: params.computedInitialPrompt,
+    }),
+  });
+
+  if (params.worktreePath) {
+    writeMeta(CONFIG_PATH, {
+      worktreePath: params.cwd,
+      displayName: params.displayName,
+      lastActivity: new Date().toISOString(),
+      branchName: params.requestBranchName ?? '',
+    });
+  }
+
+  return session;
+}
+
+/** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
+async function initializePinConfig(startupConfig: Config): Promise<void> {
+  if (startupConfig.pinHash && auth.isLegacyHash(startupConfig.pinHash)) {
+    logger.info(
+      'Migrating legacy PIN hash to scrypt. You will need to set a new PIN.'
+    );
+    delete startupConfig.pinHash;
+    saveConfig(CONFIG_PATH, startupConfig);
+  }
+
+  if (process.env.NO_PIN === '1') {
+    logger.info('PIN disabled (NO_PIN=1).');
+    startupConfig.pinHash = startupConfig.pinHash || 'disabled';
+  } else if (!startupConfig.pinHash) {
+    if (process.stdin.isTTY) {
+      const pin = await promptPin('Set up a PIN for relay-ide:');
+      startupConfig.pinHash = await auth.hashPin(pin);
+      saveConfig(CONFIG_PATH, startupConfig);
+      logger.info('PIN set successfully.');
+    } else {
+      logger.info(
+        `No PIN configured. Open http://localhost:${startupConfig.port} to set one.`
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits
   process.on('SIGPIPE', () => {});
@@ -280,58 +622,14 @@ async function main(): Promise<void> {
     );
   }
 
-  if (startupConfig.pinHash && auth.isLegacyHash(startupConfig.pinHash)) {
-    logger.info(
-      'Migrating legacy PIN hash to scrypt. You will need to set a new PIN.'
-    );
-    delete startupConfig.pinHash;
-    saveConfig(CONFIG_PATH, startupConfig);
-  }
-
-  if (process.env.NO_PIN === '1') {
-    logger.info('PIN disabled (NO_PIN=1).');
-    startupConfig.pinHash = startupConfig.pinHash || 'disabled';
-  } else if (!startupConfig.pinHash) {
-    if (process.stdin.isTTY) {
-      const pin = await promptPin('Set up a PIN for relay-ide:');
-      startupConfig.pinHash = await auth.hashPin(pin);
-      saveConfig(CONFIG_PATH, startupConfig);
-      logger.info('PIN set successfully.');
-    } else {
-      logger.info(
-        `No PIN configured. Open http://localhost:${startupConfig.port} to set one.`
-      );
-    }
-  }
+  await initializePinConfig(startupConfig);
 
   const authenticatedTokens = new Set<string>();
 
   // Build frontend if missing (e.g. fresh clone in development)
   const frontendDir = path.join(__dirname, '..', 'frontend');
-  if (!fs.existsSync(path.join(frontendDir, 'index.html'))) {
-    const packageRoot = path.join(__dirname, '..', '..');
-    const viteConfig = path.join(packageRoot, 'frontend', 'vite.config.ts');
-    if (fs.existsSync(viteConfig)) {
-      logger.info('Frontend not built — building now...');
-      try {
-        await execFileAsync(
-          'npx',
-          ['vite', 'build', '--config', 'frontend/vite.config.ts'],
-          { cwd: packageRoot }
-        );
-        logger.info('Frontend build complete.');
-      } catch (err) {
-        logger.error(
-          'Frontend build failed:',
-          err instanceof Error ? err.message : err
-        );
-      }
-    } else {
-      logger.warn(
-        'Frontend assets missing and source not available — UI will not be served.'
-      );
-    }
-  }
+  const packageRoot = path.join(__dirname, '..', '..');
+  await ensureFrontendBuilt(frontendDir, packageRoot);
 
   const app = express();
 
@@ -666,14 +964,7 @@ async function main(): Promise<void> {
   startEventBatching();
 
   // Run retention cleanup and orphan recovery at startup
-  try {
-    const recovered = recoverOrphanedSessions();
-    if (recovered > 0)
-      logger.info(`[analytics] Recovered ${recovered} orphaned session(s).`);
-    runRetentionCleanup();
-  } catch (err) {
-    logger.warn('[analytics] Retention/recovery error:', err);
-  }
+  runStartupRetentionCleanup();
 
   // Periodic rate limit snapshot recording (every 5 minutes)
   let lastRateLimitSnapshot = 0;
@@ -1117,27 +1408,22 @@ async function main(): Promise<void> {
     res.json({ activeSessions, hasUncommittedChanges });
   });
 
-  // GET /config/defaultAgent — get default coding agent
+  // GET /config/defaultAgent — get default coding agent (reads defaultFramework)
   app.get('/config/defaultAgent', requireAuth, (_req, res) => {
-    res.json({ defaultAgent: getConfig().defaultAgent || 'claude' });
+    res.json({ defaultAgent: getConfig().defaultFramework || 'claude' });
   });
 
-  // PATCH /config/defaultAgent — set default coding agent
+  // PATCH /config/defaultAgent — set default coding agent (writes defaultFramework)
   app.patch('/config/defaultAgent', requireAuth, (req, res) => {
     const { defaultAgent } = req.body as { defaultAgent?: string };
-    if (
-      !defaultAgent ||
-      (defaultAgent !== 'claude' && defaultAgent !== 'codex')
-    ) {
-      res
-        .status(400)
-        .json({ error: 'defaultAgent must be "claude" or "codex"' });
+    if (!defaultAgent) {
+      res.status(400).json({ error: 'defaultAgent is required' });
       return;
     }
     const c = getConfig();
-    c.defaultAgent = defaultAgent;
+    c.defaultFramework = defaultAgent;
     saveConfig(CONFIG_PATH, c);
-    res.json({ defaultAgent: c.defaultAgent });
+    res.json({ defaultAgent: c.defaultFramework });
   });
 
   boolConfigEndpoints('defaultContinue', true);
@@ -1205,11 +1491,6 @@ async function main(): Promise<void> {
     }
   );
 
-  // GET /config/workspace-groups — return workspace group configuration
-  app.get('/config/workspace-groups', requireAuth, (_req, res) => {
-    res.json({ groups: getConfig().workspaceGroups ?? {} });
-  });
-
   // GET /presets — return all filter presets (built-in merged with user presets)
   app.get(
     '/presets',
@@ -1234,14 +1515,15 @@ async function main(): Promise<void> {
         return;
       }
       if (sort && typeof sort === 'object') {
-        const dir = (sort as any).direction;
+        const sortObj = sort as Record<string, unknown>;
+        const dir = sortObj['direction'];
         if (dir !== 'asc' && dir !== 'desc') {
           res
             .status(400)
             .json({ error: 'sort.direction must be "asc" or "desc"' });
           return;
         }
-        const col = (sort as any).column;
+        const col = sortObj['column'];
         if (!col || typeof col !== 'string' || !col.trim()) {
           res
             .status(400)
@@ -1354,70 +1636,36 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Validate the path is a real git worktree (not the main worktree)
-    try {
-      const { stdout: wtListOut } = await execFileAsync(
-        'git',
-        ['worktree', 'list', '--porcelain'],
-        { cwd: repoPath }
-      );
-      const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
-      const isKnownWorktree = allWorktrees.some(
-        (wt) => wt.path === path.resolve(worktreePath) && !wt.isMain
-      );
-      if (!isKnownWorktree) {
-        // Check if the path simply doesn't exist anymore (already cleaned up)
-        if (!fs.existsSync(worktreePath)) {
-          res.status(404).json({
-            error: 'Worktree not found — may have been already cleaned up',
-          });
-          return;
-        }
-        res
-          .status(400)
-          .json({ error: 'Path is not a recognized git worktree' });
-        return;
-      }
-    } catch (err) {
-      logger.warn(
-        '[worktrees/delete] git worktree list failed for',
-        repoPath,
-        err instanceof Error ? err.message : err
-      );
-      // Allow force-delete when git is broken (user explicitly wants cleanup)
-      if (!force) {
-        res.status(500).json({
-          error:
-            'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.',
-        });
-        return;
-      }
-    }
-
-    // Check for active sessions in this worktree
-    const allSessions = sessions.list();
     const resolvedPath = path.resolve(worktreePath);
-    const worktreeSessions = allSessions.filter(
-      (s) => s.worktreePath === resolvedPath || s.cwd === resolvedPath
-    );
+    const worktreeSessions = sessions
+      .list()
+      .filter((s) => s.worktreePath === resolvedPath || s.cwd === resolvedPath)
+      .map((s) => s.id);
 
-    if (worktreeSessions.length > 0 && !force) {
-      // Non-force delete with active sessions: reject to prevent killing PTYs unexpectedly
-      res.status(409).json({
-        error: 'active_sessions',
-        sessionIds: worktreeSessions.map((s) => s.id),
+    const validationErr = await validateWorktreeForDelete(
+      worktreePath,
+      repoPath,
+      force ?? false,
+      worktreeSessions
+    );
+    if (validationErr) {
+      res.status(validationErr.status).json({
+        error: validationErr.error,
+        ...(validationErr.sessionIds && {
+          sessionIds: validationErr.sessionIds,
+        }),
       });
       return;
     }
 
     // Force: kill active sessions in this worktree first
     if (force) {
-      for (const s of worktreeSessions) {
+      for (const sessionId of worktreeSessions) {
         try {
-          sessions.kill(s.id);
+          sessions.kill(sessionId);
         } catch (err) {
           logger.warn(
-            `[worktrees] failed to kill session ${s.id}:`,
+            `[worktrees] failed to kill session ${sessionId}:`,
             err instanceof Error ? err.message : err
           );
         }
@@ -1429,29 +1677,14 @@ async function main(): Promise<void> {
     const branchName =
       (meta && meta.branchName) || worktreePath.split('/').pop() || '';
 
-    try {
-      // Use --force when the user has confirmed via the cascade dialog
-      const removeArgs = force
-        ? ['worktree', 'remove', '--force', worktreePath]
-        : ['worktree', 'remove', worktreePath];
-      await execFileAsync('git', removeArgs, { cwd: repoPath });
-    } catch (err: unknown) {
-      // If git worktree remove fails, the directory may be an orphaned worktree
-      // that git no longer tracks. Try to remove the directory directly.
-      if (fs.existsSync(worktreePath)) {
-        try {
-          fs.rmSync(worktreePath, { recursive: true });
-        } catch (rmErr: unknown) {
-          res.status(500).json({
-            error: execErrorMessage(
-              rmErr,
-              'Failed to remove worktree directory'
-            ),
-          });
-          return;
-        }
-      }
-      // If directory doesn't exist, the worktree is already gone — continue to cleanup
+    const removeErr = await removeWorktreeFromDisk(
+      worktreePath,
+      repoPath,
+      force ?? false
+    );
+    if (removeErr) {
+      res.status(500).json({ error: removeErr });
+      return;
     }
 
     try {
@@ -1550,20 +1783,8 @@ async function main(): Promise<void> {
       return;
     }
 
-    const safeCols =
-      typeof cols === 'number' &&
-      Number.isFinite(cols) &&
-      cols >= 1 &&
-      cols <= 500
-        ? Math.round(cols)
-        : undefined;
-    const safeRows =
-      typeof rows === 'number' &&
-      Number.isFinite(rows) &&
-      rows >= 1 &&
-      rows <= 200
-        ? Math.round(rows)
-        : undefined;
+    const safeCols = clampDimension(cols, 1, 500);
+    const safeRows = clampDimension(rows, 1, 200);
 
     const name = repoPath.split('/').filter(Boolean).pop() || 'session';
 
@@ -1591,18 +1812,12 @@ async function main(): Promise<void> {
     }
 
     // Agent session
-    // Map legacy boolean continue → continuePolicy for backward compat
-    const policyOverride =
-      explicitContinuePolicy ??
-      (explicitContinue !== undefined
-        ? explicitContinue
-          ? ('always' as const)
-          : ('never' as const)
-        : undefined);
-    // For new worktrees, always use 'never' regardless of config
-    const effectivePolicy = needsBranchRename
-      ? ('never' as const)
-      : policyOverride;
+    // Resolve continue policy (handles legacy boolean continue + new worktree override)
+    const effectivePolicy = resolveContinuePolicy(
+      explicitContinuePolicy,
+      explicitContinue,
+      needsBranchRename
+    );
 
     const resolved = resolveSessionSettings(freshConfig, repoPath, {
       agent,
@@ -1612,119 +1827,58 @@ async function main(): Promise<void> {
       continuePolicy: effectivePolicy,
     });
     const resolvedAgent = resolved.agent;
-
-    const baseArgs = [
-      ...resolved.claudeArgs,
-      ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
-    ];
-
-    // Determine --continue from policy (no .claude directory heuristic)
-    const useContinue = resolved.continuePolicy === 'always';
-
-    const args = useContinue
-      ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
-      : [...baseArgs];
+    const args = buildAgentArgs(
+      resolvedAgent,
+      resolved.claudeArgs,
+      resolved.yolo,
+      resolved.continuePolicy
+    );
 
     // Ticket context validation and initial prompt
     let computedInitialPrompt: string | undefined = initialPrompt;
     if (ticketContext) {
-      if (
-        typeof ticketContext.ticketId !== 'string' ||
-        typeof ticketContext.title !== 'string' ||
-        typeof ticketContext.url !== 'string'
-      ) {
-        res.status(400).json({
-          error: 'ticketContext requires string ticketId, title, and url',
-        });
+      const ticketErr = validateTicketContext(
+        ticketContext,
+        configuredWorkspaces
+      );
+      if (ticketErr) {
+        res.status(400).json({ error: ticketErr });
         return;
       }
-      if (
-        ticketContext.source !== 'github' &&
-        ticketContext.source !== 'jira'
-      ) {
-        res
-          .status(400)
-          .json({ error: "ticketContext.source must be 'github' or 'jira'" });
-        return;
-      }
-      if (!configuredWorkspaces.includes(ticketContext.repoPath)) {
-        res.status(400).json({
-          error: 'ticketContext.repoPath is not a configured workspace',
-        });
-        return;
-      }
-      if (
-        ticketContext.source === 'github' &&
-        !/^GH-\d+$/.test(ticketContext.ticketId)
-      ) {
-        res.status(400).json({
-          error: 'ticketContext.ticketId for github must match GH-<number>',
-        });
-        return;
-      }
-      if (
-        ticketContext.source === 'jira' &&
-        !/^[A-Z][A-Z0-9]*-\d+$/.test(ticketContext.ticketId)
-      ) {
-        res.status(400).json({
-          error: 'ticketContext.ticketId must match <PROJECT>-<number>',
-        });
-        return;
-      }
-      const settings = freshConfig.repoSettings?.[ticketContext.repoPath];
-      const template =
-        settings?.promptStartWork ??
-        'You are working on ticket {ticketId}: {title}\n\nTicket URL: {ticketUrl}\n\nPlease start by understanding the issue and proposing an approach.';
-      computedInitialPrompt = template
-        .replace(/\{ticketId\}/g, ticketContext.ticketId)
-        .replace(/\{title\}/g, ticketContext.title)
-        .replace(/\{ticketUrl\}/g, ticketContext.url)
-        .replace(/\{description\}/g, ticketContext.description ?? '');
+      const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
+      computedInitialPrompt = buildTicketInitialPrompt(
+        ticketContext,
+        repoSettings
+      );
     }
 
     const displayName = sessions.nextAgentName();
-
     // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
     // UI displayName stays as "Agent N" — tmux name and UI name are independent
-    // generateTmuxSessionName handles all sanitization and truncation
     const tmuxDisplayName = requestBranchName
       ? `${name}-${requestBranchName}`
       : name;
 
-    const session = sessions.create({
-      type: 'agent',
-      agent: resolvedAgent,
+    const session = createAgentSessionRecord({
       repoName: name,
       repoPath,
-      worktreePath: worktreePath ?? null,
+      worktreePath,
       cwd,
-      branchName: requestBranchName || '', // caller may provide; branch watcher enriches later
+      requestBranchName,
       displayName,
       tmuxDisplayName,
       args,
-      configPath: CONFIG_PATH,
-      useTmux: resolved.useTmux,
-      yolo: resolved.yolo,
-      claudeArgs: resolved.claudeArgs,
-      continuePolicy: resolved.continuePolicy,
-      ...(safeCols != null && { cols: safeCols }),
-      ...(safeRows != null && { rows: safeRows }),
+      resolvedAgent,
+      resolvedUseTmux: resolved.useTmux,
+      resolvedYolo: resolved.yolo,
+      resolvedClaudeArgs: resolved.claudeArgs,
+      resolvedContinuePolicy: resolved.continuePolicy,
+      safeCols,
+      safeRows,
       needsBranchRename: needsBranchRename ?? false,
       branchRenamePrompt: branchRenamePrompt ?? '',
-      ...(computedInitialPrompt != null && {
-        initialPrompt: computedInitialPrompt,
-      }),
+      computedInitialPrompt,
     });
-
-    // Write worktree metadata if in a worktree
-    if (worktreePath) {
-      writeMeta(CONFIG_PATH, {
-        worktreePath: cwd,
-        displayName,
-        lastActivity: new Date().toISOString(),
-        branchName: requestBranchName || '',
-      });
-    }
 
     gitWatcher.watch(session.cwd);
 
@@ -1889,32 +2043,9 @@ async function main(): Promise<void> {
   // Skip in dev mode — another server instance owns these sessions
   if (process.env.NO_PIN === '1') {
     logger.info('Dev mode: skipping orphaned tmux session cleanup.');
-  } else
-    try {
-      const adoptedNames = activeTmuxSessionNames();
-      const { stdout } = await execFileAsync('tmux', [
-        'list-sessions',
-        '-F',
-        '#{session_name}',
-      ]);
-      const tmuxPrefix = getTmuxPrefix();
-      const orphanedSessions = stdout
-        .trim()
-        .split('\n')
-        .filter(
-          (name) => name.startsWith(tmuxPrefix) && !adoptedNames.has(name)
-        );
-      for (const name of orphanedSessions) {
-        execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
-      }
-      if (orphanedSessions.length > 0) {
-        logger.info(
-          `Cleaned up ${orphanedSessions.length} orphaned tmux session(s).`
-        );
-      }
-    } catch {
-      // tmux not installed or no sessions — ignore
-    }
+  } else {
+    await cleanupOrphanedTmuxSessions(activeTmuxSessionNames());
+  }
 
   async function gracefulShutdown() {
     await stopPolling();
@@ -1943,9 +2074,7 @@ async function main(): Promise<void> {
 
   server.listen(startupConfig.port, startupConfig.host, () => {
     const addr = server.address() as import('node:net').AddressInfo;
-    logger.info(
-      `relay-ide listening on ${startupConfig.host}:${addr.port}`
-    );
+    logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
   });
 }
 
