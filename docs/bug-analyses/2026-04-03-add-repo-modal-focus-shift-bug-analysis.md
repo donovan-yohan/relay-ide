@@ -34,12 +34,12 @@ When any focusable element inside `.tree-container` receives focus (via Tab, cli
 
 ## Evidence
 
-| File                                              | Line    | Issue                                                                         |
-| ------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
-| `frontend/src/components/dialogs/DialogShell.css` | 130-134 | `.dialog-shell__body` has `overflow-y: auto` (scrollable ancestor)            |
-| `frontend/src/components/FileBrowser.css`         | 33-38   | `.tree-container` has `overflow-y: auto` + `max-height: 50vh` (nested scroll) |
-| `frontend/src/components/TuiCheckbox.css`         | 17-24   | Hidden `<input>` with `position: absolute; clip: rect(0,0,0,0)`               |
-| `frontend/src/components/dialogs/DialogShell.tsx` | 44      | `.focus()` called without `preventScroll: true`                               |
+| File                                              | Location                                              | Issue                                                                         |
+| ------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `frontend/src/components/dialogs/DialogShell.css` | `.dialog-shell__body` rule                            | `.dialog-shell__body` has `overflow-y: auto` (scrollable ancestor)            |
+| `frontend/src/components/FileBrowser.css`         | `.tree-container` rule                                | `.tree-container` has `overflow-y: auto` + `max-height: 50vh` (nested scroll) |
+| `frontend/src/components/TuiCheckbox.css`         | Hidden input rule inside `.tui-checkbox`              | Hidden `<input>` with `position: absolute; clip: rect(0,0,0,0)`               |
+| `frontend/src/components/dialogs/DialogShell.tsx` | `DialogShell.open()` focus logic in useDialogControls | `.focus()` called without `preventScroll: true`                               |
 
 ## Impact
 
