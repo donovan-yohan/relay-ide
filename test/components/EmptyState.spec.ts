@@ -1,19 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '../..');
+const componentPath = join(
+  projectRoot,
+  'frontend/src/components/EmptyState.tsx'
+);
+const cssPath = join(projectRoot, 'frontend/src/components/EmptyState.css');
 
 describe('EmptyState', () => {
-  const projectRoot = join(__dirname, '../..');
-  const componentPath = join(
-    projectRoot,
-    'frontend/src/components/EmptyState.tsx'
-  );
-  const cssPath = join(projectRoot, 'frontend/src/components/EmptyState.css');
+  const tsxSource = readFileSync(componentPath, 'utf-8');
+  const cssSource = readFileSync(cssPath, 'utf-8');
 
   it('EmptyState.tsx file exists', () => {
     expect(existsSync(componentPath)).toBeTruthy();
@@ -24,40 +24,34 @@ describe('EmptyState', () => {
   });
 
   it('exports EmptyState component', () => {
-    const content = readFileSync(componentPath, 'utf-8');
-    expect(content.includes('export function EmptyState')).toBeTruthy();
-    expect(content.includes('export default EmptyState')).toBeTruthy();
+    expect(tsxSource).toContain('export function EmptyState');
+    expect(tsxSource).toContain('export default EmptyState');
   });
 
   it('exports EmptyStateProps interface', () => {
-    const content = readFileSync(componentPath, 'utf-8');
-    expect(content.includes('interface EmptyStateProps')).toBeTruthy();
+    expect(tsxSource).toContain('interface EmptyStateProps');
   });
 
   it('has required props', () => {
-    const content = readFileSync(componentPath, 'utf-8');
-    expect(content.includes('heading: string')).toBeTruthy();
-    expect(content.includes('icon?:')).toBeTruthy();
-    expect(content.includes('description?:')).toBeTruthy();
-    expect(content.includes('actionLabel?:')).toBeTruthy();
-    expect(content.includes('onAction?:')).toBeTruthy();
+    expect(tsxSource).toContain('heading: string');
+    expect(tsxSource).toContain('icon?:');
+    expect(tsxSource).toContain('description?:');
+    expect(tsxSource).toContain('actionLabel?:');
+    expect(tsxSource).toContain('onAction?:');
   });
 
   it('imports TuiButton', () => {
-    const content = readFileSync(componentPath, 'utf-8');
-    expect(content.includes("from './TuiButton'")).toBeTruthy();
+    expect(tsxSource).toContain("from './TuiButton'");
   });
 
   it('imports CSS', () => {
-    const content = readFileSync(componentPath, 'utf-8');
-    expect(content.includes("import './EmptyState.css'")).toBeTruthy();
+    expect(tsxSource).toContain("import './EmptyState.css'");
   });
 
   it('CSS has required classes', () => {
-    const content = readFileSync(cssPath, 'utf-8');
-    expect(content.includes('.empty-state')).toBeTruthy();
-    expect(content.includes('.empty-icon')).toBeTruthy();
-    expect(content.includes('.empty-heading')).toBeTruthy();
-    expect(content.includes('.empty-description')).toBeTruthy();
+    expect(cssSource).toContain('.empty-state');
+    expect(cssSource).toContain('.empty-icon');
+    expect(cssSource).toContain('.empty-heading');
+    expect(cssSource).toContain('.empty-description');
   });
 });

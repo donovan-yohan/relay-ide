@@ -3,12 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// With vitest, tests run from source at test/ (not compiled dist/test/).
-// The project root is one level up from test/.
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const projectRoot = path.resolve(__dirname, '..');
 
 test('project root from dist/ contains frontend/ directory', () => {

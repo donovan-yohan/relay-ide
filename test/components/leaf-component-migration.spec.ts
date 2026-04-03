@@ -3,8 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '../..');
 
 interface ExpectedComponent {
@@ -118,6 +117,11 @@ const expectedComponents: ExpectedComponent[] = [
 
 describe('leaf component migration', () => {
   for (const component of expectedComponents) {
+    const source = readFileSync(
+      join(projectRoot, component.componentPath),
+      'utf8'
+    );
+
     it(`${component.name} TSX and CSS files exist`, () => {
       expect(
         existsSync(join(projectRoot, component.componentPath))
@@ -126,25 +130,14 @@ describe('leaf component migration', () => {
     });
 
     it(`${component.name} exports the expected component API`, () => {
-      const source = readFileSync(
-        join(projectRoot, component.componentPath),
-        'utf8'
-      );
-
       for (const expectedExport of component.expectedExports) {
-        expect(source.includes(expectedExport)).toBeTruthy();
+        expect(source).toContain(expectedExport);
       }
-
-      expect(source.includes('export default')).toBeTruthy();
+      expect(source).toContain('export default');
     });
 
     it(`${component.name} imports its CSS file`, () => {
-      const source = readFileSync(
-        join(projectRoot, component.componentPath),
-        'utf8'
-      );
       const cssFileName = component.cssPath.split('/').pop();
-
       expect(
         source.includes(`import './${cssFileName}'`) ||
           source.includes(`import '../${cssFileName}'`) ||

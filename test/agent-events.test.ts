@@ -142,8 +142,8 @@ describe('createEventAdapter', () => {
 
       adapter.emit(makeEvent({ type: 'session.started' }));
       adapter.emit(makeEvent({ type: 'session.ended' }));
-      expect(typeCount).toBe(1); // unchanged
-      expect(anyCount).toBe(1); // unchanged
+      expect(typeCount).toBe(1);
+      expect(anyCount).toBe(1);
     });
   });
 

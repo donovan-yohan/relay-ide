@@ -6,14 +6,7 @@ import { processIntent } from '../server/mobile-input-pipeline.js';
 import type { CapturedIntent } from '../server/mobile-input-pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = join(
-  __dirname,
-  '..',
-  '..',
-  'test',
-  'fixtures',
-  'mobile-input'
-);
+const FIXTURES_DIR = join(__dirname, 'fixtures', 'mobile-input');
 
 interface EventStep {
   inputType: string;
