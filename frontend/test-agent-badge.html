@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentBadge Test Page</title>
+  <style>
+    :root {
+      --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      --font-size-sm: 14px; --font-size-xs: 12px; --font-size-lg: 18px;
+      --font-size-base: 16px;
+      --accent: #00ff88; --text-muted: #888; --text: #fff;
+      --status-error: #ff4444; --status-success: #00ff88; --status-info: #4488ff;
+      --bg: #1a1a1a; --surface: #222; --surface-hover: #2a2a2a; --border: #333;
+    }
+    body { background: #1a1a1a; color: #fff; font-family: var(--font-mono); padding: 20px; }
+    .test-section { margin-bottom: 40px; }
+    .test-section h2 { margin-bottom: 16px; color: var(--accent); }
+    .badge-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .badge-label {
+      color: var(--text-muted);
+      font-size: 12px;
+      min-width: 160px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/test-agent-badge.tsx"></script>
+</body>
+</html>

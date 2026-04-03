@@ -1,0 +1,164 @@
+/* ── Backdrop ── */
+.dialog-shell::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* ── Base dialog ── */
+.dialog-shell {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── Compact variant ── */
+.dialog-shell--compact {
+  width: min(var(--dialog-width, 460px), 95vw);
+  max-height: 90vh;
+}
+
+.dialog-shell--compact[open] {
+  animation: dialog-fade-scale 150ms ease forwards;
+}
+
+@keyframes dialog-fade-scale {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── Fullscreen variant ── */
+/* Mobile: true full-screen */
+.dialog-shell--fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+}
+
+/* Desktop: centered ~75% modal */
+@media (min-width: 601px) {
+  .dialog-shell--fullscreen {
+    width: 75vw;
+    height: 80vh;
+    max-width: 960px;
+    max-height: none;
+  }
+}
+
+.dialog-shell--fullscreen[open] {
+  animation: dialog-slide-up 200ms ease forwards;
+}
+
+@keyframes dialog-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Inner content layout ── */
+.dialog-shell__content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.dialog-shell--compact .dialog-shell__content {
+  max-height: 90vh;
+}
+
+/* ── Header ── */
+.dialog-shell__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dialog-shell__title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.dialog-shell__header-extra {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialog-shell__close {
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-lg);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: background 0.1s, color 0.1s;
+}
+
+.dialog-shell__close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* ── Body ── */
+.dialog-shell__body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.dialog-shell--fullscreen .dialog-shell__body {
+  padding: 0;
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Scroll fade indicator */
+.dialog-shell__body {
+  mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
+}
+
+/* Remove fade when scrolled to bottom */
+.dialog-shell__body.scrolled-bottom {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+/* ── Footer ── */
+.dialog-shell__footer {
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dialog-shell .error-msg {
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+  margin: 0;
+}
