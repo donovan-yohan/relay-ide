@@ -163,12 +163,35 @@ function TreeView({
   filterText,
   initialLoading,
 }: TreeViewProps) {
+  /**
+   * Prevent browser auto-scroll-on-focus from scrolling ancestor containers.
+   * When a focusable element (checkbox input) inside the tree receives focus,
+   * the browser walks up ALL scrollable ancestors and scrolls each one to
+   * reveal the focused element. The tree-container handles its own scrolling,
+   * but the dialog body (an ancestor with overflow-y: auto) also gets scrolled,
+   * pushing the entire file browser out of view. Fix: capture the dialog body's
+   * scroll position before focus and restore it on the next frame.
+   */
+  const handleFocusIn = useCallback((e: React.FocusEvent) => {
+    const dialogBody = (e.currentTarget as HTMLElement).closest(
+      '.dialog-shell__body'
+    );
+    if (!dialogBody) return;
+    const savedScrollTop = dialogBody.scrollTop;
+    requestAnimationFrame(() => {
+      if (dialogBody.scrollTop !== savedScrollTop) {
+        dialogBody.scrollTop = savedScrollTop;
+      }
+    });
+  }, []);
+
   return (
     <div
       className="tree-container"
       role="tree"
       aria-label="File browser"
       onKeyDown={onKeyDown}
+      onFocus={handleFocusIn}
       tabIndex={0}
     >
       {initialLoading ? (
