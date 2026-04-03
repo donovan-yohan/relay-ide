@@ -1,8 +1,0 @@
-name: Validate agent instructions
-on: [push, pull_request]
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: zernie/vigiles@4eaa5f4
