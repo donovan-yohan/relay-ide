@@ -1,22 +1,41 @@
 node_modules/
-config.json
-.claude/settings.local.json
-.claude/worktrees/
-.claude/projects/
-.claude/todos/
-.claude/skills/
-bun.lockb
 dist/
-.worktrees/
-.gstack/
+bun.lockb
+
+# Config
+config.json
 config.dev.json
+
+# Database
 analytics.db
 analytics.db-shm
 analytics.db-wal
 
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.gemini/
+
 # Agent/plugin runtime data
+.agents/
+.claire/
 .desloppify/
 .lead/
+.opencode/
+.gstack/
+.worktrees/
 worktree-meta/
 pending-sessions.json
+pending-telemetry.json
+skills-lock.json
 scorecard.png
+
+# Runtime data
+scrollback/
+telemetry/
+
+# Test artifacts
+test-results/
+playwright-report/
