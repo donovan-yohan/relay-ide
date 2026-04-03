@@ -8,7 +8,8 @@
     "relay-ide": "dist/bin/relay-ide.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "scripts/"
   ],
   "scripts": {
     "check": "tsc --noEmit",
