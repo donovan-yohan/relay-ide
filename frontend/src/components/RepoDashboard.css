@@ -45,6 +45,12 @@
   background: linear-gradient(to bottom, transparent, var(--bg));
   pointer-events: none;
   z-index: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.dashboard-section--scroll.has-overflow::after {
+  opacity: 1;
 }
 
 .section-heading {
@@ -137,6 +143,8 @@
 
 .pr-cell--action {
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
 }
 
 .pr-title-link {
@@ -199,11 +207,14 @@
   opacity: 0.4;
 }
 
-.pr-role-text,
-.pr-age-text {
+.pr-role-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pr-age-text {
+  white-space: nowrap;
 }
 
 .mobile-pr-card {

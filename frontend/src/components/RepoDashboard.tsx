@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
 import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
@@ -12,8 +12,10 @@ import type {
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
+import type { StatusColor } from '../lib/pr-state.js';
 import StatusDot from './StatusDot.js';
 import { TuiButton } from './TuiButton.js';
+import type { TuiButtonVariant } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
 import './RepoDashboard.css';
 
@@ -62,7 +64,38 @@ function activityBranches(entry: ActivityEntry): string {
   return '(' + entry.branches.join(', ') + ')';
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+function colorToVariant(color: StatusColor): TuiButtonVariant {
+  if (color === 'success') return 'success';
+  if (color === 'error') return 'danger';
+  if (color === 'accent') return 'primary';
+  if (color === 'info') return 'info';
+  return 'ghost';
+}
+
+/** Returns a ref + className for a section that should only show the scroll fade when content overflows. */
+function useScrollOverflow() {
+  const ref = useRef<HTMLElement>(null);
+  const [hasOverflow, setHasOverflow] = useState(false);
+
+  const check = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setHasOverflow(el.scrollHeight > el.clientHeight + 4);
+  }, []);
+
+  useEffect(() => {
+    check();
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [check]);
+
+  return { ref, hasOverflow };
+}
+
+// ── Sub-components ─────────────────────────────────────��───────────────────────
 
 interface UsageSectionProps {
   repoSessions: import('../lib/types.js').SessionSummary[];
@@ -216,8 +249,17 @@ interface ActivitySectionProps {
 }
 
 function ActivitySection({ data, isLoading }: ActivitySectionProps) {
+  const { ref: scrollRef, hasOverflow } = useScrollOverflow();
+  const sectionClass = [
+    'dashboard-section',
+    'dashboard-section--scroll',
+    hasOverflow && 'has-overflow',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <section className="dashboard-section dashboard-section--scroll">
+    <section className={sectionClass} ref={scrollRef}>
       <div className="section-heading">recent activity</div>
       {isLoading ? (
         <div className="scroll-container">
@@ -294,7 +336,7 @@ function PrRow({ pr, onOpenPrSession, onPrAction }: PrRowProps) {
           {pr.role === 'author' ? 'Author' : 'Review'}
         </span>
       </div>
-      <div className="pr-cell pr-cell--age" style={{ width: 50, flex: 'none' }}>
+      <div className="pr-cell pr-cell--age" style={{ width: 72, flex: 'none' }}>
         <span className="pr-age-text">{formatRelativeTime(pr.updatedAt)}</span>
       </div>
       <div
@@ -303,7 +345,7 @@ function PrRow({ pr, onOpenPrSession, onPrAction }: PrRowProps) {
       >
         <div className="pr-row-actions">
           <TuiButton
-            variant="ghost"
+            variant="primary"
             size="icon"
             onClick={() => onOpenPrSession(pr)}
             title="Open session on this branch"
@@ -312,7 +354,7 @@ function PrRow({ pr, onOpenPrSession, onPrAction }: PrRowProps) {
           </TuiButton>
           {action.type !== 'none' && action.label && (
             <TuiButton
-              variant="ghost"
+              variant={colorToVariant(action.color)}
               size="sm"
               onClick={() => onPrAction(pr)}
               title={action.label}
@@ -439,6 +481,7 @@ export function RepoDashboard({
   const [searchQuery, setSearchQuery] = useState('');
   const sortBy = 'age';
   const sortDir: 'asc' | 'desc' = 'desc';
+  const { ref: prScrollRef, hasOverflow: prHasOverflow } = useScrollOverflow();
 
   const { data, isLoading, isError } = useQuery<DashboardData>({
     queryKey: ['dashboard', repoPath],
@@ -471,7 +514,16 @@ export function RepoDashboard({
       ) : (
         <>
           <UsageSection repoSessions={repoSessions} repoPath={repoPath} />
-          <section className="dashboard-section dashboard-section--scroll">
+          <section
+            className={[
+              'dashboard-section',
+              'dashboard-section--scroll',
+              prHasOverflow && 'has-overflow',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            ref={prScrollRef}
+          >
             <div className="section-heading">open pull requests</div>
             <PrListBody
               data={data}

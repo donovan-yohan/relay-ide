@@ -8,6 +8,7 @@ import {
   deletePreset,
 } from '../lib/api.js';
 import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
+import type { StatusColor } from '../lib/pr-state.js';
 import { prRoleLabel, sortPrs } from '../lib/pr-utils.js';
 import { formatRelativeTime } from '../lib/utils.js';
 import type {
@@ -20,6 +21,8 @@ import TicketsPanel from './TicketsPanel.js';
 import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import StatusDot from './StatusDot.js';
+import { TuiButton } from './TuiButton.js';
+import type { TuiButtonVariant } from './TuiButton.js';
 import './OrgDashboard.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -57,6 +60,14 @@ function getTicketIdForPr(
     }
   }
   return null;
+}
+
+function colorToVariant(color: StatusColor): TuiButtonVariant {
+  if (color === 'success') return 'success';
+  if (color === 'error') return 'danger';
+  if (color === 'accent') return 'primary';
+  if (color === 'info') return 'info';
+  return 'ghost';
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -133,17 +144,19 @@ function OrgPrRow({ pr, branchLinksData, onOpenWorkspace }: PrRowProps) {
       <div className="cell cell--ci" style={{ width: 32, flex: 'none' }}>
         {ci && <span className={`ci-icon ${ci.cls}`}>{ci.icon}</span>}
       </div>
-      <div className="cell cell--age" style={{ width: 50, flex: 'none' }}>
+      <div className="cell cell--age" style={{ width: 72, flex: 'none' }}>
         <span className="pr-meta-text">{formatRelativeTime(pr.updatedAt)}</span>
       </div>
       <div className="cell cell--action" style={{ width: 140, flex: 'none' }}>
         {action.type !== 'none' && action.label && (
-          <button
+          <TuiButton
+            variant={colorToVariant(action.color)}
+            size="sm"
             onClick={() => onOpenWorkspace(pr.repoPath ?? '')}
             title={action.label}
           >
             {action.label}
-          </button>
+          </TuiButton>
         )}
       </div>
     </div>
