@@ -199,7 +199,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle>(function SettingsDialog(
         <SettingsToc open={tocOpen} onclose={() => setTocOpen(false)} {...(contentEl ? { contentEl } : {})} sections={TOC_SECTIONS} />
         <div className="settings-dialog-sections">
           <GeneralSection config={config} notifDescription={notifDescription} notifPerm={notifPerm} searchQuery={searchQuery} handlers={configHandlers} />
-          <IntegrationsSection searchQuery={searchQuery} githubConnected={githubConnected} webhookCount={webhookCount} onGitHubDisconnect={() => setGithubConnected(false)} />
+          <IntegrationsSection searchQuery={searchQuery} githubConnected={githubConnected} webhookCount={webhookCount} onGitHubConnect={() => { setGithubConnected(true); fetchWebhookStatus().then((ws) => { if (ws.configured) setWebhookCount(1); }).catch(() => undefined); }} onGitHubDisconnect={() => setGithubConnected(false)} />
           <AdvancedSection searchQuery={searchQuery} analyticsSize={analyticsSize} clearing={clearing} devtoolsEnabled={devtoolsEnabled} onDevtoolsChange={(v) => { setDevtoolsEnabled(v); localStorage.setItem('devtools-enabled', v ? 'true' : 'false'); window.dispatchEvent(new Event('devtools-changed')); }} onClearAnalytics={() => void handleClearAnalytics()} />
           <AboutSection searchQuery={searchQuery} versionInfo={versionInfo} onUpdate={() => void handleUpdate()} />
         </div>
@@ -238,11 +238,11 @@ function GeneralSection({ config, notifDescription, notifPerm, searchQuery, hand
   );
 }
 
-function IntegrationsSection({ searchQuery, githubConnected, webhookCount, onGitHubDisconnect }: { searchQuery: string; githubConnected: boolean; webhookCount: number; onGitHubDisconnect: () => void }) {
+function IntegrationsSection({ searchQuery, githubConnected, webhookCount, onGitHubConnect, onGitHubDisconnect }: { searchQuery: string; githubConnected: boolean; webhookCount: number; onGitHubConnect: () => void; onGitHubDisconnect: () => void }) {
   return (
     <section id="section-integrations" className={sectionClass('section-integrations', searchQuery)}>
       <h3 className="settings-dialog-section-heading">integrations</h3>
-      <div id="integration-github"><GitHubIntegration onDisconnect={onGitHubDisconnect} webhookCount={webhookCount} /></div>
+      <div id="integration-github"><GitHubIntegration onConnected={onGitHubConnect} onDisconnect={onGitHubDisconnect} webhookCount={webhookCount} /></div>
       <div id="integration-webhooks"><WebhookIntegration githubConnected={githubConnected} /></div>
       <div id="integration-jira"><JiraIntegration /></div>
     </section>

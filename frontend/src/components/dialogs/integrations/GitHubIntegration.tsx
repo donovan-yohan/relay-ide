@@ -6,6 +6,7 @@ import { fetchGitHubStatus, initiateGitHubDevice, disconnectGitHub } from '../..
 import './GitHubIntegration.css';
 
 interface Props {
+  onConnected?: () => void;
   onDisconnect?: () => void;
   needsReauth?: boolean;
   webhookCount?: number;
@@ -53,15 +54,17 @@ function DeviceFlowBody({ deviceCode, onCopy }: { deviceCode: DeviceCode; onCopy
   );
 }
 
-function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (v: boolean) => void) {
+function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (v: boolean) => void, onConnected?: () => void) {
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
   const [deviceFlowError, setDeviceFlowError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stoppedRef = useRef(false);
 
   function clearTimers() {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    stoppedRef.current = true;
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
     if (expiryRef.current) { clearTimeout(expiryRef.current); expiryRef.current = null; }
   }
 
@@ -81,13 +84,17 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
     setDeviceFlowError('');
     try {
       const code = await initiateGitHubDevice(); setDeviceCode(code); clearTimers();
-      pollRef.current = setInterval(async () => {
+      stoppedRef.current = false;
+      async function poll() {
+        if (stoppedRef.current) return;
         try {
           const s = await fetchGitHubStatus();
-          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); }
-          else if (s.deviceFlowStatus === 'denied' || s.deviceFlowStatus === 'expired') { setDeviceCode(null); setDeviceFlowError(s.deviceFlowStatus === 'denied' ? 'Authorization denied. Please try again.' : 'Code expired. Please try again.'); clearTimers(); }
+          if (s.connected) { setGithubStatus({ connected: true, ...(s.username ? { username: s.username } : {}) }); setDeviceCode(null); clearTimers(); onConnected?.(); return; }
+          else if (s.deviceFlowStatus === 'denied' || s.deviceFlowStatus === 'expired') { setDeviceCode(null); setDeviceFlowError(s.deviceFlowStatus === 'denied' ? 'Authorization denied. Please try again.' : 'Code expired. Please try again.'); clearTimers(); return; }
         } catch { /* keep polling */ }
-      }, 2000);
+        if (!stoppedRef.current) pollRef.current = setTimeout(poll, 2000);
+      }
+      pollRef.current = setTimeout(poll, 2000);
       expiryRef.current = setTimeout(() => { clearTimers(); setDeviceCode(null); setDeviceFlowError('Code expired. Please try again.'); }, code.expiresIn * 1000);
     } catch { setDeviceFlowError('Failed to initiate GitHub authorization. Please try again.'); }
   }
@@ -102,12 +109,12 @@ function useGitHubFlow(setGithubStatus: (s: GitHubStatus) => void, setLoading: (
   return { deviceCode, deviceFlowError, disconnecting, connect, disconnect };
 }
 
-export default function GitHubIntegration({ onDisconnect, needsReauth = false, webhookCount = 0 }: Props) {
+export default function GitHubIntegration({ onConnected, onDisconnect, needsReauth = false, webhookCount = 0 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const { deviceCode, deviceFlowError, disconnecting, connect, disconnect } = useGitHubFlow(setGithubStatus, setLoading);
+  const { deviceCode, deviceFlowError, disconnecting, connect, disconnect } = useGitHubFlow(setGithubStatus, setLoading, onConnected);
 
   let statusText: string;
   if (loading) statusText = 'Checking connection...';
