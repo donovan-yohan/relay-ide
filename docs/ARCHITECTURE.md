@@ -1,11 +1,11 @@
 # Architecture
 
-This document describes the high-level architecture of claude-remote-cli.
+This document describes the high-level architecture of Relay IDE.
 If you want to familiarize yourself with the codebase, you are in the right place.
 
 ## Bird's Eye View
 
-claude-remote-cli is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a Claude Code CLI process running on the host machine. The server manages PTY processes, relays I/O over WebSocket, and watches for git worktree changes.
+Relay IDE is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a Claude Code CLI process running on the host machine. The server manages PTY processes, relays I/O over WebSocket, and watches for git worktree changes.
 
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
@@ -76,9 +76,9 @@ Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 
 ### `bin/`
 
-`bin/claude-remote-cli.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run.
+`bin/relay-ide.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run.
 
-**Architecture Invariant:** CLI flags are passed to the server via environment variables (`CLAUDE_REMOTE_CONFIG`, `CLAUDE_REMOTE_PORT`, `CLAUDE_REMOTE_HOST`), not direct function calls.
+**Architecture Invariant:** CLI flags are passed to the server via environment variables (`RELAY_IDE_CONFIG`, `RELAY_IDE_PORT`, `RELAY_IDE_HOST`), not direct function calls.
 
 ### `test/`
 

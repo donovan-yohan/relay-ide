@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('claude-remote-cli basic functionality', () => {
+test.describe('relay-ide basic functionality', () => {
   test('app loads successfully', async ({ page }) => {
     const errors: string[] = [];
     
@@ -12,7 +12,7 @@ test.describe('claude-remote-cli basic functionality', () => {
 
     await page.goto('/');
     
-    await expect(page).toHaveTitle(/claude-remote-cli/i);
+    await expect(page).toHaveTitle(/relay-ide/i);
     
     expect(errors).toHaveLength(0);
   });

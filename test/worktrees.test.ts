@@ -545,20 +545,20 @@ describe('workspace name from git remote', () => {
 
     const fixtures: Array<{ url: string; expected: string }> = [
       {
-        url: 'git@github.com:anthropic/claude-remote-cli.git',
-        expected: 'claude-remote-cli',
+        url: 'git@github.com:anthropic/relay-ide.git',
+        expected: 'relay-ide',
       },
       {
-        url: 'https://github.com/anthropic/claude-remote-cli.git',
-        expected: 'claude-remote-cli',
+        url: 'https://github.com/anthropic/relay-ide.git',
+        expected: 'relay-ide',
       },
       {
-        url: 'ssh://git@github.com/anthropic/claude-remote-cli.git',
-        expected: 'claude-remote-cli',
+        url: 'ssh://git@github.com/anthropic/relay-ide.git',
+        expected: 'relay-ide',
       },
       {
-        url: 'https://github.com/anthropic/claude-remote-cli',
-        expected: 'claude-remote-cli',
+        url: 'https://github.com/anthropic/relay-ide',
+        expected: 'relay-ide',
       },
       {
         url: 'https://example.com/some-group/another-repo.git',
@@ -592,10 +592,10 @@ describe('workspace name from git remote', () => {
 describe('repo-scoped tmux naming', () => {
   it('produces readable tmux names from repo-branch slugs', () => {
     const name = generateTmuxSessionName(
-      'claude-remote-cli-nightly',
+      'relay-ide-nightly',
       'a3b4c5d6-1234-5678'
     );
-    assert.ok(name.includes('claude-remote-cli-nightly'));
+    assert.ok(name.includes('relay-ide-nightly'));
     assert.ok(name.includes('a3b4c5d6'));
   });
 

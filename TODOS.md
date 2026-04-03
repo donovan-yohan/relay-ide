@@ -56,7 +56,7 @@ Clicking an inactive repo root in the sidebar navigates to the dashboard instead
 
 ### Fix --bg first-run crash loop
 
-`claude-remote-cli --bg` crashes on first run if no PIN is configured. The non-TTY exit blocks the server from starting, but the web-based PIN setup flow (`POST /auth/setup` + PinGate) needs the server running. Remove the non-TTY exit and trust the web layer.
+`relay-ide --bg` crashes on first run if no PIN is configured. The non-TTY exit blocks the server from starting, but the web-based PIN setup flow (`POST /auth/setup` + PinGate) needs the server running. Remove the non-TTY exit and trust the web layer.
 
 **Scope:** Remove the `!process.stdin.isTTY` exit in `server/index.ts`, ensure PinGate UI handles the no-PIN state. **Files:** `server/index.ts`, `server/auth.ts`.
 
@@ -108,12 +108,12 @@ This also enables Playwright/headless browser tests to run in CI without needing
 
 ```bash
 # Start preview server in CI
-claude-remote-cli --preview --port 7778 &
+relay-ide --preview --port 7778 &
 # Run Playwright tests against it
 npx playwright test
 ```
 
-**Scope:** Add `--preview` CLI flag, stub the `createPtySession` call in preview mode to return a fake session object, serve a "preview mode" banner in the terminal area. ~30-50 lines of server code + CLI flag wiring. **Files:** `bin/claude-remote-cli.ts` (flag), `server/index.ts` (session creation stub), `server/pty-handler.ts` (mock).
+**Scope:** Add `--preview` CLI flag, stub the `createPtySession` call in preview mode to return a fake session object, serve a "preview mode" banner in the terminal area. ~30-50 lines of server code + CLI flag wiring. **Files:** `bin/relay-ide.ts` (flag), `server/index.ts` (session creation stub), `server/pty-handler.ts` (mock).
 
 **Added:** 2026-03-28
 
@@ -213,7 +213,7 @@ Inspired by ["Cost to Implement vs Verify"](https://clifford.ressel.fyi/blog/cos
 **Phases:**
 
 1. **Sandbox mode (`--sandbox`):** Isolated server instance that can run the full app without affecting the production instance. Extends the existing `--preview` TODO (Small Features) but goes further:
-   - Ephemeral data directory (temp config, temp sessions) — no writes to `~/.config/claude-remote-cli/`
+   - Ephemeral data directory (temp config, temp sessions) — no writes to `~/.config/relay-ide/`
    - Isolated port range (e.g. 7780-7789) to avoid conflicts with a running production server
    - Mock PTY that replays canned terminal output for deterministic test scenarios
    - Teardown on exit — no state leaks between runs

@@ -15,10 +15,10 @@ PRs target `nightly` by default. Stable releases are promoted from `nightly` to 
 
 ```bash
 # Stable (recommended)
-npm install -g claude-remote-cli
+npm install -g relay-ide
 
 # Nightly (latest dev build)
-npm install -g claude-remote-cli@nightly
+npm install -g relay-ide@nightly
 ```
 
 ## Three Release Paths
@@ -110,7 +110,7 @@ Both stable and nightly publishing are handled by a single workflow (`publish.ym
 ### CI Setup (one-time)
 
 1. Create a GitHub environment called `release` in the repo (Settings > Environments)
-2. On npmjs.com, configure **trusted publishing** for `claude-remote-cli` with:
+2. On npmjs.com, configure **trusted publishing** for `relay-ide` with:
    - Workflow filename: `publish.yml`
    - Environment name: `release`
 
@@ -138,7 +138,7 @@ TypeScript source, test files, docs, and local config are excluded from the publ
 
 ```bash
 npm pack --dry-run                            # preview what will be included
-npm info claude-remote-cli                    # check stable version
-npm info claude-remote-cli dist-tags          # check all dist-tags (latest, nightly)
-npm install -g claude-remote-cli@nightly      # test nightly install
+npm info relay-ide                            # check stable version
+npm info relay-ide dist-tags                  # check all dist-tags (latest, nightly)
+npm install -g relay-ide@nightly              # test nightly install
 ```

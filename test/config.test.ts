@@ -20,7 +20,7 @@ let tmpDir!: string;
 
 before(() => {
   tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'claude-remote-cli-config-test-')
+    path.join(os.tmpdir(), 'relay-ide-config-test-')
   );
 });
 

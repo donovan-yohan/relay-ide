@@ -11,9 +11,9 @@ const logger = createLogger('service');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SERVICE_LABEL = 'com.claude-remote-cli';
+const SERVICE_LABEL = 'com.relay-ide';
 const HOME = process.env.HOME || process.env.USERPROFILE || '~';
-const CONFIG_DIR = path.join(HOME, '.config', 'claude-remote-cli');
+const CONFIG_DIR = path.join(HOME, '.config', 'relay-ide');
 
 function getPlatform(): Platform {
   if (process.platform === 'darwin') return 'macos';
@@ -45,10 +45,10 @@ function getServicePaths(): ServicePaths {
       '.config',
       'systemd',
       'user',
-      'claude-remote-cli.service'
+      'relay-ide.service'
     ),
     logDir: null,
-    label: 'claude-remote-cli',
+    label: 'relay-ide',
   };
 }
 
@@ -103,7 +103,7 @@ function generateServiceFile(
   }
 
   return `[Unit]
-Description=Claude Remote CLI
+Description=Relay IDE
 After=network.target
 
 [Service]
@@ -128,7 +128,7 @@ function install(opts: InstallOpts): void {
 
   if (isInstalled()) {
     throw new Error(
-      'Service is already installed. Run `claude-remote-cli uninstall` first.'
+      'Service is already installed. Run `relay-ide uninstall` first.'
     );
   }
 
@@ -137,7 +137,7 @@ function install(opts: InstallOpts): void {
     __dirname,
     '..',
     'bin',
-    'claude-remote-cli.js'
+    'relay-ide.js'
   );
   const configPath = opts.configPath || path.join(CONFIG_DIR, 'config.json');
   const port = opts.port || String(DEFAULTS.port);
@@ -161,7 +161,7 @@ function install(opts: InstallOpts): void {
     execSync('launchctl load -w ' + servicePath, { stdio: 'inherit' });
   } else {
     execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
-    execSync('systemctl --user enable --now claude-remote-cli', {
+    execSync('systemctl --user enable --now relay-ide', {
       stdio: 'inherit',
     });
   }
@@ -170,7 +170,7 @@ function install(opts: InstallOpts): void {
   if (logDir) {
     logger.info('Logs: ' + logDir);
   } else {
-    logger.info('Logs: journalctl --user -u claude-remote-cli -f');
+    logger.info('Logs: journalctl --user -u relay-ide -f');
   }
 }
 
@@ -190,7 +190,7 @@ function uninstall(): void {
     }
   } else {
     try {
-      execSync('systemctl --user disable --now claude-remote-cli', {
+      execSync('systemctl --user disable --now relay-ide', {
         stdio: 'inherit',
       });
     } catch (_) {
@@ -231,7 +231,7 @@ function checkRunning(platform: Platform): boolean {
   }
 
   try {
-    execSync('systemctl --user is-active claude-remote-cli', {
+    execSync('systemctl --user is-active relay-ide', {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return true;

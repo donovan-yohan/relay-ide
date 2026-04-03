@@ -18,7 +18,7 @@ afterEach(() => {
 
 test('browser command with no args prints usage and exits 1', () => {
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser'], {
+    execFileSync('node', ['dist/bin/relay-ide.js', 'browser'], {
       encoding: 'utf-8',
       env: { ...process.env, PATH: process.env.PATH },
     });
@@ -34,7 +34,7 @@ test('browser --help shows usage and exits 0', () => {
   try {
     const output = execFileSync(
       'node',
-      ['dist/bin/claude-remote-cli.js', 'browser', '--help'],
+      ['dist/bin/relay-ide.js', 'browser', '--help'],
       {
         encoding: 'utf-8',
         env: { ...process.env, PATH: process.env.PATH },
@@ -54,7 +54,7 @@ test('browser command fails gracefully when server is not running', () => {
     execFileSync(
       'node',
       [
-        'dist/bin/claude-remote-cli.js',
+        'dist/bin/relay-ide.js',
         'browser',
         path.join(tmpDir, 'test.html'),
       ],
@@ -62,8 +62,8 @@ test('browser command fails gracefully when server is not running', () => {
         encoding: 'utf-8',
         env: {
           ...process.env,
-          CLAUDE_REMOTE_PORT: '19999',
-          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          RELAY_IDE_PORT: '19999',
+          RELAY_IDE_BROWSER_TOKEN: 'test-token',
           PATH: process.env.PATH,
         },
       }
@@ -85,7 +85,7 @@ test('browser command fails when token not set', () => {
     execFileSync(
       'node',
       [
-        'dist/bin/claude-remote-cli.js',
+        'dist/bin/relay-ide.js',
         'browser',
         path.join(tmpDir, 'test.html'),
       ],
@@ -93,8 +93,8 @@ test('browser command fails when token not set', () => {
         encoding: 'utf-8',
         env: {
           ...process.env,
-          CLAUDE_REMOTE_PORT: '19999',
-          CLAUDE_REMOTE_BROWSER_TOKEN: '', // empty token
+          RELAY_IDE_PORT: '19999',
+          RELAY_IDE_BROWSER_TOKEN: '', // empty token
           PATH: process.env.PATH,
         },
       }
@@ -103,6 +103,6 @@ test('browser command fails when token not set', () => {
   } catch (err) {
     const e = err as { status?: number; stderr?: string };
     assert.ok(e.status !== 0);
-    assert.ok((e.stderr ?? '').includes('CLAUDE_REMOTE_BROWSER_TOKEN'));
+    assert.ok((e.stderr ?? '').includes('RELAY_IDE_BROWSER_TOKEN'));
   }
 });

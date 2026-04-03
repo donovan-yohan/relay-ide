@@ -155,7 +155,7 @@ describe('TuiInput', () => {
     });
 
     it('should not mask text input', () => {
-      const type = 'text';
+      const type: string = 'text';
       const value = 'hello';
       const selStart = 3;
       

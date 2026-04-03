@@ -12,7 +12,7 @@ Claude Code's `statusLine` hook provides a JSON payload with all telemetry data.
 Claude Code (per session)
   │ statusLine hook (300ms debounce)
   ▼
-/tmp/claude-remote-cli/<sessionId>/relay-statusline.sh
+/tmp/relay-ide/<sessionId>/relay-statusline.sh
   │ writes full JSON payload
   ▼
 <configDir>/telemetry/<sessionId>.json
@@ -33,7 +33,7 @@ SessionStatusBar.svelte + Dashboard panels
 
 **File: `server/pty-handler.ts`**
 
-The function `writeHooksSettingsFile()` (line ~40) writes per-session hooks to `/tmp/claude-remote-cli/<sessionId>/hooks-settings.json`. Extend it to:
+The function `writeHooksSettingsFile()` (line ~40) writes per-session hooks to `/tmp/relay-ide/<sessionId>/hooks-settings.json`. Extend it to:
 
 1. Add `statusLine` to the settings JSON alongside `hooks`:
 
@@ -42,7 +42,7 @@ The function `writeHooksSettingsFile()` (line ~40) writes per-session hooks to `
   "hooks": { ... existing hooks ... },
   "statusLine": {
     "type": "command",
-    "command": "/tmp/claude-remote-cli/<sessionId>/relay-statusline.sh"
+    "command": "/tmp/relay-ide/<sessionId>/relay-statusline.sh"
   }
 }
 ```

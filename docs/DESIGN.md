@@ -1,6 +1,6 @@
 # Design
 
-Backend patterns and conventions for claude-remote-cli. The server is a composition-root architecture where `index.ts` wires together single-concern modules communicating via ESM imports.
+Backend patterns and conventions for Relay IDE. The server is a composition-root architecture where `index.ts` wires together single-concern modules communicating via ESM imports.
 
 ## Key Decisions
 
@@ -26,7 +26,7 @@ Backend patterns and conventions for claude-remote-cli. The server is a composit
 | Hooks-based state detection                   | Claude Code hooks (--settings injection) replace fragile regex parsing for AgentState. Parser kept as fallback with 30s reconciliation timeout.                                                                                                                                                                                                                                                                                                                                                                                                                                     | Design doc, CEO review            |
 | Hook-driven branch rename                     | UserPromptSubmit hook triggers claude -p for descriptive branch names, replacing ws.ts keystroke capture                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | CEO review override of design doc |
 | forceOutputParser config                      | Escape hatch to disable hooks and use parser-only mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Eng review                        |
-| Local analytics                               | SQLite-backed event tracking (`analytics.ts` module). Auto-capture clicks via `data-track` attributes + explicit `trackEvent()` calls. Agent-queryable via direct `sqlite3` CLI access to `~/.config/claude-remote-cli/analytics.db`. Frontend batches events to `POST /analytics/events`.                                                                                                                                                                                                                                                                                          | Design doc                        |
+| Local analytics                               | SQLite-backed event tracking (`analytics.ts` module). Auto-capture clicks via `data-track` attributes + explicit `trackEvent()` calls. Agent-queryable via direct `sqlite3` CLI access to `~/.config/relay-ide/analytics.db`. Frontend batches events to `POST /analytics/events`.                                                                                                                                                                                                                                                                                          | Design doc                        |
 | GitHub webhook self-service                   | `webhook-manager.ts` owns webhook CRUD, smee-client lifecycle, and health state. The webhook receiver (`/webhooks`) is mounted unconditionally so it is ready before any webhook is configured. Smart polling (`startSmartPolling`) runs a 30-second interval that broadcasts `pr-updated`/`ci-updated` only for repos that have no working webhook (`webhookEnabled !== true` or `webhookError` set) — automatically going silent once webhooks are active. Auto-provision backfill (`POST /webhooks/manage/backfill`) creates webhooks for all configured workspaces in one shot. | Design doc                        |
 | OAuth scope for webhooks                      | GitHub OAuth App authorisation requests `repo admin:repo_hook` scope (previously `repo` only). The extra scope is required for `POST /repos/{owner}/{repo}/hooks` webhook creation.                                                                                                                                                                                                                                                                                                                                                                                                 | Design doc                        |
 | `extractOwnerRepo` + `buildRepoMap` in git.ts | Helper functions for resolving "owner/repo" from a git remote URL (SSH and HTTPS forms) and building a workspace-path lookup map. Extracted to `git.ts` so both `webhook-manager.ts` and `review-poller.ts` share one implementation.                                                                                                                                                                                                                                                                                                                                               | Design doc                        |
@@ -38,8 +38,8 @@ Backend patterns and conventions for claude-remote-cli. The server is a composit
 ## Config Precedence (canonical)
 
 1. CLI flags (`--port`, `--host`, `--config`)
-2. Environment variables (`CLAUDE_REMOTE_PORT`, `CLAUDE_REMOTE_HOST`, `CLAUDE_REMOTE_CONFIG`)
-3. Config file (`~/.config/claude-remote-cli/config.json` global, `./config.json` dev)
+2. Environment variables (`RELAY_IDE_PORT`, `RELAY_IDE_HOST`, `RELAY_IDE_CONFIG`)
+3. Config file (`~/.config/relay-ide/config.json` global, `./config.json` dev)
 4. Hardcoded defaults
 
 ## PTY Management
@@ -95,7 +95,7 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 ## Clipboard Image Passthrough
 
 1. Browser paste/drop detects image, base64-encodes and POSTs to `/sessions/:id/image`
-2. Server saves to `/tmp/claude-remote-cli/:sessionId/paste-:timestamp.:ext`
+2. Server saves to `/tmp/relay-ide/:sessionId/paste-:timestamp.:ext`
 3. Attempts system clipboard set (osascript on macOS, xclip on Linux)
 4. If clipboard set succeeds: sends `\x16` (Ctrl+V) to PTY stdin
 5. If fails: returns file path; frontend shows "Insert Path" button

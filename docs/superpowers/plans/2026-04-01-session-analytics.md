@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript + ESM, better-sqlite3 (already installed), Express REST API, Svelte 5 (runes), node:test for testing.
 
-**Design spec:** `~/.gstack/projects/donovan-yohan-claude-remote-cli/donovanyohan-nightly-design-20260401-000549.md`
+**Design spec:** `~/.gstack/projects/donovan-yohan-relay-ide/donovanyohan-nightly-design-20260401-000549.md`
 
 ---
 
@@ -2620,7 +2620,7 @@ interface Props {
 Fetches data using `fetchAnalyticsSessionDetail`. Layout follows the mock in the spec (lines 472-511):
 
 ```
-session abc-123 — claude-remote-cli — opus-4
+session abc-123 — relay-ide — opus-4
 ────────────────────────────────────────────────────────────
 
 metrics

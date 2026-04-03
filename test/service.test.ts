@@ -21,14 +21,14 @@ test('generateServiceFile for macos contains plist XML', () => {
   const content = service.generateServiceFile('macos', {
     nodePath: '/usr/local/bin/node',
     scriptPath:
-      '/usr/local/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
-    configPath: '/Users/test/.config/claude-remote-cli/config.json',
+      '/usr/local/lib/node_modules/relay-ide/bin/relay-ide.js',
+    configPath: '/Users/test/.config/relay-ide/config.json',
     port: '3456',
     host: '0.0.0.0',
-    logDir: '/Users/test/.config/claude-remote-cli/logs',
+    logDir: '/Users/test/.config/relay-ide/logs',
   });
   assert.match(content, /<!DOCTYPE plist/, 'should be plist XML');
-  assert.match(content, /com\.claude-remote-cli/, 'should have label');
+  assert.match(content, /com\.relay-ide/, 'should have label');
   assert.match(content, /RunAtLoad/, 'should have RunAtLoad');
   assert.match(content, /KeepAlive/, 'should have KeepAlive');
   assert.match(content, /3456/, 'should include port');
@@ -38,8 +38,8 @@ test('generateServiceFile for linux contains systemd unit', () => {
   const content = service.generateServiceFile('linux', {
     nodePath: '/usr/bin/node',
     scriptPath:
-      '/usr/lib/node_modules/claude-remote-cli/bin/claude-remote-cli.js',
-    configPath: '/home/test/.config/claude-remote-cli/config.json',
+      '/usr/lib/node_modules/relay-ide/bin/relay-ide.js',
+    configPath: '/home/test/.config/relay-ide/config.json',
     port: '3456',
     host: '0.0.0.0',
     logDir: null,

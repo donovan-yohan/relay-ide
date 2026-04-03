@@ -17,7 +17,7 @@ test.describe('TicketCard React component', () => {
   test('renders GitHub issue number and repo chip', async ({ page }) => {
     const card = page.locator('#github-open .ticket-card');
     await expect(card.locator('.ticket-number')).toHaveText('#42');
-    await expect(card.locator('.repo-chip')).toHaveText('claude-remote-cli');
+    await expect(card.locator('.repo-chip')).toHaveText('relay-ide');
   });
 
   test('renders label chips', async ({ page }) => {

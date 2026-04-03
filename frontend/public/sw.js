@@ -24,7 +24,7 @@ self.addEventListener('push', function (event) {
   }
   event.waitUntil(
     self.registration.showNotification(
-      data.displayName || 'Claude Remote CLI',
+      data.displayName || 'Relay IDE',
       {
         body: 'Session needs your input',
         tag: 'session-' + (data.sessionId || ''),

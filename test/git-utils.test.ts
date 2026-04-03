@@ -7,8 +7,8 @@ import type { PrInfo } from '../server/types.js';
 describe('extractOwnerRepo', () => {
   it('parses an SSH URL with .git suffix', () => {
     assert.equal(
-      extractOwnerRepo('git@github.com:donovan-yohan/claude-remote-cli.git'),
-      'donovan-yohan/claude-remote-cli'
+      extractOwnerRepo('git@github.com:donovan-yohan/relay-ide.git'),
+      'donovan-yohan/relay-ide'
     );
   });
 

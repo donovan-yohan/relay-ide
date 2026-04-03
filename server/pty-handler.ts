@@ -161,7 +161,7 @@ export function upgradeHooksSettings(
   sessionId: string,
   configDir: string
 ): boolean {
-  const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
+  const dir = path.join(os.tmpdir(), 'relay-ide', sessionId);
   const filePath = path.join(dir, 'hooks-settings.json');
 
   try {
@@ -192,7 +192,7 @@ function writeHooksSettingsFile(
   token: string,
   configDir: string
 ): string {
-  const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
+  const dir = path.join(os.tmpdir(), 'relay-ide', sessionId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const filePath = path.join(dir, 'hooks-settings.json');
   const statusLinePath = writeStatusLineScript(sessionId, dir, configDir);
@@ -637,7 +637,7 @@ export function createPtySession(
           retryArgs = ['--settings', settingsPath, ...retryArgs];
         }
         const retryNotice =
-          '\r\n[claude-remote-cli] --continue not available; starting new session...\r\n';
+          '\r\n[relay-ide] --continue not available; starting new session...\r\n';
         scrollback.length = 0;
         scrollbackBytes = 0;
         scrollback.push(retryNotice);
@@ -709,7 +709,7 @@ export function createPtySession(
         }
       }
       sessionsMap.delete(id);
-      const tmpDir = path.join(os.tmpdir(), 'claude-remote-cli', id);
+      const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
       fs.rm(tmpDir, { recursive: true, force: true }, () => {});
     });
   }

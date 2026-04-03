@@ -1,6 +1,6 @@
 # Frontend
 
-Svelte 5 SPA for claude-remote-cli. Built with runes syntax, TypeScript, and Vite. The frontend provides terminal access, session management, and real-time worktree monitoring.
+Svelte 5 SPA for Relay IDE. Built with runes syntax, TypeScript, and Vite. The frontend provides terminal access, session management, and real-time worktree monitoring.
 
 ## Current State
 

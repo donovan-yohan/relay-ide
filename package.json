@@ -1,11 +1,11 @@
 {
-  "name": "claude-remote-cli",
-  "version": "3.20.0",
-  "description": "Remote web interface for Claude Code CLI sessions",
+  "name": "relay-ide",
+  "version": "0.1.0",
+  "description": "Relay Agentic Development Environment — remote web interface for AI coding agent sessions",
   "type": "module",
   "main": "dist/server/index.js",
   "bin": {
-    "claude-remote-cli": "dist/bin/claude-remote-cli.js"
+    "relay-ide": "dist/bin/relay-ide.js"
   },
   "files": [
     "dist/"
@@ -15,7 +15,7 @@
     "build": "tsc && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
-    "dev": "CLAUDE_REMOTE_CONFIG=./config.dev.json NO_PIN=1 CLAUDE_REMOTE_PORT=3457 node dist/server/index.js",
+    "dev": "RELAY_IDE_CONFIG=./config.dev.json NO_PIN=1 RELAY_IDE_PORT=3457 node dist/server/index.js",
     "dev:vite": "vite --config frontend/vite.config.ts",
     "start": "tsc && vite build --config frontend/vite.config.ts && node dist/server/index.js",
     "test": "tsc -p tsconfig.test.json && node --test --test-force-exit dist/test/*.test.js dist/test/**/*.test.js",
@@ -30,10 +30,12 @@
     "node": ">=24.0.0"
   },
   "keywords": [
-    "claude",
-    "claude-code",
+    "relay",
+    "relay-ide",
+    "agentic",
+    "ai",
+    "development",
     "remote",
-    "cli",
     "terminal",
     "mobile",
     "web",
@@ -41,7 +43,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/donovan-yohan/claude-remote-cli.git"
+    "url": "git+https://github.com/donovan-yohan/relay-ide.git"
   },
   "license": "MIT",
   "author": "Donovan Yohan",

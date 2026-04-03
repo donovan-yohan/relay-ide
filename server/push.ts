@@ -25,7 +25,7 @@ export function ensureVapidKeys(
   if (config.vapidPublicKey && config.vapidPrivateKey) {
     vapidPublicKey = config.vapidPublicKey;
     webpush.setVapidDetails(
-      'mailto:noreply@claude-remote-cli.local',
+      'mailto:noreply@relay-ide.local',
       config.vapidPublicKey,
       config.vapidPrivateKey
     );
@@ -40,7 +40,7 @@ export function ensureVapidKeys(
 
     vapidPublicKey = keys.publicKey;
     webpush.setVapidDetails(
-      'mailto:noreply@claude-remote-cli.local',
+      'mailto:noreply@relay-ide.local',
       keys.publicKey,
       keys.privateKey
     );

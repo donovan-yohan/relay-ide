@@ -235,7 +235,7 @@ export async function fetchPrsGraphQL(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      'User-Agent': 'claude-remote-cli',
+      'User-Agent': 'relay-ide',
     },
     body: JSON.stringify({ query, variables }),
   });

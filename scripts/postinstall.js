@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Post-install script for claude-remote-cli
+ * Post-install script for relay-ide
  *
  * 1. Fixes node-pty permissions (macOS ARM64)
  * 2. Auto-restarts background service if running (picks up new code after npm update)
@@ -64,7 +64,7 @@ async function restartServiceIfRunning() {
     try {
       // Get config path
       const home = process.env.HOME || process.env.USERPROFILE || '~';
-      const configDir = path.join(home, '.config', 'claude-remote-cli');
+      const configDir = path.join(home, '.config', 'relay-ide');
       const configPath = path.join(configDir, 'config.json');
 
       // Load config to get port/host
@@ -86,7 +86,7 @@ async function restartServiceIfRunning() {
     } catch (err) {
       console.warn('[postinstall] Failed to restart service:', err.message);
       console.warn(
-        '[postinstall] You may need to restart manually: claude-remote-cli install'
+        '[postinstall] You may need to restart manually: relay-ide install'
       );
     }
   } catch (err) {

@@ -44,7 +44,7 @@ export function writeCodexHooksAdapter(
 ): string {
   const tmpDir = path.join(
     os.tmpdir(),
-    'claude-remote-cli',
+    'relay-ide',
     `codex-hooks-${sessionId}`
   );
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -117,7 +117,7 @@ curl -s -X POST "http://127.0.0.1:$PORT/hooks/agent-event" \\
 export function cleanupCodexHooksAdapter(sessionId: string): void {
   const tmpDir = path.join(
     os.tmpdir(),
-    'claude-remote-cli',
+    'relay-ide',
     `codex-hooks-${sessionId}`
   );
   try {

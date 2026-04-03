@@ -1,6 +1,6 @@
 # QA Guide
 
-Quick setup for local testing and visual QA of claude-remote-cli.
+Quick setup for local testing and visual QA of Relay IDE.
 
 ## Local Dev Server
 
@@ -8,10 +8,10 @@ The production instance runs on port 3456. Use a different port for QA:
 
 ```bash
 # Build and start on port 3457 (must use CLI entry point for --port flag)
-npm run build && node dist/bin/claude-remote-cli.js --port 3457 --config "$(pwd)/config.json"
+npm run build && node dist/bin/relay-ide.js --port 3457 --config "$(pwd)/config.json"
 ```
 
-**Important:** Use `dist/bin/claude-remote-cli.js` (not `dist/server/index.js`) — only the CLI entry point parses `--port` and `--config` flags.
+**Important:** Use `dist/bin/relay-ide.js` (not `dist/server/index.js`) — only the CLI entry point parses `--port` and `--config` flags.
 
 ## Test PIN Setup
 
@@ -125,8 +125,8 @@ For `/design-review` and `/qa` skills, the browse tool needs a running server.
 
 1. **Build**: `npm run build`
 2. **Set PIN**: Run the PIN setup script above
-3. **Start server**: `node dist/bin/claude-remote-cli.js --port 3457 --config "$(pwd)/config.json"`
-   - Must use `dist/bin/claude-remote-cli.js` (CLI entry point), NOT `dist/server/index.js`
+3. **Start server**: `node dist/bin/relay-ide.js --port 3457 --config "$(pwd)/config.json"`
+   - Must use `dist/bin/relay-ide.js` (CLI entry point), NOT `dist/server/index.js`
    - `dist/server/index.js` does not parse `--port` or `--config` flags
    - The `&` backgrounding works but the process must stay alive
 4. **Verify**: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3457/` should return `200`
@@ -146,7 +146,7 @@ After auth, the cookie persists for the session.
 
 ### Common gotchas
 
-- **Port 3456 in use**: The production instance (installed via `npm install -g`) runs on 3456. Always use `--port 3457` for QA.
+- **Port 3456 in use**: The production instance (installed via `npm install -g relay-ide`) runs on 3456. Always use `--port 3457` for QA.
 - **PIN hash mismatch**: Generate the hash at runtime (not pre-computed). The scrypt salt must be generated on the same machine.
 - **Multiple dialog instances**: `document.querySelector('.dialog-shell')` may return the wrong dialog. Use `.dialog-shell--fullscreen` or `.dialog-shell--compact` to target specific variants. There are 4 DialogShell instances in the DOM (Settings + 3 compact dialogs).
 - **Scroll containers**: The fullscreen settings body is `.dialog-shell--fullscreen .dialog-shell__body`. Scroll via `body.scrollTop = N`.

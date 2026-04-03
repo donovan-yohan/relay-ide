@@ -23,8 +23,8 @@ function execErrorMessage(err: unknown, fallback: string): string {
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  logger.info(`Usage: claude-remote-cli [options]
-       claude-remote-cli <command>
+  logger.info(`Usage: relay-ide [options]
+       relay-ide <command>
 
 Commands:
   update             Update to the latest version from npm
@@ -44,8 +44,8 @@ Options:
   --bg               Shortcut: install and start as background service
   --port <port>      Override server port (default: 3456)
   --host <host>      Override bind address (default: 0.0.0.0)
-  --config <path>    Path to config.json (default: ~/.config/claude-remote-cli/config.json)
-  --debug-log        Enable SDK event debug logging to ~/.config/claude-remote-cli/debug/
+  --config <path>    Path to config.json (default: ~/.config/relay-ide/config.json)
+  --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
   --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
   --help, -h         Show this help`);
@@ -103,8 +103,8 @@ if (command === 'update') {
       }
     }
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
-    logger.info(`Updating claude-remote-cli from ${channel} channel...`);
-    await execFileAsync('npm', ['install', '-g', `claude-remote-cli@${tag}`]);
+    logger.info(`Updating relay-ide from ${channel} channel...`);
+    await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`]);
     const updatedPkg = JSON.parse(
       fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
     ) as { version: string };
@@ -136,7 +136,7 @@ if (command === 'worktree') {
 
   if (!subCommand) {
     logger.error(
-      'Usage: claude-remote-cli worktree <add|remove|list> [options]'
+      'Usage: relay-ide worktree <add|remove|list> [options]'
     );
     process.exit(1);
   }
@@ -221,7 +221,7 @@ if (command === 'worktree') {
 if (command === 'pin') {
   const subCommand = args[1];
   if (subCommand !== 'reset') {
-    logger.error('Usage: claude-remote-cli pin reset');
+    logger.error('Usage: relay-ide pin reset');
     process.exit(1);
   }
 
@@ -233,7 +233,7 @@ if (command === 'pin') {
   const configPath = resolveConfigPath();
   if (!fs.existsSync(configPath)) {
     logger.error(
-      'No config file found. Run claude-remote-cli first to create one.'
+      'No config file found. Run relay-ide first to create one.'
     );
     process.exit(1);
   }
@@ -358,7 +358,7 @@ if (command === 'browser') {
     browserArgs.includes('-h') ||
     browserArgs.length === 0
   ) {
-    logger.error(`Usage: claude-remote-cli browser <path>
+    logger.error(`Usage: relay-ide browser <path>
 
 Opens an HTML file in the remote browser viewer tab.
 
@@ -366,8 +366,8 @@ Arguments:
   <path>    Path to HTML file (absolute or relative)
 
 Environment:
-  CLAUDE_REMOTE_PORT            Server port (default: 3456)
-  CLAUDE_REMOTE_BROWSER_TOKEN   Auth token for browser tab API`);
+  RELAY_IDE_PORT            Server port (default: 3456)
+  RELAY_IDE_BROWSER_TOKEN   Auth token for browser tab API`);
     process.exit(
       browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1
     );
@@ -380,12 +380,12 @@ Environment:
     process.exit(1);
   }
 
-  const port = process.env['CLAUDE_REMOTE_PORT'] ?? String(DEFAULTS.port);
-  const token = process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] ?? '';
+  const port = process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
 
   if (!token) {
     logger.error(
-      'Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?'
+      'Error: RELAY_IDE_BROWSER_TOKEN not set. Are you running inside a relay-ide session?'
     );
     process.exit(1);
   }
@@ -429,11 +429,11 @@ if (!fs.existsSync(configDir)) {
 }
 
 // Pass config path and CLI overrides to the server
-process.env['CLAUDE_REMOTE_CONFIG'] = configPath;
+process.env['RELAY_IDE_CONFIG'] = configPath;
 const portArg = getArg('--port');
-if (portArg !== undefined) process.env['CLAUDE_REMOTE_PORT'] = portArg;
+if (portArg !== undefined) process.env['RELAY_IDE_PORT'] = portArg;
 const hostArg = getArg('--host');
-if (hostArg !== undefined) process.env['CLAUDE_REMOTE_HOST'] = hostArg;
-if (args.includes('--debug-log')) process.env['CLAUDE_REMOTE_DEBUG_LOG'] = '1';
+if (hostArg !== undefined) process.env['RELAY_IDE_HOST'] = hostArg;
+if (args.includes('--debug-log')) process.env['RELAY_IDE_DEBUG_LOG'] = '1';
 
 await import('../server/index.js');

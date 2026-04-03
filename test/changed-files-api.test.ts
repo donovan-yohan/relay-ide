@@ -123,11 +123,11 @@ describe('GET /workspaces/file-diff', () => {
   });
 
   test('reads ~/file paths directly via fs', async () => {
-    const testFile = path.join(os.homedir(), '.claude-remote-cli-test-tilde');
+    const testFile = path.join(os.homedir(), '.relay-ide-test-tilde');
     fs.writeFileSync(testFile, 'tilde-test-content', 'utf-8');
     try {
       const res = await fetch(
-        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-tilde`
+        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-test-tilde`
       );
       assert.equal(res.status, 200);
       const data = (await res.json()) as any;
@@ -148,17 +148,17 @@ describe('GET /workspaces/file-diff', () => {
 
   test('returns 404 for non-existent ~/file', async () => {
     const res = await fetch(
-      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-nonexistent-file`
+      `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-nonexistent-file`
     );
     assert.equal(res.status, 404);
   });
 
   test('returns 400 for directory ~/path', async () => {
-    const testDir = path.join(os.homedir(), '.claude-remote-cli-test-dir');
+    const testDir = path.join(os.homedir(), '.relay-ide-test-dir');
     fs.mkdirSync(testDir, { recursive: true });
     try {
       const res = await fetch(
-        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.claude-remote-cli-test-dir`
+        `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-test-dir`
       );
       assert.equal(res.status, 400);
       const data = (await res.json()) as any;

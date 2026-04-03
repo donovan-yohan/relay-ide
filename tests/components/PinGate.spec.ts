@@ -24,7 +24,7 @@ test.describe('PinGate', () => {
 
   test('renders hint in unlock mode', async ({ page }) => {
     await expect(page.locator('.hint')).toBeVisible();
-    await expect(page.locator('.hint')).toContainText('claude-remote-cli pin reset');
+    await expect(page.locator('.hint')).toContainText('relay-ide pin reset');
   });
 
   test('screenshot - default', async ({ page }) => {

@@ -111,10 +111,10 @@ const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 
-// When run via CLI bin, config lives in ~/.config/claude-remote-cli/
+// When run via CLI bin, config lives in ~/.config/relay-ide/
 // When run directly (development), fall back to local config.json
 const CONFIG_PATH =
-  process.env.CLAUDE_REMOTE_CONFIG ||
+  process.env.RELAY_IDE_CONFIG ||
   path.join(__dirname, '..', '..', 'config.json');
 
 const DEFAULT_GITHUB_CLIENT_ID = 'Ov23lilheF3LelYSo0bu';
@@ -142,7 +142,7 @@ async function getLatestVersion(
   try {
     const tag = channel === 'nightly' ? 'nightly' : 'latest';
     const res = await fetch(
-      `https://registry.npmjs.org/claude-remote-cli/${tag}`
+      `https://registry.npmjs.org/relay-ide/${tag}`
     );
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: string };
@@ -262,10 +262,10 @@ async function main(): Promise<void> {
   }
 
   // CLI flag overrides
-  if (process.env.CLAUDE_REMOTE_PORT)
-    startupConfig.port = parseInt(process.env.CLAUDE_REMOTE_PORT, 10);
-  if (process.env.CLAUDE_REMOTE_HOST)
-    startupConfig.host = process.env.CLAUDE_REMOTE_HOST;
+  if (process.env.RELAY_IDE_PORT)
+    startupConfig.port = parseInt(process.env.RELAY_IDE_PORT, 10);
+  if (process.env.RELAY_IDE_HOST)
+    startupConfig.host = process.env.RELAY_IDE_HOST;
 
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
@@ -293,7 +293,7 @@ async function main(): Promise<void> {
     startupConfig.pinHash = startupConfig.pinHash || 'disabled';
   } else if (!startupConfig.pinHash) {
     if (process.stdin.isTTY) {
-      const pin = await promptPin('Set up a PIN for claude-remote-cli:');
+      const pin = await promptPin('Set up a PIN for relay-ide:');
       startupConfig.pinHash = await auth.hashPin(pin);
       saveConfig(CONFIG_PATH, startupConfig);
       logger.info('PIN set successfully.');
@@ -425,11 +425,11 @@ async function main(): Promise<void> {
   );
 
   const browserScopedToken = generateScopedToken();
-  process.env['CLAUDE_REMOTE_BROWSER'] = '1';
-  process.env['CLAUDE_REMOTE_BROWSER_CMD'] = 'claude-remote-cli browser';
-  process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = browserScopedToken;
-  if (!process.env['CLAUDE_REMOTE_PORT']) {
-    process.env['CLAUDE_REMOTE_PORT'] = String(startupConfig.port);
+  process.env['RELAY_IDE_BROWSER'] = '1';
+  process.env['RELAY_IDE_BROWSER_CMD'] = 'relay-ide browser';
+  process.env['RELAY_IDE_BROWSER_TOKEN'] = browserScopedToken;
+  if (!process.env['RELAY_IDE_PORT']) {
+    process.env['RELAY_IDE_PORT'] = String(startupConfig.port);
   }
 
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
@@ -1804,7 +1804,7 @@ async function main(): Promise<void> {
     }
     try {
       const ext = extensionForMime(mimeType);
-      const dir = path.join(os.tmpdir(), 'claude-remote-cli', sessionId);
+      const dir = path.join(os.tmpdir(), 'relay-ide', sessionId);
       fs.mkdirSync(dir, { recursive: true });
       const filePath = path.join(dir, 'paste-' + Date.now() + ext);
       fs.writeFileSync(filePath, Buffer.from(data, 'base64'));
@@ -1842,7 +1842,7 @@ async function main(): Promise<void> {
     try {
       const channel = startupConfig.updateChannel ?? 'stable';
       const tag = channel === 'nightly' ? 'nightly' : 'latest';
-      await execFileAsync('npm', ['install', '-g', `claude-remote-cli@${tag}`]);
+      await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`]);
       const restarting = serviceIsInstalled();
       if (restarting) {
         stopEventBatching();
@@ -1944,7 +1944,7 @@ async function main(): Promise<void> {
   server.listen(startupConfig.port, startupConfig.host, () => {
     const addr = server.address() as import('node:net').AddressInfo;
     logger.info(
-      `claude-remote-cli listening on ${startupConfig.host}:${addr.port}`
+      `relay-ide listening on ${startupConfig.host}:${addr.port}`
     );
   });
 }

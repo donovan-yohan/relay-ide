@@ -4,7 +4,7 @@ import os from 'node:os';
 
 /** Source code for the opencode relay plugin — written to opencode's plugin directory */
 const RELAY_PLUGIN_SOURCE = `
-// OpenCode plugin that relays lifecycle events to claude-remote-cli server.
+// OpenCode plugin that relays lifecycle events to relay-ide server.
 // Reads CRC_RELAY_URL, CRC_SESSION_ID, CRC_RELAY_TOKEN from env (injected per session by PTY handler).
 export default async () => {
   const relayUrl = process.env.CRC_RELAY_URL;

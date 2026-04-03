@@ -40,7 +40,7 @@ function UnlockForm({ pinValue, onPinChange, onKeyDown, onSubmit }: UnlockFormPr
       <TuiInput {...PIN_INPUT_PROPS} value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="PIN" autoFocus={true} />
       <TuiButton variant="primary" onClick={onSubmit}>unlock</TuiButton>
       <p className="hint">
-        forgot your PIN? run <code>claude-remote-cli pin reset</code> on the host machine
+        forgot your PIN? run <code>relay-ide pin reset</code> on the host machine
       </p>
     </>
   );

@@ -22,8 +22,8 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
   const child = spawn(process.execPath, [serverScript], {
     env: {
       ...process.env,
-      CLAUDE_REMOTE_CONFIG: configPath,
-      CLAUDE_REMOTE_PORT: '0',
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
       NO_PIN: '1',
     },
     stdio: ['pipe', 'pipe', 'pipe'],

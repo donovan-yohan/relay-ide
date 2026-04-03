@@ -1,6 +1,6 @@
 # Quality
 
-Testing patterns and quality standards for claude-remote-cli.
+Testing patterns and quality standards for Relay IDE.
 
 ## Current State
 

@@ -26,7 +26,7 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `CLAUDE_REMOTE_PORT=${port} npm run start`,
+    command: `RELAY_IDE_PORT=${port} npm run start`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,

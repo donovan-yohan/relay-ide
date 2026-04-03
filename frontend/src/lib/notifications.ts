@@ -62,7 +62,7 @@ export function fireNotification(session: {
     return;
 
   const notification = new Notification(
-    session.displayName || 'Claude Remote CLI',
+    session.displayName || 'Relay IDE',
     {
       body: 'Session needs your input',
       tag: 'session-' + session.id,

@@ -4,7 +4,7 @@
 
 **Goal:** Let agents surface HTML files (design mockups, comparison boards) as viewable tabs in the remote web UI's FileViewerPane, with a CLI command for agent discovery and token-based content serving.
 
-**Architecture:** Extend the existing FileViewerPane (diff/code tabs) with an `'html'` tab type rendered via sandboxed iframe. Server generates content tokens via `POST /browser-tabs`, serves files via `GET /browser-content/:token/*`. CLI sub-command `claude-remote-cli browser <path>` bridges agents to the server. EventMessage refactored to discriminated union.
+**Architecture:** Extend the existing FileViewerPane (diff/code tabs) with an `'html'` tab type rendered via sandboxed iframe. Server generates content tokens via `POST /browser-tabs`, serves files via `GET /browser-content/:token/*`. CLI sub-command `relay-ide browser <path>` bridges agents to the server. EventMessage refactored to discriminated union.
 
 **Tech Stack:** TypeScript, Express, Svelte 5 (runes), node:test, node:crypto
 
@@ -24,8 +24,8 @@ MODIFIED FILES:
   frontend/src/components/FileViewerPane.svelte  — iframe render, [refresh], sandbox notice, diff-fetch gate
   frontend/src/App.svelte                       — browser-tab-opened/refreshed WS handlers
   server/index.ts                               — Mount browser-content router, generate scoped token
-  server/pty-handler.ts                         — Inject CLAUDE_REMOTE_BROWSER_* env vars
-  bin/claude-remote-cli.ts                      — browser sub-command
+  server/pty-handler.ts                         — Inject RELAY_IDE_BROWSER_* env vars
+  bin/relay-ide.ts                              — browser sub-command
 ```
 
 ---
@@ -715,10 +715,10 @@ setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);
 
 - [ ] **Step 5: Export browserScopedToken for pty-handler**
 
-We need the scoped token accessible from the PTY handler. The simplest approach: store it on `process.env` (same pattern as `CLAUDE_REMOTE_CONFIG`):
+We need the scoped token accessible from the PTY handler. The simplest approach: store it on `process.env` (same pattern as `RELAY_IDE_CONFIG`):
 
 ```typescript
-process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = browserScopedToken;
+process.env['RELAY_IDE_BROWSER_TOKEN'] = browserScopedToken;
 ```
 
 - [ ] **Step 6: Verify build**
@@ -737,7 +737,7 @@ git commit -m "feat: mount browser-content router with scoped token and TTL clea
 
 ### Task 5: PTY Environment Variable Injection
 
-Inject `CLAUDE_REMOTE_BROWSER*` env vars into PTY sessions so agents can discover the capability.
+Inject `RELAY_IDE_BROWSER*` env vars into PTY sessions so agents can discover the capability.
 
 **Files:**
 
@@ -749,31 +749,31 @@ Inject `CLAUDE_REMOTE_BROWSER*` env vars into PTY sessions so agents can discove
 Add to `test/browser-content.test.ts`:
 
 ```typescript
-test('cleanEnv preserves CLAUDE_REMOTE_BROWSER vars when set', async () => {
+test('cleanEnv preserves RELAY_IDE_BROWSER vars when set', async () => {
   // Import cleanEnv
   const { cleanEnv } = await import('../server/utils.js');
 
   // Set the env vars (simulating what server/index.ts does)
-  process.env['CLAUDE_REMOTE_BROWSER'] = '1';
-  process.env['CLAUDE_REMOTE_BROWSER_CMD'] = 'claude-remote-cli browser';
-  process.env['CLAUDE_REMOTE_PORT'] = '3456';
-  process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = 'test-token';
+  process.env['RELAY_IDE_BROWSER'] = '1';
+  process.env['RELAY_IDE_BROWSER_CMD'] = 'relay-ide browser';
+  process.env['RELAY_IDE_PORT'] = '3456';
+  process.env['RELAY_IDE_BROWSER_TOKEN'] = 'test-token';
 
   const env = cleanEnv();
 
-  assert.strictEqual(env['CLAUDE_REMOTE_BROWSER'], '1');
+  assert.strictEqual(env['RELAY_IDE_BROWSER'], '1');
   assert.strictEqual(
-    env['CLAUDE_REMOTE_BROWSER_CMD'],
-    'claude-remote-cli browser'
+    env['RELAY_IDE_BROWSER_CMD'],
+    'relay-ide browser'
   );
-  assert.strictEqual(env['CLAUDE_REMOTE_PORT'], '3456');
-  assert.strictEqual(env['CLAUDE_REMOTE_BROWSER_TOKEN'], 'test-token');
+  assert.strictEqual(env['RELAY_IDE_PORT'], '3456');
+  assert.strictEqual(env['RELAY_IDE_BROWSER_TOKEN'], 'test-token');
 
   // Cleanup
-  delete process.env['CLAUDE_REMOTE_BROWSER'];
-  delete process.env['CLAUDE_REMOTE_BROWSER_CMD'];
-  delete process.env['CLAUDE_REMOTE_PORT'];
-  delete process.env['CLAUDE_REMOTE_BROWSER_TOKEN'];
+  delete process.env['RELAY_IDE_BROWSER'];
+  delete process.env['RELAY_IDE_BROWSER_CMD'];
+  delete process.env['RELAY_IDE_PORT'];
+  delete process.env['RELAY_IDE_BROWSER_TOKEN'];
 });
 ```
 
@@ -782,20 +782,20 @@ test('cleanEnv preserves CLAUDE_REMOTE_BROWSER vars when set', async () => {
 Run: `npm run build && node --test test/browser-content.test.ts`
 Expected: The test should actually PASS because `cleanEnv()` copies all of `process.env` and only deletes `CLAUDECODE`. The env vars we set flow through naturally.
 
-This confirms we do NOT need to modify `cleanEnv()` — the env vars just need to be set on `process.env` before PTY spawn, which Task 4 already does for `CLAUDE_REMOTE_BROWSER_TOKEN`.
+This confirms we do NOT need to modify `cleanEnv()` — the env vars just need to be set on `process.env` before PTY spawn, which Task 4 already does for `RELAY_IDE_BROWSER_TOKEN`.
 
 - [ ] **Step 3: Set remaining env vars in server/index.ts**
 
 In `server/index.ts`, after generating the scoped token, add the rest of the env vars:
 
 ```typescript
-process.env['CLAUDE_REMOTE_BROWSER'] = '1';
-process.env['CLAUDE_REMOTE_BROWSER_CMD'] = 'claude-remote-cli browser';
-process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] = browserScopedToken;
-// CLAUDE_REMOTE_PORT is already set by bin/claude-remote-cli.ts if --port was passed.
+process.env['RELAY_IDE_BROWSER'] = '1';
+process.env['RELAY_IDE_BROWSER_CMD'] = 'relay-ide browser';
+process.env['RELAY_IDE_BROWSER_TOKEN'] = browserScopedToken;
+// RELAY_IDE_PORT is already set by bin/relay-ide.ts if --port was passed.
 // For the default port case, set it now if not already set.
-if (!process.env['CLAUDE_REMOTE_PORT']) {
-  process.env['CLAUDE_REMOTE_PORT'] = String(startupConfig.port);
+if (!process.env['RELAY_IDE_PORT']) {
+  process.env['RELAY_IDE_PORT'] = String(startupConfig.port);
 }
 ```
 
@@ -808,18 +808,18 @@ Expected: All tests PASS
 
 ```bash
 git add server/index.ts test/browser-content.test.ts
-git commit -m "feat: inject CLAUDE_REMOTE_BROWSER env vars for PTY agent discovery"
+git commit -m "feat: inject RELAY_IDE_BROWSER env vars for PTY agent discovery"
 ```
 
 ---
 
 ### Task 6: CLI browser Sub-Command
 
-Add `claude-remote-cli browser <path>` that resolves the path and POSTs to the running server.
+Add `relay-ide browser <path>` that resolves the path and POSTs to the running server.
 
 **Files:**
 
-- Modify: `bin/claude-remote-cli.ts`
+- Modify: `bin/relay-ide.ts`
 - Create: `test/browser-cli.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
@@ -847,7 +847,7 @@ afterEach(() => {
 
 test('browser command with no args prints usage and exits 1', () => {
   try {
-    execFileSync('node', ['dist/bin/claude-remote-cli.js', 'browser'], {
+    execFileSync('node', ['dist/bin/relay-ide.js', 'browser'], {
       encoding: 'utf-8',
       env: { ...process.env, PATH: process.env.PATH },
     });
@@ -866,7 +866,7 @@ test('browser command resolves relative path to absolute', () => {
     execFileSync(
       'node',
       [
-        'dist/bin/claude-remote-cli.js',
+        'dist/bin/relay-ide.js',
         'browser',
         path.join(tmpDir, 'test.html'),
       ],
@@ -874,8 +874,8 @@ test('browser command resolves relative path to absolute', () => {
         encoding: 'utf-8',
         env: {
           ...process.env,
-          CLAUDE_REMOTE_PORT: '19999', // Port nothing listens on
-          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          RELAY_IDE_PORT: '19999', // Port nothing listens on
+          RELAY_IDE_BROWSER_TOKEN: 'test-token',
           PATH: process.env.PATH,
         },
       }
@@ -897,7 +897,7 @@ test('browser command fails gracefully when server is not running', () => {
     execFileSync(
       'node',
       [
-        'dist/bin/claude-remote-cli.js',
+        'dist/bin/relay-ide.js',
         'browser',
         path.join(tmpDir, 'test.html'),
       ],
@@ -905,8 +905,8 @@ test('browser command fails gracefully when server is not running', () => {
         encoding: 'utf-8',
         env: {
           ...process.env,
-          CLAUDE_REMOTE_PORT: '19999',
-          CLAUDE_REMOTE_BROWSER_TOKEN: 'test-token',
+          RELAY_IDE_PORT: '19999',
+          RELAY_IDE_BROWSER_TOKEN: 'test-token',
           PATH: process.env.PATH,
         },
       }
@@ -922,7 +922,7 @@ test('browser --help shows usage', () => {
   try {
     const output = execFileSync(
       'node',
-      ['dist/bin/claude-remote-cli.js', 'browser', '--help'],
+      ['dist/bin/relay-ide.js', 'browser', '--help'],
       {
         encoding: 'utf-8',
         env: { ...process.env, PATH: process.env.PATH },
@@ -944,7 +944,7 @@ Expected: FAIL — no `browser` sub-command exists yet
 
 - [ ] **Step 3: Implement browser sub-command**
 
-In `bin/claude-remote-cli.ts`, add after the `pin` command block and before line 298 (`const configPath = resolveConfigPath()`):
+In `bin/relay-ide.ts`, add after the `pin` command block and before line 298 (`const configPath = resolveConfigPath()`):
 
 ```typescript
 if (command === 'browser') {
@@ -955,7 +955,7 @@ if (command === 'browser') {
     browserArgs.includes('-h') ||
     browserArgs.length === 0
   ) {
-    console.error(`Usage: claude-remote-cli browser <path>
+    console.error(`Usage: relay-ide browser <path>
 
 Opens an HTML file in the remote browser viewer tab.
 
@@ -963,8 +963,8 @@ Arguments:
   <path>    Path to HTML file (absolute or relative)
 
 Environment:
-  CLAUDE_REMOTE_PORT            Server port (default: 3456)
-  CLAUDE_REMOTE_BROWSER_TOKEN   Auth token for browser tab API`);
+  RELAY_IDE_PORT            Server port (default: 3456)
+  RELAY_IDE_BROWSER_TOKEN   Auth token for browser tab API`);
     process.exit(
       browserArgs.includes('--help') || browserArgs.includes('-h') ? 0 : 1
     );
@@ -977,12 +977,12 @@ Environment:
     process.exit(1);
   }
 
-  const port = process.env['CLAUDE_REMOTE_PORT'] ?? String(DEFAULTS.port);
-  const token = process.env['CLAUDE_REMOTE_BROWSER_TOKEN'] ?? '';
+  const port = process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
 
   if (!token) {
     console.error(
-      'Error: CLAUDE_REMOTE_BROWSER_TOKEN not set. Are you running inside a claude-remote-cli session?'
+      'Error: RELAY_IDE_BROWSER_TOKEN not set. Are you running inside a relay-ide session?'
     );
     process.exit(1);
   }
@@ -1033,7 +1033,7 @@ Expected: All 4 tests PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bin/claude-remote-cli.ts test/browser-cli.test.ts
+git add bin/relay-ide.ts test/browser-cli.test.ts
 git commit -m "feat: add 'browser' CLI sub-command for agent HTML file viewing"
 ```
 
