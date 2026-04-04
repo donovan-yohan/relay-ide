@@ -202,14 +202,15 @@ function PresetsRow({ presets, onApply, onSave, onDelete }: PresetsRowProps) {
       {presets
         .filter((p) => !p.builtIn)
         .map((p) => (
-          <button
+          <TuiButton
             key={p.name}
-            className="preset-delete-btn"
+            variant="danger"
+            size="sm"
             title={`Delete preset: ${p.name}`}
             onClick={() => onDelete(p)}
           >
-            × {p.name}
-          </button>
+            × <span style={{ textTransform: 'none' }}>{p.name}</span>
+          </TuiButton>
         ))}
     </div>
   );
@@ -339,9 +340,9 @@ function PrsTabError({ errorCode, onRetry }: PrsTabErrorProps) {
     return (
       <div className="state-message state-message--error">
         <span>GitHub is taking too long. Try again.</span>
-        <button className="retry-btn" onClick={onRetry}>
+        <TuiButton variant="ghost" size="sm" onClick={onRetry}>
           Retry
-        </button>
+        </TuiButton>
       </div>
     );
   }
@@ -512,6 +513,7 @@ export function OrgDashboard({ onOpenWorkspace }: OrgDashboardProps) {
       <div className="org-header">
         <span className="org-title">All Workspaces</span>
       </div>
+      {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">
         <button
           className={['tab-btn', activeTab === 'prs' ? 'tab-btn--active' : '']

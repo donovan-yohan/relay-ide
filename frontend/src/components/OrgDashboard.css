@@ -98,23 +98,6 @@
   color: var(--status-error);
 }
 
-.retry-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  cursor: pointer;
-  padding: 4px 8px;
-  transition: border-color 0.12s, color 0.12s;
-}
-
-.retry-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 .cell {
   display: flex;
   align-items: center;
@@ -283,24 +266,6 @@
 .preset-select:hover {
   border-color: var(--accent);
   color: var(--text);
-}
-
-.preset-delete-btn {
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
-  white-space: nowrap;
-}
-
-.preset-delete-btn:hover {
-  border-color: var(--status-error, #e05555);
-  color: var(--status-error, #e05555);
 }
 
 .pr-table-row {
