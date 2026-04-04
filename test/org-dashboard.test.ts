@@ -26,6 +26,8 @@ let baseUrl: string;
 // A workspace path we can point git remote mocks at
 const WORKSPACE_PATH_A = '/fake/workspace/repo-a';
 const WORKSPACE_PATH_B = '/fake/workspace/repo-b';
+const REMOTE_A = 'git@github.com:myorg/repo-a.git';
+const REMOTE_B = 'git@github.com:myorg/repo-b.git';
 
 /**
  * Creates a mock execAsync that routes calls based on the command.
@@ -33,13 +35,27 @@ const WORKSPACE_PATH_B = '/fake/workspace/repo-b';
  * - `gh api user ...` → returns configured user login or throws
  * - `gh api search/issues ...` → returns configured search response or throws
  */
-function makeMockExec(opts: {
+interface MockExecOpts {
   remotes?: Record<string, string>;
   userLogin?: string;
   userError?: Error;
   searchItems?: object[];
+  authorSearchItems?: object[];
+  reviewerSearchItems?: object[];
   searchError?: Error;
-}): MockExec {
+}
+
+function mockSearchResult(opts: MockExecOpts, query: string): string {
+  if (opts.authorSearchItems && query.includes('author:')) {
+    return JSON.stringify({ items: opts.authorSearchItems });
+  }
+  if (opts.reviewerSearchItems && query.includes('review-requested:')) {
+    return JSON.stringify({ items: opts.reviewerSearchItems });
+  }
+  return JSON.stringify({ items: opts.searchItems ?? [] });
+}
+
+function makeMockExec(opts: MockExecOpts): MockExec {
   return async (cmd: unknown, args: unknown, options: unknown) => {
     const command = cmd as string;
     const argv = args as string[];
@@ -63,8 +79,7 @@ function makeMockExec(opts: {
       argv[1]?.startsWith('search/issues')
     ) {
       if (opts.searchError) throw opts.searchError;
-      const items = opts.searchItems ?? [];
-      return { stdout: JSON.stringify({ items }), stderr: '' };
+      return { stdout: mockSearchResult(opts, argv[1] as string), stderr: '' };
     }
 
     throw new Error(`Unexpected exec call: ${command} ${argv.join(' ')}`);
@@ -153,8 +168,8 @@ test('returns prs filtered to workspace repos', async () => {
 
   const exec = makeMockExec({
     remotes: {
-      [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git',
-      [WORKSPACE_PATH_B]: 'git@github.com:myorg/repo-b.git',
+      [WORKSPACE_PATH_A]: REMOTE_A,
+      [WORKSPACE_PATH_B]: REMOTE_B,
     },
     userLogin: 'testuser',
     searchItems: [
@@ -203,7 +218,7 @@ test('returns gh_not_in_path error when gh not found', async () => {
   });
 
   const exec = makeMockExec({
-    remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
+    remotes: { [WORKSPACE_PATH_A]: REMOTE_A },
     userError: notFoundError,
   });
 
@@ -226,7 +241,7 @@ test('returns gh_not_authenticated error', async () => {
   );
 
   const exec = makeMockExec({
-    remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
+    remotes: { [WORKSPACE_PATH_A]: REMOTE_A },
     userError: authError,
   });
 
@@ -273,9 +288,10 @@ test('detects reviewer role when current user is in requested_reviewers but not 
   });
 
   const exec = makeMockExec({
-    remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
+    remotes: { [WORKSPACE_PATH_A]: REMOTE_A },
     userLogin: 'testuser',
-    searchItems: [reviewerItem],
+    authorSearchItems: [],
+    reviewerSearchItems: [reviewerItem],
   });
 
   await startServer(exec);
@@ -300,7 +316,7 @@ test('caches results within TTL — exec called only once for two requests', asy
 
   // Wrap makeMockExec with a counter on the search path
   const baseExec = makeMockExec({
-    remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
+    remotes: { [WORKSPACE_PATH_A]: REMOTE_A },
     userLogin: 'testuser',
     searchItems: [
       makeSearchItem({
@@ -335,7 +351,8 @@ test('caches results within TTL — exec called only once for two requests', asy
   expect(second.error).toBe(undefined);
   expect(second.prs.length).toBe(1);
 
-  expect(searchCallCount).toBe(1);
+  // Two parallel queries (author + reviewer) per uncached request
+  expect(searchCallCount).toBe(2);
 });
 
 test('uses GraphQL path when github accessToken is in config', async () => {
@@ -388,7 +405,7 @@ test('uses GraphQL path when github accessToken is in config', async () => {
 
   // exec mock that handles git remote but should NOT be called for gh user/search
   const exec = makeMockExec({
-    remotes: { [WORKSPACE_PATH_A]: 'git@github.com:myorg/repo-a.git' },
+    remotes: { [WORKSPACE_PATH_A]: REMOTE_A },
   });
 
   const gqlApp = express();
