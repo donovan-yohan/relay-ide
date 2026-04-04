@@ -452,3 +452,39 @@ When a server has a canonical settings resolution function (e.g., `resolveSessio
 When migrating a UI framework (e.g., Svelte → React), raw `<button>` elements in non-primary positions are the most likely elements to be left unconverted. The migration agent typically converts the "obvious" action buttons (PR row actions, form submits) but misses secondary buttons embedded in sub-components: error state retries, filter management delete buttons, confirmation inline actions. After any framework migration, run a grep for `<button` in all migrated component files and verify each instance either (a) uses the project's design-system button component (`TuiButton`), or (b) is an intentional pattern-exception with a CSS class that reproduces equivalent design-system styling (e.g., tab strip navigation). Bespoke CSS that re-implements button styling is a red flag — it means the component was migrated structurally but not visually.
 
 ---
+
+### L-20260404-dialog-display-cascade: Never set `display` unconditionally on `<dialog>` elements — author CSS overrides the UA hidden state
+
+- status: active
+- category: debugging
+- scope: universal
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+The HTML `<dialog>` element is hidden when not open via the browser's UA stylesheet: `dialog:not([open]) { display: none }`. If an author stylesheet sets `display: flex` (or `grid`, `block`, etc.) on the `<dialog>` element without qualifying with `[open]`, the author rule wins — because author stylesheets always beat UA stylesheets in the CSS cascade, regardless of specificity. The dialog content then renders in normal DOM flow even though `.showModal()` was never called. On mobile, where the main app container is `position: fixed`, the unintentionally-visible dialog paints on top of the app. Always either: (1) apply layout `display` only to `dialog[open]` or a child wrapper element, or (2) add an explicit `.dialog-class:not([open]) { display: none; }` rule alongside any `display` override.
+
+---
+
+### L-20260404-dialog-layout-wrapper: Apply layout properties to a child wrapper inside `<dialog>`, not the dialog element itself
+
+- status: active
+- category: architecture
+- scope: universal
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+The `<dialog>` element has special browser-managed display semantics (hidden when not open, top-layer when modal). Setting layout properties (`display: flex`, `flex-direction`, `overflow`) directly on the `<dialog>` element risks overriding these semantics. Instead, structure dialog components as `<dialog><div class="wrapper">...</div></dialog>` and apply all layout CSS to the wrapper. The `<dialog>` element itself should only receive cosmetic properties (background, border, width, max-height) that don't interfere with the UA stylesheet's display management. This project's `WorkspaceSettingsDialog` follows this pattern correctly (`.workspace-settings-dialog-content` wrapper), while `DialogShell` applies `display: flex` directly to the `<dialog>`, causing the bug.
+
+---
+
+### L-20260404-dialog-visibility-test: Page-load tests should assert that no dialog content is visible without user interaction
+
+- status: active
+- category: testing
+- scope: repo
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+When a project uses multiple `<dialog>` elements with custom CSS, add a structural test that runs after page boot and asserts: (1) `document.querySelectorAll('dialog[open]')` is empty, and (2) no dialog content is within the visible viewport. This catches CSS cascade issues where author styles accidentally override the UA's `display: none` for non-open dialogs. The test is especially important on mobile viewports where fixed-position main containers change paint order.
+
+---
