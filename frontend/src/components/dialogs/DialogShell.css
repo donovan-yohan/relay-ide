@@ -15,6 +15,12 @@
   flex-direction: column;
 }
 
+/* Restore UA hidden state — author `display: flex` overrides the browser's
+   `dialog:not([open]) { display: none }` because author beats UA in the cascade. */
+.dialog-shell:not([open]) {
+  display: none;
+}
+
 /* ── Compact variant ── */
 .dialog-shell--compact {
   width: min(var(--dialog-width, 460px), 95vw);
