@@ -41,7 +41,7 @@ function CiIcon({ pr }: { pr: PullRequest }) {
 function ExternalLinkIcon() {
   return (
     <svg
-      className="pr-row-external-icon"
+      className="pr-row__external-icon"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -99,6 +99,7 @@ export function PrRow({
 
   const handleRowKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         onOpen(pr);
