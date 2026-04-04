@@ -209,7 +209,7 @@ function PresetsRow({ presets, onApply, onSave, onDelete }: PresetsRowProps) {
             title={`Delete preset: ${p.name}`}
             onClick={() => onDelete(p)}
           >
-            × {p.name}
+            × <span style={{ textTransform: 'none' }}>{p.name}</span>
           </TuiButton>
         ))}
     </div>
