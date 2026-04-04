@@ -163,59 +163,12 @@ function TreeView({
   filterText,
   initialLoading,
 }: TreeViewProps) {
-  /**
-   * Prevent browser auto-scroll-on-focus from scrolling ancestor containers.
-   * When a focusable element (checkbox input) inside the tree receives focus,
-   * the browser walks up ALL scrollable ancestors and scrolls each one to
-   * reveal the focused element. The tree-container handles its own scrolling,
-   * but the dialog body (an ancestor with overflow-y: auto) also gets scrolled,
-   * pushing the entire file browser out of view.
-   *
-   * Fix: capture the dialog body's scroll position before focus, then restore
-   * it on the next frame — but ONLY when the focused element is already within
-   * the visible viewport of the dialog body. When the element is out of view,
-   * we allow the browser's normal scroll-into-view behavior so the user can
-   * reach offscreen content via keyboard navigation.
-   *
-   * Testing note: asserting that scrollTop stays stable when focusing a
-   * checkbox inside the file tree requires a real browser DOM (the behavior
-   * depends on native scroll-into-view and requestAnimationFrame timing).
-   * The project's component tests are logic-only (no jsdom/RTL). Playwright
-   * e2e tests exist under test/e2e/ but do not cover this interaction.
-   * A dedicated e2e spec for this behaviour is a known gap; tracked in the
-   * bug analysis at docs/bug-analyses/2026-04-03-add-repo-modal-focus-shift-bug-analysis.md.
-   */
-  const handleFocusIn = useCallback((e: React.FocusEvent) => {
-    const treeContainer = e.currentTarget as HTMLElement;
-    const dialogBody = treeContainer.closest('.dialog-shell__body');
-    if (!dialogBody) return;
-
-    // Only guard the scroll when the focused element is already visible inside
-    // the dialog body's viewport. If it's offscreen, let the browser scroll it
-    // into view normally so keyboard users can reach out-of-view items.
-    const focusedEl = e.target as HTMLElement;
-    const bodyRect = dialogBody.getBoundingClientRect();
-    const elRect = focusedEl.getBoundingClientRect();
-    const isInView =
-      elRect.top >= bodyRect.top && elRect.bottom <= bodyRect.bottom;
-
-    if (!isInView) return;
-
-    const savedScrollTop = dialogBody.scrollTop;
-    requestAnimationFrame(() => {
-      if (dialogBody.scrollTop !== savedScrollTop) {
-        dialogBody.scrollTop = savedScrollTop;
-      }
-    });
-  }, []);
-
   return (
     <div
       className="tree-container"
       role="tree"
       aria-label="File browser"
       onKeyDown={onKeyDown}
-      onFocus={handleFocusIn}
       tabIndex={0}
     >
       {initialLoading ? (

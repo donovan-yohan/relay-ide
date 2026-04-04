@@ -1,6 +1,6 @@
 import React from 'react';
 import type { SessionIntent } from '../lib/session-intent.js';
-import type { StatusColor } from '../lib/pr-state.js';
+import { colorToVariant } from '../lib/pr-state.js';
 import type { PrDotStatus } from '../lib/pr-status.js';
 import { StatusDot } from './StatusDot.js';
 import { TuiButton } from './TuiButton.js';
@@ -14,14 +14,6 @@ interface PickerResultRowProps {
   focused?: boolean;
   onSelectIntent: (intent: SessionIntent) => void;
   onRowClick?: () => void;
-}
-
-function colorToVariant(color: StatusColor): 'primary' | 'ghost' | 'danger' | 'success' | 'info' {
-  if (color === 'success') return 'success';
-  if (color === 'error') return 'danger';
-  if (color === 'info') return 'info';
-  if (color === 'accent') return 'primary';
-  return 'ghost';
 }
 
 export function PickerResultRow({
@@ -44,7 +36,9 @@ export function PickerResultRow({
     }
   };
 
-  const rowClass = ['picker-row', focused && 'focused'].filter(Boolean).join(' ');
+  const rowClass = ['picker-row', focused && 'focused']
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div
@@ -70,7 +64,10 @@ export function PickerResultRow({
             key={i}
             variant={colorToVariant(intent.color)}
             size="sm"
-            onClick={(e) => { e.stopPropagation(); onSelectIntent(intent); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectIntent(intent);
+            }}
           >
             {intent.label}
           </TuiButton>
@@ -79,7 +76,10 @@ export function PickerResultRow({
           <TuiButton
             variant={colorToVariant(primary.color)}
             size="sm"
-            onClick={(e) => { e.stopPropagation(); onSelectIntent(primary); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectIntent(primary);
+            }}
           >
             {primary.label}
           </TuiButton>

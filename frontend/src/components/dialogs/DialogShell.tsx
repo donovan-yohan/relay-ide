@@ -51,9 +51,7 @@ function useDialogControls(
     dialogRef.current.showModal();
     requestAnimationFrame(() => {
       if (!dialogRef.current) return;
-      dialogRef.current
-        .querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-        ?.focus({ preventScroll: true });
+      dialogRef.current.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
       const body = dialogRef.current.querySelector('.dialog-shell__body');
       if (body) setScrolledBottom(body.scrollHeight <= body.clientHeight);
     });
@@ -121,7 +119,7 @@ export const DialogShell = forwardRef<DialogShellHandle, DialogShellProps>(
         className={dialogClass}
         style={dialogStyle}
         onClick={handleDialogClick}
-        onClose={onClose}
+        onClose={onClose ? () => onClose() : undefined}
         aria-modal="true"
         aria-label={title}
       >

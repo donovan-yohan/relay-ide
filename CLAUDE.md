@@ -28,6 +28,7 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 | Quality       | `docs/QUALITY.md`      | Test runner, test files, isolation patterns                            |
 | References    | `docs/references/`     | Deployment guide, review agent setup                                   |
 | Learnings     | `docs/LEARNINGS.md`    | Persistent cross-session learnings (architecture, debugging, patterns) |
+| Work Tracking | Linear (DYS-\*)        | Bugs, features, spikes, epics — query via Linear MCP                   |
 
 ## Key Patterns
 
@@ -49,6 +50,31 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 - **Hotfixes** — branch off `master`, PR to `master`, bump+tag, merge back to `nightly`.
 - Direct pushes to `master` are blocked (no bypass) — all commits via PR, version tags via `git push origin <tag>`.
 - See `docs/references/deployment.md` for full workflow.
+
+## Work Tracking (Linear)
+
+All work items are tracked in Linear (Dystudios team, DYS-\* prefix). Do NOT use TODOS.md — Linear is the source of truth.
+
+**Creating tickets:** Use the Linear MCP (`mcp__plugin_linear_linear__save_issue`). Every ticket MUST have:
+
+- `team`: `Dystudios`
+- `labels`: a type label (`Bug`, `Feature`, `Improvement`, or `Spike`) + `donovan-yohan/relay-ide`
+- `priority`: 1=Urgent, 2=High, 3=Normal, 4=Low
+- `project`: assign to a project when the ticket fits a workstream (see below)
+- `state`: `Backlog` for new items, `Todo` when scoped and ready to start
+
+**Projects:**
+
+- **Sidebar & Navigation UX** — sidenav, status indicators, session states, navigation
+- **Code & File Tools** — file browser, diffs, changed files, LLM summaries
+- **Verification & Testing** — sandbox mode, Playwright e2e, CI gates
+- **Command Center** — command palette, keyboard shortcuts, discoverability
+- **Agent Platform** — Codex, Gemini, multi-agent, spawning UX
+- **True Workspaces** — multi-repo workspace groupings
+
+**Querying tickets:** Use `list_issues` with `label: "donovan-yohan/relay-ide"` to see all relay-ide issues. Filter by `project`, `state`, or `priority` as needed.
+
+**Blocking relationships:** Use `blockedBy`/`blocks` when tickets have dependencies. Use `parentId` to nest sub-tasks under epic issues.
 
 ## gstack
 

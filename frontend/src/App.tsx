@@ -574,10 +574,8 @@ export default function App() {
   }, [activeModal]);
 
   const handleModalClose = useCallback(() => {
-    if (useUiStore.getState().activeModal !== null) {
-      useUiStore.getState().setActiveModal(null);
-    }
-  }, []);
+    setActiveModal(null);
+  }, [setActiveModal]);
 
   // Wire the module-level notifications forwarder to the live navigateToSession
   useEffect(() => {

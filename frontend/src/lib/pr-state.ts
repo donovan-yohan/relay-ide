@@ -263,3 +263,13 @@ export function getStatusCssVar(color: StatusColor): string {
 export function shouldUseDarkText(color: StatusColor): boolean {
   return color === 'success' || color === 'warning';
 }
+
+export function colorToVariant(
+  color: StatusColor
+): 'primary' | 'ghost' | 'danger' | 'success' | 'info' {
+  if (color === 'success') return 'success';
+  if (color === 'error') return 'danger';
+  if (color === 'info') return 'info';
+  if (color === 'accent') return 'primary';
+  return 'ghost';
+}

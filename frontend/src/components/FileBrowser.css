@@ -36,7 +36,6 @@
   max-height: 50vh;
   overflow-y: auto;
   outline: none;
-  overscroll-behavior: contain;
 }
 
 .tree-container:focus-visible {

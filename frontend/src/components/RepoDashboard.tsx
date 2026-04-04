@@ -1,7 +1,11 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
-import { derivePrAction, buildPrStateInput } from '../lib/pr-state.js';
+import {
+  derivePrAction,
+  buildPrStateInput,
+  colorToVariant,
+} from '../lib/pr-state.js';
 import { prRoleLabel, sortPrs } from '../lib/pr-utils.js';
 import { formatRelativeTime } from '../lib/utils.js';
 import type {
@@ -12,11 +16,10 @@ import type {
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
-import type { StatusColor } from '../lib/pr-state.js';
 import StatusDot from './StatusDot.js';
 import { TuiButton } from './TuiButton.js';
-import type { TuiButtonVariant } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
+import { useScrollOverflow } from '../hooks/useScrollOverflow.js';
 import './RepoDashboard.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -64,38 +67,7 @@ function activityBranches(entry: ActivityEntry): string {
   return '(' + entry.branches.join(', ') + ')';
 }
 
-function colorToVariant(color: StatusColor): TuiButtonVariant {
-  if (color === 'success') return 'success';
-  if (color === 'error') return 'danger';
-  if (color === 'accent') return 'primary';
-  if (color === 'info') return 'info';
-  return 'ghost';
-}
-
-/** Returns a ref + className for a section that should only show the scroll fade when content overflows. */
-function useScrollOverflow() {
-  const ref = useRef<HTMLElement>(null);
-  const [hasOverflow, setHasOverflow] = useState(false);
-
-  const check = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    setHasOverflow(el.scrollHeight > el.clientHeight + 4);
-  }, []);
-
-  useEffect(() => {
-    check();
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(check);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [check]);
-
-  return { ref, hasOverflow };
-}
-
-// ── Sub-components ─────────────────────────────────────��───────────────────────
+// ── Sub-components ─────────────────────────────────────────────────────────────
 
 interface UsageSectionProps {
   repoSessions: import('../lib/types.js').SessionSummary[];

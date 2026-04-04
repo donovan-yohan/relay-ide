@@ -10,8 +10,9 @@ import {
   derivePrAction,
   deriveSecondaryAction,
   getActionPrompt,
+  colorToVariant,
 } from '../lib/pr-state.js';
-import type { PrAction, StatusColor } from '../lib/pr-state.js';
+import type { PrAction } from '../lib/pr-state.js';
 import type { PrInfo, CiStatus } from '../lib/types.js';
 import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
@@ -27,15 +28,6 @@ export interface PrTopBarProps {
   sessionId: string | null;
   agentRunning?: boolean;
   onArchive?: () => void;
-}
-
-function colorToVariant(
-  color: StatusColor
-): 'primary' | 'ghost' | 'danger' | 'success' | 'info' {
-  if (color === 'success') return 'success';
-  if (color === 'error') return 'danger';
-  if (color === 'accent') return 'primary';
-  return 'ghost';
 }
 
 // ── Hooks ────────────────────────────────────────────────────────────────────

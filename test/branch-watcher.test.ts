@@ -5,12 +5,23 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { BranchWatcher } from '../server/watcher.js';
 
+/** Isolate child git processes from the host worktree environment. */
+const GIT_ISOLATED_ENV = {
+  ...process.env,
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  GIT_COMMON_DIR: undefined,
+};
+
 function makeTempGitRepo(): string {
   // Resolve symlinks (macOS /var → /private/var) so paths match git output
   const dir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'branch-watcher-test-'))
   );
-  execFileSync('git', ['init', '-b', 'main'], { cwd: dir });
+  execFileSync('git', ['init', '-b', 'main'], {
+    cwd: dir,
+    env: GIT_ISOLATED_ENV,
+  });
   execFileSync(
     'git',
     [
@@ -23,7 +34,7 @@ function makeTempGitRepo(): string {
       '-m',
       'init',
     ],
-    { cwd: dir }
+    { cwd: dir, env: GIT_ISOLATED_ENV }
   );
   return dir;
 }
@@ -42,7 +53,7 @@ describe('BranchWatcher', () => {
     cleanups.length = 0;
   });
 
-  it('detects branch change via HEAD file write', async () => {
+  it('[needs:git-init] detects branch change via HEAD file write', async () => {
     const repoDir = makeTempGitRepo();
     const parentDir = path.dirname(repoDir);
     cleanups.push(() => fs.rmSync(repoDir, { recursive: true, force: true }));
@@ -73,7 +84,7 @@ describe('BranchWatcher', () => {
     expect(lastEvent.newBranch).toBe('feature-test');
   });
 
-  it('does not fire callback if branch did not change', async () => {
+  it('[needs:git-init] does not fire callback if branch did not change', async () => {
     const repoDir = makeTempGitRepo();
     const parentDir = path.dirname(repoDir);
     cleanups.push(() => fs.rmSync(repoDir, { recursive: true, force: true }));
@@ -98,7 +109,7 @@ describe('BranchWatcher', () => {
     expect(events.length).toBe(0);
   });
 
-  it('detects second branch change after atomic rename (inode change)', async () => {
+  it('[needs:git-init] detects second branch change after atomic rename (inode change)', async () => {
     const repoDir = makeTempGitRepo();
     const parentDir = path.dirname(repoDir);
     cleanups.push(() => fs.rmSync(repoDir, { recursive: true, force: true }));

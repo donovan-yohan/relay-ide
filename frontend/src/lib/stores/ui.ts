@@ -44,13 +44,25 @@ export interface OpenFileTab {
 
 // ── localStorage helpers ───────────────────────────────────────────────────
 function ls(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 function lsSave(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* unavailable */ }
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* unavailable */
+  }
 }
 function lsRemove(key: string): void {
-  try { localStorage.removeItem(key); } catch { /* unavailable */ }
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* unavailable */
+  }
 }
 
 function loadSidebarWidth(): number {
@@ -66,7 +78,8 @@ function loadRightSidebarWidth(): number {
   const stored = ls(RIGHT_SIDEBAR_WIDTH_KEY);
   if (stored) {
     const val = parseInt(stored, 10);
-    if (val >= MIN_RIGHT_SIDEBAR_WIDTH && val <= MAX_RIGHT_SIDEBAR_WIDTH) return val;
+    if (val >= MIN_RIGHT_SIDEBAR_WIDTH && val <= MAX_RIGHT_SIDEBAR_WIDTH)
+      return val;
   }
   return DEFAULT_RIGHT_SIDEBAR_WIDTH;
 }
@@ -90,7 +103,11 @@ function loadTerminalFontSize(): number {
   const stored = ls(TERMINAL_FONT_SIZE_KEY);
   if (stored) {
     const val = parseInt(stored, 10);
-    if (!Number.isNaN(val) && val >= MIN_TERMINAL_FONT_SIZE && val <= MAX_TERMINAL_FONT_SIZE)
+    if (
+      !Number.isNaN(val) &&
+      val >= MIN_TERMINAL_FONT_SIZE &&
+      val <= MAX_TERMINAL_FONT_SIZE
+    )
       return val;
   }
   return DEFAULT_TERMINAL_FONT_SIZE;
@@ -100,14 +117,18 @@ function loadCollapsedWorkspaces(): Set<string> {
   try {
     const stored = ls(COLLAPSED_WORKSPACES_KEY);
     if (stored) return new Set(JSON.parse(stored) as string[]);
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
   return new Set();
 }
 
 export type AnalyticsView = 'dashboard' | { sessionId: string } | null;
 
-import type { ModalRoute } from '../url-nav.js';
-export type ActiveModal = ModalRoute;
+export type ActiveModal =
+  | { modal: 'settings'; scrollToId: string | null }
+  | { modal: 'add-repo' }
+  | null;
 
 // ── State interface ────────────────────────────────────────────────────────
 export interface UiState {
@@ -150,7 +171,12 @@ export interface UiState {
   toggleRightSidebarCollapsed: () => void;
   saveRightSidebarWidth: () => void;
   saveFileViewerRatio: () => void;
-  openFileTab: (filePath: string, isChanged: boolean, tabType?: FileTabType, token?: string) => void;
+  openFileTab: (
+    filePath: string,
+    isChanged: boolean,
+    tabType?: FileTabType,
+    token?: string
+  ) => void;
   closeFileTab: (filePath: string, tabType?: FileTabType) => void;
   closeAllFileTabs: () => void;
   openHtmlTab: (filePath: string, token: string) => void;
@@ -204,7 +230,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
     set({ sidebarCollapsed: next });
   },
 
-  saveTerminalFontSize: () => lsSave(TERMINAL_FONT_SIZE_KEY, String(get().terminalFontSize)),
+  saveTerminalFontSize: () =>
+    lsSave(TERMINAL_FONT_SIZE_KEY, String(get().terminalFontSize)),
 
   setActiveRepoPath: (v) => {
     if (v === null) lsRemove(ACTIVE_WORKSPACE_KEY);
@@ -241,25 +268,40 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setAnalyticsView: (v) => set({ analyticsView: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
-  saveRightSidebarWidth: () => lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
+  saveRightSidebarWidth: () =>
+    lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
 
-  saveFileViewerRatio: () => lsSave(FILE_VIEWER_WIDTH_KEY, String(get().fileViewerRatio)),
+  saveFileViewerRatio: () =>
+    lsSave(FILE_VIEWER_WIDTH_KEY, String(get().fileViewerRatio)),
 
   openFileTab: (filePath, isChanged, tabType, token) => {
     const { openFileTabs } = get();
     const fileName = filePath.split('/').pop() ?? filePath;
     const matchType = tabType ?? (isChanged ? 'diff' : 'code');
     const existing = openFileTabs.find(
-      (t) => t.filePath === filePath && (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType
+      (t) =>
+        t.filePath === filePath &&
+        (t.tabType ?? (t.isChanged ? 'diff' : 'code')) === matchType
     );
     if (!existing) {
-      const newTab: OpenFileTab = { filePath, fileName, isChanged, tabType: matchType };
+      const newTab: OpenFileTab = {
+        filePath,
+        fileName,
+        isChanged,
+        tabType: matchType,
+      };
       if (token) newTab.token = token;
-      set({ openFileTabs: [...openFileTabs, newTab], activeFileTabKey: fileTabKey(filePath, matchType) });
+      set({
+        openFileTabs: [...openFileTabs, newTab],
+        activeFileTabKey: fileTabKey(filePath, matchType),
+      });
     } else if (existing.isChanged !== isChanged || existing.token !== token) {
       set({
         openFileTabs: openFileTabs.map((t) => {
-          if (t.filePath !== filePath || (t.tabType ?? (t.isChanged ? 'diff' : 'code')) !== matchType)
+          if (
+            t.filePath !== filePath ||
+            (t.tabType ?? (t.isChanged ? 'diff' : 'code')) !== matchType
+          )
             return t;
           const updated: OpenFileTab = { ...t, isChanged, tabType: matchType };
           if (token !== undefined) updated.token = token;
@@ -275,13 +317,20 @@ export const useUiStore = create<UiState>()((set, get) => ({
   closeFileTab: (filePath, tabType) => {
     const { openFileTabs, activeFileTabKey } = get();
     const next = tabType
-      ? openFileTabs.filter((t) => !(t.filePath === filePath && t.tabType === tabType))
+      ? openFileTabs.filter(
+          (t) => !(t.filePath === filePath && t.tabType === tabType)
+        )
       : openFileTabs.filter((t) => t.filePath !== filePath);
     const key = tabType ? fileTabKey(filePath, tabType) : null;
-    const wasActive = key ? activeFileTabKey === key : activeFileTabKey?.endsWith('::' + filePath);
+    const wasActive = key
+      ? activeFileTabKey === key
+      : activeFileTabKey?.endsWith('::' + filePath);
     const newActiveKey = wasActive
       ? next.length > 0
-        ? fileTabKey(next[next.length - 1]!.filePath, next[next.length - 1]!.tabType)
+        ? fileTabKey(
+            next[next.length - 1]!.filePath,
+            next[next.length - 1]!.tabType
+          )
         : null
       : activeFileTabKey;
     set({ openFileTabs: next, activeFileTabKey: newActiveKey });
@@ -289,11 +338,14 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   closeAllFileTabs: () => set({ openFileTabs: [], activeFileTabKey: null }),
 
-  openHtmlTab: (filePath, token) => get().openFileTab(filePath, false, 'html', token),
+  openHtmlTab: (filePath, token) =>
+    get().openFileTab(filePath, false, 'html', token),
 
   refreshHtmlTab: (filePath) => {
     const { openFileTabs } = get();
-    const tab = openFileTabs.find((t) => t.filePath === filePath && t.tabType === 'html');
+    const tab = openFileTabs.find(
+      (t) => t.filePath === filePath && t.tabType === 'html'
+    );
     if (tab) {
       set({
         openFileTabs: openFileTabs.map((t) =>
@@ -313,7 +365,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
     else next.add(path);
     try {
       localStorage.setItem(COLLAPSED_WORKSPACES_KEY, JSON.stringify([...next]));
-    } catch { /* unavailable */ }
+    } catch {
+      /* unavailable */
+    }
     set({ collapsedWorkspaces: next });
   },
 

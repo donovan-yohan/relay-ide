@@ -2035,6 +2035,11 @@ async function main(): Promise<void> {
   const browserContentRouter = createBrowserContentRouter(broadcastEvent);
   app.use(browserContentRouter);
 
+  // SPA catch-all — serve index.html for client-side routes (must be after all API routes)
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(frontendDir, 'index.html'));
+  });
+
   // Clean expired browser content tokens every hour
   const BROWSER_TOKEN_TTL = 24 * 60 * 60 * 1000;
   setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);

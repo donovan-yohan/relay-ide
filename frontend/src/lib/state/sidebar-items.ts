@@ -87,6 +87,146 @@ function mostRecentActivity(sessions: SessionSummary[]): string {
 }
 
 /**
+ * Resolve the isUnread flag for a path, preferring the existing item's value
+ * then falling back to the checkUnread callback.
+ */
+function resolveIsUnread(
+  path: string,
+  existingById: Map<string, SidebarItem>,
+  checkUnread?: (id: string) => boolean
+): boolean {
+  return existingById.get(path)?.isUnread ?? checkUnread?.(path) ?? false;
+}
+
+/**
+ * Construct a SidebarItem, reconciling displayState against the existing item.
+ */
+function buildSidebarItem(
+  path: string,
+  kind: 'repo' | 'worktree',
+  repoPath: string,
+  displayName: string,
+  branchName: string,
+  lastActivity: string,
+  sessions: SessionSummary[],
+  newBackendState: BackendDisplayState | null,
+  existingById: Map<string, SidebarItem>,
+  checkUnread?: (id: string) => boolean
+): SidebarItem {
+  return {
+    id: path,
+    kind,
+    path,
+    repoPath,
+    displayName,
+    branchName,
+    lastActivity,
+    displayState: reconcileDisplayState(
+      existingById.get(path),
+      newBackendState,
+      sessions
+    ),
+    lastKnownBackendState: newBackendState,
+    sessions,
+    isUnread: resolveIsUnread(path, existingById, checkUnread),
+  };
+}
+
+/**
+ * Build the SidebarItems for a single workspace, appending them to `result`.
+ * Returns the set of group paths that were handled so the caller can track orphans.
+ */
+function buildItemsForWorkspace(
+  workspace: Repo,
+  sessionsByGroup: Map<string, SessionSummary[]>,
+  worktrees: WorktreeInfo[],
+  existingById: Map<string, SidebarItem>,
+  handledGroupPaths: Set<string>,
+  result: SidebarItem[],
+  checkUnread?: (id: string) => boolean
+): void {
+  // Collect group paths that belong to this workspace
+  const workspaceGroupPaths: string[] = [];
+  for (const [groupPath] of sessionsByGroup) {
+    if (
+      groupPath === workspace.path ||
+      groupPath.startsWith(workspace.path + '/')
+    ) {
+      workspaceGroupPaths.push(groupPath);
+      handledGroupPaths.add(groupPath);
+    }
+  }
+
+  // For each group path with sessions, build a SidebarItem
+  const coveredPaths = new Set<string>();
+  for (const groupPath of workspaceGroupPaths) {
+    const groupSessions = sessionsByGroup.get(groupPath) ?? [];
+    const firstSession = groupSessions[0];
+    if (!firstSession) continue;
+    const kind: 'repo' | 'worktree' =
+      groupPath === workspace.path ? 'repo' : 'worktree';
+    const newBackendState = deriveBackendState(groupSessions);
+
+    result.push(
+      buildSidebarItem(
+        groupPath,
+        kind,
+        workspace.path,
+        firstSession.displayName,
+        firstSession.branchName,
+        mostRecentActivity(groupSessions),
+        groupSessions,
+        newBackendState,
+        existingById,
+        checkUnread
+      )
+    );
+    coveredPaths.add(groupPath);
+  }
+
+  // Add inactive worktrees (those whose path has no active sessions)
+  for (const worktree of worktrees) {
+    if (worktree.repoPath !== workspace.path) continue;
+    if (coveredPaths.has(worktree.path)) continue;
+
+    result.push(
+      buildSidebarItem(
+        worktree.path,
+        'worktree',
+        worktree.repoPath,
+        worktree.displayName,
+        worktree.branchName,
+        worktree.lastActivity,
+        [],
+        null,
+        existingById,
+        checkUnread
+      )
+    );
+    coveredPaths.add(worktree.path);
+  }
+
+  // If no sessions at workspace root and the workspace root was not covered by
+  // any group path, add the repo root as inactive
+  if (!coveredPaths.has(workspace.path)) {
+    result.push(
+      buildSidebarItem(
+        workspace.path,
+        'repo',
+        workspace.path,
+        workspace.name,
+        workspace.currentBranch ?? workspace.defaultBranch ?? '',
+        existingById.get(workspace.path)?.lastActivity ?? '',
+        [],
+        null,
+        existingById,
+        checkUnread
+      )
+    );
+  }
+}
+
+/**
  * Build the full list of SidebarItems from current server data, reconciling
  * displayState against the existing items map to preserve user-facing state.
  */
@@ -122,105 +262,15 @@ export function buildSidebarItems(
 
   // --- Process each workspace ---
   for (const workspace of workspaces) {
-    // Collect group paths that belong to this workspace
-    const workspaceGroupPaths: string[] = [];
-    for (const [groupPath] of sessionsByGroup) {
-      if (
-        groupPath === workspace.path ||
-        groupPath.startsWith(workspace.path + '/')
-      ) {
-        workspaceGroupPaths.push(groupPath);
-        handledGroupPaths.add(groupPath);
-      }
-    }
-
-    // For each group path with sessions, build a SidebarItem
-    const coveredPaths = new Set<string>();
-    for (const groupPath of workspaceGroupPaths) {
-      const groupSessions = sessionsByGroup.get(groupPath) ?? [];
-      const firstSession = groupSessions[0];
-      if (!firstSession) continue;
-      const kind: 'repo' | 'worktree' =
-        groupPath === workspace.path ? 'repo' : 'worktree';
-
-      const newBackendState = deriveBackendState(groupSessions);
-      const displayState = reconcileDisplayState(
-        existingById.get(groupPath),
-        newBackendState,
-        groupSessions
-      );
-
-      result.push({
-        id: groupPath,
-        kind,
-        path: groupPath,
-        repoPath: workspace.path,
-        displayName: firstSession.displayName,
-        branchName: firstSession.branchName,
-        lastActivity: mostRecentActivity(groupSessions),
-        displayState,
-        lastKnownBackendState: newBackendState,
-        sessions: groupSessions,
-        isUnread:
-          existingById.get(groupPath)?.isUnread ??
-          checkUnread?.(groupPath) ??
-          false,
-      });
-      coveredPaths.add(groupPath);
-    }
-
-    // Add inactive worktrees (those whose path has no active sessions)
-    for (const worktree of worktrees) {
-      if (worktree.repoPath !== workspace.path) continue;
-      if (coveredPaths.has(worktree.path)) continue;
-
-      result.push({
-        id: worktree.path,
-        kind: 'worktree',
-        path: worktree.path,
-        repoPath: worktree.repoPath,
-        displayName: worktree.displayName,
-        branchName: worktree.branchName,
-        lastActivity: worktree.lastActivity,
-        displayState: reconcileDisplayState(
-          existingById.get(worktree.path),
-          null,
-          []
-        ),
-        lastKnownBackendState: null,
-        sessions: [],
-        isUnread:
-          existingById.get(worktree.path)?.isUnread ??
-          checkUnread?.(worktree.path) ??
-          false,
-      });
-      coveredPaths.add(worktree.path);
-    }
-
-    // If no sessions at workspace root and the workspace root was not covered by
-    // any group path, add the repo root as inactive
-    if (!coveredPaths.has(workspace.path)) {
-      result.push({
-        id: workspace.path,
-        kind: 'repo',
-        path: workspace.path,
-        repoPath: workspace.path,
-        displayName: workspace.name,
-        branchName: workspace.currentBranch ?? workspace.defaultBranch ?? '',
-        lastActivity: '',
-        displayState: reconcileDisplayState(
-          existingById.get(workspace.path),
-          null,
-          []
-        ),
-        lastKnownBackendState: null,
-        sessions: [],
-        isUnread:
-          existingById.get(workspace.path)?.isUnread ??
-          checkUnread?.(workspace.path) ??
-          false,
-      });
-    }
+    buildItemsForWorkspace(
+      workspace,
+      sessionsByGroup,
+      worktrees,
+      existingById,
+      handledGroupPaths,
+      result,
+      checkUnread
+    );
   }
 
   // --- Handle any session groups not belonging to any known workspace ---
@@ -231,26 +281,20 @@ export function buildSidebarItems(
     if (!firstSession) continue;
     const newBackendState = deriveBackendState(groupSessions);
 
-    result.push({
-      id: groupPath,
-      kind: 'worktree',
-      path: groupPath,
-      repoPath: firstSession.repoPath,
-      displayName: firstSession.displayName,
-      branchName: firstSession.branchName,
-      lastActivity: mostRecentActivity(groupSessions),
-      displayState: reconcileDisplayState(
-        existingById.get(groupPath),
+    result.push(
+      buildSidebarItem(
+        groupPath,
+        'worktree',
+        firstSession.repoPath,
+        firstSession.displayName,
+        firstSession.branchName,
+        mostRecentActivity(groupSessions),
+        groupSessions,
         newBackendState,
-        groupSessions
-      ),
-      lastKnownBackendState: newBackendState,
-      sessions: groupSessions,
-      isUnread:
-        existingById.get(groupPath)?.isUnread ??
-        checkUnread?.(groupPath) ??
-        false,
-    });
+        existingById,
+        checkUnread
+      )
+    );
   }
 
   return sortByAttention(result);

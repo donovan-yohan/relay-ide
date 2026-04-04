@@ -6,6 +6,7 @@ import type {
   WorktreeInfo,
   PullRequest,
 } from '../lib/types.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
 import { deriveColor } from '../lib/colors.js';
 import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
@@ -96,6 +97,7 @@ function GroupBody({
   onDeleteWorktree,
   onLaunchRepoSession,
 }: GroupBodyProps) {
+  const sidebarItems = useSessionsStore((s) => s.sidebarItems);
   return (
     <div className="group-body">
       {workspaceSessions.length > 0 ? (
@@ -155,6 +157,7 @@ function GroupBody({
             onLaunchRepoSession={onLaunchRepoSession}
             orgPrs={orgPrs ?? []}
             loadingItems={loadingItems}
+            sidebarItems={sidebarItems}
           />
         ))
       )}

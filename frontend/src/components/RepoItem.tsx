@@ -4,24 +4,19 @@ import type {
   SessionSummary,
   WorktreeInfo,
   PullRequest,
+  SidebarItem,
 } from '../lib/types.js';
-import type { DisplayState } from '../lib/state/display-state.js';
 import { isAttentionState } from '../lib/state/display-state.js';
 import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
 import { MarqueeText } from './MarqueeText.js';
+import ContextMenu from './ContextMenu.js';
 import './RepoItem.css';
 
 const EMPTY_SET = new Set<string>();
 const EMPTY_ARRAY: never[] = [];
-
-export interface SidebarItem {
-  id: string;
-  repoPath: string;
-  displayState: DisplayState;
-}
 
 export interface RepoItemProps {
   repo: Repo;
@@ -131,6 +126,149 @@ function PrStatusBadge({ pr }: PrStatusBadgeProps) {
         </span>
       ) : null}
     </span>
+  );
+}
+
+interface SessionGroupRowProps {
+  groupPath: string;
+  groupSessions: SessionSummary[];
+  rep: SessionSummary;
+  isSelected: boolean;
+  attention: boolean;
+  dotState: string;
+  matchedPr: PullRequest | undefined;
+  cancelLongPress: () => void;
+  onSelectSession: (id: string) => void;
+  onDeleteSession?: ((id: string) => void) | undefined;
+  repoPath: string;
+}
+
+function SessionGroupRow({
+  groupPath,
+  groupSessions,
+  rep,
+  isSelected,
+  attention,
+  dotState,
+  matchedPr,
+  cancelLongPress,
+  onSelectSession,
+  onDeleteSession,
+  repoPath,
+}: SessionGroupRowProps) {
+  return (
+    <li
+      className={[
+        'session-row',
+        isSelected && 'selected',
+        attention && 'attention',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-track="sidebar.session.click"
+      onClick={() => onSelectSession(rep.id)}
+      onTouchEnd={cancelLongPress}
+      onTouchMove={cancelLongPress}
+    >
+      <div className="session-row-primary">
+        <span className={`status-dot status-dot--${dotState}`} />
+        <span
+          className={['session-name', attention && 'bold']
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <MarqueeText>
+            {groupDisplayName(groupPath, repoPath, groupSessions)}
+          </MarqueeText>
+        </span>
+        {groupSessions.length > 1 ? (
+          <span className="session-count-badge">{groupSessions.length}</span>
+        ) : null}
+        {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
+      </div>
+      <div className="session-row-secondary">
+        <span className="secondary-time">
+          {formatRelativeTimeCompact(rep.lastActivity)}
+        </span>
+        {rep.branchName ? (
+          <span className="secondary-branch">
+            <MarqueeText>{rep.branchName}</MarqueeText>
+          </span>
+        ) : null}
+      </div>
+      {onDeleteSession ? (
+        <div className="row-menu-overlay">
+          <ContextMenu
+            items={[
+              {
+                label: 'close session',
+                action: () => onDeleteSession(rep.id),
+                danger: true,
+              },
+            ]}
+          />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+interface InactiveRepoRowProps {
+  groupPath: string;
+  repoPath: string;
+  repoCurrentBranch: string | null;
+  repoDefaultBranch: string | null;
+  sidebarItemById: Map<string, SidebarItem>;
+  loadingItems: Set<string>;
+  onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
+}
+
+function InactiveRepoRow({
+  groupPath,
+  repoPath,
+  repoCurrentBranch,
+  repoDefaultBranch,
+  sidebarItemById,
+  loadingItems,
+  onLaunchRepoSession,
+}: InactiveRepoRowProps) {
+  const repoLoadingKey = `repo-session:${repoPath}`;
+  const isLoading = loadingItems.has(repoLoadingKey);
+  const rootItem = sidebarItemById.get(groupPath);
+  const branchName =
+    rootItem?.branchName || repoCurrentBranch || repoDefaultBranch;
+  const lastActivity = rootItem?.lastActivity;
+  return (
+    <li
+      className={['session-row', 'inactive', isLoading && 'loading']
+        .filter(Boolean)
+        .join(' ')}
+      data-track="sidebar.repo.click"
+      onClick={() => {
+        if (!isLoading) onLaunchRepoSession?.(repoPath);
+      }}
+    >
+      <div className="session-row-primary">
+        <span className="status-dot status-dot--inactive" />
+        <span className="session-name">
+          <MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText>
+        </span>
+      </div>
+      {branchName || lastActivity ? (
+        <div className="session-row-secondary">
+          {lastActivity ? (
+            <span className="secondary-time">
+              {formatRelativeTimeCompact(lastActivity)}
+            </span>
+          ) : null}
+          {branchName ? (
+            <span className="secondary-branch">
+              <MarqueeText>{branchName}</MarqueeText>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
   );
 }
 
@@ -257,80 +395,33 @@ export function RepoItem({
                 isAttentionState(sidebarItem.displayState);
               const dotState = sidebarItem?.displayState ?? 'inactive';
               return (
-                <li
+                <SessionGroupRow
                   key={groupPath}
-                  className={[
-                    'session-row',
-                    isSelected && 'selected',
-                    attention && 'attention',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  data-track="sidebar.session.click"
-                  onClick={() => onSelectSession(rep.id)}
-                  onTouchEnd={cancelLongPress}
-                  onTouchMove={cancelLongPress}
-                >
-                  <div className="session-row-primary">
-                    <span className={`status-dot status-dot--${dotState}`} />
-                    <span
-                      className={['session-name', attention && 'bold']
-                        .filter(Boolean)
-                        .join(' ')}
-                    >
-                      <MarqueeText>
-                        {groupDisplayName(groupPath, repo.path, groupSessions)}
-                      </MarqueeText>
-                    </span>
-                    {groupSessions.length > 1 ? (
-                      <span className="session-count-badge">
-                        {groupSessions.length}
-                      </span>
-                    ) : null}
-                    {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
-                  </div>
-                  <div className="session-row-secondary">
-                    <span className="secondary-time">
-                      {formatRelativeTimeCompact(rep.lastActivity)}
-                    </span>
-                    {rep.branchName ? (
-                      <span className="secondary-branch">
-                        <MarqueeText>{rep.branchName}</MarqueeText>
-                      </span>
-                    ) : null}
-                  </div>
-                </li>
+                  groupPath={groupPath}
+                  groupSessions={groupSessions}
+                  rep={rep}
+                  isSelected={isSelected}
+                  attention={attention}
+                  dotState={dotState}
+                  matchedPr={matchedPr}
+                  cancelLongPress={cancelLongPress}
+                  onSelectSession={onSelectSession}
+                  onDeleteSession={onDeleteSession}
+                  repoPath={repo.path}
+                />
               );
             } else if (isRepoRoot) {
-              const repoLoadingKey = `repo-session:${repo.path}`;
-              const isLoading = loadingItems.has(repoLoadingKey);
               return (
-                <li
+                <InactiveRepoRow
                   key={groupPath}
-                  className={['session-row', 'inactive', isLoading && 'loading']
-                    .filter(Boolean)
-                    .join(' ')}
-                  data-track="sidebar.repo.click"
-                  onClick={() => {
-                    if (!isLoading) onLaunchRepoSession?.(repo.path);
-                  }}
-                >
-                  <div className="session-row-primary">
-                    <span className="status-dot status-dot--inactive" />
-                    <span className="session-name">
-                      <MarqueeText>
-                        {isLoading ? 'starting...' : 'default'}
-                      </MarqueeText>
-                    </span>
-                  </div>
-                  {repo.defaultBranch ? (
-                    <div className="session-row-secondary">
-                      <span className="secondary-branch">
-                        <MarqueeText>{repo.defaultBranch}</MarqueeText>
-                      </span>
-                    </div>
-                  ) : null}
-                </li>
+                  groupPath={groupPath}
+                  repoPath={repo.path}
+                  repoCurrentBranch={repo.currentBranch}
+                  repoDefaultBranch={repo.defaultBranch}
+                  sidebarItemById={sidebarItemById}
+                  loadingItems={loadingItems}
+                  onLaunchRepoSession={onLaunchRepoSession}
+                />
               );
             }
             return null;
@@ -370,6 +461,19 @@ export function RepoItem({
                     </span>
                   ) : null}
                 </div>
+                {onDeleteWorktree ? (
+                  <div className="row-menu-overlay">
+                    <ContextMenu
+                      items={[
+                        {
+                          label: 'delete worktree',
+                          action: () => onDeleteWorktree(wt),
+                          danger: true,
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
               </li>
             );
           })}

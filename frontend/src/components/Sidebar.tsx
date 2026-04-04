@@ -92,6 +92,7 @@ function UngroupedList({
   onLaunchRepoSession,
 }: UngroupedListProps) {
   const getSessionsForRepo = useSessionsStore((s) => s.getSessionsForRepo);
+  const sidebarItems = useSessionsStore((s) => s.sidebarItems);
 
   return (
     <div className="sidebar-ungrouped-list">
@@ -124,6 +125,7 @@ function UngroupedList({
               onDeleteWorktree={onDeleteWorktree}
               onLaunchRepoSession={onLaunchRepoSession}
               orgPrs={orgPrs}
+              sidebarItems={sidebarItems}
             />
           </div>
         );

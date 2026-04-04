@@ -10,6 +10,14 @@ import type { Config } from '../server/types.js';
 import { createMockFetch } from './helpers/mock-fetch.js';
 import { createTestServer } from './helpers/test-server.js';
 
+/** Isolate child git processes from the host worktree environment. */
+const GIT_ISOLATED_ENV = {
+  ...process.env,
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  GIT_COMMON_DIR: undefined,
+};
+
 // ── Server helpers ─────────────────────────────────────────────────────────────
 
 /** No-op requireAuth middleware for testing (bypasses auth). */
@@ -65,13 +73,17 @@ function makeTempConfig(name: string, overrides: Partial<Config> = {}): string {
  */
 function makeGitRepo(dir: string, owner: string, repo: string): void {
   fs.mkdirSync(dir, { recursive: true });
-  execFileSync('git', ['init', dir], { stdio: 'ignore' });
+  execFileSync('git', ['init', dir], {
+    stdio: 'ignore',
+    env: GIT_ISOLATED_ENV,
+  });
   execFileSync(
     'git',
     ['remote', 'add', 'origin', `https://github.com/${owner}/${repo}.git`],
     {
       cwd: dir,
       stdio: 'ignore',
+      env: GIT_ISOLATED_ENV,
     }
   );
 }
@@ -142,7 +154,7 @@ test('POST /setup — smee.io unreachable returns error', async () => {
 
 // 3. POST /repos — happy path: mock GitHub API 201, verify webhookId saved
 
-test('POST /repos — happy path creates webhook and saves webhookId', async () => {
+test('[needs:git-init] POST /repos — happy path creates webhook and saves webhookId', async () => {
   const repoDir = path.join(tmpDir, 'repos-happy-repo');
   makeGitRepo(repoDir, 'testowner', 'testrepo');
 
@@ -190,7 +202,7 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
 
 // 4. POST /repos — 403 forbidden: verify webhookError set to 'not-admin'
 
-test('POST /repos — 403 forbidden sets webhookError to not-admin', async () => {
+test('[needs:git-init] POST /repos — 403 forbidden sets webhookError to not-admin', async () => {
   const repoDir = path.join(tmpDir, 'repos-403-repo');
   makeGitRepo(repoDir, 'testowner', 'forbiddenrepo');
 
@@ -232,7 +244,7 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
 
 // 5. POST /repos — 422 conflict: verify treated as success
 
-test('POST /repos — 422 conflict is treated as success (webhook already exists)', async () => {
+test('[needs:git-init] POST /repos — 422 conflict is treated as success (webhook already exists)', async () => {
   const repoDir = path.join(tmpDir, 'repos-422-repo');
   makeGitRepo(repoDir, 'testowner', 'existingrepo');
 
@@ -275,7 +287,7 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
 
 // 6. POST /repos — 401 unauthorized: verify scope error response
 
-test('POST /repos — 401 unauthorized returns unauthorized error', async () => {
+test('[needs:git-init] POST /repos — 401 unauthorized returns unauthorized error', async () => {
   const repoDir = path.join(tmpDir, 'repos-401-repo');
   makeGitRepo(repoDir, 'testowner', 'privaterepo');
 
@@ -309,7 +321,7 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
 
 // 7. POST /repos/remove — happy path: verify webhookId cleared
 
-test('POST /repos/remove — happy path clears webhookId from config', async () => {
+test('[needs:git-init] POST /repos/remove — happy path clears webhookId from config', async () => {
   const repoDir = path.join(tmpDir, 'repos-remove-happy-repo');
   makeGitRepo(repoDir, 'testowner', 'removerepo');
 
@@ -362,7 +374,7 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
 
 // 8. DELETE /repos/remove with 404 — verify treated as success
 
-test('POST /repos/remove — GitHub 404 is still treated as success', async () => {
+test('[needs:git-init] POST /repos/remove — GitHub 404 is still treated as success', async () => {
   const repoDir = path.join(tmpDir, 'repos-remove-404-repo');
   makeGitRepo(repoDir, 'testowner', 'alreadydeleted');
 
@@ -469,7 +481,7 @@ test('GET /status — returns not configured when no webhook secret', async () =
 
 // 10. POST /backfill — partial failure (2 succeed, 1 fails with 403)
 
-test('POST /backfill — partial failure returns correct totals', async () => {
+test('[needs:git-init] POST /backfill — partial failure returns correct totals', async () => {
   // Create 3 fake repos
   const repoA = path.join(tmpDir, 'backfill-repo-a');
   const repoB = path.join(tmpDir, 'backfill-repo-b');
