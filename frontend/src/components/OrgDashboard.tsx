@@ -323,7 +323,7 @@ function PrsTabContent({
         )}
         {processedPrs.map((pr) => (
           <PrRow
-            key={pr.number}
+            key={`${pr.repoPath ?? pr.repoName}:${pr.number}`}
             pr={pr}
             onOpen={onOpenPrSession}
             onAction={onPrAction}

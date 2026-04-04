@@ -116,7 +116,8 @@ function mapSearchItemsToPrs(
   items: GhSearchItem[],
   repoMap: Map<string, string>,
   currentUser: string,
-  state: 'OPEN' | 'MERGED'
+  state: 'OPEN' | 'MERGED',
+  roleOverride?: 'author' | 'reviewer'
 ): PullRequest[] {
   const prs: PullRequest[] = [];
   for (const item of items) {
@@ -135,7 +136,7 @@ function mapSearchItemsToPrs(
       baseRefName: item.pull_request?.base?.ref ?? '',
       state,
       author: item.user.login,
-      role: isAuthor ? 'author' : 'reviewer',
+      role: roleOverride ?? (isAuthor ? 'author' : 'reviewer'),
       updatedAt: item.updated_at,
       additions: 0,
       deletions: 0,
@@ -171,12 +172,13 @@ async function resolveGhUser(
 
 /** Fetch open PRs via gh search API. Returns items or an error code. */
 async function fetchSearchPrs(
-  exec: ExecFn
+  exec: ExecFn,
+  query = 'is:pr+is:open+involves:@me'
 ): Promise<{ items: GhSearchItem[] } | { error: string }> {
   try {
     const { stdout } = await exec(
       'gh',
-      ['api', 'search/issues?q=is:pr+is:open+involves:@me&per_page=100'],
+      ['api', `search/issues?q=${query}&per_page=100`],
       { timeout: GH_TIMEOUT_MS }
     );
     const parsed = JSON.parse(stdout) as GhSearchResponse;
@@ -288,19 +290,44 @@ export function createOrgDashboardRouter(deps: OrgDashboardDeps): Router {
       }
     }
 
-    // Fallback: gh search API
-    const searchResult = await fetchSearchPrs(exec);
-    if ('error' in searchResult) {
-      res.json(errorResponse(searchResult.error));
+    // Fallback: gh search API — two targeted queries for accurate role assignment
+    const [authorResult, reviewerResult] = await Promise.all([
+      fetchSearchPrs(exec, 'is:pr+is:open+author:@me'),
+      fetchSearchPrs(exec, 'is:pr+is:open+review-requested:@me'),
+    ]);
+
+    if ('error' in authorResult && 'error' in reviewerResult) {
+      res.json(errorResponse(authorResult.error));
       return;
     }
 
-    const prs = mapSearchItemsToPrs(
-      searchResult.items,
-      repoMap,
-      currentUser,
-      'OPEN'
-    );
+    const authorPrs =
+      'error' in authorResult
+        ? []
+        : mapSearchItemsToPrs(
+            authorResult.items,
+            repoMap,
+            currentUser,
+            'OPEN',
+            'author'
+          );
+    const reviewerPrs =
+      'error' in reviewerResult
+        ? []
+        : mapSearchItemsToPrs(
+            reviewerResult.items,
+            repoMap,
+            currentUser,
+            'OPEN',
+            'reviewer'
+          );
+
+    // Deduplicate: author role takes precedence
+    const seen = new Set(authorPrs.map((pr) => pr.url));
+    const prs = [
+      ...authorPrs,
+      ...reviewerPrs.filter((pr) => !seen.has(pr.url)),
+    ];
     sortByUpdatedDesc(prs);
     cache = { prs, fetchedAt: now };
 
