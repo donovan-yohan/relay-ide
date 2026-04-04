@@ -1,4 +1,9 @@
-import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import React, {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import { deleteWorktree } from '../../lib/api.js';
@@ -38,11 +43,12 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
       try {
         await deleteWorktree(worktree.path, worktree.repoPath);
         shellRef.current?.close();
-        await useSessionsStore.getState().refreshAll();
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Failed to delete worktree.');
-        setDeleting(false);
+        setError(
+          err instanceof Error ? err.message : 'Failed to delete worktree.'
+        );
       } finally {
+        setDeleting(false);
         if (worktree) useSessionsStore.getState().clearLoading(worktree.path);
       }
     }
@@ -63,7 +69,12 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
     );
 
     return (
-      <DialogShell ref={shellRef} width="400px" title="Delete Worktree" footer={footer}>
+      <DialogShell
+        ref={shellRef}
+        width="400px"
+        title="Delete Worktree"
+        footer={footer}
+      >
         <div className="delete-worktree-body">
           {worktree && (
             <>
@@ -75,14 +86,16 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
                 ?
               </p>
               <p className="delete-worktree-wt-path">{worktree.path}</p>
-              <p className="delete-worktree-warning-msg">This action cannot be undone.</p>
+              <p className="delete-worktree-warning-msg">
+                This action cannot be undone.
+              </p>
             </>
           )}
           {error && <p className="delete-worktree-error-msg">{error}</p>}
         </div>
       </DialogShell>
     );
-  },
+  }
 );
 
 export default DeleteWorktreeDialog;
