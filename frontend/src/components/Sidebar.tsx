@@ -296,7 +296,8 @@ export function Sidebar({
     useSessionsStore.getState().setActiveSessionId(null);
   }, []);
   const handleHomeBrand = useCallback(() => {
-    useUiStore.setState({ activeRepoPath: null });
+    useUiStore.getState().setActiveRepoPath(null);
+    useUiStore.getState().setAnalyticsView(null);
     useSessionsStore.getState().setActiveSessionId(null);
     closeSidebar();
   }, [closeSidebar]);

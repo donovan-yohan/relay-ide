@@ -140,11 +140,6 @@ function TerminalAreaContent({
   const openFileTab = useUiStore((s) => s.openFileTab);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
-  const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
-  const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
-  const recallSessionForWorkspace = useSessionsStore(
-    (s) => s.recallSessionForWorkspace
-  );
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -306,15 +301,8 @@ function TerminalAreaContent({
 
       {viewMode === 'org' && (
         <OrgDashboard
-          onOpenWorkspace={(path) => {
-            setAnalyticsView(null);
-            setActiveRepoPath(path);
-            setActiveSessionId(recallSessionForWorkspace(path));
-          }}
-          onOpenSession={(id) => {
-            setAnalyticsView(null);
-            setActiveSessionId(id);
-          }}
+          onOpenPrSession={onOpenPrSession}
+          onPrAction={onPrAction}
         />
       )}
 

@@ -285,7 +285,9 @@ export function useSessionHandlers({
           workspace.name
         );
       } else {
-        useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: null });
+        useUiStore
+          .getState()
+          .setActiveModal({ modal: 'settings', scrollToId: null });
       }
     },
     [workspaceSettingsDialogRef]
@@ -372,14 +374,11 @@ export function useSessionHandlers({
   );
 
   const handleFixConflicts = useCallback(async (pr: PullRequest) => {
-    const currentRepoPath = useUiStore.getState().activeRepoPath;
-    const currentActiveWorkspace = currentRepoPath
-      ? useSessionsStore
-          .getState()
-          .repos.find((w) => w.path === currentRepoPath)
+    const repoPath = pr.repoPath ?? useUiStore.getState().activeRepoPath;
+    const currentActiveWorkspace = repoPath
+      ? useSessionsStore.getState().repos.find((w) => w.path === repoPath)
       : undefined;
-    if (!currentActiveWorkspace) return;
-    const repoPath = currentActiveWorkspace.path;
+    if (!currentActiveWorkspace || !repoPath) return;
 
     const currentSessions = useSessionsStore.getState().sessions;
     const currentWorktrees = useSessionsStore.getState().worktrees;
@@ -451,14 +450,11 @@ export function useSessionHandlers({
 
   const handleOpenPrBranch = useCallback(
     async (pr: PullRequest, prPrompt?: string) => {
-      const currentRepoPath = useUiStore.getState().activeRepoPath;
-      const currentActiveWorkspace = currentRepoPath
-        ? useSessionsStore
-            .getState()
-            .repos.find((w) => w.path === currentRepoPath)
+      const repoPath = pr.repoPath ?? useUiStore.getState().activeRepoPath;
+      const currentActiveWorkspace = repoPath
+        ? useSessionsStore.getState().repos.find((w) => w.path === repoPath)
         : undefined;
-      if (!currentActiveWorkspace) return;
-      const repoPath = currentActiveWorkspace.path;
+      if (!currentActiveWorkspace || !repoPath) return;
 
       const currentSessions = useSessionsStore.getState().sessions;
       const currentWorktrees = useSessionsStore.getState().worktrees;

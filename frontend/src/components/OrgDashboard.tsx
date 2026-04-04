@@ -7,13 +7,7 @@ import {
   savePreset,
   deletePreset,
 } from '../lib/api.js';
-import {
-  derivePrAction,
-  buildPrStateInput,
-  colorToVariant,
-} from '../lib/pr-state.js';
-import { prRoleLabel, sortPrs } from '../lib/pr-utils.js';
-import { formatRelativeTime } from '../lib/utils.js';
+import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
   OrgPrsResponse,
@@ -21,36 +15,21 @@ import type {
   FilterPreset,
 } from '../lib/types.js';
 import TicketsPanel from './TicketsPanel.js';
-import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
-import StatusDot from './StatusDot.js';
 import { TuiButton } from './TuiButton.js';
+import { PrRow } from './PrRow.js';
 import './OrgDashboard.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface OrgDashboardProps {
-  onOpenWorkspace: (path: string) => void;
-  onOpenSession?: (sessionId: string) => void;
+  onOpenPrSession: (pr: PullRequest) => void;
+  onPrAction: (pr: PullRequest) => void;
 }
 
 type ActiveTab = 'prs' | 'tickets';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-interface CiIconResult {
-  icon: string;
-  cls: string;
-}
-
-function ciIcon(pr: PullRequest): CiIconResult | null {
-  if (!pr.ciStatus) return null;
-  if (pr.ciStatus === 'SUCCESS') return { icon: '✓', cls: 'ci-pass' };
-  if (pr.ciStatus === 'FAILURE' || pr.ciStatus === 'ERROR')
-    return { icon: '✗', cls: 'ci-fail' };
-  if (pr.ciStatus === 'PENDING') return { icon: '○', cls: 'ci-pending' };
-  return null;
-}
 
 function getTicketIdForPr(
   headRefName: string,
@@ -62,99 +41,6 @@ function getTicketIdForPr(
     }
   }
   return null;
-}
-
-// ── Sub-components ─────────────────────────────────────────────────────────────
-
-interface PrRowProps {
-  pr: PullRequest;
-  branchLinksData: BranchLinksResponse;
-  onOpenWorkspace: (path: string) => void;
-}
-
-function OrgPrRow({ pr, branchLinksData, onOpenWorkspace }: PrRowProps) {
-  const repoName = pr.repoName ?? '';
-  const chipColor = deriveColor(repoName);
-  const ticketId = getTicketIdForPr(pr.headRefName, branchLinksData);
-  const action = useMemo(() => {
-    const a = derivePrAction(buildPrStateInput(pr));
-    if (
-      a.type === 'merge-pr' ||
-      a.type === 'archive-merged' ||
-      a.type === 'archive-closed'
-    ) {
-      return { ...a, label: 'Open' };
-    }
-    return a;
-  }, [pr]);
-  const ci = ciIcon(pr);
-
-  return (
-    <div className="pr-table-row">
-      <div className="cell cell--status" style={{ width: 36, flex: 'none' }}>
-        <StatusDot status={derivePrDotStatus(pr)} />
-      </div>
-      <div className="cell cell--title" style={{ flex: 1 }}>
-        <div className="pr-row-title-line">
-          <a
-            className="pr-title-link"
-            href={pr.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {pr.title}
-          </a>
-        </div>
-        <div className="pr-row-meta">
-          <span className="pr-meta-text">#{pr.number}</span>
-          {ticketId && (
-            <>
-              <span className="pr-sep">·</span>
-              <span className="ticket-chip">{ticketId}</span>
-            </>
-          )}
-          <span className="pr-sep">·</span>
-          <span className="pr-meta-text">{prRoleLabel(pr)}</span>
-          <span className="pr-sep">·</span>
-          <span className="pr-meta-text">
-            {formatRelativeTime(pr.updatedAt)}
-          </span>
-        </div>
-      </div>
-      <div className="cell cell--repo" style={{ width: 100, flex: 'none' }}>
-        {repoName && (
-          <span
-            className="repo-chip"
-            style={{ background: chipColor }}
-            title={pr.repoPath ?? repoName}
-          >
-            {repoName}
-          </span>
-        )}
-      </div>
-      <div className="cell cell--role" style={{ width: 60, flex: 'none' }}>
-        <span className="pr-meta-text">{pr.role}</span>
-      </div>
-      <div className="cell cell--ci" style={{ width: 32, flex: 'none' }}>
-        {ci && <span className={`ci-icon ${ci.cls}`}>{ci.icon}</span>}
-      </div>
-      <div className="cell cell--age" style={{ width: 72, flex: 'none' }}>
-        <span className="pr-meta-text">{formatRelativeTime(pr.updatedAt)}</span>
-      </div>
-      <div className="cell cell--action" style={{ width: 140, flex: 'none' }}>
-        {action.type !== 'none' && action.label && (
-          <TuiButton
-            variant={colorToVariant(action.color)}
-            size="sm"
-            onClick={() => onOpenWorkspace(pr.repoPath ?? '')}
-            title={action.label}
-          >
-            {action.label}
-          </TuiButton>
-        )}
-      </div>
-    </div>
-  );
 }
 
 interface PresetsRowProps {
@@ -356,7 +242,8 @@ interface PrsTabContentProps {
   searchQuery: string;
   activeStatusChips: string[];
   setSearchQuery: (q: string) => void;
-  onOpenWorkspace: (path: string) => void;
+  onOpenPrSession: (pr: PullRequest) => void;
+  onPrAction: (pr: PullRequest) => void;
   onApplyPreset: (p: FilterPreset) => void;
   onSaveView: () => void;
   onDeletePreset: (p: FilterPreset) => void;
@@ -373,7 +260,8 @@ function PrsTabContent({
   searchQuery,
   activeStatusChips,
   setSearchQuery,
-  onOpenWorkspace,
+  onOpenPrSession,
+  onPrAction,
   onApplyPreset,
   onSaveView,
   onDeletePreset,
@@ -434,11 +322,14 @@ function PrsTabContent({
           <div className="state-message">{emptyMsg}</div>
         )}
         {processedPrs.map((pr) => (
-          <OrgPrRow
+          <PrRow
             key={pr.number}
             pr={pr}
-            branchLinksData={branchLinksData}
-            onOpenWorkspace={onOpenWorkspace}
+            onOpen={onOpenPrSession}
+            onAction={onPrAction}
+            ticketId={getTicketIdForPr(pr.headRefName, branchLinksData)}
+            showRepo
+            showCi
           />
         ))}
       </div>
@@ -449,10 +340,11 @@ function PrsTabContent({
 // ── PrsTab sub-component ──────────────────────────────────────────────────────
 
 interface PrsTabProps {
-  onOpenWorkspace: (path: string) => void;
+  onOpenPrSession: (pr: PullRequest) => void;
+  onPrAction: (pr: PullRequest) => void;
 }
 
-function PrsTab({ onOpenWorkspace }: PrsTabProps) {
+function PrsTab({ onOpenPrSession, onPrAction }: PrsTabProps) {
   const {
     data,
     isLoading,
@@ -489,7 +381,8 @@ function PrsTab({ onOpenWorkspace }: PrsTabProps) {
       searchQuery={searchQuery}
       activeStatusChips={activeStatusChips}
       setSearchQuery={setSearchQuery}
-      onOpenWorkspace={onOpenWorkspace}
+      onOpenPrSession={onOpenPrSession}
+      onPrAction={onPrAction}
       onApplyPreset={handleApplyPreset}
       onSaveView={() => void handleSaveCurrentView()}
       onDeletePreset={(p) => void handleDeletePreset(p)}
@@ -499,13 +392,16 @@ function PrsTab({ onOpenWorkspace }: PrsTabProps) {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export function OrgDashboard({ onOpenWorkspace }: OrgDashboardProps) {
+export function OrgDashboard({
+  onOpenPrSession,
+  onPrAction,
+}: OrgDashboardProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('prs');
 
   return (
     <div className="org-dashboard">
       <div className="org-header">
-        <span className="org-title">All Workspaces</span>
+        <span className="org-title">all workspaces</span>
       </div>
       {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">
@@ -529,7 +425,9 @@ export function OrgDashboard({ onOpenWorkspace }: OrgDashboardProps) {
           Tickets
         </button>
       </div>
-      {activeTab === 'prs' && <PrsTab onOpenWorkspace={onOpenWorkspace} />}
+      {activeTab === 'prs' && (
+        <PrsTab onOpenPrSession={onOpenPrSession} onPrAction={onPrAction} />
+      )}
       {activeTab === 'tickets' && <TicketsPanel />}
     </div>
   );
