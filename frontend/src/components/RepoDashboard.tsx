@@ -1,13 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
-import {
-  derivePrAction,
-  buildPrStateInput,
-  colorToVariant,
-} from '../lib/pr-state.js';
-import { prRoleLabel, sortPrs } from '../lib/pr-utils.js';
-import { formatRelativeTime } from '../lib/utils.js';
+import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
   ActivityEntry,
@@ -15,10 +9,9 @@ import type {
 } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
-import { derivePrDotStatus } from '../lib/pr-status.js';
-import StatusDot from './StatusDot.js';
 import { TuiButton } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
+import { PrRow } from './PrRow.js';
 import { useScrollOverflow } from '../hooks/useScrollOverflow.js';
 import './RepoDashboard.css';
 
@@ -267,80 +260,6 @@ function ActivitySection({ data, isLoading }: ActivitySectionProps) {
   );
 }
 
-interface PrRowProps {
-  pr: PullRequest;
-  onOpenPrSession: (pr: PullRequest) => void;
-  onPrAction: (pr: PullRequest) => void;
-}
-
-function PrRow({ pr, onOpenPrSession, onPrAction }: PrRowProps) {
-  const action = derivePrAction(buildPrStateInput(pr));
-  return (
-    <>
-      <div
-        className="pr-cell pr-cell--status"
-        style={{ width: 36, flex: 'none' }}
-      >
-        <StatusDot status={derivePrDotStatus(pr)} />
-      </div>
-      <div className="pr-cell pr-cell--title" style={{ flex: 1 }}>
-        <a
-          className="pr-title-link"
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {pr.title}
-        </a>
-        <div className="pr-row-meta">
-          <span className="pr-num">#{pr.number}</span>
-          <span className="pr-sep">&middot;</span>
-          <span className="pr-role">{prRoleLabel(pr)}</span>
-          <span className="pr-sep">&middot;</span>
-          <span className="pr-time">{formatRelativeTime(pr.updatedAt)}</span>
-        </div>
-      </div>
-      <div
-        className="pr-cell pr-cell--role"
-        style={{ width: 60, flex: 'none' }}
-      >
-        <span className="pr-role-text">
-          {pr.role === 'author' ? 'Author' : 'Review'}
-        </span>
-      </div>
-      <div className="pr-cell pr-cell--age" style={{ width: 72, flex: 'none' }}>
-        <span className="pr-age-text">{formatRelativeTime(pr.updatedAt)}</span>
-      </div>
-      <div
-        className="pr-cell pr-cell--action"
-        style={{ width: 160, flex: 'none' }}
-      >
-        <div className="pr-row-actions">
-          <TuiButton
-            variant="primary"
-            size="icon"
-            onClick={() => onOpenPrSession(pr)}
-            title="Open session on this branch"
-          >
-            +
-          </TuiButton>
-          {action.type !== 'none' && action.label && (
-            <TuiButton
-              variant={colorToVariant(action.color)}
-              size="sm"
-              onClick={() => onPrAction(pr)}
-              title={action.label}
-              disabled={action.type === 'checks-running'}
-            >
-              {action.label}
-            </TuiButton>
-          )}
-        </div>
-      </div>
-    </>
-  );
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
 interface PrListBodyProps {
@@ -411,20 +330,12 @@ function PrListBody({
       ) : (
         <div>
           {processedPrs.map((pr) => (
-            <div
+            <PrRow
               key={pr.number}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                borderBottom: '1px solid var(--border)',
-              }}
-            >
-              <PrRow
-                pr={pr}
-                onOpenPrSession={onOpenPrSession}
-                onPrAction={onPrAction}
-              />
-            </div>
+              pr={pr}
+              onOpen={onOpenPrSession}
+              onAction={onPrAction}
+            />
           ))}
         </div>
       )}
