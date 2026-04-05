@@ -704,7 +704,7 @@ describe('WorktreeWatcher.rebuild', () => {
     expect(emitted).toBe(true);
   });
 
-  it('does not emit for repos without .worktrees when given individual repo paths', async () => {
+  it('emits when .worktrees is first created in a repo given as individual path', async () => {
     const bareRepo = path.join(tmpDir, 'bare-repo');
     fs.mkdirSync(path.join(bareRepo, '.git'), { recursive: true });
 

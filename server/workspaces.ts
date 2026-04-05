@@ -975,7 +975,16 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           lastActivity: new Date().toISOString(),
           branchName: result.branchName,
         });
-        if (!result.existing) deps.onWorktreeCreated?.();
+        if (!result.existing) {
+          try {
+            deps.onWorktreeCreated?.();
+          } catch (err) {
+            logger.error(
+              'onWorktreeCreated callback failed:',
+              err instanceof Error ? err.message : err
+            );
+          }
+        }
         res.json({
           branchName: result.branchName,
           mountainName: meta?.displayName || result.dirName,
@@ -1046,7 +1055,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       branchName,
     });
 
-    deps.onWorktreeCreated?.();
+    try {
+      deps.onWorktreeCreated?.();
+    } catch (err) {
+      logger.error('onWorktreeCreated callback failed:', err);
+    }
     res.json({ branchName, mountainName, worktreePath });
   });
 
