@@ -1,0 +1,27 @@
+server/hooks.ts
+  1a16f75379021bb4 12,25-33,168-169,171-194,205
+server/git.ts
+  1a16f75379021bb4 243-257,945
+test/branch-rename.test.ts
+  1a16f75379021bb4 3,56-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "5268e3d92f572c625b034dddb8a38dabc9257674",
+  "prompts": {
+    "1a16f75379021bb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54d182dd-9fd5-4f01-8b0e-6da1f9abf4cf",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 103,
+      "total_deletions": 23,
+      "accepted_lines": 93,
+      "overriden_lines": 0
+    }
+  }
+}
