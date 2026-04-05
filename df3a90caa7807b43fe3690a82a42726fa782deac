@@ -1,0 +1,29 @@
+server/workspaces.ts
+  2471ac54a6bd38db 108-109,978,1049
+server/watcher.ts
+  2471ac54a6bd38db 188-193,280-285
+server/index.ts
+  2471ac54a6bd38db 829
+test/worktrees.test.ts
+  2471ac54a6bd38db 1-4,11,670-729
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "df3a90caa7807b43fe3690a82a42726fa782deac",
+  "prompts": {
+    "2471ac54a6bd38db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b31dc586-16fb-4572-bea7-b9332354bea5",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 82,
+      "total_deletions": 1,
+      "accepted_lines": 82,
+      "overriden_lines": 0
+    }
+  }
+}
