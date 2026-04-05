@@ -15,7 +15,6 @@ import {
 } from './lib/notifications.js';
 import type { Repo, PullRequest } from './lib/types.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
-import { isMobileDevice } from './lib/utils.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
 import { useAppShortcuts } from './hooks/useAppShortcuts.js';
@@ -392,10 +391,8 @@ function TerminalAreaContent({
                   onClearInput={handleClearInput}
                   onUploadImage={handleUploadImage}
                   onRefocusMobileInput={handleRefocusMobileInput}
-                  useTmux={activeSessionUseTmux}
                   inCopyMode={copyModeActive}
                   onExitCopyMode={handleExitCopyMode}
-                  isMobileDevice={isMobileDevice}
                 />
               </>
             }

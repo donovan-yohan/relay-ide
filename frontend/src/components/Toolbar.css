@@ -17,7 +17,7 @@
   border: 1px solid var(--border);
   border-radius: 0;
   color: var(--text-muted);
-  font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   padding: 8px 4px;
   cursor: pointer;
