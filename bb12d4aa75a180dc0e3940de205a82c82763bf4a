@@ -1,0 +1,27 @@
+frontend/src/components/Toolbar.css
+  25dda7164898e6eb 2,16,19-20,25,31,35-37,46-52
+frontend/src/components/Toolbar.tsx
+  25dda7164898e6eb 33-36,40,42-48,52-63
+frontend/src/App.tsx
+  25dda7164898e6eb 18,398
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bb12d4aa75a180dc0e3940de205a82c82763bf4a",
+  "prompts": {
+    "25dda7164898e6eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f90350d3-c265-4211-a4c7-689d717704ec",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 42,
+      "total_deletions": 31,
+      "accepted_lines": 42,
+      "overriden_lines": 0
+    }
+  }
+}
