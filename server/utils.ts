@@ -7,19 +7,43 @@ export function stripAnsi(text: string): string {
 }
 
 export function semverLessThan(a: string, b: string): boolean {
-  const parse = (v: string): number[] =>
-    (v.split('-').at(0) ?? v).split('.').map(Number);
-  const pa = parse(a);
-  const pb = parse(b);
-  const aMaj = pa[0] ?? 0,
-    aMin = pa[1] ?? 0,
-    aPat = pa[2] ?? 0;
-  const bMaj = pb[0] ?? 0,
-    bMin = pb[1] ?? 0,
-    bPat = pb[2] ?? 0;
-  if (aMaj !== bMaj) return aMaj < bMaj;
-  if (aMin !== bMin) return aMin < bMin;
-  return aPat < bPat;
+  const idxA = a.indexOf('-');
+  const idxB = b.indexOf('-');
+  const aCore = (idxA === -1 ? a : a.slice(0, idxA)).split('.').map(Number);
+  const bCore = (idxB === -1 ? b : b.slice(0, idxB)).split('.').map(Number);
+  const aPre = idxA === -1 ? undefined : a.slice(idxA + 1);
+  const bPre = idxB === -1 ? undefined : b.slice(idxB + 1);
+
+  for (let i = 0; i < 3; i++) {
+    const ai = aCore[i] ?? 0;
+    const bi = bCore[i] ?? 0;
+    if (ai !== bi) return ai < bi;
+  }
+
+  // major.minor.patch equal — compare pre-release per semver spec
+  if (!aPre && !bPre) return false;
+  if (aPre && !bPre) return true; // pre-release < release
+  if (!aPre && bPre) return false; // release > pre-release
+
+  const aIds = aPre!.split('.');
+  const bIds = bPre!.split('.');
+  const len = Math.max(aIds.length, bIds.length);
+  for (let i = 0; i < len; i++) {
+    if (i >= aIds.length) return true; // fewer identifiers = lower
+    if (i >= bIds.length) return false;
+    const aNum = Number(aIds[i]);
+    const bNum = Number(bIds[i]);
+    const aIsNum = !isNaN(aNum);
+    const bIsNum = !isNaN(bNum);
+    if (aIsNum && bIsNum) {
+      if (aNum !== bNum) return aNum < bNum;
+    } else if (aIsNum !== bIsNum) {
+      return aIsNum; // numeric < string per semver
+    } else {
+      if (aIds[i] !== bIds[i]) return aIds[i]! < bIds[i]!;
+    }
+  }
+  return false;
 }
 
 export function cleanEnv(): Record<string, string> {

@@ -56,11 +56,11 @@ describe('semverLessThan', () => {
     expect(semverLessThan('1.0.0', '1.0.0')).toBe(false);
   });
 
-  it('strips pre-release tag before comparing — 1.2.3-beta.1 vs 1.2.3 treated as equal', () => {
-    expect(semverLessThan('1.2.3-beta.1', '1.2.3')).toBe(false);
+  it('pre-release is less than release with same base version', () => {
+    expect(semverLessThan('1.2.3-beta.1', '1.2.3')).toBe(true);
   });
 
-  it('strips pre-release tag before comparing — 1.2.3-beta.1 vs 1.3.0 treated as less than', () => {
+  it('pre-release with lower base version is less than higher release', () => {
     expect(semverLessThan('1.2.3-beta.1', '1.3.0')).toBe(true);
   });
 
