@@ -391,7 +391,6 @@ function TerminalAreaContent({
                   onClearInput={handleClearInput}
                   onUploadImage={handleUploadImage}
                   onRefocusMobileInput={handleRefocusMobileInput}
-                  useTmux={activeSessionUseTmux}
                   inCopyMode={copyModeActive}
                   onExitCopyMode={handleExitCopyMode}
                 />
