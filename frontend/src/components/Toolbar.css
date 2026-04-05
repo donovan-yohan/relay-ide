@@ -51,3 +51,10 @@
 .tb-arrow {
   font-size: var(--font-size-base);
 }
+
+@media (max-width: 600px) {
+  .tb-btn {
+    padding: 4px 4px;
+    min-height: 36px;
+  }
+}
