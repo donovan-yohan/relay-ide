@@ -1,0 +1,23 @@
+frontend/src/components/InstallBanner.tsx
+  aa306193bce47e87 12,33-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2941a7f1344b65cba9800d49abe5d4658d8e1fbf",
+  "prompts": {
+    "aa306193bce47e87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6e02510-8171-4a69-8f12-9d3d81bfb435",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 3,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
