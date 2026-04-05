@@ -1,9 +1,9 @@
 # Work Tracking
 
-All work items have been migrated to **Linear** (Dystudios team, `DYS-*` prefix).
+All work items are tracked as **GitHub Issues** on `donovan-yohan/relay-ide`.
 
-- **View all relay-ide issues:** filter by label `donovan-yohan/relay-ide` in Linear
-- **Create new tickets:** see `CLAUDE.md` > "Work Tracking (Linear)" for conventions
-- **Projects:** Sidebar & Navigation UX, Code & File Tools, Verification & Testing, Command Center, Agent Platform, True Workspaces
+- **View all issues:** `gh issue list --repo donovan-yohan/relay-ide --state open`
+- **Create new tickets:** use the `/ticket` skill or see `CLAUDE.md` > "Work Tracking (GitHub Issues)"
+- **Projects (as labels):** `project:sidebar-nav`, `project:code-file-tools`, `project:verification-testing`, `project:command-center`, `project:agent-platform`, `project:true-workspaces`
 
-This file is kept as a pointer. Do not add TODOs here — create Linear tickets instead.
+This file is kept as a pointer. Do not add TODOs here — create GitHub Issues instead.
