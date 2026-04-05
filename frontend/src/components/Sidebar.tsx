@@ -294,7 +294,8 @@ export function Sidebar({
   const handleSelectWorkspace = useCallback((path: string) => {
     useUiStore.setState({ activeRepoPath: path });
     useSessionsStore.getState().setActiveSessionId(null);
-  }, []);
+    closeSidebar();
+  }, [closeSidebar]);
   const handleHomeBrand = useCallback(() => {
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setAnalyticsView(null);
