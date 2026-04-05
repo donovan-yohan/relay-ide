@@ -1,0 +1,38 @@
+.notification-stack {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  pointer-events: none;
+}
+
+.notification-stack__item {
+  pointer-events: auto;
+  animation: notification-slide-up 0.25s ease-out;
+  width: 100%;
+  max-width: 500px;
+}
+
+@keyframes notification-slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-stack__item {
+    animation: none;
+  }
+}
