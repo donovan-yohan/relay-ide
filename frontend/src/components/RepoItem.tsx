@@ -70,6 +70,8 @@ export function groupDisplayName(
     }
     return 'default';
   }
+  const renamedSession = sessions.find((s) => s.displayName && s.displayName !== s.repoName);
+  if (renamedSession) return renamedSession.displayName;
   const branch = sessions.find((s) => s.branchName)?.branchName;
   const cwdName = sessions[0]?.cwd.split('/').pop();
   return branch || cwdName || sessions[0]?.repoName || 'unknown';
