@@ -1,0 +1,31 @@
+server/index.ts
+  6721c2eae682d6bd 2018,2022-2027
+frontend/src/components/TuiInput.tsx
+  6721c2eae682d6bd 61-82
+frontend/src/hooks/useEventSocket.ts
+  6721c2eae682d6bd 5,126-129,140-141
+frontend/src/lib/stores/auth.ts
+  6721c2eae682d6bd 17,64-67
+frontend/src/lib/ws.ts
+  6721c2eae682d6bd 58-59,87,96-97,107,133,139-151,251-254,362
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "c749123efcdf9d28b582d809b728233643f8763c",
+  "prompts": {
+    "6721c2eae682d6bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8fb5ae1a-c17b-4b28-bb47-5479f582563b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 69,
+      "total_deletions": 11,
+      "accepted_lines": 69,
+      "overriden_lines": 0
+    }
+  }
+}
