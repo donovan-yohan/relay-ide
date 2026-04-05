@@ -39,6 +39,8 @@ import UpdateToast from './components/UpdateToast.js';
 import { ImageToast } from './components/ImageToast.js';
 import type { ImageToastHandle } from './components/ImageToast.js';
 import ErrorToast from './components/ErrorToast.js';
+import NotificationStack from './components/NotificationStack.js';
+import InstallBanner from './components/InstallBanner.js';
 import CommandPalette from './components/CommandPalette.js';
 import OpenPicker from './components/OpenPicker.js';
 import FilePicker from './components/FilePicker.js';
@@ -904,8 +906,10 @@ export default function App() {
 
       {/* Toasts */}
       <UpdateToast />
-      <ImageToast ref={imageToastRef} />
+      <InstallBanner />
       <ErrorToast />
+      <ImageToast ref={imageToastRef} />
+      <NotificationStack />
     </QueryClientProvider>
   );
 }
