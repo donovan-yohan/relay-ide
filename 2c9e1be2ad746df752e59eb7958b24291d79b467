@@ -1,0 +1,27 @@
+frontend/src/components/RepoItem.tsx
+  8ad6d6a7acf534e8 73-75,77-78
+frontend/src/lib/stores/sessions.ts
+  8ad6d6a7acf534e8 262-272
+test/group-display-name.test.ts
+  8ad6d6a7acf534e8 1-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2c9e1be2ad746df752e59eb7958b24291d79b467",
+  "prompts": {
+    "8ad6d6a7acf534e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d403169-bee6-4bc9-9139-9c6471e5094e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 95,
+      "total_deletions": 2,
+      "accepted_lines": 95,
+      "overriden_lines": 0
+    }
+  }
+}
