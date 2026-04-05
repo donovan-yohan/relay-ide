@@ -2018,7 +2018,9 @@ async function main(): Promise<void> {
       }
       res.json({ ok: true, restarting });
       if (restarting) {
-        setTimeout(() => process.exit(0), 1000);
+        server.close(() => process.exit(0));
+        // Fallback if close hangs
+        setTimeout(() => process.exit(0), 3000);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed';
@@ -2090,10 +2092,29 @@ async function main(): Promise<void> {
   process.on('SIGTERM', gracefulShutdown);
   process.on('SIGINT', gracefulShutdown);
 
-  server.listen(startupConfig.port, startupConfig.host, () => {
-    const addr = server.address() as import('node:net').AddressInfo;
-    logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
+  // Retry listen with backoff — handles EADDRINUSE during updates when the
+  // previous process hasn't released the port yet (launchd KeepAlive restarts).
+  const MAX_RETRIES = 5;
+  let attempt = 0;
+  function tryListen() {
+    server.listen(startupConfig.port, startupConfig.host, () => {
+      const addr = server.address() as import('node:net').AddressInfo;
+      logger.info(`relay-ide listening on ${startupConfig.host}:${addr.port}`);
+    });
+  }
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && attempt < MAX_RETRIES) {
+      attempt++;
+      const delay = Math.min(1000 * attempt, 5000);
+      logger.warn(
+        `Port ${startupConfig.port} in use, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})...`
+      );
+      setTimeout(tryListen, delay);
+    } else {
+      throw err;
+    }
   });
+  tryListen();
 }
 
 main().catch((err) => logger.error('Unhandled fatal error:', err));
