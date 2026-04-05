@@ -1,0 +1,45 @@
+frontend/src/components/ImageToast.tsx
+  aa306193bce47e87 3,7-8,10-14,17-27,29-32,34-37,39-43,45,47-48,50-51,54-64,68
+frontend/src/components/ErrorToast.css
+  aa306193bce47e87 1,3
+frontend/src/components/ImageToast.css
+  aa306193bce47e87 1
+frontend/src/components/UpdateToast.tsx
+  aa306193bce47e87 20-31,58-59,91-92,94,103
+frontend/src/components/InstallBanner.css
+  aa306193bce47e87 1
+frontend/src/lib/stores/notifications.ts
+  aa306193bce47e87 2,18,23-24,27,37-39,51
+frontend/src/components/NotificationStack.css
+  aa306193bce47e87 39-75
+frontend/src/components/InstallBanner.tsx
+  aa306193bce47e87 63-64,67,72
+frontend/src/components/ErrorToast.tsx
+  aa306193bce47e87 9,14-19,25,34,36,38-40,55-57
+frontend/src/components/UpdateToast.css
+  aa306193bce47e87 1
+frontend/src/hooks/useSessionHandlers.ts
+  aa306193bce47e87 7
+frontend/src/App.tsx
+  aa306193bce47e87 39,577
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "e86347bc015346ba04d96c311751eb77396d6252",
+  "prompts": {
+    "aa306193bce47e87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6e02510-8171-4a69-8f12-9d3d81bfb435",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 144,
+      "total_deletions": 322,
+      "accepted_lines": 142,
+      "overriden_lines": 0
+    }
+  }
+}
