@@ -1,0 +1,25 @@
+test/worktrees.test.ts
+  2471ac54a6bd38db 707
+server/workspaces.ts
+  2471ac54a6bd38db 978-987,1058-1062
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "c2e542a607b1a0306bc6d9fa9daef16bb400942d",
+  "prompts": {
+    "2471ac54a6bd38db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b31dc586-16fb-4572-bea7-b9332354bea5",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 3,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    }
+  }
+}
