@@ -37,6 +37,7 @@ import {
   setUpdateChannel,
 } from '../../lib/api.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
+import { useConfigStore } from '../../lib/stores/config.js';
 import {
   requestPermission,
   getPermissionState,
@@ -231,6 +232,7 @@ function useConfigHandlers(
     setError('');
     try {
       await setClaudeFullscreen(v);
+      await useConfigStore.getState().refreshConfig();
     } catch {
       setConfig((c) => ({ ...c, claudeFullscreen: prev }));
       setError('Failed to update Claude fullscreen setting.');

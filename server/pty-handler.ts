@@ -377,9 +377,7 @@ export function createPtySession(
 
   const env = cleanEnv();
 
-  // Inject CLAUDE_CODE_NO_FLICKER for Claude sessions when fullscreen mode is enabled.
-  // This tells Claude Code to use alternate-screen rendering (no flicker).
-  if (framework.id === 'claude' && paramClaudeFullscreen !== false) {
+  if (framework.id === 'claude' && paramClaudeFullscreen === true) {
     env.CLAUDE_CODE_NO_FLICKER = '1';
   }
 

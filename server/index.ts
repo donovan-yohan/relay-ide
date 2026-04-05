@@ -1035,7 +1035,7 @@ async function main(): Promise<void> {
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,
-          claudeFullscreen: freshCfg.claudeFullscreen ?? true,
+          claudeFullscreen: freshCfg.claudeFullscreen,
           ...(opts.initialPrompt != null && {
             initialPrompt: opts.initialPrompt,
           }),
@@ -1883,7 +1883,7 @@ async function main(): Promise<void> {
       needsBranchRename: needsBranchRename ?? false,
       branchRenamePrompt: branchRenamePrompt ?? '',
       computedInitialPrompt,
-      claudeFullscreen: freshConfig.claudeFullscreen ?? true,
+      claudeFullscreen: freshConfig.claudeFullscreen,
     });
 
     gitWatcher.watch(session.cwd);

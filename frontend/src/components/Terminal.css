@@ -14,16 +14,15 @@
   padding: 4px;
 }
 
-/* Claude Code fullscreen: lock terminal to viewport height, no overflow scroll */
 .terminal-wrapper.terminal-fullscreen {
-  height: 100vh;
-  max-height: 100vh;
-  flex: none;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 .terminal-wrapper.terminal-fullscreen .terminal-container {
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
