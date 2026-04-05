@@ -226,18 +226,18 @@ async function getWorkingTreeDiff(
 }
 
 /**
- * Convert a git branch name to a human-readable display name.
- * "fix-mobile-scroll-bug" → "Fix mobile scroll bug"
- * "feature/add-auth"      → "Add auth"
+ * Convert a descriptive phrase to a valid kebab-case git branch name.
+ * "Fix the mobile scroll overflow" → "fix-the-mobile-scroll-overflow"
+ * "Add user authentication"        → "add-user-authentication"
  */
-function branchToDisplayName(branch: string): string {
-  const stripped = branch.replace(
-    /^(feature|fix|chore|refactor|docs|test|ci|build)\//i,
-    ''
-  );
-  const words = stripped.replace(/[-_]/g, ' ').trim();
-  if (!words) return branch;
-  return words.charAt(0).toUpperCase() + words.slice(1);
+function phraseToBranchName(phrase: string): string {
+  return phrase
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
 }
 
 async function isBranchStale(
@@ -926,7 +926,7 @@ export {
   getCommitsAhead,
   getCurrentBranch,
   getWorkingTreeDiff,
-  branchToDisplayName,
+  phraseToBranchName,
   isBranchStale,
   extractOwnerRepo,
   buildRepoMap,

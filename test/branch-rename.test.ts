@@ -1,6 +1,6 @@
 import { test, describe, expect } from 'vitest';
 import { MOUNTAIN_NAMES } from '../server/types.js';
-import { branchToDisplayName } from '../server/git.js';
+import { phraseToBranchName } from '../server/git.js';
 
 describe('MOUNTAIN_NAMES', () => {
   test('contains 30 mountain names', () => {
@@ -32,24 +32,41 @@ describe('MOUNTAIN_NAMES', () => {
   });
 });
 
-describe('branchToDisplayName', () => {
-  test('converts kebab-case to sentence case', () => {
-    expect(branchToDisplayName('fix-mobile-scroll-bug')).toBe(
-      'Fix mobile scroll bug'
+describe('phraseToBranchName', () => {
+  test('converts a phrase to kebab-case', () => {
+    expect(phraseToBranchName('Fix the mobile scroll overflow')).toBe(
+      'fix-the-mobile-scroll-overflow'
     );
   });
 
-  test('strips common branch prefixes', () => {
-    expect(branchToDisplayName('feature/add-auth')).toBe('Add auth');
-    expect(branchToDisplayName('fix/api-timeout')).toBe('Api timeout');
-    expect(branchToDisplayName('chore/update-deps')).toBe('Update deps');
+  test('strips special characters', () => {
+    expect(phraseToBranchName("Add user's authentication!")).toBe(
+      'add-users-authentication'
+    );
   });
 
-  test('handles simple names', () => {
-    expect(branchToDisplayName('lhotse')).toBe('Lhotse');
+  test('collapses multiple spaces and hyphens', () => {
+    expect(phraseToBranchName('Fix  the   bug')).toBe('fix-the-bug');
+    expect(phraseToBranchName('fix--the--bug')).toBe('fix-the-bug');
   });
 
-  test('handles underscores', () => {
-    expect(branchToDisplayName('fix_the_thing')).toBe('Fix the thing');
+  test('trims leading and trailing hyphens', () => {
+    expect(phraseToBranchName(' -Fix the bug- ')).toBe('fix-the-bug');
+  });
+
+  test('truncates to 60 characters', () => {
+    const long =
+      'This is a very long descriptive phrase that should be truncated to sixty characters max';
+    const result = phraseToBranchName(long);
+    expect(result.length).toBeLessThanOrEqual(60);
+    expect(result).toBe(
+      'this-is-a-very-long-descriptive-phrase-that-should-be-trunca'
+    );
+  });
+
+  test('preserves numbers', () => {
+    expect(phraseToBranchName('Fix issue 42 in auth')).toBe(
+      'fix-issue-42-in-auth'
+    );
   });
 });
