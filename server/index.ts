@@ -1993,7 +1993,14 @@ async function main(): Promise<void> {
     const current = getCurrentVersion();
     const channel = startupConfig.updateChannel ?? 'stable';
     const latest = await getLatestVersion(channel);
-    const updateAvailable = latest !== null && semverLessThan(current, latest);
+    const updateAvailable =
+      latest !== null &&
+      current !== latest &&
+      (semverLessThan(current, latest) ||
+        (channel === 'nightly' &&
+          !current.includes('-') &&
+          latest.includes('nightly') &&
+          latest.startsWith(current + '-')));
     res.json({ current, latest, updateAvailable, channel });
   });
 

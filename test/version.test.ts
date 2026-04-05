@@ -1,14 +1,5 @@
 import { test, expect } from 'vitest';
-
-function semverLessThan(a: string, b: string): boolean {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
+import { semverLessThan } from '../server/utils.js';
 
 test('semverLessThan returns true when major is lower', () => {
   expect(semverLessThan('1.0.0', '2.0.0')).toBe(true);
@@ -36,4 +27,76 @@ test('semverLessThan handles major version jumps', () => {
 
 test('semverLessThan handles two-segment versions gracefully', () => {
   expect(semverLessThan('1.0', '1.1')).toBe(true);
+});
+
+// Nightly / pre-release comparison tests
+
+test('nightly-to-nightly: older build < newer build', () => {
+  expect(
+    semverLessThan(
+      '0.1.0-nightly.20260404.200',
+      '0.1.0-nightly.20260405.238'
+    )
+  ).toBe(true);
+});
+
+test('nightly-to-nightly: same build is not less than', () => {
+  expect(
+    semverLessThan(
+      '0.1.0-nightly.20260405.238',
+      '0.1.0-nightly.20260405.238'
+    )
+  ).toBe(false);
+});
+
+test('nightly-to-nightly: newer build is not less than older', () => {
+  expect(
+    semverLessThan(
+      '0.1.0-nightly.20260405.238',
+      '0.1.0-nightly.20260404.200'
+    )
+  ).toBe(false);
+});
+
+test('nightly-to-nightly: same date, different build number', () => {
+  expect(
+    semverLessThan(
+      '0.1.0-nightly.20260405.100',
+      '0.1.0-nightly.20260405.238'
+    )
+  ).toBe(true);
+});
+
+test('pre-release is less than release (same base version)', () => {
+  expect(semverLessThan('0.1.0-nightly.20260405.238', '0.1.0')).toBe(true);
+});
+
+test('release is not less than pre-release (same base version)', () => {
+  expect(semverLessThan('0.1.0', '0.1.0-nightly.20260405.238')).toBe(false);
+});
+
+test('nightly with lower base version is less than higher release', () => {
+  expect(semverLessThan('0.1.0-nightly.20260405.238', '0.2.0')).toBe(true);
+});
+
+test('nightly with higher base version beats lower release', () => {
+  expect(semverLessThan('0.2.0-nightly.20260405.1', '0.1.0')).toBe(false);
+});
+
+test('fewer pre-release identifiers is lower precedence', () => {
+  expect(semverLessThan('0.1.0-nightly', '0.1.0-nightly.1')).toBe(true);
+});
+
+// Build metadata tests
+
+test('build metadata is ignored for precedence', () => {
+  expect(semverLessThan('1.0.0+build.1', '1.0.0+build.2')).toBe(false);
+});
+
+test('build metadata does not break core comparison', () => {
+  expect(semverLessThan('1.0.0+build.1', '2.0.0+build.1')).toBe(true);
+});
+
+test('build metadata with pre-release is handled correctly', () => {
+  expect(semverLessThan('1.0.0-alpha+build', '1.0.0')).toBe(true);
 });
