@@ -9,7 +9,7 @@ import type { Request, Response } from 'express';
 import type { Session } from './types.js';
 import type { AgentState } from './output-parsers/index.js';
 import { stripAnsi, cleanEnv } from './utils.js';
-import { branchToDisplayName } from './git.js';
+import { phraseToBranchName } from './git.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
 import { createLogger } from './logger.js';
@@ -22,8 +22,15 @@ const logger = createLogger('hooks');
 // ---------------------------------------------------------------------------
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
-const DEFAULT_RENAME_PROMPT =
-  'Output ONLY a short kebab-case git branch name (no explanation, no backticks, no prefix, just the name) that describes this task:';
+const DEFAULT_RENAME_PROMPT = `Output two lines (no explanation, no backticks, no quotes):
+Line 1: A short descriptive phrase (3-8 words) summarizing this task
+Line 2: A kebab-case git branch name for the same task
+
+Example:
+Fix sidebar disappearing on mobile
+fix-sidebar-disappearing-on-mobile
+
+Task:`;
 const RENAME_RETRY_DELAY_MS = 5000;
 const BRANCH_CHECK_DEBOUNCE_MS = 1000;
 
@@ -158,15 +165,33 @@ async function spawnBranchRename(
         { cwd: session.cwd, timeout: 30000, env }
       );
 
-      // Sanitize output
-      let branchName = stdout
+      // Parse two-line response: display name + branch name
+      const lines = stdout
         .replace(/`/g, '')
-        .replace(/[^a-zA-Z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .toLowerCase()
-        .slice(0, 60);
+        .replace(/["']/g, '')
+        .trim()
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
 
+      if (!lines.length) continue;
+
+      let displayName = lines[0]!.slice(0, 80);
+      displayName =
+        displayName.charAt(0).toUpperCase() + displayName.slice(1);
+
+      // Use LLM-provided branch name if present, otherwise derive from phrase
+      let branchName: string;
+      if (lines.length >= 2) {
+        branchName = lines[1]!
+          .replace(/[^a-zA-Z0-9-]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .toLowerCase()
+          .slice(0, 60);
+      } else {
+        branchName = phraseToBranchName(displayName);
+      }
       if (!branchName) continue;
 
       // Check session still exists before renaming
@@ -177,7 +202,7 @@ async function spawnBranchRename(
       });
 
       session.branchName = branchName;
-      session.displayName = branchToDisplayName(branchName);
+      session.displayName = displayName;
       deps.broadcastEvent('session-renamed', {
         sessionId: session.id,
         branchName: session.branchName,

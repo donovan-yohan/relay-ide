@@ -240,6 +240,21 @@ function branchToDisplayName(branch: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/**
+ * Convert a descriptive phrase to a valid kebab-case git branch name.
+ * "Fix the mobile scroll overflow" → "fix-the-mobile-scroll-overflow"
+ * "Add user authentication"        → "add-user-authentication"
+ */
+function phraseToBranchName(phrase: string): string {
+  return phrase
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
 async function isBranchStale(
   repoPath: string,
   branch: string,
@@ -927,6 +942,7 @@ export {
   getCurrentBranch,
   getWorkingTreeDiff,
   branchToDisplayName,
+  phraseToBranchName,
   isBranchStale,
   extractOwnerRepo,
   buildRepoMap,

@@ -1,6 +1,6 @@
 import { test, describe, expect } from 'vitest';
 import { MOUNTAIN_NAMES } from '../server/types.js';
-import { branchToDisplayName } from '../server/git.js';
+import { branchToDisplayName, phraseToBranchName } from '../server/git.js';
 
 describe('MOUNTAIN_NAMES', () => {
   test('contains 30 mountain names', () => {
@@ -51,5 +51,44 @@ describe('branchToDisplayName', () => {
 
   test('handles underscores', () => {
     expect(branchToDisplayName('fix_the_thing')).toBe('Fix the thing');
+  });
+});
+
+describe('phraseToBranchName', () => {
+  test('converts a phrase to kebab-case', () => {
+    expect(phraseToBranchName('Fix the mobile scroll overflow')).toBe(
+      'fix-the-mobile-scroll-overflow'
+    );
+  });
+
+  test('strips special characters', () => {
+    expect(phraseToBranchName("Add user's authentication!")).toBe(
+      'add-users-authentication'
+    );
+  });
+
+  test('collapses multiple spaces and hyphens', () => {
+    expect(phraseToBranchName('Fix  the   bug')).toBe('fix-the-bug');
+    expect(phraseToBranchName('fix--the--bug')).toBe('fix-the-bug');
+  });
+
+  test('trims leading and trailing hyphens', () => {
+    expect(phraseToBranchName(' -Fix the bug- ')).toBe('fix-the-bug');
+  });
+
+  test('truncates to 60 characters', () => {
+    const long =
+      'This is a very long descriptive phrase that should be truncated to sixty characters max';
+    const result = phraseToBranchName(long);
+    expect(result.length).toBeLessThanOrEqual(60);
+    expect(result).toBe(
+      'this-is-a-very-long-descriptive-phrase-that-should-be-trunca'
+    );
+  });
+
+  test('preserves numbers', () => {
+    expect(phraseToBranchName('Fix issue 42 in auth')).toBe(
+      'fix-issue-42-in-auth'
+    );
   });
 });
