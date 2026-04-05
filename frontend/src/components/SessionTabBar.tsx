@@ -10,6 +10,7 @@ export interface SessionTabBarProps {
   onNewAgent: () => void;
   onNewTerminal: () => void;
   onCustomize: () => void;
+  hidden?: boolean;
 }
 
 const terminalSvg = (
@@ -83,7 +84,7 @@ function SessionTab({ session, tabName, isActive, onSelect, onClose, onCloseKeyD
   );
 }
 
-export function SessionTabBar({ sessions, activeSessionId, onSelectSession, onCloseSession, onNewAgent, onNewTerminal, onCustomize }: SessionTabBarProps) {
+export function SessionTabBar({ sessions, activeSessionId, onSelectSession, onCloseSession, onNewAgent, onNewTerminal, onCustomize, hidden = false }: SessionTabBarProps) {
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [tabNames, setTabNames] = useState<Map<string, string>>(new Map());
   const nextAgentIndexRef = useRef(0);
@@ -125,7 +126,7 @@ export function SessionTabBar({ sessions, activeSessionId, onSelectSession, onCl
   };
 
   return (
-    <div className="session-tab-bar" role="tablist" aria-label="Sessions">
+    <div className={`session-tab-bar${hidden ? ' hidden' : ''}`} role="tablist" aria-label="Sessions">
       <div className="tabs-scroll">
         {sessions.map((session) => (
           <SessionTab

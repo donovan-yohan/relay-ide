@@ -367,6 +367,7 @@ function TerminalAreaContent({
                   onNewAgent={() => onQuickAgent()}
                   onNewTerminal={() => onQuickTerminal()}
                   onCustomize={() => onCustomize()}
+                  hidden={keyboardOpen}
                 />
 
                 <Terminal

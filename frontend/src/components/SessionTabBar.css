@@ -190,6 +190,10 @@
     height: 44px;
   }
 
+  .session-tab-bar.hidden {
+    display: none;
+  }
+
   .tab {
     height: 44px;
     padding: 0 12px;
