@@ -259,6 +259,17 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       sessions: state.sessions.map((s) =>
         s.id === sessionId ? { ...s, branchName, displayName } : s
       ),
+      sidebarItems: state.sidebarItems.map((item) => {
+        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        return {
+          ...item,
+          branchName,
+          displayName,
+          sessions: item.sessions.map((s) =>
+            s.id === sessionId ? { ...s, branchName, displayName } : s
+          ),
+        };
+      }),
     }));
   },
 
