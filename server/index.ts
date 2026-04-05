@@ -1993,7 +1993,8 @@ async function main(): Promise<void> {
       (semverLessThan(current, latest) ||
         (channel === 'nightly' &&
           !current.includes('-') &&
-          latest.includes('nightly')));
+          latest.includes('nightly') &&
+          latest.startsWith(current + '-')));
     res.json({ current, latest, updateAvailable, channel });
   });
 

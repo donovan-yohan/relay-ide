@@ -86,3 +86,17 @@ test('nightly with higher base version beats lower release', () => {
 test('fewer pre-release identifiers is lower precedence', () => {
   expect(semverLessThan('0.1.0-nightly', '0.1.0-nightly.1')).toBe(true);
 });
+
+// Build metadata tests
+
+test('build metadata is ignored for precedence', () => {
+  expect(semverLessThan('1.0.0+build.1', '1.0.0+build.2')).toBe(false);
+});
+
+test('build metadata does not break core comparison', () => {
+  expect(semverLessThan('1.0.0+build.1', '2.0.0+build.1')).toBe(true);
+});
+
+test('build metadata with pre-release is handled correctly', () => {
+  expect(semverLessThan('1.0.0-alpha+build', '1.0.0')).toBe(true);
+});

@@ -6,13 +6,22 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, '');
 }
 
+const DIGITS_RE = /^\d+$/;
+
 export function semverLessThan(a: string, b: string): boolean {
-  const idxA = a.indexOf('-');
-  const idxB = b.indexOf('-');
-  const aCore = (idxA === -1 ? a : a.slice(0, idxA)).split('.').map(Number);
-  const bCore = (idxB === -1 ? b : b.slice(0, idxB)).split('.').map(Number);
-  const aPre = idxA === -1 ? undefined : a.slice(idxA + 1);
-  const bPre = idxB === -1 ? undefined : b.slice(idxB + 1);
+  // Strip build metadata per SemVer 2.0.0 — ignored for precedence
+  const aVersion = a.split('+', 1)[0]!;
+  const bVersion = b.split('+', 1)[0]!;
+  const idxA = aVersion.indexOf('-');
+  const idxB = bVersion.indexOf('-');
+  const aCore = (idxA === -1 ? aVersion : aVersion.slice(0, idxA))
+    .split('.')
+    .map(Number);
+  const bCore = (idxB === -1 ? bVersion : bVersion.slice(0, idxB))
+    .split('.')
+    .map(Number);
+  const aPre = idxA === -1 ? undefined : aVersion.slice(idxA + 1);
+  const bPre = idxB === -1 ? undefined : bVersion.slice(idxB + 1);
 
   for (let i = 0; i < 3; i++) {
     const ai = aCore[i] ?? 0;
@@ -31,11 +40,11 @@ export function semverLessThan(a: string, b: string): boolean {
   for (let i = 0; i < len; i++) {
     if (i >= aIds.length) return true; // fewer identifiers = lower
     if (i >= bIds.length) return false;
-    const aNum = Number(aIds[i]);
-    const bNum = Number(bIds[i]);
-    const aIsNum = !isNaN(aNum);
-    const bIsNum = !isNaN(bNum);
+    const aIsNum = DIGITS_RE.test(aIds[i]!);
+    const bIsNum = DIGITS_RE.test(bIds[i]!);
     if (aIsNum && bIsNum) {
+      const aNum = Number(aIds[i]);
+      const bNum = Number(bIds[i]);
       if (aNum !== bNum) return aNum < bNum;
     } else if (aIsNum !== bIsNum) {
       return aIsNum; // numeric < string per semver
