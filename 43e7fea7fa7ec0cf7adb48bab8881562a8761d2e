@@ -1,0 +1,29 @@
+frontend/src/components/SessionTabBar.tsx
+  9b3c5b069fe72ada 13,87,129
+frontend/src/components/Toolbar.css
+  9b3c5b069fe72ada 54-60
+frontend/src/App.tsx
+  9b3c5b069fe72ada 370
+frontend/src/components/SessionTabBar.css
+  9b3c5b069fe72ada 193-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "43e7fea7fa7ec0cf7adb48bab8881562a8761d2e",
+  "prompts": {
+    "9b3c5b069fe72ada": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "126d08db-1076-4c78-b163-c689b616c07b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 2,
+      "accepted_lines": 15,
+      "overriden_lines": 0
+    }
+  }
+}
