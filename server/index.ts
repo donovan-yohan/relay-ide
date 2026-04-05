@@ -2015,12 +2015,16 @@ async function main(): Promise<void> {
         stopEventBatching();
         stopTelemetry();
         serializeAll(configDir);
+        broadcastEvent('server-restarting');
       }
       res.json({ ok: true, restarting });
       if (restarting) {
-        server.close(() => process.exit(0));
-        // Fallback if close hangs
-        setTimeout(() => process.exit(0), 3000);
+        // Brief delay to let the broadcast reach clients
+        setTimeout(() => {
+          server.close(() => process.exit(0));
+          // Fallback if close hangs
+          setTimeout(() => process.exit(0), 3000);
+        }, 500);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed';

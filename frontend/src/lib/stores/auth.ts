@@ -14,6 +14,7 @@ export interface AuthState {
   checkExistingAuth: () => Promise<void>;
   submitPin: (pin: string) => Promise<void>;
   setupNewPin: (pin: string, confirm: string) => Promise<void>;
+  deauthenticate: () => void;
 }
 
 export const useAuthStore = create<AuthState>()((set) => ({
@@ -59,6 +60,10 @@ export const useAuthStore = create<AuthState>()((set) => ({
       const pinError = err instanceof Error ? err.message : 'Failed to set PIN';
       set({ pinError });
     }
+  },
+
+  deauthenticate: () => {
+    set({ authenticated: false, pinError: null, checking: false });
   },
 }));
 
