@@ -20,6 +20,7 @@ import {
   setDefaultYolo,
   setLaunchInTmux,
   setDefaultNotifications,
+  setClaudeFullscreen,
   checkVersion,
   triggerUpdate,
   fetchAnalyticsSize,
@@ -31,10 +32,12 @@ import {
   fetchDefaultYolo,
   fetchLaunchInTmux,
   fetchDefaultNotifications,
+  fetchClaudeFullscreen,
   fetchUpdateChannel,
   setUpdateChannel,
 } from '../../lib/api.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
+import { useConfigStore } from '../../lib/stores/config.js';
 import {
   requestPermission,
   getPermissionState,
@@ -53,6 +56,7 @@ interface ConfigState {
   defaultYolo: boolean;
   launchInTmux: boolean;
   defaultNotifications: boolean;
+  claudeFullscreen: boolean;
 }
 
 const DEFAULT_CONFIG: ConfigState = {
@@ -61,10 +65,16 @@ const DEFAULT_CONFIG: ConfigState = {
   defaultYolo: false,
   launchInTmux: false,
   defaultNotifications: true,
+  claudeFullscreen: true,
 };
 
 const TOC_SECTIONS = [
   { id: 'section-general', label: 'general' },
+  {
+    id: 'section-agents',
+    label: 'agents',
+    children: [{ id: 'agent-claude-code', label: 'Claude Code' }],
+  },
   {
     id: 'section-integrations',
     label: 'integrations',
@@ -86,6 +96,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'tmux',
     'notifications',
   ],
+  agents: ['claude', 'claude code', 'fullscreen', 'no flicker'],
   integrations: [
     'github',
     'webhooks',
@@ -100,7 +111,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
 };
 
 async function loadConfig(): Promise<ConfigState> {
-  const [agent, cont, yolo, tmux, notif] = await Promise.all([
+  const [agent, cont, yolo, tmux, notif, fullscreen] = await Promise.all([
     fetchDefaultAgent().catch(() => DEFAULT_CONFIG.defaultAgent),
     fetchDefaultContinue().catch(() => DEFAULT_CONFIG.defaultContinue),
     fetchDefaultYolo().catch(() => DEFAULT_CONFIG.defaultYolo),
@@ -108,6 +119,7 @@ async function loadConfig(): Promise<ConfigState> {
     fetchDefaultNotifications().catch(
       () => DEFAULT_CONFIG.defaultNotifications
     ),
+    fetchClaudeFullscreen().catch(() => DEFAULT_CONFIG.claudeFullscreen),
   ]);
   return {
     defaultAgent: agent,
@@ -115,6 +127,7 @@ async function loadConfig(): Promise<ConfigState> {
     defaultYolo: yolo,
     launchInTmux: tmux,
     defaultNotifications: notif,
+    claudeFullscreen: fullscreen,
   };
 }
 
@@ -213,12 +226,25 @@ function useConfigHandlers(
       setError('Failed to update notifications default.');
     }
   }
+  async function handleClaudeFullscreenChange(v: boolean) {
+    const prev = config.claudeFullscreen;
+    setConfig((c) => ({ ...c, claudeFullscreen: v }));
+    setError('');
+    try {
+      await setClaudeFullscreen(v);
+      await useConfigStore.getState().refreshConfig();
+    } catch {
+      setConfig((c) => ({ ...c, claudeFullscreen: prev }));
+      setError('Failed to update Claude fullscreen setting.');
+    }
+  }
   return {
     handleAgentChange,
     handleContinueChange,
     handleYoloChange,
     handleTmuxChange,
     handleNotifChange,
+    handleClaudeFullscreenChange,
   };
 }
 
@@ -417,6 +443,11 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               searchQuery={searchQuery}
               handlers={configHandlers}
             />
+            <AgentsSection
+              config={config}
+              searchQuery={searchQuery}
+              handlers={configHandlers}
+            />
             <IntegrationsSection
               searchQuery={searchQuery}
               githubConnected={githubConnected}
@@ -521,6 +552,37 @@ function GeneralSection({
           checked={config.defaultNotifications}
           onChange={(v) => void handlers.handleNotifChange(v)}
           disabled={notifDisabled}
+        />
+      </SettingRow>
+    </section>
+  );
+}
+
+function AgentsSection({
+  config,
+  searchQuery,
+  handlers,
+}: {
+  config: ConfigState;
+  searchQuery: string;
+  handlers: ConfigHandlers;
+}) {
+  return (
+    <section
+      id="section-agents"
+      className={sectionClass('section-agents', searchQuery)}
+    >
+      <h3 className="settings-dialog-section-heading">agents</h3>
+      <h4 id="agent-claude-code" className="settings-dialog-subsection-heading">
+        Claude Code
+      </h4>
+      <SettingRow
+        name="Fullscreen mode"
+        description="Lock terminal to viewport height — Claude handles scrolling internally"
+      >
+        <TuiCheckbox
+          checked={config.claudeFullscreen}
+          onChange={(v) => void handlers.handleClaudeFullscreenChange(v)}
         />
       </SettingRow>
     </section>

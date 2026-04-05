@@ -299,6 +299,7 @@ export type CreatePtyParams = {
   hooksActive?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
   frameworks?: Record<string, Partial<AgentFramework>> | undefined;
+  claudeFullscreen?: boolean | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -341,6 +342,7 @@ export function createPtySession(
     hookToken: paramHookToken,
     hooksActive: paramHooksActive,
     frameworks,
+    claudeFullscreen: paramClaudeFullscreen,
   } = params;
 
   let args = rawArgs;
@@ -374,6 +376,10 @@ export function createPtySession(
     command || framework.commandOverride || framework.command;
 
   const env = cleanEnv();
+
+  if (framework.id === 'claude' && paramClaudeFullscreen === true) {
+    env.CLAUDE_CODE_NO_FLICKER = '1';
+  }
 
   // Inject Claude --settings hooks file for frameworks that use HTTP hook callbacks.
   // This is the Claude-specific hook mechanism; codex uses hooks.json (Task 7) and

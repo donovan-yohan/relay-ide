@@ -581,6 +581,10 @@ export const fetchDefaultNotifications = () =>
   fetchConfigBool('defaultNotifications');
 export const setDefaultNotifications = (v: boolean) =>
   setConfigBool('defaultNotifications', v);
+export const fetchClaudeFullscreen = () =>
+  fetchConfigBool('claudeFullscreen');
+export const setClaudeFullscreen = (v: boolean) =>
+  setConfigBool('claudeFullscreen', v);
 
 export async function fetchVapidKey(): Promise<string | null> {
   try {

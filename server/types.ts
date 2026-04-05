@@ -372,6 +372,7 @@ export interface Config {
   defaultYolo: boolean;
   launchInTmux: boolean;
   defaultNotifications: boolean;
+  claudeFullscreen: boolean;
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
   workspaces?: Workspace[] | undefined;
