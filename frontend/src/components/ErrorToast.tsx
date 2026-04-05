@@ -3,51 +3,41 @@ import { useToastStore } from '../lib/state/toasts.store.js';
 import { addNotification, removeNotification } from '../lib/stores/notifications.js';
 import './ErrorToast.css';
 
-/**
- * ErrorToast bridges the existing toast store into the unified notification
- * stack. It renders nothing itself — it watches the toast store and
- * imperatively pushes/removes notifications from the notification store.
- *
- * addNotification replaces by id, so re-adding an existing toast is a no-op
- * in terms of visible change (content is stable per toast id).
- */
 export const ErrorToast: React.FC = () => {
   const toasts = useToastStore((state) => state.toasts);
   const dismissToast = useToastStore((state) => state.dismissToast);
+  const syncedIds = React.useRef(new Set<string>());
 
-  // Push any new toasts into the notification store
   React.useEffect(() => {
     toasts.forEach((toast) => {
       const id = `error-toast-${toast.id}`;
+      if (syncedIds.current.has(id)) return;
+      syncedIds.current.add(id);
+      const onDismiss = () => {
+        dismissToast(toast.id);
+        removeNotification(id);
+      };
       addNotification({
         id,
         type: toast.variant === 'error' ? 'error' : 'info',
         dismissible: true,
         content: (
-          <ErrorToastContent
-            message={toast.message}
-            variant={toast.variant}
-            onDismiss={() => {
-              dismissToast(toast.id);
-              removeNotification(id);
-            }}
-          />
+          <ErrorToastContent message={toast.message} variant={toast.variant} onDismiss={onDismiss} />
         ),
-        onDismiss: () => {
-          dismissToast(toast.id);
-          removeNotification(id);
-        },
+        onDismiss,
       });
     });
   }, [toasts, dismissToast]);
 
-  // Remove notifications when toasts are dismissed from the store
   React.useEffect(() => {
     return useToastStore.subscribe((state, prev) => {
+      const currentIds = new Set(state.toasts.map((t) => t.id));
       prev.toasts
-        .filter((t) => !state.toasts.find((s) => s.id === t.id))
+        .filter((t) => !currentIds.has(t.id))
         .forEach((t) => {
-          removeNotification(`error-toast-${t.id}`);
+          const id = `error-toast-${t.id}`;
+          syncedIds.current.delete(id);
+          removeNotification(id);
         });
     });
   }, []);
@@ -62,11 +52,9 @@ interface ErrorToastContentProps {
 }
 
 const ErrorToastContent: React.FC<ErrorToastContentProps> = ({ message, variant, onDismiss }) => (
-  <div
-    className={`error-toast-content ${variant === 'error' ? 'error-toast-content--error' : 'error-toast-content--info'}`}
-  >
-    <span className="error-toast-text">{message}</span>
-    <button className="error-toast-dismiss" onClick={onDismiss} aria-label="Dismiss">
+  <div className={`notification-card${variant === 'error' ? ' notification-card--error' : ''}`}>
+    <span className="notification-card__text error-toast-text">{message}</span>
+    <button className="notification-card__dismiss" onClick={onDismiss} aria-label="Dismiss">
       ×
     </button>
   </div>

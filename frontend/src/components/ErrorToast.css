@@ -1,41 +1,11 @@
-.error-toast-content {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 10px 16px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-}
+/* ErrorToast-specific overrides — base card styles in NotificationStack.css */
 
-.error-toast-content--error {
+.notification-card--error {
   border-color: var(--status-error);
 }
 
-.error-toast-content--info {
-  border-color: var(--border);
-}
-
 .error-toast-text {
-  flex: 1;
-  font-size: var(--font-size-sm);
   font-family: var(--font-mono);
-  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.error-toast-dismiss {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: var(--font-size-lg);
-  padding: 4px 8px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.error-toast-dismiss:hover {
-  color: var(--text);
 }

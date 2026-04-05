@@ -4,7 +4,6 @@ import {
   removeNotification,
 } from '../lib/stores/notifications.js';
 import { TuiButton } from './TuiButton.js';
-import './InstallBanner.css';
 
 const INSTALL_NOTIFICATION_ID = 'pwa-install';
 const DISMISS_KEY = 'relay-pwa-install-dismissed';
@@ -61,16 +60,16 @@ export const InstallBanner: React.FC = () => {
         dismissible: true,
         onDismiss: dismiss,
         content: (
-          <div className="install-banner">
-            <span className="install-banner__text">
+          <div className="notification-card">
+            <span className="notification-card__text">
               install relay as an app for quick access
             </span>
-            <div className="install-banner__actions">
+            <div className="notification-card__actions">
               <TuiButton variant="primary" size="sm" onClick={install}>
                 install
               </TuiButton>
               <button
-                className="install-banner__dismiss"
+                className="notification-card__dismiss"
                 onClick={dismiss}
                 aria-label="Dismiss"
               >
@@ -90,7 +89,6 @@ export const InstallBanner: React.FC = () => {
     };
   }, [dismiss, install]);
 
-  // this component renders nothing directly — it pushes into NotificationStack
   return null;
 };
 

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import React from 'react';
+import type { ReactNode } from 'react';
 
 export type NotificationType = 'update' | 'install' | 'error' | 'info' | 'image';
 
@@ -15,21 +15,17 @@ export interface Notification {
   id: string;
   type: NotificationType;
   priority: number;
-  content: React.ReactNode | (() => React.ReactNode);
+  content: ReactNode | (() => ReactNode);
   dismissible: boolean;
   onDismiss?: () => void;
 }
 
+type NotificationInput = Omit<Notification, 'priority'> & { priority?: number };
+
 interface NotificationState {
   notifications: Notification[];
-  addNotification: (notification: Omit<Notification, 'priority'> & { priority?: number }) => void;
+  addNotification: (notification: NotificationInput) => void;
   removeNotification: (id: string) => void;
-}
-
-let counter = 0;
-
-export function generateNotificationId(prefix: string = 'notif'): string {
-  return `${prefix}-${++counter}`;
 }
 
 export const useNotificationStore = create<NotificationState>((set) => ({
@@ -37,11 +33,10 @@ export const useNotificationStore = create<NotificationState>((set) => ({
 
   addNotification: (notification) => {
     const priority = notification.priority ?? PRIORITY[notification.type] ?? 99;
-    const entry: Notification = { ...notification, priority };
     set((state) => {
-      // Replace existing notification with same id if present
-      const filtered = state.notifications.filter((n) => n.id !== entry.id);
-      const inserted = [...filtered, entry].sort((a, b) => a.priority - b.priority);
+      if (state.notifications.some((n) => n.id === notification.id)) return state;
+      const entry: Notification = { ...notification, priority };
+      const inserted = [...state.notifications, entry].sort((a, b) => a.priority - b.priority);
       return { notifications: inserted };
     });
   },
@@ -53,9 +48,7 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   },
 }));
 
-export function addNotification(
-  notification: Omit<Notification, 'priority'> & { priority?: number }
-): void {
+export function addNotification(notification: NotificationInput): void {
   useNotificationStore.getState().addNotification(notification);
 }
 
