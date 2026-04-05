@@ -1,0 +1,29 @@
+test/hooks.test.ts
+  28574fb536395de6 2
+server/index.ts
+  28574fb536395de6 1996-1997
+test/version.test.ts
+  28574fb536395de6 89-102
+server/utils.ts
+  28574fb536395de6 9-10,12-24,43-44,46-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "3df45a9e194039f192016a4b2efe50a85a461702",
+  "prompts": {
+    "28574fb536395de6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c17bfaaf-c6f4-4945-8399-5549b2a7013b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 36,
+      "total_deletions": 50,
+      "accepted_lines": 36,
+      "overriden_lines": 0
+    }
+  }
+}
