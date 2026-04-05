@@ -9,7 +9,7 @@ const INSTALL_NOTIFICATION_ID = 'pwa-install';
 const DISMISS_KEY = 'relay-pwa-install-dismissed';
 
 interface BeforeInstallPromptEvent extends Event {
-  prompt(): Promise<{ outcome: 'accepted' | 'dismissed' }>;
+  prompt(): Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
@@ -30,8 +30,9 @@ export const InstallBanner: React.FC = () => {
     const prompt = deferredPrompt.current;
     if (!prompt) return;
 
-    const result = await prompt.prompt();
-    if (result.outcome === 'accepted') {
+    await prompt.prompt();
+    const { outcome } = await prompt.userChoice;
+    if (outcome === 'accepted') {
       removeNotification(INSTALL_NOTIFICATION_ID);
       deferredPrompt.current = null;
     }
