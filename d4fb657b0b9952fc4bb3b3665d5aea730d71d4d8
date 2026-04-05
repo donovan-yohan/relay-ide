@@ -1,0 +1,27 @@
+frontend/src/App.tsx
+  2a63e6be3d20c503 42-43,909,911-912
+frontend/src/components/InstallBanner.tsx
+  2a63e6be3d20c503 1-97
+frontend/src/components/InstallBanner.css
+  2a63e6be3d20c503 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "d4fb657b0b9952fc4bb3b3665d5aea730d71d4d8",
+  "prompts": {
+    "2a63e6be3d20c503": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ffafa143-0415-4868-b552-2b8ad8ca7841",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 137,
+      "overriden_lines": 0
+    }
+  }
+}
