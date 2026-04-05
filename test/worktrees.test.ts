@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import {
   WORKTREE_DIRS,
   isValidWorktreePath,
   parseWorktreeListPorcelain,
   parseAllWorktrees,
   findOrCreateWorktreeForBranch,
+  WorktreeWatcher,
 } from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
 import { generateTmuxSessionName } from '../server/pty-handler.js';
@@ -661,5 +665,65 @@ describe('findOrCreateWorktreeForBranch', () => {
     expect(result.existing).toBe(false);
     expect(result.isMain).toBe(false);
     expect(result.branchName).toBe('feat/new');
+  });
+});
+
+describe('WorktreeWatcher.rebuild', () => {
+  let tmpDir: string;
+  let repoDir: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-watcher-test-'));
+    repoDir = path.join(tmpDir, 'my-repo');
+    fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, '.worktrees'), { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('emits worktrees-changed when given individual repo paths (not parent dirs)', async () => {
+    const watcher = new WorktreeWatcher();
+    let emitted = false;
+
+    watcher.on('worktrees-changed', () => {
+      emitted = true;
+    });
+
+    // Pass individual repo path (how config.repos actually stores paths)
+    watcher.rebuild([repoDir]);
+
+    // Create a new directory in .worktrees/ to simulate worktree creation
+    fs.mkdirSync(path.join(repoDir, '.worktrees', 'test-branch'));
+
+    // fs.watch debounce is 500ms — wait 800ms for it to fire
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    watcher.close();
+    expect(emitted).toBe(true);
+  });
+
+  it('does not emit for repos without .worktrees when given individual repo paths', async () => {
+    const bareRepo = path.join(tmpDir, 'bare-repo');
+    fs.mkdirSync(path.join(bareRepo, '.git'), { recursive: true });
+
+    const watcher = new WorktreeWatcher();
+    let emitted = false;
+
+    watcher.on('worktrees-changed', () => {
+      emitted = true;
+    });
+
+    // Repo exists but no .worktrees dir — watcher should watch repo root for dir creation
+    watcher.rebuild([bareRepo]);
+
+    // Create .worktrees/ dir (simulates first worktree setup)
+    fs.mkdirSync(path.join(bareRepo, '.worktrees'));
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    watcher.close();
+    expect(emitted).toBe(true);
   });
 });

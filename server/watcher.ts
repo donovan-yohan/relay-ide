@@ -185,6 +185,12 @@ export class WorktreeWatcher extends EventEmitter {
     this._closeAll();
 
     for (const rootDir of rootDirs) {
+      // config.repos stores individual repo paths — watch directly if rootDir is a repo
+      if (fs.existsSync(path.join(rootDir, '.git'))) {
+        this._watchRepo(rootDir);
+        continue;
+      }
+      // Fallback: rootDir may be a parent directory containing repos
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(rootDir, { withFileTypes: true });
@@ -271,6 +277,12 @@ export class BranchWatcher {
     this._closeAll();
 
     for (const rootDir of rootDirs) {
+      // config.repos stores individual repo paths — watch directly if rootDir is a repo
+      if (fs.existsSync(path.join(rootDir, '.git'))) {
+        this._watchRepoHeads(rootDir);
+        continue;
+      }
+      // Fallback: rootDir may be a parent directory containing repos
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(rootDir, { withFileTypes: true });

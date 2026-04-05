@@ -826,6 +826,7 @@ async function main(): Promise<void> {
   // Mount workspace router — rebuild watchers when workspaces are added or removed
   const workspaceRouter = createWorkspaceRouter({
     configPath: CONFIG_PATH,
+    onWorktreeCreated: () => broadcastEvent('worktrees-changed'),
     onWorkspacesChanged: () => {
       setImmediate(() => {
         try {

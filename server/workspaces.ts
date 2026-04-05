@@ -105,6 +105,8 @@ export interface WorkspaceDeps {
   execAsync?: typeof execFileAsync;
   /** Called after any workspace mutation (add, remove, reorder, bulk-add) so watchers can rebuild */
   onWorkspacesChanged?: () => void;
+  /** Called after a worktree is created so all connected clients refresh */
+  onWorktreeCreated?: () => void;
 }
 
 // Exported helpers
@@ -973,6 +975,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           lastActivity: new Date().toISOString(),
           branchName: result.branchName,
         });
+        if (!result.existing) deps.onWorktreeCreated?.();
         res.json({
           branchName: result.branchName,
           mountainName: meta?.displayName || result.dirName,
@@ -1043,6 +1046,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       branchName,
     });
 
+    deps.onWorktreeCreated?.();
     res.json({ branchName, mountainName, worktreePath });
   });
 
