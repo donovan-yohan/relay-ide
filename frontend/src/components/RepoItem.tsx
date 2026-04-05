@@ -70,12 +70,11 @@ export function groupDisplayName(
     }
     return 'default';
   }
-  const firstSession = sessions[0];
-  const wasRenamed = firstSession?.displayName && firstSession.displayName !== firstSession.repoName;
-  if (wasRenamed) return firstSession.displayName;
+  const renamedSession = sessions.find((s) => s.displayName && s.displayName !== s.repoName);
+  if (renamedSession) return renamedSession.displayName;
   const branch = sessions.find((s) => s.branchName)?.branchName;
-  const cwdName = firstSession?.cwd.split('/').pop();
-  return branch || cwdName || firstSession?.repoName || 'unknown';
+  const cwdName = sessions[0]?.cwd.split('/').pop();
+  return branch || cwdName || sessions[0]?.repoName || 'unknown';
 }
 
 interface PrStatusBadgeProps {
