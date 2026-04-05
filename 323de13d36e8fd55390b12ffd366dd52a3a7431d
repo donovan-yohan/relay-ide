@@ -1,0 +1,23 @@
+frontend/src/components/Sidebar.tsx
+  315176cacd4f4497 297-298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "323de13d36e8fd55390b12ffd366dd52a3a7431d",
+  "prompts": {
+    "315176cacd4f4497": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b89b64b-826d-4894-919c-3fc031ad88e6",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 1,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
