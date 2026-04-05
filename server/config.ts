@@ -39,6 +39,7 @@ export const DEFAULTS: Omit<
   defaultYolo: false,
   launchInTmux: false,
   defaultNotifications: true,
+  claudeFullscreen: true,
   updateChannel: 'stable',
 };
 

@@ -498,6 +498,7 @@ type AgentSessionParams = {
   needsBranchRename: boolean;
   branchRenamePrompt: string;
   computedInitialPrompt: string | undefined;
+  claudeFullscreen: boolean;
 };
 
 /** Creates an agent session record and writes worktree metadata if applicable. */
@@ -518,6 +519,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     yolo: params.resolvedYolo,
     claudeArgs: params.resolvedClaudeArgs,
     continuePolicy: params.resolvedContinuePolicy,
+    claudeFullscreen: params.claudeFullscreen,
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     needsBranchRename: params.needsBranchRename,
@@ -1011,7 +1013,8 @@ async function main(): Promise<void> {
         branchName: string;
         initialPrompt?: string;
       }) => {
-        const resolved = resolveSessionSettings(getConfig(), opts.repoPath, {});
+        const freshCfg = getConfig();
+        const resolved = resolveSessionSettings(freshCfg, opts.repoPath, {});
         const repoName =
           opts.repoPath.split('/').filter(Boolean).pop() || 'session';
         const displayName = sessions.nextAgentName();
@@ -1032,6 +1035,7 @@ async function main(): Promise<void> {
           useTmux: resolved.useTmux,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,
+          claudeFullscreen: freshCfg.claudeFullscreen ?? true,
           ...(opts.initialPrompt != null && {
             initialPrompt: opts.initialPrompt,
           }),
@@ -1432,6 +1436,7 @@ async function main(): Promise<void> {
     await execFileAsync('tmux', ['-V']);
   });
   boolConfigEndpoints('defaultNotifications', true);
+  boolConfigEndpoints('claudeFullscreen', true);
   boolConfigEndpoints('autoProvision', false);
 
   // GET /config/automations — get automation settings
@@ -1878,6 +1883,7 @@ async function main(): Promise<void> {
       needsBranchRename: needsBranchRename ?? false,
       branchRenamePrompt: branchRenamePrompt ?? '',
       computedInitialPrompt,
+      claudeFullscreen: freshConfig.claudeFullscreen ?? true,
     });
 
     gitWatcher.watch(session.cwd);

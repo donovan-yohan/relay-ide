@@ -55,6 +55,14 @@
   border-bottom: 1px solid var(--border);
 }
 
+.settings-dialog-subsection-heading {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  margin: 0 0 8px;
+  padding: 0;
+  font-weight: normal;
+}
+
 .settings-dialog-search-input {
   background: var(--bg);
   border: 1px solid var(--border);

@@ -14,6 +14,8 @@ import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
 import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
+import { useConfigStore } from '../lib/stores/config.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
 import { clampFontSize, zoomPercentage } from '../lib/terminal-zoom.js';
 import './Terminal.css';
 
@@ -922,6 +924,13 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const scrollbarRef = useRef<HTMLDivElement>(null);
     const thumbRef = useRef<HTMLDivElement>(null);
 
+    const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
+    const activeAgent = useSessionsStore((s) =>
+      s.sessions.find((sess) => sess.id === sessionId)?.agent
+    );
+    const isFullscreenTerminal =
+      claudeFullscreen && activeAgent === 'claude';
+
     const { termRef, fit } = useTerminalSetup(
       containerRef,
       sessionId,
@@ -978,6 +987,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       'terminal-wrapper',
       dragOver ? 'drag-over' : '',
       selectionMode ? 'selection-mode' : '',
+      isFullscreenTerminal ? 'terminal-fullscreen' : '',
     ]
       .filter(Boolean)
       .join(' ');
