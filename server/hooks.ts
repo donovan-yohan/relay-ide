@@ -50,10 +50,6 @@ export interface HookDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Branch change detection — debounced per-session check via git
 // ---------------------------------------------------------------------------
 
@@ -176,22 +172,10 @@ async function spawnBranchRename(
 
       if (!lines.length) continue;
 
-      let displayName = lines[0]!.slice(0, 80);
-      displayName =
-        displayName.charAt(0).toUpperCase() + displayName.slice(1);
+      const raw = lines[0]!.slice(0, 80);
+      const displayName = raw.charAt(0).toUpperCase() + raw.slice(1);
 
-      // Use LLM-provided branch name if present, otherwise derive from phrase
-      let branchName: string;
-      if (lines.length >= 2) {
-        branchName = lines[1]!
-          .replace(/[^a-zA-Z0-9-]/g, '-')
-          .replace(/-+/g, '-')
-          .replace(/^-+|-+$/g, '')
-          .toLowerCase()
-          .slice(0, 60);
-      } else {
-        branchName = phraseToBranchName(displayName);
-      }
+      const branchName = phraseToBranchName(lines[1] ?? displayName);
       if (!branchName) continue;
 
       // Check session still exists before renaming
