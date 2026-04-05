@@ -1,14 +1,11 @@
 import React from 'react';
 import * as api from '../lib/api.js';
 import { TuiButton } from './TuiButton';
-import './UpdateToast.css';
+import { addNotification, removeNotification } from '../lib/stores/notifications.js';
+
+const UPDATE_NOTIFICATION_ID = 'update-toast';
 
 export const UpdateToast: React.FC = () => {
-  const [visible, setVisible] = React.useState(false);
-  const [text, setText] = React.useState('');
-  const [buttonText, setButtonText] = React.useState('Update Now');
-  const [buttonDisabled, setButtonDisabled] = React.useState(false);
-  const [showActions, setShowActions] = React.useState(true);
   const didInitRef = React.useRef(false);
   const reloadTimerRef = React.useRef<number | null>(null);
 
@@ -20,11 +17,18 @@ export const UpdateToast: React.FC = () => {
       try {
         const data = await api.checkVersion();
         if (data.updateAvailable) {
-          setText(`Update available: v${data.current} → v${data.latest}`);
-          setButtonText('Update Now');
-          setButtonDisabled(false);
-          setShowActions(true);
-          setVisible(true);
+          addNotification({
+            id: UPDATE_NOTIFICATION_ID,
+            type: 'update',
+            dismissible: true,
+            content: (
+              <UpdateToastContent
+                initialText={`Update available: v${data.current} → v${data.latest}`}
+                reloadTimerRef={reloadTimerRef}
+              />
+            ),
+            onDismiss: () => removeNotification(UPDATE_NOTIFICATION_ID),
+          });
         }
       } catch {
         // expected: no update available or network error
@@ -37,6 +41,23 @@ export const UpdateToast: React.FC = () => {
       }
     };
   }, []);
+
+  return null;
+};
+
+interface UpdateToastContentProps {
+  initialText: string;
+  reloadTimerRef: React.RefObject<number | null>;
+}
+
+const UpdateToastContent: React.FC<UpdateToastContentProps> = ({
+  initialText,
+  reloadTimerRef,
+}) => {
+  const [text, setText] = React.useState(initialText);
+  const [buttonText, setButtonText] = React.useState('Update Now');
+  const [buttonDisabled, setButtonDisabled] = React.useState(false);
+  const [showActions, setShowActions] = React.useState(true);
 
   const triggerUpdate = React.useCallback(async () => {
     setButtonDisabled(true);
@@ -60,34 +81,30 @@ export const UpdateToast: React.FC = () => {
       setButtonText('Retry');
       setShowActions(true);
     }
-  }, []);
+  }, [reloadTimerRef]);
 
   const dismiss = React.useCallback(() => {
-    setVisible(false);
+    removeNotification(UPDATE_NOTIFICATION_ID);
   }, []);
 
-  if (!visible) return null;
-
   return (
-    <div className="update-toast">
-      <div className="update-toast-content">
-        <span className="update-toast-text">{text}</span>
-        {showActions ? (
-          <div className="update-toast-actions">
-            <TuiButton
-              variant="primary"
-              size="sm"
-              onClick={triggerUpdate}
-              disabled={buttonDisabled}
-            >
-              {buttonText}
-            </TuiButton>
-            <button className="update-toast-dismiss" onClick={dismiss} aria-label="Dismiss">
-              ×
-            </button>
-          </div>
-        ) : null}
-      </div>
+    <div className="notification-card">
+      <span className="notification-card__text">{text}</span>
+      {showActions ? (
+        <div className="notification-card__actions">
+          <TuiButton
+            variant="primary"
+            size="sm"
+            onClick={triggerUpdate}
+            disabled={buttonDisabled}
+          >
+            {buttonText}
+          </TuiButton>
+          <button className="notification-card__dismiss" onClick={dismiss} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 };
