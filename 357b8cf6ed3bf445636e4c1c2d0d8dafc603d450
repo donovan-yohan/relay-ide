@@ -1,0 +1,41 @@
+server/index.ts
+  c4dcb47e0c8a20cf 501,522,1016-1017,1038,1439,1886
+server/config.ts
+  c4dcb47e0c8a20cf 42
+frontend/src/components/dialogs/SettingsDialog.css
+  c4dcb47e0c8a20cf 58-65
+server/types.ts
+  c4dcb47e0c8a20cf 375
+frontend/src/lib/api.ts
+  c4dcb47e0c8a20cf 584-587
+frontend/src/lib/stores/config.ts
+  c4dcb47e0c8a20cf 10,20,24,30,38
+server/pty-handler.ts
+  c4dcb47e0c8a20cf 302,345,380-385
+frontend/src/components/dialogs/SettingsDialog.tsx
+  c4dcb47e0c8a20cf 23,35,58,67,73-76,98,113,121,129,228-238,245,444-448,559-589
+frontend/src/components/Terminal.tsx
+  c4dcb47e0c8a20cf 17-18,927-933,990
+frontend/src/components/Terminal.css
+  c4dcb47e0c8a20cf 17-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "357b8cf6ed3bf445636e4c1c2d0d8dafc603d450",
+  "prompts": {
+    "c4dcb47e0c8a20cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5fa212ab-6d5b-4efe-b1ef-327a30332762",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 118,
+      "total_deletions": 4,
+      "accepted_lines": 118,
+      "overriden_lines": 0
+    }
+  }
+}
