@@ -1,0 +1,29 @@
+frontend/src/components/dialogs/SettingsDialog.tsx
+  6c1efb014bfada26 40,235
+server/pty-handler.ts
+  6c1efb014bfada26 380
+server/index.ts
+  6c1efb014bfada26 1886
+frontend/src/components/Terminal.css
+  6c1efb014bfada26 18-19,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "8efe9067880bdced3c2594fd6df31f1990372e61",
+  "prompts": {
+    "6c1efb014bfada26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9093cd39-eb2b-47fd-9161-90494af1a9ae",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 9,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    }
+  }
+}
