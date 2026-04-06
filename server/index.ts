@@ -1153,6 +1153,11 @@ async function main(): Promise<void> {
     }
   });
 
+  // GET /auth/check — lightweight auth probe (no side effects)
+  app.get('/auth/check', requireAuth, (_req, res) => {
+    res.json({ ok: true });
+  });
+
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();

@@ -138,7 +138,7 @@ export function connectEventSocket(
 
 async function reconnectWithAuthCheck(): Promise<void> {
   try {
-    const res = await fetch('/sessions');
+    const res = await fetch('/auth/check');
     if (res.status === 401) {
       lastOnAuthRequired?.();
       return;
@@ -247,11 +247,12 @@ function scheduleReconnect(
   ptyReconnectTimer = setTimeout(async () => {
     ptyReconnectTimer = null;
     try {
-      const res = await fetch('/sessions');
-      if (res.status === 401) {
+      const authRes = await fetch('/auth/check');
+      if (authRes.status === 401) {
         lastOnAuthRequired?.();
         return;
       }
+      const res = await fetch('/sessions');
       const sessionList = (await res.json()) as Array<{ id: string }>;
       if (!sessionList.some((s) => s.id === sessionId)) {
         term.write('\r\n[Session ended]\r\n');
