@@ -34,10 +34,11 @@ function makeAccountTelemetry(
   overrides: Partial<AccountTelemetry> = {}
 ): AccountTelemetry {
   return {
-    fiveHourUsedPercent: 10,
-    fiveHourResetsAt: '2026-04-01T05:00:00.000Z',
-    sevenDayUsedPercent: 20,
-    sevenDayResetsAt: '2026-04-07T00:00:00.000Z',
+    framework: 'claude',
+    rateLimits: [
+      { name: 'five_hour', usedPercent: 10, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
+      { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+    ],
     updatedAt: '2026-04-01T00:00:00.000Z',
     ...overrides,
   };
@@ -50,7 +51,10 @@ describe('mergeSessionTelemetrySnapshot', () => {
       updatedAt: '2026-04-01T00:00:10.000Z',
     });
     const currentAccount = makeAccountTelemetry({
-      fiveHourUsedPercent: 55,
+      rateLimits: [
+        { name: 'five_hour', usedPercent: 55, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
+        { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+      ],
       updatedAt: '2026-04-01T00:00:10.000Z',
     });
 
@@ -70,7 +74,10 @@ describe('mergeSessionTelemetrySnapshot', () => {
     const mergedAccount = mergeAccountTelemetrySnapshot(
       currentAccount,
       makeAccountTelemetry({
-        fiveHourUsedPercent: 20,
+        rateLimits: [
+          { name: 'five_hour', usedPercent: 20, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
+          { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+        ],
         updatedAt: '2026-04-01T00:00:05.000Z',
       }),
       '2026-04-01T00:00:08.000Z'

@@ -161,22 +161,9 @@ function normalizeAccountTelemetry(data: unknown): AccountTelemetry | null {
   const candidate = raw as Partial<AccountTelemetry>;
   if (typeof candidate.updatedAt !== 'string') return null;
   return {
-    fiveHourUsedPercent:
-      typeof candidate.fiveHourUsedPercent === 'number'
-        ? candidate.fiveHourUsedPercent
-        : -1,
-    fiveHourResetsAt:
-      typeof candidate.fiveHourResetsAt === 'string'
-        ? candidate.fiveHourResetsAt
-        : null,
-    sevenDayUsedPercent:
-      typeof candidate.sevenDayUsedPercent === 'number'
-        ? candidate.sevenDayUsedPercent
-        : -1,
-    sevenDayResetsAt:
-      typeof candidate.sevenDayResetsAt === 'string'
-        ? candidate.sevenDayResetsAt
-        : null,
+    framework: typeof candidate.framework === 'string' ? candidate.framework : 'unknown',
+    rateLimits: Array.isArray(candidate.rateLimits) ? candidate.rateLimits : [],
+    planType: typeof candidate.planType === 'string' ? candidate.planType : undefined,
     updatedAt: candidate.updatedAt,
   };
 }

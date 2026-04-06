@@ -1,0 +1,37 @@
+import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+
+export type TelemetrySession = Pick<Session, 'id'>;
+
+export interface TelemetryAdapter {
+  readonly framework: string;
+  attach(session: TelemetrySession): void;
+  collectSnapshot(sessionId: string): TelemetryData | null;
+  collectAccountTelemetry?(): AccountTelemetry | null;
+  detach(sessionId: string): void;
+}
+
+export interface TelemetryDeps {
+  getActiveSessions: () => TelemetrySession[];
+  broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
+  configDir: string;
+}
+
+const TELEMETRY_ADAPTERS = new Map<
+  string,
+  (deps: TelemetryDeps) => TelemetryAdapter
+>();
+
+export function getAdapterForFramework(
+  frameworkId: string,
+  deps: TelemetryDeps
+): TelemetryAdapter | null {
+  const factory = TELEMETRY_ADAPTERS.get(frameworkId);
+  return factory ? factory(deps) : null;
+}
+
+export function registerTelemetryAdapter(
+  frameworkId: string,
+  factory: (deps: TelemetryDeps) => TelemetryAdapter
+): void {
+  TELEMETRY_ADAPTERS.set(frameworkId, factory);
+}

@@ -118,6 +118,7 @@ test('parses session telemetry from the statusLine file', () => {
     totalOutputTokens: 3200,
     totalCacheRead: 5000,
     totalCacheWrite: 1000,
+    reasoningOutputTokens: 0,
     contextPercent: 7.8,
     contextWindowSize: 200000,
     costUsd: 0.42,
@@ -126,10 +127,11 @@ test('parses session telemetry from the statusLine file', () => {
   });
 
   expect(account).toEqual({
-    fiveHourUsedPercent: 22,
-    fiveHourResetsAt: '2026-03-31T19:30:00Z',
-    sevenDayUsedPercent: 8,
-    sevenDayResetsAt: '2026-04-03T00:00:00Z',
+    framework: 'claude',
+    rateLimits: [
+      { name: 'five_hour', usedPercent: 22, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
+      { name: 'seven_day', usedPercent: 8, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+    ],
     updatedAt: account?.updatedAt,
   });
 
@@ -153,7 +155,7 @@ test('missing statusLine file leaves telemetry undefined', () => {
 
 test('inactive sessions are pruned once active telemetry is available', () => {
   writePendingTelemetryFile(tmpDir, {
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     sessions: {
       stale: {
@@ -163,6 +165,7 @@ test('inactive sessions are pruned once active telemetry is available', () => {
         totalOutputTokens: 20,
         totalCacheRead: 30,
         totalCacheWrite: 40,
+        reasoningOutputTokens: 0,
         contextPercent: 11,
         contextWindowSize: 999,
         costUsd: 1.23,
@@ -196,8 +199,16 @@ test('malformed statusLine JSON is ignored without crashing', () => {
 });
 
 test('restores pending telemetry from disk on startup', () => {
+  const restoredAccount = {
+    framework: 'claude',
+    rateLimits: [
+      { name: 'five_hour', usedPercent: 44, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
+      { name: 'seven_day', usedPercent: 55, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+    ],
+    updatedAt: '2026-03-31T18:00:00Z',
+  };
   const restored = {
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     sessions: {
       restored: {
@@ -207,6 +218,7 @@ test('restores pending telemetry from disk on startup', () => {
         totalOutputTokens: 20,
         totalCacheRead: 30,
         totalCacheWrite: 40,
+        reasoningOutputTokens: 0,
         contextPercent: 11,
         contextWindowSize: 999,
         costUsd: 1.23,
@@ -214,13 +226,7 @@ test('restores pending telemetry from disk on startup', () => {
         updatedAt: '2026-03-31T18:00:00Z',
       },
     },
-    account: {
-      fiveHourUsedPercent: 44,
-      fiveHourResetsAt: '2026-03-31T19:30:00Z',
-      sevenDayUsedPercent: 55,
-      sevenDayResetsAt: '2026-04-03T00:00:00Z',
-      updatedAt: '2026-03-31T18:00:00Z',
-    },
+    account: { claude: restoredAccount },
   };
   const pendingPath = writePendingTelemetryFile(tmpDir, restored);
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
@@ -234,20 +240,29 @@ test('restores pending telemetry from disk on startup', () => {
     totalOutputTokens: 20,
     totalCacheRead: 30,
     totalCacheWrite: 40,
+    reasoningOutputTokens: 0,
     contextPercent: 11,
     contextWindowSize: 999,
     costUsd: 1.23,
     source: 'statusLine',
     updatedAt: '2026-03-31T18:00:00Z',
   });
-  expect(getAccountTelemetry()).toEqual(restored.account);
+  expect(getAccountTelemetry()).toEqual(restoredAccount);
   expect(fs.existsSync(pendingPath)).toBe(false);
   expect(events.length).toBe(0);
 });
 
 test('GET /telemetry endpoints return session and account telemetry', async () => {
+  const restoredAccount = {
+    framework: 'claude',
+    rateLimits: [
+      { name: 'five_hour', usedPercent: 9, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
+      { name: 'seven_day', usedPercent: 18, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+    ],
+    updatedAt: '2026-03-31T18:00:00Z',
+  };
   const restored = {
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     sessions: {
       endpoint: {
@@ -257,6 +272,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
         totalOutputTokens: 200,
         totalCacheRead: 300,
         totalCacheWrite: 400,
+        reasoningOutputTokens: 0,
         contextPercent: 12.5,
         contextWindowSize: 123456,
         costUsd: 4.56,
@@ -264,13 +280,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
         updatedAt: '2026-03-31T18:00:00Z',
       },
     },
-    account: {
-      fiveHourUsedPercent: 9,
-      fiveHourResetsAt: '2026-03-31T19:30:00Z',
-      sevenDayUsedPercent: 18,
-      sevenDayResetsAt: '2026-04-03T00:00:00Z',
-      updatedAt: '2026-03-31T18:00:00Z',
-    },
+    account: { claude: restoredAccount },
   };
   writePendingTelemetryFile(tmpDir, restored);
   startTelemetry(makeDeps([], []));
@@ -299,6 +309,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
         totalOutputTokens: 200,
         totalCacheRead: 300,
         totalCacheWrite: 400,
+        reasoningOutputTokens: 0,
         contextPercent: 12.5,
         contextWindowSize: 123456,
         costUsd: 4.56,
@@ -309,7 +320,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
 
     const accountRes = await fetch(`${baseUrl}/telemetry/account`);
     expect(accountRes.status).toBe(200);
-    expect(await accountRes.json()).toEqual(restored.account);
+    expect(await accountRes.json()).toEqual(restoredAccount);
 
     const setupStatusRes = await fetch(`${baseUrl}/telemetry/setup-status`);
     expect(setupStatusRes.status).toBe(200);
