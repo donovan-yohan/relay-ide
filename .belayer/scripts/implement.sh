@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Reads node-context.json for the spec file path, then delegates to opencode.
 
-for cmd in jq opencode; do
+for cmd in jq opencode belayer; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not found" >&2; exit 1; }
 done
 
@@ -38,4 +38,8 @@ fi
 
 # Invoke OpenCode in headless mode (opencode run).
 # OpenCode reads CLAUDE.md/AGENTS.md and activates ultrawork/autopilot from keywords in the prompt.
-exec opencode run "$PROMPT"
+opencode run "$PROMPT"
+
+# Signal completion to belayer. BELAYER_* env vars are set by the spawner.
+# outcome.Detect checks for new commits (output type: commit).
+belayer node-complete
