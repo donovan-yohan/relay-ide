@@ -12,6 +12,7 @@ import {
   createWorktree,
   createSession,
   fetchWorkspaceSettings,
+  fetchWorktreeStatus,
   killSession,
   deleteWorktree,
   renameSession as renameSessionApi,
@@ -711,8 +712,28 @@ export function useSessionHandlers({
   );
 
   const handleDeleteWorktree = useCallback(
-    (wt: WorktreeInfo) => {
-      deleteWorktreeDialogRef.current?.open(wt);
+    async (wt: WorktreeInfo) => {
+      try {
+        const status = await fetchWorktreeStatus(wt.path);
+        const hasActive = status.activeSessions.length > 0;
+        if (status.hasUncommittedChanges) {
+          deleteWorktreeDialogRef.current?.open(wt, hasActive);
+        } else {
+          useSessionsStore.getState().setLoading(wt.path);
+          try {
+            await deleteWorktree(wt.path, wt.repoPath, hasActive);
+          } finally {
+            useSessionsStore.getState().clearLoading(wt.path);
+          }
+        }
+      } catch (err) {
+        useToastStore
+          .getState()
+          .showToast(
+            err instanceof Error ? err.message : 'Failed to delete worktree',
+            'error'
+          );
+      }
     },
     [deleteWorktreeDialogRef]
   );
