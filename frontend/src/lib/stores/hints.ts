@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 const STORAGE_KEY = 'relay-ide:hints-seen';
 const MAX_ACTIVE_HINTS = 2;
-const MIN_GAP_MS = 10_000;
+export const MIN_GAP_MS = 10_000;
 
 // ── localStorage helpers ───────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ export interface HintsState {
   isHintSeen: (id: string) => boolean;
   resetAllHints: () => void;
   canShowHint: () => boolean;
-  incrementActive: () => void;
+  incrementActive: (opts?: { updateTimestamp?: boolean }) => void;
   decrementActive: () => void;
 }
 
@@ -66,10 +66,10 @@ export const useHintsStore = create<HintsState>()((set, get) => ({
     return true;
   },
 
-  incrementActive: () =>
+  incrementActive: (opts?: { updateTimestamp?: boolean }) =>
     set((s) => ({
       activeHintCount: s.activeHintCount + 1,
-      lastShownAt: Date.now(),
+      lastShownAt: opts?.updateTimestamp === false ? s.lastShownAt : Date.now(),
     })),
 
   decrementActive: () =>

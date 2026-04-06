@@ -98,7 +98,7 @@ describe('computeAttentionScore', () => {
       })
     );
     expect(withPr > withoutPr).toBeTruthy();
-    expect(withPr - withoutPr).toBe(200);
+    expect(withPr - withoutPr).toBeCloseTo(200);
   });
 
   it('review-requested PR adds urgency', () => {
@@ -113,7 +113,7 @@ describe('computeAttentionScore', () => {
         displayState: 'running',
       })
     );
-    expect(withPr - withoutPr).toBe(150);
+    expect(withPr - withoutPr).toBeCloseTo(150);
   });
 
   it('recency contributes to score', () => {

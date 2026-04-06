@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { WHATS_NEW } from '../lib/whats-new.js';
-import { addNotification, removeNotification } from '../lib/stores/notifications.js';
-import { useHintsStore } from '../lib/stores/hints.js';
+import {
+  addNotification,
+  removeNotification,
+} from '../lib/stores/notifications.js';
+import { useHintsStore, MIN_GAP_MS } from '../lib/stores/hints.js';
 
 const WHATS_NEW_SEEN_KEY = 'relay-ide:whats-new-seen';
 const MAX_TOASTS_PER_LOAD = 2;
@@ -29,7 +32,7 @@ export function useWhatsNew(currentVersion: string) {
     if (firedRef.current) return;
 
     // Suppress during onboarding (if there are no seen hints yet, user is new)
-    const { seenIds, incrementActive } = useHintsStore.getState();
+    const { seenIds } = useHintsStore.getState();
     const isOnboarding = seenIds.size === 0;
     if (isOnboarding) return;
 
@@ -44,49 +47,59 @@ export function useWhatsNew(currentVersion: string) {
     }
 
     firedRef.current = true;
-    saveSeenVersion(currentVersion);
 
-    const featureEntries = Object.entries(features).slice(0, MAX_TOASTS_PER_LOAD);
-    let shown = 0;
+    const featureEntries = Object.entries(features).slice(
+      0,
+      MAX_TOASTS_PER_LOAD
+    );
 
-    for (const [featureId, description] of featureEntries) {
-      if (shown >= MAX_TOASTS_PER_LOAD) break;
+    const staggerTimers: ReturnType<typeof setTimeout>[] = [];
 
-      incrementActive();
-      shown++;
+    featureEntries.forEach(([featureId, description], index) => {
+      const timer = setTimeout(() => {
+        if (index === 0) saveSeenVersion(currentVersion);
+        const { incrementActive: inc } = useHintsStore.getState();
+        inc();
 
-      const notifId = `whats-new-${currentVersion}-${featureId}`;
-      let decremented = false;
-      const safeDecrement = () => {
-        if (decremented) return;
-        decremented = true;
-        useHintsStore.getState().decrementActive();
-      };
+        const notifId = `whats-new-${currentVersion}-${featureId}`;
+        let decremented = false;
+        const safeDecrement = () => {
+          if (decremented) return;
+          decremented = true;
+          useHintsStore.getState().decrementActive();
+        };
 
-      addNotification({
-        id: notifId,
-        type: 'info',
-        dismissible: true,
-        content: () => (
-          <div className="notification-card hint-toast">
-            <span className="notification-card__text hint-toast__text">
-              {description}
-            </span>
-            <button
-              className="notification-card__dismiss"
-              aria-label="dismiss"
-              onClick={() => {
-                safeDecrement();
-                removeNotification(notifId);
-              }}
-            >
-              ×
-            </button>
-          </div>
-        ),
-        onDismiss: safeDecrement,
-      });
-    }
+        addNotification({
+          id: notifId,
+          type: 'info',
+          dismissible: true,
+          content: () => (
+            <div className="notification-card hint-toast">
+              <span className="notification-card__text hint-toast__text">
+                {description}
+              </span>
+              <button
+                className="notification-card__dismiss"
+                aria-label="dismiss"
+                onClick={() => {
+                  safeDecrement();
+                  removeNotification(notifId);
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ),
+          onDismiss: safeDecrement,
+        });
+      }, index * MIN_GAP_MS);
+
+      staggerTimers.push(timer);
+    });
+
+    return () => {
+      staggerTimers.forEach((t) => clearTimeout(t));
+    };
   }, [currentVersion]);
 }
 

@@ -24,11 +24,6 @@ jobs:
 
       - name: Lint changed files
         run: |
-          FILES=$(git diff -z --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs')
-          if [ -n "$FILES" ]; then
-            printf '%s' "$FILES" | xargs -0 npx eslint
-          else
-            echo "No lintable files changed"
-          fi
+          git diff -z --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' | xargs -0 --no-run-if-empty npx eslint
 
       - run: npm test

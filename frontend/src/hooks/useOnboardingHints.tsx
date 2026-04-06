@@ -1,6 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useHintsStore } from '../lib/stores/hints.js';
-import { addNotification, removeNotification } from '../lib/stores/notifications.js';
+import {
+  addNotification,
+  removeNotification,
+} from '../lib/stores/notifications.js';
 
 // ── Hint IDs ──────────────────────────────────────────────────────────────────
 
@@ -14,8 +17,9 @@ export const HINT_COMMAND_PALETTE = 'onboarding-command-palette';
 // Fires a hint toast via the notification system with proper decrement guards.
 
 function fireHintToast(hintId: string, text: string): void {
-  const { incrementActive } = useHintsStore.getState();
-  incrementActive();
+  // Increment active count without updating lastShownAt so we don't trigger
+  // the MIN_GAP_MS throttle that blocks other hint components.
+  useHintsStore.getState().incrementActive({ updateTimestamp: false });
 
   const notifId = `hint-notif-${hintId}`;
   let decremented = false;
@@ -31,9 +35,7 @@ function fireHintToast(hintId: string, text: string): void {
     dismissible: true,
     content: () => (
       <div className="notification-card hint-toast">
-        <span className="notification-card__text hint-toast__text">
-          {text}
-        </span>
+        <span className="notification-card__text hint-toast__text">{text}</span>
         <button
           className="notification-card__dismiss"
           aria-label="dismiss hint"
@@ -87,7 +89,7 @@ export function useOnboardingHints({
       sessionToastFiredRef.current = true;
       fireHintToast(
         HINT_FIRST_SESSION_RUNNING,
-        'session is live. try cmd+k for the command palette, or [+] in the tab bar.',
+        'session is live. try cmd+k for the command palette, or [+] in the tab bar.'
       );
 
       // Queue remote access toast after another gap
@@ -97,7 +99,7 @@ export function useOnboardingHints({
           remoteToastFiredRef.current = true;
           fireHintToast(
             HINT_REMOTE_ACCESS,
-            'relay-ide is accessible from any device — see settings > advanced for the remote access url.',
+            'relay-ide is accessible from any device — see settings > advanced for the remote access url.'
           );
         }, 12_000);
       }
@@ -119,7 +121,9 @@ export function useOnboardingHints({
   return {
     showNoReposHint: !hasRepos && !isHintSeen(HINT_NO_REPOS),
     showRepoAddedHint:
-      hasRepos && !hasActiveSessions && !isHintSeen(HINT_REPO_ADDED_NO_SESSIONS),
+      hasRepos &&
+      !hasActiveSessions &&
+      !isHintSeen(HINT_REPO_ADDED_NO_SESSIONS),
     showCommandPaletteHint:
       commandPaletteJustOpened && !isHintSeen(HINT_COMMAND_PALETTE),
   };
