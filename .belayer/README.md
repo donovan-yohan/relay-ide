@@ -1,119 +1,119 @@
-# gstack Framework for Belayer
+# relay-ide Belayer Framework
 
-Belayer framework powered by gstack skills. Claude implements, Codex reviews (adversarial, isolated context), Claude ships. No custom scripts needed for the basic case — the pipeline is pure YAML.
+Custom belayer pipeline for relay-ide. OpenCode implements (with ultrawork/autopilot), Codex reviews (adversarial, isolated context), Claude ships. Review depth is auto-routed based on change classification.
 
 ## Prerequisites
 
-All tools must have gstack skills installed:
-
 ```bash
-# Claude Code CLI — install gstack skills
-# See: https://github.com/anthropics/gstack
-
-# OpenAI Codex CLI — install gstack skills
-npm i -g @openai/codex
-# gstack skills are discovered from .claude/skills/ or .agents/skills/
-
 # Belayer
 go install github.com/donovan-yohan/belayer/cmd/belayer@latest
+
+# Temporal (local dev)
+temporal server start-dev
+
+# OpenCode (implementation agent)
+# https://github.com/opencode-ai/opencode
+
+# Claude Code CLI (review routing + PR authoring)
+# https://docs.anthropic.com/en/docs/claude-code
+
+# OpenAI Codex CLI (adversarial review gates)
+npm i -g @openai/codex
+
+# GitHub CLI (issue intake)
+# https://cli.github.com
 ```
 
-Both Claude and Codex must have gstack set up so that skill invocations (/ship, $review, etc.) work in each agent.
+## GitHub Issues Workflow
+
+```
+backlog        →  refined       →  todo          →  [belayer]
+(rough idea)      (scoped)         (belayer-ready)   (implement → review → ship)
+                       │                                    │
+                       └── planning skill ──────────────────┘
+                           - writes implementation plan into issue body
+                           - checks in-flight todo/in-progress work for file overlap
+                           - if clean: promotes refined → todo
+                           - if conflict: adds "Blocked by #X" and waits
+```
+
+**Labels:**
+- `backlog` — rough idea, not yet scoped
+- `refined` — scoped, requirements clear, awaiting implementation plan
+- `todo` — planned, conflict-free, ready for belayer to pick up
+- `in-progress` — belayer has claimed this issue (added by belayer)
+
+**The planning skill** (runs upstream, not part of belayer pipeline):
+1. Takes a `refined` issue
+2. Reads code, writes file-level implementation plan into the issue body
+3. Checks all `todo` and `in-progress` issues for file/module overlap
+4. Promotes to `todo` if no conflicts, or adds dependency notes and waits
 
 ## Pipeline
 
 ```
-implement (Claude)  →  review (Codex, gate)  →  ship (Claude)
-     ↑                      |
-     └── on_retry ──────────┘
+[intake: todo issue] → implement (OpenCode) → review-router (Claude)
+                                                    │
+                      ┌─────────────────────────────┼─────────────────────────────────┐
+                      v                             v                                 v
+               full-feature-review          quick-bugfix-review               refactor-review
+               (5 dims, pass: 7.0)          (3 dims, pass: 7.0)              (4 dims, pass: 7.5)
+                      v                             v                                 v
+                 ship (Claude)                 ship (Claude)                      ship (Claude)
+                 → PR to nightly               → PR to nightly                   → PR to nightly
 ```
 
 ### implement
 
-- `vendor: claude`, `prompt: "Implement the design specification at $INPUT"`
-- Reads the design doc, implements the feature, writes tests, commits
-- Trusts agent competency — no micromanagement
+- `command: .belayer/scripts/implement.sh` (invokes OpenCode)
+- Prompt includes `/ultrawork` and `/autopilot` keywords for parallel agent orchestration
+- Receives the issue body as a spec file (implementation plan written by planning skill)
 
-### review (gate)
+### review-router
 
-- `vendor: codex`, `prompt: "$review"`
-- Runs gstack's full /review methodology via Codex (checklist, scope drift, confidence calibration)
-- H-as-feature: Codex is a different model in a different process with zero implementation context
-- Belayer auto-appends structured output instructions for gate-result.json
-- Scores three dimensions: code_quality, scope_compliance, production_readiness
+- `vendor: claude`, classifies the change and picks review depth
+- Routes to one of three subpipelines based on scope, risk, and change type
+
+### review gates (subpipelines)
+
+- `vendor: codex` (adversarial, zero implementation context)
+- Each subpipeline has tuned dimensions and thresholds for its change type
+- Score-then-route: Codex scores, belayer decides pass/retry/fail
 
 ### ship
 
-- `vendor: claude`, `prompt: "/ship"`
-- Runs gstack's /ship skill: version bump, changelog, push, create PR
+- `vendor: claude`, creates PR targeting nightly
+- Runs build + tests before pushing
 
-## How It Works
-
-The pipeline YAML defines agent nodes with `vendor` + `prompt`. Belayer resolves the vendor to the right CLI command, passes the prompt, and handles the output contract. No shell scripts needed.
-
-```yaml
-- name: implement
-  type: agent
-  vendor: claude
-  prompt: 'Implement the design specification at $INPUT'
-```
-
-Belayer translates this to:
+## Usage
 
 ```bash
-claude -p --dangerously-skip-permissions --output-format stream-json "Implement the design specification at /path/to/design.md"
+# Start Temporal worker
+belayer worker
+
+# Belayer polls for todo issues automatically via intake trigger
+# Or run manually:
+belayer climb "implement issue #170"
+
+# Check status
+belayer status
 ```
 
-For gate nodes, belayer auto-appends dimension scoring instructions to the prompt so the agent returns structured JSON that feeds into score-then-route.
+## File Structure
 
-## Extending
-
-### With carabiner (quality learning loop)
-
-When carabiner is available, add a custom `command:` to the implement node that calls `carabiner quality check` before prompting:
-
-```yaml
-- name: implement
-  type: node
-  command: .belayer/scripts/implement-with-carabiner.sh
 ```
-
-The `command:` field overrides `vendor` + `prompt` for nodes that need custom logic.
-
-### With /land-and-deploy (output verification)
-
-Add a post-ship node for merge + monitoring:
-
-```yaml
-- name: land
-  type: agent
-  vendor: claude
-  prompt: '/land-and-deploy'
-  input: { type: pr }
-  on_pass: stop
-```
-
-### Custom frameworks
-
-Copy this pipeline.yaml and change the vendors/prompts:
-
-```yaml
-# Gemini implements, Claude reviews
-- name: implement
-  type: agent
-  vendor: gemini
-  prompt: 'Implement the design at $INPUT'
-
-- name: review
-  type: gate
-  vendor: claude
-  prompt: '$review'
-```
-
-Any agent with gstack skills can fill any role.
-
-## Setup
-
-```bash
-belayer setup --framework gstack
+.belayer/
+  pipeline.yaml              # Main pipeline: implement → review-router
+  framework.yaml             # Framework metadata
+  scripts/
+    check-ready.sh           # Trigger: finds next todo issue from GitHub
+    implement.sh             # Node runner: invokes OpenCode
+  pipelines/
+    full-feature-review.yaml # 5-dim gate (quality, spec, prod, tests, arch)
+    quick-bugfix-review.yaml # 3-dim gate (correctness, regression, tests)
+    refactor-review.yaml     # 4-dim gate (behavior, arch, tests, migration)
+  prompts/
+    implement.md             # Implementation prompt (ultrawork/autopilot)
+    review.md                # Adversarial review prompt
+  .internal/                 # Gitignored runtime state
 ```

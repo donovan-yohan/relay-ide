@@ -1,0 +1,33 @@
+name: refactor-review
+
+nodes:
+  - name: code-review
+    type: agent
+    vendor: codex
+    prompt: "$review"
+    input: { type: commit }
+    output: { type: gate_result }
+    dimensions:
+      - { name: behavioral_preservation, weight: 0.35, description: "Does the refactor preserve all existing behavior? No functional changes to PTY, WebSocket, or auth." }
+      - { name: architecture_improvement, weight: 0.30, description: "Does the new structure improve modularity? Are server modules still single-concern?" }
+      - { name: test_coverage, weight: 0.20, description: "Are existing vitest tests still passing? Were tests added for restructured code?" }
+      - { name: migration_safety, weight: 0.15, description: "Can this be deployed without breaking existing relay-ide installations?" }
+    thresholds: { pass: 7.5, retry: 5.0 }
+    on_pass: ship
+    on_retry: self
+    on_fail: stop
+    max_retries: 2
+
+  - name: ship
+    type: agent
+    vendor: claude
+    prompt: |
+      Create a pull request targeting nightly for the refactor.
+      Emphasize this is a structural change with no new behavior.
+      Include before/after architecture notes.
+      Run `npm run build` and `npm test` before pushing.
+      Write the PR URL to .belayer/.internal/output/pr.json as {"url": "...", "number": N}.
+    input: { type: gate_result, key: code-review }
+    output: { type: pr, path: .belayer/.internal/output/pr.json }
+    on_pass: stop
+    on_fail: stop
