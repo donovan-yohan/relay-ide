@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -697,22 +697,27 @@ describe('WorktreeWatcher.rebuild', () => {
     watcher.close();
   });
 
-  it('emits worktrees-changed on debounced emit', async () => {
-    const watcher = new WorktreeWatcher();
-    let emitted = false;
+  it('emits worktrees-changed on debounced emit', () => {
+    vi.useFakeTimers();
+    try {
+      const watcher = new WorktreeWatcher();
+      let emitted = false;
 
-    watcher.on('worktrees-changed', () => {
-      emitted = true;
-    });
+      watcher.on('worktrees-changed', () => {
+        emitted = true;
+      });
 
-    // Trigger the debounced emit directly (testing our code, not fs.watch)
-    (watcher as unknown as { _debouncedEmit: () => void })._debouncedEmit();
+      // Trigger the debounced emit directly (testing our code, not fs.watch)
+      (watcher as unknown as { _debouncedEmit: () => void })._debouncedEmit();
 
-    // Wait for the 500ms debounce
-    await new Promise((resolve) => setTimeout(resolve, 600));
+      // Advance past the 500ms debounce
+      vi.advanceTimersByTime(500);
 
-    watcher.close();
-    expect(emitted).toBe(true);
+      expect(emitted).toBe(true);
+      watcher.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('watches repo root when .worktrees does not exist yet', () => {

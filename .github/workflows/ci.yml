@@ -52,9 +52,11 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run e2e smoke tests
-        run: npm run test:e2e -- --grep "basic functionality"
+        run: npx playwright test --grep "smoke"
         env:
           CI: true
+          NO_PIN: '1'
+          RELAY_IDE_PORT: '3456'
 
       - name: Upload Playwright report
         if: failure()

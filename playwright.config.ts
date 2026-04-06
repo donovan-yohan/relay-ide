@@ -26,7 +26,9 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `RELAY_IDE_PORT=${port} npm run start`,
+    command: process.env.CI
+      ? `RELAY_IDE_PORT=${port} node dist/server/index.js`
+      : `RELAY_IDE_PORT=${port} npm run start`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
