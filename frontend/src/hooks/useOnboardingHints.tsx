@@ -19,7 +19,7 @@ export const HINT_COMMAND_PALETTE = 'onboarding-command-palette';
 function fireHintToast(hintId: string, text: string): void {
   // Increment active count without updating lastShownAt so we don't trigger
   // the MIN_GAP_MS throttle that blocks other hint components.
-  useHintsStore.setState((s) => ({ activeHintCount: s.activeHintCount + 1 }));
+  useHintsStore.getState().incrementActive({ updateTimestamp: false });
 
   const notifId = `hint-notif-${hintId}`;
   let decremented = false;

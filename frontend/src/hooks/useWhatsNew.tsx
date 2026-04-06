@@ -4,7 +4,7 @@ import {
   addNotification,
   removeNotification,
 } from '../lib/stores/notifications.js';
-import { useHintsStore } from '../lib/stores/hints.js';
+import { useHintsStore, MIN_GAP_MS } from '../lib/stores/hints.js';
 
 const WHATS_NEW_SEEN_KEY = 'relay-ide:whats-new-seen';
 const MAX_TOASTS_PER_LOAD = 2;
@@ -47,18 +47,17 @@ export function useWhatsNew(currentVersion: string) {
     }
 
     firedRef.current = true;
-    saveSeenVersion(currentVersion);
 
     const featureEntries = Object.entries(features).slice(
       0,
       MAX_TOASTS_PER_LOAD
     );
-    const MIN_GAP_MS = 10_000;
 
     const staggerTimers: ReturnType<typeof setTimeout>[] = [];
 
     featureEntries.forEach(([featureId, description], index) => {
       const timer = setTimeout(() => {
+        if (index === 0) saveSeenVersion(currentVersion);
         const { incrementActive: inc } = useHintsStore.getState();
         inc();
 
