@@ -142,6 +142,7 @@ interface SessionGroupRowProps {
   cancelLongPress: () => void;
   onSelectSession: (id: string) => void;
   onDeleteSession?: ((id: string) => void) | undefined;
+  onDeleteWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   repoPath: string;
 }
 
@@ -156,6 +157,7 @@ function SessionGroupRow({
   cancelLongPress,
   onSelectSession,
   onDeleteSession,
+  onDeleteWorktree,
   repoPath,
 }: SessionGroupRowProps) {
   return (
@@ -198,15 +200,41 @@ function SessionGroupRow({
           </span>
         ) : null}
       </div>
-      {onDeleteSession ? (
+      {onDeleteSession || (onDeleteWorktree && groupPath !== repoPath) ? (
         <div className="row-menu-overlay">
           <ContextMenu
             items={[
-              {
-                label: 'close session',
-                action: () => onDeleteSession(rep.id),
-                danger: true,
-              },
+              ...(onDeleteSession
+                ? [
+                    {
+                      label: 'close session',
+                      action: () => onDeleteSession(rep.id),
+                      danger: true,
+                    },
+                  ]
+                : []),
+              ...(onDeleteWorktree && groupPath !== repoPath
+                ? [
+                    {
+                      label: 'delete worktree',
+                      action: () =>
+                        onDeleteWorktree({
+                          name: groupPath.split('/').pop() || '',
+                          path: groupPath,
+                          repoName: rep.repoName,
+                          repoPath,
+                          displayName: groupDisplayName(
+                            groupPath,
+                            repoPath,
+                            groupSessions
+                          ),
+                          lastActivity: rep.lastActivity,
+                          branchName: rep.branchName || '',
+                        }),
+                      danger: true,
+                    },
+                  ]
+                : []),
             ]}
           />
         </div>
@@ -409,6 +437,7 @@ export function RepoItem({
                   cancelLongPress={cancelLongPress}
                   onSelectSession={onSelectSession}
                   onDeleteSession={onDeleteSession}
+                  onDeleteWorktree={onDeleteWorktree}
                   repoPath={repo.path}
                 />
               );

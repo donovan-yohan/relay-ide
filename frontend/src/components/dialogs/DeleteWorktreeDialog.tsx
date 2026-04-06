@@ -12,7 +12,7 @@ import type { WorktreeInfo } from '../../lib/types.js';
 import './DeleteWorktreeDialog.css';
 
 export interface DeleteWorktreeDialogHandle {
-  open(wt: WorktreeInfo): void;
+  open(wt: WorktreeInfo, hasActiveSessions: boolean): void;
   close(): void;
 }
 
@@ -22,10 +22,12 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
     const [worktree, setWorktree] = useState<WorktreeInfo | null>(null);
     const [error, setError] = useState('');
     const [deleting, setDeleting] = useState(false);
+    const [hasActiveSessions, setHasActiveSessions] = useState(false);
 
     useImperativeHandle(ref, () => ({
-      open(wt: WorktreeInfo) {
+      open(wt: WorktreeInfo, hasActiveSessions: boolean) {
         setWorktree(wt);
+        setHasActiveSessions(hasActiveSessions);
         setError('');
         setDeleting(false);
         shellRef.current?.open();
@@ -41,7 +43,7 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
       setError('');
       useSessionsStore.getState().setLoading(worktree.path);
       try {
-        await deleteWorktree(worktree.path, worktree.repoPath);
+        await deleteWorktree(worktree.path, worktree.repoPath, true);
         shellRef.current?.close();
       } catch (err: unknown) {
         setError(
@@ -87,8 +89,13 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
               </p>
               <p className="delete-worktree-wt-path">{worktree.path}</p>
               <p className="delete-worktree-warning-msg">
-                This action cannot be undone.
+                This worktree has uncommitted changes that will be lost.
               </p>
+              {hasActiveSessions && (
+                <p className="delete-worktree-warning-msg">
+                  Active sessions will be terminated.
+                </p>
+              )}
             </>
           )}
           {error && <p className="delete-worktree-error-msg">{error}</p>}

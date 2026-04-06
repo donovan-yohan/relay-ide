@@ -453,14 +453,32 @@ export async function renameSession(
   });
 }
 
+export async function fetchWorktreeStatus(
+  worktreePath: string
+): Promise<{ activeSessions: string[]; hasUncommittedChanges: boolean }> {
+  const res = await fetch(
+    '/worktrees/status?path=' + encodeURIComponent(worktreePath)
+  );
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch worktree status')
+    );
+  }
+  return (await res.json()) as {
+    activeSessions: string[];
+    hasUncommittedChanges: boolean;
+  };
+}
+
 export async function deleteWorktree(
   worktreePath: string,
-  repoPath: string
+  repoPath: string,
+  force?: boolean
 ): Promise<void> {
   const res = await fetch('/worktrees', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repoPath }),
+    body: JSON.stringify({ worktreePath, repoPath, force }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to delete worktree'));
