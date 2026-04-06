@@ -18,7 +18,7 @@ test.describe('PinGate', () => {
     await expect(page.locator('.pin-container p').first()).toContainText(
       'set up a PIN'
     );
-    await expect(page.locator('.tui-input-wrapper')).toHaveCount(2);
+    await expect(page.locator('.pin-input')).toHaveCount(2);
   });
 
   test('renders error state', async ({ page }) => {
