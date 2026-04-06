@@ -37,9 +37,12 @@ export function useOnboardingHints({
     if (sessionToastFiredRef.current) return;
     if (isHintSeen(HINT_FIRST_SESSION_RUNNING)) return;
 
-    const timer = setTimeout(() => {
-      if (!canShowHint()) return;
+    // Store the remote timer ID so we can clear it on unmount
+    let remoteTimerId: ReturnType<typeof setTimeout> | null = null;
 
+    const timer = setTimeout(() => {
+      // Bypass canShowHint() for onboarding toasts — the throttle is meant for
+      // visual border hints, not toasts that go through the notification system.
       sessionToastFiredRef.current = true;
       incrementActive();
 
@@ -77,8 +80,7 @@ export function useOnboardingHints({
 
       // Queue remote access toast after another gap
       if (!isHintSeen(HINT_REMOTE_ACCESS)) {
-        setTimeout(() => {
-          if (!canShowHint()) return;
+        remoteTimerId = setTimeout(() => {
           if (remoteToastFiredRef.current) return;
           remoteToastFiredRef.current = true;
           incrementActive();
@@ -117,9 +119,11 @@ export function useOnboardingHints({
       }
     }, 2_000);
 
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionJustStarted]);
+    return () => {
+      clearTimeout(timer);
+      if (remoteTimerId !== null) clearTimeout(remoteTimerId);
+    };
+  }, [sessionJustStarted, isHintSeen, markSeen, canShowHint, incrementActive, decrementActive]);
 
   // Step 4: command palette first open
   useEffect(() => {
@@ -127,8 +131,7 @@ export function useOnboardingHints({
     if (isHintSeen(HINT_COMMAND_PALETTE)) return;
     markSeen(HINT_COMMAND_PALETTE);
     // The inline hint in CommandPalette is handled by the Hint component directly
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commandPaletteJustOpened]);
+  }, [commandPaletteJustOpened, isHintSeen, markSeen]);
 
   return {
     showNoReposHint: !hasRepos && !isHintSeen(HINT_NO_REPOS),

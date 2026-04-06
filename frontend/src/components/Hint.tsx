@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useHintsStore } from '../lib/stores/hints.js';
 import { addNotification, removeNotification } from '../lib/stores/notifications.js';
 import './Hint.css';
@@ -20,11 +20,20 @@ function HintToast({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
   const canShowHint = useHintsStore((s) => s.canShowHint);
   const incrementActive = useHintsStore((s) => s.incrementActive);
   const decrementActive = useHintsStore((s) => s.decrementActive);
+  // Track whether this instance has already decremented to avoid double-decrement
+  const decrementedRef = useRef(false);
 
   useEffect(() => {
     if (isHintSeen(id) || !canShowHint()) return;
 
     incrementActive();
+
+    const safeDecrement = () => {
+      if (!decrementedRef.current) {
+        decrementedRef.current = true;
+        decrementActive();
+      }
+    };
 
     const notifId = `hint-toast-${id}`;
     addNotification({
@@ -41,7 +50,7 @@ function HintToast({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
             aria-label="dismiss hint"
             onClick={() => {
               markSeen(id);
-              decrementActive();
+              safeDecrement();
               removeNotification(notifId);
               onDismiss?.();
             }}
@@ -52,7 +61,7 @@ function HintToast({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
       ),
       onDismiss: () => {
         markSeen(id);
-        decrementActive();
+        safeDecrement();
         onDismiss?.();
       },
     });
@@ -60,11 +69,9 @@ function HintToast({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
     return () => {
       // If the component unmounts without explicit dismiss, clean up
       removeNotification(notifId);
-      decrementActive();
+      safeDecrement();
     };
-    // Only run once on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, isHintSeen, canShowHint, incrementActive, decrementActive, markSeen, children, onDismiss]);
 
   return null;
 }
@@ -77,28 +84,32 @@ function HintBorder({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
   const canShowHint = useHintsStore((s) => s.canShowHint);
   const incrementActive = useHintsStore((s) => s.incrementActive);
   const decrementActive = useHintsStore((s) => s.decrementActive);
+  // Track whether incrementActive was called so we only decrement if we incremented
+  const incrementedRef = useRef(false);
 
   useEffect(() => {
     if (!isHintSeen(id) && canShowHint()) {
+      incrementedRef.current = true;
       incrementActive();
     }
     return () => {
-      if (!isHintSeen(id)) {
+      if (incrementedRef.current) {
+        incrementedRef.current = false;
         decrementActive();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, isHintSeen, canShowHint, incrementActive, decrementActive]);
 
   if (isHintSeen(id)) return null;
-  if (!canShowHint() && !isHintSeen(id)) {
-    // Still render if already incremented (canShowHint changes after increment)
-    // So we only gate on initial render before increment
-  }
+  // Don't render if the throttle prevented incrementing (hint was not shown)
+  if (!incrementedRef.current) return null;
 
   function handleDismiss() {
     markSeen(id);
-    decrementActive();
+    if (incrementedRef.current) {
+      incrementedRef.current = false;
+      decrementActive();
+    }
     onDismiss?.();
   }
 

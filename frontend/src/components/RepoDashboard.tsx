@@ -147,32 +147,42 @@ function UsageSection({ repoSessions }: UsageSectionProps) {
             )}
           </span>
         </div>
-        {accountTelemetry && accountTelemetry.rateLimits.length > 0 && (
+        {accountTelemetry && (
           <>
-            {accountTelemetry.rateLimits.map((rl) => {
-              const label = rl.windowMinutes === 300 ? '5h limit' : rl.windowMinutes === 10080 ? '7d limit' : rl.name;
-              return (
-                <React.Fragment key={rl.name}>
-                  <div className="usage-divider" />
-                  <div className="usage-row">
-                    <span className="usage-label">{label}</span>
-                    <span className="usage-bar">
-                      <TuiProgress
-                        variant="bar"
-                        value={Math.max(0, Math.min(100, rl.usedPercent >= 0 ? rl.usedPercent : 0))}
-                        width={10}
-                      />
-                    </span>
-                    <span className="usage-value">
-                      {rl.usedPercent >= 0 ? `${Math.round(rl.usedPercent)}% used` : '—'}
-                    </span>
-                    <span className="usage-meta">
-                      resets {formatResetAt(rl.resetsAt)}
-                    </span>
-                  </div>
-                </React.Fragment>
-              );
-            })}
+            <div className="usage-divider" />
+            <div className="usage-row">
+              <span className="usage-label">5h limit</span>
+              <span className="usage-bar">
+                <TuiProgress
+                  variant="bar"
+                  value={Math.max(0, Math.min(100, accountTelemetry.fiveHourUsedPercent >= 0 ? accountTelemetry.fiveHourUsedPercent : 0))}
+                  width={10}
+                />
+              </span>
+              <span className="usage-value">
+                {accountTelemetry.fiveHourUsedPercent >= 0 ? `${Math.round(accountTelemetry.fiveHourUsedPercent)}% used` : '—'}
+              </span>
+              <span className="usage-meta">
+                resets {formatResetAt(accountTelemetry.fiveHourResetsAt)}
+              </span>
+            </div>
+            <div className="usage-divider" />
+            <div className="usage-row">
+              <span className="usage-label">7d limit</span>
+              <span className="usage-bar">
+                <TuiProgress
+                  variant="bar"
+                  value={Math.max(0, Math.min(100, accountTelemetry.sevenDayUsedPercent >= 0 ? accountTelemetry.sevenDayUsedPercent : 0))}
+                  width={10}
+                />
+              </span>
+              <span className="usage-value">
+                {accountTelemetry.sevenDayUsedPercent >= 0 ? `${Math.round(accountTelemetry.sevenDayUsedPercent)}% used` : '—'}
+              </span>
+              <span className="usage-meta">
+                resets {formatResetAt(accountTelemetry.sevenDayResetsAt)}
+              </span>
+            </div>
           </>
         )}
       </div>

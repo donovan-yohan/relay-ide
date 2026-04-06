@@ -90,6 +90,163 @@ initNotifications((sessionId: string, sessionType: string) => {
   _navigateToSessionFn?.(sessionId, sessionType);
 });
 
+// ─── useTerminalOnboardingHints ───────────────────────────────────────────────
+// Tracks session/repo count transitions and returns onboarding hint state.
+// Extracted to reduce TerminalAreaContent's cyclomatic complexity.
+
+function useTerminalOnboardingHints(reposLength: number, sessionsLength: number) {
+  const prevSessionCountRef = useRef(sessionsLength);
+  const prevReposCountRef = useRef(reposLength);
+  const prevSessionsTotalRef = useRef(sessionsLength);
+  const [sessionJustStarted, setSessionJustStarted] = useState(false);
+  const markHintSeen = useHintsStore((s) => s.markSeen);
+
+  useEffect(() => {
+    if (sessionsLength > prevSessionCountRef.current) {
+      setSessionJustStarted(true);
+      const timeoutId = setTimeout(() => setSessionJustStarted(false), 100);
+      prevSessionCountRef.current = sessionsLength;
+      return () => { clearTimeout(timeoutId); };
+    }
+    prevSessionCountRef.current = sessionsLength;
+  }, [sessionsLength]);
+
+  useEffect(() => {
+    if (prevReposCountRef.current === 0 && reposLength > 0) {
+      markHintSeen(HINT_NO_REPOS);
+    }
+    prevReposCountRef.current = reposLength;
+  }, [reposLength, markHintSeen]);
+
+  useEffect(() => {
+    if (prevSessionsTotalRef.current === 0 && sessionsLength > 0) {
+      markHintSeen(HINT_REPO_ADDED_NO_SESSIONS);
+    }
+    prevSessionsTotalRef.current = sessionsLength;
+  }, [sessionsLength, markHintSeen]);
+
+  return { sessionJustStarted, markHintSeen };
+}
+
+// ─── resolveTerminalFilePath ──────────────────────────────────────────────────
+// Converts an absolute or relative terminal file path to a repo-relative path.
+// Returns null if the path cannot be resolved within the cwd.
+
+function resolveTerminalFilePath(clickedPath: string, cwd: string): string | null {
+  if (!cwd) return null;
+  let relative = clickedPath;
+  if (clickedPath.startsWith(cwd + '/')) {
+    relative = clickedPath.slice(cwd.length + 1);
+  } else if (clickedPath.startsWith('/')) {
+    return null;
+  } else if (clickedPath.startsWith('./')) {
+    relative = clickedPath.slice(2);
+  }
+  while (relative.startsWith('./')) {
+    relative = relative.slice(2);
+  }
+  return relative;
+}
+
+// ─── useTerminalDerivedState ──────────────────────────────────────────────────
+// Computes derived session/workspace values used by TerminalAreaContent.
+
+function useTerminalDerivedState() {
+  const activeRepoPath = useUiStore((s) => s.activeRepoPath);
+  const openFileTabs = useUiStore((s) => s.openFileTabs);
+  const analyticsView = useUiStore((s) => s.analyticsView);
+  const sessions = useSessionsStore((s) => s.sessions);
+  const repos = useSessionsStore((s) => s.repos);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+
+  const activeWorkspace = useMemo(
+    () => (activeRepoPath ? repos.find((w) => w.path === activeRepoPath) : undefined),
+    [activeRepoPath, repos]
+  );
+
+  const activeSession = useMemo(
+    () => (activeSessionId ? sessions.find((s) => s.id === activeSessionId) : undefined),
+    [activeSessionId, sessions]
+  );
+
+  const allWorkspaceSessions = useMemo(
+    () => (activeRepoPath ? useSessionsStore.getState().getSessionsForRepo(activeRepoPath) : []),
+    [activeRepoPath, sessions]
+  );
+
+  const workspaceSessions = useMemo(
+    () =>
+      (activeSession
+        ? allWorkspaceSessions.filter((s) => s.cwd === activeSession.cwd)
+        : allWorkspaceSessions
+      ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    [activeSession, allWorkspaceSessions]
+  );
+
+  const hasActiveSession = useMemo(
+    () => !!activeSession && !!activeRepoPath && activeSession.repoPath === activeRepoPath,
+    [activeSession, activeRepoPath]
+  );
+
+  const sessionTitle = useMemo(
+    () => activeSession?.displayName || activeWorkspace?.name || 'Relay',
+    [activeSession, activeWorkspace]
+  );
+
+  const activeSessionUseTmux = useMemo(() => activeSession?.useTmux ?? false, [activeSession]);
+  const activeWorkspaceCwd = useMemo(
+    () => activeSession?.worktreePath ?? activeSession?.repoPath ?? '',
+    [activeSession]
+  );
+  const fileViewerOpen = useMemo(() => openFileTabs.length > 0, [openFileTabs]);
+
+  const viewMode = useMemo<'empty' | 'org' | 'dashboard' | 'session' | 'analytics'>(() => {
+    if (analyticsView !== null) return 'analytics';
+    if (!repos.length) return 'empty';
+    if (!activeRepoPath) return 'org';
+    if (!hasActiveSession) return 'dashboard';
+    return 'session';
+  }, [analyticsView, repos.length, activeRepoPath, hasActiveSession]);
+
+  return {
+    activeRepoPath,
+    activeSessionId,
+    activeSession,
+    activeWorkspace,
+    workspaceSessions,
+    sessionTitle,
+    activeSessionUseTmux,
+    activeWorkspaceCwd,
+    fileViewerOpen,
+    viewMode,
+    analyticsView,
+    repos,
+    sessions,
+  };
+}
+
+// ─── AnalyticsViewContent ─────────────────────────────────────────────────────
+// Renders the analytics or session-detail view. Extracted to reduce complexity.
+
+function AnalyticsViewContent() {
+  const analyticsView = useUiStore((s) => s.analyticsView);
+  const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
+  if (typeof analyticsView === 'object' && analyticsView !== null && 'sessionId' in analyticsView) {
+    return (
+      <SessionDetail
+        sessionId={analyticsView.sessionId}
+        onBack={() => setAnalyticsView('dashboard')}
+      />
+    );
+  }
+  return (
+    <AnalyticsDashboard
+      onSelectSession={(id) => setAnalyticsView({ sessionId: id })}
+      onClose={() => setAnalyticsView(null)}
+    />
+  );
+}
+
 // ─── TerminalAreaContent ──────────────────────────────────────────────────────
 // Extracted to reduce App's cyclomatic complexity. Accesses Zustand stores
 // directly to avoid a large prop surface; only truly local state/refs are passed.
@@ -131,111 +288,43 @@ function TerminalAreaContent({
   onSelectSession,
   onCloseSession,
 }: TerminalAreaContentProps) {
-  // Store access
+  // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
-  const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
   const rightSidebarWidth = useUiStore((s) => s.rightSidebarWidth);
   const saveRightSidebarWidth = useUiStore((s) => s.saveRightSidebarWidth);
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
-  const openFileTabs = useUiStore((s) => s.openFileTabs);
   const openFileTab = useUiStore((s) => s.openFileTab);
-  const analyticsView = useUiStore((s) => s.analyticsView);
   const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
-  const sessions = useSessionsStore((s) => s.sessions);
-  const repos = useSessionsStore((s) => s.repos);
-  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
-  // ── Onboarding hints ──────────────────────────────────────────────────────
-  const prevSessionCountRef = useRef(sessions.length);
-  const [sessionJustStarted, setSessionJustStarted] = useState(false);
-  useEffect(() => {
-    if (sessions.length > prevSessionCountRef.current) {
-      setSessionJustStarted(true);
-      setTimeout(() => setSessionJustStarted(false), 100);
-    }
-    prevSessionCountRef.current = sessions.length;
-  }, [sessions.length]);
+  // ── Derived state ──────────────────────────────────────────────────────────
+  const {
+    activeRepoPath,
+    activeSessionId,
+    activeSession,
+    activeWorkspace,
+    workspaceSessions,
+    sessionTitle,
+    activeSessionUseTmux,
+    activeWorkspaceCwd,
+    fileViewerOpen,
+    viewMode,
+    repos,
+    sessions,
+  } = useTerminalDerivedState();
 
-  const { markSeen: markHintSeen } = useHintsStore();
+  // ── Onboarding hints ──────────────────────────────────────────────────────
+  const { sessionJustStarted } = useTerminalOnboardingHints(repos.length, sessions.length);
+
   const onboardingHints = useOnboardingHints({
     hasRepos: repos.length > 0,
     hasActiveSessions: sessions.length > 0,
     sessionJustStarted,
     commandPaletteJustOpened: false,
   });
-
-  const [copyModeActive, setCopyModeActive] = useState(false);
-
-  const activeWorkspace = useMemo(
-    () =>
-      activeRepoPath ? repos.find((w) => w.path === activeRepoPath) : undefined,
-    [activeRepoPath, repos]
-  );
-
-  const activeSession = useMemo(
-    () =>
-      activeSessionId
-        ? sessions.find((s) => s.id === activeSessionId)
-        : undefined,
-    [activeSessionId, sessions]
-  );
-
-  const allWorkspaceSessions = useMemo(
-    () =>
-      activeRepoPath
-        ? useSessionsStore.getState().getSessionsForRepo(activeRepoPath)
-        : [],
-    [activeRepoPath, sessions]
-  );
-
-  const workspaceSessions = useMemo(
-    () =>
-      (activeSession
-        ? allWorkspaceSessions.filter((s) => s.cwd === activeSession.cwd)
-        : allWorkspaceSessions
-      ).toSorted(
-        (a, b) =>
-          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      ),
-    [activeSession, allWorkspaceSessions]
-  );
-
-  const hasActiveSession = useMemo(
-    () =>
-      !!activeSession &&
-      !!activeRepoPath &&
-      activeSession.repoPath === activeRepoPath,
-    [activeSession, activeRepoPath]
-  );
-
-  const sessionTitle = useMemo(
-    () => activeSession?.displayName || activeWorkspace?.name || 'Relay',
-    [activeSession, activeWorkspace]
-  );
-
-  const activeSessionUseTmux = useMemo(
-    () => activeSession?.useTmux ?? false,
-    [activeSession]
-  );
-  const activeWorkspaceCwd = useMemo(
-    () => activeSession?.worktreePath ?? activeSession?.repoPath ?? '',
-    [activeSession]
-  );
-  const fileViewerOpen = useMemo(() => openFileTabs.length > 0, [openFileTabs]);
-
-  const viewMode = useMemo<
-    'empty' | 'org' | 'dashboard' | 'session' | 'analytics'
-  >(() => {
-    if (analyticsView !== null) return 'analytics';
-    if (!repos.length) return 'empty';
-    if (!activeRepoPath) return 'org';
-    if (!hasActiveSession) return 'dashboard';
-    return 'session';
-  }, [analyticsView, repos.length, activeRepoPath, hasActiveSession]);
 
   const handleSendKey = useCallback((key: string) => {
     sendPtyData(key);
@@ -276,30 +365,13 @@ function TerminalAreaContent({
   );
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
-      const currentActiveSessionId =
-        useSessionsStore.getState().activeSessionId;
+      const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
       const currentActiveSession = currentActiveSessionId
-        ? useSessionsStore
-            .getState()
-            .sessions.find((s) => s.id === currentActiveSessionId)
+        ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
         : undefined;
-      const cwd =
-        currentActiveSession?.worktreePath ??
-        currentActiveSession?.repoPath ??
-        '';
-      if (!cwd) return;
-      let relative = clickedPath;
-      if (clickedPath.startsWith(cwd + '/')) {
-        relative = clickedPath.slice(cwd.length + 1);
-      } else if (clickedPath.startsWith('/')) {
-        return;
-      } else if (clickedPath.startsWith('./')) {
-        relative = clickedPath.slice(2);
-      }
-      while (relative.startsWith('./')) {
-        relative = relative.slice(2);
-      }
-      openFileTab(relative, false);
+      const cwd = currentActiveSession?.worktreePath ?? currentActiveSession?.repoPath ?? '';
+      const relative = resolveTerminalFilePath(clickedPath, cwd);
+      if (relative !== null) openFileTab(relative, false);
     },
     [openFileTab]
   );
@@ -324,7 +396,6 @@ function TerminalAreaContent({
               <Hint
                 id={HINT_NO_REPOS}
                 variant="inline-text"
-                onDismiss={() => markHintSeen(HINT_NO_REPOS)}
               >
                 relay-ide manages claude code sessions across your repos.
               </Hint>
@@ -340,23 +411,7 @@ function TerminalAreaContent({
         />
       )}
 
-      {viewMode === 'analytics' && (
-        <>
-          {typeof analyticsView === 'object' &&
-          analyticsView !== null &&
-          'sessionId' in analyticsView ? (
-            <SessionDetail
-              sessionId={analyticsView.sessionId}
-              onBack={() => setAnalyticsView('dashboard')}
-            />
-          ) : (
-            <AnalyticsDashboard
-              onSelectSession={(id) => setAnalyticsView({ sessionId: id })}
-              onClose={() => setAnalyticsView(null)}
-            />
-          )}
-        </>
-      )}
+      {viewMode === 'analytics' && <AnalyticsViewContent />}
 
       {viewMode === 'dashboard' && (
         <RepoDashboard
@@ -377,7 +432,6 @@ function TerminalAreaContent({
               <Hint
                 id={HINT_REPO_ADDED_NO_SESSIONS}
                 variant="border"
-                onDismiss={() => markHintSeen(HINT_REPO_ADDED_NO_SESSIONS)}
               >
                 start a session to begin working with claude code in this repo.
               </Hint>

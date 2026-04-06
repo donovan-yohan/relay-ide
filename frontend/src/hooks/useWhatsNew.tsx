@@ -51,7 +51,9 @@ export function useWhatsNew(currentVersion: string) {
 
     for (const [featureId, description] of featureEntries) {
       if (shown >= MAX_TOASTS_PER_LOAD) break;
-      if (!canShowHint()) break;
+      // What's-new toasts bypass canShowHint() — cap at MAX_TOASTS_PER_LOAD
+      // directly instead of relying on the hint throttle (which uses MIN_GAP_MS
+      // and would suppress the second toast).
 
       incrementActive();
       shown++;
@@ -86,7 +88,6 @@ export function useWhatsNew(currentVersion: string) {
         },
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentVersion]);
 }
 
