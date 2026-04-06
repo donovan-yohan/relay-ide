@@ -61,7 +61,7 @@ export interface RateLimitWindow {
 export interface AccountTelemetry {
   framework: string;
   rateLimits: RateLimitWindow[];
-  planType?: string;
+  planType?: string | undefined;
   updatedAt: string;
 }
 
