@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import { connectEventSocket } from '../lib/ws.js';
 import type { EventMessage } from '../lib/ws.js';
+import { useAuthStore } from '../lib/stores/auth.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
@@ -122,6 +123,10 @@ export function useEventSocket({
       'browser-tab-refreshed': (msg) => {
         useUiStore.getState().refreshHtmlTab(msg.filePath);
       },
+      'server-restarting': () => {
+        // Server is about to shut down (in-app update). Auth will be
+        // invalidated on restart; the reconnect auth check handles it.
+      },
     };
 
     connectEventSocket(
@@ -131,6 +136,9 @@ export function useEventSocket({
       },
       () => {
         void useTelemetryStore.getState().refreshTelemetry();
+      },
+      () => {
+        useAuthStore.getState().deauthenticate();
       },
     );
 

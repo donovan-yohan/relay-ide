@@ -55,7 +55,8 @@ export type EventMessage =
       data: AccountTelemetry | Record<string, unknown> | null;
     }
   | { type: 'browser-tab-opened'; filePath: string; token: string }
-  | { type: 'browser-tab-refreshed'; filePath: string };
+  | { type: 'browser-tab-refreshed'; filePath: string }
+  | { type: 'server-restarting' };
 
 type EventCallback = (msg: EventMessage) => void;
 type EventOpenCallback = () => void;
@@ -83,6 +84,7 @@ let lastPtyOnResize: (() => void) | null = null;
 let lastPtyOnSessionEnd: (() => void) | null = null;
 let lastEventOnMessage: EventCallback | null = null;
 let lastEventOnOpen: EventOpenCallback | null = null;
+let lastOnAuthRequired: (() => void) | null = null;
 
 const PING_INTERVAL = 30_000; // 30s heartbeat
 const PONG_TIMEOUT = 5_000; // 5s to respond
@@ -91,7 +93,8 @@ const PONG_MSG = '{"type":"pong"}';
 
 export function connectEventSocket(
   onMessage: EventCallback,
-  onOpen?: EventOpenCallback
+  onOpen?: EventOpenCallback,
+  onAuthRequired?: () => void
 ): void {
   // Null onclose before close to prevent old socket from scheduling a reconnect
   if (eventWs) {
@@ -101,6 +104,7 @@ export function connectEventSocket(
   }
   lastEventOnMessage = onMessage;
   lastEventOnOpen = onOpen ?? null;
+  lastOnAuthRequired = onAuthRequired ?? lastOnAuthRequired;
   clearEventPing();
 
   const url = wsProtocol + '//' + location.host + '/ws/events';
@@ -126,10 +130,25 @@ export function connectEventSocket(
 
   eventWs.onclose = () => {
     clearEventPing();
-    setTimeout(() => connectEventSocket(onMessage, onOpen), 3000);
+    setTimeout(() => void reconnectWithAuthCheck(), 3000);
   };
 
   eventWs.onerror = () => {};
+}
+
+async function reconnectWithAuthCheck(): Promise<void> {
+  try {
+    const res = await fetch('/auth/check');
+    if (res.status === 401) {
+      lastOnAuthRequired?.();
+      return;
+    }
+  } catch {
+    // Server unreachable — keep trying to reconnect
+  }
+  if (lastEventOnMessage) {
+    connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
+  }
 }
 
 export function connectPtySocket(
@@ -228,6 +247,11 @@ function scheduleReconnect(
   ptyReconnectTimer = setTimeout(async () => {
     ptyReconnectTimer = null;
     try {
+      const authRes = await fetch('/auth/check');
+      if (authRes.status === 401) {
+        lastOnAuthRequired?.();
+        return;
+      }
       const res = await fetch('/sessions');
       const sessionList = (await res.json()) as Array<{ id: string }>;
       if (!sessionList.some((s) => s.id === sessionId)) {
@@ -336,8 +360,7 @@ function forceReconnectEvent(): void {
     eventWs.close();
     eventWs = null;
   }
-  if (lastEventOnMessage)
-    connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
+  setTimeout(() => void reconnectWithAuthCheck(), 1000);
 }
 
 function startEventPing(): void {

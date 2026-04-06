@@ -58,7 +58,29 @@ export const TuiInput: React.FC<TuiInputProps> = ({
       : (value ?? '').slice(0, selStart);
 
     measureRef.current.textContent = textBeforeCursor || '';
-    setCursorLeft(measureRef.current.offsetWidth);
+    const textBeforeCursorWidth = measureRef.current.offsetWidth;
+
+    const computedStyle = window.getComputedStyle(inputRef.current);
+    const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0;
+    const borderLeft = parseFloat(computedStyle.borderLeftWidth) || 0;
+
+    let left = borderLeft + paddingLeft + textBeforeCursorWidth;
+
+    if (computedStyle.textAlign === 'center') {
+      const fullText = type === 'password'
+        ? '\u2022'.repeat((value ?? '').length)
+        : (value ?? '');
+      measureRef.current.textContent = fullText;
+      const fullTextWidth = measureRef.current.offsetWidth;
+
+      const paddingRight = parseFloat(computedStyle.paddingRight) || 0;
+      const contentWidth = inputRef.current.clientWidth - paddingLeft - paddingRight;
+      const centerOffset = (contentWidth - fullTextWidth) / 2;
+
+      left = borderLeft + paddingLeft + centerOffset + textBeforeCursorWidth;
+    }
+
+    setCursorLeft(left);
     setCursorHeight(inputRef.current.offsetHeight || 16);
   }, [type, value]);
 

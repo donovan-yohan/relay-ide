@@ -1154,6 +1154,11 @@ async function main(): Promise<void> {
     }
   });
 
+  // GET /auth/check — lightweight auth probe (no side effects)
+  app.get('/auth/check', requireAuth, (_req, res) => {
+    res.json({ ok: true });
+  });
+
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();
@@ -2016,12 +2021,16 @@ async function main(): Promise<void> {
         stopEventBatching();
         stopTelemetry();
         serializeAll(configDir);
+        broadcastEvent('server-restarting');
       }
       res.json({ ok: true, restarting });
       if (restarting) {
-        server.close(() => process.exit(0));
-        // Fallback if close hangs
-        setTimeout(() => process.exit(0), 3000);
+        // Brief delay to let the broadcast reach clients
+        setTimeout(() => {
+          server.close(() => process.exit(0));
+          // Fallback if close hangs
+          setTimeout(() => process.exit(0), 3000);
+        }, 500);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed';
