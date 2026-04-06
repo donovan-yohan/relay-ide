@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('relay-ide basic functionality', () => {
+test.describe('smoke', () => {
   test('app loads successfully', async ({ page }) => {
     const errors: string[] = [];
 
@@ -12,7 +12,7 @@ test.describe('relay-ide basic functionality', () => {
 
     await page.goto('/');
 
-    await expect(page).toHaveTitle(/relay-ide/i);
+    await expect(page).toHaveTitle(/relay/i);
 
     expect(errors).toHaveLength(0);
   });
@@ -20,17 +20,8 @@ test.describe('relay-ide basic functionality', () => {
   test('PIN screen appears on first visit', async ({ page }) => {
     await page.goto('/');
 
-    await expect(page.locator('text=PIN')).toBeVisible({ timeout: 10000 });
-  });
-
-  test('screenshot comparison', async ({ page }) => {
-    await page.goto('/');
-
-    await page.waitForLoadState('networkidle');
-
-    await expect(page).toHaveScreenshot('homepage.png', {
-      maxDiffPixels: 1000,
-      threshold: 0.2,
+    await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
+      timeout: 10000,
     });
   });
 
@@ -54,6 +45,19 @@ test.describe('relay-ide basic functionality', () => {
     await page.waitForTimeout(2000);
 
     expect(errors).toHaveLength(0);
+  });
+});
+
+test.describe('visual regression', () => {
+  test('screenshot comparison', async ({ page }) => {
+    await page.goto('/');
+
+    await page.waitForLoadState('networkidle');
+
+    await expect(page).toHaveScreenshot('homepage.png', {
+      maxDiffPixels: 1000,
+      threshold: 0.2,
+    });
   });
 
   test('responsive layout - mobile', async ({ page }) => {

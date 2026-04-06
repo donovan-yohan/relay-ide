@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 describe('CodeBlock', () => {
-  const projectRoot = join(__dirname, '../../..');
+  const projectRoot = join(__dirname, '../..');
   const componentPath = join(
     projectRoot,
     'frontend/src/components/CodeBlock.tsx'

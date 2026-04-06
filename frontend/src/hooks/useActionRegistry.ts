@@ -332,19 +332,19 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...sidebarDeleteWorktree,
         handler: () => {
-          const currentActiveSessionId =
-            useSessionsStore.getState().activeSessionId;
-          const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+          const state = useSessionsStore.getState();
+          const currentActiveSession = state.activeSessionId
+            ? state.sessions.find((s) => s.id === state.activeSessionId)
             : undefined;
-          const wt = useSessionsStore
-            .getState()
-            .worktrees.find(
-              (w) => w.path === currentActiveSession?.worktreePath
+          const wt = state.worktrees.find(
+            (w) => w.path === currentActiveSession?.worktreePath
+          );
+          if (wt) {
+            const hasActiveSessions = state.sessions.some(
+              (s) => s.worktreePath === wt.path
             );
-          if (wt) deleteWorktreeDialogRef.current?.open(wt);
+            deleteWorktreeDialogRef.current?.open(wt, hasActiveSessions);
+          }
         },
       },
       { ...sidebarResumeSession, handler: () => handleQuickAgent() },

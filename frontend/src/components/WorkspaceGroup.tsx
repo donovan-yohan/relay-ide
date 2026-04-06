@@ -37,7 +37,7 @@ export interface WorkspaceGroupProps {
   onDeleteWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   onResumeWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
-  orgPrs?: PullRequest[];
+  orgPrs?: PullRequest[] | undefined;
   loadingItems?: Set<string> | undefined;
 }
 
