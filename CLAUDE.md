@@ -67,7 +67,23 @@ All work items are tracked as GitHub Issues on `donovan-yohan/relay-ide`. Use th
 
 **Querying:** `gh issue list --repo donovan-yohan/relay-ide --label <label>`. Filter by state label, type, or project.
 
-**Dependencies:** Use "Part of #N" and `## Dependencies` sections in issue body (no native CLI support for sub-issues/blocking yet).
+**Relationships (sub-issues & blockers):** Use `gh api graphql` mutations, NOT manual text in issue bodies. The `gh` CLI has no native flags for these yet.
+
+```bash
+# Get node IDs (required for all mutations)
+gh api graphql -f query='query { repository(owner: "donovan-yohan", name: "relay-ide") {
+  parent: issue(number: PARENT_NUM) { id }
+  child: issue(number: CHILD_NUM) { id }
+} }'
+
+# Add sub-issue (epic/parent-child)
+gh api graphql -f query='mutation { addSubIssue(input: {issueId: "PARENT_NODE_ID", subIssueId: "CHILD_NODE_ID"}) { subIssue { title } } }'
+
+# Add blocker (A is blocked by B)
+gh api graphql -f query='mutation { addBlockedBy(input: {issueId: "BLOCKED_NODE_ID", blockingIssueId: "BLOCKER_NODE_ID"}) { issue { title } } }'
+```
+
+See `/ticket` skill (`.claude/skills/ticket/SKILL.md`) for full reference including removal and reordering mutations.
 
 ## gstack
 

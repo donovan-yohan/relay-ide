@@ -11,8 +11,12 @@ analytics.db
 analytics.db-shm
 analytics.db-wal
 
-# Claude Code
-.claude/
+# Claude Code (track project-specific skills only)
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/scope/
+!.claude/skills/ticket/
 
 # IDE
 .vscode/
