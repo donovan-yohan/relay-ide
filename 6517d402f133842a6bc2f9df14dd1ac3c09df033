@@ -1,0 +1,33 @@
+.belayer/README.md
+  2f2cb9dcab2ad44e 1,3,11-12,14-15,17-18,20-21,23-25,27,30-38,40-44,46-50,52,55-63,66,68-70,72,74-75,77,79-81,83,85-86,88,91-92,94-96,98-99,102,104-118
+.belayer/scripts/check-ready.sh
+  2f2cb9dcab2ad44e 5,7-9,11-12,14,16-23,25-30,32,34-48
+.belayer/scripts/implement.sh
+  2f2cb9dcab2ad44e 1-36
+.belayer/framework.yaml
+  2f2cb9dcab2ad44e 2,5-6,8
+.belayer/prompts/implement.md
+  2f2cb9dcab2ad44e 1-42
+.belayer/pipeline.yaml
+  2f2cb9dcab2ad44e 3-4,6,11-12,14-19,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "6517d402f133842a6bc2f9df14dd1ac3c09df033",
+  "prompts": {
+    "2f2cb9dcab2ad44e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d2ca6ad-d31c-43fa-b54e-fe6d7e92ac6b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 322,
+      "total_deletions": 175,
+      "accepted_lines": 228,
+      "overriden_lines": 0
+    }
+  }
+}
