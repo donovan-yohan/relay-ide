@@ -1,9 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   useUiStore,
@@ -79,8 +74,15 @@ function useSidebarResize() {
 
 // ── Sortable repo wrapper for DnD ──
 
-function SortableRepoWrapper({ id, children }: { id: string; children: React.ReactNode }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
+function SortableRepoWrapper({
+  id,
+  children,
+}: {
+  id: string;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } =
+    useSortable({ id });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition: transition ?? undefined,
@@ -154,13 +156,18 @@ function UngroupedList({
   );
 
   const orderedRepos = useMemo(
-    () => localOrder.map((p) => reposByPath.get(p)).filter((r): r is Repo => r !== undefined),
+    () =>
+      localOrder
+        .map((p) => reposByPath.get(p))
+        .filter((r): r is Repo => r !== undefined),
     [localOrder, reposByPath]
   );
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 500, tolerance: 5 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 500, tolerance: 5 },
+    }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
@@ -168,29 +175,36 @@ function UngroupedList({
     (event: DragEndEvent) => {
       const { active, over } = event;
       if (!over || active.id === over.id) return;
-      setLocalOrder((prev) => {
-        const oldIndex = prev.indexOf(active.id as string);
-        const newIndex = prev.indexOf(over.id as string);
-        const newOrder = arrayMove(prev, oldIndex, newIndex);
-        const groupedPaths = new Set(workspaceGroups.flatMap((ws) => ws.repos));
-        const groupedOrder = allRepos
-          .filter((r) => groupedPaths.has(r.path))
-          .map((r) => r.path);
-        reorderWorkspaces([...groupedOrder, ...newOrder]);
-        return newOrder;
-      });
+      const oldIndex = localOrder.indexOf(active.id as string);
+      const newIndex = localOrder.indexOf(over.id as string);
+      const newOrder = arrayMove(localOrder, oldIndex, newIndex);
+      setLocalOrder(newOrder);
+      const groupedPaths = new Set(workspaceGroups.flatMap((ws) => ws.repos));
+      const groupedOrder = allRepos
+        .filter((r) => groupedPaths.has(r.path))
+        .map((r) => r.path);
+      reorderWorkspaces([...groupedOrder, ...newOrder]);
     },
-    [allRepos, workspaceGroups, reorderWorkspaces]
+    [localOrder, allRepos, workspaceGroups, reorderWorkspaces]
   );
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={localOrder} strategy={verticalListSortingStrategy}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={localOrder}
+        strategy={verticalListSortingStrategy}
+      >
         <div className="sidebar-ungrouped-list">
           {orderedRepos.map((repo) => {
             const activeSessions = getSessionsForRepo(repo.path);
             const activeWorktreePaths = new Set(
-              activeSessions.map((s) => s.worktreePath).filter(Boolean) as string[]
+              activeSessions
+                .map((s) => s.worktreePath)
+                .filter(Boolean) as string[]
             );
             const inactiveWorktrees = worktrees.filter(
               (wt) =>
@@ -392,11 +406,14 @@ export function Sidebar({
     () => new Map(repos.map((r) => [r.path, r])),
     [repos]
   );
-  const handleSelectWorkspace = useCallback((path: string) => {
-    useUiStore.setState({ activeRepoPath: path });
-    useSessionsStore.getState().setActiveSessionId(null);
-    closeSidebar();
-  }, [closeSidebar]);
+  const handleSelectWorkspace = useCallback(
+    (path: string) => {
+      useUiStore.setState({ activeRepoPath: path });
+      useSessionsStore.getState().setActiveSessionId(null);
+      closeSidebar();
+    },
+    [closeSidebar]
+  );
   const handleHomeBrand = useCallback(() => {
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setAnalyticsView(null);
