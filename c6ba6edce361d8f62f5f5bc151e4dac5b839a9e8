@@ -1,0 +1,36 @@
+.gitignore
+  0d4921356e5237c3 14-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "c6ba6edce361d8f62f5f5bc151e4dac5b839a9e8",
+  "prompts": {
+    "0d4921356e5237c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0c52886-0681-4dfe-bfcf-20f4b4d3473c",
+        "model": "<synthetic>"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 3,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    },
+    "508e1477a6bc03cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284e2271-48ed-4868-971c-a4f67e042076",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
