@@ -20,7 +20,9 @@ test.describe('smoke', () => {
   test('PIN screen appears on first visit', async ({ page }) => {
     await page.goto('/');
 
-    await expect(page.locator('text=PIN')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
+      timeout: 10000,
+    });
   });
 
   test('no console errors on load', async ({ page }) => {
