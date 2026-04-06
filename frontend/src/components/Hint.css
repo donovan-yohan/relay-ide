@@ -1,0 +1,91 @@
+/* ── Border hint ─────────────────────────────────────────────────────────────── */
+
+.hint-border {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.hint-border__content {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.hint-border__dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--font-size-base);
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  opacity: 0.6;
+}
+
+.hint-border__dismiss:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
+/* Collapse to inline on mobile */
+@media (max-width: 767px) {
+  .hint-border {
+    border: none;
+    background: none;
+    padding: 4px 0;
+    font-size: var(--font-size-xs);
+  }
+}
+
+/* ── Toast hint ──────────────────────────────────────────────────────────────── */
+
+.hint-toast {
+  /* Inherits .notification-card base from NotificationStack.css */
+}
+
+.hint-toast__text {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.hint-toast__dismiss {
+  /* Inherits .notification-card__dismiss */
+}
+
+/* ── Inline-text hint ────────────────────────────────────────────────────────── */
+
+.hint-inline-text {
+  display: inline;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.hint-inline-text__content {
+  margin-right: 4px;
+}
+
+.hint-inline-text__dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  opacity: 0.6;
+  vertical-align: middle;
+}
+
+.hint-inline-text__dismiss:hover {
+  opacity: 1;
+  color: var(--text);
+}
