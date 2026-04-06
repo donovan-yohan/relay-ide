@@ -793,18 +793,20 @@ function useTerminalSetup(
       // leave xterm.js generating mouse escape sequences that get echoed as
       // garbage text in the next session's PTY.
       term.write(
-        '\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l'
-      );
-      term.clear();
-      connectPtySocket(
-        sessionId,
-        term,
+        '\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l',
         () => {
-          if (termRef.current)
-            sendPtyResize(termRef.current.cols, termRef.current.rows);
-        },
-        () => {
-          /* session ended */
+          term.clear();
+          connectPtySocket(
+            sessionId,
+            term,
+            () => {
+              if (termRef.current)
+                sendPtyResize(termRef.current.cols, termRef.current.rows);
+            },
+            () => {
+              /* session ended */
+            }
+          );
         }
       );
     }
