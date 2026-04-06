@@ -1,0 +1,23 @@
+.belayer/scripts/check-ready.sh
+  2f2cb9dcab2ad44e 20-22,24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "ddc641af673436d670883f1e8efbd52faca0ebbe",
+  "prompts": {
+    "2f2cb9dcab2ad44e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d2ca6ad-d31c-43fa-b54e-fe6d7e92ac6b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 9,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
