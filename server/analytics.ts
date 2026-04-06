@@ -94,6 +94,9 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
 const INSERT_SQL =
   'INSERT INTO events (category, action, target, properties, session_id, device) VALUES (?, ?, ?, ?, ?, ?)';
 
+const ERR_ANALYTICS_NOT_INITIALIZED = 'Analytics not initialized';
+const SQL_REPO_PATH_FILTER = ' AND repo_path = ?';
+
 export interface AnalyticsEvent {
   category: string;
   action: string;
@@ -283,7 +286,7 @@ export function createAnalyticsRouter(configDir: string): Router {
     }
 
     if (!db || !insertStmt) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -314,7 +317,7 @@ export function createAnalyticsRouter(configDir: string): Router {
   // DELETE /analytics/events — truncate events table
   router.delete('/events', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
     try {
@@ -333,7 +336,7 @@ export function createAnalyticsRouter(configDir: string): Router {
   return router;
 }
 
-export function upsertSessionRollup(data: {
+type RollupData = {
   sessionId: string;
   repoPath?: string;
   repoName?: string;
@@ -355,7 +358,103 @@ export function upsertSessionRollup(data: {
   rateLimitEncounters?: number;
   toolUseCounts?: Record<string, number>;
   recovered?: boolean;
-}): void {
+};
+
+function buildRollupIdentifiers(data: RollupData): unknown[] {
+  return [
+    data.sessionId,
+    data.repoPath ?? null,
+    data.repoName ?? null,
+    data.agentType ?? null,
+    data.model ?? null,
+    data.startedAt ?? new Date().toISOString(),
+    data.endedAt ?? null,
+    data.durationSeconds ?? null,
+  ];
+}
+
+function buildRollupMetrics(data: RollupData): unknown[] {
+  return [
+    data.totalInputTokens ?? 0,
+    data.totalOutputTokens ?? 0,
+    data.totalCacheRead ?? 0,
+    data.totalCacheWrite ?? 0,
+    data.turnCount ?? 0,
+    data.subagentCount ?? 0,
+    data.humanResponseLatencyAvgMs ?? null,
+    data.humanResponseLatencyP50Ms ?? null,
+    data.humanResponseLatencyP95Ms ?? null,
+    data.agentIdlePercent ?? null,
+    data.rateLimitEncounters ?? 0,
+    data.toolUseCounts ? JSON.stringify(data.toolUseCounts) : null,
+    data.recovered ? 1 : 0,
+  ];
+}
+
+function insertSessionRollup(data: RollupData): void {
+  db!
+    .prepare(
+      `
+    INSERT INTO session_rollups (session_id, repo_path, repo_name, agent_type, model, started_at, ended_at, duration_seconds,
+      total_input_tokens, total_output_tokens, total_cache_read, total_cache_write,
+      turn_count, subagent_count, human_response_latency_avg_ms, human_response_latency_p50_ms,
+      human_response_latency_p95_ms, agent_idle_percent, rate_limit_encounters, tool_use_counts, recovered, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `
+    )
+    .run(...buildRollupIdentifiers(data), ...buildRollupMetrics(data));
+}
+
+function updateSessionRollup(data: RollupData): void {
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const values: unknown[] = [];
+
+  const optionalFields: Array<[keyof RollupData, string]> = [
+    ['repoPath', 'repo_path'],
+    ['repoName', 'repo_name'],
+    ['agentType', 'agent_type'],
+    ['model', 'model'],
+    ['endedAt', 'ended_at'],
+    ['durationSeconds', 'duration_seconds'],
+    ['totalInputTokens', 'total_input_tokens'],
+    ['totalOutputTokens', 'total_output_tokens'],
+    ['totalCacheRead', 'total_cache_read'],
+    ['totalCacheWrite', 'total_cache_write'],
+    ['turnCount', 'turn_count'],
+    ['subagentCount', 'subagent_count'],
+    ['humanResponseLatencyAvgMs', 'human_response_latency_avg_ms'],
+    ['humanResponseLatencyP50Ms', 'human_response_latency_p50_ms'],
+    ['humanResponseLatencyP95Ms', 'human_response_latency_p95_ms'],
+    ['agentIdlePercent', 'agent_idle_percent'],
+    ['rateLimitEncounters', 'rate_limit_encounters'],
+  ];
+
+  for (const [key, col] of optionalFields) {
+    if (data[key] !== undefined) {
+      sets.push(`${col} = ?`);
+      values.push(data[key]);
+    }
+  }
+
+  if (data.recovered !== undefined) {
+    sets.push('recovered = ?');
+    values.push(data.recovered ? 1 : 0);
+  }
+
+  if (data.toolUseCounts !== undefined) {
+    sets.push('tool_use_counts = ?');
+    values.push(JSON.stringify(data.toolUseCounts));
+  }
+
+  values.push(data.sessionId);
+  db!
+    .prepare(
+      `UPDATE session_rollups SET ${sets.join(', ')} WHERE session_id = ?`
+    )
+    .run(...values);
+}
+
+export function upsertSessionRollup(data: RollupData): void {
   if (!db) return;
 
   const existing = db
@@ -363,82 +462,9 @@ export function upsertSessionRollup(data: {
     .get(data.sessionId);
 
   if (!existing) {
-    db.prepare(
-      `
-      INSERT INTO session_rollups (session_id, repo_path, repo_name, agent_type, model, started_at, ended_at, duration_seconds,
-        total_input_tokens, total_output_tokens, total_cache_read, total_cache_write,
-        turn_count, subagent_count, human_response_latency_avg_ms, human_response_latency_p50_ms,
-        human_response_latency_p95_ms, agent_idle_percent, rate_limit_encounters, tool_use_counts, recovered, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `
-    ).run(
-      data.sessionId,
-      data.repoPath ?? null,
-      data.repoName ?? null,
-      data.agentType ?? null,
-      data.model ?? null,
-      data.startedAt ?? new Date().toISOString(),
-      data.endedAt ?? null,
-      data.durationSeconds ?? null,
-      data.totalInputTokens ?? 0,
-      data.totalOutputTokens ?? 0,
-      data.totalCacheRead ?? 0,
-      data.totalCacheWrite ?? 0,
-      data.turnCount ?? 0,
-      data.subagentCount ?? 0,
-      data.humanResponseLatencyAvgMs ?? null,
-      data.humanResponseLatencyP50Ms ?? null,
-      data.humanResponseLatencyP95Ms ?? null,
-      data.agentIdlePercent ?? null,
-      data.rateLimitEncounters ?? 0,
-      data.toolUseCounts ? JSON.stringify(data.toolUseCounts) : null,
-      data.recovered ? 1 : 0
-    );
+    insertSessionRollup(data);
   } else {
-    const sets: string[] = ["updated_at = datetime('now')"];
-    const values: unknown[] = [];
-
-    const optionalFields: Array<[keyof typeof data, string]> = [
-      ['repoPath', 'repo_path'],
-      ['repoName', 'repo_name'],
-      ['agentType', 'agent_type'],
-      ['model', 'model'],
-      ['endedAt', 'ended_at'],
-      ['durationSeconds', 'duration_seconds'],
-      ['totalInputTokens', 'total_input_tokens'],
-      ['totalOutputTokens', 'total_output_tokens'],
-      ['totalCacheRead', 'total_cache_read'],
-      ['totalCacheWrite', 'total_cache_write'],
-      ['turnCount', 'turn_count'],
-      ['subagentCount', 'subagent_count'],
-      ['humanResponseLatencyAvgMs', 'human_response_latency_avg_ms'],
-      ['humanResponseLatencyP50Ms', 'human_response_latency_p50_ms'],
-      ['humanResponseLatencyP95Ms', 'human_response_latency_p95_ms'],
-      ['agentIdlePercent', 'agent_idle_percent'],
-      ['rateLimitEncounters', 'rate_limit_encounters'],
-    ];
-
-    for (const [key, col] of optionalFields) {
-      if (data[key] !== undefined) {
-        sets.push(`${col} = ?`);
-        values.push(data[key]);
-      }
-    }
-
-    if (data.recovered !== undefined) {
-      sets.push('recovered = ?');
-      values.push(data.recovered ? 1 : 0);
-    }
-
-    if (data.toolUseCounts !== undefined) {
-      sets.push('tool_use_counts = ?');
-      values.push(JSON.stringify(data.toolUseCounts));
-    }
-
-    values.push(data.sessionId);
-    db.prepare(
-      `UPDATE session_rollups SET ${sets.join(', ')} WHERE session_id = ?`
-    ).run(...values);
+    updateSessionRollup(data);
   }
 }
 
@@ -489,29 +515,37 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)]!;
 }
 
-export function computeEngagementMetrics(sessionId: string): {
+type SessionEventRow = {
+  event_type: string;
+  event_data: string | null;
+  timestamp: string;
+};
+
+type StopFailureEntry = { timestamp: number; isRateLimit: boolean };
+
+function parseStopFailures(events: SessionEventRow[]): StopFailureEntry[] {
+  return events
+    .filter((e) => e.event_type === 'stop_failure')
+    .map((e) => ({
+      timestamp: new Date(e.timestamp).getTime(),
+      isRateLimit: (() => {
+        try {
+          const data = e.event_data
+            ? (JSON.parse(e.event_data) as Record<string, unknown>)
+            : {};
+          return data.error === 'rate_limit';
+        } catch {
+          return false;
+        }
+      })(),
+    }));
+}
+
+function computeLatencyMetrics(events: SessionEventRow[]): {
   humanResponseLatencyAvgMs: number | null;
   humanResponseLatencyP50Ms: number | null;
   humanResponseLatencyP95Ms: number | null;
-  agentIdlePercent: number | null;
-  rateLimitEncounters: number;
-  toolUseCounts: Record<string, number>;
-} | null {
-  if (!db) return null;
-
-  const events = db
-    .prepare(
-      'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
-    )
-    .all(sessionId) as Array<{
-    event_type: string;
-    event_data: string | null;
-    timestamp: string;
-  }>;
-
-  if (events.length === 0) return null;
-
-  // 1. Human response latency: last notification before each user_prompt
+} {
   const latencySamples: number[] = [];
   let lastNotificationTime: number | null = null;
   let inIdlePeriod = false;
@@ -540,26 +574,45 @@ export function computeEngagementMetrics(sessionId: string): {
         )
       : null;
 
-  // 2. Agent idle %
+  return {
+    humanResponseLatencyAvgMs: avgLatency,
+    humanResponseLatencyP50Ms:
+      sortedLatency.length > 0 ? percentile(sortedLatency, 50) : null,
+    humanResponseLatencyP95Ms:
+      sortedLatency.length > 0 ? percentile(sortedLatency, 95) : null,
+  };
+}
+
+function findLastAgentStopTime(
+  events: SessionEventRow[],
+  beforeIndex: number
+): number | null {
+  for (let j = beforeIndex - 1; j >= 0; j--) {
+    if (events[j]!.event_type === 'agent_stop') {
+      return new Date(events[j]!.timestamp).getTime();
+    }
+  }
+  return null;
+}
+
+function computeHumanIdleMs(
+  idleStart: number,
+  ts: number,
+  stopFailures: StopFailureEntry[]
+): number {
+  const hasRateLimit = stopFailures.some(
+    (sf) => sf.isRateLimit && sf.timestamp >= idleStart && sf.timestamp <= ts
+  );
+  return hasRateLimit ? 0 : ts - idleStart;
+}
+
+function computeAgentIdlePercent(
+  events: SessionEventRow[],
+  stopFailures: StopFailureEntry[]
+): number | null {
   const firstTs = new Date(events[0]!.timestamp).getTime();
   const lastTs = new Date(events[events.length - 1]!.timestamp).getTime();
   const totalDuration = lastTs - firstTs;
-
-  const stopFailureTimes = events
-    .filter((e) => e.event_type === 'stop_failure')
-    .map((e) => ({
-      timestamp: new Date(e.timestamp).getTime(),
-      isRateLimit: (() => {
-        try {
-          const data = e.event_data
-            ? (JSON.parse(e.event_data) as Record<string, unknown>)
-            : {};
-          return data.error === 'rate_limit';
-        } catch {
-          return false;
-        }
-      })(),
-    }));
 
   let waitingForHumanMs = 0;
   let lastActiveStart: number | null = firstTs;
@@ -572,39 +625,23 @@ export function computeEngagementMetrics(sessionId: string): {
       lastActiveStart = null;
     } else if (e.event_type === 'user_prompt') {
       if (lastActiveStart === null) {
-        let idleStart: number | null = null;
-        for (let j = i - 1; j >= 0; j--) {
-          if (events[j]!.event_type === 'agent_stop') {
-            idleStart = new Date(events[j]!.timestamp).getTime();
-            break;
-          }
-        }
+        const idleStart = findLastAgentStopTime(events, i);
         if (idleStart !== null) {
-          const idleMs = ts - idleStart;
-          const hasRateLimit = stopFailureTimes.some(
-            (sf) =>
-              sf.isRateLimit && sf.timestamp >= idleStart! && sf.timestamp <= ts
-          );
-          if (!hasRateLimit) {
-            waitingForHumanMs += idleMs;
-          }
+          waitingForHumanMs += computeHumanIdleMs(idleStart, ts, stopFailures);
         }
       }
       lastActiveStart = ts;
     }
   }
 
-  const agentIdlePercent =
-    totalDuration > 0
-      ? Math.round((waitingForHumanMs / totalDuration) * 1000) / 10
-      : null;
+  return totalDuration > 0
+    ? Math.round((waitingForHumanMs / totalDuration) * 1000) / 10
+    : null;
+}
 
-  // 3. Rate limit encounters
-  const rateLimitEncounters = stopFailureTimes.filter(
-    (sf) => sf.isRateLimit
-  ).length;
-
-  // 4. Tool use counts
+function computeToolUseCounts(
+  events: SessionEventRow[]
+): Record<string, number> {
   const toolUseCounts: Record<string, number> = {};
   for (const e of events) {
     if (e.event_type === 'tool_use' && e.event_data) {
@@ -617,13 +654,37 @@ export function computeEngagementMetrics(sessionId: string): {
       }
     }
   }
+  return toolUseCounts;
+}
+
+export function computeEngagementMetrics(sessionId: string): {
+  humanResponseLatencyAvgMs: number | null;
+  humanResponseLatencyP50Ms: number | null;
+  humanResponseLatencyP95Ms: number | null;
+  agentIdlePercent: number | null;
+  rateLimitEncounters: number;
+  toolUseCounts: Record<string, number>;
+} | null {
+  if (!db) return null;
+
+  const events = db
+    .prepare(
+      'SELECT event_type, event_data, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC'
+    )
+    .all(sessionId) as SessionEventRow[];
+
+  if (events.length === 0) return null;
+
+  const stopFailures = parseStopFailures(events);
+  const latencyMetrics = computeLatencyMetrics(events);
+  const agentIdlePercent = computeAgentIdlePercent(events, stopFailures);
+  const rateLimitEncounters = stopFailures.filter(
+    (sf) => sf.isRateLimit
+  ).length;
+  const toolUseCounts = computeToolUseCounts(events);
 
   return {
-    humanResponseLatencyAvgMs: avgLatency,
-    humanResponseLatencyP50Ms:
-      sortedLatency.length > 0 ? percentile(sortedLatency, 50) : null,
-    humanResponseLatencyP95Ms:
-      sortedLatency.length > 0 ? percentile(sortedLatency, 95) : null,
+    ...latencyMetrics,
     agentIdlePercent,
     rateLimitEncounters,
     toolUseCounts,
@@ -746,7 +807,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /overview
   router.get('/overview', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -759,7 +820,7 @@ export function createSessionAnalyticsRouter(): Router {
     let query = `SELECT * FROM session_rollups WHERE started_at >= ?`;
     const params: unknown[] = [since];
     if (repoFilter) {
-      query += ' AND repo_path = ?';
+      query += SQL_REPO_PATH_FILTER;
       params.push(repoFilter);
     }
 
@@ -852,7 +913,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /sessions
   router.get('/sessions', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -875,7 +936,7 @@ export function createSessionAnalyticsRouter(): Router {
     let where = 'WHERE 1=1';
     const params: unknown[] = [];
     if (repoFilter) {
-      where += ' AND repo_path = ?';
+      where += SQL_REPO_PATH_FILTER;
       params.push(repoFilter);
     }
     if (agentFilter) {
@@ -935,7 +996,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /sessions/:id
   router.get('/sessions/:id', (req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -968,8 +1029,8 @@ export function createSessionAnalyticsRouter(): Router {
     }
 
     let agentActiveTime = 0,
-      waitingForHumanTime = 0,
-      rateLimitTime = 0;
+      waitingForHumanTime = 0;
+    const rateLimitTime = 0;
     if (events.length >= 2) {
       const firstTs = new Date(events[0]!.timestamp).getTime();
       const lastTs = new Date(events[events.length - 1]!.timestamp).getTime();
@@ -1020,7 +1081,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /trends
   router.get('/trends', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -1044,7 +1105,7 @@ export function createSessionAnalyticsRouter(): Router {
     `;
     const params: unknown[] = [since];
     if (repoFilter) {
-      query += ' AND repo_path = ?';
+      query += SQL_REPO_PATH_FILTER;
       params.push(repoFilter);
     }
     query += ' GROUP BY date(started_at) ORDER BY date ASC';
@@ -1073,7 +1134,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /tools
   router.get('/tools', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 
@@ -1087,7 +1148,7 @@ export function createSessionAnalyticsRouter(): Router {
     let query = `SELECT event_data FROM session_events WHERE event_type = 'tool_use' AND timestamp >= ?`;
     const params: unknown[] = [since];
     if (repoFilter) {
-      query += ' AND repo_path = ?';
+      query += SQL_REPO_PATH_FILTER;
       params.push(repoFilter);
     }
     if (sessionFilter) {
@@ -1128,7 +1189,7 @@ export function createSessionAnalyticsRouter(): Router {
   // GET /rate-limits
   router.get('/rate-limits', (_req: Request, res: Response) => {
     if (!db) {
-      res.status(503).json({ error: 'Analytics not initialized' });
+      res.status(503).json({ error: ERR_ANALYTICS_NOT_INITIALIZED });
       return;
     }
 

@@ -23,6 +23,7 @@ export function createLogger(namespace: string): Logger {
   const prefix = `[${namespace}]`;
 
   const log = (level: LogLevel, message: string, ...args: unknown[]): void => {
+    // eslint-disable-next-line no-console
     console[level](`${prefix} ${message}`, ...args);
   };
 

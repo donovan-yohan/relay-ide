@@ -170,7 +170,9 @@ function setupWebSocket(
           sessions.resize(session.id, parsed.cols, parsed.rows);
           return;
         }
-      } catch (_) {}
+      } catch (_) {
+        // ignore
+      }
       // Use session.pty dynamically so writes go to current PTY
       session.pty.write(str);
       // Update activity timestamp on user input (throttled broadcast to avoid storm)

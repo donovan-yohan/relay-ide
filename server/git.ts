@@ -81,6 +81,45 @@ async function getCurrentBranch(
   }
 }
 
+function parseActivityLine(line: string): ActivityEntry | null {
+  // Split into exactly 6 parts by the first 5 pipe characters
+  const parts: string[] = [];
+  let remaining = line;
+  for (let i = 0; i < 5; i++) {
+    const idx = remaining.indexOf('|');
+    if (idx === -1) break;
+    parts.push(remaining.slice(0, idx));
+    remaining = remaining.slice(idx + 1);
+  }
+  parts.push(remaining);
+
+  if (parts.length < 5) return null;
+
+  const hash = parts[0] ?? '';
+  const shortHash = parts[1] ?? '';
+  const message = parts[2] ?? '';
+  const author = parts[3] ?? '';
+  const timeAgo = parts[4] ?? '';
+  const decorations = parts[5] ?? '';
+
+  if (!hash || !shortHash) return null;
+
+  const branches: string[] = decorations
+    .split(',')
+    .map((d) => d.trim())
+    .filter((d) => d && !d.startsWith('tag:') && d !== 'HEAD')
+    .map((d) => d.replace(/^HEAD -> /, '').replace(/^origin\//, ''));
+
+  return {
+    hash: hash.trim(),
+    shortHash: shortHash.trim(),
+    message: message.trim(),
+    author: author.trim(),
+    timeAgo: timeAgo.trim(),
+    branches: [...new Set(branches)],
+  };
+}
+
 async function getActivityFeed(
   repoPath: string,
   options: {
@@ -109,42 +148,8 @@ async function getActivityFeed(
 
     for (const line of lines) {
       try {
-        // Split into exactly 6 parts by the first 5 pipe characters
-        const parts: string[] = [];
-        let remaining = line;
-        for (let i = 0; i < 5; i++) {
-          const idx = remaining.indexOf('|');
-          if (idx === -1) break;
-          parts.push(remaining.slice(0, idx));
-          remaining = remaining.slice(idx + 1);
-        }
-        parts.push(remaining);
-
-        if (parts.length < 5) continue;
-
-        const hash = parts[0] ?? '';
-        const shortHash = parts[1] ?? '';
-        const message = parts[2] ?? '';
-        const author = parts[3] ?? '';
-        const timeAgo = parts[4] ?? '';
-        const decorations = parts[5] ?? '';
-
-        if (!hash || !shortHash) continue;
-
-        const branches: string[] = decorations
-          .split(',')
-          .map((d) => d.trim())
-          .filter((d) => d && !d.startsWith('tag:') && d !== 'HEAD')
-          .map((d) => d.replace(/^HEAD -> /, '').replace(/^origin\//, ''));
-
-        entries.push({
-          hash: hash.trim(),
-          shortHash: shortHash.trim(),
-          message: message.trim(),
-          author: author.trim(),
-          timeAgo: timeAgo.trim(),
-          branches: [...new Set(branches)],
-        });
+        const entry = parseActivityLine(line);
+        if (entry) entries.push(entry);
       } catch {
         // Skip malformed lines
         continue;
@@ -156,6 +161,10 @@ async function getActivityFeed(
     return [];
   }
 }
+
+const UNKNOWN_ERROR = 'Unknown error';
+const TAB = '\t';
+const FIND_RENAMES = '--find-renames';
 
 async function switchBranch(
   repoPath: string,
@@ -173,10 +182,10 @@ async function switchBranch(
   } catch (err: unknown) {
     if (err && typeof err === 'object') {
       const errObj = err as { stderr?: string; message?: string };
-      const errorText = errObj.stderr ?? errObj.message ?? 'Unknown error';
+      const errorText = errObj.stderr ?? errObj.message ?? UNKNOWN_ERROR;
       return { success: false, error: errorText.trim() };
     }
-    return { success: false, error: 'Unknown error' };
+    return { success: false, error: UNKNOWN_ERROR };
   }
 }
 
@@ -476,7 +485,7 @@ async function renameBranch(
     const errObj = err as { stderr?: string; message?: string };
     return {
       success: false,
-      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+      error: (errObj.stderr ?? errObj.message ?? UNKNOWN_ERROR).trim(),
     };
   }
 }
@@ -499,7 +508,7 @@ async function createBranch(
     const errObj = err as { stderr?: string; message?: string };
     return {
       success: false,
-      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+      error: (errObj.stderr ?? errObj.message ?? UNKNOWN_ERROR).trim(),
     };
   }
 }
@@ -522,7 +531,7 @@ async function pushBranch(
     const errObj = err as { stderr?: string; message?: string };
     return {
       success: false,
-      error: (errObj.stderr ?? errObj.message ?? 'Unknown error').trim(),
+      error: (errObj.stderr ?? errObj.message ?? UNKNOWN_ERROR).trim(),
     };
   }
   if (deleteOldBranch) {
@@ -589,61 +598,95 @@ function normalizeNumstatPath(filePath: string): string {
   return filePath;
 }
 
+type StatusEntry = { path: string; oldPath?: string; status: FileChangeStatus };
+
+function parseNameStatusLine(line: string): StatusEntry {
+  const parts = line.split(TAB);
+  const code = parts[0] ?? '';
+  if (code.startsWith('R')) {
+    return {
+      path: parts[2] ?? '',
+      oldPath: parts[1] ?? '',
+      status: 'renamed' as FileChangeStatus,
+    };
+  }
+  return { path: parts[1] ?? '', status: parseStatus(code) };
+}
+
+async function buildNumstatMap(
+  repoPath: string,
+  numstatArgs: string[],
+  exec: ExecFileAsyncLike
+): Promise<Map<string, { additions: number; deletions: number }>> {
+  const numstatMap = new Map<
+    string,
+    { additions: number; deletions: number }
+  >();
+  try {
+    const { stdout: numstat } = await exec('git', numstatArgs, {
+      cwd: repoPath,
+      timeout: 10000,
+    });
+    for (const line of numstat.split('\n').filter(Boolean)) {
+      const [add, del, ...pathParts] = line.split(TAB);
+      const filePath = pathParts.join(TAB);
+      const actualPath = normalizeNumstatPath(filePath);
+      numstatMap.set(actualPath, {
+        additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
+        deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
+      });
+    }
+  } catch (err: unknown) {
+    logger.warn(
+      '[git] numstat failed for',
+      repoPath,
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+  return numstatMap;
+}
+
+async function countUntrackedLines(
+  repoPath: string,
+  filePath: string,
+  exec: ExecFileAsyncLike
+): Promise<number> {
+  try {
+    const { stdout: wcOut } = await exec('wc', ['-l', '--', filePath], {
+      cwd: repoPath,
+      timeout: 5000,
+    });
+    const match = wcOut.trim().match(/^\s*(\d+)/);
+    if (match) return parseInt(match[1]!, 10);
+  } catch {
+    // best effort
+  }
+  return 0;
+}
+
 async function getChangedFiles(
   repoPath: string,
   base?: string,
   exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike
 ): Promise<ChangedFile[]> {
-  let statusEntries: Array<{
-    path: string;
-    oldPath?: string;
-    status: FileChangeStatus;
-  }>;
+  let statusEntries: StatusEntry[];
 
   if (base === 'cached') {
     // Staged files
     const { stdout } = await exec(
       'git',
-      ['diff', '--cached', '--name-status', '--find-renames'],
+      ['diff', '--cached', '--name-status', FIND_RENAMES],
       { cwd: repoPath, timeout: 10000 }
     );
-    statusEntries = stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split('\t');
-        const code = parts[0] ?? '';
-        if (code.startsWith('R')) {
-          return {
-            path: parts[2] ?? '',
-            oldPath: parts[1] ?? '',
-            status: 'renamed' as FileChangeStatus,
-          };
-        }
-        return { path: parts[1] ?? '', status: parseStatus(code) };
-      });
+    statusEntries = stdout.split('\n').filter(Boolean).map(parseNameStatusLine);
   } else if (base) {
     // Branch comparison
     const { stdout } = await exec(
       'git',
-      ['diff', '--name-status', '--find-renames', `${base}...HEAD`],
+      ['diff', '--name-status', FIND_RENAMES, `${base}...HEAD`],
       { cwd: repoPath, timeout: 10000 }
     );
-    statusEntries = stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split('\t');
-        const code = parts[0] ?? '';
-        if (code.startsWith('R')) {
-          return {
-            path: parts[2] ?? '',
-            oldPath: parts[1] ?? '',
-            status: 'renamed' as FileChangeStatus,
-          };
-        }
-        return { path: parts[1] ?? '', status: parseStatus(code) };
-      });
+    statusEntries = stdout.split('\n').filter(Boolean).map(parseNameStatusLine);
   } else {
     // Working tree: git status --porcelain=v1 -z
     const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], {
@@ -669,54 +712,20 @@ async function getChangedFiles(
 
   if (statusEntries.length === 0) return [];
 
-  // Get per-file stats via numstat
   const numstatArgs = base
-    ? ['diff', '--numstat', '--find-renames', `${base}...HEAD`]
-    : ['diff', '--numstat', '--find-renames', 'HEAD'];
-  const numstatMap = new Map<
-    string,
-    { additions: number; deletions: number }
-  >();
-  try {
-    const { stdout: numstat } = await exec('git', numstatArgs, {
-      cwd: repoPath,
-      timeout: 10000,
-    });
-    for (const line of numstat.split('\n').filter(Boolean)) {
-      const [add, del, ...pathParts] = line.split('\t');
-      const filePath = pathParts.join('\t');
-      const actualPath = normalizeNumstatPath(filePath);
-      numstatMap.set(actualPath, {
-        additions: add === '-' ? 0 : parseInt(add ?? '0', 10),
-        deletions: del === '-' ? 0 : parseInt(del ?? '0', 10),
-      });
-    }
-  } catch (err: unknown) {
-    logger.warn(
-      '[git] numstat failed for',
-      repoPath,
-      err instanceof Error ? err.message : String(err)
-    );
-  }
+    ? ['diff', '--numstat', FIND_RENAMES, `${base}...HEAD`]
+    : ['diff', '--numstat', FIND_RENAMES, 'HEAD'];
+  const numstatMap = await buildNumstatMap(repoPath, numstatArgs, exec);
 
   const files: ChangedFile[] = [];
   for (const entry of statusEntries) {
     if (!entry.path) continue;
     const stats = numstatMap.get(entry.path);
     let additions = stats?.additions ?? 0;
-    let deletions = stats?.deletions ?? 0;
+    const deletions = stats?.deletions ?? 0;
 
     if (entry.status === 'untracked' && additions === 0) {
-      try {
-        const { stdout: wcOut } = await exec('wc', ['-l', '--', entry.path], {
-          cwd: repoPath,
-          timeout: 5000,
-        });
-        const match = wcOut.trim().match(/^\s*(\d+)/);
-        if (match) additions = parseInt(match[1]!, 10);
-      } catch {
-        // best effort
-      }
+      additions = await countUntrackedLines(repoPath, entry.path, exec);
     }
 
     files.push({
@@ -740,7 +749,7 @@ async function getFileDiff(
 ): Promise<string> {
   let args: string[];
   if (!base) {
-    args = ['diff', '--unified=3', '--find-renames', '--', filePath];
+    args = ['diff', '--unified=3', FIND_RENAMES, '--', filePath];
   } else if (base === 'cached') {
     args = ['diff', '--cached', '--unified=3', '--', filePath];
   } else {
@@ -748,7 +757,7 @@ async function getFileDiff(
       'diff',
       `${base}...HEAD`,
       '--unified=3',
-      '--find-renames',
+      FIND_RENAMES,
       '--',
       filePath,
     ];

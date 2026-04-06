@@ -17,13 +17,18 @@ export function createLogger(namespace: string): Logger {
   const prefix = `[${namespace}]`;
 
   const log = (level: LogLevel, message: string, ...args: unknown[]): void => {
+    // eslint-disable-next-line no-console
     console[level](`${prefix} ${message}`, ...args);
   };
 
   return {
-    debug: (message: string, ...args: unknown[]) => log('debug', message, ...args),
-    info: (message: string, ...args: unknown[]) => log('info', message, ...args),
-    warn: (message: string, ...args: unknown[]) => log('warn', message, ...args),
-    error: (message: string, ...args: unknown[]) => log('error', message, ...args),
+    debug: (message: string, ...args: unknown[]) =>
+      log('debug', message, ...args),
+    info: (message: string, ...args: unknown[]) =>
+      log('info', message, ...args),
+    warn: (message: string, ...args: unknown[]) =>
+      log('warn', message, ...args),
+    error: (message: string, ...args: unknown[]) =>
+      log('error', message, ...args),
   };
 }

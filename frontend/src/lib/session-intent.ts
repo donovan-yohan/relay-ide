@@ -23,6 +23,9 @@ export type SessionIntentType =
   | 'resume-session'
   | 'archive';
 
+const RESUME_SESSION = 'resume-session' as const;
+const OPEN_BRANCH = 'open-branch' as const;
+
 // TODO: refine into a discriminated union so resume-session requires existingSessionId at compile time:
 //   type SessionIntent = ResumeIntent | ActionIntent;
 //   interface ResumeIntent { type: 'resume-session'; existingSessionId: string; ... }
@@ -103,9 +106,9 @@ function resolvePrIntent(
   intents.push(primaryIntent);
 
   // Add resume-session if session exists and primary isn't already resume
-  if (existingSession && intentType !== 'resume-session') {
+  if (existingSession && intentType !== RESUME_SESSION) {
     const resumeIntent: SessionIntent = {
-      type: 'resume-session',
+      type: RESUME_SESSION,
       label: 'Resume',
       color: 'muted',
       prompt: null,
@@ -137,11 +140,11 @@ function mapPrActionToIntent(actionType: PrActionType): SessionIntentType {
     case 'archive-closed':
       return 'archive';
     case 'ready-for-review':
-      return 'open-branch';
+      return OPEN_BRANCH;
     case 'checks-running':
-      return 'open-branch';
+      return OPEN_BRANCH;
     case 'none':
-      return 'open-branch';
+      return OPEN_BRANCH;
   }
 }
 

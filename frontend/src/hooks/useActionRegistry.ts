@@ -127,26 +127,32 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
   } = params;
 
   useEffect(() => {
+    const SECTION_INTEGRATIONS = 'section-integrations' as const;
+    const SECTION_GENERAL = 'section-general' as const;
+    const SECTION_ADVANCED = 'section-advanced' as const;
     // ── Settings section openers ─────────────────────────────────────────────
     // Many actions just open a specific settings section.
     const settingsSectionActions = [
-      [settingsDisconnectGithub, 'section-integrations'],
-      [settingsSetupWebhooks, 'section-integrations'],
-      [settingsRemoveWebhook, 'section-integrations'],
-      [settingsTestWebhook, 'section-integrations'],
-      [settingsConnectJira, 'section-integrations'],
-      [settingsDisconnectJira, 'section-integrations'],
-      [settingsToggleDevTools, 'section-advanced'],
-      [settingsClearAnalytics, 'section-advanced'],
-      [settingsToggleContinue, 'section-general'],
-      [settingsToggleTmux, 'section-general'],
-      [settingsToggleNotifications, 'section-general'],
-      [settingsChangeDefaultAgent, 'section-general'],
+      [settingsDisconnectGithub, SECTION_INTEGRATIONS],
+      [settingsSetupWebhooks, SECTION_INTEGRATIONS],
+      [settingsRemoveWebhook, SECTION_INTEGRATIONS],
+      [settingsTestWebhook, SECTION_INTEGRATIONS],
+      [settingsConnectJira, SECTION_INTEGRATIONS],
+      [settingsDisconnectJira, SECTION_INTEGRATIONS],
+      [settingsToggleDevTools, SECTION_ADVANCED],
+      [settingsClearAnalytics, SECTION_ADVANCED],
+      [settingsToggleContinue, SECTION_GENERAL],
+      [settingsToggleTmux, SECTION_GENERAL],
+      [settingsToggleNotifications, SECTION_GENERAL],
+      [settingsChangeDefaultAgent, SECTION_GENERAL],
     ] as const;
 
     const settingsActions = settingsSectionActions.map(([def, section]) => ({
       ...def,
-      handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: section }),
+      handler: () =>
+        useUiStore
+          .getState()
+          .setActiveModal({ modal: 'settings', scrollToId: section }),
     }));
 
     // ── Noop placeholders ────────────────────────────────────────────────────
@@ -198,21 +204,30 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: () => {
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const ws = currentRepoPath
-            ? useSessionsStore.getState().repos.find((w) => w.path === currentRepoPath)
+            ? useSessionsStore
+                .getState()
+                .repos.find((w) => w.path === currentRepoPath)
             : undefined;
-          if (ws) customizeDialogRef.current?.open({ name: ws.name, path: ws.path });
+          if (ws)
+            customizeDialogRef.current?.open({ name: ws.name, path: ws.path });
         },
       },
       { ...sessionRename, handler: () => handleRenameActiveSession() },
 
       // ── Workspace ───────────────────────────────────────────────────────────
-      { ...workspaceAdd, handler: () => useUiStore.getState().setActiveModal({ modal: 'add-repo' }) },
+      {
+        ...workspaceAdd,
+        handler: () =>
+          useUiStore.getState().setActiveModal({ modal: 'add-repo' }),
+      },
       {
         ...workspaceNewWorktree,
         handler: () => {
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const ws = currentRepoPath
-            ? useSessionsStore.getState().repos.find((w) => w.path === currentRepoPath)
+            ? useSessionsStore
+                .getState()
+                .repos.find((w) => w.path === currentRepoPath)
             : undefined;
           if (ws) handleNewWorktree(ws);
         },
@@ -228,18 +243,25 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...prCopyBranchName,
         handler: async () => {
-          const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const allWs = currentRepoPath
             ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
             : [];
-          const wsSessions = (currentActiveSession
-            ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
-            : allWs
-          ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          const wsSessions = (
+            currentActiveSession
+              ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
+              : allWs
+          ).toSorted(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
           const branch = wsSessions[0]?.branchName;
           if (branch) await navigator.clipboard.writeText(branch);
         },
@@ -258,7 +280,13 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       { ...settingsOpen, handler: () => handleOpenSettings() },
       {
         ...settingsConnectGithub,
-        handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: 'section-integrations' }),
+        handler: () =>
+          useUiStore
+            .getState()
+            .setActiveModal({
+              modal: 'settings',
+              scrollToId: SECTION_INTEGRATIONS,
+            }),
       },
       {
         ...settingsToggleYolo,
@@ -275,7 +303,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       },
       {
         ...settingsCheckUpdates,
-        handler: () => useUiStore.getState().setActiveModal({ modal: 'settings', scrollToId: 'section-about' }),
+        handler: () =>
+          useUiStore
+            .getState()
+            .setActiveModal({ modal: 'settings', scrollToId: 'section-about' }),
       },
       ...settingsActions,
 
@@ -290,7 +321,9 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: () => {
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const ws = currentRepoPath
-            ? useSessionsStore.getState().repos.find((w) => w.path === currentRepoPath)
+            ? useSessionsStore
+                .getState()
+                .repos.find((w) => w.path === currentRepoPath)
             : undefined;
           if (ws) workspaceSettingsDialogRef.current?.open(ws.path, ws.name);
         },
@@ -299,13 +332,18 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...sidebarDeleteWorktree,
         handler: () => {
-          const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
           const wt = useSessionsStore
             .getState()
-            .worktrees.find((w) => w.path === currentActiveSession?.worktreePath);
+            .worktrees.find(
+              (w) => w.path === currentActiveSession?.worktreePath
+            );
           if (wt) deleteWorktreeDialogRef.current?.open(wt);
         },
       },
@@ -329,43 +367,64 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...navPreviousTab,
         handler: () => {
-          const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
           const allWs = currentRepoPath
             ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
             : [];
-          const wsSessions = (currentActiveSession
-            ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
-            : allWs
-          ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          const wsSessions = (
+            currentActiveSession
+              ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
+              : allWs
+          ).toSorted(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
           if (wsSessions.length === 0) return;
-          const idx = wsSessions.findIndex((s) => s.id === currentActiveSessionId);
-          const prev = idx <= 0 ? wsSessions[wsSessions.length - 1] : wsSessions[idx - 1];
+          const idx = wsSessions.findIndex(
+            (s) => s.id === currentActiveSessionId
+          );
+          const prev =
+            idx <= 0 ? wsSessions[wsSessions.length - 1] : wsSessions[idx - 1];
           if (prev) handleSelectSession(prev.id);
         },
       },
       {
         ...navNextTab,
         handler: () => {
-          const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
           const allWs = currentRepoPath
             ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
             : [];
-          const wsSessions = (currentActiveSession
-            ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
-            : allWs
-          ).toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          const wsSessions = (
+            currentActiveSession
+              ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
+              : allWs
+          ).toSorted(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
           if (wsSessions.length === 0) return;
-          const idx = wsSessions.findIndex((s) => s.id === currentActiveSessionId);
+          const idx = wsSessions.findIndex(
+            (s) => s.id === currentActiveSessionId
+          );
           const next =
-            idx === -1 || idx === wsSessions.length - 1 ? wsSessions[0] : wsSessions[idx + 1];
+            idx === -1 || idx === wsSessions.length - 1
+              ? wsSessions[0]
+              : wsSessions[idx + 1];
           if (next) handleSelectSession(next.id);
         },
       },
@@ -385,11 +444,15 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         shortcut: { key: 'd' },
         when: (ctx: ActionContext) => ctx.view === 'session',
         handler: () => {
-          const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
-          const ws = currentActiveSession?.cwd ?? currentActiveSession?.repoPath ?? '';
+          const ws =
+            currentActiveSession?.cwd ?? currentActiveSession?.repoPath ?? '';
           if (ws) useUiStore.setState({ fullPageDiff: { workspacePath: ws } });
         },
       },

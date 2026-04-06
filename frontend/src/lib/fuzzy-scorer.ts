@@ -115,85 +115,72 @@ interface DpResult {
   positions: number[];
 }
 
-function scoreString(query: string, target: string): DpResult | null {
-  const qLen = query.length;
-  const tLen = target.length;
-  if (qLen === 0 || tLen === 0 || qLen > tLen) return null;
+interface DpArrays {
+  scores: Float64Array;
+  consecutive: Uint16Array;
+  fromDiag: Uint8Array;
+}
 
-  const queryLower = query.toLowerCase();
-  const targetLower = target.toLowerCase();
+function computeMatchCell(
+  i: number,
+  j: number,
+  idx: number,
+  query: string,
+  target: string,
+  arrays: DpArrays
+): void {
+  const { scores, consecutive, fromDiag } = arrays;
 
-  if (!preFilter(queryLower, targetLower)) return null;
+  const prevConsec =
+    i > 0 && j > 0 ? (consecutive[(i - 1) * target.length + (j - 1)] ?? 0) : 0;
+  const cs = charScore(query, i, target, j, prevConsec);
 
-  // score[i][j] = best score matching query[0..i] against target[0..j]
-  // consec[i][j] = consecutive match count ending at (i,j)
-  // We use flat arrays for perf: index = i * tLen + j
-  const size = qLen * tLen;
-  const scores = new Float64Array(size);
-  const consecutive = new Uint16Array(size);
-  // Track whether each cell came from a diagonal (match) for backtracking
-  const fromDiag = new Uint8Array(size);
-
-  for (let i = 0; i < qLen; i++) {
-    let hasMatch = false;
-    for (let j = 0; j < tLen; j++) {
-      const idx = i * tLen + j;
-
-      if (queryLower[i] === targetLower[j]) {
-        // Match: diagonal score + char bonus
-        const prevConsec =
-          i > 0 && j > 0 ? (consecutive[(i - 1) * tLen + (j - 1)] ?? 0) : 0;
-        const cs = charScore(query, i, target, j, prevConsec);
-
-        let diagScore: number;
-        if (i === 0 && j === 0) {
-          diagScore = cs;
-        } else if (i === 0) {
-          diagScore = cs; // first query char, no prior row
-        } else if (j === 0) {
-          diagScore = -Infinity; // can't match query[i>0] at target[0] without prior
-        } else {
-          diagScore = (scores[(i - 1) * tLen + (j - 1)] ?? 0) + cs;
-        }
-
-        // Gap: skip this target char (take best from left)
-        const gapScore =
-          j > 0
-            ? (scores[idx - 1] ?? 0) +
-              (fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY)
-            : -Infinity;
-
-        if (diagScore >= gapScore) {
-          scores[idx] = diagScore;
-          consecutive[idx] = (prevConsec as number) + 1;
-          fromDiag[idx] = 1;
-        } else {
-          scores[idx] = gapScore;
-          consecutive[idx] = 0;
-          fromDiag[idx] = 0;
-        }
-        hasMatch = true;
-      } else {
-        // No match: propagate from left with gap penalty
-        if (j > 0) {
-          const penalty = fromDiag[idx - 1]
-            ? GAP_OPEN_PENALTY
-            : GAP_EXTEND_PENALTY;
-          scores[idx] = (scores[idx - 1] ?? 0) + penalty;
-        } else {
-          scores[idx] = -Infinity;
-        }
-        consecutive[idx] = 0;
-        fromDiag[idx] = 0;
-      }
-    }
-    if (!hasMatch) return null; // query char not found anywhere in remaining target
+  let diagScore: number;
+  if (i === 0) {
+    diagScore = cs; // first query row: no prior row needed
+  } else if (j === 0) {
+    diagScore = -Infinity; // can't match query[i>0] at target[0] without prior
+  } else {
+    diagScore = (scores[(i - 1) * target.length + (j - 1)] ?? 0) + cs;
   }
 
-  // Find best score in last query row
+  const gapScore =
+    j > 0
+      ? (scores[idx - 1] ?? 0) +
+        (fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY)
+      : -Infinity;
+
+  if (diagScore >= gapScore) {
+    scores[idx] = diagScore;
+    consecutive[idx] = prevConsec + 1;
+    fromDiag[idx] = 1;
+  } else {
+    scores[idx] = gapScore;
+    consecutive[idx] = 0;
+    fromDiag[idx] = 0;
+  }
+}
+
+function computeNoMatchCell(idx: number, arrays: DpArrays): void {
+  const { scores, consecutive, fromDiag } = arrays;
+  if (idx > 0 && fromDiag[idx - 1] !== undefined) {
+    // j > 0 case: propagate from left with gap penalty
+    const penalty = fromDiag[idx - 1] ? GAP_OPEN_PENALTY : GAP_EXTEND_PENALTY;
+    scores[idx] = (scores[idx - 1] ?? 0) + penalty;
+  } else {
+    scores[idx] = -Infinity;
+  }
+  consecutive[idx] = 0;
+  fromDiag[idx] = 0;
+}
+
+function findBestScoreJ(
+  scores: Float64Array,
+  lastRow: number,
+  tLen: number
+): { bestScore: number; bestJ: number } {
   let bestScore = -Infinity;
   let bestJ = -1;
-  const lastRow = (qLen - 1) * tLen;
   for (let j = 0; j < tLen; j++) {
     const val = scores[lastRow + j] ?? 0;
     if (val > bestScore) {
@@ -201,10 +188,15 @@ function scoreString(query: string, target: string): DpResult | null {
       bestJ = j;
     }
   }
+  return { bestScore, bestJ };
+}
 
-  if (bestScore <= 0 || bestJ < 0) return null;
-
-  // Backtrack to find match positions
+function backtrackPositions(
+  fromDiag: Uint8Array,
+  qLen: number,
+  tLen: number,
+  bestJ: number
+): number[] {
   const positions: number[] = [];
   let i = qLen - 1;
   let j = bestJ;
@@ -219,7 +211,56 @@ function scoreString(query: string, target: string): DpResult | null {
     }
   }
   positions.reverse();
+  return positions;
+}
 
+function scoreString(query: string, target: string): DpResult | null {
+  const qLen = query.length;
+  const tLen = target.length;
+  if (qLen === 0 || tLen === 0 || qLen > tLen) return null;
+
+  const queryLower = query.toLowerCase();
+  const targetLower = target.toLowerCase();
+
+  if (!preFilter(queryLower, targetLower)) return null;
+
+  // score[i][j] = best score matching query[0..i] against target[0..j]
+  // consec[i][j] = consecutive match count ending at (i,j)
+  // We use flat arrays for perf: index = i * tLen + j
+  const size = qLen * tLen;
+  const arrays: DpArrays = {
+    scores: new Float64Array(size),
+    consecutive: new Uint16Array(size),
+    fromDiag: new Uint8Array(size),
+  };
+
+  for (let i = 0; i < qLen; i++) {
+    let hasMatch = false;
+    for (let j = 0; j < tLen; j++) {
+      const idx = i * tLen + j;
+      if (queryLower[i] === targetLower[j]) {
+        computeMatchCell(i, j, idx, query, target, arrays);
+        hasMatch = true;
+      } else {
+        // j === 0 means idx - 1 is the previous row's last cell, not left neighbor
+        if (j === 0) {
+          arrays.scores[idx] = -Infinity;
+          arrays.consecutive[idx] = 0;
+          arrays.fromDiag[idx] = 0;
+        } else {
+          computeNoMatchCell(idx, arrays);
+        }
+      }
+    }
+    if (!hasMatch) return null;
+  }
+
+  const lastRow = (qLen - 1) * tLen;
+  const { bestScore, bestJ } = findBestScoreJ(arrays.scores, lastRow, tLen);
+
+  if (bestScore <= 0 || bestJ < 0) return null;
+
+  const positions = backtrackPositions(arrays.fromDiag, qLen, tLen, bestJ);
   return { score: bestScore, positions };
 }
 

@@ -31,6 +31,8 @@ export type PrActionType =
   | 'archive-merged'
   | 'archive-closed';
 
+const RESOLVE_COMMENTS = 'resolve-comments' as const;
+
 export type StatusColor =
   | 'accent'
   | 'success'
@@ -167,7 +169,7 @@ export function derivePrAction(input: PrStateInput): PrAction {
         return { type: 'review-pr', color: 'info', label: 'Review' };
       }
       return {
-        type: 'resolve-comments',
+        type: RESOLVE_COMMENTS,
         color: 'accent',
         label: `Resolve Comments (${unresolvedCommentCount})`,
       };
@@ -191,7 +193,7 @@ export function deriveSecondaryAction(
   const role = input.role ?? 'author';
 
   // Author primary = resolve-comments → secondary = review-pr (muted)
-  if (primary.type === 'resolve-comments') {
+  if (primary.type === RESOLVE_COMMENTS) {
     return { type: 'review-pr', color: 'muted', label: 'Review PR' };
   }
 
@@ -202,7 +204,7 @@ export function deriveSecondaryAction(
     input.unresolvedCommentCount > 0
   ) {
     return {
-      type: 'resolve-comments',
+      type: RESOLVE_COMMENTS,
       color: 'accent',
       label: `Resolve Comments (${input.unresolvedCommentCount})`,
     };
@@ -224,7 +226,7 @@ export function getActionPrompt(
       return `Review the pull request #${ctx.prNumber} for branch "${ctx.branchName}". Read the diff, check for bugs and code quality.`;
     case 'fix-conflicts':
       return `There are merge conflicts with the base branch "${ctx.baseBranch}". Run \`git merge ${ctx.baseBranch}\` and resolve all conflicts.`;
-    case 'resolve-comments':
+    case RESOLVE_COMMENTS:
       return `There are ${ctx.unresolvedCommentCount} unresolved review comments on PR #${ctx.prNumber}. Read each comment thread, triage them, and address the feedback.`;
     case 'fix-errors':
       return `The CI checks are failing on branch "${ctx.branchName}". Investigate the failing checks and fix the errors.`;

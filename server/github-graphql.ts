@@ -134,6 +134,67 @@ export interface GraphQLResponse {
  * @param repoMap  - Map of "owner/repo" (lowercased) → local workspace path
  * @returns { prs, username } — filtered and mapped PR list plus authenticated username
  */
+function mapRollupState(
+  rollupState: string | null
+): 'SUCCESS' | 'FAILURE' | 'ERROR' | 'PENDING' | null {
+  if (rollupState === 'SUCCESS') return 'SUCCESS';
+  if (rollupState === 'FAILURE') return 'FAILURE';
+  if (rollupState === 'ERROR') return 'ERROR';
+  if (rollupState === 'PENDING' || rollupState === 'EXPECTED') return 'PENDING';
+  return null;
+}
+
+function mapPrState(state: string): 'OPEN' | 'CLOSED' | 'MERGED' {
+  if (state === 'OPEN') return 'OPEN';
+  if (state === 'MERGED') return 'MERGED';
+  return 'CLOSED';
+}
+
+function mapPrNode(
+  pr: GraphQLPullRequest,
+  wsPath: string,
+  username: string
+): PullRequest | null {
+  const author = pr.author?.login ?? '';
+  const isAuthor = author === username;
+  const isReviewer =
+    !isAuthor &&
+    pr.reviewRequests.nodes.some(
+      (rr) => rr.requestedReviewer?.login === username
+    );
+
+  if (!isAuthor && !isReviewer) return null;
+
+  const role: 'author' | 'reviewer' = isAuthor ? 'author' : 'reviewer';
+
+  const lastCommit = pr.commits.nodes[0];
+  const rollupState = lastCommit?.commit?.statusCheckRollup?.state ?? null;
+  const ciStatus = mapRollupState(rollupState);
+
+  const repoName =
+    pr.repository.nameWithOwner.split('/')[1] ?? pr.repository.nameWithOwner;
+
+  return {
+    number: pr.number,
+    title: pr.title,
+    url: pr.url,
+    headRefName: pr.headRefName,
+    baseRefName: pr.baseRefName,
+    state: mapPrState(pr.state),
+    author,
+    role,
+    updatedAt: pr.updatedAt,
+    additions: pr.additions,
+    deletions: pr.deletions,
+    reviewDecision: pr.reviewDecision,
+    mergeable: pr.mergeable,
+    ciStatus,
+    isDraft: pr.isDraft,
+    repoName,
+    repoPath: wsPath,
+  };
+}
+
 export function mapGraphQLResponse(
   response: GraphQLResponse,
   repoMap: Map<string, string>
@@ -144,7 +205,6 @@ export function mapGraphQLResponse(
   const prs: PullRequest[] = [];
 
   for (const node of nodes) {
-    // Type guard: only process PullRequest nodes (not Issue nodes)
     if (!('number' in node) || !('headRefName' in node)) continue;
     const pr = node as GraphQLPullRequest;
 
@@ -152,58 +212,8 @@ export function mapGraphQLResponse(
     const wsPath = repoMap.get(nameWithOwner);
     if (!wsPath) continue;
 
-    const author = pr.author?.login ?? '';
-
-    const isAuthor = author === username;
-    const isReviewer =
-      !isAuthor &&
-      pr.reviewRequests.nodes.some(
-        (rr) => rr.requestedReviewer?.login === username
-      );
-
-    if (!isAuthor && !isReviewer) continue;
-
-    const role: 'author' | 'reviewer' = isAuthor ? 'author' : 'reviewer';
-
-    // Extract CI status from last commit's statusCheckRollup
-    const lastCommit = pr.commits.nodes[0];
-    const rollupState = lastCommit?.commit?.statusCheckRollup?.state ?? null;
-    let ciStatus: 'SUCCESS' | 'FAILURE' | 'ERROR' | 'PENDING' | null = null;
-    if (rollupState === 'SUCCESS') ciStatus = 'SUCCESS';
-    else if (rollupState === 'FAILURE') ciStatus = 'FAILURE';
-    else if (rollupState === 'ERROR') ciStatus = 'ERROR';
-    else if (rollupState === 'PENDING' || rollupState === 'EXPECTED')
-      ciStatus = 'PENDING';
-
-    // Derive repoName from the nameWithOwner (the part after the slash)
-    const repoName =
-      pr.repository.nameWithOwner.split('/')[1] ?? pr.repository.nameWithOwner;
-
-    // Map state
-    let state: 'OPEN' | 'CLOSED' | 'MERGED';
-    if (pr.state === 'OPEN') state = 'OPEN';
-    else if (pr.state === 'MERGED') state = 'MERGED';
-    else state = 'CLOSED';
-
-    prs.push({
-      number: pr.number,
-      title: pr.title,
-      url: pr.url,
-      headRefName: pr.headRefName,
-      baseRefName: pr.baseRefName,
-      state,
-      author,
-      role,
-      updatedAt: pr.updatedAt,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      reviewDecision: pr.reviewDecision,
-      mergeable: pr.mergeable,
-      ciStatus,
-      isDraft: pr.isDraft,
-      repoName,
-      repoPath: wsPath,
-    });
+    const mapped = mapPrNode(pr, wsPath, username);
+    if (mapped) prs.push(mapped);
   }
 
   return { prs, username };
@@ -262,7 +272,7 @@ export async function fetchPrsGraphQL(
     // Partial errors: data is present but some fields failed — log and continue
     logger.warn(
       '[github-graphql] GraphQL returned partial errors:',
-      json.errors.map((e: any) => e.message).join('; ')
+      json.errors.map((e: { message: string }) => e.message).join('; ')
     );
   }
 

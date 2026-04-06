@@ -16,6 +16,9 @@ const execFileAsync = promisify(execFile);
 const logger = createLogger('ticket-transitions');
 
 const GH_TIMEOUT_MS = 10_000;
+const LABEL_IN_PROGRESS = 'in-progress';
+const LABEL_CODE_REVIEW = 'code-review';
+const LABEL_READY_FOR_QA = 'ready-for-qa';
 
 export interface TicketTransitionsDeps {
   configPath: string;
@@ -144,16 +147,85 @@ export function createTicketTransitionsRouter(deps: TicketTransitionsDeps) {
     if (ctx.source === 'github') {
       const issueNum = ghIssueNumber(ctx.ticketId);
       if (!issueNum) return;
-      const ok = await addLabel(exec, ctx.repoPath, issueNum, 'in-progress');
-      if (ok) transitionMap.set(ctx.ticketId, 'in-progress');
+      const ok = await addLabel(
+        exec,
+        ctx.repoPath,
+        issueNum,
+        LABEL_IN_PROGRESS
+      );
+      if (ok) transitionMap.set(ctx.ticketId, LABEL_IN_PROGRESS);
     } else if (ctx.source === 'jira') {
       const config = loadConfig(configPath);
-      const transitionName = getJiraStatusMapping(config, 'in-progress');
+      const transitionName = getJiraStatusMapping(config, LABEL_IN_PROGRESS);
       if (transitionName) {
         const ok = await jiraTransition(exec, ctx.ticketId, transitionName);
-        if (ok) transitionMap.set(ctx.ticketId, 'in-progress');
+        if (ok) transitionMap.set(ctx.ticketId, LABEL_IN_PROGRESS);
       }
     }
+  }
+
+  async function applyGithubTransition(
+    ticketId: string,
+    links: BranchLink[],
+    removeFrom: string,
+    addTo: TransitionState
+  ): Promise<boolean> {
+    const issueNum = ghIssueNumber(ticketId);
+    if (!issueNum) return false;
+    const repoPath = links[0]?.repoPath;
+    if (!repoPath) return false;
+    await removeLabel(exec, repoPath, issueNum, removeFrom);
+    return addLabel(exec, repoPath, issueNum, addTo);
+  }
+
+  async function applyJiraTransition(
+    config: Config,
+    ticketId: string,
+    targetState: TransitionState
+  ): Promise<boolean> {
+    const transitionName = getJiraStatusMapping(config, targetState);
+    if (!transitionName) return false;
+    return jiraTransition(exec, ticketId, transitionName);
+  }
+
+  async function transitionToCodeReview(
+    config: Config,
+    ticketId: string,
+    links: BranchLink[],
+    source: 'github' | 'jira'
+  ): Promise<void> {
+    let ok = false;
+    if (source === 'github') {
+      ok = await applyGithubTransition(
+        ticketId,
+        links,
+        LABEL_IN_PROGRESS,
+        LABEL_CODE_REVIEW
+      );
+    } else if (source === 'jira') {
+      ok = await applyJiraTransition(config, ticketId, LABEL_CODE_REVIEW);
+    }
+    if (ok) transitionMap.set(ticketId, LABEL_CODE_REVIEW);
+  }
+
+  async function transitionToReadyForQa(
+    config: Config,
+    ticketId: string,
+    links: BranchLink[],
+    source: 'github' | 'jira'
+  ): Promise<void> {
+    let ok = false;
+    if (source === 'github') {
+      ok = await applyGithubTransition(
+        ticketId,
+        links,
+        LABEL_CODE_REVIEW,
+        LABEL_READY_FOR_QA
+      );
+    } else if (source === 'jira') {
+      ok = await applyJiraTransition(config, ticketId, LABEL_READY_FOR_QA);
+    }
+    if (ok) transitionMap.set(ticketId, LABEL_READY_FOR_QA);
   }
 
   async function checkPrTransitions(
@@ -171,40 +243,12 @@ export function createTicketTransitionsRouter(deps: TicketTransitionsDeps) {
 
         if (
           pr.state === 'OPEN' &&
-          current !== 'code-review' &&
-          current !== 'ready-for-qa'
+          current !== LABEL_CODE_REVIEW &&
+          current !== LABEL_READY_FOR_QA
         ) {
-          if (source === 'github') {
-            const issueNum = ghIssueNumber(ticketId);
-            if (!issueNum) continue;
-            const repoPath = links[0]?.repoPath;
-            if (!repoPath) continue;
-            await removeLabel(exec, repoPath, issueNum, 'in-progress');
-            const ok = await addLabel(exec, repoPath, issueNum, 'code-review');
-            if (ok) transitionMap.set(ticketId, 'code-review');
-          } else if (source === 'jira') {
-            const transitionName = getJiraStatusMapping(config, 'code-review');
-            if (transitionName) {
-              const ok = await jiraTransition(exec, ticketId, transitionName);
-              if (ok) transitionMap.set(ticketId, 'code-review');
-            }
-          }
-        } else if (pr.state === 'MERGED' && current !== 'ready-for-qa') {
-          if (source === 'github') {
-            const issueNum = ghIssueNumber(ticketId);
-            if (!issueNum) continue;
-            const repoPath = links[0]?.repoPath;
-            if (!repoPath) continue;
-            await removeLabel(exec, repoPath, issueNum, 'code-review');
-            const ok = await addLabel(exec, repoPath, issueNum, 'ready-for-qa');
-            if (ok) transitionMap.set(ticketId, 'ready-for-qa');
-          } else if (source === 'jira') {
-            const transitionName = getJiraStatusMapping(config, 'ready-for-qa');
-            if (transitionName) {
-              const ok = await jiraTransition(exec, ticketId, transitionName);
-              if (ok) transitionMap.set(ticketId, 'ready-for-qa');
-            }
-          }
+          await transitionToCodeReview(config, ticketId, links, source);
+        } else if (pr.state === 'MERGED' && current !== LABEL_READY_FOR_QA) {
+          await transitionToReadyForQa(config, ticketId, links, source);
         }
       }
     }

@@ -1,4 +1,4 @@
-/* global clients, self */
+/* global clients */
 // Service worker for PWA install support and push notifications.
 // Only intercept navigation requests (page loads). Let API calls, analytics,
 // and other subresource fetches go straight to the network without SW interference.
@@ -23,14 +23,11 @@ self.addEventListener('push', function (event) {
     /* ignore parse errors */
   }
   event.waitUntil(
-    self.registration.showNotification(
-      data.displayName || 'Relay IDE',
-      {
-        body: 'Session needs your input',
-        tag: 'session-' + (data.sessionId || ''),
-        data: { sessionId: data.sessionId, sessionType: data.sessionType },
-      }
-    )
+    self.registration.showNotification(data.displayName || 'Relay IDE', {
+      body: 'Session needs your input',
+      tag: 'session-' + (data.sessionId || ''),
+      data: { sessionId: data.sessionId, sessionType: data.sessionType },
+    })
   );
 });
 
