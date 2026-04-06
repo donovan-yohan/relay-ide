@@ -469,11 +469,18 @@ export async function renameSession(
 export async function fetchWorktreeStatus(
   worktreePath: string
 ): Promise<{ activeSessions: string[]; hasUncommittedChanges: boolean }> {
-  return json(
-    await fetch(
-      '/worktrees/status?path=' + encodeURIComponent(worktreePath)
-    )
+  const res = await fetch(
+    '/worktrees/status?path=' + encodeURIComponent(worktreePath)
   );
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch worktree status')
+    );
+  }
+  return (await res.json()) as {
+    activeSessions: string[];
+    hasUncommittedChanges: boolean;
+  };
 }
 
 export async function deleteWorktree(

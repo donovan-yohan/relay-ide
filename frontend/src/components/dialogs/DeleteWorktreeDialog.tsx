@@ -12,7 +12,7 @@ import type { WorktreeInfo } from '../../lib/types.js';
 import './DeleteWorktreeDialog.css';
 
 export interface DeleteWorktreeDialogHandle {
-  open(wt: WorktreeInfo, hasActiveSessions?: boolean): void;
+  open(wt: WorktreeInfo, hasActiveSessions: boolean): void;
   close(): void;
 }
 
@@ -22,12 +22,12 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
     const [worktree, setWorktree] = useState<WorktreeInfo | null>(null);
     const [error, setError] = useState('');
     const [deleting, setDeleting] = useState(false);
-    const [activeSessions, setActiveSessions] = useState(false);
+    const [hasActiveSessions, setHasActiveSessions] = useState(false);
 
     useImperativeHandle(ref, () => ({
-      open(wt: WorktreeInfo, hasActiveSessions?: boolean) {
+      open(wt: WorktreeInfo, hasActiveSessions: boolean) {
         setWorktree(wt);
-        setActiveSessions(hasActiveSessions ?? false);
+        setHasActiveSessions(hasActiveSessions);
         setError('');
         setDeleting(false);
         shellRef.current?.open();
@@ -91,7 +91,7 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
               <p className="delete-worktree-warning-msg">
                 This worktree has uncommitted changes that will be lost.
               </p>
-              {activeSessions && (
+              {hasActiveSessions && (
                 <p className="delete-worktree-warning-msg">
                   Active sessions will be terminated.
                 </p>

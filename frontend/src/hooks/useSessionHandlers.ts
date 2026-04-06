@@ -721,7 +721,11 @@ export function useSessionHandlers({
         } else {
           useSessionsStore.getState().setLoading(wt.path);
           try {
-            await deleteWorktree(wt.path, wt.repoPath, hasActive);
+            if (hasActive) {
+              await deleteWorktree(wt.path, wt.repoPath, true);
+            } else {
+              await deleteWorktree(wt.path, wt.repoPath);
+            }
           } finally {
             useSessionsStore.getState().clearLoading(wt.path);
           }
