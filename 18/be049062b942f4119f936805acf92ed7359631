@@ -1,0 +1,29 @@
+frontend/src/App.tsx
+  434deb847d5ba1c5 540,792
+frontend/src/components/WorkspaceGroup.tsx
+  434deb847d5ba1c5 38,99,159,189,243
+frontend/src/components/Sidebar.tsx
+  434deb847d5ba1c5 77,93,128,177,197,233,252,265,408,429
+frontend/src/hooks/useSessionHandlers.ts
+  434deb847d5ba1c5 735-783,828
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "18be049062b942f4119f936805acf92ed7359631",
+  "prompts": {
+    "434deb847d5ba1c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bce67962-f371-4f4b-90c7-5a7f0943a78c",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 67,
+      "total_deletions": 0,
+      "accepted_lines": 67,
+      "overriden_lines": 0
+    }
+  }
+}
