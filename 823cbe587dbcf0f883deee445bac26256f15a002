@@ -1,0 +1,23 @@
+test/stores/notifications-store.test.ts
+  b312c99a8b6b376c 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "823cbe587dbcf0f883deee445bac26256f15a002",
+  "prompts": {
+    "b312c99a8b6b376c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "695c1383-dfc2-4b0a-a09c-001eba7d5910",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
