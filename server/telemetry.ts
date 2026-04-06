@@ -12,6 +12,8 @@ import type {
 import { getAdapterForFramework } from './telemetry-adapter.js';
 // Side-effect import: registers the Claude adapter in the adapter registry
 import './adapters/claude-telemetry.js';
+// Side-effect import: registers the Codex adapter in the adapter registry
+import './adapters/codex-telemetry.js';
 import { createLogger } from './logger.js';
 
 // Re-export TelemetryDeps from telemetry-adapter for backward compat

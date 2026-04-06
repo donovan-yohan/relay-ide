@@ -13,6 +13,7 @@ import {
   stopTelemetry,
   type TelemetryDeps,
 } from '../server/telemetry.js';
+import { getAdapterForFramework } from '../server/telemetry-adapter.js';
 import type { Session } from '../server/types.js';
 
 const noopAuth = (
@@ -129,8 +130,18 @@ test('parses session telemetry from the statusLine file', () => {
   expect(account).toEqual({
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 22, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 8, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 22,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 8,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: account?.updatedAt,
   });
@@ -202,8 +213,18 @@ test('restores pending telemetry from disk on startup', () => {
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 44, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 55, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 44,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 55,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -256,8 +277,18 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 9, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 18, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 9,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 18,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -366,4 +397,39 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
   expect(
     events.filter((event) => event.type === 'session-telemetry').length
   ).toBe(1);
+});
+
+test('Codex adapter registered and discoverable via getAdapterForFramework', () => {
+  const deps = makeDeps([], []);
+
+  const adapter = getAdapterForFramework('codex', deps);
+
+  expect(adapter).toBeTruthy();
+  expect(adapter!.framework).toBe('codex');
+});
+
+test('multi-adapter coexistence: Claude and Codex adapters work independently', () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+  writeStatusLineFile('claude-session', sampleStatusLinePayload());
+
+  const deps: TelemetryDeps = {
+    configDir: tmpDir,
+    getActiveSessions: () => [
+      { id: 'codex-session', agent: 'codex' } as Session,
+      { id: 'claude-session', agent: 'claude' } as Session,
+    ],
+    broadcastEvent: (type, data) => {
+      if (data === undefined) events.push({ type });
+      else events.push({ type, data });
+    },
+  };
+
+  startTelemetry(deps);
+
+  const claudeTelemetry = getTelemetryForSession('claude-session');
+
+  expect(claudeTelemetry).toBeTruthy();
+  expect(claudeTelemetry!.source).toBe('statusLine');
+  expect(claudeTelemetry!.totalInputTokens).toBe(12400);
 });
