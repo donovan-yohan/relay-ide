@@ -123,44 +123,82 @@ function UsageSection({ repoSessions }: UsageSectionProps) {
             )}
           </span>
         </div>
-        {accountTelemetry && (
-          <>
-            <div className="usage-divider" />
-            <div className="usage-row">
-              <span className="usage-label">5h limit</span>
-              <span className="usage-bar">
-                <TuiProgress
-                  variant="bar"
-                  value={Math.max(0, Math.min(100, accountTelemetry.fiveHourUsedPercent >= 0 ? accountTelemetry.fiveHourUsedPercent : 0))}
-                  width={10}
-                />
-              </span>
-              <span className="usage-value">
-                {accountTelemetry.fiveHourUsedPercent >= 0 ? `${Math.round(accountTelemetry.fiveHourUsedPercent)}% used` : '—'}
-              </span>
-              <span className="usage-meta">
-                resets {formatResetAt(accountTelemetry.fiveHourResetsAt)}
-              </span>
-            </div>
-            <div className="usage-divider" />
-            <div className="usage-row">
-              <span className="usage-label">7d limit</span>
-              <span className="usage-bar">
-                <TuiProgress
-                  variant="bar"
-                  value={Math.max(0, Math.min(100, accountTelemetry.sevenDayUsedPercent >= 0 ? accountTelemetry.sevenDayUsedPercent : 0))}
-                  width={10}
-                />
-              </span>
-              <span className="usage-value">
-                {accountTelemetry.sevenDayUsedPercent >= 0 ? `${Math.round(accountTelemetry.sevenDayUsedPercent)}% used` : '—'}
-              </span>
-              <span className="usage-meta">
-                resets {formatResetAt(accountTelemetry.sevenDayResetsAt)}
-              </span>
-            </div>
-          </>
-        )}
+        {accountTelemetry &&
+          (() => {
+            const fiveHour = accountTelemetry.rateLimits.find(
+              (rl) => rl.name === 'five_hour'
+            );
+            const sevenDay = accountTelemetry.rateLimits.find(
+              (rl) => rl.name === 'seven_day'
+            );
+            if (!fiveHour && !sevenDay) return null;
+            return (
+              <>
+                {fiveHour && (
+                  <>
+                    <div className="usage-divider" />
+                    <div className="usage-row">
+                      <span className="usage-label">5h limit</span>
+                      <span className="usage-bar">
+                        <TuiProgress
+                          variant="bar"
+                          value={Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              fiveHour.usedPercent >= 0
+                                ? fiveHour.usedPercent
+                                : 0
+                            )
+                          )}
+                          width={10}
+                        />
+                      </span>
+                      <span className="usage-value">
+                        {fiveHour.usedPercent >= 0
+                          ? `${Math.round(fiveHour.usedPercent)}% used`
+                          : '—'}
+                      </span>
+                      <span className="usage-meta">
+                        resets {formatResetAt(fiveHour.resetsAt)}
+                      </span>
+                    </div>
+                  </>
+                )}
+                {sevenDay && (
+                  <>
+                    <div className="usage-divider" />
+                    <div className="usage-row">
+                      <span className="usage-label">7d limit</span>
+                      <span className="usage-bar">
+                        <TuiProgress
+                          variant="bar"
+                          value={Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              sevenDay.usedPercent >= 0
+                                ? sevenDay.usedPercent
+                                : 0
+                            )
+                          )}
+                          width={10}
+                        />
+                      </span>
+                      <span className="usage-value">
+                        {sevenDay.usedPercent >= 0
+                          ? `${Math.round(sevenDay.usedPercent)}% used`
+                          : '—'}
+                      </span>
+                      <span className="usage-meta">
+                        resets {formatResetAt(sevenDay.resetsAt)}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
       </div>
     </section>
   );
