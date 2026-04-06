@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [nightly, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  ci:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Lint changed files
+        run: |
+          FILES=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs')
+          if [ -n "$FILES" ]; then
+            echo "$FILES" | xargs npx eslint
+          else
+            echo "No lintable files changed"
+          fi
+
+      - run: npm test
