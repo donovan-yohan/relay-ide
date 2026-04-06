@@ -1,50 +1,72 @@
-name: gstack
+name: relay-ide
 
-# Trigger contract: how intake signals "ready to build"
-# Checks for APPROVED design docs in ~/.gstack/projects/
-# Can also be invoked explicitly: belayer submit --spec <path>
+# Trigger contract: checks GitHub Issues for todo-labeled issues
+# Workflow: backlog → refined → [planning skill] → todo → [belayer picks up]
 intake:
-  - name: design-doc
+  - name: github-issue
     type: trigger
     check: .belayer/scripts/check-ready.sh
 
 nodes:
-  # Implementation phase: self-resolving loop
-  # implement ↔ review is the build loop. Gates are implementation primitives.
+  # Implementation: receives a todo issue spec (planned upstream by the planning skill).
+  # Uses OpenCode with ultrawork/autopilot for parallel agent execution.
   - name: implement
+    type: node
+    command: .belayer/scripts/implement.sh
+    description: |
+      Implement the GitHub issue spec. OpenCode with ultrawork/autopilot
+      handles parallel execution. The issue body contains the full
+      implementation plan written by the planning skill.
+    input: { type: file, key: github-issue }
+    output: { type: commit }
+    on_pass: review-router
+    on_fail: stop
+    max_retries: 3
+
+  # Review Router: classifies the change and routes to appropriate review depth.
+  # Each route is an isolated subpipeline with its own gate + ship.
+  - name: review-router
     type: agent
     vendor: claude
-    prompt: 'Implement the design specification at %{INPUT}'
-    input: { type: file, key: design_doc }
-    output: { type: commit }
-    on_pass: review
-    on_fail: stop
+    prompt: |
+      Read the diff at %{INPUT}. Classify this change for relay-ide
+      and choose the appropriate review depth.
 
-  - name: review
-    type: gate
-    vendor: codex
-    prompt: '$review'
-    input: { type: commit }
-    output: { type: gate_result }
-    dimensions:
-      - { name: code_quality, weight: 0.35 }
-      - { name: scope_compliance, weight: 0.30 }
-      - { name: production_readiness, weight: 0.35 }
-    thresholds: { pass: 7.0, retry: 4.0 }
-    on_pass: ship
-    on_retry: implement
+      Consider:
+      - Scope: how many modules touched (server/, src/components/, src/stores/)
+      - Risk: PTY management, auth, WebSocket, session state
+      - API surface: REST endpoints, WebSocket messages, config schema
+      - Frontend vs backend: React components vs Express routes
+      - Test coverage: vitest test additions or modifications
+    input: { type: commit, key: implement }
+    output: { type: route_result, path: .belayer/.internal/output/route-result.json }
+    routes:
+      mode: choose_one
+      options:
+        full-feature-review:
+          pipeline: .belayer/pipelines/full-feature-review.yaml
+          description: >
+            Broad or risky change spanning multiple modules.
+            Thorough review with 5 dimensions covering code quality,
+            spec compliance, production readiness, test coverage,
+            and relay-ide architecture patterns.
+        quick-bugfix-review:
+          pipeline: .belayer/pipelines/quick-bugfix-review.yaml
+          description: >
+            Small localized fix in a single module.
+            Lightweight review with 3 dimensions: correctness,
+            regression risk, and test coverage. 1 retry max.
+        refactor-review:
+          pipeline: .belayer/pipelines/refactor-review.yaml
+          description: >
+            Structural change with no new behavior.
+            Focus on behavioral preservation, architecture
+            improvement, and migration safety. Higher pass
+            threshold (7.5).
+    on_pass: stop
+    on_retry: self
     on_fail: stop
     max_retries: 2
 
-  # Output phase: shipping
-  - name: ship
-    type: agent
-    vendor: claude
-    prompt: 'Create a pull request for the changes on this branch. Include a summary of what was implemented, run any tests, and push to remote. Write the PR URL to .belayer/.internal/output/pr.json as {"url": "...", "number": N}.'
-    input: { type: commit }
-    output: { type: pr, path: .belayer/.internal/output/pr.json }
-    on_pass: stop
-    on_fail: stop
-
 safety:
-  max_concurrent_runs: 3
+  max_concurrent_runs: 2

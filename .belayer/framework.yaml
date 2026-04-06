@@ -1,6 +1,11 @@
-name: gstack
-description: Belayer framework powered by gstack skills. Uses /office-hours for intake, Claude Code for implementation, /review for gates, and /ship + /land-and-deploy for output.
+name: relay-ide
+description: Custom belayer framework for relay-ide. GitHub Issues intake, OpenCode for implementation (ultrawork/autopilot), Codex for adversarial review gates, Claude Code for review routing and PR authoring.
 version: 0.1.0
 requires:
-  - gstack (npm i -g @anthropic/gstack or vendor into .claude/skills/gstack)
-  - claude (Claude Code CLI)
+  - opencode (OpenCode CLI, for implementation)
+  - claude (Claude Code CLI, for review routing and shipping)
+  - codex (OpenAI Codex CLI, for review gates)
+  - gh (GitHub CLI, for issue intake)
+  - jq (for JSON parsing in scripts)
+  - node >= 24.0.0
+  - npm (for build and test)
