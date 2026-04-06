@@ -1,0 +1,25 @@
+frontend/src/components/Sidebar.tsx
+  b06462a0478f0dc5 178-181,188
+frontend/src/components/RepoItem.tsx
+  b06462a0478f0dc5 12,18,358,370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "53d95501a40eea3c3052f9c5ced168de35510aec",
+  "prompts": {
+    "b06462a0478f0dc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e1a5195-59e6-432a-8662-32fc72401f19",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 17,
+      "total_deletions": 23,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
