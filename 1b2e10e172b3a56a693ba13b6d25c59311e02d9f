@@ -1,0 +1,40 @@
+.belayer/pipeline.yaml
+  cf791a1a5806caab 20
+.belayer/scripts/implement.sh
+  cf791a1a5806caab 20-22
+.belayer/scripts/check-ready.sh
+  cf791a1a5806caab 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "1b2e10e172b3a56a693ba13b6d25c59311e02d9f",
+  "prompts": {
+    "508e1477a6bc03cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284e2271-48ed-4868-971c-a4f67e042076",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "cf791a1a5806caab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b073bfb8-5f45-4f04-8ec7-3d5910e0b3ab",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 4,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
