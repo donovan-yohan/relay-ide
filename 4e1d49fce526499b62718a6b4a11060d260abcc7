@@ -1,0 +1,41 @@
+frontend/src/components/Hint.tsx
+  c59951db7afe6f57 1-158
+frontend/src/components/EmptyState.tsx
+  c59951db7afe6f57 11,20,34
+frontend/src/lib/stores/hints.ts
+  c59951db7afe6f57 1-81
+frontend/src/components/EmptyState.css
+  c59951db7afe6f57 34-41
+frontend/src/components/TuiButton.css
+  c59951db7afe6f57 84-101
+frontend/src/components/TuiButton.tsx
+  c59951db7afe6f57 12,27,46-49,63,79
+frontend/src/App.tsx
+  c59951db7afe6f57 11-13,152-170,322-332,375-385
+frontend/src/components/RepoDashboard.tsx
+  c59951db7afe6f57 1,29,150,152-175,329,366
+frontend/src/components/Hint.css
+  c59951db7afe6f57 1-91
+frontend/src/lib/whats-new.ts
+  c59951db7afe6f57 1-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "4e1d49fce526499b62718a6b4a11060d260abcc7",
+  "prompts": {
+    "c59951db7afe6f57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c854b1e-7f93-40a8-89e4-b475c77db22d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 940,
+      "total_deletions": 73,
+      "accepted_lines": 460,
+      "overriden_lines": 0
+    }
+  }
+}
