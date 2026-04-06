@@ -1,0 +1,25 @@
+scripts/postinstall.js
+  9adc39e758319215 34-38,104-107
+server/index.ts
+  9adc39e758319215 2002,2004-2008,2012-2014,2032
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "ab48e4a083ab33b2bf6c9c8de4d0a77c041324ae",
+  "prompts": {
+    "9adc39e758319215": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32a6ecbb-1b33-493b-8c59-43887b806c08",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 22,
+      "total_deletions": 6,
+      "accepted_lines": 19,
+      "overriden_lines": 0
+    }
+  }
+}
