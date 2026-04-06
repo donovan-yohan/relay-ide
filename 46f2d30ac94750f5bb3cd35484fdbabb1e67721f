@@ -1,0 +1,75 @@
+frontend/public/sw.js
+  64c54ae47ff3ea44 1
+server/webhook-manager.ts
+  64c54ae47ff3ea44 358-386,650
+server/git.ts
+  64c54ae47ff3ea44 84-122,151-152,165-168,185,188,488,511,534,601-666,672,678,681,686,689,716-718,728,752,760
+server/gh.ts
+  64c54ae47ff3ea44 77-155,176,179-180,186-187
+server/workspace-groups.ts
+  64c54ae47ff3ea44 18-20,30,41-147,150,161,190,223,230,256,300,338,345,366,408,425,433,459,462,469-470
+server/analytics.ts
+  64c54ae47ff3ea44 97-99,289,320,339,361-374,376-392,394-396,398-406,408-435,437,439-447,449-451,453-457,465,467,518-521,524,526-542,544-548,577-584,586-612,628,630,637,640,642-644,657-684,687,810,823,916,939,999,1032-1033,1084,1108,1137,1151,1192
+frontend/src/lib/session-intent.ts
+  64c54ae47ff3ea44 26-28,109,111,143,145,147
+frontend/src/lib/fuzzy-scorer.ts
+  64c54ae47ff3ea44 118-122,124-132,134-136,138-145,147-151,153-156,158-162,164-167,173-175,177-181,191-192,194-199,214-261,263
+server/output-parsers/claude-parser.ts
+  64c54ae47ff3ea44 4,7
+server/review-poller.ts
+  64c54ae47ff3ea44 132-277,305-306,313,316
+scripts/postinstall.js
+  64c54ae47ff3ea44 2
+server/pty-handler.ts
+  64c54ae47ff3ea44 13,311-314,316,318,334,336-342,344-364,366-387,389-401,411,418,422,426,437,456-473,475,490-491,499-500,502-529,531,566-705,751,753-754,772,783,785-790,795-801,803-806,809,826-829,835,870-962
+eslint.config.js
+  64c54ae47ff3ea44 41
+server/logger.ts
+  64c54ae47ff3ea44 20
+server/output-parsers/opencode-parser.ts
+  64c54ae47ff3ea44 4,7
+server/github-graphql.ts
+  64c54ae47ff3ea44 137-197,215-216,275
+frontend/src/lib/pr-state.ts
+  64c54ae47ff3ea44 34-35,172,196,207,229
+server/watcher.ts
+  64c54ae47ff3ea44 17-19,233-235,346-348,365-367,376-378,430-432,568-570,748-750,754-756,810-812,816-818
+server/sessions.ts
+  64c54ae47ff3ea44 515-522,524-526,528,533,535,537-555,558-568,570-572,574,576,581-585,588,590-602,604-638,640-641,643,646-652,656-659,662-664,666-751,753,777
+frontend/src/lib/logger.ts
+  64c54ae47ff3ea44 26
+server/ticket-transitions.ts
+  64c54ae47ff3ea44 19-21,150-156,159,162,167-230,246-247,249-251
+server/ws.ts
+  64c54ae47ff3ea44 173-175
+frontend/src/hooks/useActionRegistry.ts
+  64c54ae47ff3ea44 130-132,136-147
+server/utils.ts
+  64c54ae47ff3ea44 3,12-15,17-29,31-32,34-35,37-43,48,50-53,55-68
+server/workspaces.ts
+  64c54ae47ff3ea44 49-53,163,174,248,309,323,406,451,463,485,567,580,753,772,784,825,1020,1076,1341,1394,1457,1523
+server/git-routes.ts
+  64c54ae47ff3ea44 56-156,176-177,187,190
+server/hooks.ts
+  64c54ae47ff3ea44 25,116,281,364,458
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "46f2d30ac94750f5bb3cd35484fdbabb1e67721f",
+  "prompts": {
+    "64c54ae47ff3ea44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d7e1f39-da8b-4625-9cc6-5585e24a80c0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1957,
+      "total_deletions": 1460,
+      "accepted_lines": 1851,
+      "overriden_lines": 2
+    }
+  }
+}
