@@ -1,0 +1,36 @@
+.github/workflows/ci.yml
+  9d4fd1d81d2da759 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "b6d1cb55fb174e66761fc44ef74a757735faad53",
+  "prompts": {
+    "2aef7f2be6328e16": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ef2784b-aeab-47e8-bd3c-02398fe7dc04",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 17,
+      "overriden_lines": 0
+    },
+    "9d4fd1d81d2da759": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57581c50-e290-408f-bcc6-97edc75b61df",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 8,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
