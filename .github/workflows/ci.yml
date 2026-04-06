@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [nightly, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  ci:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npx eslint .
+
+      - run: npm test
