@@ -1,0 +1,23 @@
+test/stores/toasts-store.test.ts
+  b312c99a8b6b376c 3,6,9,14-24,27-34,37-45,48-61,64-83,85-101,105-122,126-133,136-149,151,153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "65e730a35659384b4db024f8b856c8d93751fd62",
+  "prompts": {
+    "b312c99a8b6b376c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "695c1383-dfc2-4b0a-a09c-001eba7d5910",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 127,
+      "total_deletions": 47,
+      "accepted_lines": 125,
+      "overriden_lines": 0
+    }
+  }
+}
