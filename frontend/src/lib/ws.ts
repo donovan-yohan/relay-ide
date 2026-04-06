@@ -201,55 +201,65 @@ export function connectPtySocket(
     startPtyPing();
   };
 
-  // Flow control constants
-  const HIGH_WATER_MARK = 512 * 1024; // 500KB — pause feeding xterm
-  const LOW_WATER_MARK = 128 * 1024; //  128KB — resume feeding xterm
+  // Flow control constants (thresholds measured in string length / UTF-16 code units,
+  // which is close enough to bytes for mostly-ASCII terminal output)
+  const HIGH_WATER_MARK = 512 * 1024; // ~500KB — pause feeding xterm
+  const LOW_WATER_MARK = 128 * 1024; //  ~128KB — resume feeding xterm
+  const MAX_QUEUE_SIZE = 2 * 1024 * 1024; // ~2MB — cap queued data to prevent OOM
+  const BG_FLUSH_INTERVAL = 250; // ms — fallback flush interval when tab is hidden
 
   // Per-connection write buffer state (scoped here; abandoned on next connectPtySocket call)
   let writeQueue: string[] = [];
-  let pendingBytes = 0; // bytes handed to term.write but not yet processed
+  let queueSize = 0; // total string length queued but not yet handed to term.write
+  let pendingSize = 0; // string length handed to term.write but not yet processed
   let paused = false;
   let rafHandle: number | null = null;
+  let bgTimer: ReturnType<typeof setTimeout> | null = null;
 
   function flushWriteQueue(): void {
     rafHandle = null;
+    bgTimer = null;
     if (writeQueue.length === 0) return;
 
-    // Drain the queue into xterm, one chunk per call, tracking pressure via callback
-    const chunks = writeQueue;
+    // Coalesce all queued chunks into a single term.write call per frame
+    const combined = writeQueue.join('');
+    const combinedLen = combined.length;
     writeQueue = [];
+    queueSize = 0;
 
-    for (const chunk of chunks) {
-      const chunkLen = chunk.length;
-      pendingBytes += chunkLen;
-      term.write(chunk, () => {
-        pendingBytes -= chunkLen;
-        // Resume if we were paused and the buffer has drained below the low-water mark
-        if (paused && pendingBytes < LOW_WATER_MARK) {
-          paused = false;
-          logger.info(
-            'flow-control: LOW water mark reached, resuming (pending=%d, queued=%d)',
-            pendingBytes,
-            writeQueue.length
-          );
-          scheduleFlush();
-        }
-      });
-    }
+    pendingSize += combinedLen;
+    term.write(combined, () => {
+      pendingSize -= combinedLen;
+      // Resume if we were paused and the buffer has drained below the low-water mark
+      if (paused && pendingSize < LOW_WATER_MARK) {
+        paused = false;
+        logger.info(
+          'flow-control: LOW water mark reached, resuming (pending=%d, queued=%d)',
+          pendingSize,
+          writeQueue.length
+        );
+        scheduleFlush();
+      }
+    });
 
-    // Check pressure after handing off all chunks
-    if (pendingBytes >= HIGH_WATER_MARK) {
+    // Check pressure after handing off the coalesced write
+    if (pendingSize >= HIGH_WATER_MARK) {
       paused = true;
       logger.warn(
         'flow-control: HIGH water mark hit, pausing (pending=%d)',
-        pendingBytes
+        pendingSize
       );
     }
   }
 
   function scheduleFlush(): void {
-    if (rafHandle !== null) return;
-    rafHandle = requestAnimationFrame(flushWriteQueue);
+    if (rafHandle !== null || bgTimer !== null) return;
+    // RAF is throttled/paused in background tabs — use setTimeout fallback
+    if (document.hidden) {
+      bgTimer = setTimeout(flushWriteQueue, BG_FLUSH_INTERVAL);
+    } else {
+      rafHandle = requestAnimationFrame(flushWriteQueue);
+    }
   }
 
   socket.onmessage = (event) => {
@@ -258,12 +268,25 @@ export function connectPtySocket(
     if (ptyPongPending) clearPtyPongTimeout();
     // Handle pong responses silently
     if (str === PONG_MSG) return;
+
+    // Cap queue size to prevent unbounded memory growth
+    if (queueSize + str.length > MAX_QUEUE_SIZE) {
+      if (!paused) {
+        logger.warn(
+          'flow-control: queue cap reached (%d), dropping data',
+          queueSize
+        );
+      }
+      return;
+    }
+
     writeQueue.push(str);
+    queueSize += str.length;
     if (paused) {
       logger.debug(
-        'flow-control: queued %d bytes while paused (pending=%d, queue=%d)',
+        'flow-control: queued %d chars while paused (pending=%d, queue=%d)',
         str.length,
-        pendingBytes,
+        pendingSize,
         writeQueue.length
       );
     }
@@ -272,10 +295,14 @@ export function connectPtySocket(
 
   socket.onclose = (event) => {
     clearPtyPing();
-    // Cancel any pending RAF flush for this socket
+    // Cancel any pending flush for this socket
     if (rafHandle !== null) {
       cancelAnimationFrame(rafHandle);
       rafHandle = null;
+    }
+    if (bgTimer !== null) {
+      clearTimeout(bgTimer);
+      bgTimer = null;
     }
     // Clear pending ref if this socket closed before onopen
     if (pendingPtySocket === socket) pendingPtySocket = null;

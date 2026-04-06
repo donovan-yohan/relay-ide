@@ -697,11 +697,9 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
   // recognized by xterm.js. Swallow to prevent parser confusion.
   t.parser.registerOscHandler(66, () => true);
 
-  // Kitty graphics protocol — OpenTUI probes for graphics support via
-  // APC sequences (ESC _ G ... ESC \). Register a handler to swallow them.
-  // The APC handler uses the same registration pattern as DCS.
-  // Note: xterm.js handles unknown APC sequences gracefully in recent versions,
-  // but registering explicitly is belt-and-suspenders.
+  // Kitty graphics protocol — OpenTUI may probe for graphics support via
+  // APC sequences (ESC _ G ... ESC \). No explicit APC sanitizer is registered
+  // here; xterm.js handles unknown APC sequences gracefully in recent versions.
 }
 
 function useTerminalSetup(
