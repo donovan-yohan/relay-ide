@@ -6,7 +6,7 @@ function resetStore() {
   useNotificationStore.setState({ notifications: [] });
 }
 
-describe('notification Zustand store', () => {
+describe('notifications Zustand store', () => {
   beforeEach(() => {
     resetStore();
   });
