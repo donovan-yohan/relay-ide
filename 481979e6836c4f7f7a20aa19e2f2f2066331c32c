@@ -1,0 +1,27 @@
+server/service.ts
+  4ebab2a33409435d 8,19-61,63-73,191-206,208,315-316
+scripts/postinstall.js
+  4ebab2a33409435d 104-117,119
+test/service.test.ts
+  4ebab2a33409435d 47-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "481979e6836c4f7f7a20aa19e2f2f2066331c32c",
+  "prompts": {
+    "4ebab2a33409435d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f603a530-6d95-4ec7-8fd9-bfc192f902f2",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 108,
+      "total_deletions": 9,
+      "accepted_lines": 125,
+      "overriden_lines": 1
+    }
+  }
+}
