@@ -6,5 +6,6 @@ requires:
   - claude (Claude Code CLI, for review routing and shipping)
   - codex (OpenAI Codex CLI, for review gates)
   - gh (GitHub CLI, for issue intake)
+  - jq (for JSON parsing in scripts)
   - node >= 24.0.0
   - npm (for build and test)

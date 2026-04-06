@@ -6,6 +6,10 @@ set -euo pipefail
 #
 # Reads node-context.json for the spec file path, then delegates to opencode.
 
+for cmd in jq opencode; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not found" >&2; exit 1; }
+done
+
 CONTEXT_FILE=".belayer/.internal/input/node-context.json"
 
 if [ ! -f "$CONTEXT_FILE" ]; then
