@@ -92,6 +92,11 @@ import type { TerminalHandle } from '../components/Terminal.js';
 
 const logger = createLogger('ActionRegistry');
 
+const SECTION_INTEGRATIONS = 'section-integrations' as const;
+const SECTION_GENERAL = 'section-general' as const;
+const SECTION_ADVANCED = 'section-advanced' as const;
+const SECTION_ABOUT = 'section-about' as const;
+
 export interface UseActionRegistryParams {
   handleQuickAgent: () => void;
   handleQuickTerminal: () => void;
@@ -127,9 +132,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
   } = params;
 
   useEffect(() => {
-    const SECTION_INTEGRATIONS = 'section-integrations' as const;
-    const SECTION_GENERAL = 'section-general' as const;
-    const SECTION_ADVANCED = 'section-advanced' as const;
     // ── Settings section openers ─────────────────────────────────────────────
     // Many actions just open a specific settings section.
     const settingsSectionActions = [
@@ -281,12 +283,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       {
         ...settingsConnectGithub,
         handler: () =>
-          useUiStore
-            .getState()
-            .setActiveModal({
-              modal: 'settings',
-              scrollToId: SECTION_INTEGRATIONS,
-            }),
+          useUiStore.getState().setActiveModal({
+            modal: 'settings',
+            scrollToId: SECTION_INTEGRATIONS,
+          }),
       },
       {
         ...settingsToggleYolo,
@@ -306,7 +306,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: () =>
           useUiStore
             .getState()
-            .setActiveModal({ modal: 'settings', scrollToId: 'section-about' }),
+            .setActiveModal({ modal: 'settings', scrollToId: SECTION_ABOUT }),
       },
       ...settingsActions,
 

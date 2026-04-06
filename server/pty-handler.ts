@@ -602,13 +602,10 @@ export function createPtySession(
 ): { session: PtySession; result: CreatePtyResult } {
   const {
     id,
-    type,
     agent = 'claude',
     repoName,
-    repoPath,
     worktreePath = null,
     cwd,
-    branchName,
     displayName,
     command,
     args: rawArgs = [],
@@ -619,11 +616,9 @@ export function createPtySession(
     useTmux: paramUseTmux,
     tmuxSessionName: paramTmuxSessionName,
     initialScrollback,
-    restored: paramRestored,
     port,
     forceOutputParser,
     yolo: paramYolo,
-    claudeArgs: paramClaudeArgs,
     hookToken: paramHookToken,
     hooksActive: paramHooksActive,
     frameworks,
@@ -780,8 +775,7 @@ export function createPtySession(
 
     proc.onExit(() => {
       if (canRetry && Date.now() - spawnTime < 3000) {
-        const retried = tryRetrySpawn(
-          session,
+        const retried = tryRetrySpawn(session, {
           rawArgs,
           continueArgs,
           settingsPath,
@@ -794,12 +788,14 @@ export function createPtySession(
           env,
           scrollback,
           scrollbackRef,
-          restoredClearTimer,
-          idleTimer,
-          metaFlushTimer,
+          timers: {
+            restoredClear: restoredClearTimer,
+            idle: idleTimer,
+            metaFlush: metaFlushTimer,
+          },
           sessionsMap,
-          id
-        );
+          id,
+        });
         if (retried !== null) {
           session.pty = retried;
           for (const cb of session.onPtyReplacedCallbacks) cb(retried);
@@ -868,45 +864,54 @@ export function createPtySession(
   return { session, result };
 }
 
+type RetryContext = {
+  rawArgs: string[];
+  continueArgs: string[];
+  settingsPath: string;
+  resolvedCommand: string;
+  useTmux: boolean;
+  tmuxSessionName: string;
+  cols: number;
+  rows: number;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  scrollback: string[];
+  scrollbackRef: { bytes: number };
+  timers: {
+    restoredClear: ReturnType<typeof setTimeout> | null;
+    idle: ReturnType<typeof setTimeout> | null;
+    metaFlush: ReturnType<typeof setTimeout> | null;
+  };
+  sessionsMap: Map<string, Session>;
+  id: string;
+};
+
 function tryRetrySpawn(
   session: PtySession,
-  rawArgs: string[],
-  continueArgs: string[],
-  settingsPath: string,
-  resolvedCommand: string,
-  useTmux: boolean,
-  tmuxSessionName: string,
-  cols: number,
-  rows: number,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  scrollback: string[],
-  scrollbackRef: { bytes: number },
-  restoredClearTimer: ReturnType<typeof setTimeout> | null,
-  idleTimer: ReturnType<typeof setTimeout> | null,
-  metaFlushTimer: ReturnType<typeof setTimeout> | null,
-  sessionsMap: Map<string, Session>,
-  id: string
+  ctx: RetryContext
 ): pty.IPty | null {
-  let retryArgs = rawArgs.filter((a) => !continueArgs.includes(a));
-  // Re-inject hooks settings if active (settingsPath captured from outer scope)
-  if (session.hooksActive && settingsPath) {
-    retryArgs = ['--settings', settingsPath, ...retryArgs];
+  let retryArgs = ctx.rawArgs.filter((a) => !ctx.continueArgs.includes(a));
+  if (session.hooksActive && ctx.settingsPath) {
+    retryArgs = ['--settings', ctx.settingsPath, ...retryArgs];
   }
 
   const retryNotice =
     '\r\n[relay-ide] --continue not available; starting new session...\r\n';
-  scrollback.length = 0;
-  scrollbackRef.bytes = 0;
-  scrollback.push(retryNotice);
-  scrollbackRef.bytes = retryNotice.length;
+  ctx.scrollback.length = 0;
+  ctx.scrollbackRef.bytes = 0;
+  ctx.scrollback.push(retryNotice);
+  ctx.scrollbackRef.bytes = retryNotice.length;
 
-  let retryCommand = resolvedCommand;
+  let retryCommand = ctx.resolvedCommand;
   let retrySpawnArgs = retryArgs;
-  if (useTmux && tmuxSessionName) {
-    const retryTmuxName = tmuxSessionName + '-retry';
+  if (ctx.useTmux && ctx.tmuxSessionName) {
+    const retryTmuxName = ctx.tmuxSessionName + '-retry';
     session.tmuxSessionName = retryTmuxName;
-    const tmux = resolveTmuxSpawn(resolvedCommand, retryArgs, retryTmuxName);
+    const tmux = resolveTmuxSpawn(
+      ctx.resolvedCommand,
+      retryArgs,
+      retryTmuxName
+    );
     retryCommand = tmux.command;
     retrySpawnArgs = tmux.args;
   }
@@ -914,16 +919,16 @@ function tryRetrySpawn(
   try {
     return pty.spawn(retryCommand, retrySpawnArgs, {
       name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env,
+      cols: ctx.cols,
+      rows: ctx.rows,
+      cwd: ctx.cwd,
+      env: ctx.env,
     });
   } catch {
-    if (restoredClearTimer) clearTimeout(restoredClearTimer);
-    if (idleTimer) clearTimeout(idleTimer);
-    if (metaFlushTimer) clearTimeout(metaFlushTimer);
-    sessionsMap.delete(id);
+    if (ctx.timers.restoredClear) clearTimeout(ctx.timers.restoredClear);
+    if (ctx.timers.idle) clearTimeout(ctx.timers.idle);
+    if (ctx.timers.metaFlush) clearTimeout(ctx.timers.metaFlush);
+    ctx.sessionsMap.delete(ctx.id);
     return null;
   }
 }

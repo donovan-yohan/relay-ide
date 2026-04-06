@@ -68,6 +68,22 @@ export function semverLessThan(a: string, b: string): boolean {
   return comparePreRelease(pa.pre, pb.pre) < 0;
 }
 
+export function clampDimension(
+  value: unknown,
+  min: number,
+  max: number
+): number | undefined {
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max
+  ) {
+    return Math.round(value);
+  }
+  return undefined;
+}
+
 export function cleanEnv(): Record<string, string> {
   const env = Object.assign({}, process.env) as Record<string, string>;
   delete env.CLAUDECODE;

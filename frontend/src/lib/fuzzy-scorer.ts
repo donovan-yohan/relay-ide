@@ -125,6 +125,7 @@ function computeMatchCell(
   i: number,
   j: number,
   idx: number,
+  tLen: number,
   query: string,
   target: string,
   arrays: DpArrays
@@ -132,7 +133,7 @@ function computeMatchCell(
   const { scores, consecutive, fromDiag } = arrays;
 
   const prevConsec =
-    i > 0 && j > 0 ? (consecutive[(i - 1) * target.length + (j - 1)] ?? 0) : 0;
+    i > 0 && j > 0 ? (consecutive[(i - 1) * tLen + (j - 1)] ?? 0) : 0;
   const cs = charScore(query, i, target, j, prevConsec);
 
   let diagScore: number;
@@ -141,7 +142,7 @@ function computeMatchCell(
   } else if (j === 0) {
     diagScore = -Infinity; // can't match query[i>0] at target[0] without prior
   } else {
-    diagScore = (scores[(i - 1) * target.length + (j - 1)] ?? 0) + cs;
+    diagScore = (scores[(i - 1) * tLen + (j - 1)] ?? 0) + cs;
   }
 
   const gapScore =
@@ -239,7 +240,7 @@ function scoreString(query: string, target: string): DpResult | null {
     for (let j = 0; j < tLen; j++) {
       const idx = i * tLen + j;
       if (queryLower[i] === targetLower[j]) {
-        computeMatchCell(i, j, idx, query, target, arrays);
+        computeMatchCell(i, j, idx, tLen, query, target, arrays);
         hasMatch = true;
       } else {
         // j === 0 means idx - 1 is the previous row's last cell, not left neighbor

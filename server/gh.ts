@@ -124,7 +124,6 @@ function classifyChecks(checks: CheckEntry[]): {
 
   for (const check of checks) {
     const conclusion = (check.conclusion ?? '').toUpperCase();
-    const state = (check.state ?? '').toUpperCase();
 
     if (
       conclusion === 'SUCCESS' ||
@@ -138,13 +137,6 @@ function classifyChecks(checks: CheckEntry[]): {
       conclusion === 'TIMED_OUT'
     ) {
       failing++;
-    } else if (
-      state === 'IN_PROGRESS' ||
-      state === 'QUEUED' ||
-      state === 'PENDING' ||
-      conclusion === ''
-    ) {
-      pending++;
     } else {
       pending++;
     }

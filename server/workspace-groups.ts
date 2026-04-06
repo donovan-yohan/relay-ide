@@ -24,6 +24,7 @@ import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { detectGitRepo } from './workspaces.js';
 import type { CreateParams, CreateResult } from './sessions.js';
 import { createLogger } from './logger.js';
+import { clampDimension } from './utils.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspace-groups');
@@ -81,22 +82,6 @@ async function resolveRepoPath(
       error: err instanceof Error ? err.message : 'worktree creation failed',
     };
   }
-}
-
-function clampDimension(
-  value: unknown,
-  min: number,
-  max: number
-): number | undefined {
-  if (
-    typeof value === 'number' &&
-    Number.isFinite(value) &&
-    value >= min &&
-    value <= max
-  ) {
-    return Math.round(value);
-  }
-  return undefined;
 }
 
 function buildFinalArgs(
