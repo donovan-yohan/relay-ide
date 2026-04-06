@@ -1,0 +1,31 @@
+test/worktrees.test.ts
+  508e1477a6bc03cd 1,700-704,706-708,710-711,713-714,716-720
+test/components/CodeBlock.spec.ts
+  508e1477a6bc03cd 11
+test/e2e/basic.spec.ts
+  508e1477a6bc03cd 3,47-58
+.github/workflows/ci.yml
+  508e1477a6bc03cd 55,58-59
+playwright.config.ts
+  508e1477a6bc03cd 29-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "23eae1f33ca83ae545c689e6e7f3e949a69bb01a",
+  "prompts": {
+    "508e1477a6bc03cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284e2271-48ed-4868-971c-a4f67e042076",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 43,
+      "total_deletions": 33,
+      "accepted_lines": 91,
+      "overriden_lines": 0
+    }
+  }
+}
