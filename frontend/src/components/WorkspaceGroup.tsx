@@ -35,6 +35,7 @@ export interface WorkspaceGroupProps {
   onOpenSettings: (workspace?: Repo) => void;
   onDeleteSession?: ((id: string) => void) | undefined;
   onDeleteWorktree?: ((wt: WorktreeInfo) => void) | undefined;
+  onResumeWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
   orgPrs?: PullRequest[];
   loadingItems?: Set<string> | undefined;
@@ -95,6 +96,7 @@ function GroupBody({
   onOpenSettings,
   onDeleteSession,
   onDeleteWorktree,
+  onResumeWorktree,
   onLaunchRepoSession,
 }: GroupBodyProps) {
   const sidebarItems = useSessionsStore((s) => s.sidebarItems);
@@ -154,6 +156,7 @@ function GroupBody({
             onOpenSettings={onOpenSettings}
             onDeleteSession={onDeleteSession}
             onDeleteWorktree={onDeleteWorktree}
+            onResumeWorktree={onResumeWorktree}
             onLaunchRepoSession={onLaunchRepoSession}
             orgPrs={orgPrs ?? []}
             loadingItems={loadingItems}
@@ -183,6 +186,7 @@ export function WorkspaceGroup({
   onOpenSettings,
   onDeleteSession,
   onDeleteWorktree,
+  onResumeWorktree,
   onLaunchRepoSession,
   orgPrs,
   loadingItems = EMPTY_SET,
@@ -236,6 +240,7 @@ export function WorkspaceGroup({
           onLaunchRepoSession={onLaunchRepoSession}
           onDeleteSession={onDeleteSession}
           onDeleteWorktree={onDeleteWorktree}
+          onResumeWorktree={onResumeWorktree}
           onToggleCollapse={onToggleCollapse}
           collapsed={collapsed}
           loading={loading}

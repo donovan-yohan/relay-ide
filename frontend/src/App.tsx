@@ -631,6 +631,7 @@ export default function App() {
     handlePrAction,
     handleOpenPrSession,
     handleDeleteWorktree,
+    handleResumeWorktree,
     handleNewSessionCreated,
     handleCloseSession,
   } = useSessionHandlers({
@@ -882,6 +883,7 @@ export default function App() {
           onAddWorkspace={handleAddWorkspace}
           onDeleteSession={handleCloseSession}
           onDeleteWorktree={handleDeleteWorktree}
+          onResumeWorktree={handleResumeWorktree}
           onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
           onLaunchRepoSession={handleLaunchRepoSession}
           onOpenAnalytics={openAnalytics}
