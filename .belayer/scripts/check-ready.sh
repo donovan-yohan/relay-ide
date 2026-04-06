@@ -17,18 +17,13 @@ INTERNAL_DIR=".belayer/.internal/input"
 
 mkdir -p "$INTERNAL_DIR"
 
-# Find todo issues sorted by creation date (oldest first).
-# No --limit so we get all todo issues for correct oldest-first selection.
-ISSUE_JSON=$(gh issue list \
-  --repo "$REPO" \
-  --label "todo" \
-  --state open \
-  --json number,title,body,labels 2>/dev/null) || exit 1
+# Fetch the 5 oldest todo issues in one API call (created asc, small page).
+# Enough headroom to filter out in-progress without over-fetching.
+ISSUE_JSON=$(gh api "repos/$REPO/issues?labels=todo&state=open&sort=created&direction=asc&per_page=5" 2>/dev/null) || exit 1
 
-# Filter out issues already claimed (in-progress label), pick the oldest
+# Filter out issues already claimed (in-progress label), pick the first (oldest)
 AVAILABLE=$(echo "$ISSUE_JSON" | jq -r '
   [.[] | select(.labels | map(.name) | index("in-progress") | not)]
-  | sort_by(.number)
   | first // empty
 ')
 
