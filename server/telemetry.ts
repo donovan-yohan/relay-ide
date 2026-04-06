@@ -4,7 +4,13 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+import type { TelemetryAdapter, TelemetryDeps } from './telemetry-adapter.js';
+import { getAdapterForFramework } from './telemetry-adapter.js';
+import { ClaudeTelemetryAdapter } from './adapters/claude-telemetry.js';
 import { createLogger } from './logger.js';
+
+// Re-export TelemetryDeps from telemetry-adapter for backward compat
+export type { TelemetryDeps } from './telemetry-adapter.js';
 
 const logger = createLogger('telemetry');
 
@@ -16,38 +22,23 @@ interface PendingTelemetryFile {
   version: number;
   timestamp: string;
   sessions: Record<string, TelemetryData>;
-  account: AccountTelemetry | null;
+  account: Record<string, AccountTelemetry> | null;
 }
 
 type IncomingTelemetryData = Omit<TelemetryData, 'updatedAt'>;
-
-export interface TelemetryDeps {
-  getActiveSessions: () => Array<Pick<Session, 'id'>>;
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
-  configDir: string;
-}
 
 let activeDeps: TelemetryDeps | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let persistTimer: ReturnType<typeof setInterval> | null = null;
 let sessionTelemetry = new Map<string, TelemetryData>();
-let accountTelemetry: AccountTelemetry | null = null;
+// Map from frameworkId -> AccountTelemetry
+let accountTelemetryMap = new Map<string, AccountTelemetry>();
+// Per-session adapter instances (keyed by sessionId)
+let sessionAdapters = new Map<string, TelemetryAdapter>();
 let restoredPendingOnly = false;
-
-function telemetryDir(configDir: string): string {
-  return path.join(configDir, 'telemetry');
-}
 
 function pendingFilePath(configDir: string): string {
   return path.join(configDir, 'pending-telemetry.json');
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function asString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
 }
 
 function telemetryToObject(): Record<string, TelemetryData> {
@@ -66,6 +57,7 @@ function sameTelemetry(
     a.totalOutputTokens === b.totalOutputTokens &&
     a.totalCacheRead === b.totalCacheRead &&
     a.totalCacheWrite === b.totalCacheWrite &&
+    a.reasoningOutputTokens === b.reasoningOutputTokens &&
     a.contextPercent === b.contextPercent &&
     a.contextWindowSize === b.contextWindowSize &&
     a.costUsd === b.costUsd &&
@@ -74,67 +66,42 @@ function sameTelemetry(
 }
 
 function sameAccountTelemetry(
-  a: AccountTelemetry | null,
-  b: Omit<AccountTelemetry, 'updatedAt'>
+  a: AccountTelemetry | undefined,
+  b: AccountTelemetry
 ): boolean {
   if (!a) return false;
-  return (
-    a.fiveHourUsedPercent === b.fiveHourUsedPercent &&
-    a.fiveHourResetsAt === b.fiveHourResetsAt &&
-    a.sevenDayUsedPercent === b.sevenDayUsedPercent &&
-    a.sevenDayResetsAt === b.sevenDayResetsAt
-  );
+  if (a.framework !== b.framework) return false;
+  if (a.rateLimits.length !== b.rateLimits.length) return false;
+  for (let i = 0; i < a.rateLimits.length; i++) {
+    const ar = a.rateLimits[i];
+    const br = b.rateLimits[i];
+    if (!ar || !br) return false;
+    if (
+      ar.name !== br.name ||
+      ar.usedPercent !== br.usedPercent ||
+      ar.resetsAt !== br.resetsAt
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
-function extractTelemetry(
-  sessionId: string,
-  payload: unknown
-): {
-  session: IncomingTelemetryData;
-  account: Omit<AccountTelemetry, 'updatedAt'> | null;
-} | null {
-  if (!payload || typeof payload !== 'object') return null;
-
-  const data = payload as Record<string, unknown>;
-  const contextWindow = (data.context_window ?? {}) as Record<string, unknown>;
-  const currentUsage = (contextWindow.current_usage ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const cost = (data.cost ?? {}) as Record<string, unknown>;
-  const rateLimits = (data.rate_limits ?? {}) as Record<string, unknown>;
-  const fiveHour = (rateLimits.five_hour ?? {}) as Record<string, unknown>;
-  const sevenDay = (rateLimits.seven_day ?? {}) as Record<string, unknown>;
-  const model = (data.model ?? {}) as Record<string, unknown>;
-
-  const session: IncomingTelemetryData = {
-    sessionId,
-    model: typeof model.display_name === 'string' ? model.display_name : null,
-    totalInputTokens: asNumber(contextWindow.total_input_tokens, 0),
-    totalOutputTokens: asNumber(contextWindow.total_output_tokens, 0),
-    totalCacheRead: asNumber(currentUsage.cache_read_input_tokens, 0),
-    totalCacheWrite: asNumber(currentUsage.cache_creation_input_tokens, 0),
-    contextPercent: asNumber(contextWindow.used_percentage, -1),
-    contextWindowSize: asNumber(contextWindow.context_window_size, 0),
-    costUsd:
-      typeof cost.total_cost_usd === 'number' ? cost.total_cost_usd : null,
-    source: 'statusLine',
-  };
-
-  const account =
-    typeof fiveHour.used_percentage === 'number' ||
-    typeof sevenDay.used_percentage === 'number' ||
-    typeof fiveHour.resets_at === 'string' ||
-    typeof sevenDay.resets_at === 'string'
-      ? {
-          fiveHourUsedPercent: asNumber(fiveHour.used_percentage, -1),
-          fiveHourResetsAt: asString(fiveHour.resets_at),
-          sevenDayUsedPercent: asNumber(sevenDay.used_percentage, -1),
-          sevenDayResetsAt: asString(sevenDay.resets_at),
-        }
-      : null;
-
-  return { session, account };
+function createAdapterForSession(
+  session: Pick<Session, 'id'> & { agent?: string },
+  deps: TelemetryDeps
+): TelemetryAdapter | null {
+  try {
+    const frameworkId = (session as Session).agent ?? 'claude';
+    const adapter = getAdapterForFramework(frameworkId, deps);
+    if (adapter) {
+      adapter.attach(session as Session);
+    }
+    return adapter;
+  } catch (err) {
+    logger.warn(`Failed to create adapter for session ${session.id}:`, err);
+    return null;
+  }
 }
 
 function restorePendingTelemetry(configDir: string): void {
@@ -145,6 +112,13 @@ function restorePendingTelemetry(configDir: string): void {
     const pending = JSON.parse(
       fs.readFileSync(pendingPath, 'utf-8')
     ) as PendingTelemetryFile;
+
+    // Reject v1 files — new format (v2) required
+    if (pending.version !== 2) {
+      fs.unlinkSync(pendingPath);
+      return;
+    }
+
     const ageMs = Date.now() - new Date(pending.timestamp).getTime();
     if (!Number.isFinite(ageMs) || ageMs > STALE_THRESHOLD_MS) {
       fs.unlinkSync(pendingPath);
@@ -152,9 +126,18 @@ function restorePendingTelemetry(configDir: string): void {
     }
 
     sessionTelemetry = new Map(Object.entries(pending.sessions ?? {}));
-    accountTelemetry = pending.account ?? null;
+
+    // Restore account telemetry map (v2 format: Record<frameworkId, AccountTelemetry>)
+    if (pending.account && typeof pending.account === 'object') {
+      for (const [frameworkId, acct] of Object.entries(pending.account)) {
+        if (acct && typeof acct === 'object' && 'framework' in acct) {
+          accountTelemetryMap.set(frameworkId, acct as AccountTelemetry);
+        }
+      }
+    }
+
     restoredPendingOnly =
-      sessionTelemetry.size > 0 || accountTelemetry !== null;
+      sessionTelemetry.size > 0 || accountTelemetryMap.size > 0;
     fs.unlinkSync(pendingPath);
   } catch {
     try {
@@ -167,10 +150,13 @@ function restorePendingTelemetry(configDir: string): void {
 
 function persistPendingTelemetry(configDir: string): void {
   const payload: PendingTelemetryFile = {
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     sessions: telemetryToObject(),
-    account: accountTelemetry,
+    account:
+      accountTelemetryMap.size > 0
+        ? Object.fromEntries(accountTelemetryMap.entries())
+        : null,
   };
   const filePath = pendingFilePath(configDir);
 
@@ -195,66 +181,59 @@ function collectTelemetry(): void {
         sessionTelemetry.delete(sessionId);
       }
     }
+    // Detach and remove adapters for ended sessions
+    for (const [sessionId, adapter] of [...sessionAdapters.entries()]) {
+      if (!activeSessionIds.has(sessionId)) {
+        try {
+          adapter.detach(sessionId);
+        } catch {
+          /* ignore cleanup errors */
+        }
+        sessionAdapters.delete(sessionId);
+      }
+    }
   } else if (!restoredPendingOnly) {
     sessionTelemetry = new Map();
+    sessionAdapters.clear();
   }
 
   for (const session of activeSessions) {
-    const filePath = path.join(
-      telemetryDir(activeDeps.configDir),
-      `${session.id}.json`
-    );
-    let raw: string;
-    try {
-      raw = fs.readFileSync(filePath, 'utf-8');
-    } catch (err) {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code !== 'ENOENT') {
-        logger.warn(
-          `[telemetry] Failed to read telemetry for session ${session.id}:`,
-          err
-        );
+    // Get or create adapter for this session
+    let adapter = sessionAdapters.get(session.id);
+    if (!adapter) {
+      adapter = createAdapterForSession(session, activeDeps) ?? undefined;
+      if (adapter) {
+        sessionAdapters.set(session.id, adapter);
       }
-      continue;
     }
 
-    let payload: unknown;
-    try {
-      payload = JSON.parse(raw);
-    } catch (err) {
-      logger.warn(
-        `[telemetry] Malformed telemetry JSON for session ${session.id}:`,
-        err
-      );
-      continue;
-    }
+    if (!adapter) continue;
 
-    const extracted = extractTelemetry(session.id, payload);
-    if (!extracted) continue;
+    const snapshot = adapter.collectSnapshot(session.id);
+    if (!snapshot) continue;
 
-    if (!sameTelemetry(sessionTelemetry.get(session.id), extracted.session)) {
-      const nextSessionTelemetry: TelemetryData = {
-        ...extracted.session,
-        updatedAt: new Date().toISOString(),
-      };
-      sessionTelemetry.set(session.id, nextSessionTelemetry);
+    const { updatedAt: _u, ...snapshotWithoutUpdatedAt } = snapshot;
+
+    if (!sameTelemetry(sessionTelemetry.get(session.id), snapshotWithoutUpdatedAt)) {
+      sessionTelemetry.set(session.id, snapshot);
       activeDeps.broadcastEvent('session-telemetry', {
         sessionId: session.id,
-        data: nextSessionTelemetry,
+        data: snapshot,
       });
     }
 
-    if (
-      extracted.account &&
-      !sameAccountTelemetry(accountTelemetry, extracted.account)
-    ) {
-      accountTelemetry = {
-        ...extracted.account,
-        updatedAt: new Date().toISOString(),
-      };
-      activeDeps.broadcastEvent('account-telemetry', {
-        data: accountTelemetry,
-      });
+    // Poll account telemetry from adapter (side channel)
+    if (adapter instanceof ClaudeTelemetryAdapter) {
+      const adapterAccount = adapter.getAccountTelemetry();
+      if (adapterAccount) {
+        const existing = accountTelemetryMap.get(adapterAccount.framework);
+        if (!sameAccountTelemetry(existing, adapterAccount)) {
+          accountTelemetryMap.set(adapterAccount.framework, adapterAccount);
+          activeDeps.broadcastEvent('account-telemetry', {
+            data: adapterAccount,
+          });
+        }
+      }
     }
   }
 }
@@ -283,9 +262,18 @@ export function stopTelemetry(): void {
   if (activeDeps) {
     persistPendingTelemetry(activeDeps.configDir);
   }
+  // Detach all adapters
+  for (const [sessionId, adapter] of sessionAdapters.entries()) {
+    try {
+      adapter.detach(sessionId);
+    } catch {
+      /* ignore */
+    }
+  }
   activeDeps = null;
   sessionTelemetry = new Map();
-  accountTelemetry = null;
+  accountTelemetryMap = new Map();
+  sessionAdapters = new Map();
   restoredPendingOnly = false;
 }
 
@@ -296,7 +284,12 @@ export function getTelemetryForSession(
 }
 
 export function getAccountTelemetry(): AccountTelemetry | null {
-  return accountTelemetry;
+  // Prefer 'claude' framework; fall back to first available
+  return (
+    accountTelemetryMap.get('claude') ??
+    accountTelemetryMap.values().next().value ??
+    null
+  );
 }
 
 export function createTelemetryRouter(): Router {
@@ -307,7 +300,7 @@ export function createTelemetryRouter(): Router {
   });
 
   router.get('/account', (_req: Request, res: Response) => {
-    res.json(accountTelemetry);
+    res.json(getAccountTelemetry());
   });
 
   router.get('/setup-status', (_req: Request, res: Response) => {

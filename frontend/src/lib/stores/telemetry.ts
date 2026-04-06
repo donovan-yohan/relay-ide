@@ -108,14 +108,9 @@ function normalizeSessionTelemetry(
 
 function normalizeAccountTelemetry(data: Partial<AccountTelemetry>): AccountTelemetry {
   return {
-    fiveHourUsedPercent:
-      typeof data.fiveHourUsedPercent === 'number' ? data.fiveHourUsedPercent : -1,
-    fiveHourResetsAt:
-      typeof data.fiveHourResetsAt === 'string' ? data.fiveHourResetsAt : null,
-    sevenDayUsedPercent:
-      typeof data.sevenDayUsedPercent === 'number' ? data.sevenDayUsedPercent : -1,
-    sevenDayResetsAt:
-      typeof data.sevenDayResetsAt === 'string' ? data.sevenDayResetsAt : null,
+    framework: typeof data.framework === 'string' ? data.framework : 'unknown',
+    rateLimits: Array.isArray(data.rateLimits) ? data.rateLimits : [],
+    planType: typeof data.planType === 'string' ? data.planType : undefined,
     updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
   };
 }

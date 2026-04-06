@@ -60,11 +60,15 @@ function getContextLabel(telemetry: { contextPercent: number } | null): string {
   return `${'░'.repeat(BAR_WIDTH)} —%`;
 }
 
-function buildRateLimitLabel(accountTelemetry: { fiveHourUsedPercent: number; sevenDayUsedPercent: number } | null | undefined): string {
-  if (!accountTelemetry) return '—';
+function buildRateLimitLabel(accountTelemetry: import('../lib/types.js').AccountTelemetry | null | undefined): string {
+  if (!accountTelemetry || !accountTelemetry.rateLimits.length) return '—';
   const parts: string[] = [];
-  if (accountTelemetry.fiveHourUsedPercent >= 0) parts.push(`5h: ${Math.round(accountTelemetry.fiveHourUsedPercent)}%`);
-  if (accountTelemetry.sevenDayUsedPercent >= 0) parts.push(`7d: ${Math.round(accountTelemetry.sevenDayUsedPercent)}%`);
+  for (const rl of accountTelemetry.rateLimits) {
+    if (rl.usedPercent >= 0) {
+      const label = rl.windowMinutes === 300 ? '5h' : rl.windowMinutes === 10080 ? '7d' : rl.name;
+      parts.push(`${label}: ${Math.round(rl.usedPercent)}%`);
+    }
+  }
   return parts.length > 0 ? parts.join(' | ') : '—';
 }
 
@@ -114,7 +118,7 @@ export function SessionStatusBar({ sessionId, currentActivity = null }: SessionS
       <div className="status-right">
         <span
           className="status-rate-limits status-segment"
-          title={`${formatResetAt(accountTelemetry?.fiveHourResetsAt)} · ${formatResetAt(accountTelemetry?.sevenDayResetsAt)}`}
+          title={accountTelemetry?.rateLimits.map((rl) => formatResetAt(rl.resetsAt)).join(' · ') ?? '—'}
         >
           {rateLimitLabel}
         </span>

@@ -51,11 +51,17 @@ export interface SessionTelemetry {
 
 export type TelemetryData = SessionTelemetry;
 
+export interface RateLimitWindow {
+  name: string;
+  usedPercent: number;
+  resetsAt: string;
+  windowMinutes?: number;
+}
+
 export interface AccountTelemetry {
-  fiveHourUsedPercent: number;
-  fiveHourResetsAt: string | null;
-  sevenDayUsedPercent: number;
-  sevenDayResetsAt: string | null;
+  framework: string;
+  rateLimits: RateLimitWindow[];
+  planType?: string;
   updatedAt: string;
 }
 

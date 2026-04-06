@@ -273,6 +273,7 @@ export interface TelemetryData {
   totalOutputTokens: number;
   totalCacheRead: number;
   totalCacheWrite: number;
+  reasoningOutputTokens: number;
   contextPercent: number;
   contextWindowSize: number;
   costUsd: number | null;
@@ -280,11 +281,17 @@ export interface TelemetryData {
   updatedAt: string;
 }
 
+export interface RateLimitWindow {
+  name: string;
+  usedPercent: number;
+  resetsAt: string;
+  windowMinutes?: number;
+}
+
 export interface AccountTelemetry {
-  fiveHourUsedPercent: number;
-  fiveHourResetsAt: string;
-  sevenDayUsedPercent: number;
-  sevenDayResetsAt: string;
+  framework: string;
+  rateLimits: RateLimitWindow[];
+  planType?: string;
   updatedAt: string;
 }
 

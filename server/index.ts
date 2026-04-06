@@ -961,13 +961,16 @@ async function main(): Promise<void> {
     const now = Date.now();
     if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
     const account = getAccountTelemetry();
-    if (!account || account.fiveHourUsedPercent < 0) return;
+    if (!account || !account.rateLimits.length) return;
+    const fiveHour = account.rateLimits.find((rl) => rl.name === 'five_hour' || rl.windowMinutes === 300);
+    const sevenDay = account.rateLimits.find((rl) => rl.name === 'seven_day' || rl.windowMinutes === 10080);
+    if (!fiveHour || fiveHour.usedPercent < 0) return;
     lastRateLimitSnapshot = now;
     recordRateLimitSnapshot({
-      fiveHourPercent: account.fiveHourUsedPercent,
-      fiveHourResetsAt: account.fiveHourResetsAt,
-      sevenDayPercent: account.sevenDayUsedPercent,
-      sevenDayResetsAt: account.sevenDayResetsAt,
+      fiveHourPercent: fiveHour.usedPercent,
+      fiveHourResetsAt: fiveHour.resetsAt,
+      sevenDayPercent: sevenDay?.usedPercent ?? -1,
+      sevenDayResetsAt: sevenDay?.resetsAt ?? '',
       timestamp: new Date().toISOString(),
     });
   }, 60_000);
