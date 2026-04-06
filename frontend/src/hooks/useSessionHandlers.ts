@@ -732,6 +732,55 @@ export function useSessionHandlers({
     [terminalRef]
   );
 
+  const handleResumeWorktree = useCallback(async (wt: WorktreeInfo) => {
+    const loadingKey = wt.path;
+    if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
+    useSessionsStore.getState().setLoading(loadingKey);
+    try {
+      const { cols, rows } = estimateTerminalDimensions();
+      const session = await createSession({
+        repoPath: wt.repoPath,
+        worktreePath: wt.path,
+        type: 'agent',
+        branchName: wt.branchName,
+        cols,
+        rows,
+      });
+      await useSessionsStore.getState().refreshAll();
+      if (session?.id) {
+        useSessionsStore.getState().setActiveSessionId(session.id);
+        useUiStore.getState().setActiveRepoPath(wt.repoPath);
+        useSessionsStore
+          .getState()
+          .initSessionNotification(
+            session.id,
+            useConfigStore.getState().defaultNotifications
+          );
+        useUiStore.getState().closeSidebar();
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && 'sessionId' in err) {
+        const conflictErr = err as Error & { sessionId?: string };
+        await useSessionsStore.getState().refreshAll();
+        if (conflictErr.sessionId) {
+          useSessionsStore.getState().setActiveSessionId(conflictErr.sessionId);
+          useUiStore.getState().setActiveRepoPath(wt.repoPath);
+          useUiStore.getState().closeSidebar();
+        }
+      } else {
+        useToastStore
+          .getState()
+          .showToast(
+            err instanceof Error
+              ? err.message
+              : 'failed to resume worktree session'
+          );
+      }
+    } finally {
+      useSessionsStore.getState().clearLoading(loadingKey);
+    }
+  }, []);
+
   const handleCloseSession = useCallback((sessionId: string) => {
     // Kill session via API, then refresh
     fetch(`/sessions/${sessionId}`, { method: 'DELETE' }).then(() =>
@@ -776,6 +825,7 @@ export function useSessionHandlers({
     handlePrAction,
     handleOpenPrSession,
     handleDeleteWorktree,
+    handleResumeWorktree,
     handleNewSessionCreated,
     handleCloseSession,
   };

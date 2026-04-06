@@ -74,6 +74,7 @@ interface UngroupedListProps {
   onOpenSettings: (workspace?: Repo) => void;
   onDeleteSession: ((id: string) => void) | undefined;
   onDeleteWorktree: ((wt: WorktreeInfo) => void) | undefined;
+  onResumeWorktree: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchRepoSession: ((repoPath: string) => void) | undefined;
 }
 
@@ -89,6 +90,7 @@ function UngroupedList({
   onOpenSettings,
   onDeleteSession,
   onDeleteWorktree,
+  onResumeWorktree,
   onLaunchRepoSession,
 }: UngroupedListProps) {
   const getSessionsForRepo = useSessionsStore((s) => s.getSessionsForRepo);
@@ -123,6 +125,7 @@ function UngroupedList({
               onOpenSettings={onOpenSettings}
               onDeleteSession={onDeleteSession}
               onDeleteWorktree={onDeleteWorktree}
+              onResumeWorktree={onResumeWorktree}
               onLaunchRepoSession={onLaunchRepoSession}
               orgPrs={orgPrs}
               sidebarItems={sidebarItems}
@@ -171,6 +174,7 @@ interface WorkspaceGroupsListProps {
   onOpenSettings: (repo?: Repo) => void;
   onDeleteSession: ((id: string) => void) | undefined;
   onDeleteWorktree: ((wt: WorktreeInfo) => void) | undefined;
+  onResumeWorktree: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchWorkspaceSession: ((workspaceId: string) => void) | undefined;
   onLaunchRepoSession: ((repoPath: string) => void) | undefined;
 }
@@ -190,6 +194,7 @@ function WorkspaceGroupsList({
   onOpenSettings,
   onDeleteSession,
   onDeleteWorktree,
+  onResumeWorktree,
   onLaunchWorkspaceSession,
   onLaunchRepoSession,
 }: WorkspaceGroupsListProps) {
@@ -225,6 +230,7 @@ function WorkspaceGroupsList({
             onOpenSettings={onOpenSettings}
             onDeleteSession={(id) => onDeleteSession?.(id)}
             onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
+            onResumeWorktree={(wt) => onResumeWorktree?.(wt)}
             {...(onLaunchRepoSession ? { onLaunchRepoSession } : {})}
             orgPrs={orgPrs}
           />
@@ -243,6 +249,7 @@ export interface SidebarProps {
   onAddWorkspace: () => void;
   onDeleteSession?: (id: string) => void;
   onDeleteWorktree?: (wt: WorktreeInfo) => void;
+  onResumeWorktree?: (wt: WorktreeInfo) => void;
   onLaunchWorkspaceSession?: (workspaceId: string) => void;
   onLaunchRepoSession?: (repoPath: string) => void;
   onOpenAnalytics: () => void;
@@ -255,6 +262,7 @@ export function Sidebar({
   onAddWorkspace,
   onDeleteSession,
   onDeleteWorktree,
+  onResumeWorktree,
   onLaunchWorkspaceSession,
   onLaunchRepoSession,
   onOpenAnalytics,
@@ -397,6 +405,7 @@ export function Sidebar({
               onOpenSettings={onOpenSettings}
               onDeleteSession={onDeleteSession}
               onDeleteWorktree={onDeleteWorktree}
+              onResumeWorktree={onResumeWorktree}
               onLaunchWorkspaceSession={onLaunchWorkspaceSession}
               onLaunchRepoSession={onLaunchRepoSession}
             />
@@ -417,6 +426,7 @@ export function Sidebar({
                   onOpenSettings={onOpenSettings}
                   onDeleteSession={onDeleteSession}
                   onDeleteWorktree={onDeleteWorktree}
+                  onResumeWorktree={onResumeWorktree}
                   onLaunchRepoSession={onLaunchRepoSession}
                 />
               </>
