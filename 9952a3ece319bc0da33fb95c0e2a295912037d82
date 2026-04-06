@@ -1,0 +1,33 @@
+frontend/src/hooks/useActionRegistry.ts
+  cad89341084520e4 95-99,309
+server/utils.ts
+  cad89341084520e4 71-86
+server/workspace-groups.ts
+  cad89341084520e4 27
+frontend/src/lib/fuzzy-scorer.ts
+  cad89341084520e4 128,136,145,243
+server/pty-handler.ts
+  cad89341084520e4 778,791-795,797-798,867-888,891,893-895,900-903,905,907-908,910-914,922-925,928-931
+server/index.ts
+  cad89341084520e4 104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "9952a3ece319bc0da33fb95c0e2a295912037d82",
+  "prompts": {
+    "cad89341084520e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b12e1ff-6121-49d8-8389-9506bcb71dca",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 83,
+      "total_deletions": 96,
+      "accepted_lines": 82,
+      "overriden_lines": 0
+    }
+  }
+}
