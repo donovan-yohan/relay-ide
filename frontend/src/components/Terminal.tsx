@@ -784,7 +784,17 @@ function useTerminalSetup(
   useEffect(() => {
     const term = termRef.current;
     if (sessionId && term && !companionMode) {
-      term.write('\x1b[?1049l');
+      // Reset terminal modes before switching sessions:
+      // - Exit alternate screen buffer (?1049l)
+      // - Disable mouse tracking modes (?1000l normal, ?1002l button-event,
+      //   ?1003l any-event, ?1006l SGR format, ?1015l URXVT format)
+      // - Disable bracketed paste (?2004l)
+      // Without this, an app like OpenCode that enables mouse tracking will
+      // leave xterm.js generating mouse escape sequences that get echoed as
+      // garbage text in the next session's PTY.
+      term.write(
+        '\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l'
+      );
       term.clear();
       connectPtySocket(
         sessionId,
