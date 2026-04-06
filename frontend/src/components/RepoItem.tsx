@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   Repo,
   SessionSummary,
@@ -343,6 +343,36 @@ export function RepoItem({
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Double-click to collapse: single click selects workspace, double click toggles collapse
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMobile = useMemo(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches,
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
+  const handleHeaderClick = useCallback(() => {
+    if (isMobile) {
+      onSelectWorkspace(repo.path);
+      return;
+    }
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      onToggleCollapse?.();
+    } else {
+      clickTimerRef.current = setTimeout(() => {
+        clickTimerRef.current = null;
+        onSelectWorkspace(repo.path);
+      }, 200);
+    }
+  }, [isMobile, onSelectWorkspace, repo.path, onToggleCollapse]);
+
   function cancelLongPress() {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
@@ -368,7 +398,7 @@ export function RepoItem({
           .filter(Boolean)
           .join(' ')}
         data-track="sidebar.repo.click"
-        onClick={() => onSelectWorkspace(repo.path)}
+        onClick={handleHeaderClick}
       >
         <div className="repo-left">
           <span
