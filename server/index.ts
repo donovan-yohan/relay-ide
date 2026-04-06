@@ -2027,6 +2027,8 @@ async function main(): Promise<void> {
           // Fallback if close hangs
           setTimeout(() => process.exit(0), 3000);
         }, 500);
+      } else {
+        updateInFlight = false;
       }
     } catch (err) {
       updateInFlight = false;
