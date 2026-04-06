@@ -36,6 +36,6 @@ else
   PROMPT="Implement the specification at $INPUT_PATH. Use /ultrawork and /autopilot for parallel execution."
 fi
 
-# Invoke OpenCode with the prompt
-# OpenCode reads CLAUDE.md/AGENTS.md and activates ultrawork/autopilot from keywords in the prompt
-exec opencode --prompt "$PROMPT"
+# Invoke OpenCode in headless mode (opencode run).
+# OpenCode reads CLAUDE.md/AGENTS.md and activates ultrawork/autopilot from keywords in the prompt.
+exec opencode run "$PROMPT"
