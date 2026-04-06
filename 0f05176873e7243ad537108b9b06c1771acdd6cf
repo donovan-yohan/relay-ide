@@ -1,0 +1,25 @@
+frontend/src/lib/ws.ts
+  d5b87f0bdee654bc 8-10,204-254,261-270,275-279
+frontend/src/components/Terminal.tsx
+  d5b87f0bdee654bc 686-706,753
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "0f05176873e7243ad537108b9b06c1771acdd6cf",
+  "prompts": {
+    "d5b87f0bdee654bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33a646c0-92a9-4005-81e9-b6eb38a5d8e6",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 91,
+      "total_deletions": 1,
+      "accepted_lines": 91,
+      "overriden_lines": 0
+    }
+  }
+}
