@@ -42,7 +42,7 @@ SPEC_FILE="$INTERNAL_DIR/issue-${ISSUE_NUMBER}.md"
 } > "$SPEC_FILE"
 
 # Claim the issue so concurrent runs don't pick the same one
-gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "in-progress" 2>/dev/null || true
+gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "in-progress" >/dev/null 2>&1 || true
 
 # Output the artifact path
 echo "$SPEC_FILE"

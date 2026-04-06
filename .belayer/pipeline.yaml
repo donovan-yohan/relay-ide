@@ -17,7 +17,7 @@ nodes:
       Implement the GitHub issue spec. OpenCode with ultrawork/autopilot
       handles parallel execution. The issue body contains the full
       implementation plan written by the planning skill.
-    input: { type: file, key: github-issue }
+    input: { type: file, key: design_doc }
     output: { type: commit }
     on_pass: review-router
     on_fail: stop

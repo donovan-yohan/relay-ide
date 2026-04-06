@@ -17,8 +17,9 @@ if [ ! -f "$CONTEXT_FILE" ]; then
   exit 1
 fi
 
-# Extract the input artifact path from node context
-INPUT_PATH=$(jq -r '.input.path // .input.description // empty' "$CONTEXT_FILE")
+# Extract the input artifact path from node context.
+# Core writes artifacts as a map (e.g. {"design_doc": "path/to/spec.md"}).
+INPUT_PATH=$(jq -r '.artifacts.design_doc // (.artifacts | to_entries | first | .value) // empty' "$CONTEXT_FILE")
 
 if [ -z "$INPUT_PATH" ]; then
   echo "ERROR: no input path found in node context" >&2
