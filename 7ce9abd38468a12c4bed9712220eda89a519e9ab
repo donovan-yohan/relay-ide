@@ -1,0 +1,23 @@
+frontend/src/components/PinGate.tsx
+  a79ec3471ace12bb 4,20-21,38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "7ce9abd38468a12c4bed9712220eda89a519e9ab",
+  "prompts": {
+    "a79ec3471ace12bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bbee3589-987d-47e1-860f-b7602b72a37c",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 13,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
