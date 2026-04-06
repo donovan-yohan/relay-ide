@@ -1,0 +1,25 @@
+server/service.ts
+  4ebab2a33409435d 42,44-45,58,60,64-73,75,78,198,200-210,212-214,217-219,222
+test/service.test.ts
+  4ebab2a33409435d 48,59,63-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "4e97594bc4c81ec8703bbe018223fdc637d92f95",
+  "prompts": {
+    "4ebab2a33409435d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f603a530-6d95-4ec7-8fd9-bfc192f902f2",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 54,
+      "total_deletions": 39,
+      "accepted_lines": 54,
+      "overriden_lines": 0
+    }
+  }
+}
