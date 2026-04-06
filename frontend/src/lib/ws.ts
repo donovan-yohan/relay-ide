@@ -5,6 +5,9 @@ import type {
   CurrentActivity,
   SessionTelemetry,
 } from './types.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 // Discriminated union for WebSocket event messages.
@@ -198,17 +201,82 @@ export function connectPtySocket(
     startPtyPing();
   };
 
+  // Flow control constants
+  const HIGH_WATER_MARK = 512 * 1024; // 500KB — pause feeding xterm
+  const LOW_WATER_MARK = 128 * 1024; //  128KB — resume feeding xterm
+
+  // Per-connection write buffer state (scoped here; abandoned on next connectPtySocket call)
+  let writeQueue: string[] = [];
+  let pendingBytes = 0; // bytes handed to term.write but not yet processed
+  let paused = false;
+  let rafHandle: number | null = null;
+
+  function flushWriteQueue(): void {
+    rafHandle = null;
+    if (writeQueue.length === 0) return;
+
+    // Drain the queue into xterm, one chunk per call, tracking pressure via callback
+    const chunks = writeQueue;
+    writeQueue = [];
+
+    for (const chunk of chunks) {
+      const chunkLen = chunk.length;
+      pendingBytes += chunkLen;
+      term.write(chunk, () => {
+        pendingBytes -= chunkLen;
+        // Resume if we were paused and the buffer has drained below the low-water mark
+        if (paused && pendingBytes < LOW_WATER_MARK) {
+          paused = false;
+          logger.info(
+            'flow-control: LOW water mark reached, resuming (pending=%d, queued=%d)',
+            pendingBytes,
+            writeQueue.length
+          );
+          scheduleFlush();
+        }
+      });
+    }
+
+    // Check pressure after handing off all chunks
+    if (pendingBytes >= HIGH_WATER_MARK) {
+      paused = true;
+      logger.warn(
+        'flow-control: HIGH water mark hit, pausing (pending=%d)',
+        pendingBytes
+      );
+    }
+  }
+
+  function scheduleFlush(): void {
+    if (rafHandle !== null) return;
+    rafHandle = requestAnimationFrame(flushWriteQueue);
+  }
+
   socket.onmessage = (event) => {
     const str = event.data as string;
     // Any message from server clears pong pending state
     if (ptyPongPending) clearPtyPongTimeout();
     // Handle pong responses silently
     if (str === PONG_MSG) return;
-    term.write(str);
+    writeQueue.push(str);
+    if (paused) {
+      logger.debug(
+        'flow-control: queued %d bytes while paused (pending=%d, queue=%d)',
+        str.length,
+        pendingBytes,
+        writeQueue.length
+      );
+    }
+    if (!paused) scheduleFlush();
   };
 
   socket.onclose = (event) => {
     clearPtyPing();
+    // Cancel any pending RAF flush for this socket
+    if (rafHandle !== null) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
     // Clear pending ref if this socket closed before onopen
     if (pendingPtySocket === socket) pendingPtySocket = null;
     // If this socket was superseded, ignore its close event

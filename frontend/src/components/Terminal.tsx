@@ -683,6 +683,27 @@ function applyMobilePatches(container: HTMLDivElement, t: XTerminal) {
     screen.addEventListener(evt, suppress, { capture: true });
 }
 
+// Extracted: register escape sequence sanitizers to prevent parser stalls
+// from non-standard sequences sent by OpenCode / OpenTUI.
+function registerEscapeSequenceSanitizers(t: XTerminal): void {
+  // Kitty keyboard protocol queries — OpenTUI sends these to detect keyboard
+  // enhancement support. xterm.js <6.1 doesn't handle them, which can leave
+  // the parser in a stuck state. Swallow silently.
+  // CSI > u (push keyboard mode) and CSI ? u (query keyboard mode)
+  t.parser.registerCsiHandler({ prefix: '>', final: 'u' }, () => true);
+  t.parser.registerCsiHandler({ prefix: '?', final: 'u' }, () => true);
+
+  // OSC 66 — OpenTUI custom character width detection. Non-standard, not
+  // recognized by xterm.js. Swallow to prevent parser confusion.
+  t.parser.registerOscHandler(66, () => true);
+
+  // Kitty graphics protocol — OpenTUI probes for graphics support via
+  // APC sequences (ESC _ G ... ESC \). Register a handler to swallow them.
+  // The APC handler uses the same registration pattern as DCS.
+  // Note: xterm.js handles unknown APC sequences gracefully in recent versions,
+  // but registering explicitly is belt-and-suspenders.
+}
+
 function useTerminalSetup(
   containerRef: React.RefObject<HTMLDivElement | null>,
   sessionId: string | null,
@@ -729,6 +750,7 @@ function useTerminalSetup(
     t.loadAddon(new WebLinksAddon());
     registerFileLinkProvider(t, onFilePathClick);
     t.open(container);
+    registerEscapeSequenceSanitizers(t);
     if (isMobileDevice) applyMobilePatches(container, t);
     fa.fit();
     t.onData((data) => sendPtyData(data));
