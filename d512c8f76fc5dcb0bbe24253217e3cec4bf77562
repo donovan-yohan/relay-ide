@@ -1,0 +1,40 @@
+frontend/src/hooks/useOnboardingHints.tsx
+  9d4fd1d81d2da759 22
+frontend/src/hooks/useWhatsNew.tsx
+  9d4fd1d81d2da759 7,60
+frontend/src/lib/stores/hints.ts
+  9d4fd1d81d2da759 5,37,69,72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "d512c8f76fc5dcb0bbe24253217e3cec4bf77562",
+  "prompts": {
+    "2aef7f2be6328e16": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ef2784b-aeab-47e8-bd3c-02398fe7dc04",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 17,
+      "total_deletions": 1,
+      "accepted_lines": 17,
+      "overriden_lines": 0
+    },
+    "9d4fd1d81d2da759": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57581c50-e290-408f-bcc6-97edc75b61df",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 8,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    }
+  }
+}
