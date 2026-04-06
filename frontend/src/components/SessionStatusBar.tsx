@@ -1,6 +1,7 @@
 import { useUiStore } from '../lib/stores/ui.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import type { CurrentActivity } from '../lib/types.js';
+import { formatCompact, formatResetAt } from '../lib/utils.js';
 import './SessionStatusBar.css';
 
 export interface SessionStatusBarProps {
@@ -10,34 +11,9 @@ export interface SessionStatusBarProps {
 
 const BAR_WIDTH = 10;
 
-function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  const abs = Math.abs(value);
-  if (abs < 1000) return String(Math.round(value));
-  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
-  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
-  return `${(value / 1_000_000_000).toFixed(1)}B`;
-}
-
 function formatCurrency(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '~$—';
   return `~$${value.toFixed(2)}`;
-}
-
-function formatResetAt(value: string | null | undefined): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-  }
-  const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: '2-digit' });
 }
 
 function barForPercent(value: number): string {

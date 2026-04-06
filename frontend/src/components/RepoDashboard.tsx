@@ -13,6 +13,7 @@ import { TuiButton } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
 import { PrRow } from './PrRow.js';
 import { useScrollOverflow } from '../hooks/useScrollOverflow.js';
+import { formatCompact, formatResetAt } from '../lib/utils.js';
 import './RepoDashboard.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -30,31 +31,6 @@ export interface RepoDashboardProps {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function compactCount(value: number): string {
-  if (value < 1000) return String(Math.round(value));
-  if (value < 1_000_000)
-    return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-  return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
-}
-
-function formatResetAt(value: string | null | undefined): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  if (sameDay)
-    return date.toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
 
 function activityBranches(entry: ActivityEntry): string {
   if (!entry.branches || entry.branches.length === 0) return '';
@@ -119,11 +95,11 @@ function UsageSection({ repoSessions }: UsageSectionProps) {
         <div className="usage-row">
           <span className="usage-label">relay tokens</span>
           <span className="usage-value">
-            ↓{compactCount(repoTelemetry.totalInputTokens)} ↑
-            {compactCount(repoTelemetry.totalOutputTokens)}
+            ↓{formatCompact(repoTelemetry.totalInputTokens)} ↑
+            {formatCompact(repoTelemetry.totalOutputTokens)}
           </span>
           <span className="usage-meta">
-            cache: {compactCount(repoTelemetry.totalCacheRead)} read
+            cache: {formatCompact(repoTelemetry.totalCacheRead)} read
           </span>
         </div>
         <div className="usage-row">

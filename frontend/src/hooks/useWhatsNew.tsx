@@ -29,7 +29,7 @@ export function useWhatsNew(currentVersion: string) {
     if (firedRef.current) return;
 
     // Suppress during onboarding (if there are no seen hints yet, user is new)
-    const { seenIds, canShowHint, incrementActive } = useHintsStore.getState();
+    const { seenIds, incrementActive } = useHintsStore.getState();
     const isOnboarding = seenIds.size === 0;
     if (isOnboarding) return;
 
@@ -51,41 +51,40 @@ export function useWhatsNew(currentVersion: string) {
 
     for (const [featureId, description] of featureEntries) {
       if (shown >= MAX_TOASTS_PER_LOAD) break;
-      // What's-new toasts bypass canShowHint() — cap at MAX_TOASTS_PER_LOAD
-      // directly instead of relying on the hint throttle (which uses MIN_GAP_MS
-      // and would suppress the second toast).
 
       incrementActive();
       shown++;
 
       const notifId = `whats-new-${currentVersion}-${featureId}`;
+      let decremented = false;
+      const safeDecrement = () => {
+        if (decremented) return;
+        decremented = true;
+        useHintsStore.getState().decrementActive();
+      };
+
       addNotification({
         id: notifId,
         type: 'info',
         dismissible: true,
-        content: () => {
-          const { decrementActive } = useHintsStore.getState();
-          return (
-            <div className="notification-card hint-toast">
-              <span className="notification-card__text hint-toast__text">
-                {description}
-              </span>
-              <button
-                className="notification-card__dismiss"
-                aria-label="dismiss"
-                onClick={() => {
-                  decrementActive();
-                  removeNotification(notifId);
-                }}
-              >
-                ×
-              </button>
-            </div>
-          );
-        },
-        onDismiss: () => {
-          useHintsStore.getState().decrementActive();
-        },
+        content: () => (
+          <div className="notification-card hint-toast">
+            <span className="notification-card__text hint-toast__text">
+              {description}
+            </span>
+            <button
+              className="notification-card__dismiss"
+              aria-label="dismiss"
+              onClick={() => {
+                safeDecrement();
+                removeNotification(notifId);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        ),
+        onDismiss: safeDecrement,
       });
     }
   }, [currentVersion]);

@@ -10,6 +10,50 @@ export const HINT_FIRST_SESSION_RUNNING = 'onboarding-first-session-running';
 export const HINT_REMOTE_ACCESS = 'onboarding-remote-access';
 export const HINT_COMMAND_PALETTE = 'onboarding-command-palette';
 
+// ── Toast helper ─────────────────────────────────────────────────────────────
+// Fires a hint toast via the notification system with proper decrement guards.
+
+function fireHintToast(hintId: string, text: string): void {
+  const { incrementActive } = useHintsStore.getState();
+  incrementActive();
+
+  const notifId = `hint-notif-${hintId}`;
+  let decremented = false;
+  const safeDecrement = () => {
+    if (decremented) return;
+    decremented = true;
+    useHintsStore.getState().decrementActive();
+  };
+
+  addNotification({
+    id: notifId,
+    type: 'info',
+    dismissible: true,
+    content: () => (
+      <div className="notification-card hint-toast">
+        <span className="notification-card__text hint-toast__text">
+          {text}
+        </span>
+        <button
+          className="notification-card__dismiss"
+          aria-label="dismiss hint"
+          onClick={() => {
+            useHintsStore.getState().markSeen(hintId);
+            safeDecrement();
+            removeNotification(notifId);
+          }}
+        >
+          ×
+        </button>
+      </div>
+    ),
+    onDismiss: () => {
+      useHintsStore.getState().markSeen(hintId);
+      safeDecrement();
+    },
+  });
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export interface OnboardingHintsOptions {
@@ -25,8 +69,8 @@ export function useOnboardingHints({
   sessionJustStarted,
   commandPaletteJustOpened,
 }: OnboardingHintsOptions) {
-  const { isHintSeen, markSeen, canShowHint, incrementActive, decrementActive } =
-    useHintsStore.getState();
+  const isHintSeen = useHintsStore((s) => s.isHintSeen);
+  const markSeen = useHintsStore((s) => s.markSeen);
 
   const sessionToastFiredRef = useRef(false);
   const remoteToastFiredRef = useRef(false);
@@ -37,84 +81,24 @@ export function useOnboardingHints({
     if (sessionToastFiredRef.current) return;
     if (isHintSeen(HINT_FIRST_SESSION_RUNNING)) return;
 
-    // Store the remote timer ID so we can clear it on unmount
     let remoteTimerId: ReturnType<typeof setTimeout> | null = null;
 
     const timer = setTimeout(() => {
-      // Bypass canShowHint() for onboarding toasts — the throttle is meant for
-      // visual border hints, not toasts that go through the notification system.
       sessionToastFiredRef.current = true;
-      incrementActive();
-
-      const notifId = `hint-notif-${HINT_FIRST_SESSION_RUNNING}`;
-      addNotification({
-        id: notifId,
-        type: 'info',
-        dismissible: true,
-        content: () => {
-          const { markSeen: ms, decrementActive: da } = useHintsStore.getState();
-          return (
-            <div className="notification-card hint-toast">
-              <span className="notification-card__text hint-toast__text">
-                session is live. try cmd+k for the command palette, or [+] in the tab bar.
-              </span>
-              <button
-                className="notification-card__dismiss"
-                aria-label="dismiss hint"
-                onClick={() => {
-                  ms(HINT_FIRST_SESSION_RUNNING);
-                  da();
-                  removeNotification(notifId);
-                }}
-              >
-                ×
-              </button>
-            </div>
-          );
-        },
-        onDismiss: () => {
-          markSeen(HINT_FIRST_SESSION_RUNNING);
-          decrementActive();
-        },
-      });
+      fireHintToast(
+        HINT_FIRST_SESSION_RUNNING,
+        'session is live. try cmd+k for the command palette, or [+] in the tab bar.',
+      );
 
       // Queue remote access toast after another gap
       if (!isHintSeen(HINT_REMOTE_ACCESS)) {
         remoteTimerId = setTimeout(() => {
           if (remoteToastFiredRef.current) return;
           remoteToastFiredRef.current = true;
-          incrementActive();
-          const remoteNotifId = `hint-notif-${HINT_REMOTE_ACCESS}`;
-          addNotification({
-            id: remoteNotifId,
-            type: 'info',
-            dismissible: true,
-            content: () => {
-              const { markSeen: ms2, decrementActive: da2 } = useHintsStore.getState();
-              return (
-                <div className="notification-card hint-toast">
-                  <span className="notification-card__text hint-toast__text">
-                    relay-ide is accessible from any device — see settings &gt; advanced for the remote access url.
-                  </span>
-                  <button
-                    className="notification-card__dismiss"
-                    aria-label="dismiss hint"
-                    onClick={() => {
-                      ms2(HINT_REMOTE_ACCESS);
-                      da2();
-                      removeNotification(remoteNotifId);
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              );
-            },
-            onDismiss: () => {
-              markSeen(HINT_REMOTE_ACCESS);
-              decrementActive();
-            },
-          });
+          fireHintToast(
+            HINT_REMOTE_ACCESS,
+            'relay-ide is accessible from any device — see settings > advanced for the remote access url.',
+          );
         }, 12_000);
       }
     }, 2_000);
@@ -123,14 +107,13 @@ export function useOnboardingHints({
       clearTimeout(timer);
       if (remoteTimerId !== null) clearTimeout(remoteTimerId);
     };
-  }, [sessionJustStarted, isHintSeen, markSeen, canShowHint, incrementActive, decrementActive]);
+  }, [sessionJustStarted, isHintSeen]);
 
   // Step 4: command palette first open
   useEffect(() => {
     if (!commandPaletteJustOpened) return;
     if (isHintSeen(HINT_COMMAND_PALETTE)) return;
     markSeen(HINT_COMMAND_PALETTE);
-    // The inline hint in CommandPalette is handled by the Hint component directly
   }, [commandPaletteJustOpened, isHintSeen, markSeen]);
 
   return {

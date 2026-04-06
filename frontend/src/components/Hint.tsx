@@ -71,7 +71,7 @@ function HintToast({ id, children, onDismiss }: Omit<HintProps, 'variant'>) {
       removeNotification(notifId);
       safeDecrement();
     };
-  }, [id, isHintSeen, canShowHint, incrementActive, decrementActive, markSeen, children, onDismiss]);
+  }, [id, isHintSeen, canShowHint, incrementActive, decrementActive, markSeen, onDismiss]);
 
   return null;
 }
@@ -157,13 +157,10 @@ function HintInlineText({ id, children, onDismiss }: Omit<HintProps, 'variant'>)
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function Hint({ id, variant, children, onDismiss }: HintProps) {
-  if (variant === 'toast') {
-    return <HintToast id={id} onDismiss={onDismiss}>{children}</HintToast>;
-  }
-  if (variant === 'border') {
-    return <HintBorder id={id} onDismiss={onDismiss}>{children}</HintBorder>;
-  }
-  return <HintInlineText id={id} onDismiss={onDismiss}>{children}</HintInlineText>;
+  const props = { id, children, ...(onDismiss ? { onDismiss } : {}) };
+  if (variant === 'toast') return <HintToast {...props} />;
+  if (variant === 'border') return <HintBorder {...props} />;
+  return <HintInlineText {...props} />;
 }
 
 export default Hint;

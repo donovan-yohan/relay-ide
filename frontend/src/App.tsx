@@ -95,37 +95,33 @@ initNotifications((sessionId: string, sessionType: string) => {
 // Extracted to reduce TerminalAreaContent's cyclomatic complexity.
 
 function useTerminalOnboardingHints(reposLength: number, sessionsLength: number) {
-  const prevSessionCountRef = useRef(sessionsLength);
-  const prevReposCountRef = useRef(reposLength);
-  const prevSessionsTotalRef = useRef(sessionsLength);
+  const prevSessionsRef = useRef(sessionsLength);
+  const prevReposRef = useRef(reposLength);
   const [sessionJustStarted, setSessionJustStarted] = useState(false);
   const markHintSeen = useHintsStore((s) => s.markSeen);
 
   useEffect(() => {
-    if (sessionsLength > prevSessionCountRef.current) {
+    const prev = prevSessionsRef.current;
+    if (sessionsLength > prev) {
       setSessionJustStarted(true);
       const timeoutId = setTimeout(() => setSessionJustStarted(false), 100);
-      prevSessionCountRef.current = sessionsLength;
+      prevSessionsRef.current = sessionsLength;
       return () => { clearTimeout(timeoutId); };
     }
-    prevSessionCountRef.current = sessionsLength;
-  }, [sessionsLength]);
-
-  useEffect(() => {
-    if (prevReposCountRef.current === 0 && reposLength > 0) {
-      markHintSeen(HINT_NO_REPOS);
-    }
-    prevReposCountRef.current = reposLength;
-  }, [reposLength, markHintSeen]);
-
-  useEffect(() => {
-    if (prevSessionsTotalRef.current === 0 && sessionsLength > 0) {
+    if (prev === 0 && sessionsLength > 0) {
       markHintSeen(HINT_REPO_ADDED_NO_SESSIONS);
     }
-    prevSessionsTotalRef.current = sessionsLength;
+    prevSessionsRef.current = sessionsLength;
   }, [sessionsLength, markHintSeen]);
 
-  return { sessionJustStarted, markHintSeen };
+  useEffect(() => {
+    if (prevReposRef.current === 0 && reposLength > 0) {
+      markHintSeen(HINT_NO_REPOS);
+    }
+    prevReposRef.current = reposLength;
+  }, [reposLength, markHintSeen]);
+
+  return { sessionJustStarted };
 }
 
 // ─── resolveTerminalFilePath ──────────────────────────────────────────────────
