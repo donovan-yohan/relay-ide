@@ -1,0 +1,23 @@
+test/attention.test.ts
+  9d4fd1d81d2da759 101,116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "d4a05cdffe2366b1c6537da55c64ccf868679d4f",
+  "prompts": {
+    "9d4fd1d81d2da759": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57581c50-e290-408f-bcc6-97edc75b61df",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
