@@ -355,6 +355,35 @@ function persistWebhookError(
   saveConfig(configPath, config);
 }
 
+async function tryDeleteWebhookRemote(
+  repoPath: string,
+  webhookId: number,
+  token: string,
+  githubApi: ReturnType<typeof makeGithubApi>
+): Promise<void> {
+  const ownerRepo = await getOwnerRepoForPath(repoPath);
+  if (!ownerRepo) return;
+
+  const parts = ownerRepo.split('/');
+  const owner = parts[0];
+  const repo = parts[1];
+  if (!owner || !repo) return;
+
+  try {
+    const delRes = await githubApi(
+      'DELETE',
+      `/repos/${owner}/${repo}/hooks/${webhookId}`,
+      token
+    );
+    // 404 is fine — webhook already gone
+    if (!delRes.ok && delRes.status !== 404) {
+      logger.warn(`DELETE hook returned ${delRes.status}`);
+    }
+  } catch (err) {
+    logger.warn('Failed to delete webhook via API:', err);
+  }
+}
+
 // ── Router factory ─────────────────────────────────────────────────────────────
 
 /**
@@ -618,27 +647,7 @@ export function createWebhookManagerRouter(deps: WebhookManagerDeps): Router {
     }
 
     if (token) {
-      const ownerRepo = await getOwnerRepoForPath(repoPath);
-      if (ownerRepo) {
-        const parts = ownerRepo.split('/');
-        const owner = parts[0];
-        const repo = parts[1];
-        if (owner && repo) {
-          try {
-            const delRes = await githubApi(
-              'DELETE',
-              `/repos/${owner}/${repo}/hooks/${webhookId}`,
-              token
-            );
-            // 404 is fine — webhook already gone
-            if (!delRes.ok && delRes.status !== 404) {
-              logger.warn(`DELETE hook returned ${delRes.status}`);
-            }
-          } catch (err) {
-            logger.warn('Failed to delete webhook via API:', err);
-          }
-        }
-      }
+      await tryDeleteWebhookRemote(repoPath, webhookId, token, githubApi);
     }
 
     // Clear local webhook state regardless of API result

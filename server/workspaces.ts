@@ -46,6 +46,11 @@ import { createLogger } from './logger.js';
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
 
+const GIT_SYMBOLIC_REF = 'symbolic-ref';
+const ERR_ON_WORKSPACES_CHANGED = 'onWorkspacesChanged failed:';
+const ERR_PATH_REQUIRED = 'path query parameter is required';
+const ERR_PATH_NOT_IN_WORKSPACES = 'path not in configured workspaces';
+
 /** Extract repo name from a git remote URL (SSH or HTTPS). */
 export function repoNameFromRemoteUrl(url: string): string | undefined {
   // Strip trailing slash before splitting so pop() gets the last real segment
@@ -155,7 +160,7 @@ export async function detectGitRepo(
   try {
     const { stdout } = await execAsync(
       'git',
-      ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'],
+      [GIT_SYMBOLIC_REF, 'refs/remotes/origin/HEAD', '--short'],
       { cwd: dirPath }
     );
     const trimmed = stdout.trim();
@@ -166,7 +171,7 @@ export async function detectGitRepo(
     try {
       const { stdout } = await execAsync(
         'git',
-        ['symbolic-ref', '--short', 'HEAD'],
+        [GIT_SYMBOLIC_REF, '--short', 'HEAD'],
         { cwd: dirPath }
       );
       defaultBranch = stdout.trim() || null;
@@ -240,7 +245,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           try {
             const { stdout } = await exec(
               'git',
-              ['symbolic-ref', '--short', 'HEAD'],
+              [GIT_SYMBOLIC_REF, '--short', 'HEAD'],
               { cwd: p }
             );
             currentBranch = stdout.trim() || null;
@@ -301,7 +306,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try {
       deps.onWorkspacesChanged?.();
     } catch (err) {
-      logger.error('onWorkspacesChanged failed:', err);
+      logger.error(ERR_ON_WORKSPACES_CHANGED, err);
     }
     trackEvent({
       category: 'workspace',
@@ -315,7 +320,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       try {
         const { stdout } = await exec(
           'git',
-          ['symbolic-ref', '--short', 'HEAD'],
+          [GIT_SYMBOLIC_REF, '--short', 'HEAD'],
           { cwd: resolved }
         );
         currentBranch = stdout.trim() || null;
@@ -398,7 +403,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try {
       deps.onWorkspacesChanged?.();
     } catch (err) {
-      logger.error('onWorkspacesChanged failed:', err);
+      logger.error(ERR_ON_WORKSPACES_CHANGED, err);
     }
     trackEvent({ category: 'workspace', action: 'removed', target: resolved });
 
@@ -443,7 +448,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try {
       deps.onWorkspacesChanged?.();
     } catch (err) {
-      logger.error('onWorkspacesChanged failed:', err);
+      logger.error(ERR_ON_WORKSPACES_CHANGED, err);
     }
 
     const results: Repo[] = await Promise.all(
@@ -455,7 +460,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           try {
             const { stdout } = await exec(
               'git',
-              ['symbolic-ref', '--short', 'HEAD'],
+              [GIT_SYMBOLIC_REF, '--short', 'HEAD'],
               { cwd: p }
             );
             currentBranch = stdout.trim() || null;
@@ -477,7 +482,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     try {
       const { stdout } = await exec(
         'git',
-        ['symbolic-ref', '--short', 'HEAD'],
+        [GIT_SYMBOLIC_REF, '--short', 'HEAD'],
         { cwd: repoPath }
       );
       return stdout.trim() || null;
@@ -559,7 +564,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       try {
         deps.onWorkspacesChanged?.();
       } catch (err) {
-        logger.error('onWorkspacesChanged failed:', err);
+        logger.error(ERR_ON_WORKSPACES_CHANGED, err);
       }
     }
 
@@ -572,7 +577,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
 
@@ -745,7 +750,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const repoPath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
     // Backward compat: handle merged=true inline (same logic as /settings/merged)
@@ -764,7 +769,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const repoPath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
     res.json(buildMergedSettings(getConfig(), repoPath));
@@ -776,7 +781,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
 
@@ -817,7 +822,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
 
@@ -1012,7 +1017,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       typeof req.query.path === 'string' ? req.query.path : undefined;
 
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
 
@@ -1068,7 +1073,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const repoPath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
-      res.status(400).json({ error: 'path query parameter is required' });
+      res.status(400).json({ error: ERR_PATH_REQUIRED });
       return;
     }
     const branch = await getCurrentBranch(path.resolve(repoPath));
@@ -1333,7 +1338,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       res.status(403).json({
         files: [],
         aggregate: { additions: 0, deletions: 0, fileCount: 0 },
-        error: 'path not in configured workspaces',
+        error: ERR_PATH_NOT_IN_WORKSPACES,
       });
       return;
     }
@@ -1386,7 +1391,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         files: [],
         truncated: false,
         total: 0,
-        error: 'path not in configured workspaces',
+        error: ERR_PATH_NOT_IN_WORKSPACES,
       });
       return;
     }
@@ -1449,9 +1454,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
-      res
-        .status(403)
-        .json({ diff: '', error: 'path not in configured workspaces' });
+      res.status(403).json({ diff: '', error: ERR_PATH_NOT_IN_WORKSPACES });
       return;
     }
 
@@ -1517,9 +1520,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
-      res
-        .status(403)
-        .json({ branch: '', error: 'path not in configured workspaces' });
+      res.status(403).json({ branch: '', error: ERR_PATH_NOT_IN_WORKSPACES });
       return;
     }
 

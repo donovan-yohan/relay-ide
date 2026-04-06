@@ -512,6 +512,209 @@ function serializeAll(configDir: string): void {
   );
 }
 
+interface RawV2Session extends Record<string, unknown> {
+  cwd?: string;
+  repoPath?: string;
+  worktreePath?: string | null;
+  type?: string;
+  root?: string;
+  worktreeName?: string;
+}
+
+function readPendingSessionsFile(
+  pendingPath: string
+): PendingSessionsFile | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(pendingPath, 'utf-8')
+    ) as PendingSessionsFile;
+  } catch {
+    fs.unlinkSync(pendingPath);
+    return null;
+  }
+}
+
+function migrateV2ToV3(
+  sessions: SerializedPtySession[],
+  workspaces: string[]
+): void {
+  for (const s of sessions) {
+    const raw = s as unknown as RawV2Session;
+    // In v2 format, the field was called "repoPath" and stored the CWD
+    const v2Cwd = raw['repoPath'] as string | undefined;
+    if (!('cwd' in raw) && v2Cwd) {
+      raw.cwd = v2Cwd;
+    }
+    if (!('repoPath' in raw) || v2Cwd === raw.repoPath) {
+      const cwd = raw.cwd ?? v2Cwd ?? '';
+      const matchedWorkspace = workspaces.find(
+        (w) => cwd === w || cwd.startsWith(w + '/')
+      );
+      if (!matchedWorkspace) {
+        logger.warn(
+          `v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`
+        );
+      }
+      raw.repoPath = matchedWorkspace ?? cwd;
+    }
+    if (!('worktreePath' in raw)) {
+      const cwd = raw.cwd ?? '';
+      const repoPath = raw.repoPath ?? '';
+      // If cwd differs from repoPath, it's a worktree
+      raw.worktreePath = cwd !== repoPath ? cwd : null;
+    }
+    // Map old types to new
+    if (raw.type === 'repo' || raw.type === 'worktree') {
+      raw.type = 'agent';
+    }
+    // Clean up legacy fields (repoPath is now kept as it's our real field)
+    delete raw.root;
+    delete raw.worktreeName;
+  }
+}
+
+function migrateV3ToV4(sessions: SerializedPtySession[]): void {
+  // v3 → v4 migration: workspacePath → repoPath
+  // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
+  // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
+  // guard is false. Correctness depends on sequential execution order.
+  for (const s of sessions) {
+    const legacy = s as SerializedPtySession & { workspacePath?: string };
+    if ('workspacePath' in legacy && !('repoPath' in s)) {
+      (legacy as unknown as RawV2Session).repoPath = legacy.workspacePath;
+      delete legacy.workspacePath;
+    }
+  }
+}
+
+function loadScrollback(
+  scrollbackDirPath: string,
+  sessionId: string
+): string[] | undefined {
+  const scrollbackPath = path.join(scrollbackDirPath, sessionId + '.buf');
+  try {
+    const data = fs.readFileSync(scrollbackPath, 'utf-8');
+    if (data.length > 0) return [data];
+  } catch {
+    // Missing scrollback is non-fatal
+  }
+  return undefined;
+}
+
+function buildAgentArgs(
+  s: SerializedPtySession,
+  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+): string[] {
+  let continueArgsList: string[];
+  let yoloArgsList: string[];
+  try {
+    const framework = resolveFramework(
+      frameworks ? { frameworks } : {},
+      s.agent
+    );
+    continueArgsList = framework.continueArgs;
+    yoloArgsList = framework.yoloArgs;
+  } catch {
+    // Unknown framework — fall back to deprecated lookup tables
+    continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
+    yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
+  }
+  return [
+    ...continueArgsList,
+    ...(s.claudeArgs ?? []),
+    ...(s.yolo ? yoloArgsList : []),
+  ];
+}
+
+async function resolveSessionSpawnParams(
+  s: SerializedPtySession,
+  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+): Promise<{ command: string | undefined; args: string[] }> {
+  if (s.customCommand) {
+    return { command: s.customCommand, args: [] };
+  }
+
+  if (s.useTmux && s.tmuxSessionName) {
+    let tmuxAlive = false;
+    try {
+      await execFileAsync('tmux', ['has-session', '-t', s.tmuxSessionName]);
+      tmuxAlive = true;
+    } catch {
+      // tmux session is gone
+    }
+
+    if (tmuxAlive) {
+      // Upgrade hooks-settings.json to include statusLine if missing (migration for pre-telemetry sessions)
+      if (s.hooksActive && defaultConfigDir) {
+        const upgraded = upgradeHooksSettings(s.id, defaultConfigDir);
+        if (upgraded) {
+          logger.info(
+            `Upgraded hooks settings for session ${s.id} (added statusLine relay)`
+          );
+        }
+      }
+      return {
+        command: 'tmux',
+        args: ['-u', 'attach-session', '-t', s.tmuxSessionName],
+      };
+    }
+
+    // Tmux session died — fall back to agent with continue args + preserved flags
+    return { command: undefined, args: buildAgentArgs(s, frameworks) };
+  }
+
+  // Non-tmux agent session — respawn with continue args + preserved flags
+  return { command: undefined, args: buildAgentArgs(s, frameworks) };
+}
+
+function restoreSession(
+  s: SerializedPtySession,
+  command: string | undefined,
+  args: string[],
+  initialScrollback: string[] | undefined
+): void {
+  const createParams: CreateParams = {
+    id: s.id,
+    type: s.type,
+    agent: s.agent,
+    repoName: s.repoName,
+    repoPath: s.repoPath,
+    worktreePath: s.worktreePath,
+    cwd: s.cwd,
+    branchName: s.branchName,
+    displayName: s.displayName,
+    args,
+    useTmux: false, // Don't re-wrap in tmux — either attaching to existing or using plain agent
+    tmuxSessionName: s.tmuxSessionName,
+    restored: true,
+    yolo: s.yolo ?? false,
+    claudeArgs: s.claudeArgs ?? [],
+    hookToken: s.hookToken,
+    hooksActive: s.hooksActive,
+    continuePolicy: s.continuePolicy ?? 'never',
+    ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
+    ...(s.branchRenamePrompt
+      ? { branchRenamePrompt: s.branchRenamePrompt }
+      : {}),
+    ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+    ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+  };
+  if (command) createParams.command = command;
+  if (initialScrollback) createParams.initialScrollback = initialScrollback;
+  create(createParams);
+}
+
+function syncDisplayNameCounters(): void {
+  for (const s of sessions.values()) {
+    const agentMatch = s.displayName?.match(/^Agent (\d+)$/);
+    if (agentMatch)
+      agentCounter = Math.max(agentCounter, parseInt(agentMatch[1]!, 10));
+    const termMatch = s.displayName?.match(/^Terminal (\d+)$/);
+    if (termMatch)
+      terminalCounter = Math.max(terminalCounter, parseInt(termMatch[1]!, 10));
+  }
+}
+
 async function restoreFromDisk(
   configDir: string,
   workspaces?: string[],
@@ -520,15 +723,8 @@ async function restoreFromDisk(
   const pendingPath = path.join(configDir, 'pending-sessions.json');
   if (!fs.existsSync(pendingPath)) return 0;
 
-  let pending: PendingSessionsFile;
-  try {
-    pending = JSON.parse(
-      fs.readFileSync(pendingPath, 'utf-8')
-    ) as PendingSessionsFile;
-  } catch {
-    fs.unlinkSync(pendingPath);
-    return 0;
-  }
+  const pending = readPendingSessionsFile(pendingPath);
+  if (!pending) return 0;
 
   // Ignore stale files (>5 minutes old)
   if (Date.now() - new Date(pending.timestamp).getTime() > STALE_THRESHOLD_MS) {
@@ -536,191 +732,30 @@ async function restoreFromDisk(
     return 0;
   }
 
-  // v2 → v3 migration
   if (pending.version <= 2) {
-    for (const s of pending.sessions) {
-      const legacy = s as SerializedPtySession & {
-        legacyCwd?: string;
-        root?: string;
-        worktreeName?: string;
-      };
-      // In v2 format, the field was called "repoPath" and stored the CWD
-      const v2Cwd: string | undefined = (
-        s as unknown as Record<string, unknown>
-      )['repoPath'] as string | undefined;
-      if (!('cwd' in s) && v2Cwd) {
-        (s as any).cwd = v2Cwd;
-      }
-      if (!('repoPath' in s) || v2Cwd === (s as any).repoPath) {
-        // Derive repoPath from the configured workspaces (it's different from the old cwd meaning)
-        const configuredWorkspaces = workspaces ?? [];
-        const cwd = (s as any).cwd ?? v2Cwd ?? '';
-        const matchedWorkspace = configuredWorkspaces.find(
-          (w) => cwd === w || cwd.startsWith(w + '/')
-        );
-        if (!matchedWorkspace) {
-          logger.warn(
-            `v2→v3 migration: no configured workspace matches cwd "${cwd}", using cwd as repoPath`
-          );
-        }
-        (s as any).repoPath = matchedWorkspace ?? cwd;
-      }
-      if (!('worktreePath' in s)) {
-        const cwd = (s as any).cwd ?? '';
-        const repoPath = (s as any).repoPath ?? '';
-        // If cwd differs from repoPath, it's a worktree
-        (s as any).worktreePath = cwd !== repoPath ? cwd : null;
-      }
-      // Map old types to new
-      if ((s as any).type === 'repo' || (s as any).type === 'worktree') {
-        (s as any).type = 'agent';
-      }
-      // Clean up legacy fields (repoPath is now kept as it's our real field)
-      delete legacy.root;
-      delete legacy.worktreeName;
-    }
+    migrateV2ToV3(pending.sessions, workspaces ?? []);
   }
 
-  // v3 → v4 migration: workspacePath → repoPath
-  // NOTE: This block also fires for v1/v2 files, but is a no-op for them because
-  // the v2→v3 block above already sets `repoPath`, so the `!('repoPath' in s)`
-  // guard is false. Correctness depends on sequential execution order.
   if (pending.version <= 3) {
-    for (const s of pending.sessions) {
-      const legacy = s as SerializedPtySession & { workspacePath?: string };
-      if ('workspacePath' in legacy && !('repoPath' in s)) {
-        (s as any).repoPath = legacy.workspacePath;
-        delete (legacy as any).workspacePath;
-      }
-    }
+    migrateV3ToV4(pending.sessions);
   }
 
   const scrollbackDirPath = path.join(configDir, 'scrollback');
   let restored = 0;
 
-  // Restore PTY sessions
   for (const s of pending.sessions) {
-    // Load scrollback from disk
-    let initialScrollback: string[] | undefined;
     const scrollbackPath = path.join(scrollbackDirPath, s.id + '.buf');
-    try {
-      const data = fs.readFileSync(scrollbackPath, 'utf-8');
-      if (data.length > 0) initialScrollback = [data];
-    } catch {
-      // Missing scrollback is non-fatal
-    }
+    const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
 
-    // Determine spawn command and args
-    let command: string | undefined;
-    let args: string[] = [];
-
-    if (s.customCommand) {
-      // Terminal session — respawn the shell
-      command = s.customCommand;
-    } else if (s.useTmux && s.tmuxSessionName) {
-      // Tmux session — check if tmux session is still alive
-      let tmuxAlive = false;
-      try {
-        await execFileAsync('tmux', ['has-session', '-t', s.tmuxSessionName]);
-        tmuxAlive = true;
-      } catch {
-        // tmux session is gone
-      }
-
-      if (tmuxAlive) {
-        // Attach to surviving tmux session
-        command = 'tmux';
-        args = ['-u', 'attach-session', '-t', s.tmuxSessionName];
-        // Upgrade hooks-settings.json to include statusLine if missing (migration for pre-telemetry sessions)
-        if (s.hooksActive && defaultConfigDir) {
-          const upgraded = upgradeHooksSettings(s.id, defaultConfigDir);
-          if (upgraded)
-            logger.info(
-              `Upgraded hooks settings for session ${s.id} (added statusLine relay)`
-            );
-        }
-      } else {
-        // Tmux session died — fall back to agent with continue args + preserved flags
-        // Continue args first: Codex uses subcommands (resume --last) that must precede flags
-        let continueArgsList: string[];
-        let yoloArgsList: string[];
-        try {
-          const framework = resolveFramework(
-            frameworks ? { frameworks } : {},
-            s.agent
-          );
-          continueArgsList = framework.continueArgs;
-          yoloArgsList = framework.yoloArgs;
-        } catch {
-          // Unknown framework — fall back to deprecated lookup tables
-          continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
-          yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
-        }
-        args = [
-          ...continueArgsList,
-          ...(s.claudeArgs ?? []),
-          ...(s.yolo ? yoloArgsList : []),
-        ];
-      }
-    } else {
-      // Non-tmux agent session — respawn with continue args + preserved flags
-      // Continue args first: Codex uses subcommands (resume --last) that must precede flags
-      let continueArgsList: string[];
-      let yoloArgsList: string[];
-      try {
-        const framework = resolveFramework({}, s.agent);
-        continueArgsList = framework.continueArgs;
-        yoloArgsList = framework.yoloArgs;
-      } catch {
-        // Unknown framework — fall back to deprecated lookup tables
-        continueArgsList = AGENT_CONTINUE_ARGS[s.agent] ?? [];
-        yoloArgsList = AGENT_YOLO_ARGS[s.agent] ?? [];
-      }
-      args = [
-        ...continueArgsList,
-        ...(s.claudeArgs ?? []),
-        ...(s.yolo ? yoloArgsList : []),
-      ];
-    }
+    const { command, args } = await resolveSessionSpawnParams(s, frameworks);
 
     try {
-      const createParams: CreateParams = {
-        id: s.id,
-        type: s.type,
-        agent: s.agent,
-        repoName: s.repoName,
-        repoPath: s.repoPath,
-        worktreePath: s.worktreePath,
-        cwd: s.cwd,
-        branchName: s.branchName,
-        displayName: s.displayName,
-        args,
-        useTmux: false, // Don't re-wrap in tmux — either attaching to existing or using plain agent
-        tmuxSessionName: s.tmuxSessionName,
-        restored: true,
-        yolo: s.yolo ?? false,
-        claudeArgs: s.claudeArgs ?? [],
-        hookToken: s.hookToken,
-        hooksActive: s.hooksActive,
-        continuePolicy: s.continuePolicy ?? 'never',
-        ...(s.needsBranchRename ? { needsBranchRename: true as const } : {}),
-        ...(s.branchRenamePrompt
-          ? { branchRenamePrompt: s.branchRenamePrompt }
-          : {}),
-        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-        ...(s.additionalDirs?.length
-          ? { additionalDirs: s.additionalDirs }
-          : {}),
-      };
-      if (command) createParams.command = command;
-      if (initialScrollback) createParams.initialScrollback = initialScrollback;
-      create(createParams);
+      restoreSession(s, command, args, initialScrollback);
       restored++;
     } catch (err) {
       logger.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
     }
 
-    // Clean up scrollback file
     try {
       fs.unlinkSync(scrollbackPath);
     } catch {
@@ -728,7 +763,6 @@ async function restoreFromDisk(
     }
   }
 
-  // Clean up
   try {
     fs.unlinkSync(pendingPath);
   } catch {
@@ -740,15 +774,7 @@ async function restoreFromDisk(
     /* ignore — may not be empty */
   }
 
-  // Sync counters to avoid duplicate display names after restore
-  for (const s of sessions.values()) {
-    const agentMatch = s.displayName?.match(/^Agent (\d+)$/);
-    if (agentMatch)
-      agentCounter = Math.max(agentCounter, parseInt(agentMatch[1]!, 10));
-    const termMatch = s.displayName?.match(/^Terminal (\d+)$/);
-    if (termMatch)
-      terminalCounter = Math.max(terminalCounter, parseInt(termMatch[1]!, 10));
-  }
+  syncDisplayNameCounters();
 
   return restored;
 }

@@ -101,7 +101,7 @@ import type {
   WorkspaceSettings,
 } from './types.js';
 import { BUILTIN_FRAMEWORKS } from './types.js';
-import { semverLessThan } from './utils.js';
+import { semverLessThan, clampDimension } from './utils.js';
 import {
   createBrowserContentRouter,
   generateScopedToken,
@@ -405,21 +405,6 @@ async function validateWorktreeForDelete(
  * Clamps a terminal dimension (cols or rows) to a valid range.
  * Returns the rounded value if valid, or undefined if invalid/unset.
  */
-function clampDimension(
-  value: number | undefined,
-  min: number,
-  max: number
-): number | undefined {
-  if (
-    typeof value === 'number' &&
-    Number.isFinite(value) &&
-    value >= min &&
-    value <= max
-  ) {
-    return Math.round(value);
-  }
-  return undefined;
-}
 
 /**
  * Builds the CLI args array for an agent session based on resolved settings.

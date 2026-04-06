@@ -10,6 +10,7 @@ import type {
   ContinuePolicy,
   EventSourceType,
   PtySession,
+  Session,
   SessionStatus,
   SessionSummary,
   SessionType,
@@ -180,10 +181,13 @@ export function upgradeHooksSettings(
     settings.statusLine = { type: 'command', command: statusLinePath };
     fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf-8');
     return true;
-    } catch (err) {
-      logger.warn(`Failed to upgrade hooks settings for session ${sessionId}:`, err);
-      return false;
-    }
+  } catch (err) {
+    logger.warn(
+      `Failed to upgrade hooks settings for session ${sessionId}:`,
+      err
+    );
+    return false;
+  }
 }
 
 function writeHooksSettingsFile(
@@ -304,58 +308,14 @@ export type CreatePtyParams = {
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
 
-export function createPtySession(
-  params: CreatePtyParams,
-  sessionsMap: Map<string, import('./types.js').Session>,
-  stateChangeCallbacks: Array<
-    (sessionId: string, state: AgentState) => void
-  > = [],
-  sessionEndCallbacks: Array<
-    (sessionId: string, cwd: string, branchName?: string) => void
-  > = [],
-  fireBackendStateIfChanged?: (session: import('./types.js').Session) => void
-): { session: PtySession; result: CreatePtyResult } {
-  const {
-    id,
-    type,
-    agent = 'claude',
-    repoName,
-    repoPath,
-    worktreePath = null,
-    cwd,
-    branchName,
-    displayName,
-    command,
-    args: rawArgs = [],
-    cols = 80,
-    rows = 24,
-    configPath,
-    configDir,
-    useTmux: paramUseTmux,
-    tmuxSessionName: paramTmuxSessionName,
-    initialScrollback,
-    restored: paramRestored,
-    port,
-    forceOutputParser,
-    yolo: paramYolo,
-    claudeArgs: paramClaudeArgs,
-    hookToken: paramHookToken,
-    hooksActive: paramHooksActive,
-    frameworks,
-    claudeFullscreen: paramClaudeFullscreen,
-  } = params;
-
-  let args = rawArgs;
-  const createdAt = new Date().toISOString();
-
-  // Resolve the agent framework (builtin or future config-driven custom)
-  // Falls back to a minimal stub using deprecated aliases when agent is not a known framework.
-  let framework: import('./types.js').AgentFramework;
+function resolveAgentFramework(
+  agent: AgentType,
+  frameworks: Record<string, Partial<AgentFramework>> | undefined
+): AgentFramework {
   try {
-    framework = resolveFramework(frameworks ? { frameworks } : {}, agent);
+    return resolveFramework(frameworks ? { frameworks } : {}, agent);
   } catch {
-    // Unknown agent — synthesize a minimal framework from deprecated aliases for backward compat
-    framework = {
+    return {
       id: agent,
       displayName: agent,
       command: AGENT_COMMANDS[agent] ?? agent,
@@ -371,78 +331,112 @@ export function createPtySession(
       },
     };
   }
+}
 
-  const resolvedCommand =
-    command || framework.commandOverride || framework.command;
+type HookSetupResult = {
+  env: NodeJS.ProcessEnv;
+  hookToken: string;
+  hooksActive: boolean;
+  settingsPath: string;
+  args: string[];
+};
 
+function setupPluginHooks(
+  id: string,
+  port: number,
+  hookToken: string,
+  env: Record<string, string>
+): { hookToken: string; hooksActive: boolean } {
+  if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
+  try {
+    installOpencodeRelayPlugin();
+    env.CRC_RELAY_URL = `http://127.0.0.1:${port}`;
+    env.CRC_SESSION_ID = id;
+    env.CRC_RELAY_TOKEN = hookToken;
+    return { hookToken, hooksActive: true };
+  } catch (err) {
+    logger.warn(
+      `Failed to install opencode relay plugin for session ${id}:`,
+      err
+    );
+    return { hookToken, hooksActive: false };
+  }
+}
+
+function setupCodexHooks(
+  id: string,
+  port: number,
+  hookToken: string,
+  configDir: string,
+  env: Record<string, string>
+): { hookToken: string; hooksActive: boolean } {
+  if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
+  try {
+    const codexConfigDir = writeCodexHooksAdapter(
+      id,
+      port,
+      hookToken,
+      configDir
+    );
+    env.CODEX_CONFIG_DIR = codexConfigDir;
+    return { hookToken, hooksActive: true };
+  } catch (err) {
+    logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
+    return { hookToken, hooksActive: false };
+  }
+}
+
+function setupEnvAndHooks(
+  id: string,
+  framework: AgentFramework,
+  effectiveEventSource: EventSourceType,
+  command: string | undefined,
+  port: number | undefined,
+  configDir: string | undefined,
+  paramYolo: boolean | undefined,
+  paramHookToken: string | undefined,
+  paramHooksActive: boolean | undefined,
+  paramClaudeFullscreen: boolean | undefined,
+  rawArgs: string[]
+): HookSetupResult {
   const env = cleanEnv();
 
   if (framework.id === 'claude' && paramClaudeFullscreen === true) {
     env.CLAUDE_CODE_NO_FLICKER = '1';
   }
 
-  // Inject Claude --settings hooks file for frameworks that use HTTP hook callbacks.
-  // This is the Claude-specific hook mechanism; codex uses hooks.json (Task 7) and
-  // opencode uses a TS relay plugin (Task 6) — each with its own injection path.
-  // For restored sessions whose tmux died, reuse the preserved token but re-create the settings
-  // file on disk — the new Claude process needs --settings even though the token is the same.
-  // For surviving tmux sessions (command='tmux'), shouldInjectHooks is false — the old Claude
-  // instance already has its settings file, and we just need the token for server-side validation.
   let hookToken = paramHookToken ?? '';
   let hooksActive = paramHooksActive ?? false;
   let settingsPath = '';
-  const effectiveEventSource: EventSourceType = forceOutputParser
-    ? 'parser'
-    : framework.eventSource;
+  let args = rawArgs;
 
   if (paramYolo && framework.yoloEnv) {
     Object.assign(env, framework.yoloEnv);
   }
 
   if (effectiveEventSource === 'plugin' && port !== undefined) {
-    if (!hookToken) {
-      hookToken = crypto.randomBytes(32).toString('hex');
-    }
-    try {
-      installOpencodeRelayPlugin();
-      env.CRC_RELAY_URL = `http://127.0.0.1:${port}`;
-      env.CRC_SESSION_ID = id;
-      env.CRC_RELAY_TOKEN = hookToken;
-      hooksActive = true;
-    } catch (err) {
-      logger.warn(`Failed to install opencode relay plugin for session ${id}:`, err);
-    }
+    ({ hookToken, hooksActive } = setupPluginHooks(id, port, hookToken, env));
   }
 
   if (framework.id === 'codex' && port !== undefined) {
-    if (!hookToken) {
-      hookToken = crypto.randomBytes(32).toString('hex');
-    }
-    try {
-      const codexConfigDir = writeCodexHooksAdapter(
-        id,
-        port,
-        hookToken,
-        configDir ?? process.cwd()
-      );
-      env.CODEX_CONFIG_DIR = codexConfigDir;
-      hooksActive = true;
-    } catch (err) {
-      logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
-    }
+    ({ hookToken, hooksActive } = setupCodexHooks(
+      id,
+      port,
+      hookToken,
+      configDir ?? process.cwd(),
+      env
+    ));
   }
 
-  // Only inject --settings for claude; codex and opencode have their own hook injection paths
   const shouldInjectHooks =
     framework.id === 'claude' &&
     framework.capabilities.supportsHooks &&
     effectiveEventSource === 'hooks' &&
     !command &&
     port !== undefined;
+
   if (shouldInjectHooks) {
-    if (!hookToken) {
-      hookToken = crypto.randomBytes(32).toString('hex');
-    }
+    if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
     try {
       settingsPath = writeHooksSettingsFile(
         id,
@@ -459,14 +453,32 @@ export function createPtySession(
     }
   }
 
+  return { env, hookToken, hooksActive, settingsPath, args };
+}
+
+function resolveSpawnTarget(
+  command: string | undefined,
+  resolvedCommand: string,
+  args: string[],
+  paramUseTmux: boolean | undefined,
+  paramTmuxSessionName: string | undefined,
+  tmuxDisplayName: string | undefined,
+  displayName: string | undefined,
+  repoName: string | undefined,
+  cwd: string,
+  id: string
+): {
+  spawnCommand: string;
+  spawnArgs: string[];
+  useTmux: boolean;
+  tmuxSessionName: string;
+} {
   const useTmux = !command && !!paramUseTmux;
-  let spawnCommand = resolvedCommand;
-  let spawnArgs = args;
   const tmuxSessionName =
     paramTmuxSessionName ||
     (useTmux
       ? generateTmuxSessionName(
-          params.tmuxDisplayName ||
+          tmuxDisplayName ||
             displayName ||
             repoName ||
             path.basename(cwd) ||
@@ -475,33 +487,48 @@ export function createPtySession(
         )
       : '');
 
+  let spawnCommand = resolvedCommand;
+  let spawnArgs = args;
+
   if (useTmux) {
     const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);
     spawnCommand = tmux.command;
     spawnArgs = tmux.args;
   }
 
-  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
-    name: 'xterm-256color',
-    cols,
-    rows,
+  return { spawnCommand, spawnArgs, useTmux, tmuxSessionName };
+}
+
+function buildSessionObject(
+  params: CreatePtyParams,
+  ptyProcess: pty.IPty,
+  scrollback: string[],
+  parser: OutputParser,
+  hookToken: string,
+  hooksActive: boolean,
+  effectiveEventSource: EventSourceType,
+  useTmux: boolean,
+  tmuxSessionName: string,
+  createdAt: string
+): PtySession {
+  const {
+    id,
+    type,
+    agent = 'claude',
+    repoName,
+    repoPath,
+    worktreePath = null,
     cwd,
-    env,
-  });
+    branchName,
+    displayName,
+    command,
+    restored: paramRestored,
+    yolo: paramYolo,
+    claudeArgs: paramClaudeArgs,
+    continuePolicy,
+  } = params;
 
-  // Scrollback buffer: stores all PTY output so we can replay on WebSocket (re)connect
-  const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
-  let scrollbackBytes = initialScrollback
-    ? initialScrollback.reduce((sum, s) => sum + s.length, 0)
-    : 0;
-
-  // Instantiate vendor-specific output parser dispatched by framework.parserType
-  // Falls back to 'none' parser for unknown parserType values
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const parserFactory =
-    outputParsers[framework.parserType] ?? outputParsers['none'];
-  const parser: OutputParser = parserFactory!();
-  const session: PtySession = {
+  return {
     id,
     type: type || 'agent',
     agent,
@@ -531,16 +558,148 @@ export function createPtySession(
     cleanedUp: false,
     yolo: paramYolo ?? false,
     sessionArgs: paramClaudeArgs ?? [],
-    claudeArgs: paramClaudeArgs ?? [], // keep for backward compat
-    continuePolicy: params.continuePolicy ?? 'never',
-    // Derive dataQuality from what actually got enabled, not just the configured framework eventSource.
-    // If hook/plugin injection failed, hooksActive is false → downgrade to 'parser' for accuracy.
+    claudeArgs: paramClaudeArgs ?? [],
+    continuePolicy: continuePolicy ?? 'never',
     dataQuality: hooksActive ? effectiveEventSource : 'parser',
     _lastHookTime: undefined,
   };
+}
+
+function isParserOverrideAllowed(
+  session: PtySession,
+  lastHook: number | undefined
+): boolean {
+  const sessionAge = Date.now() - new Date(session.createdAt).getTime();
+  if (lastHook && Date.now() - lastHook > 30000) return true;
+  if (!lastHook && sessionAge > 30000) return true;
+  return false;
+}
+
+function handleParserStateUpdate(
+  session: PtySession,
+  newState: AgentState,
+  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>,
+  fireBackendStateIfChanged: ((session: PtySession) => void) | undefined
+): void {
+  if (session.hooksActive) {
+    if (!isParserOverrideAllowed(session, session._lastHookTime)) return;
+  }
+  session.agentState = newState;
+  for (const cb of stateChangeCallbacks) cb(session.id, newState);
+  fireBackendStateIfChanged?.(session);
+}
+
+export function createPtySession(
+  params: CreatePtyParams,
+  sessionsMap: Map<string, Session>,
+  stateChangeCallbacks: Array<
+    (sessionId: string, state: AgentState) => void
+  > = [],
+  sessionEndCallbacks: Array<
+    (sessionId: string, cwd: string, branchName?: string) => void
+  > = [],
+  fireBackendStateIfChanged?: (session: Session) => void
+): { session: PtySession; result: CreatePtyResult } {
+  const {
+    id,
+    agent = 'claude',
+    repoName,
+    worktreePath = null,
+    cwd,
+    displayName,
+    command,
+    args: rawArgs = [],
+    cols = 80,
+    rows = 24,
+    configPath,
+    configDir,
+    useTmux: paramUseTmux,
+    tmuxSessionName: paramTmuxSessionName,
+    initialScrollback,
+    port,
+    forceOutputParser,
+    yolo: paramYolo,
+    hookToken: paramHookToken,
+    hooksActive: paramHooksActive,
+    frameworks,
+    claudeFullscreen: paramClaudeFullscreen,
+  } = params;
+
+  const createdAt = new Date().toISOString();
+
+  const framework = resolveAgentFramework(agent, frameworks);
+  const resolvedCommand =
+    command || framework.commandOverride || framework.command;
+
+  const effectiveEventSource: EventSourceType = forceOutputParser
+    ? 'parser'
+    : framework.eventSource;
+
+  const hookSetup = setupEnvAndHooks(
+    id,
+    framework,
+    effectiveEventSource,
+    command,
+    port,
+    configDir,
+    paramYolo,
+    paramHookToken,
+    paramHooksActive,
+    paramClaudeFullscreen,
+    rawArgs
+  );
+
+  const { env, hookToken, hooksActive, settingsPath } = hookSetup;
+  const args = hookSetup.args;
+
+  const { spawnCommand, spawnArgs, useTmux, tmuxSessionName } =
+    resolveSpawnTarget(
+      command,
+      resolvedCommand,
+      args,
+      paramUseTmux,
+      paramTmuxSessionName,
+      params.tmuxDisplayName,
+      displayName,
+      repoName,
+      cwd,
+      id
+    );
+
+  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env,
+  });
+
+  const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
+  // Use a ref so tryRetrySpawn (called from onExit) can reset the byte counter
+  const scrollbackRef = {
+    bytes: initialScrollback
+      ? initialScrollback.reduce((sum, s) => sum + s.length, 0)
+      : 0,
+  };
+
+  const parserFactory =
+    outputParsers[framework.parserType] ?? outputParsers['none'];
+  const parser: OutputParser = parserFactory!();
+
+  const session = buildSessionObject(
+    params,
+    ptyProcess,
+    scrollback,
+    parser,
+    hookToken,
+    hooksActive,
+    effectiveEventSource,
+    useTmux,
+    tmuxSessionName,
+    createdAt
+  );
   sessionsMap.set(id, session);
 
-  // Load existing metadata to preserve a previously-set displayName
   if (configPath && worktreePath) {
     const existing = readMeta(configPath, worktreePath);
     if (existing && existing.displayName) {
@@ -574,7 +733,6 @@ export function createPtySession(
 
   function attachHandlers(proc: pty.IPty, canRetry: boolean): void {
     const spawnTime = Date.now();
-    // Clear restored flag after 3s of running — means the PTY is healthy
     const restoredClearTimer = session.restored
       ? setTimeout(() => {
           session.restored = false;
@@ -585,10 +743,10 @@ export function createPtySession(
       session.lastActivity = new Date().toISOString();
       resetIdleTimer();
       scrollback.push(data);
-      scrollbackBytes += data.length;
+      scrollbackRef.bytes += data.length;
       // Trim oldest entries if over limit
-      while (scrollbackBytes > MAX_SCROLLBACK && scrollback.length > 1) {
-        scrollbackBytes -= (scrollback.shift() as string).length;
+      while (scrollbackRef.bytes > MAX_SCROLLBACK && scrollback.length > 1) {
+        scrollbackRef.bytes -= (scrollback.shift() as string).length;
       }
       if (configPath && worktreePath && !metaFlushTimer) {
         metaFlushTimer = setTimeout(() => {
@@ -601,122 +759,77 @@ export function createPtySession(
         }, 5000);
       }
 
-      // Vendor-specific output parsing for semantic state detection
       const parseResult = session.outputParser.onData(
         data,
         scrollback.slice(-20)
       );
       if (parseResult && parseResult.state !== session.agentState) {
-        if (session.hooksActive) {
-          // Hooks are authoritative — check 30s reconciliation timeout
-          const lastHook = session._lastHookTime;
-          const sessionAge = Date.now() - new Date(session.createdAt).getTime();
-          if (lastHook && Date.now() - lastHook > 30000) {
-            // No hook for 30s and parser disagrees — parser overrides
-            session.agentState = parseResult.state;
-            for (const cb of stateChangeCallbacks)
-              cb(session.id, parseResult.state);
-            fireBackendStateIfChanged?.(session);
-          } else if (!lastHook && sessionAge > 30000) {
-            // Hooks active but never fired in 30s — allow parser to override to prevent permanent suppression
-            session.agentState = parseResult.state;
-            for (const cb of stateChangeCallbacks)
-              cb(session.id, parseResult.state);
-            fireBackendStateIfChanged?.(session);
-          }
-          // else: suppress parser — hooks are still fresh
-        } else {
-          // No hooks — parser is primary (current behavior)
-          session.agentState = parseResult.state;
-          for (const cb of stateChangeCallbacks)
-            cb(session.id, parseResult.state);
-          fireBackendStateIfChanged?.(session);
-        }
+        handleParserStateUpdate(
+          session,
+          parseResult.state,
+          stateChangeCallbacks,
+          fireBackendStateIfChanged
+        );
       }
     });
 
     proc.onExit(() => {
       if (canRetry && Date.now() - spawnTime < 3000) {
-        let retryArgs = rawArgs.filter((a) => !continueArgs.includes(a));
-        // Re-inject hooks settings if active (settingsPath captured from outer scope)
-        if (session.hooksActive && settingsPath) {
-          retryArgs = ['--settings', settingsPath, ...retryArgs];
-        }
-        const retryNotice =
-          '\r\n[relay-ide] --continue not available; starting new session...\r\n';
-        scrollback.length = 0;
-        scrollbackBytes = 0;
-        scrollback.push(retryNotice);
-        scrollbackBytes = retryNotice.length;
-        let retryCommand = resolvedCommand;
-        let retrySpawnArgs = retryArgs;
-        if (useTmux && tmuxSessionName) {
-          const retryTmuxName = tmuxSessionName + '-retry';
-          session.tmuxSessionName = retryTmuxName;
-          const tmux = resolveTmuxSpawn(
-            resolvedCommand,
-            retryArgs,
-            retryTmuxName
-          );
-          retryCommand = tmux.command;
-          retrySpawnArgs = tmux.args;
-        }
-        let retryPty: pty.IPty;
-        try {
-          retryPty = pty.spawn(retryCommand, retrySpawnArgs, {
-            name: 'xterm-256color',
-            cols,
-            rows,
-            cwd,
-            env,
-          });
-        } catch {
-          // Retry spawn failed — fall through to normal exit cleanup
-          if (restoredClearTimer) clearTimeout(restoredClearTimer);
-          if (idleTimer) clearTimeout(idleTimer);
-          if (metaFlushTimer) clearTimeout(metaFlushTimer);
-          sessionsMap.delete(id);
+        const retried = tryRetrySpawn(session, {
+          rawArgs,
+          continueArgs,
+          settingsPath,
+          resolvedCommand,
+          useTmux,
+          tmuxSessionName,
+          cols,
+          rows,
+          cwd,
+          env,
+          scrollback,
+          scrollbackRef,
+          timers: {
+            restoredClear: restoredClearTimer,
+            idle: idleTimer,
+            metaFlush: metaFlushTimer,
+          },
+          sessionsMap,
+          id,
+        });
+        if (retried !== null) {
+          session.pty = retried;
+          for (const cb of session.onPtyReplacedCallbacks) cb(retried);
+          attachHandlers(retried, false);
           return;
         }
-        session.pty = retryPty;
-        for (const cb of session.onPtyReplacedCallbacks) cb(retryPty);
-        attachHandlers(retryPty, false);
+        // Retry spawn failed — fall through to exit cleanup
         return;
       }
 
-      if (session.cleanedUp) return; // Dedup: SessionEnd hook already cleaned up
+      if (session.cleanedUp) return;
       session.cleanedUp = true;
 
       if (restoredClearTimer) clearTimeout(restoredClearTimer);
 
-      // If PTY exited and this is a restored session, mark disconnected rather than delete
       if (session.restored) {
         session.status = 'disconnected';
-        session.restored = false; // clear so user-initiated kills can delete normally
+        session.restored = false;
         if (idleTimer) clearTimeout(idleTimer);
         if (metaFlushTimer) clearTimeout(metaFlushTimer);
         return;
       }
 
-      if (idleTimer) clearTimeout(idleTimer);
-      if (metaFlushTimer) clearTimeout(metaFlushTimer);
-      if (configPath && worktreePath) {
-        writeMeta(configPath, {
-          worktreePath,
-          displayName: session.displayName,
-          lastActivity: session.lastActivity,
-        });
-      }
-      for (const cb of sessionEndCallbacks) {
-        try {
-          cb(id, cwd, session.branchName);
-        } catch (err) {
-          logger.error('sessionEnd callback error:', err);
-        }
-      }
-      sessionsMap.delete(id);
-      const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
-      fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+      runExitCleanup(
+        session,
+        idleTimer,
+        metaFlushTimer,
+        configPath,
+        worktreePath,
+        sessionEndCallbacks,
+        sessionsMap,
+        id,
+        cwd
+      );
     });
   }
 
@@ -749,4 +862,107 @@ export function createPtySession(
   };
 
   return { session, result };
+}
+
+type RetryContext = {
+  rawArgs: string[];
+  continueArgs: string[];
+  settingsPath: string;
+  resolvedCommand: string;
+  useTmux: boolean;
+  tmuxSessionName: string;
+  cols: number;
+  rows: number;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  scrollback: string[];
+  scrollbackRef: { bytes: number };
+  timers: {
+    restoredClear: ReturnType<typeof setTimeout> | null;
+    idle: ReturnType<typeof setTimeout> | null;
+    metaFlush: ReturnType<typeof setTimeout> | null;
+  };
+  sessionsMap: Map<string, Session>;
+  id: string;
+};
+
+function tryRetrySpawn(
+  session: PtySession,
+  ctx: RetryContext
+): pty.IPty | null {
+  let retryArgs = ctx.rawArgs.filter((a) => !ctx.continueArgs.includes(a));
+  if (session.hooksActive && ctx.settingsPath) {
+    retryArgs = ['--settings', ctx.settingsPath, ...retryArgs];
+  }
+
+  const retryNotice =
+    '\r\n[relay-ide] --continue not available; starting new session...\r\n';
+  ctx.scrollback.length = 0;
+  ctx.scrollbackRef.bytes = 0;
+  ctx.scrollback.push(retryNotice);
+  ctx.scrollbackRef.bytes = retryNotice.length;
+
+  let retryCommand = ctx.resolvedCommand;
+  let retrySpawnArgs = retryArgs;
+  if (ctx.useTmux && ctx.tmuxSessionName) {
+    const retryTmuxName = ctx.tmuxSessionName + '-retry';
+    session.tmuxSessionName = retryTmuxName;
+    const tmux = resolveTmuxSpawn(
+      ctx.resolvedCommand,
+      retryArgs,
+      retryTmuxName
+    );
+    retryCommand = tmux.command;
+    retrySpawnArgs = tmux.args;
+  }
+
+  try {
+    return pty.spawn(retryCommand, retrySpawnArgs, {
+      name: 'xterm-256color',
+      cols: ctx.cols,
+      rows: ctx.rows,
+      cwd: ctx.cwd,
+      env: ctx.env,
+    });
+  } catch {
+    if (ctx.timers.restoredClear) clearTimeout(ctx.timers.restoredClear);
+    if (ctx.timers.idle) clearTimeout(ctx.timers.idle);
+    if (ctx.timers.metaFlush) clearTimeout(ctx.timers.metaFlush);
+    ctx.sessionsMap.delete(ctx.id);
+    return null;
+  }
+}
+
+function runExitCleanup(
+  session: PtySession,
+  idleTimer: ReturnType<typeof setTimeout> | null,
+  metaFlushTimer: ReturnType<typeof setTimeout> | null,
+  configPath: string | undefined,
+  worktreePath: string | null | undefined,
+  sessionEndCallbacks: Array<
+    (sessionId: string, cwd: string, branchName?: string) => void
+  >,
+  sessionsMap: Map<string, Session>,
+  id: string,
+  cwd: string
+): void {
+  if (idleTimer) clearTimeout(idleTimer);
+  if (metaFlushTimer) clearTimeout(metaFlushTimer);
+  if (configPath && worktreePath) {
+    writeMeta(configPath, {
+      worktreePath,
+      displayName: session.displayName,
+      lastActivity: session.lastActivity,
+    });
+  }
+  for (const cb of sessionEndCallbacks) {
+    try {
+      cb(id, cwd, session.branchName);
+    } catch (err) {
+      logger.error('sessionEnd callback error:', err);
+    }
+  }
+  sessionsMap.delete(id);
+  const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
+  fs.rm(tmpDir, { recursive: true, force: true }, () => {});
 }

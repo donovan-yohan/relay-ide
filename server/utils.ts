@@ -1,5 +1,6 @@
 // Strip ANSI escape sequences (CSI, OSC, charset, mode sequences)
 export const ANSI_RE =
+  // eslint-disable-next-line no-control-regex
   /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b\[\?[0-9;]*[hlm]|\x1b\[[0-9]*[ABCDJKH]/g;
 
 export function stripAnsi(text: string): string {
@@ -8,51 +9,79 @@ export function stripAnsi(text: string): string {
 
 const DIGITS_RE = /^\d+$/;
 
-export function semverLessThan(a: string, b: string): boolean {
-  // Strip build metadata per SemVer 2.0.0 — ignored for precedence
-  const aVersion = a.split('+', 1)[0]!;
-  const bVersion = b.split('+', 1)[0]!;
-  const idxA = aVersion.indexOf('-');
-  const idxB = bVersion.indexOf('-');
-  const aCore = (idxA === -1 ? aVersion : aVersion.slice(0, idxA))
-    .split('.')
-    .map(Number);
-  const bCore = (idxB === -1 ? bVersion : bVersion.slice(0, idxB))
-    .split('.')
-    .map(Number);
-  const aPre = idxA === -1 ? undefined : aVersion.slice(idxA + 1);
-  const bPre = idxB === -1 ? undefined : bVersion.slice(idxB + 1);
+interface ParsedSemver {
+  core: number[];
+  pre: string | undefined;
+}
 
-  for (let i = 0; i < 3; i++) {
-    const ai = aCore[i] ?? 0;
-    const bi = bCore[i] ?? 0;
-    if (ai !== bi) return ai < bi;
+function parseSemver(v: string): ParsedSemver {
+  const withoutBuild = v.split('+', 1)[0]!;
+  const idx = withoutBuild.indexOf('-');
+  const corePart = idx === -1 ? withoutBuild : withoutBuild.slice(0, idx);
+  const pre = idx === -1 ? undefined : withoutBuild.slice(idx + 1);
+  return { core: corePart.split('.').map(Number), pre };
+}
+
+function comparePreIds(aId: string, bId: string): number {
+  const aIsNum = DIGITS_RE.test(aId);
+  const bIsNum = DIGITS_RE.test(bId);
+  if (aIsNum && bIsNum) {
+    return Number(aId) - Number(bId);
   }
+  if (aIsNum !== bIsNum) {
+    return aIsNum ? -1 : 1; // numeric < alphanumeric per semver
+  }
+  return aId < bId ? -1 : aId > bId ? 1 : 0;
+}
 
-  // major.minor.patch equal — compare pre-release per semver spec
-  if (!aPre && !bPre) return false;
-  if (aPre && !bPre) return true; // pre-release < release
-  if (!aPre && bPre) return false; // release > pre-release
+function comparePreRelease(
+  aPre: string | undefined,
+  bPre: string | undefined
+): number {
+  if (!aPre && !bPre) return 0;
+  if (aPre && !bPre) return -1; // pre-release < release
+  if (!aPre && bPre) return 1; // release > pre-release
 
   const aIds = aPre!.split('.');
   const bIds = bPre!.split('.');
   const len = Math.max(aIds.length, bIds.length);
+
   for (let i = 0; i < len; i++) {
-    if (i >= aIds.length) return true; // fewer identifiers = lower
-    if (i >= bIds.length) return false;
-    const aIsNum = DIGITS_RE.test(aIds[i]!);
-    const bIsNum = DIGITS_RE.test(bIds[i]!);
-    if (aIsNum && bIsNum) {
-      const aNum = Number(aIds[i]);
-      const bNum = Number(bIds[i]);
-      if (aNum !== bNum) return aNum < bNum;
-    } else if (aIsNum !== bIsNum) {
-      return aIsNum; // numeric < string per semver
-    } else {
-      if (aIds[i] !== bIds[i]) return aIds[i]! < bIds[i]!;
-    }
+    if (i >= aIds.length) return -1; // fewer identifiers = lower
+    if (i >= bIds.length) return 1;
+    const cmp = comparePreIds(aIds[i]!, bIds[i]!);
+    if (cmp !== 0) return cmp;
   }
-  return false;
+  return 0;
+}
+
+export function semverLessThan(a: string, b: string): boolean {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+
+  for (let i = 0; i < 3; i++) {
+    const ai = pa.core[i] ?? 0;
+    const bi = pb.core[i] ?? 0;
+    if (ai !== bi) return ai < bi;
+  }
+
+  return comparePreRelease(pa.pre, pb.pre) < 0;
+}
+
+export function clampDimension(
+  value: unknown,
+  min: number,
+  max: number
+): number | undefined {
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max
+  ) {
+    return Math.round(value);
+  }
+  return undefined;
 }
 
 export function cleanEnv(): Record<string, string> {

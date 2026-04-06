@@ -12,15 +12,23 @@ import {
   resolveSessionSettings,
   writeMeta,
 } from './config.js';
-import type { Config, Workspace, AgentType } from './types.js';
+import type {
+  Config,
+  Workspace,
+  AgentType,
+  WorkspaceLevelSettings,
+  WorkspaceTemplate,
+} from './types.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { detectGitRepo } from './workspaces.js';
 import type { CreateParams, CreateResult } from './sessions.js';
 import { createLogger } from './logger.js';
+import { clampDimension } from './utils.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspace-groups');
+const ERR_FAILED_READ_CONFIG = 'Failed to read config';
 
 interface SessionDeps {
   sessions: {
@@ -31,9 +39,100 @@ interface SessionDeps {
   configPath: string;
 }
 
+type ExecFn = (
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; timeout?: number }
+) => Promise<{ stdout: string; stderr: string }>;
+
+type RepoResult =
+  | { repoPath: string; resolvedPath: string }
+  | { repoPath: string; error: string };
+
+async function resolveRepoPath(
+  repoPath: string,
+  execFn: ExecFn
+): Promise<RepoResult> {
+  if (!fs.existsSync(repoPath)) {
+    return { repoPath, error: `directory not found: ${repoPath}` };
+  }
+
+  let gitInfo: { isGitRepo: boolean; defaultBranch: string | null };
+  try {
+    gitInfo = await detectGitRepo(repoPath);
+  } catch (err) {
+    logger.warn(`detectGitRepo failed for ${repoPath}:`, err);
+    return { repoPath, resolvedPath: repoPath };
+  }
+
+  if (!gitInfo.isGitRepo || !gitInfo.defaultBranch) {
+    return { repoPath, resolvedPath: repoPath };
+  }
+
+  try {
+    const result = await findOrCreateWorktreeForBranch(
+      repoPath,
+      gitInfo.defaultBranch,
+      execFn
+    );
+    return { repoPath, resolvedPath: result.worktreePath };
+  } catch (err) {
+    return {
+      repoPath,
+      error: err instanceof Error ? err.message : 'worktree creation failed',
+    };
+  }
+}
+
+function buildFinalArgs(
+  config: Config,
+  primary: { repoPath: string; resolvedPath: string },
+  additionalDirs: string[],
+  overrides: {
+    agent: string | undefined;
+    yolo: boolean | undefined;
+    useTmux: boolean | undefined;
+    claudeArgs: string[] | undefined;
+  },
+  workspaceId: string
+): {
+  resolved: ReturnType<typeof resolveSessionSettings>;
+  combinedClaudeArgs: string[];
+  finalArgs: string[];
+} {
+  const addDirArgs = additionalDirs.flatMap((dir) => ['--add-dir', dir]);
+
+  const sessionOverrides: Parameters<typeof resolveSessionSettings>[2] = {};
+  if (overrides.agent !== undefined)
+    sessionOverrides.agent = overrides.agent as AgentType;
+  if (overrides.yolo !== undefined) sessionOverrides.yolo = overrides.yolo;
+  if (overrides.useTmux !== undefined)
+    sessionOverrides.useTmux = overrides.useTmux;
+  if (overrides.claudeArgs !== undefined)
+    sessionOverrides.claudeArgs = overrides.claudeArgs;
+
+  const resolved = resolveSessionSettings(
+    config,
+    primary.repoPath,
+    sessionOverrides,
+    workspaceId
+  );
+  const resolvedAgent = resolved.agent;
+  const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
+  const baseArgs = [
+    ...combinedClaudeArgs,
+    ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
+  ];
+  const finalArgs =
+    resolved.continuePolicy === 'always'
+      ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
+      : [...baseArgs];
+  return { resolved, combinedClaudeArgs, finalArgs };
+}
+
 export function createWorkspaceGroupsRouter(
   configPath: string,
-  requireAuth: (req: any, res: any, next: any) => void,
+  requireAuth: (req: Request, res: Response, next: () => void) => void,
   sessionDeps?: SessionDeps
 ): Router {
   const router = Router();
@@ -44,7 +143,7 @@ export function createWorkspaceGroupsRouter(
     try {
       config = loadConfig(configPath);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to read config' });
+      res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
     const workspaces = config.workspaces ?? [];
@@ -73,7 +172,7 @@ export function createWorkspaceGroupsRouter(
     try {
       config = loadConfig(configPath);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to read config' });
+      res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
     const validRepoPaths = new Set<string>(config.repos ?? []);
@@ -106,14 +205,14 @@ export function createWorkspaceGroupsRouter(
       typeof settings === 'object' &&
       settings !== null
     ) {
-      (workspace as any).settings = settings;
+      workspace.settings = settings as WorkspaceLevelSettings;
     }
     if (
       template !== undefined &&
       typeof template === 'object' &&
       template !== null
     ) {
-      (workspace as any).template = template;
+      workspace.template = template as WorkspaceTemplate;
     }
 
     config.workspaces = [...workspaces, workspace];
@@ -139,7 +238,7 @@ export function createWorkspaceGroupsRouter(
     try {
       config = loadConfig(configPath);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to read config' });
+      res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
     const workspaces = config.workspaces ?? [];
@@ -183,7 +282,7 @@ export function createWorkspaceGroupsRouter(
     try {
       config = loadConfig(configPath);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to read config' });
+      res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
     const workspaces = config.workspaces ?? [];
@@ -221,14 +320,14 @@ export function createWorkspaceGroupsRouter(
     }
     if (settings !== undefined) {
       if (settings !== null && typeof settings === 'object') {
-        (updated as any).settings = settings;
+        updated.settings = settings as WorkspaceLevelSettings;
       } else {
         delete updated.settings;
       }
     }
     if (template !== undefined) {
       if (template !== null && typeof template === 'object') {
-        (updated as any).template = template;
+        updated.template = template as WorkspaceTemplate;
       } else {
         delete updated.template;
       }
@@ -249,7 +348,7 @@ export function createWorkspaceGroupsRouter(
     try {
       config = loadConfig(configPath);
     } catch (err) {
-      res.status(500).json({ error: 'Failed to read config' });
+      res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
     const workspaces = config.workspaces ?? [];
@@ -291,7 +390,7 @@ export function createWorkspaceGroupsRouter(
         try {
           config = loadConfig(configPath);
         } catch {
-          res.status(500).json({ error: 'Failed to read config' });
+          res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
           return;
         }
 
@@ -308,56 +407,15 @@ export function createWorkspaceGroupsRouter(
         }
 
         // Resolve paths per-repo in parallel: git repos get worktrees, non-git use path directly
-        const execFn = (
-          cmd: string,
-          args: string[],
-          opts: { cwd: string; timeout?: number }
-        ) =>
+        const execFn: ExecFn = (cmd, args, opts) =>
           execFileAsync(cmd, args, {
             cwd: opts.cwd,
             timeout: opts.timeout ?? 10_000,
           }).then(({ stdout, stderr }) => ({ stdout, stderr }));
 
-        type RepoResult =
-          | { repoPath: string; resolvedPath: string }
-          | { repoPath: string; error: string };
-
         // Inner fn always returns (never rejects), so Promise.all is safe here
         const results = await Promise.all(
-          workspace.repos.map(async (repoPath): Promise<RepoResult> => {
-            if (!fs.existsSync(repoPath)) {
-              return { repoPath, error: `directory not found: ${repoPath}` };
-            }
-
-            let gitInfo: { isGitRepo: boolean; defaultBranch: string | null };
-            try {
-              gitInfo = await detectGitRepo(repoPath);
-            } catch (err) {
-              logger.warn(`detectGitRepo failed for ${repoPath}:`, err);
-              return { repoPath, resolvedPath: repoPath };
-            }
-
-            if (!gitInfo.isGitRepo || !gitInfo.defaultBranch) {
-              return { repoPath, resolvedPath: repoPath };
-            }
-
-            try {
-              const result = await findOrCreateWorktreeForBranch(
-                repoPath,
-                gitInfo.defaultBranch,
-                execFn
-              );
-              return { repoPath, resolvedPath: result.worktreePath };
-            } catch (err) {
-              return {
-                repoPath,
-                error:
-                  err instanceof Error
-                    ? err.message
-                    : 'worktree creation failed',
-              };
-            }
-          })
+          workspace.repos.map((repoPath) => resolveRepoPath(repoPath, execFn))
         );
 
         const successes: Array<{ repoPath: string; resolvedPath: string }> = [];
@@ -380,49 +438,21 @@ export function createWorkspaceGroupsRouter(
 
         const primary = successes[0]!;
         const additionalDirs = successes.slice(1).map((s) => s.resolvedPath);
-        const addDirArgs = additionalDirs.flatMap((dir) => ['--add-dir', dir]);
 
         // Resolve settings first (respects global < workspace < repo cascade),
         // then append --add-dir args so they don't replace configured claudeArgs
-        const resolved = resolveSessionSettings(
+        const { resolved, combinedClaudeArgs, finalArgs } = buildFinalArgs(
           config,
-          primary.repoPath,
-          {
-            agent: agent as AgentType | undefined,
-            yolo,
-            useTmux,
-            claudeArgs,
-          },
+          primary,
+          additionalDirs,
+          { agent, yolo, useTmux, claudeArgs },
           workspace.id
         );
 
         const resolvedAgent = resolved.agent;
-        const combinedClaudeArgs = [...resolved.claudeArgs, ...addDirArgs];
-        const baseArgs = [
-          ...combinedClaudeArgs,
-          ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolvedAgent] ?? []) : []),
-        ];
-
-        const useContinue = resolved.continuePolicy === 'always';
-        const finalArgs = useContinue
-          ? [...(AGENT_CONTINUE_ARGS[resolvedAgent] ?? []), ...baseArgs]
-          : [...baseArgs];
-
         const displayName = sessionDeps.sessions.nextAgentName();
-        const safeCols =
-          typeof cols === 'number' &&
-          Number.isFinite(cols) &&
-          cols >= 1 &&
-          cols <= 500
-            ? Math.round(cols)
-            : undefined;
-        const safeRows =
-          typeof rows === 'number' &&
-          Number.isFinite(rows) &&
-          rows >= 1 &&
-          rows <= 200
-            ? Math.round(rows)
-            : undefined;
+        const safeCols = clampDimension(cols, 1, 500);
+        const safeRows = clampDimension(rows, 1, 200);
 
         const cwd = primary.resolvedPath;
         const worktreePath =

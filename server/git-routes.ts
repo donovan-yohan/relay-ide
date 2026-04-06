@@ -53,6 +53,107 @@ interface WorktreeResult {
   branchName: string;
 }
 
+function buildReposFromRootDirs(
+  deps: GitRouterDeps,
+  roots: string[]
+): RepoEntry[] {
+  const repos: RepoEntry[] = [];
+  for (const rootDir of roots) {
+    let entries: Array<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = deps.readdirSync(rootDir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const fullPath = path.join(rootDir, entry.name);
+      const dotGit = path.join(fullPath, '.git');
+      try {
+        if (deps.statSync(dotGit).isDirectory()) {
+          repos.push({ name: entry.name, path: fullPath, root: rootDir });
+        }
+      } catch {
+        // .git doesn't exist — not a repo
+      }
+    }
+  }
+  return repos;
+}
+
+function addConfiguredRepos(
+  repos: RepoEntry[],
+  configRepos: string[],
+  roots: string[]
+): void {
+  const scannedPaths = new Set(repos.map((r) => r.path));
+  for (const wp of configRepos) {
+    if (scannedPaths.has(wp)) continue;
+    const root = roots.find((r) => wp.startsWith(r)) || '';
+    repos.push({
+      path: wp,
+      name: wp.split('/').filter(Boolean).pop() || '',
+      root,
+    });
+  }
+}
+
+function processWorktreeList(
+  deps: GitRouterDeps,
+  repo: RepoEntry,
+  stdout: string
+): WorktreeResult[] {
+  const results: WorktreeResult[] = [];
+  const parsed = parseWorktreeListPorcelain(stdout, repo.path);
+  for (const wt of parsed) {
+    const dirName = wt.path.split('/').pop() || '';
+    const meta = deps.readMeta(deps.configPath, wt.path);
+    results.push({
+      name: dirName,
+      path: wt.path,
+      repoName: repo.name,
+      repoPath: repo.path,
+      root: repo.root,
+      displayName: meta?.displayName || wt.branch || dirName,
+      lastActivity: meta?.lastActivity || '',
+      branchName: wt.branch || meta?.branchName || dirName,
+    });
+  }
+  return results;
+}
+
+function processWorktreeFallback(
+  deps: GitRouterDeps,
+  repo: RepoEntry
+): WorktreeResult[] {
+  const results: WorktreeResult[] = [];
+  for (const dir of WORKTREE_DIRS) {
+    const worktreeDir = path.join(repo.path, dir);
+    let entries: Array<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = deps.readdirSync(worktreeDir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const wtPath = path.join(worktreeDir, entry.name);
+      const meta = deps.readMeta(deps.configPath, wtPath);
+      results.push({
+        name: entry.name,
+        path: wtPath,
+        repoName: repo.name,
+        repoPath: repo.path,
+        root: repo.root,
+        displayName: meta?.displayName || '',
+        lastActivity: meta?.lastActivity || '',
+        branchName: meta?.branchName || entry.name,
+      });
+    }
+  }
+  return results;
+}
+
 export async function scanWorktrees(
   deps: GitRouterDeps,
   repoParam?: string
@@ -72,44 +173,8 @@ export async function scanWorktrees(
       },
     ];
   } else {
-    reposToScan = [];
-    for (const rootDir of roots) {
-      let entries: Array<{ name: string; isDirectory: () => boolean }>;
-      try {
-        entries = deps.readdirSync(rootDir);
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-        const fullPath = path.join(rootDir, entry.name);
-        const dotGit = path.join(fullPath, '.git');
-        try {
-          if (deps.statSync(dotGit).isDirectory()) {
-            reposToScan.push({
-              name: entry.name,
-              path: fullPath,
-              root: rootDir,
-            });
-          }
-        } catch {
-          // .git doesn't exist — not a repo
-        }
-      }
-    }
-
-    // Also include directly-configured repos (may not be under any rootDir)
-    const configRepos = config.repos ?? [];
-    const scannedPaths = new Set(reposToScan.map((r) => r.path));
-    for (const wp of configRepos) {
-      if (scannedPaths.has(wp)) continue;
-      const root = roots.find((r) => wp.startsWith(r)) || '';
-      reposToScan.push({
-        path: wp,
-        name: wp.split('/').filter(Boolean).pop() || '',
-        root,
-      });
-    }
+    reposToScan = buildReposFromRootDirs(deps, roots);
+    addConfiguredRepos(reposToScan, config.repos ?? [], roots);
   }
 
   for (const repo of reposToScan) {
@@ -119,47 +184,10 @@ export async function scanWorktrees(
         ['worktree', 'list', '--porcelain'],
         { cwd: repo.path }
       );
-      const parsed = parseWorktreeListPorcelain(stdout, repo.path);
-      for (const wt of parsed) {
-        const dirName = wt.path.split('/').pop() || '';
-        const meta = deps.readMeta(deps.configPath, wt.path);
-        worktrees.push({
-          name: dirName,
-          path: wt.path,
-          repoName: repo.name,
-          repoPath: repo.path,
-          root: repo.root,
-          displayName: meta?.displayName || wt.branch || dirName,
-          lastActivity: meta?.lastActivity || '',
-          branchName: wt.branch || meta?.branchName || dirName,
-        });
-      }
+      worktrees.push(...processWorktreeList(deps, repo, stdout));
     } catch {
       // git worktree list failed — fall back to directory scanning
-      for (const dir of WORKTREE_DIRS) {
-        const worktreeDir = path.join(repo.path, dir);
-        let entries: Array<{ name: string; isDirectory: () => boolean }>;
-        try {
-          entries = deps.readdirSync(worktreeDir);
-        } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          const wtPath = path.join(worktreeDir, entry.name);
-          const meta = deps.readMeta(deps.configPath, wtPath);
-          worktrees.push({
-            name: entry.name,
-            path: wtPath,
-            repoName: repo.name,
-            repoPath: repo.path,
-            root: repo.root,
-            displayName: meta?.displayName || '',
-            lastActivity: meta?.lastActivity || '',
-            branchName: meta?.branchName || entry.name,
-          });
-        }
-      }
+      worktrees.push(...processWorktreeFallback(deps, repo));
     }
   }
 

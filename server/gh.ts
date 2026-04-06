@@ -74,6 +74,77 @@ function clearPrCache(repoPath?: string): void {
   }
 }
 
+const AUTH_ERROR_RESULT: CiStatus & { authError: true } = {
+  total: 0,
+  passing: 0,
+  failing: 0,
+  pending: 0,
+  authError: true,
+};
+
+function isAuthErrorText(text: string): boolean {
+  return text.includes('not logged into') || text.includes('authentication');
+}
+
+function isNoPrErrorText(text: string): boolean {
+  return (
+    text.includes('no pull requests found') || text.includes('Could not find')
+  );
+}
+
+function handleCiExecError(
+  err: unknown
+): (CiStatus & { authError?: boolean }) | null {
+  if (!err || typeof err !== 'object') return null;
+
+  const errObj = err as { code?: string; message?: string; stderr?: string };
+  if (errObj.code === 'ENOENT') return null;
+
+  const errorText = errObj.stderr ?? errObj.message ?? '';
+  if (typeof errorText === 'string' && isAuthErrorText(errorText)) {
+    return AUTH_ERROR_RESULT;
+  }
+  if (typeof errorText === 'string' && isNoPrErrorText(errorText)) {
+    return null;
+  }
+
+  return null;
+}
+
+type CheckEntry = { name: string; state: string; conclusion: string };
+
+function classifyChecks(checks: CheckEntry[]): {
+  passing: number;
+  failing: number;
+  pending: number;
+} {
+  let passing = 0;
+  let failing = 0;
+  let pending = 0;
+
+  for (const check of checks) {
+    const conclusion = (check.conclusion ?? '').toUpperCase();
+
+    if (
+      conclusion === 'SUCCESS' ||
+      conclusion === 'SKIPPED' ||
+      conclusion === 'NEUTRAL'
+    ) {
+      passing++;
+    } else if (
+      conclusion === 'FAILURE' ||
+      conclusion === 'CANCELLED' ||
+      conclusion === 'TIMED_OUT'
+    ) {
+      failing++;
+    } else {
+      pending++;
+    }
+  }
+
+  return { passing, failing, pending };
+}
+
 async function getCiStatus(
   repoPath: string,
   branch: string,
@@ -94,92 +165,18 @@ async function getCiStatus(
       { cwd: repoPath, timeout: 5000 }
     ));
   } catch (err: unknown) {
-    if (err && typeof err === 'object') {
-      const errObj = err as {
-        code?: string;
-        message?: string;
-        stderr?: string;
-      };
-      const errorText = errObj.stderr ?? errObj.message ?? '';
-
-      // gh not installed
-      if (errObj.code === 'ENOENT') return null;
-
-      // Not authenticated
-      if (
-        typeof errorText === 'string' &&
-        (errorText.includes('not logged into') ||
-          errorText.includes('authentication'))
-      ) {
-        return {
-          total: 0,
-          passing: 0,
-          failing: 0,
-          pending: 0,
-          authError: true,
-        };
-      }
-
-      // No PR for branch
-      if (
-        typeof errorText === 'string' &&
-        (errorText.includes('no pull requests found') ||
-          errorText.includes('Could not find'))
-      ) {
-        return null;
-      }
-    }
-
-    return null;
+    return handleCiExecError(err);
   }
 
-  // gh may exit 0 but write errors or auth prompts to stderr
-  if (
-    stderr &&
-    (stderr.includes('not logged into') || stderr.includes('authentication'))
-  ) {
-    return { total: 0, passing: 0, failing: 0, pending: 0, authError: true };
+  if (stderr && isAuthErrorText(stderr)) {
+    return AUTH_ERROR_RESULT;
   }
 
   if (!stdout.trim()) return null;
 
   try {
-    const checks: Array<{ name: string; state: string; conclusion: string }> =
-      JSON.parse(stdout);
-
-    let passing = 0;
-    let failing = 0;
-    let pending = 0;
-
-    for (const check of checks) {
-      const conclusion = (check.conclusion ?? '').toUpperCase();
-      const state = (check.state ?? '').toUpperCase();
-
-      if (
-        conclusion === 'SUCCESS' ||
-        conclusion === 'SKIPPED' ||
-        conclusion === 'NEUTRAL'
-      ) {
-        passing++;
-      } else if (
-        conclusion === 'FAILURE' ||
-        conclusion === 'CANCELLED' ||
-        conclusion === 'TIMED_OUT'
-      ) {
-        failing++;
-      } else if (
-        state === 'IN_PROGRESS' ||
-        state === 'QUEUED' ||
-        state === 'PENDING' ||
-        conclusion === ''
-      ) {
-        pending++;
-      } else {
-        // Unknown conclusion — treat as pending rather than silently ignoring
-        pending++;
-      }
-    }
-
+    const checks: CheckEntry[] = JSON.parse(stdout);
+    const { passing, failing, pending } = classifyChecks(checks);
     return { total: checks.length, passing, failing, pending };
   } catch {
     return null;

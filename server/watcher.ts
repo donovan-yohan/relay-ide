@@ -14,7 +14,9 @@ function closeWatchers(watchers: fs.FSWatcher[]): void {
   for (const w of watchers) {
     try {
       w.close();
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
   }
 }
 
@@ -228,7 +230,9 @@ export class WorktreeWatcher extends EventEmitter {
       });
       watcher.on('error', () => {});
       this._watchers.push(watcher);
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
   }
 
   private _debouncedEmit(): void {
@@ -339,7 +343,9 @@ export class BranchWatcher {
       const content = fs.readFileSync(headPath, 'utf-8').trim();
       const match = content.match(/^ref: refs\/heads\/(.+)$/);
       if (match) this._lastBranch.set(cwdPath, match[1]!);
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
 
     this._createWatcher(headPath, cwdPath);
   }
@@ -356,7 +362,9 @@ export class BranchWatcher {
     if (existing) {
       try {
         existing.watcher.close();
-      } catch (_) {}
+      } catch (_) {
+        // ignore
+      }
     }
 
     try {
@@ -365,7 +373,9 @@ export class BranchWatcher {
       });
       watcher.on('error', () => {});
       this._watcherMap.set(headPath, { watcher, cwdPath });
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
   }
 
   private _debouncedCheck(headPath: string, cwdPath: string): void {
@@ -417,7 +427,9 @@ export class BranchWatcher {
     for (const { watcher } of this._watcherMap.values()) {
       try {
         watcher.close();
-      } catch (_) {}
+      } catch (_) {
+        // ignore
+      }
     }
     this._watcherMap.clear();
     for (const timer of this._debounceTimers.values()) {
@@ -553,7 +565,9 @@ export class RefWatcher {
       });
       watcher.on('error', () => {});
       this._watchers.push(watcher);
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
   }
 
   private _debouncedCheck(key: string): void {
@@ -731,11 +745,15 @@ export class GitWatcher extends EventEmitter {
     if (entry.refCount <= 0) {
       try {
         entry.treeWatcher.close();
-      } catch {}
+      } catch {
+        // ignore
+      }
       if (entry.headWatcher)
         try {
           entry.headWatcher.close();
-        } catch {}
+        } catch {
+          // ignore
+        }
       this._watchers.delete(workspacePath);
       const timer = this._debounceTimers.get(workspacePath);
       if (timer) {
@@ -753,7 +771,7 @@ export class GitWatcher extends EventEmitter {
       setTimeout(async () => {
         this._debounceTimers.delete(workspacePath);
         // Collect changed file paths via git status for the sidebar's blue-dot tracking
-        let changedFiles: string[] = [];
+        const changedFiles: string[] = [];
         try {
           const { stdout } = await execFileAsync(
             'git',
@@ -789,11 +807,15 @@ export class GitWatcher extends EventEmitter {
     for (const entry of this._watchers.values()) {
       try {
         entry.treeWatcher.close();
-      } catch {}
+      } catch {
+        // ignore
+      }
       if (entry.headWatcher)
         try {
           entry.headWatcher.close();
-        } catch {}
+        } catch {
+          // ignore
+        }
     }
     this._watchers.clear();
     for (const timer of this._debounceTimers.values()) {

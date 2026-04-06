@@ -27,7 +27,7 @@ interface DeviceFlowState {
   pollInFlight: boolean;
 }
 
-let deviceFlow: DeviceFlowState = {
+const deviceFlow: DeviceFlowState = {
   generation: 0,
   deviceCode: '',
   interval: 5,

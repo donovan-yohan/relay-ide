@@ -22,6 +22,7 @@ const logger = createLogger('hooks');
 // ---------------------------------------------------------------------------
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const AGENT_STATE_PERMISSION_PROMPT = 'permission-prompt';
 const DEFAULT_RENAME_PROMPT = `Output two lines (no explanation, no backticks, no quotes):
 Line 1: A short descriptive phrase (3-8 words) summarizing this task
 Line 2: A kebab-case git branch name for the same task
@@ -112,7 +113,7 @@ function setAgentState(
   // Check for branch changes on meaningful pauses (agent stopped or waiting for user)
   if (
     state === 'idle' ||
-    state === 'permission-prompt' ||
+    state === AGENT_STATE_PERMISSION_PROMPT ||
     state === 'waiting-for-input'
   ) {
     scheduleBranchCheck(session, deps, 0);
@@ -203,7 +204,7 @@ async function spawnBranchRename(
       }
 
       return; // success
-      } catch (err) {
+    } catch (err) {
       if (attempt === 1) {
         logger.error('branch rename failed after 2 attempts:', err);
         session.needsBranchRename = true;
@@ -277,7 +278,7 @@ export function createHooksRouter(deps: HookDeps): Router {
     } else if (eventType === 'session.idle' || eventType === 'session.ended') {
       setAgentState(session, 'idle', deps);
     } else if (eventType === 'permission.requested') {
-      setAgentState(session, 'permission-prompt', deps);
+      setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
       session.lastAttentionNotifiedAt = Date.now();
       deps.notifySessionAttention(session.id, {
         displayName: session.displayName,
@@ -360,7 +361,7 @@ export function createHooksRouter(deps: HookDeps): Router {
     const type = req.query.type;
 
     if (type === 'permission_prompt') {
-      setAgentState(session, 'permission-prompt', deps);
+      setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
       session.lastAttentionNotifiedAt = Date.now();
       deps.notifySessionAttention(session.id, {
         displayName: session.displayName,
@@ -454,7 +455,7 @@ export function createHooksRouter(deps: HookDeps): Router {
     // When a tool completes while in permission-prompt state, the user has answered
     // the question or approved the permission. Transition to processing so the
     // backend state reflects that Claude is actively working again.
-    if (session.agentState === 'permission-prompt') {
+    if (session.agentState === AGENT_STATE_PERMISSION_PROMPT) {
       setAgentState(session, 'processing', deps);
     }
     recordSessionEvent({
