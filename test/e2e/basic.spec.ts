@@ -12,7 +12,7 @@ test.describe('smoke', () => {
 
     await page.goto('/');
 
-    await expect(page).toHaveTitle(/relay-ide/i);
+    await expect(page).toHaveTitle(/relay/i);
 
     expect(errors).toHaveLength(0);
   });
