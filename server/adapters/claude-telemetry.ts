@@ -1,8 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { AccountTelemetry, Session, TelemetryData } from '../types.js';
-import type { TelemetryAdapter, TelemetryDeps } from '../telemetry-adapter.js';
+import type { AccountTelemetry, TelemetryData } from '../types.js';
+import type {
+  TelemetryAdapter,
+  TelemetryDeps,
+  TelemetrySession,
+} from '../telemetry-adapter.js';
 import { registerTelemetryAdapter } from '../telemetry-adapter.js';
 import { createLogger } from '../logger.js';
 
@@ -98,7 +102,7 @@ export class ClaudeTelemetryAdapter implements TelemetryAdapter {
     this.deps = deps;
   }
 
-  attach(_session: Session): void {
+  attach(_session: TelemetrySession): void {
     // No async setup needed for Claude — telemetry is read from files on demand
   }
 
@@ -157,37 +161,10 @@ export class ClaudeTelemetryAdapter implements TelemetryAdapter {
   }
 
   /** Returns the most recently observed account telemetry, or null if none seen yet. */
-  getAccountTelemetry(): AccountTelemetry | null {
+  collectAccountTelemetry(): AccountTelemetry | null {
     return this._accountTelemetry;
   }
-
-  /** Allows telemetry.ts to restore persisted account state on startup. */
-  setAccountTelemetry(data: AccountTelemetry | null): void {
-    this._accountTelemetry = data;
-  }
 }
-
-function sameAccountTelemetry(
-  a: AccountTelemetry,
-  b: AccountTelemetry
-): boolean {
-  if (a.rateLimits.length !== b.rateLimits.length) return false;
-  for (let i = 0; i < a.rateLimits.length; i++) {
-    const ar = a.rateLimits[i];
-    const br = b.rateLimits[i];
-    if (!ar || !br) return false;
-    if (
-      ar.name !== br.name ||
-      ar.usedPercent !== br.usedPercent ||
-      ar.resetsAt !== br.resetsAt
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-export { sameAccountTelemetry };
 
 // Self-register when this module is imported
 registerTelemetryAdapter('claude', (deps) => new ClaudeTelemetryAdapter(deps));

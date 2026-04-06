@@ -1,14 +1,17 @@
-import type { Session, TelemetryData } from './types.js';
+import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+
+export type TelemetrySession = Pick<Session, 'id'>;
 
 export interface TelemetryAdapter {
   readonly framework: string;
-  attach(session: Session): void;
+  attach(session: TelemetrySession): void;
   collectSnapshot(sessionId: string): TelemetryData | null;
+  collectAccountTelemetry?(): AccountTelemetry | null;
   detach(sessionId: string): void;
 }
 
 export interface TelemetryDeps {
-  getActiveSessions: () => Array<Pick<Session, 'id'>>;
+  getActiveSessions: () => TelemetrySession[];
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
   configDir: string;
 }

@@ -3,10 +3,15 @@ import path from 'node:path';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { AccountTelemetry, Session, TelemetryData } from './types.js';
-import type { TelemetryAdapter, TelemetryDeps } from './telemetry-adapter.js';
+import type { AccountTelemetry, TelemetryData } from './types.js';
+import type {
+  TelemetryAdapter,
+  TelemetryDeps,
+  TelemetrySession,
+} from './telemetry-adapter.js';
 import { getAdapterForFramework } from './telemetry-adapter.js';
-import { ClaudeTelemetryAdapter } from './adapters/claude-telemetry.js';
+// Side-effect import: registers the Claude adapter in the adapter registry
+import './adapters/claude-telemetry.js';
 import { createLogger } from './logger.js';
 
 // Re-export TelemetryDeps from telemetry-adapter for backward compat
@@ -72,30 +77,26 @@ function sameAccountTelemetry(
   if (!a) return false;
   if (a.framework !== b.framework) return false;
   if (a.rateLimits.length !== b.rateLimits.length) return false;
-  for (let i = 0; i < a.rateLimits.length; i++) {
-    const ar = a.rateLimits[i];
-    const br = b.rateLimits[i];
-    if (!ar || !br) return false;
-    if (
-      ar.name !== br.name ||
-      ar.usedPercent !== br.usedPercent ||
-      ar.resetsAt !== br.resetsAt
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return b.rateLimits.every((br) => {
+    const ar = a.rateLimits.find((r) => r.name === br.name);
+    if (!ar) return false;
+    return (
+      ar.usedPercent === br.usedPercent &&
+      ar.resetsAt === br.resetsAt &&
+      ar.windowMinutes === br.windowMinutes
+    );
+  });
 }
 
 function createAdapterForSession(
-  session: Pick<Session, 'id'> & { agent?: string },
+  session: TelemetrySession & { agent?: string },
   deps: TelemetryDeps
 ): TelemetryAdapter | null {
   try {
-    const frameworkId = (session as Session).agent ?? 'claude';
+    const frameworkId = session.agent ?? 'claude';
     const adapter = getAdapterForFramework(frameworkId, deps);
     if (adapter) {
-      adapter.attach(session as Session);
+      adapter.attach(session);
     }
     return adapter;
   } catch (err) {
@@ -168,72 +169,83 @@ function persistPendingTelemetry(configDir: string): void {
   }
 }
 
+function pruneEndedSessions(activeSessionIds: Set<string>): void {
+  for (const sessionId of [...sessionTelemetry.keys()]) {
+    if (!activeSessionIds.has(sessionId)) {
+      sessionTelemetry.delete(sessionId);
+    }
+  }
+  for (const [sessionId, adapter] of [...sessionAdapters.entries()]) {
+    if (!activeSessionIds.has(sessionId)) {
+      try {
+        adapter.detach(sessionId);
+      } catch {
+        /* ignore cleanup errors */
+      }
+      sessionAdapters.delete(sessionId);
+    }
+  }
+}
+
+function getOrCreateAdapter(
+  session: TelemetrySession,
+  deps: TelemetryDeps
+): TelemetryAdapter | undefined {
+  let adapter = sessionAdapters.get(session.id);
+  if (!adapter) {
+    adapter = createAdapterForSession(session, deps) ?? undefined;
+    if (adapter) {
+      sessionAdapters.set(session.id, adapter);
+    }
+  }
+  return adapter;
+}
+
+function pollSessionTelemetry(
+  adapter: TelemetryAdapter,
+  sessionId: string,
+  deps: TelemetryDeps
+): void {
+  const snapshot = adapter.collectSnapshot(sessionId);
+  if (!snapshot) return;
+
+  const { updatedAt: _u, ...incoming } = snapshot;
+  if (!sameTelemetry(sessionTelemetry.get(sessionId), incoming)) {
+    sessionTelemetry.set(sessionId, snapshot);
+    deps.broadcastEvent('session-telemetry', { sessionId, data: snapshot });
+  }
+
+  const adapterAccount = adapter.collectAccountTelemetry?.();
+  if (
+    adapterAccount &&
+    !sameAccountTelemetry(
+      accountTelemetryMap.get(adapterAccount.framework),
+      adapterAccount
+    )
+  ) {
+    accountTelemetryMap.set(adapterAccount.framework, adapterAccount);
+    deps.broadcastEvent('account-telemetry', { data: adapterAccount });
+  }
+}
+
 function collectTelemetry(): void {
   if (!activeDeps) return;
 
   const activeSessions = activeDeps.getActiveSessions();
-  const activeSessionIds = new Set(activeSessions.map((session) => session.id));
+  const activeSessionIds = new Set(activeSessions.map((s) => s.id));
 
   if (activeSessionIds.size > 0) {
     restoredPendingOnly = false;
-    for (const sessionId of [...sessionTelemetry.keys()]) {
-      if (!activeSessionIds.has(sessionId)) {
-        sessionTelemetry.delete(sessionId);
-      }
-    }
-    // Detach and remove adapters for ended sessions
-    for (const [sessionId, adapter] of [...sessionAdapters.entries()]) {
-      if (!activeSessionIds.has(sessionId)) {
-        try {
-          adapter.detach(sessionId);
-        } catch {
-          /* ignore cleanup errors */
-        }
-        sessionAdapters.delete(sessionId);
-      }
-    }
+    pruneEndedSessions(activeSessionIds);
   } else if (!restoredPendingOnly) {
     sessionTelemetry = new Map();
     sessionAdapters.clear();
   }
 
   for (const session of activeSessions) {
-    // Get or create adapter for this session
-    let adapter = sessionAdapters.get(session.id);
-    if (!adapter) {
-      adapter = createAdapterForSession(session, activeDeps) ?? undefined;
-      if (adapter) {
-        sessionAdapters.set(session.id, adapter);
-      }
-    }
-
-    if (!adapter) continue;
-
-    const snapshot = adapter.collectSnapshot(session.id);
-    if (!snapshot) continue;
-
-    const { updatedAt: _u, ...snapshotWithoutUpdatedAt } = snapshot;
-
-    if (!sameTelemetry(sessionTelemetry.get(session.id), snapshotWithoutUpdatedAt)) {
-      sessionTelemetry.set(session.id, snapshot);
-      activeDeps.broadcastEvent('session-telemetry', {
-        sessionId: session.id,
-        data: snapshot,
-      });
-    }
-
-    // Poll account telemetry from adapter (side channel)
-    if (adapter instanceof ClaudeTelemetryAdapter) {
-      const adapterAccount = adapter.getAccountTelemetry();
-      if (adapterAccount) {
-        const existing = accountTelemetryMap.get(adapterAccount.framework);
-        if (!sameAccountTelemetry(existing, adapterAccount)) {
-          accountTelemetryMap.set(adapterAccount.framework, adapterAccount);
-          activeDeps.broadcastEvent('account-telemetry', {
-            data: adapterAccount,
-          });
-        }
-      }
+    const adapter = getOrCreateAdapter(session, activeDeps);
+    if (adapter) {
+      pollSessionTelemetry(adapter, session.id, activeDeps);
     }
   }
 }

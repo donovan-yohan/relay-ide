@@ -118,7 +118,7 @@ export function SessionStatusBar({ sessionId, currentActivity = null }: SessionS
       <div className="status-right">
         <span
           className="status-rate-limits status-segment"
-          title={accountTelemetry?.rateLimits.map((rl) => formatResetAt(rl.resetsAt)).join(' · ') ?? '—'}
+          title={accountTelemetry?.rateLimits.length ? accountTelemetry.rateLimits.map((rl) => formatResetAt(rl.resetsAt)).join(' · ') : '—'}
         >
           {rateLimitLabel}
         </span>
