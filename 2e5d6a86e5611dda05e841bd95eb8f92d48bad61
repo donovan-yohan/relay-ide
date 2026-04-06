@@ -1,0 +1,23 @@
+test/e2e/basic.spec.ts
+  508e1477a6bc03cd 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2e5d6a86e5611dda05e841bd95eb8f92d48bad61",
+  "prompts": {
+    "508e1477a6bc03cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284e2271-48ed-4868-971c-a4f67e042076",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
