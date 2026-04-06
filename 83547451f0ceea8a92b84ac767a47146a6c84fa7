@@ -1,0 +1,27 @@
+frontend/src/lib/api.ts
+  20c464a5ab3c0eb0 472-473,475-483
+frontend/src/hooks/useSessionHandlers.ts
+  20c464a5ab3c0eb0 724-728
+frontend/src/components/dialogs/DeleteWorktreeDialog.tsx
+  20c464a5ab3c0eb0 25,28,30,94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "83547451f0ceea8a92b84ac767a47146a6c84fa7",
+  "prompts": {
+    "20c464a5ab3c0eb0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7355fb83-6354-419a-bbec-ce45827e9343",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 22,
+      "total_deletions": 11,
+      "accepted_lines": 20,
+      "overriden_lines": 0
+    }
+  }
+}
