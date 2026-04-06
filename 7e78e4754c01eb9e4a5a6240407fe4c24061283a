@@ -1,0 +1,35 @@
+frontend/src/hooks/useWhatsNew.tsx
+  c59951db7afe6f57 32,59-65,70-87
+frontend/src/hooks/useOnboardingHints.tsx
+  c59951db7afe6f57 13-56,72-73,88-91,98-101,110
+frontend/src/App.tsx
+  c59951db7afe6f57 98-99,104-105,108,111-115,118,121,124
+frontend/src/lib/utils.ts
+  c59951db7afe6f57 87-102
+frontend/src/components/SessionStatusBar.tsx
+  c59951db7afe6f57 4
+frontend/src/components/Hint.tsx
+  c59951db7afe6f57 74,160-163
+frontend/src/components/RepoDashboard.tsx
+  c59951db7afe6f57 16,98-99,102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "7e78e4754c01eb9e4a5a6240407fe4c24061283a",
+  "prompts": {
+    "c59951db7afe6f57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c854b1e-7f93-40a8-89e4-b475c77db22d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 123,
+      "total_deletions": 180,
+      "accepted_lines": 120,
+      "overriden_lines": 0
+    }
+  }
+}
