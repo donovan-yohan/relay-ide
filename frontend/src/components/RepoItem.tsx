@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   Repo,
   SessionSummary,
@@ -9,12 +9,13 @@ import type {
 import { isAttentionState } from '../lib/state/display-state.js';
 import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
-import { formatRelativeTimeCompact } from '../lib/utils.js';
+import { formatRelativeTimeCompact, isMobileDevice } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
 import { MarqueeText } from './MarqueeText.js';
 import ContextMenu from './ContextMenu.js';
 import './RepoItem.css';
 
+const DOUBLE_CLICK_DELAY_MS = 200;
 const EMPTY_SET = new Set<string>();
 const EMPTY_ARRAY: never[] = [];
 
@@ -70,7 +71,9 @@ export function groupDisplayName(
     }
     return 'default';
   }
-  const renamedSession = sessions.find((s) => s.displayName && s.displayName !== s.repoName);
+  const renamedSession = sessions.find(
+    (s) => s.displayName && s.displayName !== s.repoName
+  );
   if (renamedSession) return renamedSession.displayName;
   const branch = sessions.find((s) => s.branchName)?.branchName;
   const cwdName = sessions[0]?.cwd.split('/').pop();
@@ -343,6 +346,31 @@ export function RepoItem({
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
+  const handleHeaderClick = useCallback(() => {
+    if (isMobileDevice) {
+      onSelectWorkspace(repo.path);
+      return;
+    }
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      onToggleCollapse?.();
+    } else {
+      clickTimerRef.current = setTimeout(() => {
+        clickTimerRef.current = null;
+        onSelectWorkspace(repo.path);
+      }, DOUBLE_CLICK_DELAY_MS);
+    }
+  }, [onSelectWorkspace, repo.path, onToggleCollapse]);
+
   function cancelLongPress() {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
@@ -368,7 +396,7 @@ export function RepoItem({
           .filter(Boolean)
           .join(' ')}
         data-track="sidebar.repo.click"
-        onClick={() => onSelectWorkspace(repo.path)}
+        onClick={handleHeaderClick}
       >
         <div className="repo-left">
           <span
