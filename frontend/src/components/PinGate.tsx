@@ -4,6 +4,8 @@ import { TuiButton } from './TuiButton.js';
 import { PinInput } from './PinInput.js';
 import './PinGate.css';
 
+const MAX_PIN_LENGTH = 20;
+
 interface SetupFormProps {
   pinValue: string;
   confirmValue: string;
@@ -17,8 +19,8 @@ function SetupForm({ pinValue, confirmValue, onPinChange, onConfirmChange, onKey
   return (
     <>
       <p>set up a PIN to secure this instance</p>
-      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="choose a PIN" autoFocus={true} maxLength={20} />
-      <PinInput value={confirmValue} onChange={onConfirmChange} onKeyDown={onKeyDown} placeholder="confirm PIN" maxLength={20} />
+      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="choose a PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
+      <PinInput value={confirmValue} onChange={onConfirmChange} onKeyDown={onKeyDown} placeholder="confirm PIN" maxLength={MAX_PIN_LENGTH} />
       <TuiButton variant="primary" onClick={onSubmit}>set PIN</TuiButton>
     </>
   );
@@ -35,7 +37,7 @@ function UnlockForm({ pinValue, onPinChange, onKeyDown, onSubmit }: UnlockFormPr
   return (
     <>
       <p>enter PIN to continue</p>
-      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="PIN" autoFocus={true} maxLength={20} />
+      <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
       <TuiButton variant="primary" onClick={onSubmit}>unlock</TuiButton>
       <p className="hint">
         forgot your PIN? run <code>relay-ide pin reset</code> on the host machine
