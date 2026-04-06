@@ -65,7 +65,7 @@ test('initAnalytics creates rate_limit_snapshots table', () => {
   db.close();
 });
 
-test('initAnalytics creates schema_version table at version 2', () => {
+test('initAnalytics creates schema_version table at version 3', () => {
   initAnalytics(tmpDir);
   const db = new Database(getDbPath(tmpDir), { readonly: true });
   const tables = db
@@ -75,7 +75,7 @@ test('initAnalytics creates schema_version table at version 2', () => {
   const version = db.prepare('SELECT version FROM schema_version').get() as {
     version: number;
   };
-  expect(version.version).toBe(2);
+  expect(version.version).toBe(3);
   db.close();
 });
 
@@ -205,10 +205,20 @@ test('recordRateLimitSnapshot inserts a snapshot row', () => {
   initAnalytics(tmpDir);
 
   recordRateLimitSnapshot({
-    fiveHourPercent: 62,
-    fiveHourResetsAt: '2026-04-01T14:32:00Z',
-    sevenDayPercent: 91,
-    sevenDayResetsAt: '2026-04-03T00:00:00Z',
+    windows: [
+      {
+        name: 'five_hour',
+        usedPercent: 62,
+        resetsAt: '2026-04-01T14:32:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 91,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
+    ],
     timestamp: '2026-04-01T10:00:00.000Z',
   });
 
@@ -217,8 +227,17 @@ test('recordRateLimitSnapshot inserts a snapshot row', () => {
     string,
     unknown
   >;
-  expect(row.five_hour_percent).toBe(62);
-  expect(row.seven_day_percent).toBe(91);
+  expect(row.windows).toBeDefined();
+  const windows = JSON.parse(row.windows as string) as Array<{
+    name: string;
+    usedPercent: number;
+    resetsAt: string;
+  }>;
+  expect(windows).toHaveLength(2);
+  expect(windows[0]!.name).toBe('five_hour');
+  expect(windows[0]!.usedPercent).toBe(62);
+  expect(windows[1]!.name).toBe('seven_day');
+  expect(windows[1]!.usedPercent).toBe(91);
   db.close();
 });
 

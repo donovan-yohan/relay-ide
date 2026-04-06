@@ -129,8 +129,18 @@ test('parses session telemetry from the statusLine file', () => {
   expect(account).toEqual({
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 22, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 8, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 22,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 8,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: account?.updatedAt,
   });
@@ -202,8 +212,18 @@ test('restores pending telemetry from disk on startup', () => {
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 44, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 55, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 44,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 55,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -256,8 +276,18 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 9, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 18, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 9,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 18,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -366,4 +396,103 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
   expect(
     events.filter((event) => event.type === 'session-telemetry').length
   ).toBe(1);
+});
+
+test('rejects v1 pending telemetry files and cleans them up', () => {
+  writePendingTelemetryFile(tmpDir, {
+    version: 1,
+    timestamp: new Date().toISOString(),
+    sessions: { old: { sessionId: 'old', model: 'Claude' } },
+    account: null,
+  });
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+  startTelemetry(makeDeps([], events));
+
+  expect(getTelemetryForSession('old')).toBe(undefined);
+  expect(fs.existsSync(path.join(tmpDir, 'pending-telemetry.json'))).toBe(
+    false
+  );
+});
+
+test('multiple frameworks telemetry coexist without overwriting', () => {
+  const claudeAccount = {
+    framework: 'claude',
+    rateLimits: [
+      {
+        name: 'five_hour',
+        usedPercent: 22,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 8,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
+    ],
+    updatedAt: '2026-03-31T18:00:00Z',
+  };
+  const opencodeAccount = {
+    framework: 'opencode',
+    rateLimits: [
+      {
+        name: 'rpm',
+        usedPercent: 30,
+        resetsAt: '2026-03-31T19:00:00Z',
+        windowMinutes: 1,
+      },
+    ],
+    updatedAt: '2026-03-31T18:05:00Z',
+  };
+
+  const pending = {
+    version: 2,
+    timestamp: new Date().toISOString(),
+    sessions: {
+      claudeSession: {
+        sessionId: 'claudeSession',
+        model: 'Claude Opus',
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        totalCacheRead: 25,
+        totalCacheWrite: 10,
+        reasoningOutputTokens: 0,
+        contextPercent: 5,
+        contextWindowSize: 200000,
+        costUsd: 0.5,
+        source: 'statusLine',
+        updatedAt: '2026-03-31T18:00:00Z',
+      },
+      opencodeSession: {
+        sessionId: 'opencodeSession',
+        model: 'GPT-4',
+        totalInputTokens: 200,
+        totalOutputTokens: 100,
+        totalCacheRead: 50,
+        totalCacheWrite: 20,
+        reasoningOutputTokens: 0,
+        contextPercent: 10,
+        contextWindowSize: 128000,
+        costUsd: 1.0,
+        source: 'jsonl',
+        updatedAt: '2026-03-31T18:05:00Z',
+      },
+    },
+    account: {
+      claude: claudeAccount,
+      opencode: opencodeAccount,
+    },
+  };
+
+  writePendingTelemetryFile(tmpDir, pending);
+  startTelemetry(makeDeps([], []));
+
+  // Both sessions should be restored
+  expect(getTelemetryForSession('claudeSession')).toBeTruthy();
+  expect(getTelemetryForSession('opencodeSession')).toBeTruthy();
+
+  // Claude account should be returned by default
+  expect(getAccountTelemetry()).toEqual(claudeAccount);
 });

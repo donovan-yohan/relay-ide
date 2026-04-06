@@ -10,8 +10,9 @@ import type {
   TelemetrySession,
 } from './telemetry-adapter.js';
 import { getAdapterForFramework } from './telemetry-adapter.js';
-// Side-effect import: registers the Claude adapter in the adapter registry
+// Side-effect imports: register adapters in the adapter registry
 import './adapters/claude-telemetry.js';
+import './adapters/opencode-telemetry.js';
 import { createLogger } from './logger.js';
 
 // Re-export TelemetryDeps from telemetry-adapter for backward compat
