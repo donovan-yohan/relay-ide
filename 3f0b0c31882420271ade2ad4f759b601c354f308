@@ -1,0 +1,31 @@
+frontend/src/components/Hint.tsx
+  c59951db7afe6f57 1,23-24,31-37,53,64,72,74,87-88,92,96-97,101,104-105,109-112
+frontend/src/hooks/useOnboardingHints.tsx
+  c59951db7afe6f57 40-41,43-45,83,122-126,134
+frontend/src/App.tsx
+  c59951db7afe6f57 93-249,291,303-318,320,368,372-374,414
+frontend/src/components/RepoDashboard.tsx
+  c59951db7afe6f57 150,152-185
+frontend/src/hooks/useWhatsNew.tsx
+  c59951db7afe6f57 54-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "3f0b0c31882420271ade2ad4f759b601c354f308",
+  "prompts": {
+    "c59951db7afe6f57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c854b1e-7f93-40a8-89e4-b475c77db22d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 281,
+      "total_deletions": 202,
+      "accepted_lines": 257,
+      "overriden_lines": 0
+    }
+  }
+}
