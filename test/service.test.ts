@@ -45,8 +45,7 @@ test('generateServiceFile for linux contains systemd unit', () => {
   expect(content).toMatch(/3456/);
 });
 
-test('generateServiceFile never contains worktree paths', () => {
-  // Simulates what would happen if a worktree path leaked into scriptPath
+test('generateServiceFile is a pure formatter that interpolates any scriptPath', () => {
   const worktreePath =
     '/Users/test/project/.worktrees/etna/dist/bin/relay-ide.js';
   const content = service.generateServiceFile('macos', {
@@ -57,26 +56,24 @@ test('generateServiceFile never contains worktree paths', () => {
     host: '0.0.0.0',
     logDir: '/Users/test/.config/relay-ide/logs',
   });
-  // This test documents the risk — the service file generator accepts any path.
-  // The guard is in install(), which now resolves to the global binary.
+  // generateServiceFile is a pure formatter — the guard is in install()
   expect(content).toContain(worktreePath);
-  // Verify the install() function would catch this — it uses resolveGlobalScriptPath()
-  // instead of __dirname, so worktree paths never reach generateServiceFile in practice.
 });
 
-test('service file scriptPath should use global node_modules path pattern', () => {
-  // The correct pattern for a globally installed relay-ide
-  const globalPath =
-    '/Users/test/.nvm/versions/node/v24.0.0/lib/node_modules/relay-ide/dist/bin/relay-ide.js';
-  const content = service.generateServiceFile('macos', {
-    nodePath: '/Users/test/.nvm/versions/node/v24.0.0/bin/node',
-    scriptPath: globalPath,
-    configPath: '/Users/test/.config/relay-ide/config.json',
-    port: '3456',
-    host: '0.0.0.0',
-    logDir: '/Users/test/.config/relay-ide/logs',
-  });
-  expect(content).toContain('node_modules/relay-ide/dist/bin/relay-ide.js');
-  expect(content).not.toMatch(/\.worktrees/);
-  expect(content).not.toMatch(/\.claude\/worktrees/);
+test('resolveGlobalScriptPath returns a path under global node_modules or null', () => {
+  const result = service.resolveGlobalScriptPath();
+  if (result !== null) {
+    // If a global install exists, it should point to the relay-ide dist binary
+    expect(result).toContain('relay-ide');
+    expect(result).toMatch(/relay-ide\.js$/);
+    // Must never resolve to a worktree path
+    expect(result).not.toMatch(/\.worktrees/);
+    expect(result).not.toMatch(/\.claude\/worktrees/);
+  }
+  // null is acceptable — means no global install found
+});
+
+test('isGlobalInstall returns false when running from repo checkout', () => {
+  // In the test environment we're running from the local repo, not a global install
+  expect(service.isGlobalInstall()).toBe(false);
 });
