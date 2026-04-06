@@ -1,0 +1,37 @@
+.husky/pre-commit
+  508e1477a6bc03cd 2
+package.json
+  508e1477a6bc03cd 16
+test/worktrees.test.ts
+  508e1477a6bc03cd 686,688-700,708-709,711-712,718,727-729
+frontend/src/hooks/useActionRegistry.ts
+  508e1477a6bc03cd 335-337,339-344,346-347
+frontend/src/App.tsx
+  508e1477a6bc03cd 355-356
+.github/workflows/ci.yml
+  508e1477a6bc03cd 23-25,33-65
+frontend/src/lib/types.ts
+  508e1477a6bc03cd 64
+frontend/src/components/WorkspaceGroup.tsx
+  508e1477a6bc03cd 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "badf11dafb45e7ae3492661bdb97d1ae132b4f05",
+  "prompts": {
+    "508e1477a6bc03cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284e2271-48ed-4868-971c-a4f67e042076",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 92,
+      "total_deletions": 50,
+      "accepted_lines": 78,
+      "overriden_lines": 0
+    }
+  }
+}
