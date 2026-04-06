@@ -27,13 +27,6 @@
   font-size: var(--font-size-base);
 }
 
-.pin-container .tui-input {
-  padding: 16px 16px;
-  background: var(--surface);
-  font-size: var(--font-size-lg);
-  text-align: center;
-}
-
 .error {
   color: var(--accent);
   font-size: var(--font-size-base);
