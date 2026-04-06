@@ -8,6 +8,7 @@ export interface EmptyStateProps {
   description?: string;
   actionLabel?: string;
   onAction?: () => void;
+  hint?: React.ReactNode;
 }
 
 export function EmptyState({
@@ -16,6 +17,7 @@ export function EmptyState({
   description,
   actionLabel,
   onAction,
+  hint,
 }: EmptyStateProps) {
   return (
     <div className="empty-state">
@@ -28,6 +30,8 @@ export function EmptyState({
       <div className="empty-heading">{heading}</div>
 
       {description && <p className="empty-description">{description}</p>}
+
+      {hint && <div className="empty-hint">{hint}</div>}
 
       {actionLabel && onAction && (
         <TuiButton variant="primary" onClick={onAction}>

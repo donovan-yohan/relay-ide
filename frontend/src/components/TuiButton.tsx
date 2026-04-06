@@ -9,6 +9,7 @@ export interface TuiButtonProps {
   disabled?: boolean;
   type?: 'button' | 'submit' | 'reset';
   href?: string;
+  shortcut?: string;
   onClick?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
   onMouseEnter?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
   onMouseLeave?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
@@ -23,6 +24,7 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
   disabled = false,
   type = 'button',
   href,
+  shortcut,
   onClick,
   onMouseEnter,
   onMouseLeave,
@@ -41,6 +43,10 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
     .filter(Boolean)
     .join(' ');
 
+  const shortcutEl = shortcut ? (
+    <kbd className="tui-btn__shortcut">{shortcut}</kbd>
+  ) : null;
+
   if (href) {
     return (
       <a
@@ -54,6 +60,7 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
         {...(rest as React.AnchorHTMLAttributes<HTMLAnchorElement>)}
       >
         {children}
+        {shortcutEl}
       </a>
     );
   }
@@ -69,6 +76,7 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
       {...(rest as React.ButtonHTMLAttributes<HTMLButtonElement>)}
     >
       {children}
+      {shortcutEl}
     </button>
   );
 };

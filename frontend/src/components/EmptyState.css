@@ -32,3 +32,11 @@
   color: var(--text-muted);
   line-height: 1.5;
 }
+
+.empty-hint {
+  width: 100%;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-align: left;
+}

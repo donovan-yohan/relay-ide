@@ -8,6 +8,9 @@ import { useConfigStore } from './lib/stores/config.js';
 import { useBootStateStore } from './lib/stores/boot-state.js';
 import { useTelemetryStore } from './lib/stores/telemetry.js';
 import { sendPtyData } from './lib/ws.js';
+import { useOnboardingHints, HINT_NO_REPOS, HINT_REPO_ADDED_NO_SESSIONS } from './hooks/useOnboardingHints.js';
+import { useHintsStore } from './lib/stores/hints.js';
+import { Hint } from './components/Hint.js';
 import {
   initNotifications,
   initPushNotifications,
@@ -145,6 +148,25 @@ function TerminalAreaContent({
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
+
+  // ── Onboarding hints ──────────────────────────────────────────────────────
+  const prevSessionCountRef = useRef(sessions.length);
+  const [sessionJustStarted, setSessionJustStarted] = useState(false);
+  useEffect(() => {
+    if (sessions.length > prevSessionCountRef.current) {
+      setSessionJustStarted(true);
+      setTimeout(() => setSessionJustStarted(false), 100);
+    }
+    prevSessionCountRef.current = sessions.length;
+  }, [sessions.length]);
+
+  const { markSeen: markHintSeen } = useHintsStore();
+  const onboardingHints = useOnboardingHints({
+    hasRepos: repos.length > 0,
+    hasActiveSessions: sessions.length > 0,
+    sessionJustStarted,
+    commandPaletteJustOpened: false,
+  });
 
   const [copyModeActive, setCopyModeActive] = useState(false);
 
@@ -297,6 +319,17 @@ function TerminalAreaContent({
           description="point to any folder on your machine. git repos get pr tracking and branch management."
           actionLabel="+ add repo"
           onAction={onAddWorkspace}
+          hint={
+            onboardingHints.showNoReposHint ? (
+              <Hint
+                id={HINT_NO_REPOS}
+                variant="inline-text"
+                onDismiss={() => markHintSeen(HINT_NO_REPOS)}
+              >
+                relay-ide manages claude code sessions across your repos.
+              </Hint>
+            ) : undefined
+          }
         />
       )}
 
@@ -339,6 +372,17 @@ function TerminalAreaContent({
           onFixConflicts={onFixConflicts}
           onPrAction={onPrAction}
           onOpenPrSession={onOpenPrSession}
+          hint={
+            onboardingHints.showRepoAddedHint ? (
+              <Hint
+                id={HINT_REPO_ADDED_NO_SESSIONS}
+                variant="border"
+                onDismiss={() => markHintSeen(HINT_REPO_ADDED_NO_SESSIONS)}
+              >
+                start a session to begin working with claude code in this repo.
+              </Hint>
+            ) : undefined
+          }
         />
       )}
 

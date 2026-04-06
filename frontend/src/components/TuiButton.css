@@ -81,6 +81,24 @@ a.tui-btn--disabled {
   pointer-events: none;
 }
 
+/* Shortcut label */
+.tui-btn__shortcut {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  opacity: 0.7;
+}
+
+@media (max-width: 767px) {
+  .tui-btn__shortcut {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tui-btn {
     transition: none;
