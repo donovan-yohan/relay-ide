@@ -31,6 +31,11 @@ try {
 
 // ── Step 2: Auto-restart background service if running ──
 
+// When the update is triggered via the server's POST /update API, the server
+// handles its own graceful restart (serialize sessions, broadcast, exit for
+// launchd KeepAlive). Postinstall must NOT kill the server mid-request.
+const skipRestart = process.env.RELAY_IDE_SKIP_SERVICE_RESTART === '1';
+
 async function restartServiceIfRunning() {
   try {
     // Import service module from compiled dist
@@ -96,5 +101,7 @@ async function restartServiceIfRunning() {
   }
 }
 
-// Run restart check
-restartServiceIfRunning();
+// Run restart check (skipped when the server's POST /update API handles its own restart)
+if (!skipRestart) {
+  restartServiceIfRunning();
+}

@@ -1999,11 +1999,19 @@ async function main(): Promise<void> {
   });
 
   // POST /update — install latest version from npm
+  let updateInFlight = false;
   app.post('/update', requireAuth, async (_req, res) => {
+    if (updateInFlight) {
+      res.status(409).json({ ok: false, error: 'Update already in progress' });
+      return;
+    }
+    updateInFlight = true;
     try {
       const channel = startupConfig.updateChannel ?? 'stable';
       const tag = channel === 'nightly' ? 'nightly' : 'latest';
-      await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`]);
+      await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`], {
+        env: { ...process.env, RELAY_IDE_SKIP_SERVICE_RESTART: '1' },
+      });
       const restarting = serviceIsInstalled();
       if (restarting) {
         stopEventBatching();
@@ -2021,6 +2029,7 @@ async function main(): Promise<void> {
         }, 500);
       }
     } catch (err) {
+      updateInFlight = false;
       const message = err instanceof Error ? err.message : 'Update failed';
       res.status(500).json({ ok: false, error: message });
     }
