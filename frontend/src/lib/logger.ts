@@ -22,7 +22,7 @@ interface LogEntry {
   msg: string;
 }
 
-let relayQueue: LogEntry[] = [];
+const relayQueue: LogEntry[] = [];
 let relayTimer: ReturnType<typeof setTimeout> | null = null;
 const RELAY_INTERVAL = 2000; // flush every 2s
 const RELAY_MAX_BATCH = 50;
