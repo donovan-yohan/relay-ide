@@ -697,6 +697,29 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
   // recognized by xterm.js. Swallow to prevent parser confusion.
   t.parser.registerOscHandler(66, () => true);
 
+  // DECRQM (DEC Request Mode) — Bubble Tea / OpenTUI probes terminal
+  // capabilities by sending CSI Ps $ p (ANSI) and CSI ? Ps $ p (DEC private).
+  // xterm.js v6's built-in requestMode handler crashes with "ReferenceError:
+  // s is not defined" because the pre-minified xterm.js webpack bundle gets
+  // double-minified by Vite/esbuild, breaking an internal variable reference.
+  // The uncaught error corrupts the parser, the term.write callback never
+  // fires, flow control pauses permanently, and the terminal goes blank.
+  // Intercept both DECRQM forms and respond with "not recognized" (Pm=0) so
+  // the TUI app gets a valid DECRPM response and falls back to defaults.
+  t.parser.registerCsiHandler({ intermediates: '$', final: 'p' }, (params) => {
+    const mode = params[0];
+    sendPtyData(`\x1b[${mode};0$y`);
+    return true;
+  });
+  t.parser.registerCsiHandler(
+    { prefix: '?', intermediates: '$', final: 'p' },
+    (params) => {
+      const mode = params[0];
+      sendPtyData(`\x1b[?${mode};0$y`);
+      return true;
+    }
+  );
+
   // Kitty graphics protocol — OpenTUI may probe for graphics support via
   // APC sequences (ESC _ G ... ESC \). No explicit APC sanitizer is registered
   // here; xterm.js handles unknown APC sequences gracefully in recent versions.
