@@ -81,17 +81,22 @@ export function mergeAccountTelemetryByFrameworkSnapshot(
     return result;
   }
 
+  const requestStartedMs = parseUpdatedAt(requestStartedAt);
   const result: Record<string, AccountTelemetry> = {};
-  const allFrameworks = new Set([
-    ...Object.keys(currentByFramework),
-    ...Object.keys(incomingByFramework),
-  ]);
+  const incomingKeys = new Set(Object.keys(incomingByFramework));
 
-  for (const framework of allFrameworks) {
+  for (const framework of incomingKeys) {
     const current = currentByFramework[framework];
     const incoming = incomingByFramework[framework];
     const selected = pickNewerAccountTelemetryByFramework(current, incoming);
     if (selected) result[framework] = selected;
+  }
+
+  for (const [framework, telemetry] of Object.entries(currentByFramework)) {
+    if (incomingKeys.has(framework)) continue;
+    if (parseUpdatedAt(telemetry.updatedAt) > requestStartedMs) {
+      result[framework] = telemetry;
+    }
   }
 
   return result;

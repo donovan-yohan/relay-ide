@@ -63,7 +63,7 @@ export function SessionStatusBar({
   const sessionTelemetryById = useTelemetryStore((s) => s.sessionTelemetryById);
   const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
   const accountTelemetry = getAccountTelemetry(framework ?? undefined);
-  const frameworkLabel = framework ?? 'claude';
+  const frameworkLabel = framework ?? accountTelemetry?.framework ?? 'claude';
 
   const telemetry = sessionId
     ? (sessionTelemetryById[sessionId] ?? null)
@@ -105,7 +105,7 @@ export function SessionStatusBar({
             : '~$—'}
         </span>
         <span
-          className="status-framework status-segment"
+          className={`status-framework status-segment status-framework--${frameworkLabel}`}
           title={`Framework: ${frameworkLabel}`}
         >
           {frameworkLabel}

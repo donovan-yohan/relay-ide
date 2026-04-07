@@ -7,7 +7,6 @@ import type {
   SessionTelemetry,
 } from '../types.js';
 import {
-  mergeAccountTelemetrySnapshot,
   mergeAccountTelemetryByFrameworkSnapshot,
   mergeSessionTelemetrySnapshot,
   pickNewerAccountTelemetry,
@@ -350,7 +349,7 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
       updates.accountTelemetryByFramework =
         mergeAccountTelemetryByFrameworkSnapshot(
           accountTelemetryByFramework,
-          accountResult.value ?? {},
+          accountResult.value,
           requestStartedAt
         );
     }
