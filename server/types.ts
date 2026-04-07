@@ -277,7 +277,7 @@ export interface TelemetryData {
   contextPercent: number;
   contextWindowSize: number;
   costUsd: number | null;
-  source: 'statusLine' | 'jsonl';
+  source: 'statusLine' | 'jsonl' | (string & {});
   updatedAt: string;
 }
 

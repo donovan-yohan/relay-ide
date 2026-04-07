@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import * as api from '../api.js';
-import type { AccountTelemetry, Repo, SessionSummary, SessionTelemetry } from '../types.js';
+import type {
+  AccountTelemetry,
+  Repo,
+  SessionSummary,
+  SessionTelemetry,
+} from '../types.js';
 import {
   mergeAccountTelemetrySnapshot,
   mergeSessionTelemetrySnapshot,
@@ -67,7 +72,10 @@ function buildAggregate(
     aggregate.totalOutputTokens += telemetry.totalOutputTokens || 0;
     aggregate.totalCacheRead += telemetry.totalCacheRead || 0;
     aggregate.totalCacheWrite += telemetry.totalCacheWrite || 0;
-    aggregate.totalCostUsd = mergeCost(aggregate.totalCostUsd, telemetry.costUsd);
+    aggregate.totalCostUsd = mergeCost(
+      aggregate.totalCostUsd,
+      telemetry.costUsd
+    );
     if (telemetry.contextPercent >= 0) {
       contextPercentTotal += telemetry.contextPercent;
       contextPercentCount += 1;
@@ -91,27 +99,45 @@ function normalizeSessionTelemetry(
 ): SessionTelemetry {
   return {
     sessionId,
-    model: typeof data.model === 'string' || data.model === null ? (data.model ?? null) : null,
-    totalInputTokens: typeof data.totalInputTokens === 'number' ? data.totalInputTokens : 0,
-    totalOutputTokens: typeof data.totalOutputTokens === 'number' ? data.totalOutputTokens : 0,
-    totalCacheRead: typeof data.totalCacheRead === 'number' ? data.totalCacheRead : 0,
-    totalCacheWrite: typeof data.totalCacheWrite === 'number' ? data.totalCacheWrite : 0,
-    contextPercent: typeof data.contextPercent === 'number' ? data.contextPercent : -1,
-    contextWindowSize: typeof data.contextWindowSize === 'number' ? data.contextWindowSize : 0,
+    model:
+      typeof data.model === 'string' || data.model === null
+        ? (data.model ?? null)
+        : null,
+    totalInputTokens:
+      typeof data.totalInputTokens === 'number' ? data.totalInputTokens : 0,
+    totalOutputTokens:
+      typeof data.totalOutputTokens === 'number' ? data.totalOutputTokens : 0,
+    totalCacheRead:
+      typeof data.totalCacheRead === 'number' ? data.totalCacheRead : 0,
+    totalCacheWrite:
+      typeof data.totalCacheWrite === 'number' ? data.totalCacheWrite : 0,
+    contextPercent:
+      typeof data.contextPercent === 'number' ? data.contextPercent : -1,
+    contextWindowSize:
+      typeof data.contextWindowSize === 'number' ? data.contextWindowSize : 0,
     costUsd: typeof data.costUsd === 'number' ? data.costUsd : null,
     turnCount: typeof data.turnCount === 'number' ? data.turnCount : 0,
-    subagentCount: typeof data.subagentCount === 'number' ? data.subagentCount : 0,
-    source: data.source === 'jsonl' ? 'jsonl' : 'statusLine',
-    updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
+    subagentCount:
+      typeof data.subagentCount === 'number' ? data.subagentCount : 0,
+    source: typeof data.source === 'string' ? data.source : 'statusLine',
+    updatedAt:
+      typeof data.updatedAt === 'string'
+        ? data.updatedAt
+        : new Date().toISOString(),
   };
 }
 
-function normalizeAccountTelemetry(data: Partial<AccountTelemetry>): AccountTelemetry {
+function normalizeAccountTelemetry(
+  data: Partial<AccountTelemetry>
+): AccountTelemetry {
   return {
     framework: typeof data.framework === 'string' ? data.framework : 'unknown',
     rateLimits: Array.isArray(data.rateLimits) ? data.rateLimits : [],
     planType: typeof data.planType === 'string' ? data.planType : undefined,
-    updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
+    updatedAt:
+      typeof data.updatedAt === 'string'
+        ? data.updatedAt
+        : new Date().toISOString(),
   };
 }
 
@@ -119,11 +145,19 @@ export interface TelemetryState {
   sessionTelemetryById: Record<string, SessionTelemetry>;
   accountTelemetry: AccountTelemetry | null;
   telemetrySetupInstalled: boolean | null;
-  summarizeSessionSetTelemetry: (sessions: SessionSummary[]) => TelemetryAggregate;
-  summarizeReposTelemetry: (repos: Repo[], sessions: SessionSummary[]) => OrgTelemetrySummary;
+  summarizeSessionSetTelemetry: (
+    sessions: SessionSummary[]
+  ) => TelemetryAggregate;
+  summarizeReposTelemetry: (
+    repos: Repo[],
+    sessions: SessionSummary[]
+  ) => OrgTelemetrySummary;
   summarizeSessionTelemetry: (sessionId: string) => SessionTelemetry | null;
   setSessionTelemetry: (data: SessionTelemetry) => void;
-  setSessionTelemetryBatch: (items: SessionTelemetry[], requestStartedAt?: string) => void;
+  setSessionTelemetryBatch: (
+    items: SessionTelemetry[],
+    requestStartedAt?: string
+  ) => void;
   clearSessionTelemetry: (sessionId: string) => void;
   pruneSessionTelemetry: (activeSessionIds: Iterable<string>) => void;
   setAccountTelemetrySnapshot: (data: AccountTelemetry | null) => void;
@@ -157,10 +191,18 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     const repoSummaries = repos.map((repo) => ({
       repoPath: repo.path,
       repoName: repo.name,
-      aggregate: buildAggregate(sessionsByRepo.get(repo.path) ?? [], sessionTelemetryById),
+      aggregate: buildAggregate(
+        sessionsByRepo.get(repo.path) ?? [],
+        sessionTelemetryById
+      ),
     }));
-    const outsideRelaySessions = sessions.filter((s) => !sessionTelemetryById[s.id]);
-    const outsideRelay = buildAggregate(outsideRelaySessions, sessionTelemetryById);
+    const outsideRelaySessions = sessions.filter(
+      (s) => !sessionTelemetryById[s.id]
+    );
+    const outsideRelay = buildAggregate(
+      outsideRelaySessions,
+      sessionTelemetryById
+    );
     outsideRelay.totalSessions = outsideRelaySessions.length;
     return { repos: repoSummaries, outsideRelay };
   },
@@ -176,12 +218,22 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
       normalized
     );
     if (sessionTelemetryById[normalized.sessionId] === next) return;
-    set({ sessionTelemetryById: { ...sessionTelemetryById, [normalized.sessionId]: next } });
+    set({
+      sessionTelemetryById: {
+        ...sessionTelemetryById,
+        [normalized.sessionId]: next,
+      },
+    });
   },
 
-  setSessionTelemetryBatch: (items, requestStartedAt = new Date().toISOString()) => {
+  setSessionTelemetryBatch: (
+    items,
+    requestStartedAt = new Date().toISOString()
+  ) => {
     const { sessionTelemetryById } = get();
-    const normalized = items.map((item) => normalizeSessionTelemetry(item.sessionId, item));
+    const normalized = items.map((item) =>
+      normalizeSessionTelemetry(item.sessionId, item)
+    );
     set({
       sessionTelemetryById: mergeSessionTelemetrySnapshot(
         sessionTelemetryById,
@@ -228,7 +280,8 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     });
   },
 
-  setTelemetrySetupInstalled: (installed) => set({ telemetrySetupInstalled: installed }),
+  setTelemetrySetupInstalled: (installed) =>
+    set({ telemetrySetupInstalled: installed }),
 
   handleSessionTelemetryEvent: (sessionId, data) => {
     if (!data || typeof data !== 'object') return;
@@ -253,11 +306,12 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
 
   refreshTelemetry: async () => {
     const requestStartedAt = new Date().toISOString();
-    const [sessionResult, accountResult, setupResult] = await Promise.allSettled([
-      api.fetchSessionTelemetry(),
-      api.fetchAccountTelemetry(),
-      api.fetchTelemetrySetupStatus(),
-    ]);
+    const [sessionResult, accountResult, setupResult] =
+      await Promise.allSettled([
+        api.fetchSessionTelemetry(),
+        api.fetchAccountTelemetry(),
+        api.fetchTelemetrySetupStatus(),
+      ]);
 
     const { sessionTelemetryById, accountTelemetry } = get();
 
