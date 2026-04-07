@@ -1,17 +1,21 @@
 import type { DisplayState } from '../lib/state/display-state.js';
+import './SessionIndicator.css';
 
 interface SessionIndicatorProps {
   state: DisplayState;
 }
 
-const config: Record<DisplayState, { char: string; colorClass: string; bold: boolean }> = {
+const config: Record<
+  DisplayState,
+  { char: string; colorClass: string; bold: boolean }
+> = {
   initializing: { char: '●', colorClass: 'ind-green-dim', bold: false },
   running: { char: '●', colorClass: 'ind-green', bold: false },
-  'unseen-idle': { char: '▶', colorClass: 'ind-yellow', bold: false },
+  'unseen-idle': { char: '▶', colorClass: 'ind-yellow', bold: true },
   'seen-idle': { char: '▶', colorClass: 'ind-yellow-muted', bold: false },
   permission: { char: '◆', colorClass: 'ind-red', bold: true },
   'needs-answer': { char: '◇', colorClass: 'ind-red', bold: true },
-  error: { char: '■', colorClass: 'ind-red', bold: false },
+  error: { char: '■', colorClass: 'ind-red', bold: true },
   inactive: { char: '─', colorClass: 'ind-gray', bold: false },
 };
 

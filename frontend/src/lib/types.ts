@@ -102,6 +102,8 @@ export interface SessionSummary {
   additionalDirs?: string[] | undefined;
   currentActivity?: CurrentActivity | undefined;
   dataQuality?: EventSourceType | undefined;
+  /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
+  permissionType?: 'approval' | 'question';
 }
 
 export interface WorktreeInfo {

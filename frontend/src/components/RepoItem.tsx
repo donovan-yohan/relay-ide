@@ -11,8 +11,10 @@ import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { formatRelativeTimeCompact, isMobileDevice } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
+import { SessionIndicator } from './SessionIndicator.js';
 import { MarqueeText } from './MarqueeText.js';
 import ContextMenu from './ContextMenu.js';
+import { useRepoAggregation } from '../hooks/useRepoAggregation.js';
 import './RepoItem.css';
 
 const DOUBLE_CLICK_DELAY_MS = 200;
@@ -178,7 +180,11 @@ function SessionGroupRow({
       onTouchMove={cancelLongPress}
     >
       <div className="session-row-primary">
-        <span className={`status-dot status-dot--${dotState}`} />
+        <SessionIndicator
+          state={
+            dotState as import('../lib/state/display-state.js').DisplayState
+          }
+        />
         <span
           className={['session-name', attention && 'bold']
             .filter(Boolean)
@@ -282,7 +288,7 @@ function InactiveRepoRow({
       }}
     >
       <div className="session-row-primary">
-        <span className="status-dot status-dot--inactive" />
+        <SessionIndicator state="inactive" />
         <span className="session-name">
           <MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText>
         </span>
@@ -344,6 +350,11 @@ export function RepoItem({
     [sidebarItems, repo.path]
   );
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
+  const { highestState, attentionCount } = useRepoAggregation(
+    repo.path,
+    sidebarItems,
+    loadingItems
+  );
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -416,6 +427,12 @@ export function RepoItem({
           <span className="repo-name">
             <MarqueeText>{repo.name}</MarqueeText>
           </span>
+          {highestState && attentionCount > 0 ? (
+            <span className="repo-attention-badge">
+              <SessionIndicator state={highestState} />
+              {attentionCount}
+            </span>
+          ) : null}
           {collapsed && totalItems > 0 ? (
             <span className="collapse-count">{totalItems}</span>
           ) : null}
@@ -501,7 +518,7 @@ export function RepoItem({
                 onTouchMove={cancelLongPress}
               >
                 <div className="session-row-primary">
-                  <span className="status-dot status-dot--inactive" />
+                  <SessionIndicator state="inactive" />
                   <span className="session-name">
                     <MarqueeText>
                       {isLoading
