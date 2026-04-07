@@ -295,13 +295,8 @@ export function getTelemetryForSession(
   return sessionTelemetry.get(sessionId);
 }
 
-export function getAccountTelemetry(): AccountTelemetry | null {
-  // Prefer 'claude' framework; fall back to first available
-  return (
-    accountTelemetryMap.get('claude') ??
-    accountTelemetryMap.values().next().value ??
-    null
-  );
+export function getAccountTelemetry(): Record<string, AccountTelemetry> {
+  return Object.fromEntries(accountTelemetryMap.entries());
 }
 
 export function createTelemetryRouter(): Router {

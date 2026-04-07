@@ -46,7 +46,8 @@ interface UsageSectionProps {
 
 function UsageSection({ repoSessions }: UsageSectionProps) {
   const summarize = useTelemetryStore((s) => s.summarizeSessionSetTelemetry);
-  const accountTelemetry = useTelemetryStore((s) => s.accountTelemetry);
+  const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
+  const accountTelemetry = getAccountTelemetry();
   const repoTelemetry = useMemo(
     () => summarize(repoSessions),
     [summarize, repoSessions]

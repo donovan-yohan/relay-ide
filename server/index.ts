@@ -960,10 +960,19 @@ async function main(): Promise<void> {
   setInterval(() => {
     const now = Date.now();
     if (now - lastRateLimitSnapshot < RATE_LIMIT_SNAPSHOT_INTERVAL) return;
-    const account = getAccountTelemetry();
-    if (!account || !account.rateLimits.length) return;
-    const fiveHour = account.rateLimits.find((rl) => rl.name === 'five_hour' || rl.windowMinutes === 300);
-    const sevenDay = account.rateLimits.find((rl) => rl.name === 'seven_day' || rl.windowMinutes === 10080);
+    const account = Object.values(getAccountTelemetry())
+      .filter((entry) => entry.rateLimits.length > 0)
+      .sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      )[0];
+    if (!account) return;
+    const fiveHour = account.rateLimits.find(
+      (rl) => rl.name === 'five_hour' || rl.windowMinutes === 300
+    );
+    const sevenDay = account.rateLimits.find(
+      (rl) => rl.name === 'seven_day' || rl.windowMinutes === 10080
+    );
     if (!fiveHour || fiveHour.usedPercent < 0) return;
     lastRateLimitSnapshot = now;
     recordRateLimitSnapshot({

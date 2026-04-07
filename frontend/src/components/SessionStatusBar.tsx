@@ -7,12 +7,14 @@ import './SessionStatusBar.css';
 export interface SessionStatusBarProps {
   sessionId: string | null;
   currentActivity?: CurrentActivity | null;
+  framework?: string | null | undefined;
 }
 
 const BAR_WIDTH = 10;
 
 function formatCurrency(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '~$—';
+  if (value === null || value === undefined || Number.isNaN(value))
+    return '~$—';
   return `~$${value.toFixed(2)}`;
 }
 
@@ -36,29 +38,43 @@ function getContextLabel(telemetry: { contextPercent: number } | null): string {
   return `${'░'.repeat(BAR_WIDTH)} —%`;
 }
 
-function buildRateLimitLabel(accountTelemetry: import('../lib/types.js').AccountTelemetry | null | undefined): string {
+function buildRateLimitLabel(
+  accountTelemetry:
+    | import('../lib/types.js').AccountTelemetry
+    | null
+    | undefined
+): string {
   if (!accountTelemetry || !accountTelemetry.rateLimits.length) return '—';
   const parts: string[] = [];
   for (const rl of accountTelemetry.rateLimits) {
     if (rl.usedPercent >= 0) {
-      const label = rl.windowMinutes === 300 ? '5h' : rl.windowMinutes === 10080 ? '7d' : rl.name;
-      parts.push(`${label}: ${Math.round(rl.usedPercent)}%`);
+      parts.push(`${rl.name}: ${Math.round(rl.usedPercent)}%`);
     }
   }
   return parts.length > 0 ? parts.join(' | ') : '—';
 }
 
-export function SessionStatusBar({ sessionId, currentActivity = null }: SessionStatusBarProps) {
+export function SessionStatusBar({
+  sessionId,
+  currentActivity = null,
+  framework,
+}: SessionStatusBarProps) {
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
   const sessionTelemetryById = useTelemetryStore((s) => s.sessionTelemetryById);
-  const accountTelemetry = useTelemetryStore((s) => s.accountTelemetry);
+  const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
+  const accountTelemetry = getAccountTelemetry(framework ?? undefined);
+  const frameworkLabel = framework ?? 'claude';
 
-  const telemetry = sessionId ? sessionTelemetryById[sessionId] ?? null : null;
+  const telemetry = sessionId
+    ? (sessionTelemetryById[sessionId] ?? null)
+    : null;
   const contextTone = getContextTone(telemetry);
   const contextLabel = getContextLabel(telemetry);
 
   const contextClass =
-    contextTone === 'ok' ? 'status-context status-segment' : `status-context status-segment status-context--${contextTone}`;
+    contextTone === 'ok'
+      ? 'status-context status-segment'
+      : `status-context status-segment status-context--${contextTone}`;
 
   const activityLabel = currentActivity
     ? `${currentActivity.tool}${currentActivity.detail ? `: ${currentActivity.detail}` : ''}`
@@ -84,7 +100,15 @@ export function SessionStatusBar({ sessionId, currentActivity = null }: SessionS
           {telemetry ? formatCompact(telemetry.totalOutputTokens) : '—'}
         </span>
         <span className="status-cost status-segment" title={telemetryTitle}>
-          {telemetry ? formatCurrency(telemetry.costUsd) : '~$—'}
+          {telemetry && telemetry.costUsd !== null
+            ? formatCurrency(telemetry.costUsd)
+            : '~$—'}
+        </span>
+        <span
+          className="status-framework status-segment"
+          title={`Framework: ${frameworkLabel}`}
+        >
+          {frameworkLabel}
         </span>
         <span className="status-activity status-segment" title={activityLabel}>
           [{activityLabel}]
@@ -94,7 +118,13 @@ export function SessionStatusBar({ sessionId, currentActivity = null }: SessionS
       <div className="status-right">
         <span
           className="status-rate-limits status-segment"
-          title={accountTelemetry?.rateLimits.length ? accountTelemetry.rateLimits.map((rl) => formatResetAt(rl.resetsAt)).join(' · ') : '—'}
+          title={
+            accountTelemetry?.rateLimits.length
+              ? accountTelemetry.rateLimits
+                  .map((rl) => formatResetAt(rl.resetsAt))
+                  .join(' · ')
+              : '—'
+          }
         >
           {rateLimitLabel}
         </span>

@@ -8,6 +8,7 @@ import type {
 } from '../types.js';
 import {
   mergeAccountTelemetrySnapshot,
+  mergeAccountTelemetryByFrameworkSnapshot,
   mergeSessionTelemetrySnapshot,
   pickNewerAccountTelemetry,
   pickNewerSessionTelemetry,
@@ -143,7 +144,7 @@ function normalizeAccountTelemetry(
 
 export interface TelemetryState {
   sessionTelemetryById: Record<string, SessionTelemetry>;
-  accountTelemetry: AccountTelemetry | null;
+  accountTelemetryByFramework: Record<string, AccountTelemetry>;
   telemetrySetupInstalled: boolean | null;
   summarizeSessionSetTelemetry: (
     sessions: SessionSummary[]
@@ -160,7 +161,11 @@ export interface TelemetryState {
   ) => void;
   clearSessionTelemetry: (sessionId: string) => void;
   pruneSessionTelemetry: (activeSessionIds: Iterable<string>) => void;
-  setAccountTelemetrySnapshot: (data: AccountTelemetry | null) => void;
+  setAccountTelemetrySnapshot: (
+    data: Record<string, AccountTelemetry> | null,
+    requestStartedAt?: string
+  ) => void;
+  getAccountTelemetry: (framework?: string) => AccountTelemetry | null;
   setTelemetrySetupInstalled: (installed: boolean | null) => void;
   handleSessionTelemetryEvent: (
     sessionId: string,
@@ -174,7 +179,7 @@ export interface TelemetryState {
 
 export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
   sessionTelemetryById: {},
-  accountTelemetry: null,
+  accountTelemetryByFramework: {},
   telemetrySetupInstalled: null,
 
   summarizeSessionSetTelemetry: (sessions) =>
@@ -266,16 +271,24 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     if (changed) set({ sessionTelemetryById: next });
   },
 
-  setAccountTelemetrySnapshot: (data) => {
+  setAccountTelemetrySnapshot: (data, requestStartedAt) => {
+    const { accountTelemetryByFramework } = get();
+    const requestTime = requestStartedAt ?? new Date().toISOString();
     if (!data) {
-      set({ accountTelemetry: null });
+      set({
+        accountTelemetryByFramework: mergeAccountTelemetryByFrameworkSnapshot(
+          accountTelemetryByFramework,
+          null,
+          requestTime
+        ),
+      });
       return;
     }
-    const { accountTelemetry } = get();
     set({
-      accountTelemetry: pickNewerAccountTelemetry(
-        accountTelemetry,
-        normalizeAccountTelemetry(data)
+      accountTelemetryByFramework: mergeAccountTelemetryByFrameworkSnapshot(
+        accountTelemetryByFramework,
+        data,
+        requestTime
       ),
     });
   },
@@ -292,15 +305,22 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
 
   handleAccountTelemetryEvent: (data) => {
     if (!data || typeof data !== 'object') {
-      set({ accountTelemetry: null });
+      set({ accountTelemetryByFramework: {} });
       return;
     }
-    const { accountTelemetry } = get();
+    const normalized = normalizeAccountTelemetry(
+      data as Partial<AccountTelemetry>
+    );
+    const framework = normalized.framework;
+    const { accountTelemetryByFramework } = get();
+    const existing = accountTelemetryByFramework[framework] ?? null;
+    const merged = pickNewerAccountTelemetry(existing, normalized);
+    if (existing === merged) return;
     set({
-      accountTelemetry: pickNewerAccountTelemetry(
-        accountTelemetry,
-        normalizeAccountTelemetry(data as Partial<AccountTelemetry>)
-      ),
+      accountTelemetryByFramework: {
+        ...accountTelemetryByFramework,
+        [framework]: merged,
+      },
     });
   },
 
@@ -313,7 +333,7 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
         api.fetchTelemetrySetupStatus(),
       ]);
 
-    const { sessionTelemetryById, accountTelemetry } = get();
+    const { sessionTelemetryById, accountTelemetryByFramework } = get();
 
     const updates: Partial<TelemetryState> = {};
     if (sessionResult.status === 'fulfilled') {
@@ -327,16 +347,29 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
       );
     }
     if (accountResult.status === 'fulfilled') {
-      updates.accountTelemetry = mergeAccountTelemetrySnapshot(
-        accountTelemetry,
-        accountResult.value,
-        requestStartedAt
-      );
+      updates.accountTelemetryByFramework =
+        mergeAccountTelemetryByFrameworkSnapshot(
+          accountTelemetryByFramework,
+          accountResult.value ?? {},
+          requestStartedAt
+        );
     }
     if (setupResult.status === 'fulfilled') {
       updates.telemetrySetupInstalled = setupResult.value.installed;
     }
     if (Object.keys(updates).length > 0) set(updates);
+  },
+
+  getAccountTelemetry: (framework) => {
+    const { accountTelemetryByFramework } = get();
+    if (framework) {
+      return accountTelemetryByFramework[framework] ?? null;
+    }
+    return (
+      accountTelemetryByFramework['claude'] ??
+      Object.values(accountTelemetryByFramework)[0] ??
+      null
+    );
   },
 }));
 
