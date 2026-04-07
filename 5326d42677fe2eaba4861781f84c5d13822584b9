@@ -1,0 +1,27 @@
+frontend/src/lib/stores/telemetry.ts
+  3bbd3119e902648f 352
+frontend/src/lib/telemetry-sync.ts
+  3bbd3119e902648f 84,86,88,95-99
+frontend/src/components/SessionStatusBar.tsx
+  3bbd3119e902648f 66,108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "5326d42677fe2eaba4861781f84c5d13822584b9",
+  "prompts": {
+    "3bbd3119e902648f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab00ac37-6264-4cfa-bac1-1643f8183b22",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 9,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    }
+  }
+}
