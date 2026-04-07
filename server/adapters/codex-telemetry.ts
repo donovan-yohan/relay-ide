@@ -51,6 +51,8 @@ interface CodexJsonlEvent {
 interface CodexSessionState {
   transcriptPath: string | null;
   lastByteOffset: number;
+  trailingFragment: string;
+  lastSeenModel: string | null;
   cachedTelemetry: IncomingTelemetryData | null;
   cachedAccountTelemetry: Omit<
     AccountTelemetry,
@@ -72,19 +74,40 @@ function parseJsonlLine(line: string): CodexJsonlEvent | null {
 }
 
 /**
- * Extract telemetry data from accumulated events
+ * Extract rate limit data from a rate_limits event
+ */
+function extractRateLimits(
+  rateLimitsEvent: RateLimitsEvent
+): Omit<AccountTelemetry, 'framework' | 'updatedAt'> | null {
+  const rateLimits: RateLimitWindow[] = Object.entries(rateLimitsEvent).map(
+    ([name, data]) => ({
+      name,
+      usedPercent: data.used_percentage ?? -1,
+      resetsAt: data.resets_at ?? '',
+      ...(data.window_minutes !== undefined && {
+        windowMinutes: data.window_minutes,
+      }),
+    })
+  );
+  return rateLimits.length > 0 ? { rateLimits } : null;
+}
+
+/**
+ * Extract telemetry data from accumulated events.
+ * Accepts persisted state (model, account) so data from earlier polls isn't lost.
  */
 function extractTelemetryFromEvents(
   sessionId: string,
-  events: CodexJsonlEvent[]
+  events: CodexJsonlEvent[],
+  state: CodexSessionState
 ): {
-  session: IncomingTelemetryData;
+  session: IncomingTelemetryData | null;
   account: Omit<AccountTelemetry, 'framework' | 'updatedAt'> | null;
-} | null {
-  // Find the latest token_count event
+  model: string | null;
+} {
   let latestTokenCount: TokenCountEvent | null = null;
   let latestRateLimits: RateLimitsEvent | null = null;
-  let latestModel: string | null = null;
+  let model: string | null = state.lastSeenModel;
 
   for (const event of events) {
     if (event.type === 'token_count' && event.token_count) {
@@ -94,18 +117,21 @@ function extractTelemetryFromEvents(
       latestRateLimits = event.rate_limits;
     }
     if (event.type === 'turn_context' && event.turn_context?.model) {
-      latestModel = event.turn_context.model;
+      model = event.turn_context.model;
     }
   }
 
-  // If we have no token count data, we can't report telemetry
+  // Rate limits are extracted independently of token_count
+  const account = latestRateLimits ? extractRateLimits(latestRateLimits) : null;
+
+  // Session telemetry requires token_count data
   if (!latestTokenCount) {
-    return null;
+    return { session: null, account, model };
   }
 
   const session: IncomingTelemetryData = {
     sessionId,
-    model: latestModel,
+    model,
     totalInputTokens: latestTokenCount.input_tokens ?? 0,
     totalOutputTokens: latestTokenCount.output_tokens ?? 0,
     totalCacheRead: latestTokenCount.cached_tokens ?? 0,
@@ -117,58 +143,47 @@ function extractTelemetryFromEvents(
     source: 'jsonl',
   };
 
-  // Extract rate limits if available
-  let account: Omit<AccountTelemetry, 'framework' | 'updatedAt'> | null = null;
-  if (latestRateLimits) {
-    const rateLimits: RateLimitWindow[] = Object.entries(latestRateLimits).map(
-      ([name, data]) => ({
-        name,
-        usedPercent: data.used_percentage ?? -1,
-        resetsAt: data.resets_at ?? '',
-        ...(data.window_minutes !== undefined && {
-          windowMinutes: data.window_minutes,
-        }),
-      })
-    );
-
-    if (rateLimits.length > 0) {
-      account = { rateLimits };
-    }
-  }
-
-  return { session, account };
+  return { session, account, model };
 }
 
 /**
- * Tail the JSONL file from the last known offset and parse new events
+ * Tail the JSONL file from the last known offset and parse new events.
+ * Returns a trailing fragment (incomplete line) to be prepended on the next poll.
  */
 function tailFile(
   filePath: string,
-  startOffset: number
-): { events: CodexJsonlEvent[]; newOffset: number } {
+  startOffset: number,
+  leadingFragment: string
+): { events: CodexJsonlEvent[]; newOffset: number; trailing: string } {
   try {
-    // Get current file size
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
 
-    // If file hasn't grown or was truncated, return empty
-    if (startOffset >= fileSize) {
-      return { events: [], newOffset: startOffset };
+    // If the file was truncated/rotated, reset to the beginning
+    const effectiveOffset = startOffset > fileSize ? 0 : startOffset;
+
+    // If file hasn't grown, nothing to read
+    if (effectiveOffset === fileSize) {
+      return { events: [], newOffset: effectiveOffset, trailing: leadingFragment };
     }
 
     // Read only new bytes since last poll
-    const bytesToRead = fileSize - startOffset;
+    const bytesToRead = fileSize - effectiveOffset;
     const buffer = Buffer.alloc(bytesToRead);
     const fd = fs.openSync(filePath, 'r');
+    let bytesRead: number;
     try {
-      fs.readSync(fd, buffer, 0, bytesToRead, startOffset);
+      bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, effectiveOffset);
     } finally {
       fs.closeSync(fd);
     }
 
-    // Parse new content as lines
-    const newContent = buffer.toString('utf-8');
+    // Prepend any trailing fragment from the previous poll
+    const newContent = leadingFragment + buffer.subarray(0, bytesRead).toString('utf-8');
     const lines = newContent.split('\n');
+
+    // Last element may be an incomplete line — save it for next poll
+    const trailing = lines.pop() ?? '';
 
     const events: CodexJsonlEvent[] = [];
     for (const line of lines) {
@@ -178,32 +193,35 @@ function tailFile(
       }
     }
 
-    return { events, newOffset: fileSize };
+    // Advance offset by actual bytes read (not including the trailing fragment
+    // which will be re-processed next poll)
+    const newOffset = effectiveOffset + bytesRead;
+    return { events, newOffset, trailing };
   } catch (err) {
     const error = err as NodeJS.ErrnoException;
     if (error.code !== 'ENOENT') {
       logger.warn(`Failed to tail Codex telemetry file ${filePath}:`, err);
     }
-    return { events: [], newOffset: startOffset };
+    return { events: [], newOffset: startOffset, trailing: leadingFragment };
   }
 }
 
 export class CodexTelemetryAdapter implements TelemetryAdapter {
   readonly framework = 'codex';
 
-  private deps: TelemetryDeps;
   private sessionStates = new Map<string, CodexSessionState>();
   private _accountTelemetry: AccountTelemetry | null = null;
 
-  constructor(deps: TelemetryDeps) {
-    this.deps = deps;
+  constructor(_deps: TelemetryDeps) {
+    // deps unused — Codex adapter relies on JSONL file tailing, not deps
   }
 
   attach(session: TelemetrySession): void {
-    // Initialize session state - transcript_path will be set via handleHookEvent
     this.sessionStates.set(session.id, {
       transcriptPath: null,
       lastByteOffset: 0,
+      trailingFragment: '',
+      lastSeenModel: null,
       cachedTelemetry: null,
       cachedAccountTelemetry: null,
     });
@@ -211,7 +229,8 @@ export class CodexTelemetryAdapter implements TelemetryAdapter {
 
   /**
    * Handle hook events from the Codex hooks adapter.
-   * Call this when a session.started hook is received to capture transcript_path.
+   * Captures transcript_path and seeks to end of file so the first poll
+   * only reads new data instead of the entire transcript.
    */
   handleHookEvent(
     sessionId: string,
@@ -227,6 +246,13 @@ export class CodexTelemetryAdapter implements TelemetryAdapter {
     const state = this.sessionStates.get(sessionId);
     if (state) {
       state.transcriptPath = transcriptPath;
+      // Seek to end so the first collectSnapshot only reads new data
+      try {
+        const stats = fs.statSync(transcriptPath);
+        state.lastByteOffset = stats.size;
+      } catch {
+        // File may not exist yet — offset stays at 0
+      }
       logger.debug(
         `Set transcript path for session ${sessionId}: ${transcriptPath}`
       );
@@ -241,46 +267,32 @@ export class CodexTelemetryAdapter implements TelemetryAdapter {
     const state = this.sessionStates.get(sessionId);
     if (!state) return null;
 
-    // If we haven't discovered the transcript path yet, return null (no crash)
     if (!state.transcriptPath) {
       return null;
     }
 
-    // Tail the file for new events
-    const { events, newOffset } = tailFile(
+    const { events, newOffset, trailing } = tailFile(
       state.transcriptPath,
-      state.lastByteOffset
+      state.lastByteOffset,
+      state.trailingFragment
     );
 
-    // Update offset for next poll
     state.lastByteOffset = newOffset;
+    state.trailingFragment = trailing;
 
-    // If no new events, return cached telemetry if available
     if (events.length === 0) {
       if (state.cachedTelemetry) {
-        return {
-          ...state.cachedTelemetry,
-          updatedAt: new Date().toISOString(),
-        };
+        return { ...state.cachedTelemetry, updatedAt: new Date().toISOString() };
       }
       return null;
     }
 
-    // Extract telemetry from accumulated events
-    const extracted = extractTelemetryFromEvents(sessionId, events);
-    if (!extracted) {
-      // No valid token_count event yet, return cached if available
-      if (state.cachedTelemetry) {
-        return {
-          ...state.cachedTelemetry,
-          updatedAt: new Date().toISOString(),
-        };
-      }
-      return null;
-    }
+    const extracted = extractTelemetryFromEvents(sessionId, events, state);
 
-    // Cache the telemetry for future polls
-    state.cachedTelemetry = extracted.session;
+    // Persist model across polls
+    state.lastSeenModel = extracted.model;
+
+    // Update account telemetry independently of session telemetry
     if (extracted.account) {
       state.cachedAccountTelemetry = extracted.account;
       this._accountTelemetry = {
@@ -290,10 +302,16 @@ export class CodexTelemetryAdapter implements TelemetryAdapter {
       };
     }
 
-    return {
-      ...extracted.session,
-      updatedAt: new Date().toISOString(),
-    };
+    if (extracted.session) {
+      state.cachedTelemetry = extracted.session;
+      return { ...extracted.session, updatedAt: new Date().toISOString() };
+    }
+
+    // No token_count yet — return cached if available
+    if (state.cachedTelemetry) {
+      return { ...state.cachedTelemetry, updatedAt: new Date().toISOString() };
+    }
+    return null;
   }
 
   detach(sessionId: string): void {

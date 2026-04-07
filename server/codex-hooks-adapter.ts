@@ -78,10 +78,10 @@ CONFIG_FILE="${configPath}"
   read -r SESSION_ID PORT TOKEN < <(node -e "const fs=require('node:fs');const{sessionId,port,hookToken}=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write([sessionId,port,hookToken].join(' ')+'\\n');" "$CONFIG_FILE")
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Extract transcript_path from Codex hook payload using node for reliable JSON parsing
-TRANSCRIPT_PATH=$(echo "$INPUT" | node -e "const fs=require('node:fs');const data=JSON.parse(fs.readFileSync(0,'utf8'));console.log(data.transcript_path||'')" 2>/dev/null || echo '')
+TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | node -e "const fs=require('node:fs');const data=JSON.parse(fs.readFileSync(0,'utf8'));console.log(data.transcript_path||'')" 2>/dev/null || echo '')
 # Build data payload with transcript_path if available
 if [ -n "$TRANSCRIPT_PATH" ]; then
-  DATA_PAYLOAD=$(echo "$INPUT" | node -e "const fs=require('node:fs');const data=JSON.parse(fs.readFileSync(0,'utf8'));data.transcript_path=data.transcript_path||'';console.log(JSON.stringify(data))" 2>/dev/null || echo "$INPUT")
+  DATA_PAYLOAD=$(printf '%s' "$INPUT" | node -e "const fs=require('node:fs');const data=JSON.parse(fs.readFileSync(0,'utf8'));data.transcript_path=data.transcript_path||'';console.log(JSON.stringify(data))" 2>/dev/null || echo "$INPUT")
 else
   DATA_PAYLOAD="$INPUT"
 fi
