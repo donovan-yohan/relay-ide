@@ -161,9 +161,11 @@ function normalizeAccountTelemetry(data: unknown): AccountTelemetry | null {
   const candidate = raw as Partial<AccountTelemetry>;
   if (typeof candidate.updatedAt !== 'string') return null;
   return {
-    framework: typeof candidate.framework === 'string' ? candidate.framework : 'unknown',
+    framework:
+      typeof candidate.framework === 'string' ? candidate.framework : 'unknown',
     rateLimits: Array.isArray(candidate.rateLimits) ? candidate.rateLimits : [],
-    planType: typeof candidate.planType === 'string' ? candidate.planType : undefined,
+    planType:
+      typeof candidate.planType === 'string' ? candidate.planType : undefined,
     updatedAt: candidate.updatedAt,
   };
 }
@@ -174,10 +176,30 @@ export async function fetchSessionTelemetry(): Promise<SessionTelemetry[]> {
   return normalizeTelemetrySessions(data);
 }
 
-export async function fetchAccountTelemetry(): Promise<AccountTelemetry | null> {
+export async function fetchAccountTelemetry(): Promise<Record<
+  string,
+  AccountTelemetry
+> | null> {
   const res = await fetch('/telemetry/account');
   const data = await jsonOrNull<unknown>(res);
-  return normalizeAccountTelemetry(data);
+  if (!data || typeof data !== 'object') return null;
+
+  const result: Record<string, AccountTelemetry> = {};
+  for (const [framework, telemetry] of Object.entries(
+    data as Record<string, unknown>
+  )) {
+    if (
+      telemetry &&
+      typeof telemetry === 'object' &&
+      'framework' in telemetry
+    ) {
+      const normalized = normalizeAccountTelemetry(
+        telemetry as Partial<AccountTelemetry>
+      );
+      if (normalized) result[framework] = normalized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 export async function fetchTelemetrySetupStatus(): Promise<{
@@ -586,8 +608,7 @@ export const fetchDefaultNotifications = () =>
   fetchConfigBool('defaultNotifications');
 export const setDefaultNotifications = (v: boolean) =>
   setConfigBool('defaultNotifications', v);
-export const fetchClaudeFullscreen = () =>
-  fetchConfigBool('claudeFullscreen');
+export const fetchClaudeFullscreen = () => fetchConfigBool('claudeFullscreen');
 export const setClaudeFullscreen = (v: boolean) =>
   setConfigBool('claudeFullscreen', v);
 

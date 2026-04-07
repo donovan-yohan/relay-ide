@@ -12,6 +12,7 @@ import { stripAnsi, cleanEnv } from './utils.js';
 import { phraseToBranchName } from './git.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
+import { forwardHookEvent } from './telemetry.js';
 import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -118,6 +119,91 @@ function setAgentState(
   ) {
     scheduleBranchCheck(session, deps, 0);
   }
+}
+
+function handleAgentEvent(
+  session: Session,
+  sessionId: string,
+  eventType: string,
+  data: Record<string, unknown> | undefined,
+  deps: HookDeps
+): void {
+  // Map certain event types to agent state changes
+  if (eventType === 'session.started') {
+    setAgentState(session, 'processing', deps);
+  } else if (eventType === 'session.idle' || eventType === 'session.ended') {
+    setAgentState(session, 'idle', deps);
+  } else if (eventType === 'permission.requested') {
+    setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
+    session.lastAttentionNotifiedAt = Date.now();
+    deps.notifySessionAttention(session.id, {
+      displayName: session.displayName,
+      type: session.type,
+    });
+  } else if (eventType === 'tool.started') {
+    setAgentState(session, 'processing', deps);
+    if (data?.tool) {
+      session.currentActivity = { tool: String(data.tool) };
+    }
+  } else if (eventType === 'tool.finished') {
+    session.currentActivity = undefined;
+  } else if (eventType === 'prompt.submitted') {
+    setAgentState(session, 'processing', deps);
+  } else if (eventType === 'state.changed') {
+    // Generic state change from output parser or opencode status events
+    // Only map recognized states
+    const status = data?.status;
+    if (status === 'error') setAgentState(session, 'error', deps);
+  }
+}
+
+function createAgentEventHandler(deps: HookDeps) {
+  return (req: Request, res: Response): void => {
+    const { sessionId, token, eventType, data, timestamp } = req.body as {
+      sessionId?: string;
+      token?: string;
+      eventType?: string;
+      data?: Record<string, unknown>;
+      timestamp?: string;
+    };
+
+    if (!sessionId || !token || !eventType) {
+      res.status(400).json({
+        error: 'Missing required fields: sessionId, token, eventType',
+      });
+      return;
+    }
+
+    // Find the session and validate token
+    const session = deps.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    if (session.hookToken !== token) {
+      res.status(401).json({ error: 'Invalid token' });
+      return;
+    }
+
+    // Record the event for analytics
+    recordSessionEvent({
+      session_id: sessionId,
+      repo_path: session.repoPath,
+      event_type: eventType,
+      ...(data !== undefined && { event_data: data }),
+      timestamp: timestamp || new Date().toISOString(),
+    });
+
+    // Forward to telemetry adapter (e.g. Codex adapter uses this for transcript_path)
+    if (data) {
+      forwardHookEvent(sessionId, eventType, data);
+    }
+
+    handleAgentEvent(session, sessionId, eventType, data, deps);
+
+    res.status(204).end();
+  };
 }
 
 function extractToolDetail(
@@ -235,73 +321,7 @@ export function createHooksRouter(deps: HookDeps): Router {
 
   // POST /agent-event — receives relay events from opencode plugin and codex hooks adapter.
   // Registered BEFORE the query-param token middleware because it takes sessionId/token from body.
-  router.post('/agent-event', (req: Request, res: Response) => {
-    const { sessionId, token, eventType, data, timestamp } = req.body as {
-      sessionId?: string;
-      token?: string;
-      eventType?: string;
-      data?: Record<string, unknown>;
-      timestamp?: string;
-    };
-
-    if (!sessionId || !token || !eventType) {
-      res.status(400).json({
-        error: 'Missing required fields: sessionId, token, eventType',
-      });
-      return;
-    }
-
-    // Find the session and validate token
-    const session = deps.getSession(sessionId);
-    if (!session) {
-      res.status(404).json({ error: 'Session not found' });
-      return;
-    }
-
-    if (session.hookToken !== token) {
-      res.status(401).json({ error: 'Invalid token' });
-      return;
-    }
-
-    // Record the event for analytics
-    recordSessionEvent({
-      session_id: sessionId,
-      repo_path: session.repoPath,
-      event_type: eventType,
-      ...(data !== undefined && { event_data: data }),
-      timestamp: timestamp || new Date().toISOString(),
-    });
-
-    // Map certain event types to agent state changes
-    if (eventType === 'session.started') {
-      setAgentState(session, 'processing', deps);
-    } else if (eventType === 'session.idle' || eventType === 'session.ended') {
-      setAgentState(session, 'idle', deps);
-    } else if (eventType === 'permission.requested') {
-      setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
-      session.lastAttentionNotifiedAt = Date.now();
-      deps.notifySessionAttention(session.id, {
-        displayName: session.displayName,
-        type: session.type,
-      });
-    } else if (eventType === 'tool.started') {
-      setAgentState(session, 'processing', deps);
-      if (data?.tool) {
-        session.currentActivity = { tool: String(data.tool) };
-      }
-    } else if (eventType === 'tool.finished') {
-      session.currentActivity = undefined;
-    } else if (eventType === 'prompt.submitted') {
-      setAgentState(session, 'processing', deps);
-    } else if (eventType === 'state.changed') {
-      // Generic state change from output parser or opencode status events
-      // Only map recognized states
-      const status = data?.status;
-      if (status === 'error') setAgentState(session, 'error', deps);
-    }
-
-    res.status(204).end();
-  });
+  router.post('/agent-event', createAgentEventHandler(deps));
 
   // Middleware: token verification
   router.use((req: Request, res: Response, next) => {

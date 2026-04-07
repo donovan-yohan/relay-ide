@@ -804,29 +804,24 @@ function useTerminalSetup(
   useEffect(() => {
     const term = termRef.current;
     if (sessionId && term && !companionMode) {
-      // Reset terminal modes before switching sessions:
-      // - Exit alternate screen buffer (?1049l)
-      // - Disable mouse tracking modes (?1000l normal, ?1002l button-event,
-      //   ?1003l any-event, ?1006l SGR format, ?1015l URXVT format)
-      // - Disable bracketed paste (?2004l)
-      // Without this, an app like OpenCode that enables mouse tracking will
-      // leave xterm.js generating mouse escape sequences that get echoed as
-      // garbage text in the next session's PTY.
-      term.write(
-        '\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l',
+      // Full reset (RIS) — synchronously resets parser state, all terminal
+      // modes (mouse tracking, bracketed paste, alternate screen), and clears
+      // the screen. This replaces the previous term.write(escapeSequences)
+      // approach which relied on an async callback. If the parser was stuck
+      // waiting for a string terminator from an unterminated escape sequence
+      // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
+      // would never fire, connectPtySocket would never be called, and every
+      // subsequent session would render blank.
+      term.reset();
+      connectPtySocket(
+        sessionId,
+        term,
         () => {
-          term.clear();
-          connectPtySocket(
-            sessionId,
-            term,
-            () => {
-              if (termRef.current)
-                sendPtyResize(termRef.current.cols, termRef.current.rows);
-            },
-            () => {
-              /* session ended */
-            }
-          );
+          if (termRef.current)
+            sendPtyResize(termRef.current.cols, termRef.current.rows);
+        },
+        () => {
+          /* session ended */
         }
       );
     }
@@ -957,11 +952,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const thumbRef = useRef<HTMLDivElement>(null);
 
     const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
-    const activeAgent = useSessionsStore((s) =>
-      s.sessions.find((sess) => sess.id === sessionId)?.agent
+    const activeAgent = useSessionsStore(
+      (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
     );
-    const isFullscreenTerminal =
-      claudeFullscreen && activeAgent === 'claude';
+    const isFullscreenTerminal = claudeFullscreen && activeAgent === 'claude';
 
     const { termRef, fit } = useTerminalSetup(
       containerRef,

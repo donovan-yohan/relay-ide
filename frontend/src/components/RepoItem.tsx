@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   Repo,
   SessionSummary,
@@ -6,15 +6,21 @@ import type {
   PullRequest,
   SidebarItem,
 } from '../lib/types.js';
-import { isAttentionState } from '../lib/state/display-state.js';
+import {
+  isAttentionState,
+  type DisplayState,
+} from '../lib/state/display-state.js';
 import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
-import { formatRelativeTimeCompact } from '../lib/utils.js';
+import { formatRelativeTimeCompact, isMobileDevice } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
+import { SessionIndicator } from './SessionIndicator.js';
 import { MarqueeText } from './MarqueeText.js';
 import ContextMenu from './ContextMenu.js';
+import { useRepoAggregation } from '../hooks/useRepoAggregation.js';
 import './RepoItem.css';
 
+const DOUBLE_CLICK_DELAY_MS = 200;
 const EMPTY_SET = new Set<string>();
 const EMPTY_ARRAY: never[] = [];
 
@@ -70,7 +76,9 @@ export function groupDisplayName(
     }
     return 'default';
   }
-  const renamedSession = sessions.find((s) => s.displayName && s.displayName !== s.repoName);
+  const renamedSession = sessions.find(
+    (s) => s.displayName && s.displayName !== s.repoName
+  );
   if (renamedSession) return renamedSession.displayName;
   const branch = sessions.find((s) => s.branchName)?.branchName;
   const cwdName = sessions[0]?.cwd.split('/').pop();
@@ -137,7 +145,7 @@ interface SessionGroupRowProps {
   rep: SessionSummary;
   isSelected: boolean;
   attention: boolean;
-  dotState: string;
+  dotState: DisplayState;
   matchedPr: PullRequest | undefined;
   cancelLongPress: () => void;
   onSelectSession: (id: string) => void;
@@ -175,7 +183,7 @@ function SessionGroupRow({
       onTouchMove={cancelLongPress}
     >
       <div className="session-row-primary">
-        <span className={`status-dot status-dot--${dotState}`} />
+        <SessionIndicator state={dotState} />
         <span
           className={['session-name', attention && 'bold']
             .filter(Boolean)
@@ -279,7 +287,7 @@ function InactiveRepoRow({
       }}
     >
       <div className="session-row-primary">
-        <span className="status-dot status-dot--inactive" />
+        <SessionIndicator state="inactive" />
         <span className="session-name">
           <MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText>
         </span>
@@ -341,7 +349,37 @@ export function RepoItem({
     [sidebarItems, repo.path]
   );
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
+  const { highestState, attentionCount } = useRepoAggregation(
+    repo.path,
+    sidebarItems,
+    loadingItems
+  );
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
+  const handleHeaderClick = useCallback(() => {
+    if (isMobileDevice) {
+      onSelectWorkspace(repo.path);
+      return;
+    }
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      onToggleCollapse?.();
+    } else {
+      clickTimerRef.current = setTimeout(() => {
+        clickTimerRef.current = null;
+        onSelectWorkspace(repo.path);
+      }, DOUBLE_CLICK_DELAY_MS);
+    }
+  }, [onSelectWorkspace, repo.path, onToggleCollapse]);
 
   function cancelLongPress() {
     if (longPressTimerRef.current) {
@@ -368,7 +406,7 @@ export function RepoItem({
           .filter(Boolean)
           .join(' ')}
         data-track="sidebar.repo.click"
-        onClick={() => onSelectWorkspace(repo.path)}
+        onClick={handleHeaderClick}
       >
         <div className="repo-left">
           <span
@@ -388,6 +426,12 @@ export function RepoItem({
           <span className="repo-name">
             <MarqueeText>{repo.name}</MarqueeText>
           </span>
+          {highestState && attentionCount > 0 ? (
+            <span className="repo-attention-badge">
+              <SessionIndicator state={highestState} />
+              {attentionCount}
+            </span>
+          ) : null}
           {collapsed && totalItems > 0 ? (
             <span className="collapse-count">{totalItems}</span>
           ) : null}
@@ -473,7 +517,7 @@ export function RepoItem({
                 onTouchMove={cancelLongPress}
               >
                 <div className="session-row-primary">
-                  <span className="status-dot status-dot--inactive" />
+                  <SessionIndicator state="inactive" />
                   <span className="session-name">
                     <MarqueeText>
                       {isLoading

@@ -101,7 +101,21 @@ async function restartServiceIfRunning() {
   }
 }
 
+// Skip restart if triggered from a worktree or local dev build — only global
+// installs should touch the production service.
+const WORKTREE_MARKERS = [
+  path.sep + '.worktrees' + path.sep,
+  path.sep + '.claude' + path.sep + 'worktrees' + path.sep,
+  path.sep + '.belayer' + path.sep + 'worktrees' + path.sep,
+];
+const isWorktreeInstall = WORKTREE_MARKERS.some((m) => __dirname.includes(m));
+if (isWorktreeInstall) {
+  console.log(
+    '[postinstall] Running inside a worktree — skipping service restart.'
+  );
+}
+
 // Run restart check (skipped when the server's POST /update API handles its own restart)
-if (!skipRestart) {
+if (!skipRestart && !isWorktreeInstall) {
   restartServiceIfRunning();
 }

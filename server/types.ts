@@ -264,6 +264,8 @@ export interface SessionSummary {
   workspaceId?: string;
   additionalDirs?: string[];
   dataQuality?: EventSourceType;
+  /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
+  permissionType?: 'approval' | 'question';
 }
 
 export interface TelemetryData {
@@ -277,7 +279,7 @@ export interface TelemetryData {
   contextPercent: number;
   contextWindowSize: number;
   costUsd: number | null;
-  source: 'statusLine' | 'jsonl';
+  source: 'statusLine' | 'jsonl' | (string & {});
   updatedAt: string;
 }
 

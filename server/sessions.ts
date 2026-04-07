@@ -366,6 +366,9 @@ function list(): SessionSummary[] {
           ? { additionalDirs: s.additionalDirs }
           : {}),
         ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
+        ...(s._lastEmittedPermissionType !== undefined
+          ? { permissionType: s._lastEmittedPermissionType }
+          : {}),
       })
     )
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));

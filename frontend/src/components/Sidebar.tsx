@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   useUiStore,
@@ -19,6 +13,24 @@ import { fetchOrgPrs } from '../lib/api.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
 import RepoItem from './RepoItem.js';
 import { TuiButton } from './TuiButton.js';
+import {
+  DndContext,
+  closestCenter,
+  MouseSensor,
+  TouchSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import './Sidebar.css';
 
 // ── Resize hook ──
@@ -60,7 +72,29 @@ function useSidebarResize() {
   return { startResize, resetWidth };
 }
 
-// ── Ungrouped workspace list (no DnD in React version — order from store) ──
+// ── Sortable repo wrapper for DnD ──
+
+function SortableRepoWrapper({
+  id,
+  children,
+}: {
+  id: string;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } =
+    useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: transition ?? undefined,
+  };
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      {children}
+    </div>
+  );
+}
+
+// ── Ungrouped workspace list with DnD reorder ──
 
 interface UngroupedListProps {
   ungroupedRepos: Repo[];
@@ -95,45 +129,118 @@ function UngroupedList({
 }: UngroupedListProps) {
   const getSessionsForRepo = useSessionsStore((s) => s.getSessionsForRepo);
   const sidebarItems = useSessionsStore((s) => s.sidebarItems);
+  const reorderWorkspaces = useSessionsStore((s) => s.reorderWorkspaces);
+  const allRepos = useSessionsStore((s) => s.repos);
+  const workspaceGroups = useSessionsStore((s) => s.workspaceGroups);
+  const collapsedWorkspaces = useUiStore((s) => s.collapsedWorkspaces);
+  const toggleWorkspaceCollapse = useUiStore((s) => s.toggleWorkspaceCollapse);
+
+  // Local order for DnD — only re-sync when repos are added/removed
+  const [localOrder, setLocalOrder] = useState<string[]>([]);
+
+  useEffect(() => {
+    const incomingIds = ungroupedRepos.map((r) => r.path);
+    setLocalOrder((prev) => {
+      const prevSet = new Set(prev);
+      const incomingSet = new Set(incomingIds);
+      const added = incomingIds.some((id) => !prevSet.has(id));
+      const removed = prev.some((id) => !incomingSet.has(id));
+      if (added || removed || prev.length === 0) return incomingIds;
+      return prev;
+    });
+  }, [ungroupedRepos]);
+
+  const reposByPath = useMemo(
+    () => new Map(ungroupedRepos.map((r) => [r.path, r])),
+    [ungroupedRepos]
+  );
+
+  const orderedRepos = useMemo(
+    () =>
+      localOrder
+        .map((p) => reposByPath.get(p))
+        .filter((r): r is Repo => r !== undefined),
+    [localOrder, reposByPath]
+  );
+
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 500, tolerance: 5 },
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = localOrder.indexOf(active.id as string);
+      const newIndex = localOrder.indexOf(over.id as string);
+      const newOrder = arrayMove(localOrder, oldIndex, newIndex);
+      setLocalOrder(newOrder);
+      const groupedPaths = new Set(workspaceGroups.flatMap((ws) => ws.repos));
+      const groupedOrder = allRepos
+        .filter((r) => groupedPaths.has(r.path))
+        .map((r) => r.path);
+      reorderWorkspaces([...groupedOrder, ...newOrder]);
+    },
+    [localOrder, allRepos, workspaceGroups, reorderWorkspaces]
+  );
 
   return (
-    <div className="sidebar-ungrouped-list">
-      {ungroupedRepos.map((repo) => {
-        const activeSessions = getSessionsForRepo(repo.path);
-        const activeWorktreePaths = new Set(
-          activeSessions.map((s) => s.worktreePath).filter(Boolean) as string[]
-        );
-        const inactiveWorktrees = worktrees.filter(
-          (wt) =>
-            wt.repoPath === repo.path &&
-            wt.path.startsWith(repo.path + '/') &&
-            !activeWorktreePaths.has(wt.path)
-        );
-        const groupedByPath = buildGroupedByPath(repo.path, activeSessions);
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={localOrder}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="sidebar-ungrouped-list">
+          {orderedRepos.map((repo) => {
+            const activeSessions = getSessionsForRepo(repo.path);
+            const activeWorktreePaths = new Set(
+              activeSessions
+                .map((s) => s.worktreePath)
+                .filter(Boolean) as string[]
+            );
+            const inactiveWorktrees = worktrees.filter(
+              (wt) =>
+                wt.repoPath === repo.path &&
+                wt.path.startsWith(repo.path + '/') &&
+                !activeWorktreePaths.has(wt.path)
+            );
+            const groupedByPath = buildGroupedByPath(repo.path, activeSessions);
 
-        return (
-          <div key={repo.path}>
-            <RepoItem
-              repo={repo}
-              sessionGroups={groupedByPath}
-              inactiveWorktrees={inactiveWorktrees}
-              isActive={activeRepoPath === repo.path && !activeSessionId}
-              activeSessionId={activeSessionId ?? null}
-              onSelectWorkspace={onSelectWorkspace}
-              onSelectSession={onSelectSession}
-              onNewWorktree={onNewWorktree}
-              onOpenSettings={onOpenSettings}
-              onDeleteSession={onDeleteSession}
-              onDeleteWorktree={onDeleteWorktree}
-              onResumeWorktree={onResumeWorktree}
-              onLaunchRepoSession={onLaunchRepoSession}
-              orgPrs={orgPrs}
-              sidebarItems={sidebarItems}
-            />
-          </div>
-        );
-      })}
-    </div>
+            return (
+              <SortableRepoWrapper key={repo.path} id={repo.path}>
+                <RepoItem
+                  repo={repo}
+                  sessionGroups={groupedByPath}
+                  inactiveWorktrees={inactiveWorktrees}
+                  isActive={activeRepoPath === repo.path && !activeSessionId}
+                  activeSessionId={activeSessionId ?? null}
+                  onSelectWorkspace={onSelectWorkspace}
+                  onSelectSession={onSelectSession}
+                  onNewWorktree={onNewWorktree}
+                  onOpenSettings={onOpenSettings}
+                  onDeleteSession={onDeleteSession}
+                  onDeleteWorktree={onDeleteWorktree}
+                  onResumeWorktree={onResumeWorktree}
+                  onLaunchRepoSession={onLaunchRepoSession}
+                  orgPrs={orgPrs}
+                  sidebarItems={sidebarItems}
+                  collapsed={collapsedWorkspaces.has(repo.path)}
+                  onToggleCollapse={() => toggleWorkspaceCollapse(repo.path)}
+                />
+              </SortableRepoWrapper>
+            );
+          })}
+        </div>
+      </SortableContext>
+    </DndContext>
   );
 }
 
@@ -299,11 +406,14 @@ export function Sidebar({
     () => new Map(repos.map((r) => [r.path, r])),
     [repos]
   );
-  const handleSelectWorkspace = useCallback((path: string) => {
-    useUiStore.setState({ activeRepoPath: path });
-    useSessionsStore.getState().setActiveSessionId(null);
-    closeSidebar();
-  }, [closeSidebar]);
+  const handleSelectWorkspace = useCallback(
+    (path: string) => {
+      useUiStore.setState({ activeRepoPath: path });
+      useSessionsStore.getState().setActiveSessionId(null);
+      closeSidebar();
+    },
+    [closeSidebar]
+  );
   const handleHomeBrand = useCallback(() => {
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setAnalyticsView(null);

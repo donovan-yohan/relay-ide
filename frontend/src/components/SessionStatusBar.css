@@ -40,8 +40,26 @@
 .status-cost,
 .status-tokens,
 .status-activity,
-.status-rate-limits {
+.status-rate-limits,
+.status-framework {
   color: var(--text-muted);
+}
+
+.status-framework {
+  text-transform: lowercase;
+  min-width: 60px;
+}
+
+.status-framework--claude {
+  color: var(--color-coral);
+}
+
+.status-framework--codex {
+  color: var(--color-green);
+}
+
+.status-framework--opencode {
+  color: var(--color-purple);
 }
 
 .status-context {
@@ -73,7 +91,8 @@
   .status-model,
   .status-tokens,
   .status-cost,
-  .status-rate-limits {
+  .status-rate-limits,
+  .status-framework {
     display: none;
   }
 

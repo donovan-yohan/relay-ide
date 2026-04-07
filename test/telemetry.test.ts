@@ -13,6 +13,7 @@ import {
   stopTelemetry,
   type TelemetryDeps,
 } from '../server/telemetry.js';
+import { getAdapterForFramework } from '../server/telemetry-adapter.js';
 import type { Session } from '../server/types.js';
 
 const noopAuth = (
@@ -127,22 +128,24 @@ test('parses session telemetry from the statusLine file', () => {
   });
 
   expect(account).toEqual({
-    framework: 'claude',
-    rateLimits: [
-      {
-        name: 'five_hour',
-        usedPercent: 22,
-        resetsAt: '2026-03-31T19:30:00Z',
-        windowMinutes: 300,
-      },
-      {
-        name: 'seven_day',
-        usedPercent: 8,
-        resetsAt: '2026-04-03T00:00:00Z',
-        windowMinutes: 10080,
-      },
-    ],
-    updatedAt: account?.updatedAt,
+    claude: {
+      framework: 'claude',
+      rateLimits: [
+        {
+          name: 'five_hour',
+          usedPercent: 22,
+          resetsAt: '2026-03-31T19:30:00Z',
+          windowMinutes: 300,
+        },
+        {
+          name: 'seven_day',
+          usedPercent: 8,
+          resetsAt: '2026-04-03T00:00:00Z',
+          windowMinutes: 10080,
+        },
+      ],
+      updatedAt: account?.claude?.updatedAt,
+    },
   });
 
   expect(
@@ -159,7 +162,7 @@ test('missing statusLine file leaves telemetry undefined', () => {
   startTelemetry(makeDeps(['missing-session'], events));
 
   expect(getTelemetryForSession('missing-session')).toBe(undefined);
-  expect(getAccountTelemetry()).toBe(null);
+  expect(getAccountTelemetry()).toEqual({});
   expect(events.length).toBe(0);
 });
 
@@ -204,7 +207,7 @@ test('malformed statusLine JSON is ignored without crashing', () => {
   }).not.toThrow();
 
   expect(getTelemetryForSession('bad-session')).toBe(undefined);
-  expect(getAccountTelemetry()).toBe(null);
+  expect(getAccountTelemetry()).toEqual({});
   expect(events.length).toBe(0);
 });
 
@@ -267,7 +270,7 @@ test('restores pending telemetry from disk on startup', () => {
     source: 'statusLine',
     updatedAt: '2026-03-31T18:00:00Z',
   });
-  expect(getAccountTelemetry()).toEqual(restoredAccount);
+  expect(getAccountTelemetry()).toEqual({ claude: restoredAccount });
   expect(fs.existsSync(pendingPath)).toBe(false);
   expect(events.length).toBe(0);
 });
@@ -350,7 +353,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
 
     const accountRes = await fetch(`${baseUrl}/telemetry/account`);
     expect(accountRes.status).toBe(200);
-    expect(await accountRes.json()).toEqual(restoredAccount);
+    expect(await accountRes.json()).toEqual({ claude: restoredAccount });
 
     const setupStatusRes = await fetch(`${baseUrl}/telemetry/setup-status`);
     expect(setupStatusRes.status).toBe(200);
@@ -493,6 +496,43 @@ test('multiple frameworks telemetry coexist without overwriting', () => {
   expect(getTelemetryForSession('claudeSession')).toBeTruthy();
   expect(getTelemetryForSession('opencodeSession')).toBeTruthy();
 
-  // Claude account should be returned by default
-  expect(getAccountTelemetry()).toEqual(claudeAccount);
+  // Both frameworks' account telemetry should be present
+  const allAccountTelemetry = getAccountTelemetry();
+  expect(allAccountTelemetry.claude).toEqual(claudeAccount);
+  expect(allAccountTelemetry.opencode).toEqual(opencodeAccount);
+});
+
+test('Codex adapter registered and discoverable via getAdapterForFramework', () => {
+  const deps = makeDeps([], []);
+
+  const adapter = getAdapterForFramework('codex', deps);
+
+  expect(adapter).toBeTruthy();
+  expect(adapter!.framework).toBe('codex');
+});
+
+test('multi-adapter coexistence: Claude and Codex adapters work independently', () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+  writeStatusLineFile('claude-session', sampleStatusLinePayload());
+
+  const deps: TelemetryDeps = {
+    configDir: tmpDir,
+    getActiveSessions: () => [
+      { id: 'codex-session', agent: 'codex' } as Session,
+      { id: 'claude-session', agent: 'claude' } as Session,
+    ],
+    broadcastEvent: (type, data) => {
+      if (data === undefined) events.push({ type });
+      else events.push({ type, data });
+    },
+  };
+
+  startTelemetry(deps);
+
+  const claudeTelemetry = getTelemetryForSession('claude-session');
+
+  expect(claudeTelemetry).toBeTruthy();
+  expect(claudeTelemetry!.source).toBe('statusLine');
+  expect(claudeTelemetry!.totalInputTokens).toBe(12400);
 });

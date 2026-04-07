@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   computeAttentionScore,
   sortByAttention,
+  highestPriorityState,
 } from '../frontend/src/lib/state/attention.js';
 import type { SidebarItem } from '../frontend/src/lib/types.js';
+import type { DisplayState } from '../frontend/src/lib/state/display-state.js';
 
 function makeScoreItem(
   overrides: Partial<SidebarItem> & {
@@ -141,5 +143,37 @@ describe('sortByAttention', () => {
     ];
     const sorted = sortByAttention(items);
     expect(sorted[0]!.id).toBe('b');
+  });
+});
+
+describe('highestPriorityState', () => {
+  it('returns null for empty array', () => {
+    expect(highestPriorityState([])).toBeNull();
+  });
+
+  it('returns the only state in a single-item array', () => {
+    expect(highestPriorityState(['running'])).toBe('running');
+  });
+
+  it('prioritizes permission > needs-answer > error > unseen-idle', () => {
+    const states: DisplayState[] = [
+      'unseen-idle',
+      'error',
+      'needs-answer',
+      'permission',
+      'running',
+    ];
+    expect(highestPriorityState(states)).toBe('permission');
+  });
+
+  it('prioritizes unseen-idle > running > initializing > seen-idle > inactive', () => {
+    const states: DisplayState[] = [
+      'inactive',
+      'seen-idle',
+      'initializing',
+      'running',
+      'unseen-idle',
+    ];
+    expect(highestPriorityState(states)).toBe('unseen-idle');
   });
 });

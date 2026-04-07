@@ -12,6 +12,9 @@ import type {
 import { getAdapterForFramework } from './telemetry-adapter.js';
 // Side-effect imports: register adapters in the adapter registry
 import './adapters/claude-telemetry.js';
+// Side-effect import: registers the Codex adapter in the adapter registry
+import './adapters/codex-telemetry.js';
+// Side-effect import: registers the OpenCode adapter in the adapter registry
 import './adapters/opencode-telemetry.js';
 import { createLogger } from './logger.js';
 
@@ -296,13 +299,23 @@ export function getTelemetryForSession(
   return sessionTelemetry.get(sessionId);
 }
 
-export function getAccountTelemetry(): AccountTelemetry | null {
-  // Prefer 'claude' framework; fall back to first available
-  return (
-    accountTelemetryMap.get('claude') ??
-    accountTelemetryMap.values().next().value ??
-    null
-  );
+/**
+ * Forward a hook event to the adapter for the given session.
+ * Called from the hooks router when an agent-event is received.
+ */
+export function forwardHookEvent(
+  sessionId: string,
+  eventType: string,
+  data: Record<string, unknown>
+): void {
+  const adapter = sessionAdapters.get(sessionId);
+  if (adapter?.handleHookEvent) {
+    adapter.handleHookEvent(sessionId, eventType, data);
+  }
+}
+
+export function getAccountTelemetry(): Record<string, AccountTelemetry> {
+  return Object.fromEntries(accountTelemetryMap.entries());
 }
 
 export function createTelemetryRouter(): Router {

@@ -5,6 +5,7 @@ import { execSync } from 'node:child_process';
 import { DEFAULTS } from './config.js';
 import type { Platform, ServicePaths, InstallOpts } from './types.js';
 import { createLogger } from './logger.js';
+import { WORKTREE_DIRS } from './watcher.js';
 
 const logger = createLogger('service');
 
@@ -14,6 +15,68 @@ const __dirname = path.dirname(__filename);
 const SERVICE_LABEL = 'com.relay-ide';
 const HOME = process.env.HOME || process.env.USERPROFILE || '~';
 const CONFIG_DIR = path.join(HOME, '.config', 'relay-ide');
+
+/**
+ * Detect whether the current process is running from a global npm install.
+ * Returns false for worktrees, local dev builds, and npm link.
+ */
+function isGlobalInstall(): boolean {
+  // Worktree paths contain /.worktrees/ or /.claude/worktrees/
+  for (const dir of WORKTREE_DIRS) {
+    if (__dirname.includes(path.sep + dir + path.sep)) return false;
+  }
+  // Global installs live under node's prefix/lib/node_modules/relay-ide
+  const nodePrefix = path.resolve(process.execPath, '..', '..');
+  const globalModules = path.join(
+    nodePrefix,
+    'lib',
+    'node_modules',
+    'relay-ide'
+  );
+  return __dirname.startsWith(globalModules);
+}
+
+/**
+ * Resolve the script path for the service file.
+ * Always uses the global npm binary to prevent worktrees/dev builds from
+ * hijacking the production service. Returns null if no global install found.
+ */
+function resolveGlobalScriptPath(): string | null {
+  // Try to find the global relay-ide binary via node's prefix
+  const nodePrefix = path.resolve(process.execPath, '..', '..');
+  const globalScript = path.join(
+    nodePrefix,
+    'lib',
+    'node_modules',
+    'relay-ide',
+    'dist',
+    'bin',
+    'relay-ide.js'
+  );
+  if (fs.existsSync(globalScript)) return globalScript;
+
+  // Fallback: use `npm prefix -g` to find the global root
+  try {
+    const npmPrefix = execSync('npm prefix -g', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const npmGlobalScript = path.join(
+      npmPrefix,
+      'lib',
+      'node_modules',
+      'relay-ide',
+      'dist',
+      'bin',
+      'relay-ide.js'
+    );
+    if (fs.existsSync(npmGlobalScript)) return npmGlobalScript;
+  } catch (_) {
+    // npm not available
+  }
+
+  return null;
+}
 
 function getPlatform(): Platform {
   if (process.platform === 'darwin') return 'macos';
@@ -132,13 +195,35 @@ function install(opts: InstallOpts): void {
     );
   }
 
+  // Resolve the global binary path once and validate it.
+  // The service plist/unit must always point to the global npm binary.
+  const scriptPath = resolveGlobalScriptPath();
+  if (!scriptPath) {
+    throw new Error(
+      'Cannot install service: no global relay-ide installation found. ' +
+        'Install globally first: npm install -g relay-ide'
+    );
+  }
+
+  // Validate the resolved path is not inside a worktree
+  for (const dir of WORKTREE_DIRS) {
+    if (scriptPath.includes(path.sep + dir + path.sep)) {
+      throw new Error(
+        'Cannot install service: resolved script path is inside a worktree (' +
+          scriptPath +
+          '). Install relay-ide globally first: npm install -g relay-ide'
+      );
+    }
+  }
+
+  if (!isGlobalInstall()) {
+    logger.warn(
+      'Running from a non-global path — service will use the global binary at ' +
+        scriptPath
+    );
+  }
+
   const nodePath = process.execPath;
-  const scriptPath = path.resolve(
-    __dirname,
-    '..',
-    'bin',
-    'relay-ide.js'
-  );
   const configPath = opts.configPath || path.join(CONFIG_DIR, 'config.json');
   const port = opts.port || String(DEFAULTS.port);
   const host = opts.host || DEFAULTS.host;
@@ -245,6 +330,8 @@ export {
   getServicePaths,
   generateServiceFile,
   isInstalled,
+  isGlobalInstall,
+  resolveGlobalScriptPath,
   install,
   uninstall,
   status,
