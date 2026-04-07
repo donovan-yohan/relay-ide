@@ -119,7 +119,7 @@ function normalizeSessionTelemetry(
     turnCount: typeof data.turnCount === 'number' ? data.turnCount : 0,
     subagentCount:
       typeof data.subagentCount === 'number' ? data.subagentCount : 0,
-    source: data.source ?? 'statusLine',
+    source: typeof data.source === 'string' ? data.source : 'statusLine',
     updatedAt:
       typeof data.updatedAt === 'string'
         ? data.updatedAt

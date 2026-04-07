@@ -45,7 +45,7 @@ export interface SessionTelemetry {
   costUsd: number | null;
   turnCount: number;
   subagentCount: number;
-  source: string;
+  source: 'statusLine' | 'jsonl' | (string & {});
   updatedAt: string;
 }
 
