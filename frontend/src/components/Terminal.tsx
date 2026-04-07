@@ -708,6 +708,7 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
   // the TUI app gets a valid DECRPM response and falls back to defaults.
   t.parser.registerCsiHandler({ intermediates: '$', final: 'p' }, (params) => {
     const mode = params[0];
+    if (typeof mode !== 'number') return true;
     sendPtyData(`\x1b[${mode};0$y`);
     return true;
   });
@@ -715,6 +716,7 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
     { prefix: '?', intermediates: '$', final: 'p' },
     (params) => {
       const mode = params[0];
+      if (typeof mode !== 'number') return true;
       sendPtyData(`\x1b[?${mode};0$y`);
       return true;
     }
