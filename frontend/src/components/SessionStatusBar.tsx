@@ -54,12 +54,10 @@ function buildRateLimitLabel(
   return parts.length > 0 ? parts.join(' | ') : '—';
 }
 
-export function SessionStatusBar({
-  sessionId,
-  currentActivity = null,
-  framework,
-}: SessionStatusBarProps) {
-  const keyboardOpen = useUiStore((s) => s.keyboardOpen);
+function useSessionStatusBarData(
+  sessionId: string | null,
+  framework: string | null | undefined
+) {
   const sessionTelemetryById = useTelemetryStore((s) => s.sessionTelemetryById);
   const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
   const accountTelemetry = getAccountTelemetry(framework ?? undefined);
@@ -68,6 +66,31 @@ export function SessionStatusBar({
   const telemetry = sessionId
     ? (sessionTelemetryById[sessionId] ?? null)
     : null;
+
+  return { telemetry, accountTelemetry, frameworkLabel };
+}
+
+function buildActivityLabel(currentActivity: CurrentActivity | null): string {
+  if (!currentActivity) return 'idle';
+  return `${currentActivity.tool}${currentActivity.detail ? `: ${currentActivity.detail}` : ''}`;
+}
+
+function buildTelemetryTitle(
+  telemetry: import('../lib/types.js').TelemetryData | null
+): string {
+  if (!telemetry) return 'telemetry unavailable';
+  return `turns ${telemetry.turnCount} · subagents ${telemetry.subagentCount} · context ${telemetry.contextWindowSize || 'unknown'}`;
+}
+
+export function SessionStatusBar({
+  sessionId,
+  currentActivity = null,
+  framework,
+}: SessionStatusBarProps) {
+  const keyboardOpen = useUiStore((s) => s.keyboardOpen);
+  const { telemetry, accountTelemetry, frameworkLabel } =
+    useSessionStatusBarData(sessionId, framework);
+
   const contextTone = getContextTone(telemetry);
   const contextLabel = getContextLabel(telemetry);
 
@@ -76,15 +99,9 @@ export function SessionStatusBar({
       ? 'status-context status-segment'
       : `status-context status-segment status-context--${contextTone}`;
 
-  const activityLabel = currentActivity
-    ? `${currentActivity.tool}${currentActivity.detail ? `: ${currentActivity.detail}` : ''}`
-    : 'idle';
-
+  const activityLabel = buildActivityLabel(currentActivity);
   const rateLimitLabel = buildRateLimitLabel(accountTelemetry);
-
-  const telemetryTitle = telemetry
-    ? `turns ${telemetry.turnCount} · subagents ${telemetry.subagentCount} · context ${telemetry.contextWindowSize || 'unknown'}`
-    : 'telemetry unavailable';
+  const telemetryTitle = buildTelemetryTitle(telemetry);
 
   return (
     <div className="session-status-bar" hidden={keyboardOpen}>

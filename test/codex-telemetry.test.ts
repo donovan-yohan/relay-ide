@@ -39,10 +39,7 @@ function appendJsonlLines(filePath: string, lines: unknown[]): void {
 }
 
 /** Setup a session: attach, discover transcript via hook, then append data */
-function setupSession(
-  sessionId: string,
-  lines: unknown[]
-): string {
+function setupSession(sessionId: string, lines: unknown[]): string {
   const filePath = createEmptyJsonlFile(`${sessionId}.jsonl`);
   adapter.attach({ id: sessionId });
   adapter.handleHookEvent(sessionId, 'session.started', {
@@ -414,7 +411,11 @@ test('truncated file resets offset and recovers', () => {
     {
       type: 'rate_limits',
       rate_limits: {
-        five_hour: { used_percentage: 10, resets_at: '2026-04-06T20:00:00Z', window_minutes: 300 },
+        five_hour: {
+          used_percentage: 10,
+          resets_at: '2026-04-06T20:00:00Z',
+          window_minutes: 300,
+        },
       },
     },
   ]);

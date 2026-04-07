@@ -164,7 +164,11 @@ function tailFile(
 
     // If file hasn't grown, nothing to read
     if (effectiveOffset === fileSize) {
-      return { events: [], newOffset: effectiveOffset, trailing: leadingFragment };
+      return {
+        events: [],
+        newOffset: effectiveOffset,
+        trailing: leadingFragment,
+      };
     }
 
     // Read only new bytes since last poll
@@ -179,7 +183,8 @@ function tailFile(
     }
 
     // Prepend any trailing fragment from the previous poll
-    const newContent = leadingFragment + buffer.subarray(0, bytesRead).toString('utf-8');
+    const newContent =
+      leadingFragment + buffer.subarray(0, bytesRead).toString('utf-8');
     const lines = newContent.split('\n');
 
     // Last element may be an incomplete line — save it for next poll
@@ -282,7 +287,10 @@ export class CodexTelemetryAdapter implements TelemetryAdapter {
 
     if (events.length === 0) {
       if (state.cachedTelemetry) {
-        return { ...state.cachedTelemetry, updatedAt: new Date().toISOString() };
+        return {
+          ...state.cachedTelemetry,
+          updatedAt: new Date().toISOString(),
+        };
       }
       return null;
     }

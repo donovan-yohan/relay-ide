@@ -952,11 +952,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const thumbRef = useRef<HTMLDivElement>(null);
 
     const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
-    const activeAgent = useSessionsStore((s) =>
-      s.sessions.find((sess) => sess.id === sessionId)?.agent
+    const activeAgent = useSessionsStore(
+      (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
     );
-    const isFullscreenTerminal =
-      claudeFullscreen && activeAgent === 'claude';
+    const isFullscreenTerminal = claudeFullscreen && activeAgent === 'claude';
 
     const { termRef, fit } = useTerminalSetup(
       containerRef,

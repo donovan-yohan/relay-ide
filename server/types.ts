@@ -709,9 +709,14 @@ export interface SessionRollup {
 }
 
 export interface RateLimitSnapshot {
-  fiveHourPercent: number;
-  fiveHourResetsAt: string;
-  sevenDayPercent: number;
-  sevenDayResetsAt: string;
+  windows: RateLimitWindow[];
   timestamp: string;
+  /** @deprecated Use `windows` instead. */
+  fiveHourPercent?: number;
+  /** @deprecated Use `windows` instead. */
+  sevenDayPercent?: number;
+  /** @deprecated Use `windows` instead. */
+  fiveHourResetsAt?: string;
+  /** @deprecated Use `windows` instead. */
+  sevenDayResetsAt?: string;
 }

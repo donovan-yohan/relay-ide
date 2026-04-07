@@ -86,9 +86,14 @@ CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
 CREATE INDEX IF NOT EXISTS idx_ratelimit_ts ON rate_limit_snapshots(timestamp);
 `;
 
+const SCHEMA_V3 = `
+ALTER TABLE rate_limit_snapshots ADD COLUMN windows TEXT;
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ];
 
 const INSERT_SQL =
@@ -154,7 +159,7 @@ function ensureSessionStmts(): void {
   }
   if (!insertRateLimitStmt) {
     insertRateLimitStmt = db.prepare(
-      'INSERT INTO rate_limit_snapshots (five_hour_percent, five_hour_resets_at, seven_day_percent, seven_day_resets_at, timestamp) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO rate_limit_snapshots (windows, timestamp, five_hour_percent, seven_day_percent) VALUES (?, ?, ?, ?)'
     );
   }
 }
@@ -201,17 +206,35 @@ export function flushEventBuffer(sessionId?: string): void {
   }
 }
 
+function findWindowPercent(
+  windows: import('./types.js').RateLimitWindow[],
+  namePattern: string,
+  targetMinutes: number
+): number | null {
+  for (const w of windows) {
+    const name = (w.name ?? '').toLowerCase();
+    if (
+      w.windowMinutes === targetMinutes ||
+      name.includes(namePattern)
+    ) {
+      return w.usedPercent ?? null;
+    }
+  }
+  return null;
+}
+
 export function recordRateLimitSnapshot(snapshot: RateLimitSnapshot): void {
   if (!db) return;
   ensureSessionStmts();
   if (!insertRateLimitStmt) return;
   try {
+    const fiveHour = findWindowPercent(snapshot.windows, 'five_hour', 300);
+    const sevenDay = findWindowPercent(snapshot.windows, 'seven_day', 10080);
     insertRateLimitStmt.run(
-      snapshot.fiveHourPercent,
-      snapshot.fiveHourResetsAt,
-      snapshot.sevenDayPercent,
-      snapshot.sevenDayResetsAt,
-      snapshot.timestamp
+      JSON.stringify(snapshot.windows),
+      snapshot.timestamp,
+      fiveHour,
+      sevenDay
     );
   } catch (err) {
     logger.warn('Failed to record rate limit snapshot:', err);
@@ -1203,11 +1226,27 @@ export function createSessionAnalyticsRouter(): Router {
       .all(since) as Array<Record<string, unknown>>;
 
     res.json({
-      snapshots: rows.map((r) => ({
-        timestamp: r.timestamp,
-        fiveHourPercent: r.five_hour_percent,
-        sevenDayPercent: r.seven_day_percent,
-      })),
+      snapshots: rows.map((r) => {
+        // Parse windows from v3 format if available
+        let windows: import('./types.js').RateLimitWindow[] | undefined;
+        if (r.windows && typeof r.windows === 'string') {
+          try {
+            windows = JSON.parse(
+              r.windows
+            ) as import('./types.js').RateLimitWindow[];
+          } catch {
+            windows = undefined;
+          }
+        }
+        return {
+          timestamp: r.timestamp,
+          fiveHourPercent:
+            r.five_hour_percent ?? findWindowPercent(windows ?? [], 'five_hour', 300),
+          sevenDayPercent:
+            r.seven_day_percent ?? findWindowPercent(windows ?? [], 'seven_day', 10080),
+          windows,
+        };
+      }),
     });
   });
 

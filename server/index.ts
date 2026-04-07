@@ -933,7 +933,8 @@ async function main(): Promise<void> {
     }
     const frontendLogger = createLogger('frontend');
     for (const e of entries.slice(0, 50)) {
-      const level = e.level === 'warn' || e.level === 'error' ? e.level : 'info';
+      const level =
+        e.level === 'warn' || e.level === 'error' ? e.level : 'info';
       const ns = typeof e.ns === 'string' ? e.ns : '?';
       const msg = typeof e.msg === 'string' ? e.msg : '';
       frontendLogger[level](`[${ns}] ${msg}`);
@@ -999,10 +1000,7 @@ async function main(): Promise<void> {
     if (!fiveHour || fiveHour.usedPercent < 0) return;
     lastRateLimitSnapshot = now;
     recordRateLimitSnapshot({
-      fiveHourPercent: fiveHour.usedPercent,
-      fiveHourResetsAt: fiveHour.resetsAt,
-      sevenDayPercent: sevenDay?.usedPercent ?? -1,
-      sevenDayResetsAt: sevenDay?.resetsAt ?? '',
+      windows: account.rateLimits,
       timestamp: new Date().toISOString(),
     });
   }, 60_000);

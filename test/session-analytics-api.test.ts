@@ -62,10 +62,10 @@ beforeAll(async () => {
   flushEventBuffer();
 
   recordRateLimitSnapshot({
-    fiveHourPercent: 62,
-    fiveHourResetsAt: '2026-04-01T14:32:00Z',
-    sevenDayPercent: 91,
-    sevenDayResetsAt: '2026-04-03T00:00:00Z',
+    windows: [
+      { name: 'five_hour', usedPercent: 62, resetsAt: '2026-04-01T14:32:00Z', windowMinutes: 300 },
+      { name: 'seven_day', usedPercent: 91, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+    ],
     timestamp: new Date().toISOString(),
   });
 
