@@ -1,0 +1,25 @@
+test/decrqm-sanitizer.test.ts
+  e763c425d46b307f 1-121
+frontend/src/components/Terminal.tsx
+  e763c425d46b307f 711,719
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bd3cd5f81c76cbb0b533bf0bc91245ad6d405aab",
+  "prompts": {
+    "e763c425d46b307f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8662fb9b-13d9-4a36-9d15-461e8c07470c",
+        "model": "<synthetic>"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 123,
+      "total_deletions": 0,
+      "accepted_lines": 123,
+      "overriden_lines": 0
+    }
+  }
+}
