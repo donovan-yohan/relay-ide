@@ -1,0 +1,27 @@
+frontend/src/lib/stores/telemetry.ts
+  74ff3a893a2ec1e2 122
+frontend/src/lib/types.ts
+  74ff3a893a2ec1e2 48
+server/types.ts
+  74ff3a893a2ec1e2 280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "91c4198304a0c4f8d6dd47649ddcecb1540a907e",
+  "prompts": {
+    "74ff3a893a2ec1e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc80e74-242d-4281-a042-128960365b89",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 3,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
