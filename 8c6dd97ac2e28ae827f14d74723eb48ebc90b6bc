@@ -1,0 +1,52 @@
+frontend/src/components/SessionStatusBar.tsx
+  3b81c5bf86bb36aa 57-60,69-92,102,104
+server/hooks.ts
+  1929882cf80d65b0 124-208
+  d2d440805ff8cade 324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "8c6dd97ac2e28ae827f14d74723eb48ebc90b6bc",
+  "prompts": {
+    "1929882cf80d65b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-50599120-060b-4617-b888-7f3538034a2f",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 85,
+      "total_deletions": 0,
+      "accepted_lines": 85,
+      "overriden_lines": 0
+    },
+    "3b81c5bf86bb36aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-02787c82-5d40-465d-a355-36788f1c1fdf",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 31,
+      "total_deletions": 14,
+      "accepted_lines": 31,
+      "overriden_lines": 0
+    },
+    "d2d440805ff8cade": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-587dba64-e1e7-4e27-bb1f-d130257a1fdc",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 72,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
