@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { aggregateRepo } from '../frontend/src/hooks/useRepoAggregation.js';
 import { highestPriorityState } from '../frontend/src/lib/state/attention.js';
-import { isAttentionState } from '../frontend/src/lib/state/display-state.js';
 import type { DisplayState } from '../frontend/src/lib/state/display-state.js';
 import type { SidebarItem } from '../frontend/src/lib/types.js';
 
@@ -53,37 +53,7 @@ describe('highestPriorityState', () => {
   });
 });
 
-describe('repo aggregation logic', () => {
-  function aggregateRepo(
-    repoPath: string,
-    items: SidebarItem[],
-    loadingItems?: Set<string>
-  ) {
-    const repoItems = items.filter((item) => item.repoPath === repoPath);
-
-    const isLoading = repoItems.some((item) => loadingItems?.has(item.path));
-
-    if (isLoading) {
-      return {
-        highestState: 'initializing' as const,
-        attentionCount: 0,
-        isLoading: true,
-      };
-    }
-
-    const states = repoItems.map((item) => item.displayState);
-    const highestState = highestPriorityState(states);
-    const attentionCount = repoItems.filter((item) =>
-      isAttentionState(item.displayState)
-    ).length;
-
-    return {
-      highestState,
-      attentionCount,
-      isLoading: false,
-    };
-  }
-
+describe('aggregateRepo', () => {
   it('filters items by repoPath', () => {
     const items: SidebarItem[] = [
       makeItem({ repoPath: '/repo1', displayState: 'permission' }),
@@ -113,6 +83,26 @@ describe('repo aggregation logic', () => {
     const result = aggregateRepo('/repo', items, loadingItems);
     expect(result.highestState).toBe('initializing');
     expect(result.attentionCount).toBe(0);
+    expect(result.isLoading).toBe(true);
+  });
+
+  it('detects repo-scoped loading keys', () => {
+    const items: SidebarItem[] = [
+      makeItem({ path: '/repo/wt1', displayState: 'running' }),
+    ];
+    const loadingItems = new Set(['new-worktree:/repo']);
+    const result = aggregateRepo('/repo', items, loadingItems);
+    expect(result.highestState).toBe('initializing');
+    expect(result.isLoading).toBe(true);
+  });
+
+  it('detects repo-session loading key', () => {
+    const items: SidebarItem[] = [
+      makeItem({ path: '/repo/wt1', displayState: 'running' }),
+    ];
+    const loadingItems = new Set(['repo-session:/repo']);
+    const result = aggregateRepo('/repo', items, loadingItems);
+    expect(result.highestState).toBe('initializing');
     expect(result.isLoading).toBe(true);
   });
 

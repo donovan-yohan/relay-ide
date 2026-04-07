@@ -6,7 +6,10 @@ import type {
   PullRequest,
   SidebarItem,
 } from '../lib/types.js';
-import { isAttentionState } from '../lib/state/display-state.js';
+import {
+  isAttentionState,
+  type DisplayState,
+} from '../lib/state/display-state.js';
 import { deriveColor } from '../lib/colors.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { formatRelativeTimeCompact, isMobileDevice } from '../lib/utils.js';
@@ -142,7 +145,7 @@ interface SessionGroupRowProps {
   rep: SessionSummary;
   isSelected: boolean;
   attention: boolean;
-  dotState: string;
+  dotState: DisplayState;
   matchedPr: PullRequest | undefined;
   cancelLongPress: () => void;
   onSelectSession: (id: string) => void;
@@ -180,11 +183,7 @@ function SessionGroupRow({
       onTouchMove={cancelLongPress}
     >
       <div className="session-row-primary">
-        <SessionIndicator
-          state={
-            dotState as import('../lib/state/display-state.js').DisplayState
-          }
-        />
+        <SessionIndicator state={dotState} />
         <span
           className={['session-name', attention && 'bold']
             .filter(Boolean)

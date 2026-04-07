@@ -60,8 +60,10 @@ export function deriveBackendState(
 function initialDisplayState(sessions: SessionSummary[]): DisplayState {
   if (sessions.length === 0) return 'inactive';
   switch (deriveBackendState(sessions)) {
-    case 'permission':
-      return 'permission';
+    case 'permission': {
+      const hasQuestion = sessions.some((s) => s.permissionType === 'question');
+      return hasQuestion ? 'needs-answer' : 'permission';
+    }
     case 'error':
       return 'error';
     case 'running':

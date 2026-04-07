@@ -1,18 +1,5 @@
 import { describe, it, expect } from 'vitest';
-
-const config: Record<
-  string,
-  { char: string; colorClass: string; bold: boolean }
-> = {
-  initializing: { char: '●', colorClass: 'ind-green-dim', bold: false },
-  running: { char: '●', colorClass: 'ind-green', bold: false },
-  'unseen-idle': { char: '▶', colorClass: 'ind-yellow', bold: true },
-  'seen-idle': { char: '▶', colorClass: 'ind-yellow-muted', bold: false },
-  permission: { char: '◆', colorClass: 'ind-red', bold: true },
-  'needs-answer': { char: '◇', colorClass: 'ind-red', bold: true },
-  error: { char: '■', colorClass: 'ind-red', bold: true },
-  inactive: { char: '─', colorClass: 'ind-gray', bold: false },
-};
+import { config } from '../frontend/src/components/SessionIndicator.js';
 
 describe('SessionIndicator shape language', () => {
   it('running uses filled circle (●) with green', () => {

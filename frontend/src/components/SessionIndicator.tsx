@@ -5,7 +5,7 @@ interface SessionIndicatorProps {
   state: DisplayState;
 }
 
-const config: Record<
+export const config: Record<
   DisplayState,
   { char: string; colorClass: string; bold: boolean }
 > = {
