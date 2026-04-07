@@ -159,7 +159,7 @@ function ensureSessionStmts(): void {
   }
   if (!insertRateLimitStmt) {
     insertRateLimitStmt = db.prepare(
-      'INSERT INTO rate_limit_snapshots (windows, timestamp) VALUES (?, ?)'
+      'INSERT INTO rate_limit_snapshots (windows, timestamp, five_hour_percent, seven_day_percent) VALUES (?, ?, ?, ?)'
     );
   }
 }
@@ -206,14 +206,35 @@ export function flushEventBuffer(sessionId?: string): void {
   }
 }
 
+function findWindowPercent(
+  windows: import('./types.js').RateLimitWindow[],
+  namePattern: string,
+  targetMinutes: number
+): number | null {
+  for (const w of windows) {
+    const name = (w.name ?? '').toLowerCase();
+    if (
+      w.windowMinutes === targetMinutes ||
+      name.includes(namePattern)
+    ) {
+      return w.usedPercent ?? null;
+    }
+  }
+  return null;
+}
+
 export function recordRateLimitSnapshot(snapshot: RateLimitSnapshot): void {
   if (!db) return;
   ensureSessionStmts();
   if (!insertRateLimitStmt) return;
   try {
+    const fiveHour = findWindowPercent(snapshot.windows, 'five_hour', 300);
+    const sevenDay = findWindowPercent(snapshot.windows, 'seven_day', 10080);
     insertRateLimitStmt.run(
       JSON.stringify(snapshot.windows),
-      snapshot.timestamp
+      snapshot.timestamp,
+      fiveHour,
+      sevenDay
     );
   } catch (err) {
     logger.warn('Failed to record rate limit snapshot:', err);
@@ -1219,8 +1240,10 @@ export function createSessionAnalyticsRouter(): Router {
         }
         return {
           timestamp: r.timestamp,
-          fiveHourPercent: r.five_hour_percent,
-          sevenDayPercent: r.seven_day_percent,
+          fiveHourPercent:
+            r.five_hour_percent ?? findWindowPercent(windows ?? [], 'five_hour', 300),
+          sevenDayPercent:
+            r.seven_day_percent ?? findWindowPercent(windows ?? [], 'seven_day', 10080),
           windows,
         };
       }),

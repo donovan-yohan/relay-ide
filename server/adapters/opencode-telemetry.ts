@@ -174,9 +174,8 @@ export class OpenCodeTelemetryAdapter implements TelemetryAdapter {
   private deps: TelemetryDeps;
   private eventAdapter: AgentEventAdapter;
   private unsubscribe: (() => void) | null = null;
-  // Cached telemetry from latest event
-  private cachedTelemetry: Omit<TelemetryData, 'updatedAt'> | null = null;
-  // Cached account telemetry from latest event
+  private attachedSessions = new Set<string>();
+  private cachedTelemetry = new Map<string, Omit<TelemetryData, 'updatedAt'>>();
   private cachedAccount: Omit<
     AccountTelemetry,
     'framework' | 'updatedAt'
@@ -184,25 +183,31 @@ export class OpenCodeTelemetryAdapter implements TelemetryAdapter {
 
   constructor(deps: TelemetryDeps) {
     this.deps = deps;
-    this.eventAdapter = createEventAdapter();
+    this.eventAdapter = deps.eventAdapter ?? createEventAdapter();
   }
 
-  attach(_session: TelemetrySession): void {
-    // Subscribe to telemetry.updated events from the event bus
-    this.unsubscribe = this.eventAdapter.on(
-      'telemetry.updated',
-      (event: AgentEvent) => {
-        this.handleTelemetryEvent(event);
-      }
-    );
+  attach(session: TelemetrySession): void {
+    this.attachedSessions.add(session.id);
+    // Subscribe once on first attach
+    if (!this.unsubscribe) {
+      this.unsubscribe = this.eventAdapter.on(
+        'telemetry.updated',
+        (event: AgentEvent) => {
+          this.handleTelemetryEvent(event);
+        }
+      );
+    }
   }
 
   private handleTelemetryEvent(event: AgentEvent): void {
+    // Ignore events for sessions we're not tracking
+    if (!this.attachedSessions.has(event.sessionId)) return;
+
     try {
       const extracted = extractTelemetry(event.sessionId, event.data);
       if (!extracted) return;
 
-      this.cachedTelemetry = extracted.session;
+      this.cachedTelemetry.set(event.sessionId, extracted.session);
       if (extracted.account) {
         this.cachedAccount = extracted.account;
       }
@@ -236,20 +241,16 @@ export class OpenCodeTelemetryAdapter implements TelemetryAdapter {
     }
   }
 
-  /**
-   * Returns the cached telemetry data from the latest event.
-   * If no telemetry has been received yet, returns null.
-   */
-  collectSnapshot(_sessionId: string): TelemetryData | null {
-    if (!this.cachedTelemetry) return null;
+  collectSnapshot(sessionId: string): TelemetryData | null {
+    const cached = this.cachedTelemetry.get(sessionId);
+    if (!cached) return null;
 
     return {
-      ...this.cachedTelemetry,
+      ...cached,
       updatedAt: new Date().toISOString(),
     };
   }
 
-  /** Returns the most recently observed account telemetry, or null if none seen yet. */
   collectAccountTelemetry(): AccountTelemetry | null {
     if (!this.cachedAccount) return null;
 
@@ -260,15 +261,16 @@ export class OpenCodeTelemetryAdapter implements TelemetryAdapter {
     };
   }
 
-  detach(_sessionId: string): void {
-    // Unsubscribe from events
-    if (this.unsubscribe) {
+  detach(sessionId: string): void {
+    this.attachedSessions.delete(sessionId);
+    this.cachedTelemetry.delete(sessionId);
+
+    // Unsubscribe when no sessions remain
+    if (this.attachedSessions.size === 0 && this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
+      this.cachedAccount = null;
     }
-    // Clear cached data
-    this.cachedTelemetry = null;
-    this.cachedAccount = null;
   }
 }
 

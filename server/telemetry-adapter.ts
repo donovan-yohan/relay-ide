@@ -1,4 +1,5 @@
 import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+import type { AgentEventAdapter } from './agent-events.js';
 
 export type TelemetrySession = Pick<Session, 'id'>;
 
@@ -14,6 +15,7 @@ export interface TelemetryDeps {
   getActiveSessions: () => TelemetrySession[];
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
   configDir: string;
+  eventAdapter?: AgentEventAdapter;
 }
 
 const TELEMETRY_ADAPTERS = new Map<
