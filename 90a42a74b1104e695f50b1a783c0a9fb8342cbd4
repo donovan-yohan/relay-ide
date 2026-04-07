@@ -1,0 +1,50 @@
+frontend/src/components/RepoItem.css
+  b254303fa4061dcb 143
+  a3a6d3b90bab07e2 181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "90a42a74b1104e695f50b1a783c0a9fb8342cbd4",
+  "prompts": {
+    "96d28323fa877ad1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_299bf53dfffeDSaoaaH1VIVvMQ-56893129-9eb3-4910-bbb6-702498ddca28",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "a3a6d3b90bab07e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_299bf53dfffeDSaoaaH1VIVvMQ-0955839d-ca94-4341-ae94-cb8f7e8b8530",
+        "model": "unknown"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "b254303fa4061dcb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_299bf53dfffeDSaoaaH1VIVvMQ-1eff6804-d9d5-4af6-adc6-d2b5d6f98eed",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
