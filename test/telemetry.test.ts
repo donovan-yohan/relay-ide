@@ -13,6 +13,7 @@ import {
   stopTelemetry,
   type TelemetryDeps,
 } from '../server/telemetry.js';
+import { getAdapterForFramework } from '../server/telemetry-adapter.js';
 import type { Session } from '../server/types.js';
 
 const noopAuth = (
@@ -398,4 +399,39 @@ test('collectTelemetry reuses a single active session snapshot per poll', () => 
   expect(
     events.filter((event) => event.type === 'session-telemetry').length
   ).toBe(1);
+});
+
+test('Codex adapter registered and discoverable via getAdapterForFramework', () => {
+  const deps = makeDeps([], []);
+
+  const adapter = getAdapterForFramework('codex', deps);
+
+  expect(adapter).toBeTruthy();
+  expect(adapter!.framework).toBe('codex');
+});
+
+test('multi-adapter coexistence: Claude and Codex adapters work independently', () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+  writeStatusLineFile('claude-session', sampleStatusLinePayload());
+
+  const deps: TelemetryDeps = {
+    configDir: tmpDir,
+    getActiveSessions: () => [
+      { id: 'codex-session', agent: 'codex' } as Session,
+      { id: 'claude-session', agent: 'claude' } as Session,
+    ],
+    broadcastEvent: (type, data) => {
+      if (data === undefined) events.push({ type });
+      else events.push({ type, data });
+    },
+  };
+
+  startTelemetry(deps);
+
+  const claudeTelemetry = getTelemetryForSession('claude-session');
+
+  expect(claudeTelemetry).toBeTruthy();
+  expect(claudeTelemetry!.source).toBe('statusLine');
+  expect(claudeTelemetry!.totalInputTokens).toBe(12400);
 });

@@ -7,6 +7,11 @@ export interface TelemetryAdapter {
   attach(session: TelemetrySession): void;
   collectSnapshot(sessionId: string): TelemetryData | null;
   collectAccountTelemetry?(): AccountTelemetry | null;
+  handleHookEvent?(
+    sessionId: string,
+    eventType: string,
+    data: Record<string, unknown>
+  ): void;
   detach(sessionId: string): void;
 }
 

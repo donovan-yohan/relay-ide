@@ -12,6 +12,7 @@ import { stripAnsi, cleanEnv } from './utils.js';
 import { phraseToBranchName } from './git.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
+import { forwardHookEvent } from './telemetry.js';
 import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -271,6 +272,11 @@ export function createHooksRouter(deps: HookDeps): Router {
       ...(data !== undefined && { event_data: data }),
       timestamp: timestamp || new Date().toISOString(),
     });
+
+    // Forward to telemetry adapter (e.g. Codex adapter uses this for transcript_path)
+    if (data) {
+      forwardHookEvent(sessionId, eventType, data);
+    }
 
     // Map certain event types to agent state changes
     if (eventType === 'session.started') {
