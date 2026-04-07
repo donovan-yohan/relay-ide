@@ -127,12 +127,24 @@ test('parses session telemetry from the statusLine file', () => {
   });
 
   expect(account).toEqual({
-    framework: 'claude',
-    rateLimits: [
-      { name: 'five_hour', usedPercent: 22, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 8, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
-    ],
-    updatedAt: account?.updatedAt,
+    claude: {
+      framework: 'claude',
+      rateLimits: [
+        {
+          name: 'five_hour',
+          usedPercent: 22,
+          resetsAt: '2026-03-31T19:30:00Z',
+          windowMinutes: 300,
+        },
+        {
+          name: 'seven_day',
+          usedPercent: 8,
+          resetsAt: '2026-04-03T00:00:00Z',
+          windowMinutes: 10080,
+        },
+      ],
+      updatedAt: account?.claude?.updatedAt,
+    },
   });
 
   expect(
@@ -149,7 +161,7 @@ test('missing statusLine file leaves telemetry undefined', () => {
   startTelemetry(makeDeps(['missing-session'], events));
 
   expect(getTelemetryForSession('missing-session')).toBe(undefined);
-  expect(getAccountTelemetry()).toBe(null);
+  expect(getAccountTelemetry()).toEqual({});
   expect(events.length).toBe(0);
 });
 
@@ -194,7 +206,7 @@ test('malformed statusLine JSON is ignored without crashing', () => {
   }).not.toThrow();
 
   expect(getTelemetryForSession('bad-session')).toBe(undefined);
-  expect(getAccountTelemetry()).toBe(null);
+  expect(getAccountTelemetry()).toEqual({});
   expect(events.length).toBe(0);
 });
 
@@ -202,8 +214,18 @@ test('restores pending telemetry from disk on startup', () => {
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 44, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 55, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 44,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 55,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -247,7 +269,7 @@ test('restores pending telemetry from disk on startup', () => {
     source: 'statusLine',
     updatedAt: '2026-03-31T18:00:00Z',
   });
-  expect(getAccountTelemetry()).toEqual(restoredAccount);
+  expect(getAccountTelemetry()).toEqual({ claude: restoredAccount });
   expect(fs.existsSync(pendingPath)).toBe(false);
   expect(events.length).toBe(0);
 });
@@ -256,8 +278,18 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
   const restoredAccount = {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 9, resetsAt: '2026-03-31T19:30:00Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 18, resetsAt: '2026-04-03T00:00:00Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 9,
+        resetsAt: '2026-03-31T19:30:00Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 18,
+        resetsAt: '2026-04-03T00:00:00Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-03-31T18:00:00Z',
   };
@@ -320,7 +352,7 @@ test('GET /telemetry endpoints return session and account telemetry', async () =
 
     const accountRes = await fetch(`${baseUrl}/telemetry/account`);
     expect(accountRes.status).toBe(200);
-    expect(await accountRes.json()).toEqual(restoredAccount);
+    expect(await accountRes.json()).toEqual({ claude: restoredAccount });
 
     const setupStatusRes = await fetch(`${baseUrl}/telemetry/setup-status`);
     expect(setupStatusRes.status).toBe(200);

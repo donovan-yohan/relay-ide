@@ -518,6 +518,7 @@ function TerminalAreaContent({
                   <SessionStatusBar
                     sessionId={activeSessionId}
                     currentActivity={activeSession?.currentActivity ?? null}
+                    framework={activeSession?.agent}
                   />
                 )}
 

@@ -12,13 +12,14 @@ test.describe('SessionStatusBar React component', () => {
   }) => {
     const bar = page.locator('#active-root .session-status-bar').first();
     await expect(bar).toBeVisible();
+    await expect(bar.locator('.status-framework')).toContainText('claude');
     await expect(bar).toContainText('claude-4.5');
     await expect(bar).toContainText('███████░░░ 67%');
     await expect(bar).toContainText('↓12k ↑3.2k');
     await expect(bar).toContainText('~$12.34');
     await expect(bar).toContainText('[edit: frontend/src/App.svelte]');
     await expect(bar.locator('.status-rate-limits')).toHaveText(
-      '5h: 42% | 7d: 63%'
+      'five_hour: 42% | seven_day: 63%'
     );
   });
 
@@ -53,5 +54,24 @@ test.describe('SessionStatusBar React component', () => {
       maxDiffPixels: 100,
       threshold: 0.2,
     });
+  });
+
+  test('displays framework badge with correct styling', async ({ page }) => {
+    const bar = page.locator('#active-root .session-status-bar').first();
+    const frameworkBadge = bar.locator('.status-framework');
+
+    await expect(frameworkBadge).toBeVisible();
+    await expect(frameworkBadge).toContainText('claude');
+    await expect(frameworkBadge).toHaveClass(/status-framework--claude/);
+  });
+
+  test('renders different frameworks with different colors', async ({
+    page,
+  }) => {
+    const bar = page.locator('#codex-root .session-status-bar').first();
+    const frameworkBadge = bar.locator('.status-framework');
+
+    await expect(frameworkBadge).toContainText('codex');
+    await expect(frameworkBadge).toHaveClass(/status-framework--codex/);
   });
 });

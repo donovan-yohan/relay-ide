@@ -6,6 +6,7 @@ import type {
 } from '../frontend/src/lib/types.js';
 import {
   mergeAccountTelemetrySnapshot,
+  mergeAccountTelemetryByFrameworkSnapshot,
   mergeSessionTelemetrySnapshot,
 } from '../frontend/src/lib/telemetry-sync.js';
 
@@ -36,8 +37,18 @@ function makeAccountTelemetry(
   return {
     framework: 'claude',
     rateLimits: [
-      { name: 'five_hour', usedPercent: 10, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
-      { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+      {
+        name: 'five_hour',
+        usedPercent: 10,
+        resetsAt: '2026-04-01T05:00:00.000Z',
+        windowMinutes: 300,
+      },
+      {
+        name: 'seven_day',
+        usedPercent: 20,
+        resetsAt: '2026-04-07T00:00:00.000Z',
+        windowMinutes: 10080,
+      },
     ],
     updatedAt: '2026-04-01T00:00:00.000Z',
     ...overrides,
@@ -52,8 +63,18 @@ describe('mergeSessionTelemetrySnapshot', () => {
     });
     const currentAccount = makeAccountTelemetry({
       rateLimits: [
-        { name: 'five_hour', usedPercent: 55, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
-        { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+        {
+          name: 'five_hour',
+          usedPercent: 55,
+          resetsAt: '2026-04-01T05:00:00.000Z',
+          windowMinutes: 300,
+        },
+        {
+          name: 'seven_day',
+          usedPercent: 20,
+          resetsAt: '2026-04-07T00:00:00.000Z',
+          windowMinutes: 10080,
+        },
       ],
       updatedAt: '2026-04-01T00:00:10.000Z',
     });
@@ -75,8 +96,18 @@ describe('mergeSessionTelemetrySnapshot', () => {
       currentAccount,
       makeAccountTelemetry({
         rateLimits: [
-          { name: 'five_hour', usedPercent: 20, resetsAt: '2026-04-01T05:00:00.000Z', windowMinutes: 300 },
-          { name: 'seven_day', usedPercent: 20, resetsAt: '2026-04-07T00:00:00.000Z', windowMinutes: 10080 },
+          {
+            name: 'five_hour',
+            usedPercent: 20,
+            resetsAt: '2026-04-01T05:00:00.000Z',
+            windowMinutes: 300,
+          },
+          {
+            name: 'seven_day',
+            usedPercent: 20,
+            resetsAt: '2026-04-07T00:00:00.000Z',
+            windowMinutes: 10080,
+          },
         ],
         updatedAt: '2026-04-01T00:00:05.000Z',
       }),
@@ -102,5 +133,104 @@ describe('mergeSessionTelemetrySnapshot', () => {
 
     expect(Object.keys(mergedSessions)).toEqual(['session-2']);
     expect(mergedSessions['session-2']).toEqual(currentSession);
+  });
+});
+
+describe('mergeAccountTelemetryByFrameworkSnapshot', () => {
+  it('merges per-framework telemetry correctly', () => {
+    const current = {
+      claude: makeAccountTelemetry({
+        framework: 'claude',
+        rateLimits: [
+          {
+            name: 'five_hour',
+            usedPercent: 60,
+            resetsAt: '2026-04-01T05:00:00.000Z',
+            windowMinutes: 300,
+          },
+        ],
+        updatedAt: '2026-04-01T00:00:10.000Z',
+      }),
+    };
+    const incoming = {
+      codex: makeAccountTelemetry({
+        framework: 'codex',
+        rateLimits: [
+          {
+            name: 'five_hour',
+            usedPercent: 30,
+            resetsAt: '2026-04-01T05:00:00.000Z',
+            windowMinutes: 300,
+          },
+        ],
+        updatedAt: '2026-04-01T00:00:15.000Z',
+      }),
+    };
+
+    const merged = mergeAccountTelemetryByFrameworkSnapshot(
+      current,
+      incoming,
+      '2026-04-01T00:00:08.000Z'
+    );
+
+    expect(Object.keys(merged).sort()).toEqual(['claude', 'codex']);
+    expect(merged.claude).toEqual(current.claude);
+    expect(merged.codex).toEqual(incoming.codex);
+  });
+
+  it('prefers newer telemetry per framework', () => {
+    const current = {
+      claude: makeAccountTelemetry({
+        framework: 'claude',
+        rateLimits: [
+          {
+            name: 'five_hour',
+            usedPercent: 60,
+            resetsAt: '2026-04-01T05:00:00.000Z',
+            windowMinutes: 300,
+          },
+        ],
+        updatedAt: '2026-04-01T00:00:10.000Z',
+      }),
+    };
+    const incoming = {
+      claude: makeAccountTelemetry({
+        framework: 'claude',
+        rateLimits: [
+          {
+            name: 'five_hour',
+            usedPercent: 70,
+            resetsAt: '2026-04-01T05:00:00.000Z',
+            windowMinutes: 300,
+          },
+        ],
+        updatedAt: '2026-04-01T00:00:12.000Z',
+      }),
+    };
+
+    const merged = mergeAccountTelemetryByFrameworkSnapshot(
+      current,
+      incoming,
+      '2026-04-01T00:00:08.000Z'
+    );
+
+    expect(merged.claude).toEqual(incoming.claude);
+  });
+
+  it('handles empty maps', () => {
+    expect(
+      mergeAccountTelemetryByFrameworkSnapshot(
+        {},
+        null,
+        '2026-04-01T00:00:00.000Z'
+      )
+    ).toEqual({});
+    expect(
+      mergeAccountTelemetryByFrameworkSnapshot(
+        {},
+        {},
+        '2026-04-01T00:00:00.000Z'
+      )
+    ).toEqual({});
   });
 });
