@@ -1,0 +1,33 @@
+frontend/src/lib/state/sidebar-items.ts
+  c2037e12bfe02f8e 63-66
+frontend/src/components/SessionIndicator.tsx
+  c2037e12bfe02f8e 8
+test/SessionIndicator.test.ts
+  c2037e12bfe02f8e 2
+test/repo-aggregation.test.ts
+  c2037e12bfe02f8e 2,56,89-105
+frontend/src/components/RepoItem.tsx
+  c2037e12bfe02f8e 10,148
+frontend/src/hooks/useRepoAggregation.ts
+  c2037e12bfe02f8e 7,13-14,19,21-27,29,31-33,35-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bc5da6dc42bfe707e6a28ced2040abc52ab6a153",
+  "prompts": {
+    "c2037e12bfe02f8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6164158d-4057-4f23-97b7-bf47b951ae64",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 77,
+      "total_deletions": 86,
+      "accepted_lines": 69,
+      "overriden_lines": 1
+    }
+  }
+}
