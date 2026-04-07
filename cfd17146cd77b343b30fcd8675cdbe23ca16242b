@@ -1,0 +1,23 @@
+frontend/src/lib/logger.ts
+  63ea62e66b82bbac 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "cfd17146cd77b343b30fcd8675cdbe23ca16242b",
+  "prompts": {
+    "63ea62e66b82bbac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aacfba95-2b6a-4b91-8949-4ff24e6faed3",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
