@@ -1,0 +1,33 @@
+server/analytics.ts
+  56a1e441d3233436 162,209-225,231-232,235-237,1243-1246
+server/telemetry-adapter.ts
+  56a1e441d3233436 2,18
+server/types.ts
+  56a1e441d3233436 712-719
+test/session-analytics-api.test.ts
+  56a1e441d3233436 65-68
+server/adapters/opencode-telemetry.ts
+  56a1e441d3233436 177-178,186,189-199,203-205,210,244-246,249,264-266,268-269,272
+test/adapters/opencode-telemetry.test.ts
+  56a1e441d3233436 5-6,9,12,20,39-40,51,58,80,97,107,120-121,123,127-157,159-187,197-198,201,227,259,279,293,305,317,329,343,356,366,380,398,417,430,443,455
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2bdb411f7b3d3e0ee6b836a8bc1d6b5ea4cc11cd",
+  "prompts": {
+    "56a1e441d3233436": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf76ba14-d501-435f-8f65-7a4e4bcdd251",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 165,
+      "total_deletions": 77,
+      "accepted_lines": 165,
+      "overriden_lines": 0
+    }
+  }
+}
