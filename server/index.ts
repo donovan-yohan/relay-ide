@@ -107,7 +107,7 @@ import {
   generateScopedToken,
   cleanExpiredTokens,
 } from './browser-content.js';
-import { createLogger } from './logger.js';
+import { createLogger, initFileLogging } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -599,6 +599,7 @@ async function main(): Promise<void> {
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
   const configDir = getConfigDir(CONFIG_PATH);
+  initFileLogging(path.join(configDir, 'logs'));
   fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
   try {
     initAnalytics(configDir);
@@ -917,6 +918,28 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
+
+  // POST /api/frontend-log — relay frontend logs to the server log file
+  app.post('/api/frontend-log', requireAuth, (req, res) => {
+    const entries = req.body as Array<{
+      ts?: string;
+      level?: string;
+      ns?: string;
+      msg?: string;
+    }>;
+    if (!Array.isArray(entries)) {
+      res.status(400).end();
+      return;
+    }
+    const frontendLogger = createLogger('frontend');
+    for (const e of entries.slice(0, 50)) {
+      const level = e.level === 'warn' || e.level === 'error' ? e.level : 'info';
+      const ns = typeof e.ns === 'string' ? e.ns : '?';
+      const msg = typeof e.msg === 'string' ? e.msg : '';
+      frontendLogger[level](`[${ns}] ${msg}`);
+    }
+    res.status(204).end();
+  });
 
   // GET /api/frameworks — returns available agent frameworks with capabilities
   app.get('/api/frameworks', requireAuth, (_req, res) => {
