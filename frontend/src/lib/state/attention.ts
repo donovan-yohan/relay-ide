@@ -12,6 +12,20 @@ const STATE_SCORES: Record<DisplayState, number> = {
   inactive: 1,
 };
 
+/**
+ * Compute the highest priority state from an array of display states.
+ * Priority order (highest first): permission > needs-answer > error > unseen-idle > running > initializing > seen-idle > inactive
+ * Returns null if the array is empty.
+ */
+export function highestPriorityState(
+  states: DisplayState[]
+): DisplayState | null {
+  if (states.length === 0) return null;
+  return states.reduce((highest, state) =>
+    STATE_SCORES[state] > STATE_SCORES[highest] ? state : highest
+  );
+}
+
 function minutesSinceLastActivity(item: SidebarItem): number {
   if (!item.lastActivity) return Infinity;
   const ms = new Date(item.lastActivity).getTime();

@@ -56,6 +56,16 @@
   flex-shrink: 0;
 }
 
+.repo-attention-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .initial-block {
   display: inline-flex;
   align-items: center;
@@ -243,34 +253,6 @@
   flex-shrink: 0;
 }
 
-.status-dot--running {
-  background: var(--status-success);
-}
-.status-dot--initializing {
-  background: #6b7280;
-}
-.status-dot--unseen-idle {
-  background: var(--status-warning);
-  box-shadow: 0 0 5px 1px rgba(251, 191, 36, 0.45);
-  animation: attention-glow 2s ease-in-out infinite;
-}
-.status-dot--seen-idle {
-  background: var(--status-info);
-}
-.status-dot--permission,
-.status-dot--needs-answer {
-  background: #eab308;
-  box-shadow: 0 0 5px 1px rgba(234, 179, 8, 0.45);
-  animation: attention-glow 1.5s ease-in-out infinite;
-}
-.status-dot--inactive {
-  background: transparent;
-  border: 1.5px solid var(--border);
-}
-.status-dot--error {
-  background: var(--status-error);
-}
-
 .session-row.inactive .session-name {
   color: var(--text-muted);
 }
@@ -283,16 +265,6 @@
 }
 .session-row.loading .session-name {
   color: var(--accent);
-}
-
-@keyframes attention-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 3px 1px rgba(251, 191, 36, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 7px 2px rgba(251, 191, 36, 0.6);
-  }
 }
 
 .session-name {
