@@ -33,6 +33,7 @@ import BootScreen from './components/BootScreen.js';
 import PinGate from './components/PinGate.js';
 import Sidebar from './components/Sidebar.js';
 import Terminal from './components/Terminal.js';
+import { ChatView } from './components/chat/ChatView.js';
 import type { TerminalHandle } from './components/Terminal.js';
 import PrTopBar from './components/PrTopBar.js';
 import SessionTabBar from './components/SessionTabBar.js';
@@ -214,6 +215,7 @@ function useTerminalDerivedState() {
     [activeSession, activeWorkspace]
   );
 
+  const activeSessionMode = useMemo(() => activeSession?.mode, [activeSession]);
   const activeSessionUseTmux = useMemo(
     () => activeSession?.useTmux ?? false,
     [activeSession]
@@ -241,6 +243,7 @@ function useTerminalDerivedState() {
     activeWorkspace,
     workspaceSessions,
     sessionTitle,
+    activeSessionMode,
     activeSessionUseTmux,
     activeWorkspaceCwd,
     fileViewerOpen,
@@ -273,6 +276,41 @@ function AnalyticsViewContent() {
     <AnalyticsDashboard
       onSelectSession={(id) => setAnalyticsView({ sessionId: id })}
       onClose={() => setAnalyticsView(null)}
+    />
+  );
+}
+
+// ─── SessionContent ──────────────────────────────────────────────────────────
+// Routes between ChatView (web sessions) and Terminal (PTY sessions).
+
+function SessionContent({
+  mode,
+  sessionId,
+  terminalRef,
+  onImageUpload,
+  useTmux,
+  onCopyModeChange,
+  onFilePathClick,
+}: {
+  mode?: 'pty' | 'web' | undefined;
+  sessionId: string | null;
+  terminalRef: React.RefObject<TerminalHandle | null>;
+  onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
+  useTmux: boolean;
+  onCopyModeChange: (active: boolean) => void;
+  onFilePathClick: (path: string) => void;
+}) {
+  if (mode === 'web') {
+    return <ChatView sessionId={sessionId} />;
+  }
+  return (
+    <Terminal
+      ref={terminalRef}
+      sessionId={sessionId}
+      onImageUpload={onImageUpload}
+      useTmux={useTmux}
+      onCopyModeChange={onCopyModeChange}
+      onFilePathClick={onFilePathClick}
     />
   );
 }
@@ -338,6 +376,7 @@ function TerminalAreaContent({
     activeWorkspace,
     workspaceSessions,
     sessionTitle,
+    activeSessionMode,
     activeSessionUseTmux,
     activeWorkspaceCwd,
     fileViewerOpen,
@@ -505,9 +544,10 @@ function TerminalAreaContent({
                   hidden={keyboardOpen}
                 />
 
-                <Terminal
-                  ref={terminalRef}
+                <SessionContent
+                  mode={activeSessionMode}
                   sessionId={activeSessionId}
+                  terminalRef={terminalRef}
                   onImageUpload={onImageUpload}
                   useTmux={activeSessionUseTmux}
                   onCopyModeChange={handleCopyModeChange}

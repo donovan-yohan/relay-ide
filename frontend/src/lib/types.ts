@@ -85,7 +85,7 @@ export interface SessionSummary {
   id: string;
   type: 'agent' | 'terminal';
   agent: AgentType;
-  mode?: 'pty' | undefined;
+  mode?: 'pty' | 'web' | undefined;
   repoName: string;
   repoPath: string;
   worktreePath: string | null;
