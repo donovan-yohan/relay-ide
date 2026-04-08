@@ -355,17 +355,20 @@ function list(): SessionSummary[] {
         lastActivity: s.lastActivity,
         idle: s.idle,
         customCommand: s.customCommand,
-        useTmux: s.useTmux,
-        tmuxSessionName: s.tmuxSessionName,
         status: s.status,
         needsBranchRename: !!s.needsBranchRename,
         agentState: s.agentState,
         currentActivity: s.currentActivity,
+        ...(s.mode === 'pty'
+          ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
+          : {}),
         ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
         ...(s.additionalDirs?.length
           ? { additionalDirs: s.additionalDirs }
           : {}),
-        ...(s.dataQuality !== undefined ? { dataQuality: s.dataQuality } : {}),
+        ...(s.mode === 'pty' && s.dataQuality !== undefined
+          ? { dataQuality: s.dataQuality }
+          : {}),
         ...(s._lastEmittedPermissionType !== undefined
           ? { permissionType: s._lastEmittedPermissionType }
           : {}),
@@ -389,13 +392,31 @@ function kill(id: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  try {
-    session.pty.kill('SIGTERM');
-  } catch {
-    // PTY may already be dead (e.g. disconnected sessions) — still delete from registry
-  }
-  if (session.tmuxSessionName) {
-    execFile('tmux', ['kill-session', '-t', session.tmuxSessionName], () => {});
+  if (session.mode === 'pty') {
+    try {
+      session.pty.kill('SIGTERM');
+    } catch {
+      // PTY may already be dead (e.g. disconnected sessions) — still delete from registry
+    }
+    if (session.tmuxSessionName) {
+      execFile(
+        'tmux',
+        ['kill-session', '-t', session.tmuxSessionName],
+        () => {}
+      );
+    }
+  } else {
+    // Web session: disconnect adapter (tears down network connections and event handlers)
+    session.adapter.disconnect().catch(() => {
+      // Adapter may already be disconnected — still proceed with cleanup
+    });
+    if (session.process) {
+      try {
+        session.process.kill('SIGTERM');
+      } catch {
+        /* may already be dead */
+      }
+    }
   }
   const durationS = Math.round(
     (Date.now() - new Date(session.createdAt).getTime()) / 1000
@@ -415,7 +436,11 @@ function kill(id: string): void {
   fireSessionEnd(id, session.cwd, session.branchName);
 
   // Clean up codex hooks adapter temp directory to avoid leaking temp files
-  if (session.agent === 'codex' && session.hooksActive) {
+  if (
+    session.mode === 'pty' &&
+    session.agent === 'codex' &&
+    session.hooksActive
+  ) {
     cleanupCodexHooksAdapter(id);
   }
 
@@ -424,7 +449,7 @@ function kill(id: string): void {
 
 function killAllTmuxSessions(): void {
   for (const session of sessions.values()) {
-    if (session.tmuxSessionName) {
+    if (session.mode === 'pty' && session.tmuxSessionName) {
       execFile(
         'tmux',
         ['kill-session', '-t', session.tmuxSessionName],
@@ -439,7 +464,11 @@ function resize(id: string, cols: number, rows: number): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  session.pty.resize(cols, rows);
+  if (session.mode === 'pty') {
+    session.pty.resize(cols, rows);
+  } else {
+    logger.warn(`resize() called on web session ${id} — no-op`);
+  }
 }
 
 function write(id: string, data: string): void {
@@ -447,7 +476,11 @@ function write(id: string, data: string): void {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  session.pty.write(data);
+  if (session.mode === 'pty') {
+    session.pty.write(data);
+  } else {
+    logger.warn(`write() called on web session ${id} — no-op`);
+  }
 }
 
 function nextTerminalName(): string {
@@ -465,41 +498,44 @@ function serializeAll(configDir: string): void {
   const serializedPty: SerializedPtySession[] = [];
 
   for (const session of sessions.values()) {
-    // Write scrollback to disk
-    const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
-    fs.writeFileSync(scrollbackPath, session.scrollback.join(''), 'utf-8');
+    // Web sessions are not persisted across restarts (adapter state is transient)
+    if (session.mode === 'pty') {
+      // Write scrollback to disk
+      const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
+      fs.writeFileSync(scrollbackPath, session.scrollback.join(''), 'utf-8');
 
-    serializedPty.push({
-      id: session.id,
-      type: session.type,
-      agent: session.agent,
-      repoPath: session.repoPath,
-      worktreePath: session.worktreePath,
-      cwd: session.cwd,
-      repoName: session.repoName,
-      branchName: session.branchName,
-      displayName: session.displayName,
-      createdAt: session.createdAt,
-      lastActivity: session.lastActivity,
-      useTmux: session.useTmux,
-      tmuxSessionName: session.tmuxSessionName || '',
-      customCommand: session.customCommand,
-      yolo: session.yolo,
-      claudeArgs: session.sessionArgs ?? session.claudeArgs,
-      hookToken: session.hookToken,
-      hooksActive: session.hooksActive,
-      continuePolicy: session.continuePolicy,
-      ...(session.needsBranchRename
-        ? { needsBranchRename: true as const }
-        : {}),
-      ...(session.branchRenamePrompt
-        ? { branchRenamePrompt: session.branchRenamePrompt }
-        : {}),
-      ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
-      ...(session.additionalDirs?.length
-        ? { additionalDirs: session.additionalDirs }
-        : {}),
-    });
+      serializedPty.push({
+        id: session.id,
+        type: session.type,
+        agent: session.agent,
+        repoPath: session.repoPath,
+        worktreePath: session.worktreePath,
+        cwd: session.cwd,
+        repoName: session.repoName,
+        branchName: session.branchName,
+        displayName: session.displayName,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivity,
+        useTmux: session.useTmux,
+        tmuxSessionName: session.tmuxSessionName || '',
+        customCommand: session.customCommand,
+        yolo: session.yolo,
+        claudeArgs: session.sessionArgs ?? session.claudeArgs,
+        hookToken: session.hookToken,
+        hooksActive: session.hooksActive,
+        continuePolicy: session.continuePolicy,
+        ...(session.needsBranchRename
+          ? { needsBranchRename: true as const }
+          : {}),
+        ...(session.branchRenamePrompt
+          ? { branchRenamePrompt: session.branchRenamePrompt }
+          : {}),
+        ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+        ...(session.additionalDirs?.length
+          ? { additionalDirs: session.additionalDirs }
+          : {}),
+      });
+    }
   }
 
   const pending: PendingSessionsFile = {
@@ -786,7 +822,8 @@ async function restoreFromDisk(
 function activeTmuxSessionNames(): Set<string> {
   const names = new Set<string>();
   for (const session of sessions.values()) {
-    if (session.tmuxSessionName) names.add(session.tmuxSessionName);
+    if (session.mode === 'pty' && session.tmuxSessionName)
+      names.add(session.tmuxSessionName);
   }
   return names;
 }

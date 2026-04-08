@@ -1,5 +1,8 @@
 import type { IPty } from 'node-pty';
+import type { ChildProcess } from 'node:child_process'; // used by WebSession.process
 import type { OutputParser } from './output-parsers/index.js';
+import type { ProtocolAdapter } from './protocol-adapter.js';
+import type { ChatEvent } from './chat-events.js';
 
 export type AgentState =
   | 'initializing'
@@ -22,7 +25,7 @@ export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
-export type SessionMode = 'pty';
+export type SessionMode = 'pty' | 'web';
 
 // ── Agent Framework Registry ──
 
@@ -206,6 +209,11 @@ interface BaseSession {
   agentState: AgentState;
   workspaceId?: string;
   additionalDirs?: string[];
+  // Shared mutable state (used by both PTY and web sessions)
+  currentActivity?: { tool: string; detail?: string } | undefined;
+  _lastEmittedBackendState?: BackendDisplayState | undefined;
+  _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
+  lastAttentionNotifiedAt?: number | undefined;
 }
 
 export interface PtySession extends BaseSession {
@@ -223,10 +231,6 @@ export interface PtySession extends BaseSession {
   hooksActive: boolean;
   cleanedUp: boolean;
   _lastHookTime?: number | undefined;
-  _lastEmittedBackendState?: BackendDisplayState | undefined;
-  _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
-  lastAttentionNotifiedAt?: number | undefined;
-  currentActivity?: { tool: string; detail?: string } | undefined;
   yolo: boolean;
   /** Framework-specific args (replaces deprecated claudeArgs) */
   sessionArgs?: string[];
@@ -237,7 +241,30 @@ export interface PtySession extends BaseSession {
   dataQuality?: EventSourceType;
 }
 
-export type Session = PtySession;
+export interface WebSession extends BaseSession {
+  mode: 'web';
+  /** Active protocol adapter for this agent backend */
+  adapter: ProtocolAdapter;
+  /**
+   * Agent type identifier (matches AgentFramework.id, e.g. 'codex' | 'opencode' | 'claude').
+   * Mirrors adapter.agentType — kept as a plain field so session summaries and logs
+   * can reference it without dereferencing the adapter object.
+   */
+  adapterType: string;
+  /**
+   * In-memory event buffer for replay on reconnect.
+   * Cap: 1000 events, FIFO eviction (approval events never dropped).
+   * TODO(PR#213): Enforce the cap when adapters start pushing events — use a bounded
+   * buffer helper rather than raw array push to guarantee the eviction policy.
+   */
+  messages: ChatEvent[];
+  /** Currently active turn ID, or null when idle */
+  currentTurnId: string | null;
+  /** Spawned agent subprocess (codex app-server, opencode serve, claude subprocess) */
+  process?: ChildProcess;
+}
+
+export type Session = PtySession | WebSession;
 
 // Summary type for REST API responses (no internal handles)
 export interface SessionSummary {
@@ -255,14 +282,17 @@ export interface SessionSummary {
   lastActivity: string;
   idle: boolean;
   customCommand: string | null;
-  useTmux: boolean;
-  tmuxSessionName: string;
+  /** PTY sessions only */
+  useTmux?: boolean;
+  /** PTY sessions only */
+  tmuxSessionName?: string;
   status: SessionStatus;
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;
   workspaceId?: string;
   additionalDirs?: string[];
+  /** PTY sessions only — tracks data quality of telemetry source */
   dataQuality?: EventSourceType;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
