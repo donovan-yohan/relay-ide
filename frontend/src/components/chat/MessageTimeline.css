@@ -62,3 +62,9 @@
   color: var(--text);
   word-break: break-word;
 }
+
+@media (max-width: 767px) {
+  .message-timeline__text {
+    max-width: 95%;
+  }
+}

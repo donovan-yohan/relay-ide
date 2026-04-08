@@ -5,3 +5,9 @@
   background: var(--bg);
   overflow: hidden;
 }
+
+@media (max-width: 767px) {
+  .chat-view {
+    width: 100%;
+  }
+}

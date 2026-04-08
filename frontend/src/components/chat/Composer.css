@@ -69,3 +69,13 @@
 .composer__btn--interrupt {
   color: var(--status-error);
 }
+
+@media (max-width: 767px) {
+  .composer__textarea {
+    padding: 8px 10px;
+  }
+
+  .composer__actions {
+    padding: 4px 8px;
+  }
+}

@@ -48,7 +48,11 @@ export const ToolCard: React.FC<ToolCardProps> = ({ event }) => {
   const hasInput = Object.keys(event.input).length > 0;
 
   return (
-    <div className="tool-card">
+    <div
+      className="tool-card"
+      role="article"
+      aria-label={event.toolName.toLowerCase()}
+    >
       <button
         className="tool-card__header"
         onClick={() => setExpanded((v) => !v)}

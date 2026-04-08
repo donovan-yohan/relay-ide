@@ -50,7 +50,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [events, interrupt]);
 
   return (
-    <div className="chat-view">
+    <div className="chat-view" role="main" aria-label="chat">
       <MessageTimeline events={events} onApprove={approve} />
       <Composer
         onSend={handleSend}

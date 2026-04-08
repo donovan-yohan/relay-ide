@@ -188,16 +188,31 @@ export const MessageTimeline: React.FC<MessageTimelineProps> = ({
 
   if (groups.length === 0) {
     return (
-      <div className="message-timeline message-timeline--empty">
+      <div
+        className="message-timeline message-timeline--empty"
+        role="log"
+        aria-live="polite"
+        aria-label="message timeline"
+      >
         <span className="message-timeline__empty-label">no messages yet</span>
       </div>
     );
   }
 
   return (
-    <div className="message-timeline">
+    <div
+      className="message-timeline"
+      role="log"
+      aria-live="polite"
+      aria-label="message timeline"
+    >
       {groups.map((group) => (
-        <div key={group.turnId} className="message-timeline__turn">
+        <div
+          key={group.turnId}
+          className="message-timeline__turn"
+          role="group"
+          aria-label={`turn ${group.turnIndex}`}
+        >
           <div className="message-timeline__turn-header">
             turn {group.turnIndex}
           </div>

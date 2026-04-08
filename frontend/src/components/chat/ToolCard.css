@@ -77,3 +77,15 @@
   word-break: break-all;
   overflow-x: auto;
 }
+
+@media (max-width: 767px) {
+  .tool-card__description {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .tool-card__body {
+    display: none;
+  }
+}

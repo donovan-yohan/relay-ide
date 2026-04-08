@@ -88,3 +88,9 @@
 .approval-card__btn--deny {
   color: var(--status-error);
 }
+
+@media (max-width: 767px) {
+  .approval-card__actions {
+    flex-direction: column;
+  }
+}

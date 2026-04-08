@@ -19,7 +19,11 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   decision,
 }) => {
   return (
-    <div className="approval-card">
+    <div
+      className="approval-card"
+      role="alertdialog"
+      aria-label="permission request"
+    >
       <div className="approval-card__header">
         <span className="approval-card__tool">
           {event.toolName.toLowerCase()}
@@ -44,6 +48,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
               type="button"
               disabled={responded}
               onClick={() => onApprove(event.requestId, 'allow')}
+              aria-label="allow command"
             >
               allow
             </button>
@@ -52,6 +57,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
               type="button"
               disabled={responded}
               onClick={() => onApprove(event.requestId, 'allow-always')}
+              aria-label="allow command always"
             >
               allow always
             </button>
@@ -60,6 +66,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
               type="button"
               disabled={responded}
               onClick={() => onApprove(event.requestId, 'deny')}
+              aria-label="deny command"
             >
               deny
             </button>

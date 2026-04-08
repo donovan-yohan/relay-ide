@@ -58,7 +58,7 @@ export const Composer: React.FC<ComposerProps> = ({
   }, [onSend, resize]);
 
   return (
-    <div className="composer">
+    <div className="composer" role="form" aria-label="message composer">
       <textarea
         ref={textareaRef}
         className="composer__textarea"
@@ -67,6 +67,7 @@ export const Composer: React.FC<ComposerProps> = ({
         onInput={handleInput}
         rows={1}
         disabled={isActive}
+        aria-label="message input"
       />
       <div className="composer__actions">
         {isActive ? (
@@ -74,6 +75,7 @@ export const Composer: React.FC<ComposerProps> = ({
             className="composer__btn composer__btn--interrupt"
             type="button"
             onClick={onInterrupt}
+            aria-label="interrupt agent"
           >
             interrupt
           </button>
@@ -82,6 +84,7 @@ export const Composer: React.FC<ComposerProps> = ({
             className="composer__btn composer__btn--send"
             type="button"
             onClick={handleSendClick}
+            aria-label="send message"
           >
             send
           </button>

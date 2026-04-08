@@ -35,3 +35,11 @@
   font-size: var(--font-size-xs);
   white-space: nowrap;
 }
+
+@media (max-width: 767px) {
+  .file-change-card__path {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+}
