@@ -4,7 +4,11 @@ import type { IPty } from 'node-pty';
 import * as sessions from './sessions.js';
 import { WorktreeWatcher } from './watcher.js';
 import type { Session } from './types.js';
+import type { Attachment } from './protocol-adapter.js';
 import { trackEvent } from './analytics.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('ws');
 
 function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
@@ -197,8 +201,75 @@ function setupWebSocket(
       ws.on('close', cleanup);
       ws.on('error', cleanup);
     } else {
-      // Web session — JSON relay will be wired by web-session-handler.ts (PR #213)
+      // Web session — JSON relay
+      // Register the live listener BEFORE replaying the snapshot so no events
+      // are lost in the window between replay completion and listener registration.
+      const snapshot = [...session.messages];
+      const unlisten = session.adapter.on((event) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      });
+      for (const event of snapshot) {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      }
+
+      ws.on('message', (msg) => {
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(msg.toString()) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+        switch (parsed['type']) {
+          case 'ping':
+            replyPing(ws);
+            break;
+          case 'send-message':
+            session.adapter
+              .sendMessage(
+                String(parsed['turnId'] ?? ''),
+                String(parsed['content'] ?? ''),
+                parsed['attachments'] as Attachment[] | undefined
+              )
+              .catch((err: unknown) => logger.error('sendMessage error:', err));
+            break;
+          case 'interrupt':
+            session.adapter
+              .interrupt(String(parsed['turnId'] ?? ''))
+              .catch((err: unknown) => logger.error('interrupt error:', err));
+            break;
+          case 'approve': {
+            const decision = parsed['decision'];
+            if (
+              decision !== 'allow' &&
+              decision !== 'allow-always' &&
+              decision !== 'deny'
+            ) {
+              logger.warn('ws: invalid approval decision', { decision });
+              break;
+            }
+            session.adapter
+              .respondToApproval(String(parsed['requestId'] ?? ''), decision)
+              .catch((err: unknown) =>
+                logger.error('respondToApproval error:', err)
+              );
+            break;
+          }
+          case 'input-response':
+            session.adapter
+              .respondToInput(
+                String(parsed['requestId'] ?? ''),
+                (parsed['answers'] as Record<string, string[]> | undefined) ??
+                  {}
+              )
+              .catch((err: unknown) =>
+                logger.error('respondToInput error:', err)
+              );
+            break;
+        }
+      });
+
       const cleanup = () => {
+        unlisten();
         sessionMap.delete(ws);
       };
       ws.on('close', cleanup);

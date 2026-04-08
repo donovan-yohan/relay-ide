@@ -12,6 +12,7 @@ import type {
   SessionSummary,
   SessionMeta,
   SessionType,
+  WebSession,
 } from './types.js';
 export type { BackendDisplayState };
 import {
@@ -23,6 +24,10 @@ import {
 import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
 import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
+import {
+  createWebSession,
+  type CreateWebParams,
+} from './web-session-handler.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
 import {
@@ -904,9 +909,33 @@ async function populateMetaCache(): Promise<void> {
   );
 }
 
+async function createWeb(
+  params: CreateWebParams
+): Promise<{ session: WebSession }> {
+  const result = await createWebSession(
+    params,
+    sessions,
+    fireBackendStateIfChanged
+  );
+  trackEvent({
+    category: 'session',
+    action: 'created',
+    target: result.session.id,
+    properties: {
+      agent: params.agentType,
+      type: 'agent',
+      workspace: params.repoPath,
+      mode: 'web',
+    },
+    session_id: result.session.id,
+  });
+  return result;
+}
+
 export {
   configure,
   create,
+  createWeb,
   get,
   list,
   kill,
@@ -929,3 +958,4 @@ export {
   AGENT_CONTINUE_ARGS,
   AGENT_YOLO_ARGS,
 };
+export type { CreateWebParams };
