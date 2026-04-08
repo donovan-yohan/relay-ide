@@ -33,20 +33,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   );
 
   const handleInterrupt = useCallback(() => {
-    // Find the latest active turnId
-    let latestTurnId = '';
+    // Find the latest active turnId — skip if none found
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
       if (
         e &&
         'turnId' in e &&
-        typeof (e as { turnId?: string }).turnId === 'string'
+        typeof (e as { turnId?: string }).turnId === 'string' &&
+        (e as { turnId: string }).turnId.length > 0
       ) {
-        latestTurnId = (e as { turnId: string }).turnId;
-        break;
+        interrupt((e as { turnId: string }).turnId);
+        return;
       }
     }
-    interrupt(latestTurnId);
   }, [events, interrupt]);
 
   return (

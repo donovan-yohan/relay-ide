@@ -13,7 +13,7 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ event }) => {
       : event.path;
 
   return (
-    <div className="file-change-card" role="listitem">
+    <div className="file-change-card">
       <span className="file-change-card__path">{displayPath}</span>
       <span className="file-change-card__stats">
         {event.additions > 0 && (

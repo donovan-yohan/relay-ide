@@ -86,6 +86,7 @@
   }
 
   .tool-card__body {
-    display: none;
+    max-height: 120px;
+    overflow: auto;
   }
 }

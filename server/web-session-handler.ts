@@ -30,6 +30,9 @@ export interface CreateWebParams {
 
 export function pushToBuffer(session: WebSession, event: ChatEvent): void {
   if (session.messages.length >= MESSAGE_BUFFER_MAX) {
+    // Prefer evicting non-approval events so approval state is preserved for reconnecting clients.
+    // If the entire buffer is approvals (pathological case), fall back to FIFO eviction of the
+    // oldest approval to prevent unbounded growth — losing a stale approval is better than OOM.
     const evictIdx = session.messages.findIndex(
       (e) =>
         e.type !== 'chat:approval-request' &&
@@ -101,13 +104,28 @@ export async function createWebSession(
     } else if (event.type === 'chat:approval-request') {
       session.agentState = 'permission-prompt';
       onBackendStateChanged(session);
-    } else if (
-      event.type === 'chat:session-status' &&
-      event.status === 'idle'
-    ) {
-      session.agentState = 'idle';
-      session.idle = true;
+    } else if (event.type === 'chat:approval-response') {
+      session.agentState = 'processing';
+      session.idle = false;
       onBackendStateChanged(session);
+    } else if (event.type === 'chat:session-status') {
+      if (event.status === 'idle') {
+        session.agentState = 'idle';
+        session.idle = true;
+        onBackendStateChanged(session);
+      } else if (event.status === 'active') {
+        session.agentState = 'processing';
+        session.idle = false;
+        onBackendStateChanged(session);
+      } else if (event.status === 'error') {
+        session.agentState = 'error';
+        session.idle = true;
+        onBackendStateChanged(session);
+      } else if (event.status === 'disconnected') {
+        session.agentState = 'idle';
+        session.idle = true;
+        onBackendStateChanged(session);
+      }
     }
 
     session.lastActivity = new Date().toISOString();

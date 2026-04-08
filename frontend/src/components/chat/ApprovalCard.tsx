@@ -21,7 +21,8 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   return (
     <div
       className="approval-card"
-      role="alertdialog"
+      role="alert"
+      aria-live="assertive"
       aria-label="permission request"
     >
       <div className="approval-card__header">

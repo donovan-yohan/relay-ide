@@ -56,7 +56,7 @@ export function useChatSocket(sessionId: string | null): ChatSocketState {
 
   const sendMessage = useCallback(
     (turnId: string, content: string) => {
-      send({ type: 'message', turnId, content });
+      send({ type: 'send-message', turnId, content });
     },
     [send]
   );

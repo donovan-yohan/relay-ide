@@ -5,6 +5,7 @@ import type {
   ApprovalRequestEvent,
   ApprovalResponseEvent,
   ToolCallEvent,
+  ToolResultEvent,
   FileChangeEvent,
   ErrorEvent,
 } from '../../../../server/chat-events.js';
@@ -26,6 +27,7 @@ interface TurnGroup {
   textByMessageId: Map<string, string>;
   textMessageOrder: string[];
   toolCalls: ToolCallEvent[];
+  toolResults: Map<string, ToolResultEvent>;
   fileChanges: FileChangeEvent[];
   approvalRequests: ApprovalRequestEvent[];
   approvalResponses: Map<string, ApprovalResponseEvent>;
@@ -41,6 +43,7 @@ function emptyGroup(turnId: string, turnIndex: number): TurnGroup {
     textByMessageId: new Map(),
     textMessageOrder: [],
     toolCalls: [],
+    toolResults: new Map(),
     fileChanges: [],
     approvalRequests: [],
     approvalResponses: new Map(),
@@ -108,6 +111,7 @@ function routeEvent(
       const gid = turnId ?? NO_TURN;
       const group = groupMap.get(gid);
       if (group) {
+        group.toolResults.set(event.toolCallId, event);
         const idx = group.toolCalls.findIndex(
           (t) => t.toolCallId === event.toolCallId
         );
@@ -179,11 +183,20 @@ export const MessageTimeline: React.FC<MessageTimelineProps> = ({
   onApprove,
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const groups = useMemo(() => buildTurnGroups(events), [events]);
 
+  // Auto-scroll only when user is near the bottom (within 150px)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = containerRef.current;
+    if (!container) return;
+    const nearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight <
+      150;
+    if (nearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [events.length]);
 
   if (groups.length === 0) {
@@ -201,6 +214,7 @@ export const MessageTimeline: React.FC<MessageTimelineProps> = ({
 
   return (
     <div
+      ref={containerRef}
       className="message-timeline"
       role="log"
       aria-live="polite"
@@ -230,7 +244,11 @@ export const MessageTimeline: React.FC<MessageTimelineProps> = ({
 
           {/* Tool calls */}
           {group.toolCalls.map((tc) => (
-            <ToolCard key={tc.toolCallId} event={tc} />
+            <ToolCard
+              key={tc.toolCallId}
+              event={tc}
+              result={group.toolResults.get(tc.toolCallId)}
+            />
           ))}
 
           {/* File changes */}
