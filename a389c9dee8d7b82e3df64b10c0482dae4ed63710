@@ -1,0 +1,67 @@
+server/ws.ts
+  2a4969d36bec33fc 132-144,146-148,150-153,155,157-158,160,162-175,177-187,189,191-203
+server/hooks.ts
+  2a4969d36bec33fc 112-114,186-192,237-239,356-361
+docs/ARCHITECTURE.md
+  6648115d37d64a1b 13,58,62-64,68-69,76,103,195
+server/protocol-adapter.ts
+  2a4969d36bec33fc 1-49,51-195
+server/types.ts
+  2a4969d36bec33fc 2,4-5,28,212-216,244-265,267,285-288,295
+server/index.ts
+  2a4969d36bec33fc 1164
+server/chat-events.ts
+  2a4969d36bec33fc 1-58,60-181,183-205,207-221,223-292,294-350,352-361
+test/chat-events.test.ts
+  2a4969d36bec33fc 1-142,144-151,153-160,162-169,171-200,202-225,227-251,253-290,302-328,330-374,376-383
+docs/FRONTEND.md
+  6648115d37d64a1b 3,7,14,16-57,61,63-65,67-75,77-84,89,102-107,123,125,130,132
+server/sessions.ts
+  2a4969d36bec33fc 362-364,369-370,395-419,439-443,452,467-471,479-482,501-538,825-826
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "a389c9dee8d7b82e3df64b10c0482dae4ed63710",
+  "prompts": {
+    "2a4969d36bec33fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00e5c532-767b-424a-ae95-bbb965e5e856",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1038,
+      "total_deletions": 141,
+      "accepted_lines": 1125,
+      "overriden_lines": 17
+    },
+    "6648115d37d64a1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ca6e288-1f3c-4545-b344-cf82402a2472",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 95,
+      "total_deletions": 85,
+      "accepted_lines": 90,
+      "overriden_lines": 4
+    },
+    "fda605a95c703c40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca9969ac-5f62-418b-b31a-9a19d96fdb2b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 61,
+      "accepted_lines": 28,
+      "overriden_lines": 0
+    }
+  }
+}
