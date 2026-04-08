@@ -1,0 +1,31 @@
+server/protocol-adapters/codex-adapter.ts
+  2a4969d36bec33fc 1-123
+server/protocol-adapters/claude-adapter.ts
+  2a4969d36bec33fc 1-82,84-150,156-158
+server/protocol-adapters/base-hook-adapter.ts
+  2a4969d36bec33fc 1-196,198-207
+server/protocol-adapters/opencode-adapter.ts
+  2a4969d36bec33fc 1-108,110-130,136-203
+server/protocol-adapters/index.ts
+  2a4969d36bec33fc 3-5,9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "28e2b0068defcfc5c5313415313c407de7ba67be",
+  "prompts": {
+    "2a4969d36bec33fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00e5c532-767b-424a-ae95-bbb965e5e856",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1010,
+      "total_deletions": 384,
+      "accepted_lines": 684,
+      "overriden_lines": 3
+    }
+  }
+}
