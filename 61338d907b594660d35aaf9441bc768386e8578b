@@ -1,0 +1,51 @@
+frontend/src/components/chat/Composer.css
+  2a4969d36bec33fc 1-71
+frontend/src/components/chat/ChatView.tsx
+  2a4969d36bec33fc 1-64
+frontend/src/components/chat/FileChangeCard.css
+  2a4969d36bec33fc 1-37
+frontend/src/components/chat/ToolCard.tsx
+  2a4969d36bec33fc 1-4,6-77
+frontend/src/components/chat/ApprovalCard.tsx
+  2a4969d36bec33fc 1-73
+frontend/src/components/chat/ToolCard.css
+  2a4969d36bec33fc 1-79
+frontend/src/components/chat/Composer.tsx
+  2a4969d36bec33fc 1-12,14-94
+frontend/src/App.tsx
+  2a4969d36bec33fc 36,218,246,283-317,379,547-548,550
+frontend/src/components/chat/MessageTimeline.tsx
+  2a4969d36bec33fc 1-116,118-178,180-254
+frontend/src/components/chat/MessageTimeline.css
+  2a4969d36bec33fc 1-64
+frontend/src/components/chat/ChatView.css
+  2a4969d36bec33fc 1-7
+frontend/src/lib/types.ts
+  2a4969d36bec33fc 88
+frontend/src/components/chat/ApprovalCard.css
+  2a4969d36bec33fc 1-90
+frontend/src/components/chat/FileChangeCard.tsx
+  2a4969d36bec33fc 1-35
+frontend/src/hooks/useChatSocket.ts
+  2a4969d36bec33fc 1-80,82-91,93-96,98-101,103-119,126-129,131-132,135-142,149-151,156,159,169,172,177-178,180-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "61338d907b594660d35aaf9441bc768386e8578b",
+  "prompts": {
+    "2a4969d36bec33fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00e5c532-767b-424a-ae95-bbb965e5e856",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1243,
+      "total_deletions": 135,
+      "accepted_lines": 1179,
+      "overriden_lines": 23
+    }
+  }
+}
