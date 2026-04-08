@@ -143,8 +143,11 @@ export abstract class BaseProtocolAdapter implements ProtocolAdapter {
    * override this method; implement onDisconnect() instead so cleanup is guaranteed.
    */
   async disconnect(): Promise<void> {
-    await this.onDisconnect();
-    this.handlers.clear();
+    try {
+      await this.onDisconnect();
+    } finally {
+      this.handlers.clear();
+    }
   }
 
   /** Subclass hook: tear down connections and release resources before handlers are cleared */

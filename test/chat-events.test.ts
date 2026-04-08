@@ -24,7 +24,7 @@ import type {
 const BASE = {
   sessionId: 'test-session',
   timestamp: new Date().toISOString(),
-  source: 'mock' as const,
+  source: 'claude' as const,
 };
 
 function makeTextDelta(overrides?: Partial<TextDeltaEvent>): TextDeltaEvent {
@@ -140,7 +140,7 @@ describe('isChatEvent', () => {
         type: 'session.started',
         sessionId: 'x',
         timestamp: 'y',
-        source: 'mock',
+        source: 'claude',
       })
     ).toBe(false);
     // known type + valid source passes
@@ -149,7 +149,7 @@ describe('isChatEvent', () => {
         type: 'chat:text-delta',
         sessionId: 'x',
         timestamp: 'y',
-        source: 'mock',
+        source: 'claude',
       })
     ).toBe(true);
     // chat: prefix but unknown type fails (stricter than prefix-only check)
@@ -158,7 +158,7 @@ describe('isChatEvent', () => {
         type: 'chat:nonexistent',
         sessionId: 'x',
         timestamp: 'y',
-        source: 'mock',
+        source: 'claude',
       })
     ).toBe(false);
     // invalid source fails even with valid type
@@ -168,6 +168,15 @@ describe('isChatEvent', () => {
         sessionId: 'x',
         timestamp: 'y',
         source: 'unknown',
+      })
+    ).toBe(false);
+    // 'mock' is test-only and not a valid production source
+    expect(
+      isChatEvent({
+        type: 'chat:text-delta',
+        sessionId: 'x',
+        timestamp: 'y',
+        source: 'mock',
       })
     ).toBe(false);
     // missing source fails

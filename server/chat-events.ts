@@ -6,7 +6,7 @@
 // All agent backends (Codex, OpenCode, Claude Code) map their native protocol
 // messages into this canonical type system via ProtocolAdapters.
 
-export type ChatEventSource = 'codex' | 'opencode' | 'claude' | 'mock';
+export type ChatEventSource = 'codex' | 'opencode' | 'claude';
 
 export interface ChatEventBase {
   sessionId: string;
@@ -290,7 +290,6 @@ const VALID_SOURCES: ReadonlySet<string> = new Set([
   'codex',
   'opencode',
   'claude',
-  'mock',
 ]);
 
 const VALID_TYPES: ReadonlySet<string> = new Set([

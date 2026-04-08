@@ -188,18 +188,21 @@ function setupWebSocket(
         }
       });
 
-      ws.on('close', () => {
+      const cleanup = () => {
         dataDisposable?.dispose();
         exitDisposable?.dispose();
         const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
         if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
-      });
+      };
+      ws.on('close', cleanup);
+      ws.on('error', cleanup);
     } else {
       // Web session — JSON relay will be wired by web-session-handler.ts (PR #213)
-      // Register a close handler now to avoid leaking the sessionMap entry
-      ws.on('close', () => {
+      const cleanup = () => {
         sessionMap.delete(ws);
-      });
+      };
+      ws.on('close', cleanup);
+      ws.on('error', cleanup);
     }
   });
 
