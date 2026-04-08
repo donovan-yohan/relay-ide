@@ -1,0 +1,37 @@
+frontend/src/components/chat/MessageTimeline.tsx
+  2a4969d36bec33fc 8,30,46,114,186,190,192-199,217,247-251
+frontend/src/components/chat/ToolCard.css
+  2a4969d36bec33fc 89-90
+frontend/src/components/chat/ToolCard.tsx
+  2a4969d36bec33fc 6,11,46,51-52,70-72,77,79-89
+frontend/src/components/chat/FileChangeCard.tsx
+  2a4969d36bec33fc 16
+frontend/src/hooks/useChatSocket.ts
+  2a4969d36bec33fc 59
+frontend/src/components/chat/ApprovalCard.tsx
+  2a4969d36bec33fc 24-25
+frontend/src/components/chat/ChatView.tsx
+  2a4969d36bec33fc 36,42-43,45-46
+server/web-session-handler.ts
+  2a4969d36bec33fc 33-35,107-109,111-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "cc83a7be5933a12fce2f67a6db046cb613d8f6f2",
+  "prompts": {
+    "2a4969d36bec33fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00e5c532-767b-424a-ae95-bbb965e5e856",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 73,
+      "total_deletions": 23,
+      "accepted_lines": 75,
+      "overriden_lines": 0
+    }
+  }
+}
