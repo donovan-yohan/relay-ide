@@ -1,0 +1,29 @@
+test/chat-events.test.ts
+  7b3b3f0f82dc158c 27,143,152,161,173-179
+server/chat-events.ts
+  7b3b3f0f82dc158c 9
+server/ws.ts
+  7b3b3f0f82dc158c 191,196-198,201,203-205
+server/protocol-adapter.ts
+  7b3b3f0f82dc158c 146-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "a11da802b56e343e8ba4529c44c00549d082801f",
+  "prompts": {
+    "7b3b3f0f82dc158c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cd84f3f-0871-40a6-890f-9094b0392883",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 27,
+      "total_deletions": 13,
+      "accepted_lines": 27,
+      "overriden_lines": 0
+    }
+  }
+}
