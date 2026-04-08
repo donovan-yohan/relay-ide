@@ -109,7 +109,9 @@ function setAgentState(
 ): void {
   session.agentState = state;
   deps.fireBackendStateIfChanged(session);
-  session._lastHookTime = Date.now();
+  if (session.mode === 'pty') {
+    session._lastHookTime = Date.now();
+  }
 
   // Check for branch changes on meaningful pauses (agent stopped or waiting for user)
   if (
@@ -181,6 +183,13 @@ function createAgentEventHandler(deps: HookDeps) {
       return;
     }
 
+    if (session.mode !== 'pty') {
+      res
+        .status(400)
+        .json({ error: 'Hooks are only supported for PTY sessions' });
+      return;
+    }
+
     if (session.hookToken !== token) {
       res.status(401).json({ error: 'Invalid token' });
       return;
@@ -225,7 +234,9 @@ async function spawnBranchRename(
   deps: HookDeps
 ): Promise<void> {
   const cleanedPrompt = stripAnsi(promptText).slice(0, 500);
-  const renamePrompt = session.branchRenamePrompt ?? DEFAULT_RENAME_PROMPT;
+  const renamePrompt =
+    (session.mode === 'pty' ? session.branchRenamePrompt : undefined) ??
+    DEFAULT_RENAME_PROMPT;
   const fullPrompt = renamePrompt + '\n\n' + cleanedPrompt;
   const env = cleanEnv();
 
@@ -340,6 +351,12 @@ export function createHooksRouter(deps: HookDeps): Router {
     const session = deps.getSession(sessionId);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    if (session.mode !== 'pty') {
+      res
+        .status(400)
+        .json({ error: 'Hooks are only supported for PTY sessions' });
       return;
     }
     const tokenBuf = Buffer.from(token);

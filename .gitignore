@@ -44,3 +44,4 @@ telemetry/
 # Test artifacts
 test-results/
 playwright-report/
+.omx/

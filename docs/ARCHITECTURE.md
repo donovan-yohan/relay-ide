@@ -10,7 +10,7 @@ Relay IDE is a remote web interface for interacting with Claude Code CLI session
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
 
-The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`, and a Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
+The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
 ## Code Map
 
@@ -55,24 +55,25 @@ Thirty-four TypeScript modules compiled to `dist/server/` via `tsc`. Modules com
 
 ### `frontend/`
 
-Svelte 5 SPA built by Vite, output to `dist/frontend/`. Express serves the compiled output.
+React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compiled output.
 
-| Path                                  | Role                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontend/src/components/`            | Svelte 5 components (Terminal, Sidebar, WorkspaceItem, PrTopBar, SessionTabBar, RepoDashboard, Spotlight, dialogs, etc.)                                                                                                                                                                                              |
-| `frontend/src/lib/state/`             | Reactive state modules (`.svelte.ts` files) exporting state + mutations; includes pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `ui.svelte.ts` — left/right sidebar state, file viewer tabs, shared diff source) |
-| `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                                                                                                                                                                             |
-| `frontend/src/lib/ws.ts`              | WebSocket connection management (PTY relay + event channel)                                                                                                                                                                                                                                                           |
-| `frontend/src/lib/types.ts`           | Frontend TypeScript interfaces                                                                                                                                                                                                                                                                                        |
-| `frontend/src/lib/actions.ts`         | Shared Svelte actions (scroll-on-hover, longpress-click)                                                                                                                                                                                                                                                              |
-| `frontend/src/lib/actions/`           | Command center action registry: types, pure registry logic (`registry.ts`), reactive wrapper (`registry.svelte.ts`), and co-located action definitions in `definitions/`                                                                                                                                              |
-| `frontend/src/lib/notifications.ts`   | Browser Notification API wrapper, service worker registration, Web Push subscription                                                                                                                                                                                                                                  |
-| `frontend/src/lib/utils.ts`           | Shared utilities (path display, relative time formatting, device detection)                                                                                                                                                                                                                                           |
-| `frontend/src/lib/pr-state.ts`        | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments                                                                                                                                                                                                                       |
-| `frontend/src/lib/file-tree-utils.ts` | Pure file tree functions: `buildChangedFilesTree`, `flattenVisibleNodes`, `findMostRecentlyChanged`, `parseLineReference`, status badge helpers                                                                                                                                                                       |
-| `frontend/src/lib/analytics.ts`       | Frontend analytics: batch event collection, `data-track` attribute integration                                                                                                                                                                                                                                        |
+| Path                                  | Role                                                                                                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontend/src/components/`            | React 19 TSX components (Terminal, Sidebar, RepoItem, PrTopBar, SessionTabBar, RepoDashboard, CommandPalette, dialogs, etc.)                                                                |
+| `frontend/src/lib/state/`             | Pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `attention.ts` — state priority scoring) |
+| `frontend/src/hooks/`                 | React hooks for state and side effects (`useEventSocket`, `useSessionHandlers`, `useActionRegistry`, `useRepoAggregation`, etc.)                                                            |
+| `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                                                   |
+| `frontend/src/lib/ws.ts`              | WebSocket connection management (PTY relay + event channel)                                                                                                                                 |
+| `frontend/src/lib/types.ts`           | Frontend TypeScript interfaces                                                                                                                                                              |
+| `frontend/src/lib/actions.ts`         | Shared utility actions (scroll-on-hover, longpress-click)                                                                                                                                   |
+| `frontend/src/lib/actions/`           | Command center action registry: types, pure registry logic (`registry.ts`), reactive hook wrapper, and co-located action definitions in `definitions/`                                      |
+| `frontend/src/lib/notifications.ts`   | Browser Notification API wrapper, service worker registration, Web Push subscription                                                                                                        |
+| `frontend/src/lib/utils.ts`           | Shared utilities (path display, relative time formatting, device detection)                                                                                                                 |
+| `frontend/src/lib/pr-state.ts`        | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments                                                                                             |
+| `frontend/src/lib/file-tree-utils.ts` | Pure file tree functions: `buildChangedFilesTree`, `flattenVisibleNodes`, `findMostRecentlyChanged`, `parseLineReference`, status badge helpers                                             |
+| `frontend/src/lib/analytics.ts`       | Frontend analytics: batch event collection, `data-track` attribute integration                                                                                                              |
 
-**Architecture Invariant:** The frontend does NOT vendor any libraries. xterm.js, xterm-addon-fit, and `@tanstack/svelte-query` are npm dependencies. State lives in `.svelte.ts` modules, not in component files (PR data is an exception — managed via svelte-query cache).
+**Architecture Invariant:** The frontend does NOT vendor any libraries. xterm.js, xterm-addon-fit, `react`, `zustand`, and `@tanstack/react-query` are npm dependencies. State lives in Zustand stores and React hooks, not in component files (PR data is an exception — managed via TanStack Query cache).
 
 ### `bin/`
 
@@ -99,7 +100,7 @@ Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--PTY I/O--> node-pty <--spawn
 **Event channel:**
 
 ```
-Browser (Svelte)   <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .worktrees/)
+Browser (React)    <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .worktrees/)
                                                     <-- POST/DELETE /roots (manual broadcast)
 ```
 
@@ -191,4 +192,4 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 | ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)             |
 | ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)             |
 
-> ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration. `hooks.ts` does not yet have a dedicated ADR.
+> ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration, which was subsequently superseded by the React 19 migration. `hooks.ts` does not yet have a dedicated ADR.

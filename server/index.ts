@@ -1161,6 +1161,7 @@ async function main(): Promise<void> {
       if (session && session.type !== 'terminal') {
         // Dedup: if hooks fired an attention notification within last 10s, skip
         if (
+          session.mode === 'pty' &&
           session.hooksActive &&
           session.lastAttentionNotifiedAt &&
           Date.now() - session.lastAttentionNotifiedAt < 10000

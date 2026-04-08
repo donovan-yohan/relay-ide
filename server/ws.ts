@@ -129,70 +129,78 @@ function setupWebSocket(
     const session = sessionMap.get(ws);
     if (!session) return;
 
-    let dataDisposable: { dispose(): void } | null = null;
-    let exitDisposable: { dispose(): void } | null = null;
+    if (session.mode === 'pty') {
+      let dataDisposable: { dispose(): void } | null = null;
+      let exitDisposable: { dispose(): void } | null = null;
 
-    const attachToPty = (ptyProcess: IPty): void => {
-      // Dispose previous handlers
-      dataDisposable?.dispose();
-      exitDisposable?.dispose();
+      const attachToPty = (ptyProcess: IPty): void => {
+        // Dispose previous handlers
+        dataDisposable?.dispose();
+        exitDisposable?.dispose();
 
-      // Replay scrollback
-      for (const chunk of session.scrollback) {
-        if (ws.readyState === ws.OPEN) ws.send(chunk);
-      }
-
-      dataDisposable = ptyProcess.onData((data) => {
-        if (ws.readyState === ws.OPEN) ws.send(data);
-      });
-
-      exitDisposable = ptyProcess.onExit(() => {
-        if (ws.readyState === ws.OPEN) ws.close(1000);
-      });
-    };
-
-    attachToPty(session.pty);
-
-    const ptyReplacedHandler = (newPty: IPty) => attachToPty(newPty);
-    session.onPtyReplacedCallbacks.push(ptyReplacedHandler);
-
-    let lastActivityBroadcast = 0;
-
-    ws.on('message', (msg) => {
-      const str = msg.toString();
-      try {
-        const parsed = JSON.parse(str);
-        if (parsed.type === 'ping') {
-          replyPing(ws);
-          return;
+        // Replay scrollback
+        for (const chunk of session.scrollback) {
+          if (ws.readyState === ws.OPEN) ws.send(chunk);
         }
-        if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
-          sessions.resize(session.id, parsed.cols, parsed.rows);
-          return;
-        }
-      } catch (_) {
-        // ignore
-      }
-      // Use session.pty dynamically so writes go to current PTY
-      session.pty.write(str);
-      // Update activity timestamp on user input (throttled broadcast to avoid storm)
-      const now = Date.now();
-      session.lastActivity = new Date(now).toISOString();
-      if (now - lastActivityBroadcast >= 2000) {
-        lastActivityBroadcast = now;
-        broadcastEvent('session-activity-changed', {
-          sessionId: session.id,
-          timestamp: session.lastActivity,
+
+        dataDisposable = ptyProcess.onData((data) => {
+          if (ws.readyState === ws.OPEN) ws.send(data);
         });
-      }
-    });
 
-    ws.on('close', () => {
-      dataDisposable?.dispose();
-      exitDisposable?.dispose();
-      const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
-      if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
-    });
+        exitDisposable = ptyProcess.onExit(() => {
+          if (ws.readyState === ws.OPEN) ws.close(1000);
+        });
+      };
+
+      attachToPty(session.pty);
+
+      const ptyReplacedHandler = (newPty: IPty) => attachToPty(newPty);
+      session.onPtyReplacedCallbacks.push(ptyReplacedHandler);
+
+      let lastActivityBroadcast = 0;
+
+      ws.on('message', (msg) => {
+        const str = msg.toString();
+        try {
+          const parsed = JSON.parse(str);
+          if (parsed.type === 'ping') {
+            replyPing(ws);
+            return;
+          }
+          if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
+            sessions.resize(session.id, parsed.cols, parsed.rows);
+            return;
+          }
+        } catch (_) {
+          // ignore
+        }
+        // Use session.pty dynamically so writes go to current PTY
+        session.pty.write(str);
+        // Update activity timestamp on user input (throttled broadcast to avoid storm)
+        const now = Date.now();
+        session.lastActivity = new Date(now).toISOString();
+        if (now - lastActivityBroadcast >= 2000) {
+          lastActivityBroadcast = now;
+          broadcastEvent('session-activity-changed', {
+            sessionId: session.id,
+            timestamp: session.lastActivity,
+          });
+        }
+      });
+
+      ws.on('close', () => {
+        dataDisposable?.dispose();
+        exitDisposable?.dispose();
+        const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
+        if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
+      });
+    } else {
+      // Web session — JSON relay will be wired by web-session-handler.ts (PR #213)
+      // Register a close handler now to avoid leaking the sessionMap entry
+      ws.on('close', () => {
+        sessionMap.delete(ws);
+      });
+    }
   });
 
   sessions.onBackendStateChange((sessionId, state, permissionType) => {
