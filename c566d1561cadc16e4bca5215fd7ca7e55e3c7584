@@ -1,0 +1,36 @@
+test/e2e/basic.spec.ts
+  4fe2c5788548dcb3 3-6,13-16,40-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "c566d1561cadc16e4bca5215fd7ca7e55e3c7584",
+  "prompts": {
+    "079ce597475993cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28c8ada85ffeOrH7mfxsFKVYlx-3c4155cc-c2e8-407b-bbcc-6ea5e2b0bf57",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "4fe2c5788548dcb3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28c8ada85ffeOrH7mfxsFKVYlx-2d60b97c-f72b-4501-9c18-35244f7f5039",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 2,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
