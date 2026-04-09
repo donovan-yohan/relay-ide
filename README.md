@@ -221,6 +221,14 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 - **Update notifications** — toast notification when a new version is available, with one-click update
 - **CLI self-update** — `relay-ide update` to update from npm
 
+## terminal renderer (xterm.js fork)
+
+relay-ide uses a [fork of xterm.js](https://github.com/donovan-yohan/xterm.js) instead of the official npm package. the fork adds the experimental WebGPU renderer ([xtermjs/xterm.js#5666](https://github.com/xtermjs/xterm.js/pull/5666)) and gives us the ability to patch terminal behavior for our use case.
+
+the fork stays as close to upstream as possible. you can verify the exact differences from upstream and reproduce the build artifacts yourself — see the fork's [FORK.md](https://github.com/donovan-yohan/xterm.js/blob/master/FORK.md) for details.
+
+the dependency in `package.json` is pinned to a specific commit hash so every install is deterministic and auditable.
+
 ## Architecture
 
 TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
