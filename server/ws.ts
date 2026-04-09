@@ -14,6 +14,22 @@ function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
 }
 
+function sendChatError(ws: WebSocket, context: string, err: unknown): void {
+  if (ws.readyState !== ws.OPEN) return;
+  const message = err instanceof Error ? err.message : String(err);
+  ws.send(
+    JSON.stringify({
+      type: 'chat:error',
+      kind: 'protocol',
+      message: `${context}: ${message}`,
+      retryable: false,
+      sessionId: '',
+      timestamp: new Date().toISOString(),
+      source: 'claude',
+    })
+  );
+}
+
 function parseCookies(
   cookieHeader: string | undefined
 ): Record<string, string> {
@@ -217,6 +233,10 @@ function setupWebSocket(
         try {
           parsed = JSON.parse(msg.toString()) as Record<string, unknown>;
         } catch {
+          logger.warn('web session: malformed JSON from client', {
+            sessionId: session.id,
+            preview: msg.toString().slice(0, 200),
+          });
           return;
         }
         switch (parsed['type']) {
@@ -230,12 +250,18 @@ function setupWebSocket(
                 String(parsed['content'] ?? ''),
                 parsed['attachments'] as Attachment[] | undefined
               )
-              .catch((err: unknown) => logger.error('sendMessage error:', err));
+              .catch((err: unknown) => {
+                logger.error('sendMessage error:', err);
+                sendChatError(ws, 'sendMessage failed', err);
+              });
             break;
           case 'interrupt':
             session.adapter
               .interrupt(String(parsed['turnId'] ?? ''))
-              .catch((err: unknown) => logger.error('interrupt error:', err));
+              .catch((err: unknown) => {
+                logger.error('interrupt error:', err);
+                sendChatError(ws, 'interrupt failed', err);
+              });
             break;
           case 'approve': {
             const decision = parsed['decision'];
@@ -249,9 +275,10 @@ function setupWebSocket(
             }
             session.adapter
               .respondToApproval(String(parsed['requestId'] ?? ''), decision)
-              .catch((err: unknown) =>
-                logger.error('respondToApproval error:', err)
-              );
+              .catch((err: unknown) => {
+                logger.error('respondToApproval error:', err);
+                sendChatError(ws, 'approval delivery failed', err);
+              });
             break;
           }
           case 'input-response':
@@ -261,9 +288,10 @@ function setupWebSocket(
                 (parsed['answers'] as Record<string, string[]> | undefined) ??
                   {}
               )
-              .catch((err: unknown) =>
-                logger.error('respondToInput error:', err)
-              );
+              .catch((err: unknown) => {
+                logger.error('respondToInput error:', err);
+                sendChatError(ws, 'input delivery failed', err);
+              });
             break;
         }
       });

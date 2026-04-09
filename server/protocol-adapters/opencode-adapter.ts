@@ -3,27 +3,10 @@ import type { AdapterConfig } from '../protocol-adapter.js';
 import { installOpencodeRelayPlugin } from '../opencode-relay.js';
 import { BaseHookAdapter } from './base-hook-adapter.js';
 import type { HookEventPayload } from './base-hook-adapter.js';
+import { strField, objField } from './adapter-utils.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-adapter');
-
-function strField(
-  data: Record<string, unknown> | undefined,
-  key: string,
-  fallback = ''
-): string {
-  return String(data?.[key] ?? fallback);
-}
-
-function objField(
-  data: Record<string, unknown> | undefined,
-  key: string
-): Record<string, unknown> | undefined {
-  const val = data?.[key];
-  return typeof val === 'object' && val !== null
-    ? (val as Record<string, unknown>)
-    : undefined;
-}
 
 export class OpencodeProtocolAdapter extends BaseHookAdapter {
   readonly agentType = 'opencode';

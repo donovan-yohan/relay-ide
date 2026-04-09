@@ -11,7 +11,7 @@ const PONG_MSG = '{"type":"pong"}';
 export interface ChatSocketState {
   events: ChatEvent[];
   connected: boolean;
-  send: (msg: Record<string, unknown>) => void;
+  send: (msg: Record<string, unknown>) => boolean;
   sendMessage: (turnId: string, content: string) => void;
   interrupt: (turnId: string) => void;
   approve: (
@@ -47,11 +47,18 @@ export function useChatSocket(sessionId: string | null): ChatSocketState {
     pongPendingRef.current = false;
   }, []);
 
-  const send = useCallback((msg: Record<string, unknown>) => {
+  const send = useCallback((msg: Record<string, unknown>): boolean => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // eslint-disable-next-line no-console -- intentional: surface silent send failures in devtools
+      console.warn(
+        '[useChatSocket] send() dropped — WebSocket not open',
+        msg.type
+      );
+      return false;
     }
+    ws.send(JSON.stringify(msg));
+    return true;
   }, []);
 
   const sendMessage = useCallback(
@@ -107,7 +114,28 @@ export function useChatSocket(sessionId: string | null): ChatSocketState {
           pongPendingRef.current = true;
           try {
             wsRef.current.send(PING_MSG);
-          } catch {
+          } catch (err) {
+            // eslint-disable-next-line no-console -- intentional: surface ping failures in devtools
+            console.error(
+              '[useChatSocket] ping send failed, triggering reconnect',
+              err
+            );
+            clearPing();
+            if (wsRef.current) {
+              wsRef.current.onclose = null;
+              wsRef.current.close();
+              wsRef.current = null;
+            }
+            setConnected(false);
+            if (
+              sessionIdRef.current &&
+              reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS
+            ) {
+              reconnectAttemptRef.current++;
+              reconnectTimerRef.current = setTimeout(() => {
+                if (sessionIdRef.current) connect(sessionIdRef.current);
+              }, RECONNECT_DELAY);
+            }
             return;
           }
           pongTimeoutRef.current = setTimeout(() => {
@@ -154,8 +182,13 @@ export function useChatSocket(sessionId: string | null): ChatSocketState {
           ) {
             setEvents((prev) => [...prev, parsed as ChatEvent]);
           }
-        } catch {
-          // ignore parse errors
+        } catch (err) {
+          // eslint-disable-next-line no-console -- intentional: surface malformed messages in devtools
+          console.warn(
+            '[useChatSocket] failed to parse WebSocket message:',
+            str.slice(0, 200),
+            err
+          );
         }
       };
 
@@ -177,7 +210,14 @@ export function useChatSocket(sessionId: string | null): ChatSocketState {
         }
       };
 
-      ws.onerror = () => {};
+      ws.onerror = (event) => {
+        // eslint-disable-next-line no-console -- intentional: surface WS errors in devtools
+        console.error(
+          '[useChatSocket] WebSocket error for session',
+          sid,
+          event
+        );
+      };
     },
     [clearPing]
   );

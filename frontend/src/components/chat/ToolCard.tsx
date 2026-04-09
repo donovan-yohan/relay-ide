@@ -13,21 +13,6 @@ interface ToolCardProps {
 
 const EXPANDED_BY_DEFAULT = new Set(['bash', 'edit', 'multiedit', 'write']);
 
-function statusLabel(status: ToolCallStatus): string {
-  switch (status) {
-    case 'pending':
-      return 'pending';
-    case 'running':
-      return 'running';
-    case 'completed':
-      return 'completed';
-    case 'error':
-      return 'error';
-    case 'declined':
-      return 'declined';
-  }
-}
-
 function statusClass(status: ToolCallStatus): string {
   switch (status) {
     case 'pending':
@@ -71,7 +56,7 @@ export const ToolCard: React.FC<ToolCardProps> = ({ event, result }) => {
           <span className="tool-card__duration">{durationLabel}</span>
         )}
         <span className={`tool-card__status ${statusClass(event.status)}`}>
-          {statusLabel(event.status)}
+          {event.status}
         </span>
       </button>
       {expanded && (

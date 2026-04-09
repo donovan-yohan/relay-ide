@@ -65,7 +65,7 @@
 .tool-card__body {
   border-top: 1px solid var(--border);
   padding: 8px 10px;
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .tool-card__input {

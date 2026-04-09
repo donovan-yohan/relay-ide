@@ -170,7 +170,7 @@ describe('isChatEvent', () => {
         source: 'unknown',
       })
     ).toBe(false);
-    // 'mock' is test-only and not a valid production source
+    // 'mock' is a valid source (used by MockProtocolAdapter)
     expect(
       isChatEvent({
         type: 'chat:text-delta',
@@ -178,7 +178,7 @@ describe('isChatEvent', () => {
         timestamp: 'y',
         source: 'mock',
       })
-    ).toBe(false);
+    ).toBe(true);
     // missing source fails
     expect(
       isChatEvent({ type: 'chat:text-delta', sessionId: 'x', timestamp: 'y' })

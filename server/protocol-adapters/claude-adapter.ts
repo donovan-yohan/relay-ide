@@ -2,17 +2,10 @@ import crypto from 'node:crypto';
 import type { AdapterConfig } from '../protocol-adapter.js';
 import { BaseHookAdapter } from './base-hook-adapter.js';
 import type { HookEventPayload } from './base-hook-adapter.js';
+import { strField } from './adapter-utils.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('claude-adapter');
-
-function strField(
-  data: Record<string, unknown> | undefined,
-  key: string,
-  fallback = ''
-): string {
-  return String(data?.[key] ?? fallback);
-}
 
 export class ClaudeProtocolAdapter extends BaseHookAdapter {
   readonly agentType = 'claude';

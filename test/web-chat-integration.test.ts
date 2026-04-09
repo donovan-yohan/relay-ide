@@ -6,11 +6,18 @@ import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.
 import { OpencodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
 import { pushToBuffer } from '../server/web-session-handler.js';
 import { isChatEvent } from '../server/chat-events.js';
-import type { ChatEvent, ApprovalRequestEvent } from '../server/chat-events.js';
-import type { WebSession } from '../server/types.js';
+import type { ChatEvent } from '../server/chat-events.js';
 import type { HookEventPayload } from '../server/protocol-adapters/base-hook-adapter.js';
 import { BaseHookAdapter } from '../server/protocol-adapters/base-hook-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
+import {
+  ZERO_DELAYS,
+  BASE_CONFIG,
+  makeWebSession,
+  makeBaseEvent,
+  makeApproval,
+  connectAndClear,
+} from './helpers/web-chat-fixtures.js';
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
@@ -24,85 +31,6 @@ vi.mock('../server/logger.js', () => ({
 vi.mock('../server/sessions.js', () => ({
   fireBackendStateIfChanged: vi.fn(),
 }));
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const ZERO_DELAYS = { wordMs: 0, toolMs: 0, connectMs: 0, errorMs: 0 };
-
-const BASE_CONFIG: AdapterConfig = {
-  cwd: '/repo',
-  port: 3000,
-  sessionId: 'sess-integration',
-  hookToken: 'test-token',
-  configDir: '/config',
-};
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function makeWebSession(overrides: Partial<WebSession> = {}): WebSession {
-  return {
-    mode: 'web',
-    id: 'sess-1',
-    type: 'agent',
-    agent: 'mock',
-    repoPath: '/repo',
-    worktreePath: null,
-    cwd: '/repo',
-    repoName: 'repo',
-    branchName: 'main',
-    displayName: 'Test',
-    createdAt: new Date().toISOString(),
-    lastActivity: new Date().toISOString(),
-    idle: true,
-    customCommand: null,
-    status: 'active',
-    needsBranchRename: false,
-    agentState: 'idle',
-    adapter: new MockProtocolAdapter(ZERO_DELAYS),
-    adapterType: 'mock',
-    messages: [],
-    currentTurnId: null,
-    ...overrides,
-  } as WebSession;
-}
-
-function makeBaseEvent(overrides: Partial<ChatEvent> = {}): ChatEvent {
-  return {
-    type: 'chat:text-delta',
-    sessionId: 'test',
-    timestamp: new Date().toISOString(),
-    source: 'claude',
-    turnId: 'turn-1',
-    messageId: 'msg-1',
-    delta: 'hello',
-    ...overrides,
-  } as ChatEvent;
-}
-
-function makeApproval(requestId = 'req-1'): ApprovalRequestEvent {
-  return {
-    type: 'chat:approval-request',
-    sessionId: 'test',
-    timestamp: new Date().toISOString(),
-    source: 'claude',
-    turnId: 'turn-1',
-    requestId,
-    kind: 'command',
-    toolName: 'Bash',
-    description: 'Run something',
-    target: 'something',
-  };
-}
-
-async function connectAndClear(
-  adapter: MockProtocolAdapter
-): Promise<ChatEvent[]> {
-  const events: ChatEvent[] = [];
-  adapter.on((e) => events.push(e));
-  await adapter.connect(BASE_CONFIG);
-  events.length = 0;
-  return events;
-}
 
 // ── 1. Mock adapter scenario contract tests ───────────────────────────────────
 

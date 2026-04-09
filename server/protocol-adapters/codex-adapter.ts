@@ -6,17 +6,10 @@ import {
 } from '../codex-hooks-adapter.js';
 import { BaseHookAdapter } from './base-hook-adapter.js';
 import type { HookEventPayload } from './base-hook-adapter.js';
+import { strField } from './adapter-utils.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('codex-adapter');
-
-function strField(
-  data: Record<string, unknown> | undefined,
-  key: string,
-  fallback = ''
-): string {
-  return String(data?.[key] ?? fallback);
-}
 
 export class CodexProtocolAdapter extends BaseHookAdapter {
   readonly agentType = 'codex';

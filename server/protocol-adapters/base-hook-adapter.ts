@@ -8,7 +8,7 @@ import type {
   SessionOptions,
   Attachment,
 } from '../protocol-adapter.js';
-import type { ChatEvent } from '../chat-events.js';
+import type { ChatEvent, ChatEventSource } from '../chat-events.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('hook-adapter');
@@ -136,14 +136,25 @@ export abstract class BaseHookAdapter extends BaseProtocolAdapter {
       throw new Error('Agent process stdin not available');
     }
     this._currentTurnId = turnId;
+    // Write first — only emit lifecycle events after successful write
+    try {
+      this._process.stdin.write(content + '\n');
+    } catch (err) {
+      this.fire({
+        type: 'chat:error',
+        kind: 'protocol',
+        message: `stdin write failed: ${err instanceof Error ? err.message : String(err)}`,
+        retryable: false,
+        turnId,
+      });
+      throw err;
+    }
     this.fire({ type: 'chat:session-status', status: 'active' });
     this.fire({
       type: 'chat:turn-started',
       turnId,
       turnIndex: this._turnCounter++,
     });
-    // Write the message to the agent's stdin
-    this._process.stdin.write(content + '\n');
   }
 
   async interrupt(_turnId: string): Promise<void> {
@@ -156,12 +167,19 @@ export abstract class BaseHookAdapter extends BaseProtocolAdapter {
     _requestId: string,
     decision: 'allow' | 'allow-always' | 'deny'
   ): Promise<void> {
-    if (this._process?.stdin?.writable) {
-      if (decision === 'allow' || decision === 'allow-always') {
-        this._process.stdin.write('y\n');
-      } else {
-        this._process.stdin.write('n\n');
-      }
+    if (!this._process?.stdin?.writable) {
+      this.fire({
+        type: 'chat:error',
+        kind: 'protocol',
+        message: 'Cannot deliver approval — agent stdin unavailable',
+        retryable: false,
+      });
+      throw new Error('Agent process stdin not available for approval');
+    }
+    if (decision === 'allow' || decision === 'allow-always') {
+      this._process.stdin.write('y\n');
+    } else {
+      this._process.stdin.write('n\n');
     }
   }
 
@@ -169,10 +187,17 @@ export abstract class BaseHookAdapter extends BaseProtocolAdapter {
     _requestId: string,
     answers: Record<string, string[]>
   ): Promise<void> {
-    if (this._process?.stdin?.writable) {
-      const firstAnswer = Object.values(answers)[0]?.[0];
-      if (firstAnswer) this._process.stdin.write(firstAnswer + '\n');
+    if (!this._process?.stdin?.writable) {
+      this.fire({
+        type: 'chat:error',
+        kind: 'protocol',
+        message: 'Cannot deliver input — agent stdin unavailable',
+        retryable: false,
+      });
+      throw new Error('Agent process stdin not available for input');
     }
+    const firstAnswer = Object.values(answers)[0]?.[0];
+    if (firstAnswer) this._process.stdin.write(firstAnswer + '\n');
   }
 
   async createSession(
@@ -190,18 +215,16 @@ export abstract class BaseHookAdapter extends BaseProtocolAdapter {
     return crypto.randomBytes(8).toString('hex');
   }
 
-  /** Helper to build full ChatEvent from partial (same pattern as MockProtocolAdapter) */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  protected fire(partial: {
-    type: ChatEvent['type'];
-    [key: string]: any;
-  }): void {
+  /** Helper to build full ChatEvent from partial fields. */
+  protected fire(
+    partial: { type: ChatEvent['type'] } & Record<string, unknown>
+  ): void {
     const sessionId = this._config?.sessionId ?? '';
     this.emit({
       ...partial,
       sessionId,
       timestamp: new Date().toISOString(),
-      source: this.agentType as 'codex' | 'opencode' | 'claude',
+      source: this.agentType as ChatEventSource,
     } as ChatEvent);
   }
 }

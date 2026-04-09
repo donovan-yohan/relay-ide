@@ -201,16 +201,15 @@ export class MockProtocolAdapter extends BaseProtocolAdapter {
 
   // ── Event Helper ──────────────────────────────────────────────────────────
 
-  // TypeScript cannot distribute Omit over discriminated unions, so we accept
-  // a loose type and cast to ChatEvent at the emit boundary.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private fire(partial: { type: ChatEvent['type']; [key: string]: any }): void {
+  private fire(
+    partial: { type: ChatEvent['type'] } & Record<string, unknown>
+  ): void {
     const sessionId = this._config?.sessionId ?? 'mock';
     this.emit({
       ...partial,
       sessionId,
       timestamp: nowIso(),
-      source: 'claude',
+      source: 'mock',
     } as ChatEvent);
   }
 
