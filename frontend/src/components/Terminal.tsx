@@ -9,6 +9,7 @@ import React, {
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebgpuAddon } from '@xterm/addon-webgpu';
 import '@xterm/xterm/css/xterm.css';
 import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
@@ -772,7 +773,29 @@ function useTerminalSetup(
     t.loadAddon(fa);
     t.loadAddon(new WebLinksAddon());
     registerFileLinkProvider(t, onFilePathClick);
-    t.open(container);
+    // Try WebGPU renderer first, fall back to default DOM renderer
+    let webgpuAddon: WebgpuAddon | undefined;
+    try {
+      webgpuAddon = new WebgpuAddon();
+      t.loadAddon(webgpuAddon);
+      t.open(container);
+    } catch (e) {
+      // eslint-disable-next-line no-console -- intentional: surface WebGPU fallback in devtools
+      console.warn('WebGPU renderer unavailable, using DOM renderer:', e);
+      webgpuAddon?.dispose();
+      webgpuAddon = undefined;
+    }
+    if (!t.element) {
+      // WebGPU failed or wasn't attempted — open with default renderer
+      t.open(container);
+    }
+    if (webgpuAddon) {
+      webgpuAddon.onContextLoss(() => {
+        // eslint-disable-next-line no-console -- intentional: surface GPU context loss in devtools
+        console.warn('WebGPU context lost, falling back to DOM renderer');
+        webgpuAddon?.dispose();
+      });
+    }
     registerEscapeSequenceSanitizers(t);
     if (isMobileDevice) applyMobilePatches(container, t);
     fa.fit();
@@ -838,6 +861,8 @@ function useTerminalSetup(
       // would never fire, connectPtySocket would never be called, and every
       // subsequent session would render blank.
       term.reset();
+      fitAddonRef.current?.fit();
+      term.refresh(0, term.rows - 1);
       connectPtySocket(
         sessionId,
         term,
