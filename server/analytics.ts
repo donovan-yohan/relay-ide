@@ -213,10 +213,7 @@ function findWindowPercent(
 ): number | null {
   for (const w of windows) {
     const name = (w.name ?? '').toLowerCase();
-    if (
-      w.windowMinutes === targetMinutes ||
-      name.includes(namePattern)
-    ) {
+    if (w.windowMinutes === targetMinutes || name.includes(namePattern)) {
       return w.usedPercent ?? null;
     }
   }
@@ -951,6 +948,7 @@ export function createSessionAnalyticsRouter(): Router {
 
     const validSorts: Record<string, string> = {
       started_at: 'started_at DESC',
+      ended_at: 'ended_at DESC',
       tokens: 'total_input_tokens DESC',
       duration: 'duration_seconds DESC',
     };
@@ -1241,9 +1239,11 @@ export function createSessionAnalyticsRouter(): Router {
         return {
           timestamp: r.timestamp,
           fiveHourPercent:
-            r.five_hour_percent ?? findWindowPercent(windows ?? [], 'five_hour', 300),
+            r.five_hour_percent ??
+            findWindowPercent(windows ?? [], 'five_hour', 300),
           sevenDayPercent:
-            r.seven_day_percent ?? findWindowPercent(windows ?? [], 'seven_day', 10080),
+            r.seven_day_percent ??
+            findWindowPercent(windows ?? [], 'seven_day', 10080),
           windows,
         };
       }),

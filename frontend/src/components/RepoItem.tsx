@@ -167,6 +167,7 @@ interface SessionGroupRowProps {
   onSelectSession: (id: string) => void;
   onDeleteSession?: ((id: string) => void) | undefined;
   onDeleteWorktree?: ((wt: WorktreeInfo) => void) | undefined;
+  onViewHistory?: ((repoPath: string) => void) | undefined;
   repoPath: string;
 }
 
@@ -182,6 +183,7 @@ function SessionGroupRow({
   onSelectSession,
   onDeleteSession,
   onDeleteWorktree,
+  onViewHistory,
   repoPath,
 }: SessionGroupRowProps) {
   return (
@@ -262,6 +264,19 @@ function SessionGroupRow({
             ]}
           />
         </div>
+      ) : null}
+      {onViewHistory ? (
+        <button
+          className="session-history-btn"
+          title="View session history"
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onViewHistory(repoPath);
+          }}
+        >
+          {historySvg}
+        </button>
       ) : null}
     </li>
   );
@@ -454,19 +469,6 @@ export function RepoItem({
           ) : null}
         </div>
         <div className="repo-actions">
-          {onViewHistory && (
-            <button
-              className="action-btn"
-              title="View session history"
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onViewHistory(repo.path);
-              }}
-            >
-              {historySvg}
-            </button>
-          )}
           <button
             className="action-btn"
             title="Settings"
@@ -512,6 +514,7 @@ export function RepoItem({
                   onSelectSession={onSelectSession}
                   onDeleteSession={onDeleteSession}
                   onDeleteWorktree={onDeleteWorktree}
+                  onViewHistory={onViewHistory}
                   repoPath={repo.path}
                 />
               );

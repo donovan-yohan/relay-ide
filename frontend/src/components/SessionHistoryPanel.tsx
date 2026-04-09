@@ -70,7 +70,8 @@ function groupSessionsByAgent(
   for (const [agent, agentSessions] of groups) {
     agentSessions.sort(
       (a, b) =>
-        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+        new Date(b.endedAt ?? b.startedAt).getTime() -
+        new Date(a.endedAt ?? a.startedAt).getTime()
     );
     groups.set(agent, agentSessions);
   }
@@ -82,8 +83,10 @@ function groupSessionsByAgent(
       sessions,
     }))
     .sort((a, b) => {
-      const aLatest = a.sessions[0]?.startedAt ?? '';
-      const bLatest = b.sessions[0]?.startedAt ?? '';
+      const aSession = a.sessions[0];
+      const bSession = b.sessions[0];
+      const aLatest = aSession?.endedAt ?? aSession?.startedAt ?? '';
+      const bLatest = bSession?.endedAt ?? bSession?.startedAt ?? '';
       return new Date(bLatest).getTime() - new Date(aLatest).getTime();
     });
 }
@@ -115,7 +118,7 @@ export function SessionHistoryPanel({
         const response = await fetchAnalyticsSessions({
           repo: repoPath,
           limit: 100,
-          sort: 'started_at:desc',
+          sort: 'ended_at',
         });
         if (!cancelled) {
           setSessions(response.sessions);
@@ -195,7 +198,9 @@ export function SessionHistoryPanel({
                           {session.sessionId.slice(0, 8)}
                         </span>
                         <span className="session-time">
-                          {formatRelativeTimeCompact(session.startedAt)}
+                          {formatRelativeTimeCompact(
+                            session.endedAt ?? session.startedAt
+                          )}
                         </span>
                       </div>
                       <div className="session-secondary">
