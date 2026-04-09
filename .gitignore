@@ -28,6 +28,7 @@ analytics.db-wal
 .desloppify/
 .lead/
 .omc/
+.omo/
 .opencode/
 .gstack/
 .worktrees/
