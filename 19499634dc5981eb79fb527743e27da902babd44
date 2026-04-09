@@ -1,0 +1,29 @@
+frontend/src/components/Terminal.tsx
+  3a2bbcca44183128 12,776-798,864-865
+frontend/src/types/xterm-addon-webgpu.d.ts
+  3a2bbcca44183128 1-24
+package.json
+  3a2bbcca44183128 60
+frontend/vite.config.ts
+  3a2bbcca44183128 12-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "19499634dc5981eb79fb527743e27da902babd44",
+  "prompts": {
+    "3a2bbcca44183128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc3ed344-6754-4fe2-917e-c5681bf4ac7d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 63,
+      "total_deletions": 12,
+      "accepted_lines": 57,
+      "overriden_lines": 0
+    }
+  }
+}
