@@ -980,7 +980,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const activeAgent = useSessionsStore(
       (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
     );
-    const isFullscreenTerminal = claudeFullscreen && activeAgent === 'claude';
+    const isFullscreenTerminal =
+      (claudeFullscreen && activeAgent === 'claude') || useTmux;
 
     const { termRef, fit } = useTerminalSetup(
       containerRef,
@@ -1033,6 +1034,19 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       }),
       [termRef, fit, exitCopyMode, handleImageUpload]
     );
+
+    // Enforce xterm viewport overflow for fullscreen/tmux sessions.
+    // xterm.js defaults .xterm-viewport to overflow-y:scroll; for sessions
+    // that should fill the viewport without scrolling (Claude NO_FLICKER,
+    // tmux) we lock it to hidden and re-fit to avoid stale sizing.
+    useEffect(() => {
+      const container = containerRef.current;
+      if (!container) return;
+      const viewport = container.querySelector<HTMLElement>('.xterm-viewport');
+      if (!viewport) return;
+      viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
+      fit();
+    }, [isFullscreenTerminal, fit]);
 
     const wrapperClass = [
       'terminal-wrapper',
