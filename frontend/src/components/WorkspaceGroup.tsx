@@ -37,6 +37,7 @@ export interface WorkspaceGroupProps {
   onDeleteWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   onResumeWorktree?: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
+  onViewHistory?: ((repoPath: string) => void) | undefined;
   orgPrs?: PullRequest[] | undefined;
   loadingItems?: Set<string> | undefined;
 }
@@ -98,6 +99,7 @@ function GroupBody({
   onDeleteWorktree,
   onResumeWorktree,
   onLaunchRepoSession,
+  onViewHistory,
 }: GroupBodyProps) {
   const sidebarItems = useSessionsStore((s) => s.sidebarItems);
   return (
@@ -158,6 +160,7 @@ function GroupBody({
             onDeleteWorktree={onDeleteWorktree}
             onResumeWorktree={onResumeWorktree}
             onLaunchRepoSession={onLaunchRepoSession}
+            onViewHistory={onViewHistory}
             orgPrs={orgPrs ?? []}
             loadingItems={loadingItems}
             sidebarItems={sidebarItems}
@@ -188,6 +191,7 @@ export function WorkspaceGroup({
   onDeleteWorktree,
   onResumeWorktree,
   onLaunchRepoSession,
+  onViewHistory,
   orgPrs,
   loadingItems = EMPTY_SET,
 }: WorkspaceGroupProps) {
@@ -238,6 +242,7 @@ export function WorkspaceGroup({
           onNewWorktree={onNewWorktree}
           onOpenSettings={onOpenSettings}
           onLaunchRepoSession={onLaunchRepoSession}
+          onViewHistory={onViewHistory}
           onDeleteSession={onDeleteSession}
           onDeleteWorktree={onDeleteWorktree}
           onResumeWorktree={onResumeWorktree}

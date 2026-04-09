@@ -12,6 +12,7 @@ import type { Repo, WorktreeInfo, PullRequest } from '../lib/types.js';
 import { fetchOrgPrs } from '../lib/api.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
 import RepoItem from './RepoItem.js';
+import { SessionHistoryPanel } from './SessionHistoryPanel.js';
 import { TuiButton } from './TuiButton.js';
 import {
   DndContext,
@@ -110,6 +111,7 @@ interface UngroupedListProps {
   onDeleteWorktree: ((wt: WorktreeInfo) => void) | undefined;
   onResumeWorktree: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchRepoSession: ((repoPath: string) => void) | undefined;
+  onViewHistory: ((repoPath: string) => void) | undefined;
 }
 
 function UngroupedList({
@@ -126,6 +128,7 @@ function UngroupedList({
   onDeleteWorktree,
   onResumeWorktree,
   onLaunchRepoSession,
+  onViewHistory,
 }: UngroupedListProps) {
   const getSessionsForRepo = useSessionsStore((s) => s.getSessionsForRepo);
   const sidebarItems = useSessionsStore((s) => s.sidebarItems);
@@ -230,6 +233,7 @@ function UngroupedList({
                   onDeleteWorktree={onDeleteWorktree}
                   onResumeWorktree={onResumeWorktree}
                   onLaunchRepoSession={onLaunchRepoSession}
+                  onViewHistory={onViewHistory}
                   orgPrs={orgPrs}
                   sidebarItems={sidebarItems}
                   collapsed={collapsedWorkspaces.has(repo.path)}
@@ -284,6 +288,7 @@ interface WorkspaceGroupsListProps {
   onResumeWorktree: ((wt: WorktreeInfo) => void) | undefined;
   onLaunchWorkspaceSession: ((workspaceId: string) => void) | undefined;
   onLaunchRepoSession: ((repoPath: string) => void) | undefined;
+  onViewHistory: ((repoPath: string) => void) | undefined;
 }
 
 function WorkspaceGroupsList({
@@ -304,6 +309,7 @@ function WorkspaceGroupsList({
   onResumeWorktree,
   onLaunchWorkspaceSession,
   onLaunchRepoSession,
+  onViewHistory,
 }: WorkspaceGroupsListProps) {
   const getSessionsForWorkspaceGroup = useSessionsStore(
     (s) => s.getSessionsForWorkspaceGroup
@@ -338,6 +344,7 @@ function WorkspaceGroupsList({
             onDeleteSession={(id) => onDeleteSession?.(id)}
             onDeleteWorktree={(wt) => onDeleteWorktree?.(wt)}
             onResumeWorktree={(wt) => onResumeWorktree?.(wt)}
+            onViewHistory={onViewHistory}
             {...(onLaunchRepoSession ? { onLaunchRepoSession } : {})}
             orgPrs={orgPrs}
           />
@@ -345,6 +352,28 @@ function WorkspaceGroupsList({
       })}
     </>
   );
+}
+
+function useHistoryView(reposByPath: Map<string, Repo>) {
+  const [historyRepoPath, setHistoryRepoPath] = useState<string | null>(null);
+
+  const handleViewHistory = useCallback((repoPath: string) => {
+    setHistoryRepoPath(repoPath);
+  }, []);
+
+  const handleCloseHistory = useCallback(() => {
+    setHistoryRepoPath(null);
+  }, []);
+
+  const historyRepo = historyRepoPath
+    ? reposByPath.get(historyRepoPath)
+    : undefined;
+
+  return {
+    historyRepo,
+    handleViewHistory,
+    handleCloseHistory,
+  };
 }
 
 // ── Main Sidebar ──
@@ -431,6 +460,9 @@ export function Sidebar({
     setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
+  const { historyRepo, handleViewHistory, handleCloseHistory } =
+    useHistoryView(reposByPath);
+
   return (
     <aside
       className={[
@@ -499,61 +531,71 @@ export function Sidebar({
       </div>
       {!sidebarCollapsed && (
         <>
-          <div className="sidebar-workspace-list">
-            <WorkspaceGroupsList
-              sortedGroups={sortedGroups}
-              reposByPath={reposByPath}
-              worktrees={worktrees}
-              activeRepoPath={activeRepoPath}
-              activeSessionId={activeSessionId ?? null}
-              orgPrs={orgPrs}
-              collapsedGroups={collapsedGroups}
-              onToggleGroupCollapse={handleToggleGroupCollapse}
-              onSelectWorkspace={handleSelectWorkspace}
-              onSelectSession={onSelectSession}
-              onNewWorktree={onNewWorktree}
-              onOpenSettings={onOpenSettings}
-              onDeleteSession={onDeleteSession}
-              onDeleteWorktree={onDeleteWorktree}
-              onResumeWorktree={onResumeWorktree}
-              onLaunchWorkspaceSession={onLaunchWorkspaceSession}
-              onLaunchRepoSession={onLaunchRepoSession}
+          {historyRepo ? (
+            <SessionHistoryPanel
+              repoPath={historyRepo.path}
+              repoName={historyRepo.name}
+              onBack={handleCloseHistory}
             />
-            {ungroupedRepos.length > 0 && (
-              <>
-                {workspaceGroups.length > 0 && (
-                  <div className="sidebar-ungrouped-label">ungrouped</div>
-                )}
-                <UngroupedList
-                  ungroupedRepos={ungroupedRepos}
-                  activeRepoPath={activeRepoPath}
-                  activeSessionId={activeSessionId ?? null}
-                  worktrees={worktrees}
-                  orgPrs={orgPrs}
-                  onSelectWorkspace={handleSelectWorkspace}
-                  onSelectSession={onSelectSession}
-                  onNewWorktree={onNewWorktree}
-                  onOpenSettings={onOpenSettings}
-                  onDeleteSession={onDeleteSession}
-                  onDeleteWorktree={onDeleteWorktree}
-                  onResumeWorktree={onResumeWorktree}
-                  onLaunchRepoSession={onLaunchRepoSession}
-                />
-              </>
-            )}
-            {repos.length === 0 && (
-              <div className="sidebar-empty-state">
-                <span>no repos</span>
-              </div>
-            )}
-            {workspaceGroups.length === 0 &&
-              ungroupedRepos.length === 0 &&
-              repos.length > 0 && (
-                <div className="sidebar-empty-workspace-hint">
-                  <span>no workspaces yet</span>
+          ) : (
+            <div className="sidebar-workspace-list">
+              <WorkspaceGroupsList
+                sortedGroups={sortedGroups}
+                reposByPath={reposByPath}
+                worktrees={worktrees}
+                activeRepoPath={activeRepoPath}
+                activeSessionId={activeSessionId ?? null}
+                orgPrs={orgPrs}
+                collapsedGroups={collapsedGroups}
+                onToggleGroupCollapse={handleToggleGroupCollapse}
+                onSelectWorkspace={handleSelectWorkspace}
+                onSelectSession={onSelectSession}
+                onNewWorktree={onNewWorktree}
+                onOpenSettings={onOpenSettings}
+                onDeleteSession={onDeleteSession}
+                onDeleteWorktree={onDeleteWorktree}
+                onResumeWorktree={onResumeWorktree}
+                onLaunchWorkspaceSession={onLaunchWorkspaceSession}
+                onLaunchRepoSession={onLaunchRepoSession}
+                onViewHistory={handleViewHistory}
+              />
+              {ungroupedRepos.length > 0 && (
+                <>
+                  {workspaceGroups.length > 0 && (
+                    <div className="sidebar-ungrouped-label">ungrouped</div>
+                  )}
+                  <UngroupedList
+                    ungroupedRepos={ungroupedRepos}
+                    activeRepoPath={activeRepoPath}
+                    activeSessionId={activeSessionId ?? null}
+                    worktrees={worktrees}
+                    orgPrs={orgPrs}
+                    onSelectWorkspace={handleSelectWorkspace}
+                    onSelectSession={onSelectSession}
+                    onNewWorktree={onNewWorktree}
+                    onOpenSettings={onOpenSettings}
+                    onDeleteSession={onDeleteSession}
+                    onDeleteWorktree={onDeleteWorktree}
+                    onResumeWorktree={onResumeWorktree}
+                    onLaunchRepoSession={onLaunchRepoSession}
+                    onViewHistory={handleViewHistory}
+                  />
+                </>
+              )}
+              {repos.length === 0 && (
+                <div className="sidebar-empty-state">
+                  <span>no repos</span>
                 </div>
               )}
-          </div>
+              {workspaceGroups.length === 0 &&
+                ungroupedRepos.length === 0 &&
+                repos.length > 0 && (
+                  <div className="sidebar-empty-workspace-hint">
+                    <span>no workspaces yet</span>
+                  </div>
+                )}
+            </div>
+          )}
           <div className="sidebar-footer-row">
             <TuiButton
               variant="primary"
