@@ -1,0 +1,373 @@
+frontend/src/components/WorkspaceGroup.tsx
+  906c1d11ea7dfcb3 194
+  a073a717d9993650 163
+  01380a4d92b6aed2 40
+  645c730ee5ca8d0c 102
+  b7148d05f75e8d14 245
+frontend/src/components/Sidebar.tsx
+  8080eaa127cf532a 312
+  d423936210982ceb 291
+  6669452efdd62b3a 114
+  85211658a60a0ddd 15
+  5fb9ff6167bce75d 465
+  d649201625ef8db4 534-538,540-587,590-598
+  9bb498e7cb2cb48f 236
+  a42cf013e89ac635 464
+  1bd22c573c31b052 131
+  fc463f5b611f19f5 357-378
+  609a354786a4a0e4 347
+frontend/src/components/SessionHistoryPanel.css
+  09991b39305640b9 1-170
+frontend/src/components/RepoItem.tsx
+  e0adca39973a09f7 41
+  36df0912d5f380c5 457-469
+  ca08a027c95ad9af 343
+  8560e77311e08d69 60-75
+frontend/src/components/SessionHistoryPanel.tsx
+  cb5225c6b139b6b0 1-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "71a1b1e38887fc07da7bb7480fd85984a687bf32",
+  "prompts": {
+    "01380a4d92b6aed2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-2060e6e7-5831-4b44-97df-161c98f6ab92",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "09991b39305640b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-7681b355-fd5f-4411-a2a7-73aabbd96458",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 170,
+      "total_deletions": 0,
+      "accepted_lines": 170,
+      "overriden_lines": 0
+    },
+    "1bd22c573c31b052": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-5a93ff26-a169-4597-9789-69aa17c47995",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "368255923f6d2163": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-330e52a9-01f1-4c14-925c-126c63804245",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "36df0912d5f380c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-53f8b62d-aac0-4780-9e48-78cb00fb9a84",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 0,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "5fb9ff6167bce75d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-a7b17ee8-065a-4ae0-8593-44e3fc5b3345",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "609a354786a4a0e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-fb3aa2a9-1b02-4564-99e6-6e00289d1dc2",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "645c730ee5ca8d0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-2999299a-d4bb-492f-a2cc-522ad0486123",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "6669452efdd62b3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-9864eec9-60be-4935-b304-781fdcb1956c",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "8080eaa127cf532a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-2fda9f56-f6bf-4d7f-9eb2-92c34a76bb1f",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "85211658a60a0ddd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-a33ee0c4-1874-4a06-9cf0-b4184e315d5f",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "8560e77311e08d69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-559b2ad8-5a5e-44e2-831c-ff8dcb16f800",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 1,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    },
+    "8576d0ee87ab8c86": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-3136c193-4348-4461-80c3-839a79ca1e41",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "906c1d11ea7dfcb3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-c5d1d8fd-0272-4b5a-8e5e-51de5eb72163",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "9bb498e7cb2cb48f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-67646b46-8eb1-4d9a-bdde-2ebddbf8d02b",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "a073a717d9993650": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-c31230ec-3e87-4a62-abe5-3aff54e3a0b8",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "a42cf013e89ac635": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-2ffba7f4-a3ec-4e31-bbcf-503fc77c6e68",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 10,
+      "accepted_lines": 1,
+      "overriden_lines": 1
+    },
+    "b7148d05f75e8d14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-025310d2-01f1-4e44-9002-31858a0db929",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "ca08a027c95ad9af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-6af7dfe2-81f1-44bf-ab04-01fb25066b03",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "cb5225c6b139b6b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-fcb2558d-bafb-4fbd-8a3a-9b6ae65dba97",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 237,
+      "total_deletions": 0,
+      "accepted_lines": 236,
+      "overriden_lines": 0
+    },
+    "d423936210982ceb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-d261b807-2182-4a39-b3e7-524985529457",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "d57f607bce72f5b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-373ea24e-f731-42f1-9d4f-79c9fa1e2987",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "d649201625ef8db4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-a258e45e-2289-4844-bb6f-65d2f720fad8",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 62,
+      "total_deletions": 52,
+      "accepted_lines": 62,
+      "overriden_lines": 0
+    },
+    "e0adca39973a09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-15ee8559-99cb-40f3-9537-2095a25a13e4",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "f773968ccdb15c5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-401c4ad9-3d02-4991-a240-8842def93767",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "fc463f5b611f19f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28bee820dffenXYhNaK9HtJoeg-1f2c13a4-7989-4ade-9450-87420e7886d3",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 24,
+      "total_deletions": 0,
+      "accepted_lines": 22,
+      "overriden_lines": 0
+    }
+  }
+}
