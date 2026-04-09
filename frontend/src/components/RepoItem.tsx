@@ -290,6 +290,7 @@ interface InactiveRepoRowProps {
   sidebarItemById: Map<string, SidebarItem>;
   loadingItems: Set<string>;
   onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
+  onViewHistory?: ((repoPath: string) => void) | undefined;
 }
 
 function InactiveRepoRow({
@@ -300,6 +301,7 @@ function InactiveRepoRow({
   sidebarItemById,
   loadingItems,
   onLaunchRepoSession,
+  onViewHistory,
 }: InactiveRepoRowProps) {
   const repoLoadingKey = `repo-session:${repoPath}`;
   const isLoading = loadingItems.has(repoLoadingKey);
@@ -336,6 +338,19 @@ function InactiveRepoRow({
             </span>
           ) : null}
         </div>
+      ) : null}
+      {onViewHistory ? (
+        <button
+          className="session-history-btn"
+          title="View session history"
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onViewHistory(repoPath);
+          }}
+        >
+          {historySvg}
+        </button>
       ) : null}
     </li>
   );
@@ -529,6 +544,7 @@ export function RepoItem({
                   sidebarItemById={sidebarItemById}
                   loadingItems={loadingItems}
                   onLaunchRepoSession={onLaunchRepoSession}
+                  onViewHistory={onViewHistory}
                 />
               );
             }

@@ -366,4 +366,8 @@
   .row-menu-overlay {
     opacity: 1;
   }
+
+  .session-history-btn {
+    opacity: 1;
+  }
 }
