@@ -1,0 +1,25 @@
+.gitignore
+  73471f4c158532a1 31
+.husky/pre-commit
+  73471f4c158532a1 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "329219ea13495d8a307c5cef9a4b2830ff7a9722",
+  "prompts": {
+    "73471f4c158532a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f2ab7355-08fe-4999-b42c-6d9b101f1801",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
