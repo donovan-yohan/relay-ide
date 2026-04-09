@@ -775,18 +775,19 @@ function useTerminalSetup(
     registerFileLinkProvider(t, onFilePathClick);
     // Try WebGPU renderer first, fall back to default DOM renderer
     let webgpuAddon: WebgpuAddon | undefined;
-    try {
-      webgpuAddon = new WebgpuAddon();
-      t.loadAddon(webgpuAddon);
-      t.open(container);
-    } catch (e) {
-      // eslint-disable-next-line no-console -- intentional: surface WebGPU fallback in devtools
-      console.warn('WebGPU renderer unavailable, using DOM renderer:', e);
-      webgpuAddon?.dispose();
-      webgpuAddon = undefined;
+    if ('gpu' in navigator) {
+      try {
+        webgpuAddon = new WebgpuAddon();
+        t.loadAddon(webgpuAddon);
+        t.open(container);
+      } catch (e) {
+        // eslint-disable-next-line no-console -- intentional: surface WebGPU fallback in devtools
+        console.warn('WebGPU renderer unavailable, using DOM renderer:', e);
+        webgpuAddon?.dispose();
+        webgpuAddon = undefined;
+      }
     }
     if (!t.element) {
-      // WebGPU failed or wasn't attempted — open with default renderer
       t.open(container);
     }
     if (webgpuAddon) {
