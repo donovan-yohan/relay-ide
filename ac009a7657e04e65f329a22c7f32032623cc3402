@@ -1,0 +1,53 @@
+server/protocol-adapters/codex-adapter.ts
+  487fd219027ea5c2 9
+frontend/src/components/chat/ToolCard.css
+  487fd219027ea5c2 68
+frontend/src/components/chat/ToolCard.tsx
+  487fd219027ea5c2 59
+server/ws.ts
+  487fd219027ea5c2 17-32,236-239,253-256,261-264,278-281,291-294
+server/protocol-adapters/adapter-utils.ts
+  487fd219027ea5c2 1-19
+frontend/src/hooks/useChatSocket.ts
+  487fd219027ea5c2 14,50,52-58,60-61,117-138,185-191,213-220
+server/chat-events.ts
+  487fd219027ea5c2 9,293
+server/protocol-adapters/opencode-adapter.ts
+  487fd219027ea5c2 6
+server/protocol-adapters/base-hook-adapter.ts
+  487fd219027ea5c2 11,139-151,170-177,179-182,190-197,199-200,218-221,227
+server/protocol-adapters/claude-adapter.ts
+  487fd219027ea5c2 5
+test/adapter-map-hook-event.test.ts
+  487fd219027ea5c2 1-35,37-42,44,46-59,61-97,99-128,130-156,158-197,199-210,212-248,250-267,269-353,355-381
+server/protocol-adapters/mock-adapter.ts
+  487fd219027ea5c2 204-206,212
+test/chat-events.test.ts
+  487fd219027ea5c2 173,181
+test/web-chat-integration.test.ts
+  487fd219027ea5c2 9,13-20
+test/web-session-handler.test.ts
+  487fd219027ea5c2 8,10-14
+test/helpers/web-chat-fixtures.ts
+  487fd219027ea5c2 1-7,9-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "ac009a7657e04e65f329a22c7f32032623cc3402",
+  "prompts": {
+    "487fd219027ea5c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c65f98d5-b4ac-4250-94ad-edf11119092f",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 642,
+      "total_deletions": 270,
+      "accepted_lines": 633,
+      "overriden_lines": 7
+    }
+  }
+}
