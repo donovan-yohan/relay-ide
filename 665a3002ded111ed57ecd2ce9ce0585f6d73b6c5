@@ -1,0 +1,23 @@
+test/framework-actions-and-config.test.ts
+  d69aaf09523f8bc6 45,56-62,77-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "665a3002ded111ed57ecd2ce9ce0585f6d73b6c5",
+  "prompts": {
+    "d69aaf09523f8bc6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28c8ada85ffeOrH7mfxsFKVYlx-3e3b5d0d-b50a-4210-8126-1f2997cbc9e8",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 8,
+      "accepted_lines": 11,
+      "overriden_lines": 0
+    }
+  }
+}
