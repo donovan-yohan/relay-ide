@@ -9,6 +9,10 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: path.resolve(import.meta.dirname, 'src/lib'),
+      '@xterm/addon-webgpu': path.resolve(
+        import.meta.dirname,
+        '../node_modules/@xterm/xterm/addons/addon-webgpu'
+      ),
     },
   },
   build: {
