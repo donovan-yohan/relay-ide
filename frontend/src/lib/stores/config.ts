@@ -49,6 +49,4 @@ export const useConfigStore = create<ConfigState>()((set, get) => ({
   },
 }));
 
-void useConfigStore.getState().loadFrameworks();
-
 export default useConfigStore;

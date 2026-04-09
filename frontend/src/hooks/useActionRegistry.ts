@@ -86,7 +86,7 @@ import {
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
-import { killSession, setDefaultYolo } from '../lib/api.js';
+import { ConflictError, killSession, setDefaultYolo } from '../lib/api.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
@@ -504,7 +504,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           agent: framework.id,
         });
 
-        if (session?.id) {
+        if (session?.id && !(error instanceof ConflictError)) {
           useSessionsStore
             .getState()
             .initSessionNotification(
@@ -513,7 +513,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             );
         }
 
-        if (error && !(error instanceof Error && 'sessionId' in error)) {
+        if (error && !(error instanceof ConflictError)) {
           logger.error(`Failed to create ${framework.id} session`, error);
           customizeDialogRef.current?.open(
             { name: workspace.name, path: workspace.path },

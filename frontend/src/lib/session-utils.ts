@@ -73,13 +73,14 @@ export async function createAgentSession(
   } catch (error) {
     if (error instanceof ConflictError) {
       await useSessionsStore.getState().refreshAll();
-      const session = error.sessionId
+      const conflictingSessionId = error.sessionId;
+      const session = conflictingSessionId
         ? useSessionsStore
             .getState()
-            .sessions.find((existing) => existing.id === error.sessionId)
+            .sessions.find((existing) => existing.id === conflictingSessionId)
         : undefined;
-      if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
+      if (conflictingSessionId) {
+        useSessionsStore.getState().setActiveSessionId(conflictingSessionId);
       }
       return { session, error };
     }

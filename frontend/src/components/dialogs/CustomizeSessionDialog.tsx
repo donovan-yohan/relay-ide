@@ -153,6 +153,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [workspaceName, setWorkspaceName] = useState('');
     const [form, setForm] = useState<FormState>(defaultForm());
     const [creating, setCreating] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     useImperativeHandle(ref, () => ({
       async open(
@@ -160,6 +161,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         nextWorktreePath?: string | null,
         preselectedFramework?: AgentType
       ) {
+        setError(null);
         setForm(defaultForm());
         setWorkspacePath(workspace.path);
         setWorktreePath(nextWorktreePath ?? null);
@@ -184,13 +186,21 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     async function handleSubmit() {
       if (!workspacePath || creating) return;
       setCreating(true);
-      const { session, error } = await createSessionFromForm(
+      setError(null);
+      const { session, error: submitError } = await createSessionFromForm(
         workspacePath,
         worktreePath,
         form
       );
       try {
-        if (error && !session) return;
+        if (submitError && !session) {
+          setError(
+            submitError instanceof Error
+              ? submitError.message
+              : 'Failed to create session'
+          );
+          return;
+        }
         shellRef.current?.close();
         if (session?.id) onSessionCreated?.(session.id);
       } finally {
@@ -225,6 +235,11 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         title="Customize Session"
         footer={footer}
       >
+        {error && (
+          <div className="customize-session-error" role="alert">
+            {error}
+          </div>
+        )}
         <CustomizeSessionBody
           workspaceName={workspaceName}
           form={form}

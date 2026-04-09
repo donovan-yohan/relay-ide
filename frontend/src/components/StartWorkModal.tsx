@@ -204,7 +204,7 @@ export function StartWorkModal({
         <div className="modal-header">
           <span className="modal-title">Start Work</span>
           <button className="modal-close" onClick={onClose}>
-            &times;
+            ×
           </button>
         </div>
         <div className="modal-body">
