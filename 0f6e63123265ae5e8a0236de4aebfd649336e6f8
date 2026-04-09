@@ -1,0 +1,68 @@
+frontend/src/lib/actions/definitions/frameworks.ts
+  e248a5d1ff2567dc 1-12
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  f0d5d4221eca6d7e 12-13,16,33-39,42-46,51,69-73,87-89,91-102,110-127,129-142,152,158-159,162,165,169-171,173-176,179-181,203-215,222-232,235
+  e248a5d1ff2567dc 1,187,193
+  91e0b8b972bd7b00 7-8,49,188-191
+frontend/src/hooks/useActionRegistry.ts
+  e248a5d1ff2567dc 5-7,19,93,139,482-534
+frontend/src/lib/session-utils.ts
+  91e0b8b972bd7b00 1-89
+frontend/src/App.tsx
+  e248a5d1ff2567dc 605,837-838,897
+frontend/src/components/StartWorkModal.tsx
+  91e0b8b972bd7b00 1,3-4,20-23,28-33,37-44,55-57,65-71,77-80,86-98,102-106,116-121,127-130,133-138,143-150,153-160,163-169,172-175,189-194,198-202,206-208,222-224,226-236,239-241,246-256,261-268
+test/framework-actions-and-config.test.ts
+  e248a5d1ff2567dc 1-78
+frontend/src/lib/stores/config.ts
+  e248a5d1ff2567dc 3,12,14,24,45-49,52
+frontend/src/hooks/useSessionHandlers.ts
+  91e0b8b972bd7b00 13,26-29,130-131,134-147,149-157,167,176-183,186,190,199-200,202-216,220-221,276,283-284,286-293,393,399-400,402-409,459,465-466,468-475,525,531,533-540,743,753-760,763,767-768
+  f0d5d4221eca6d7e 234-239,241-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "0f6e63123265ae5e8a0236de4aebfd649336e6f8",
+  "prompts": {
+    "91e0b8b972bd7b00": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_28c7c7356ffepVcH3FcGkxBSUj",
+        "model": "openai/gpt-5.4"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 371,
+      "total_deletions": 217,
+      "accepted_lines": 358,
+      "overriden_lines": 0
+    },
+    "e248a5d1ff2567dc": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_28c7c43a3ffeFgx24mtRrWeAJV",
+        "model": "openai/gpt-5.4"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 169,
+      "total_deletions": 9,
+      "accepted_lines": 168,
+      "overriden_lines": 0
+    },
+    "f0d5d4221eca6d7e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_28c7c9c91ffeVJAGARGXNEpLSK",
+        "model": "openai/gpt-5.4-mini"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 134,
+      "total_deletions": 27,
+      "accepted_lines": 121,
+      "overriden_lines": 5
+    }
+  }
+}
