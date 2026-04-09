@@ -1,0 +1,25 @@
+README.md
+  3a2bbcca44183128 224-231
+package.json
+  3a2bbcca44183128 60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "5e8613d10572afaa8833b4d575887a74836283fe",
+  "prompts": {
+    "3a2bbcca44183128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc3ed344-6754-4fe2-917e-c5681bf4ac7d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 1,
+      "accepted_lines": 11,
+      "overriden_lines": 0
+    }
+  }
+}
