@@ -42,7 +42,7 @@ describe('useConfigStore framework loading', () => {
     vi.doUnmock('../frontend/src/lib/api.js');
   });
 
-  it('loads frameworks during store initialization', async () => {
+  it('loadFrameworks() fetches and stores frameworks when called', async () => {
     const fetchFrameworks = vi.fn().mockResolvedValue([CLAUDE_FRAMEWORK]);
 
     vi.doMock('../frontend/src/lib/api.js', async () => {
@@ -53,10 +53,13 @@ describe('useConfigStore framework loading', () => {
     const { useConfigStore } =
       await import('../frontend/src/lib/stores/config.js');
 
-    await vi.waitFor(() => {
-      expect(fetchFrameworks).toHaveBeenCalledTimes(1);
-      expect(useConfigStore.getState().frameworks).toEqual([CLAUDE_FRAMEWORK]);
-    });
+    expect(fetchFrameworks).not.toHaveBeenCalled();
+    expect(useConfigStore.getState().frameworks).toEqual([]);
+
+    await useConfigStore.getState().loadFrameworks();
+
+    expect(fetchFrameworks).toHaveBeenCalledTimes(1);
+    expect(useConfigStore.getState().frameworks).toEqual([CLAUDE_FRAMEWORK]);
   });
 
   it('falls back to an empty framework list when loading fails', async () => {
@@ -71,8 +74,8 @@ describe('useConfigStore framework loading', () => {
     const { useConfigStore } =
       await import('../frontend/src/lib/stores/config.js');
 
-    await vi.waitFor(() => {
-      expect(useConfigStore.getState().frameworks).toEqual([]);
-    });
+    await useConfigStore.getState().loadFrameworks();
+
+    expect(useConfigStore.getState().frameworks).toEqual([]);
   });
 });
