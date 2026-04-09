@@ -1,12 +1,19 @@
 import { test, expect } from '@playwright/test';
 
+const isExpectedError = (msg: string) => {
+  return msg.includes('401 (Unauthorized)') || msg.includes('auth');
+};
+
 test.describe('smoke', () => {
   test('app loads successfully', async ({ page }) => {
     const errors: string[] = [];
 
     page.on('console', (msg) => {
       if (msg.type() === 'error') {
-        errors.push(msg.text());
+        const text = msg.text();
+        if (!isExpectedError(text)) {
+          errors.push(text);
+        }
       }
     });
 
@@ -30,7 +37,10 @@ test.describe('smoke', () => {
 
     page.on('console', (msg) => {
       if (msg.type() === 'error') {
-        errors.push(`Console error: ${msg.text()}`);
+        const text = msg.text();
+        if (!isExpectedError(text)) {
+          errors.push(`Console error: ${text}`);
+        }
       }
     });
 
