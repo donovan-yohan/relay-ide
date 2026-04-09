@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as api from '../api.js';
+import type { FrameworkInfo } from '../types.js';
 
 export interface ConfigState {
   defaultContinue: boolean;
@@ -8,7 +9,9 @@ export interface ConfigState {
   defaultAgent: string;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
+  frameworks: FrameworkInfo[];
   refreshConfig: () => Promise<void>;
+  loadFrameworks: () => Promise<void>;
 }
 
 export const useConfigStore = create<ConfigState>()((set, get) => ({
@@ -18,6 +21,7 @@ export const useConfigStore = create<ConfigState>()((set, get) => ({
   defaultAgent: 'claude',
   defaultNotifications: true,
   claudeFullscreen: true,
+  frameworks: [],
 
   refreshConfig: async () => {
     const s = get();
@@ -38,6 +42,13 @@ export const useConfigStore = create<ConfigState>()((set, get) => ({
       claudeFullscreen: fullscreen,
     });
   },
+
+  loadFrameworks: async () => {
+    const frameworks = await api.fetchFrameworks().catch(() => []);
+    set({ frameworks });
+  },
 }));
+
+void useConfigStore.getState().loadFrameworks();
 
 export default useConfigStore;

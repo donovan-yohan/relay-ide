@@ -2,6 +2,10 @@ import { useEffect } from 'react';
 import type React from 'react';
 import { registerGlobal } from '../lib/actions/registry.js';
 import {
+  registerContextual,
+  unregisterContextual,
+} from '../lib/actions/registry.js';
+import {
   sessionNewAgent,
   sessionNewTerminal,
   sessionCloseActive,
@@ -12,6 +16,7 @@ import {
   sessionSwitchToTab,
   sessionRename,
 } from '../lib/actions/definitions/session.js';
+import { createFrameworkAction } from '../lib/actions/definitions/frameworks.js';
 import {
   workspaceAdd,
   workspaceNewWorktree,
@@ -85,6 +90,7 @@ import { killSession, setDefaultYolo } from '../lib/api.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
+import { createAgentSession } from '../lib/session-utils.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
@@ -130,6 +136,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
     terminalRef,
     setFilePickerOpen,
   } = params;
+  const frameworks = useConfigStore((state) => state.frameworks);
 
   useEffect(() => {
     // ── Settings section openers ─────────────────────────────────────────────
@@ -472,4 +479,57 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       ...noopActions,
     ] satisfies Action[]);
   }, []);
+
+  useEffect(() => {
+    const frameworkActions = frameworks.map((framework) => ({
+      ...createFrameworkAction(framework),
+      handler: async () => {
+        const currentRepoPath = useUiStore.getState().activeRepoPath;
+        const state = useSessionsStore.getState();
+        const workspace = currentRepoPath
+          ? state.repos.find((repo) => repo.path === currentRepoPath)
+          : undefined;
+        const activeSession = state.activeSessionId
+          ? state.sessions.find(
+              (session) => session.id === state.activeSessionId
+            )
+          : undefined;
+
+        if (!workspace) return;
+
+        const { session, error } = await createAgentSession({
+          repoPath: workspace.path,
+          worktreePath: activeSession?.worktreePath ?? null,
+          type: 'agent',
+          agent: framework.id,
+        });
+
+        if (session?.id) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
+
+        if (error && !(error instanceof Error && 'sessionId' in error)) {
+          logger.error(`Failed to create ${framework.id} session`, error);
+          customizeDialogRef.current?.open(
+            { name: workspace.name, path: workspace.path },
+            activeSession?.worktreePath ?? null,
+            framework.id
+          );
+        }
+      },
+    }));
+
+    if (frameworkActions.length === 0) return;
+
+    registerContextual(frameworkActions);
+
+    return () => {
+      unregisterContextual(frameworkActions.map((action) => action.id));
+    };
+  }, [customizeDialogRef, frameworks]);
 }

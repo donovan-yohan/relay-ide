@@ -602,6 +602,7 @@ export default function App() {
   const authAuthenticated = useAuthStore((s) => s.authenticated);
   const authNeedsSetup = useAuthStore((s) => s.needsSetup);
   const checkExistingAuth = useAuthStore((s) => s.checkExistingAuth);
+  const loadFrameworks = useConfigStore((s) => s.loadFrameworks);
 
   // ── UI store ───────────────────────────────────────────────────────────────
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
@@ -833,6 +834,8 @@ export default function App() {
   useEffect(() => {
     if (!authAuthenticated) return;
 
+    void loadFrameworks();
+
     const isInitialBoot = !bootRefreshDone.current;
     if (isInitialBoot) {
       bootRefreshDone.current = true;
@@ -891,7 +894,7 @@ export default function App() {
     };
 
     runRefresh();
-  }, [authAuthenticated]);
+  }, [authAuthenticated, loadFrameworks]);
 
   // ── Event socket ───────────────────────────────────────────────────────────
   useEventSocket({

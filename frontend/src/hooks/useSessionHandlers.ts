@@ -10,7 +10,7 @@ import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
 import {
   createWorktree,
-  createSession,
+  ConflictError,
   fetchWorkspaceSettings,
   fetchWorktreeStatus,
   killSession,
@@ -23,6 +23,10 @@ import {
   buildPrStateInput,
   getActionPrompt,
 } from '../lib/pr-state.js';
+import {
+  createAgentSession,
+  getCurrentSessionContext,
+} from '../lib/session-utils.js';
 import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
 import type { TerminalHandle } from '../components/Terminal.js';
@@ -123,55 +127,34 @@ export function useSessionHandlers({
   );
 
   const handleQuickAgent = useCallback(async () => {
-    const currentRepoPath = useUiStore.getState().activeRepoPath;
-    const currentActiveWorkspace = currentRepoPath
-      ? useSessionsStore
-          .getState()
-          .repos.find((w) => w.path === currentRepoPath)
-      : undefined;
+    const { currentActiveWorkspace, currentWorktreePath } =
+      getCurrentSessionContext();
     if (!currentActiveWorkspace) return;
-    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
-    const currentActiveSession = currentActiveSessionId
-      ? useSessionsStore
-          .getState()
-          .sessions.find((s) => s.id === currentActiveSessionId)
-      : undefined;
     const { cols, rows } = estimateTerminalDimensions();
-    try {
-      const session = await createSession({
-        repoPath: currentActiveWorkspace.path,
-        worktreePath: currentActiveSession?.worktreePath ?? null,
-        type: 'agent',
-        cols,
-        rows,
-      });
-      await useSessionsStore.getState().refreshAll();
-      if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error && 'sessionId' in err) {
-        const conflictErr = err as Error & { sessionId?: string };
-        await useSessionsStore.getState().refreshAll();
-        if (conflictErr.sessionId) {
-          useSessionsStore.getState().setActiveSessionId(conflictErr.sessionId);
-        }
-      } else {
-        logger.error('Failed to create agent session:', err);
-        useToastStore
-          .getState()
-          .showToast(
-            err instanceof Error
-              ? err.message
-              : 'failed to create agent session'
-          );
-      }
+    const { session, error } = await createAgentSession({
+      repoPath: currentActiveWorkspace.path,
+      worktreePath: currentWorktreePath,
+      type: 'agent',
+      cols,
+      rows,
+    });
+    if (session?.id && !(error instanceof ConflictError)) {
+      useSessionsStore
+        .getState()
+        .initSessionNotification(
+          session.id,
+          useConfigStore.getState().defaultNotifications
+        );
+    }
+    if (error && !(error instanceof ConflictError)) {
+      logger.error('Failed to create agent session:', error);
+      useToastStore
+        .getState()
+        .showToast(
+          error instanceof Error
+            ? error.message
+            : 'failed to create agent session'
+        );
     }
   }, []);
 
@@ -181,7 +164,7 @@ export function useSessionHandlers({
     useSessionsStore.getState().setLoading(loadingKey);
     try {
       const { cols, rows } = estimateTerminalDimensions();
-      const session = await createSession({
+      const { session, error } = await createAgentSession({
         repoPath,
         worktreePath: null,
         type: 'agent',
@@ -189,31 +172,22 @@ export function useSessionHandlers({
         rows,
       });
       if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
         useUiStore.getState().setActiveRepoPath(repoPath);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
+        if (!(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
         useUiStore.getState().closeSidebar();
       }
-      await useSessionsStore.getState().refreshAll();
-    } catch (err: unknown) {
-      if (err instanceof Error && 'sessionId' in err) {
-        const conflictErr = err as Error & { sessionId?: string };
-        await useSessionsStore.getState().refreshAll();
-        if (conflictErr.sessionId) {
-          useSessionsStore.getState().setActiveSessionId(conflictErr.sessionId);
-          useUiStore.getState().setActiveRepoPath(repoPath);
-          useUiStore.getState().closeSidebar();
-        }
-      } else {
+      if (error && !(error instanceof ConflictError)) {
         useToastStore
           .getState()
           .showToast(
-            err instanceof Error ? err.message : 'failed to create session'
+            error instanceof Error ? error.message : 'failed to create session'
           );
       }
     } finally {
@@ -222,42 +196,29 @@ export function useSessionHandlers({
   }, []);
 
   const handleQuickTerminal = useCallback(async () => {
-    const currentRepoPath = useUiStore.getState().activeRepoPath;
-    const currentActiveWorkspace = currentRepoPath
-      ? useSessionsStore
-          .getState()
-          .repos.find((w) => w.path === currentRepoPath)
-      : undefined;
+    const { currentActiveWorkspace, currentWorktreePath } =
+      getCurrentSessionContext();
     if (!currentActiveWorkspace) return;
-    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
-    const currentActiveSession = currentActiveSessionId
-      ? useSessionsStore
-          .getState()
-          .sessions.find((s) => s.id === currentActiveSessionId)
-      : undefined;
-    try {
-      const session = await createSession({
-        repoPath: currentActiveWorkspace.path,
-        worktreePath: currentActiveSession?.worktreePath ?? null,
-        type: 'terminal',
-      });
-      await useSessionsStore.getState().refreshAll();
-      if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
-      }
-    } catch (err) {
-      logger.error('Failed to create terminal session:', err);
+    const { session, error } = await createAgentSession({
+      repoPath: currentActiveWorkspace.path,
+      worktreePath: currentWorktreePath,
+      type: 'terminal',
+    });
+    if (session?.id && !(error instanceof ConflictError)) {
+      useSessionsStore
+        .getState()
+        .initSessionNotification(
+          session.id,
+          useConfigStore.getState().defaultNotifications
+        );
+    }
+    if (error && !(error instanceof ConflictError)) {
+      logger.error('Failed to create terminal session:', error);
       useToastStore
         .getState()
         .showToast(
-          err instanceof Error
-            ? err.message
+          error instanceof Error
+            ? error.message
             : 'failed to create terminal session'
         );
     }
@@ -270,11 +231,20 @@ export function useSessionHandlers({
           .getState()
           .repos.find((w) => w.path === currentRepoPath)
       : undefined;
+    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+    const currentActiveSession = currentActiveSessionId
+      ? useSessionsStore
+          .getState()
+          .sessions.find((s) => s.id === currentActiveSessionId)
+      : undefined;
     if (currentActiveWorkspace) {
-      customizeDialogRef.current?.open({
-        name: currentActiveWorkspace.name,
-        path: currentActiveWorkspace.path,
-      });
+      customizeDialogRef.current?.open(
+        {
+          name: currentActiveWorkspace.name,
+          path: currentActiveWorkspace.path,
+        },
+        currentActiveSession?.worktreePath
+      );
     }
   }, [customizeDialogRef]);
 
@@ -303,22 +273,24 @@ export function useSessionHandlers({
         const { branchName, worktreePath } = await createWorktree(
           workspace.path
         );
-        const session = await createSession({
+        const { session, error } = await createAgentSession({
           repoPath: workspace.path,
           worktreePath,
           type: 'agent',
           branchName,
           needsBranchRename: true,
         });
-        await useSessionsStore.getState().refreshAll();
-        useSessionsStore.getState().setActiveSessionId(session.id);
+        if (error && !(error instanceof ConflictError)) throw error;
+        if (!session) throw new Error('failed to create worktree session');
         useUiStore.getState().setActiveRepoPath(workspace.path);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
+        if (!(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
         useUiStore.getState().closeSidebar();
         terminalRef.current?.focusTerm();
       } catch (e) {
@@ -418,21 +390,23 @@ export function useSessionHandlers({
         branchName = wt.branchName;
       }
 
-      const session = await createSession({
+      const { session, error } = await createAgentSession({
         repoPath,
         worktreePath,
         type: 'agent',
         branchName,
       });
-      await useSessionsStore.getState().refreshAll();
-      useSessionsStore.getState().setActiveSessionId(session.id);
+      if (!session)
+        throw error ?? new Error('failed to start conflict resolution');
       useUiStore.getState().setActiveRepoPath(repoPath);
-      useSessionsStore
-        .getState()
-        .initSessionNotification(
-          session.id,
-          useConfigStore.getState().defaultNotifications
-        );
+      if (!(error instanceof ConflictError)) {
+        useSessionsStore
+          .getState()
+          .initSessionNotification(
+            session.id,
+            useConfigStore.getState().defaultNotifications
+          );
+      }
       useUiStore.getState().closeSidebar();
 
       // Delay sending the prompt to allow the terminal WebSocket connection to establish
@@ -482,21 +456,23 @@ export function useSessionHandlers({
           branchName = wt.branchName;
         }
 
-        const session = await createSession({
+        const { session, error } = await createAgentSession({
           repoPath,
           worktreePath,
           type: 'agent',
           branchName,
         });
-        await useSessionsStore.getState().refreshAll();
-        useSessionsStore.getState().setActiveSessionId(session.id);
+        if (!session)
+          throw error ?? new Error('failed to open PR branch session');
         useUiStore.getState().setActiveRepoPath(repoPath);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
+        if (!(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
         useUiStore.getState().closeSidebar();
 
         // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
@@ -546,21 +522,22 @@ export function useSessionHandlers({
           resolvedBranch = wt.branchName;
         }
 
-        const session = await createSession({
+        const { session, error } = await createAgentSession({
           repoPath,
           worktreePath,
           type: 'agent',
           branchName: resolvedBranch,
         });
-        await useSessionsStore.getState().refreshAll();
-        useSessionsStore.getState().setActiveSessionId(session.id);
+        if (!session) throw error ?? new Error('failed to open branch session');
         useUiStore.getState().setActiveRepoPath(repoPath);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
+        if (!(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
         useUiStore.getState().closeSidebar();
 
         // TODO: replace setTimeout with event-driven terminal-ready signal to avoid race condition on slow connections
@@ -763,7 +740,7 @@ export function useSessionHandlers({
     useSessionsStore.getState().setLoading(loadingKey);
     try {
       const { cols, rows } = estimateTerminalDimensions();
-      const session = await createSession({
+      const { session, error } = await createAgentSession({
         repoPath: wt.repoPath,
         worktreePath: wt.path,
         type: 'agent',
@@ -771,33 +748,24 @@ export function useSessionHandlers({
         cols,
         rows,
       });
-      await useSessionsStore.getState().refreshAll();
       if (session?.id) {
-        useSessionsStore.getState().setActiveSessionId(session.id);
         useUiStore.getState().setActiveRepoPath(wt.repoPath);
-        useSessionsStore
-          .getState()
-          .initSessionNotification(
-            session.id,
-            useConfigStore.getState().defaultNotifications
-          );
+        if (!(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
         useUiStore.getState().closeSidebar();
       }
-    } catch (err: unknown) {
-      if (err instanceof Error && 'sessionId' in err) {
-        const conflictErr = err as Error & { sessionId?: string };
-        await useSessionsStore.getState().refreshAll();
-        if (conflictErr.sessionId) {
-          useSessionsStore.getState().setActiveSessionId(conflictErr.sessionId);
-          useUiStore.getState().setActiveRepoPath(wt.repoPath);
-          useUiStore.getState().closeSidebar();
-        }
-      } else {
+      if (error && !(error instanceof ConflictError)) {
         useToastStore
           .getState()
           .showToast(
-            err instanceof Error
-              ? err.message
+            error instanceof Error
+              ? error.message
               : 'failed to resume worktree session'
           );
       }
