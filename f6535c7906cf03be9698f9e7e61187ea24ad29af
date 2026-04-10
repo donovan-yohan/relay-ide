@@ -1,0 +1,23 @@
+docs/WEB_CHAT.md
+  ac57af885331bcfe 1-304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "f6535c7906cf03be9698f9e7e61187ea24ad29af",
+  "prompts": {
+    "ac57af885331bcfe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_28ab20bcbffeaKeLbTJndKeCqN-ffb59159-a0a8-47f9-af70-36c1059820ee",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 304,
+      "total_deletions": 0,
+      "accepted_lines": 304,
+      "overriden_lines": 0
+    }
+  }
+}
