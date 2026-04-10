@@ -11,8 +11,14 @@ import { fireNotification, shouldFireNotification } from '../notifications.js';
 import * as api from '../api.js';
 import { createLogger } from '../logger.js';
 import type { BackendDisplayState } from '../state/display-state.js';
-import { transitionDisplayState, shouldNotify } from '../state/display-state.js';
-import { buildSidebarItems, deriveBackendState } from '../state/sidebar-items.js';
+import {
+  transitionDisplayState,
+  shouldNotify,
+} from '../state/display-state.js';
+import {
+  buildSidebarItems,
+  deriveBackendState,
+} from '../state/sidebar-items.js';
 import { shouldMarkUnread } from '../state/unread-logic.js';
 import useUnreadStore from './unread.js';
 
@@ -25,42 +31,56 @@ const BOOT_FETCH_TIMEOUT_MS = 10_000;
 
 // ── localStorage helpers ───────────────────────────────────────────────────
 function loadActiveSessionId(): string | null {
-  try { return localStorage.getItem(ACTIVE_SESSION_KEY); } catch { return null; }
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_KEY);
+  } catch {
+    return null;
+  }
 }
 
 function saveActiveSessionId(id: string | null): void {
   try {
     if (id === null) localStorage.removeItem(ACTIVE_SESSION_KEY);
     else localStorage.setItem(ACTIVE_SESSION_KEY, id);
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
 }
 
 function loadWorkspaceSessions(): Record<string, string> {
   try {
     const stored = localStorage.getItem(WORKSPACE_SESSIONS_KEY);
     if (stored) return JSON.parse(stored);
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
   return {};
 }
 
 function persistWorkspaceSessions(map: Record<string, string>): void {
   try {
     localStorage.setItem(WORKSPACE_SESSIONS_KEY, JSON.stringify(map));
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
 }
 
 function loadNotificationPrefs(): Record<string, boolean> {
   try {
     const stored = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
     if (stored) return JSON.parse(stored);
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
   return {};
 }
 
 function saveNotificationPrefs(prefs: Record<string, boolean>): void {
   try {
     localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(prefs));
-  } catch { /* unavailable */ }
+  } catch {
+    /* unavailable */
+  }
 }
 
 // ── Timed fetch helper ─────────────────────────────────────────────────────
@@ -84,7 +104,10 @@ async function timed<T>(
       ? Promise.race([
           fn(),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('timeout')), BOOT_FETCH_TIMEOUT_MS);
+            timer = setTimeout(
+              () => reject(new Error('timeout')),
+              BOOT_FETCH_TIMEOUT_MS
+            );
           }),
         ])
       : fn());
@@ -97,7 +120,10 @@ async function timed<T>(
   } catch (reason) {
     clearTimeout(timer);
     const errorMsg = reason instanceof Error ? reason.message : String(reason);
-    report?.(service, 'fail', { error: errorMsg, durationMs: Math.round(performance.now() - start) });
+    report?.(service, 'fail', {
+      error: errorMsg,
+      durationMs: Math.round(performance.now() - start),
+    });
     return { status: 'rejected' as const, reason };
   }
 }
@@ -113,20 +139,42 @@ export interface SessionsState {
   loadingItems: Record<string, boolean>;
   notificationSessions: Record<string, boolean>;
   sidebarItems: SidebarItem[];
-  enrichmentResults: Record<string, { pr: import('../types.js').PrInfo | null; stale: boolean }>;
+  enrichmentResults: Record<
+    string,
+    { pr: import('../types.js').PrInfo | null; stale: boolean }
+  >;
+  reconnectingPtySessionId: string | null;
   // Actions
   setActiveSessionId: (id: string | null) => void;
-  rememberSessionForWorkspace: (workspacePath: string, sessionId: string) => void;
+  rememberSessionForWorkspace: (
+    workspacePath: string,
+    sessionId: string
+  ) => void;
   recallSessionForWorkspace: (workspacePath: string) => string | null;
   enrichSidebarBranches: () => Promise<void>;
-  getEnrichment: (repoPath: string, branchName: string) => { pr: import('../types.js').PrInfo | null; stale: boolean } | undefined;
+  getEnrichment: (
+    repoPath: string,
+    branchName: string
+  ) => { pr: import('../types.js').PrInfo | null; stale: boolean } | undefined;
   refreshAll: (report?: FetchReporter) => Promise<void>;
   getSessionsForRepo: (repoPath: string) => SessionSummary[];
   getSessionsForWorkspaceGroup: (workspaceId: string) => SessionSummary[];
-  renameSession: (sessionId: string, branchName: string, displayName: string) => void;
+  renameSession: (
+    sessionId: string,
+    branchName: string,
+    displayName: string
+  ) => void;
   handleBranchChanged: (sessionId: string, branch: string) => void;
-  handleActivityChanged: (sessionId: string, timestamp?: string, currentActivity?: CurrentActivity | null) => void;
-  handleBackendStateChanged: (sessionId: string, backendState: BackendDisplayState, permissionType?: 'approval' | 'question') => void;
+  handleActivityChanged: (
+    sessionId: string,
+    timestamp?: string,
+    currentActivity?: CurrentActivity | null
+  ) => void;
+  handleBackendStateChanged: (
+    sessionId: string,
+    backendState: BackendDisplayState,
+    permissionType?: 'approval' | 'question'
+  ) => void;
   handleUserViewed: (sessionId: string) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
   initSessionNotification: (sessionId: string, defaultEnabled: boolean) => void;
@@ -135,6 +183,8 @@ export interface SessionsState {
   clearLoading: (key: string) => void;
   isItemLoading: (key: string) => boolean;
   reorderWorkspaces: (paths: string[]) => Promise<void>;
+  beginPtyReconnect: (sessionId: string) => void;
+  clearPtyReconnect: (sessionId?: string) => void;
 }
 
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
@@ -148,6 +198,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   notificationSessions: loadNotificationPrefs(),
   sidebarItems: [],
   enrichmentResults: {},
+  reconnectingPtySessionId: null,
 
   setActiveSessionId: (id) => {
     saveActiveSessionId(id);
@@ -176,7 +227,10 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   enrichSidebarBranches: async () => {
     const { worktrees } = get();
-    const branches = worktrees.map((wt) => ({ repoPath: wt.repoPath, branchName: wt.branchName }));
+    const branches = worktrees.map((wt) => ({
+      repoPath: wt.repoPath,
+      branchName: wt.branchName,
+    }));
     if (branches.length === 0) return;
     try {
       const data = await api.enrichBranches(branches);
@@ -192,13 +246,37 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   refreshAll: async (report) => {
     const [sResult, wResult, wsResult, wgResult] = await Promise.all([
       timed('sessions', api.fetchSessions, (v) => `${v.length} active`, report),
-      timed('worktrees', () => api.fetchWorktrees(), (v) => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`, report),
-      timed('workspaces', api.fetchWorkspaces, (v) => `${v.length} ${v.length === 1 ? 'repo' : 'repos'}`, report),
-      timed('groups', api.fetchWorkspaceGroups, (v) => `${v.length} ${v.length === 1 ? 'group' : 'groups'}`, report),
+      timed(
+        'worktrees',
+        () => api.fetchWorktrees(),
+        (v) => `${v.length} ${v.length === 1 ? 'tree' : 'trees'}`,
+        report
+      ),
+      timed(
+        'workspaces',
+        api.fetchWorkspaces,
+        (v) => `${v.length} ${v.length === 1 ? 'repo' : 'repos'}`,
+        report
+      ),
+      timed(
+        'groups',
+        api.fetchWorkspaceGroups,
+        (v) => `${v.length} ${v.length === 1 ? 'group' : 'groups'}`,
+        report
+      ),
     ]);
 
     const state = get();
-    let { sessions, worktrees, repos, workspaceGroups, activeSessionId, notificationSessions, workspaceLastSession, sidebarItems } = state;
+    let {
+      sessions,
+      worktrees,
+      repos,
+      workspaceGroups,
+      activeSessionId,
+      notificationSessions,
+      workspaceLastSession,
+      sidebarItems,
+    } = state;
 
     if (sResult.status === 'fulfilled') sessions = sResult.value;
     else logger.error('refreshAll failed to fetch sessions', sResult.reason);
@@ -210,7 +288,11 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     else logger.error('refreshAll failed to fetch repos', wsResult.reason);
 
     if (wgResult.status === 'fulfilled') workspaceGroups = wgResult.value;
-    else logger.error('refreshAll failed to fetch workspace groups', wgResult.reason);
+    else
+      logger.error(
+        'refreshAll failed to fetch workspace groups',
+        wgResult.reason
+      );
 
     const activeIds = new Set(sessions.map((s) => s.id));
 
@@ -222,23 +304,46 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     let notifPruned = false;
     notificationSessions = { ...notificationSessions };
     for (const id of Object.keys(notificationSessions)) {
-      if (!activeIds.has(id)) { delete notificationSessions[id]; notifPruned = true; }
+      if (!activeIds.has(id)) {
+        delete notificationSessions[id];
+        notifPruned = true;
+      }
     }
     if (notifPruned) saveNotificationPrefs(notificationSessions);
 
     let wsPruned = false;
     workspaceLastSession = { ...workspaceLastSession };
     for (const [path, id] of Object.entries(workspaceLastSession)) {
-      if (!activeIds.has(id)) { delete workspaceLastSession[path]; wsPruned = true; }
+      if (!activeIds.has(id)) {
+        delete workspaceLastSession[path];
+        wsPruned = true;
+      }
     }
     if (wsPruned) persistWorkspaceSessions(workspaceLastSession);
 
     const { isUnread } = useUnreadStore.getState();
-    sidebarItems = buildSidebarItems(sessions, worktrees, repos, sidebarItems, isUnread);
+    sidebarItems = buildSidebarItems(
+      sessions,
+      worktrees,
+      repos,
+      sidebarItems,
+      isUnread
+    );
 
-    useUnreadStore.getState().pruneUnread(new Set(sidebarItems.map((i) => i.id)));
+    useUnreadStore
+      .getState()
+      .pruneUnread(new Set(sidebarItems.map((i) => i.id)));
 
-    set({ sessions, worktrees, repos, workspaceGroups, activeSessionId, notificationSessions, workspaceLastSession, sidebarItems });
+    set({
+      sessions,
+      worktrees,
+      repos,
+      workspaceGroups,
+      activeSessionId,
+      notificationSessions,
+      workspaceLastSession,
+      sidebarItems,
+    });
   },
 
   getSessionsForRepo: (repoPath) =>
@@ -246,11 +351,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   getSessionsForWorkspaceGroup: (workspaceId) => {
     const { sessions, workspaceGroups } = get();
-    const directSessions = sessions.filter((s) => s.workspaceId === workspaceId);
+    const directSessions = sessions.filter(
+      (s) => s.workspaceId === workspaceId
+    );
     const workspace = workspaceGroups.find((w) => w.id === workspaceId);
     if (!workspace) return directSessions;
     const repoSet = new Set(workspace.repos);
-    const repoSessions = sessions.filter((s) => !s.workspaceId && repoSet.has(s.repoPath));
+    const repoSessions = sessions.filter(
+      (s) => !s.workspaceId && repoSet.has(s.repoPath)
+    );
     return [...directSessions, ...repoSessions];
   },
 
@@ -275,9 +384,13 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   handleBranchChanged: (sessionId, branch) => {
     set((state) => ({
-      sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, branchName: branch } : s)),
+      sessions: state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, branchName: branch } : s
+      ),
       sidebarItems: state.sidebarItems.map((item) =>
-        item.sessions.some((s) => s.id === sessionId) ? { ...item, branchName: branch } : item
+        item.sessions.some((s) => s.id === sessionId)
+          ? { ...item, branchName: branch }
+          : item
       ),
     }));
     if (!get().sessions.some((s) => s.id === sessionId)) {
@@ -291,7 +404,8 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       sessions: state.sessions.map((s) => {
         if (s.id !== sessionId) return s;
         const updated = { ...s, lastActivity: now };
-        if (currentActivity !== undefined) updated.currentActivity = currentActivity ?? undefined;
+        if (currentActivity !== undefined)
+          updated.currentActivity = currentActivity ?? undefined;
         return updated;
       }),
       sidebarItems: state.sidebarItems.map((item) =>
@@ -304,7 +418,10 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   handleBackendStateChanged: (sessionId, backendState, permissionType) => {
     set((state) => {
-      const agentStateMap: Record<BackendDisplayState, SessionSummary['agentState']> = {
+      const agentStateMap: Record<
+        BackendDisplayState,
+        SessionSummary['agentState']
+      > = {
         running: 'processing',
         idle: 'idle',
         permission: 'permission-prompt',
@@ -313,23 +430,34 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       };
       const sessions = state.sessions.map((s) => {
         if (s.id !== sessionId) return s;
-        return { ...s, idle: backendState === 'idle', agentState: agentStateMap[backendState] };
+        return {
+          ...s,
+          idle: backendState === 'idle',
+          agentState: agentStateMap[backendState],
+        };
       });
 
       const { activeSessionId, notificationSessions } = state;
       const sidebarItems = state.sidebarItems.map((item) => {
         if (!item.sessions.some((s) => s.id === sessionId)) return item;
 
-        const updatedSessions = sessions.filter((s) => item.sessions.some((is) => is.id === s.id));
+        const updatedSessions = sessions.filter((s) =>
+          item.sessions.some((is) => is.id === s.id)
+        );
         const aggregateState = deriveBackendState(updatedSessions);
         if (aggregateState === item.lastKnownBackendState) return item;
 
         const oldDisplayState = item.displayState;
-        const effectivePermissionType = aggregateState === 'permission' ? permissionType : undefined;
+        const effectivePermissionType =
+          aggregateState === 'permission' ? permissionType : undefined;
         const newDisplayState = transitionDisplayState(
           item.displayState,
           effectivePermissionType
-            ? { type: 'backend-state-changed' as const, state: aggregateState, permissionType: effectivePermissionType }
+            ? {
+                type: 'backend-state-changed' as const,
+                state: aggregateState,
+                permissionType: effectivePermissionType,
+              }
             : { type: 'backend-state-changed' as const, state: aggregateState }
         );
 
@@ -344,7 +472,11 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
             const notifySession =
               item.sessions.find((s) => s.id === sessionId) ??
               item.sessions.find((s) => notificationSessions[s.id]);
-            if (notifySession && notificationSessions[notifySession.id] && shouldFireNotification()) {
+            if (
+              notifySession &&
+              notificationSessions[notifySession.id] &&
+              shouldFireNotification()
+            ) {
               fireNotification(notifySession);
             }
           }
@@ -369,7 +501,9 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
         useUnreadStore.getState().markRead(item.id);
         return {
           ...item,
-          displayState: transitionDisplayState(item.displayState, { type: 'user-viewed' }),
+          displayState: transitionDisplayState(item.displayState, {
+            type: 'user-viewed',
+          }),
           isUnread: false,
         };
       }),
@@ -411,6 +545,17 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   reorderWorkspaces: async (paths) => {
     const updated = await api.reorderWorkspaces(paths);
     set({ repos: updated });
+  },
+
+  beginPtyReconnect: (sessionId: string) => {
+    set({ reconnectingPtySessionId: sessionId });
+  },
+
+  clearPtyReconnect: (sessionId?: string) => {
+    const current = get().reconnectingPtySessionId;
+    if (sessionId === undefined || current === sessionId) {
+      set({ reconnectingPtySessionId: null });
+    }
   },
 }));
 

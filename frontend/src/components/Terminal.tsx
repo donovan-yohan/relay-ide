@@ -1006,6 +1006,9 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const activeAgent = useSessionsStore(
       (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
     );
+    const reconnectingPtySessionId = useSessionsStore(
+      (s) => s.reconnectingPtySessionId
+    );
     const isFullscreenTerminal =
       (claudeFullscreen && activeAgent === 'claude') || useTmux;
 
@@ -1060,6 +1063,34 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       }),
       [termRef, fit, exitCopyMode, handleImageUpload]
     );
+
+    useEffect(() => {
+      if (
+        sessionId &&
+        reconnectingPtySessionId === sessionId &&
+        termRef.current &&
+        !companionMode
+      ) {
+        const term = termRef.current;
+        term.reset();
+        const container = containerRef.current;
+        if (container) {
+          const viewport =
+            container.querySelector<HTMLElement>('.xterm-viewport');
+          if (viewport) {
+            viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
+          }
+        }
+        fit();
+        term.refresh(0, term.rows - 1);
+      }
+    }, [
+      sessionId,
+      reconnectingPtySessionId,
+      companionMode,
+      isFullscreenTerminal,
+      fit,
+    ]);
 
     // Enforce xterm viewport overflow for fullscreen/tmux sessions.
     // xterm.js defaults .xterm-viewport to overflow-y:scroll; for sessions
