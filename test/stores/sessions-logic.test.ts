@@ -275,4 +275,75 @@ describe('sessions store pure logic', () => {
       expect(result['/repo/b']).toBe(undefined);
     });
   });
+
+  describe('PTY reconnect state', () => {
+    type PtyReconnectAction =
+      | { type: 'begin'; sessionId: string }
+      | { type: 'clear'; sessionId?: string };
+
+    function applyPtyReconnectTransition(
+      currentId: string | null,
+      action: PtyReconnectAction
+    ): string | null {
+      if (action.type === 'begin') {
+        return action.sessionId;
+      }
+
+      if (action.sessionId === undefined || currentId === action.sessionId) {
+        return null;
+      }
+
+      return currentId;
+    }
+
+    function beginPtyReconnect(
+      currentId: string | null,
+      sessionId: string
+    ): string | null {
+      return applyPtyReconnectTransition(currentId, {
+        type: 'begin',
+        sessionId,
+      });
+    }
+
+    function clearPtyReconnect(
+      currentId: string | null,
+      sessionId?: string
+    ): string | null {
+      return applyPtyReconnectTransition(currentId, {
+        type: 'clear',
+        sessionId,
+      });
+    }
+
+    it('beginPtyReconnect sets the reconnecting session ID', () => {
+      const result = beginPtyReconnect(null, 'session-a');
+      expect(result).toBe('session-a');
+    });
+
+    it('beginPtyReconnect replaces previous session ID', () => {
+      const result = beginPtyReconnect('session-a', 'session-b');
+      expect(result).toBe('session-b');
+    });
+
+    it('clearPtyReconnect clears when sessionId matches', () => {
+      const result = clearPtyReconnect('session-a', 'session-a');
+      expect(result).toBeNull();
+    });
+
+    it('clearPtyReconnect keeps current when sessionId does not match', () => {
+      const result = clearPtyReconnect('session-a', 'session-b');
+      expect(result).toBe('session-a');
+    });
+
+    it('clearPtyReconnect clears unconditionally when no sessionId provided', () => {
+      const result = clearPtyReconnect('session-a');
+      expect(result).toBeNull();
+    });
+
+    it('clearPtyReconnect is a no-op when already null', () => {
+      const result = clearPtyReconnect(null, 'session-a');
+      expect(result).toBeNull();
+    });
+  });
 });

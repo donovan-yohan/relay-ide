@@ -45,21 +45,33 @@ export function useEventSocket({
       }, 500);
     }
 
-    const handlers: { [K in EventMessage['type']]?: (msg: Extract<EventMessage, { type: K }>) => void } = {
+    const handlers: {
+      [K in EventMessage['type']]?: (
+        msg: Extract<EventMessage, { type: K }>
+      ) => void;
+    } = {
       'worktrees-changed': () => {
         useSessionsStore.getState().refreshAll();
       },
       'session-backend-state-changed': (msg) => {
         useSessionsStore
           .getState()
-          .handleBackendStateChanged(msg.sessionId, msg.state, msg.permissionType);
+          .handleBackendStateChanged(
+            msg.sessionId,
+            msg.state,
+            msg.permissionType
+          );
       },
       'session-renamed': (msg) => {
-        useSessionsStore.getState().renameSession(msg.sessionId, msg.branchName, msg.displayName);
+        useSessionsStore
+          .getState()
+          .renameSession(msg.sessionId, msg.branchName, msg.displayName);
         invalidatePrData();
       },
       'session-branch-changed': (msg) => {
-        useSessionsStore.getState().handleBranchChanged(msg.sessionId, msg.branch);
+        useSessionsStore
+          .getState()
+          .handleBranchChanged(msg.sessionId, msg.branch);
       },
       'session-ended': () => {
         invalidatePrData();
@@ -74,7 +86,7 @@ export function useEventSocket({
           setTimeout(() => {
             refChangedTimers.delete(key);
             invalidatePrData();
-          }, 5000),
+          }, 5000)
         );
       },
       'pr-updated': () => {
@@ -84,11 +96,15 @@ export function useEventSocket({
         throttledPollInvalidate();
       },
       'files-changed': (msg) => {
-        const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+        const currentActiveSessionId =
+          useSessionsStore.getState().activeSessionId;
         const currentActiveSession = currentActiveSessionId
-          ? useSessionsStore.getState().sessions.find((s) => s.id === currentActiveSessionId)
+          ? useSessionsStore
+              .getState()
+              .sessions.find((s) => s.id === currentActiveSessionId)
           : undefined;
-        const activeWs = currentActiveSession?.cwd ?? currentActiveSession?.repoPath;
+        const activeWs =
+          currentActiveSession?.worktreePath ?? currentActiveSession?.repoPath;
         if (activeWs === msg.workspacePath) {
           throttledChangedFilesRefresh();
           queryClient.invalidateQueries({ queryKey: ['files-list'] });
@@ -100,21 +116,25 @@ export function useEventSocket({
       'session-activity-changed': (msg) => {
         useSessionsStore
           .getState()
-          .handleActivityChanged(msg.sessionId, msg.timestamp, msg.currentActivity ?? undefined);
+          .handleActivityChanged(
+            msg.sessionId,
+            msg.timestamp,
+            msg.currentActivity ?? undefined
+          );
       },
       'session-telemetry': (msg) => {
         useTelemetryStore
           .getState()
           .handleSessionTelemetryEvent(
             msg.sessionId,
-            msg.data as SessionTelemetry | Record<string, unknown>,
+            msg.data as SessionTelemetry | Record<string, unknown>
           );
       },
       'account-telemetry': (msg) => {
         useTelemetryStore
           .getState()
           .handleAccountTelemetryEvent(
-            msg.data as AccountTelemetry | Record<string, unknown> | null,
+            msg.data as AccountTelemetry | Record<string, unknown> | null
           );
       },
       'browser-tab-opened': (msg) => {
@@ -124,8 +144,16 @@ export function useEventSocket({
         useUiStore.getState().refreshHtmlTab(msg.filePath);
       },
       'server-restarting': () => {
-        // Server is about to shut down (in-app update). Auth will be
-        // invalidated on restart; the reconnect auth check handles it.
+        const state = useSessionsStore.getState();
+        const activeSessionId = state.activeSessionId;
+        if (activeSessionId) {
+          const activeSession = state.sessions.find(
+            (s) => s.id === activeSessionId
+          );
+          if (activeSession && activeSession.mode === 'pty') {
+            state.beginPtyReconnect(activeSessionId);
+          }
+        }
       },
     };
 
@@ -139,7 +167,7 @@ export function useEventSocket({
       },
       () => {
         useAuthStore.getState().deauthenticate();
-      },
+      }
     );
 
     return () => {
@@ -150,6 +178,5 @@ export function useEventSocket({
         pollInvalidateTimer = null;
       }
     };
-
   }, [authAuthenticated]);
 }

@@ -6,6 +6,7 @@ import type {
   SessionTelemetry,
 } from './types.js';
 import { createLogger } from './logger.js';
+import { useSessionsStore } from './stores/sessions.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -199,6 +200,7 @@ export function connectPtySocket(
     ptyReconnectAttempt = 0;
     onResize();
     startPtyPing();
+    useSessionsStore.getState().clearPtyReconnect(sessionId);
   };
 
   // Flow control constants (thresholds measured in string length / UTF-16 code units,
@@ -311,10 +313,12 @@ export function connectPtySocket(
     if (event.code === 1000) {
       term.write('\r\n[Session ended]\r\n');
       ptyWs = null;
+      useSessionsStore.getState().clearPtyReconnect(sessionId);
       onSessionEnd();
       return;
     }
     ptyWs = null;
+    useSessionsStore.getState().beginPtyReconnect(sessionId);
     if (ptyReconnectAttempt === 0) term.write('\r\n[Reconnecting...]\r\n');
     scheduleReconnect(sessionId, term, onResize, onSessionEnd);
   };
@@ -334,6 +338,7 @@ function scheduleReconnect(
         MAX_RECONNECT_ATTEMPTS +
         ' attempts]\r\n'
     );
+    useSessionsStore.getState().clearPtyReconnect(sessionId);
     return;
   }
   const delay = Math.min(1000 * 2 ** ptyReconnectAttempt, 10000);
@@ -344,6 +349,7 @@ function scheduleReconnect(
     try {
       const authRes = await fetch('/auth/check');
       if (authRes.status === 401) {
+        useSessionsStore.getState().clearPtyReconnect(sessionId);
         lastOnAuthRequired?.();
         return;
       }
@@ -351,6 +357,7 @@ function scheduleReconnect(
       const sessionList = (await res.json()) as Array<{ id: string }>;
       if (!sessionList.some((s) => s.id === sessionId)) {
         term.write('\r\n[Session ended]\r\n');
+        useSessionsStore.getState().clearPtyReconnect(sessionId);
         onSessionEnd();
         return;
       }
@@ -417,6 +424,7 @@ function forceReconnectPty(): void {
     lastPtyOnResize &&
     lastPtyOnSessionEnd
   ) {
+    useSessionsStore.getState().beginPtyReconnect(lastPtySessionId);
     if (ptyReconnectAttempt === 0)
       lastPtyTerm.write('\r\n[Reconnecting...]\r\n');
     scheduleReconnect(
