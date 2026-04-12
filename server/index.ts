@@ -108,6 +108,13 @@ import {
   cleanExpiredTokens,
 } from './browser-content.js';
 import { createLogger, initFileLogging } from './logger.js';
+import {
+  initializeDefaultAllocator,
+  getDefaultAllocator,
+  normalizePortVariables,
+  removePortsFromEnvFile,
+  upsertPortsInEnvFile,
+} from './port-allocator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,6 +167,8 @@ function execErrorMessage(err: unknown, fallback: string): string {
   return (e.stderr || e.message || fallback).trim();
 }
 
+const GIT_WORKTREE_LIST_ARGS = ['worktree', 'list', '--porcelain'] as const;
+
 type RepoEntry = { name: string; path: string; root: string };
 
 function scanReposInRoot(rootDir: string): RepoEntry[] {
@@ -183,6 +192,19 @@ function scanReposInRoot(rootDir: string): RepoEntry[] {
     }
   }
   return repos;
+}
+
+async function listNonMainWorktrees(
+  repoPath: string
+): Promise<ReturnType<typeof parseAllWorktrees>> {
+  const { stdout } = await execFileAsync('git', [...GIT_WORKTREE_LIST_ARGS], {
+    cwd: repoPath,
+  });
+  return parseAllWorktrees(stdout, repoPath).filter((wt) => !wt.isMain);
+}
+
+function getRepoPortVariables(config: Config, repoPath: string): string[] {
+  return normalizePortVariables(config.repoSettings?.[repoPath]?.portVariables);
 }
 
 function scanAllRepos(rootDirs: string[]): RepoEntry[] {
@@ -484,6 +506,8 @@ type AgentSessionParams = {
   branchRenamePrompt: string;
   computedInitialPrompt: string | undefined;
   claudeFullscreen: boolean;
+  /** Port env var names to inject for this worktree (from repo settings) */
+  portVariables?: string[] | undefined;
 };
 
 /** Creates an agent session record and writes worktree metadata if applicable. */
@@ -512,6 +536,8 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     ...(params.computedInitialPrompt != null && {
       initialPrompt: params.computedInitialPrompt,
     }),
+    // Pass port env var names for per-worktree port injection
+    portVariables: params.portVariables,
   });
 
   if (params.worktreePath) {
@@ -561,6 +587,44 @@ async function main(): Promise<void> {
 
   ensureMetaDir(CONFIG_PATH);
 
+  async function reconcilePortsForRepo(repoPath: string): Promise<void> {
+    const allocator = getDefaultAllocator();
+    const config = getConfig();
+    const portVariables = normalizePortVariables(
+      config.repoSettings?.[repoPath]?.portVariables
+    );
+
+    let worktrees: Awaited<ReturnType<typeof listNonMainWorktrees>>;
+    try {
+      worktrees = await listNonMainWorktrees(repoPath);
+    } catch {
+      return;
+    }
+
+    const activeWorktreePaths = new Set(worktrees.map((wt) => wt.path));
+    for (const worktree of worktrees) {
+      const ports = await allocator.reconcilePortsForWorktree(
+        repoPath,
+        worktree.path,
+        portVariables
+      );
+      upsertPortsInEnvFile(worktree.path, ports);
+    }
+
+    for (const assignment of allocator.getAllAssignments()) {
+      if (assignment.repoId !== repoPath) continue;
+      if (activeWorktreePaths.has(assignment.worktreeId)) continue;
+      allocator.releasePortsForWorktree(repoPath, assignment.worktreeId);
+      removePortsFromEnvFile(assignment.worktreeId);
+    }
+  }
+
+  async function reconcilePortsForAllRepos(repoPaths: string[]): Promise<void> {
+    for (const repoPath of repoPaths) {
+      await reconcilePortsForRepo(repoPath);
+    }
+  }
+
   // Runtime config — always reads fresh from disk.
   // Use this for ALL config access in route handlers, pollers, and event callbacks.
   let lastGoodConfig: Config | null = null;
@@ -601,6 +665,19 @@ async function main(): Promise<void> {
   const configDir = getConfigDir(CONFIG_PATH);
   initFileLogging(path.join(configDir, 'logs'));
   fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+
+  // Initialize port allocator for per-worktree port env injection
+  try {
+    await initializeDefaultAllocator(CONFIG_PATH, logger);
+  } catch (err) {
+    logger.warn(
+      'Port allocator disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  await reconcilePortsForAllRepos(getConfig().repos ?? []);
+
   try {
     initAnalytics(configDir);
   } catch (err) {
@@ -760,6 +837,7 @@ async function main(): Promise<void> {
   branchWatcher.rebuild(getConfig().repos || []);
   watcher.on('worktrees-changed', () => {
     branchWatcher.rebuild(getConfig().repos || []);
+    void reconcilePortsForAllRepos(getConfig().repos || []);
   });
 
   // Watch upstream tracking refs for push/fetch and broadcast ref-changed events
@@ -819,6 +897,7 @@ async function main(): Promise<void> {
           const repoPaths = getConfig().repos || [];
           watcher.rebuild(repoPaths);
           branchWatcher.rebuild(repoPaths);
+          void reconcilePortsForAllRepos(repoPaths);
         } catch (err) {
           logger.error('Failed to rebuild workspace watchers:', err);
         }
@@ -1037,6 +1116,8 @@ async function main(): Promise<void> {
         const repoName =
           opts.repoPath.split('/').filter(Boolean).pop() || 'session';
         const displayName = sessions.nextAgentName();
+        // Get port env var names from repo settings for port injection
+        const portVariables = getRepoPortVariables(freshCfg, opts.repoPath);
         sessions.create({
           type: 'agent',
           agent: resolved.agent,
@@ -1058,6 +1139,8 @@ async function main(): Promise<void> {
           ...(opts.initialPrompt != null && {
             initialPrompt: opts.initialPrompt,
           }),
+          // Pass port env var names for per-worktree port injection
+          portVariables,
         });
       },
       broadcastEvent,
@@ -1735,6 +1818,16 @@ async function main(): Promise<void> {
       }
     }
 
+    try {
+      getDefaultAllocator().releasePortsForWorktree(repoPath, resolvedPath);
+      removePortsFromEnvFile(resolvedPath);
+    } catch (err) {
+      logger.warn(
+        '[worktrees] failed to release ports:',
+        err instanceof Error ? err.message : err
+      );
+    }
+
     // Clean up metadata file
     deleteMeta(CONFIG_PATH, worktreePath);
 
@@ -1817,6 +1910,7 @@ async function main(): Promise<void> {
     const safeRows = clampDimension(rows, 1, 200);
 
     const name = repoPath.split('/').filter(Boolean).pop() || 'session';
+    const portVariables = getRepoPortVariables(freshConfig, repoPath);
 
     if (type === 'terminal') {
       // Terminal session — bare shell
@@ -1835,6 +1929,8 @@ async function main(): Promise<void> {
         args: [],
         ...(safeCols != null && { cols: safeCols }),
         ...(safeRows != null && { rows: safeRows }),
+        // Pass port env var names for per-worktree port injection
+        portVariables,
       });
       gitWatcher.watch(session.cwd);
       res.status(201).json(session);
@@ -1909,6 +2005,7 @@ async function main(): Promise<void> {
       branchRenamePrompt: branchRenamePrompt ?? '',
       computedInitialPrompt,
       claudeFullscreen: freshConfig.claudeFullscreen,
+      portVariables,
     });
 
     gitWatcher.watch(session.cwd);

@@ -302,6 +302,8 @@ export interface WorkspaceSettings {
   promptFixConflicts?: string;
   promptStartWork?: string;
   nextMountainIndex?: number;
+  /** Environment variable names that should receive per-worktree allocated ports. */
+  portVariables?: string[];
 }
 
 export interface AutomationSettings {

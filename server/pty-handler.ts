@@ -27,6 +27,7 @@ import type { OutputParser } from './output-parsers/index.js';
 import { installOpencodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
+import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -304,6 +305,10 @@ export type CreatePtyParams = {
   continuePolicy?: ContinuePolicy | undefined;
   frameworks?: Record<string, Partial<AgentFramework>> | undefined;
   claudeFullscreen?: boolean | undefined;
+  /** Environment variable names to inject with allocated ports (per-worktree) */
+  portVariables?: string[] | undefined;
+  /** Optional port allocator instance (uses default if not provided) */
+  portAllocator?: PortAllocator | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -386,6 +391,166 @@ function setupCodexHooks(
   }
 }
 
+type PortInjectionParams = {
+  repoPath: string;
+  worktreePath: string | null | undefined;
+  cwd: string;
+  portVariables?: string[] | undefined;
+  portAllocator?: PortAllocator | undefined;
+};
+
+/**
+ * Inject per-worktree allocated port environment variables into the PTY environment.
+ *
+ * Uses the port allocator to look up existing allocations for the worktree
+ * identified by worktreePath (or cwd if no worktree). Ports are injected as
+ * environment variables matching the configured port variable names.
+ */
+function injectPortEnvVars(
+  env: Record<string, string>,
+  params: PortInjectionParams
+): void {
+  const { repoPath, worktreePath, cwd, portVariables, portAllocator } = params;
+
+  // Skip if no port variable names configured
+  if (!portVariables || portVariables.length === 0) return;
+
+  // Get the port allocator - use provided instance or fall back to default
+  let allocator: PortAllocator;
+  try {
+    allocator = portAllocator ?? getDefaultAllocator();
+  } catch {
+    // Default allocator not initialized - skip silently
+    return;
+  }
+
+  // Derive worktree ID: use worktreePath if available, otherwise cwd
+  const worktreeId = worktreePath ?? cwd;
+  if (!worktreeId) return;
+
+  // Get existing port allocations (synchronous)
+  const portMapping = allocator.getPortsForWorktree(repoPath, worktreeId);
+  if (!portMapping) return;
+
+  // Inject allocated ports as environment variables
+  for (const [varName, port] of Object.entries(portMapping)) {
+    if (portVariables.includes(varName)) {
+      env[varName] = String(port);
+    }
+  }
+}
+
+function maybeInjectPortEnvVars(
+  env: Record<string, string>,
+  portInjectionParams?: PortInjectionParams
+): void {
+  if (!portInjectionParams) return;
+  injectPortEnvVars(env, portInjectionParams);
+}
+
+function maybeApplyYoloEnv(
+  env: Record<string, string>,
+  paramYolo: boolean | undefined,
+  framework: AgentFramework
+): void {
+  if (paramYolo && framework.yoloEnv) {
+    Object.assign(env, framework.yoloEnv);
+  }
+}
+
+function maybeSetupPluginHooks(
+  id: string,
+  effectiveEventSource: EventSourceType,
+  port: number | undefined,
+  hookToken: string,
+  hooksActive: boolean,
+  env: Record<string, string>
+): { hookToken: string; hooksActive: boolean } {
+  if (effectiveEventSource === 'plugin' && port !== undefined) {
+    return setupPluginHooks(id, port, hookToken, env);
+  }
+  return { hookToken, hooksActive };
+}
+
+function maybeSetupCodexHooks(
+  id: string,
+  framework: AgentFramework,
+  port: number | undefined,
+  hookToken: string,
+  hooksActive: boolean,
+  configDir: string | undefined,
+  env: Record<string, string>
+): { hookToken: string; hooksActive: boolean } {
+  if (framework.id === 'codex' && port !== undefined) {
+    return setupCodexHooks(
+      id,
+      port,
+      hookToken,
+      configDir ?? process.cwd(),
+      env
+    );
+  }
+  return { hookToken, hooksActive };
+}
+
+function maybeInjectClaudeHooks(
+  id: string,
+  framework: AgentFramework,
+  effectiveEventSource: EventSourceType,
+  command: string | undefined,
+  port: number | undefined,
+  hookToken: string,
+  configDir: string | undefined,
+  args: string[]
+): {
+  hookToken: string;
+  hooksActive: boolean;
+  settingsPath: string;
+  args: string[];
+} {
+  const shouldInjectHooks =
+    framework.id === 'claude' &&
+    framework.capabilities.supportsHooks &&
+    effectiveEventSource === 'hooks' &&
+    !command &&
+    port !== undefined;
+
+  if (!shouldInjectHooks) {
+    return { hookToken, hooksActive: false, settingsPath: '', args };
+  }
+
+  let nextHookToken = hookToken;
+  if (!nextHookToken) nextHookToken = crypto.randomBytes(32).toString('hex');
+  try {
+    const settingsPath = writeHooksSettingsFile(
+      id,
+      port,
+      nextHookToken,
+      configDir ?? process.cwd()
+    );
+    return {
+      hookToken: nextHookToken,
+      hooksActive: true,
+      settingsPath,
+      args: ['--settings', settingsPath, ...args],
+    };
+  } catch (err) {
+    logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
+    return { hookToken: '', hooksActive: false, settingsPath: '', args };
+  }
+}
+
+function buildPortInjectionParams(
+  repoPath: string,
+  worktreePath: string | null,
+  cwd: string,
+  portVariables: string[] | undefined,
+  portAllocator: PortAllocator | undefined
+): PortInjectionParams | undefined {
+  if (!repoPath || (!portVariables && !portAllocator)) return undefined;
+  return { repoPath, worktreePath, cwd, portVariables, portAllocator };
+}
+
 function setupEnvAndHooks(
   id: string,
   framework: AgentFramework,
@@ -397,7 +562,8 @@ function setupEnvAndHooks(
   paramHookToken: string | undefined,
   paramHooksActive: boolean | undefined,
   paramClaudeFullscreen: boolean | undefined,
-  rawArgs: string[]
+  rawArgs: string[],
+  portInjectionParams?: PortInjectionParams
 ): HookSetupResult {
   const env = cleanEnv();
 
@@ -406,54 +572,51 @@ function setupEnvAndHooks(
   }
 
   let hookToken = paramHookToken ?? '';
-  let hooksActive = paramHooksActive ?? false;
-  let settingsPath = '';
   let args = rawArgs;
 
-  if (paramYolo && framework.yoloEnv) {
-    Object.assign(env, framework.yoloEnv);
-  }
+  maybeApplyYoloEnv(env, paramYolo, framework);
+  const pluginHookState = maybeSetupPluginHooks(
+    id,
+    effectiveEventSource,
+    port,
+    hookToken,
+    paramHooksActive ?? false,
+    env
+  );
+  hookToken = pluginHookState.hookToken;
 
-  if (effectiveEventSource === 'plugin' && port !== undefined) {
-    ({ hookToken, hooksActive } = setupPluginHooks(id, port, hookToken, env));
-  }
+  const codexHookState = maybeSetupCodexHooks(
+    id,
+    framework,
+    port,
+    hookToken,
+    pluginHookState.hooksActive,
+    configDir,
+    env
+  );
+  hookToken = codexHookState.hookToken;
 
-  if (framework.id === 'codex' && port !== undefined) {
-    ({ hookToken, hooksActive } = setupCodexHooks(
-      id,
-      port,
-      hookToken,
-      configDir ?? process.cwd(),
-      env
-    ));
-  }
+  const claudeHookState = maybeInjectClaudeHooks(
+    id,
+    framework,
+    effectiveEventSource,
+    command,
+    port,
+    hookToken,
+    configDir,
+    args
+  );
+  hookToken = claudeHookState.hookToken;
+  args = claudeHookState.args;
+  maybeInjectPortEnvVars(env, portInjectionParams);
 
-  const shouldInjectHooks =
-    framework.id === 'claude' &&
-    framework.capabilities.supportsHooks &&
-    effectiveEventSource === 'hooks' &&
-    !command &&
-    port !== undefined;
-
-  if (shouldInjectHooks) {
-    if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
-    try {
-      settingsPath = writeHooksSettingsFile(
-        id,
-        port,
-        hookToken,
-        configDir ?? process.cwd()
-      );
-      args = ['--settings', settingsPath, ...args];
-      hooksActive = true;
-    } catch (err) {
-      logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
-      hooksActive = false;
-      hookToken = '';
-    }
-  }
-
-  return { env, hookToken, hooksActive, settingsPath, args };
+  return {
+    env,
+    hookToken,
+    hooksActive: claudeHookState.hooksActive || codexHookState.hooksActive,
+    settingsPath: claudeHookState.settingsPath,
+    args,
+  };
 }
 
 function resolveSpawnTarget(
@@ -604,6 +767,7 @@ export function createPtySession(
     id,
     agent = 'claude',
     repoName,
+    repoPath,
     worktreePath = null,
     cwd,
     displayName,
@@ -623,6 +787,8 @@ export function createPtySession(
     hooksActive: paramHooksActive,
     frameworks,
     claudeFullscreen: paramClaudeFullscreen,
+    portVariables,
+    portAllocator,
   } = params;
 
   const createdAt = new Date().toISOString();
@@ -635,6 +801,15 @@ export function createPtySession(
     ? 'parser'
     : framework.eventSource;
 
+  // Prepare port injection params for setupEnvAndHooks
+  const portInjectionParams = buildPortInjectionParams(
+    repoPath,
+    worktreePath,
+    cwd,
+    portVariables,
+    portAllocator
+  );
+
   const hookSetup = setupEnvAndHooks(
     id,
     framework,
@@ -646,7 +821,8 @@ export function createPtySession(
     paramHookToken,
     paramHooksActive,
     paramClaudeFullscreen,
-    rawArgs
+    rawArgs,
+    portInjectionParams
   );
 
   const { env, hookToken, hooksActive, settingsPath } = hookSetup;

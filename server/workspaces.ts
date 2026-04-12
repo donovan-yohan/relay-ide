@@ -17,6 +17,11 @@ import {
   writeMeta,
   readMeta,
 } from './config.js';
+import {
+  getDefaultAllocator,
+  normalizePortVariables,
+  upsertPortsInEnvFile,
+} from './port-allocator.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import {
@@ -739,6 +744,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       'defaultContinue',
       'defaultYolo',
       'launchInTmux',
+      'portVariables',
     ] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
     }
@@ -809,6 +815,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     // Apply updates
     if (Object.keys(keysToUpdate).length > 0) {
       setRepoSettings(configPath, config, resolved, keysToUpdate);
+    }
+
+    if (keysToDelete.length > 0 || Object.keys(keysToUpdate).length > 0) {
+      try {
+        deps.onWorkspacesChanged?.();
+      } catch (err) {
+        logger.error(ERR_ON_WORKSPACES_CHANGED, err);
+      }
     }
 
     // Return the current raw repo settings
@@ -980,6 +994,15 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           lastActivity: new Date().toISOString(),
           branchName: result.branchName,
         });
+        const portVariables = normalizePortVariables(
+          getRepoSettings(loadConfig(configPath), resolved).portVariables
+        );
+        const ports = await getDefaultAllocator().reconcilePortsForWorktree(
+          resolved,
+          result.worktreePath,
+          portVariables
+        );
+        upsertPortsInEnvFile(result.worktreePath, ports);
         if (!result.existing) {
           try {
             deps.onWorktreeCreated?.();
@@ -1059,6 +1082,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       lastActivity: new Date().toISOString(),
       branchName,
     });
+
+    const ports = await getDefaultAllocator().reconcilePortsForWorktree(
+      resolved,
+      worktreePath,
+      normalizePortVariables(settings.portVariables)
+    );
+    upsertPortsInEnvFile(worktreePath, ports);
 
     try {
       deps.onWorktreeCreated?.();
