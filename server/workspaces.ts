@@ -17,6 +17,11 @@ import {
   writeMeta,
   readMeta,
 } from './config.js';
+import {
+  getDefaultAllocator,
+  normalizePortVariables,
+  upsertPortsInEnvFile,
+} from './port-allocator.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
 import { trackEvent } from './analytics.js';
 import {
@@ -50,6 +55,89 @@ const GIT_SYMBOLIC_REF = 'symbolic-ref';
 const ERR_ON_WORKSPACES_CHANGED = 'onWorkspacesChanged failed:';
 const ERR_PATH_REQUIRED = 'path query parameter is required';
 const ERR_PATH_NOT_IN_WORKSPACES = 'path not in configured workspaces';
+
+function getAllocatorOrNull() {
+  try {
+    return getDefaultAllocator();
+  } catch {
+    return null;
+  }
+}
+
+async function reconcilePortsForWorktreeBestEffort(
+  resolvedRepoPath: string,
+  worktreePath: string,
+  portVariables: string[]
+): Promise<void> {
+  const allocator = getAllocatorOrNull();
+  if (!allocator) return;
+
+  const ports = await allocator.reconcilePortsForWorktree(
+    resolvedRepoPath,
+    worktreePath,
+    portVariables
+  );
+  upsertPortsInEnvFile(worktreePath, ports);
+}
+
+async function reconcileExistingBranchWorktreePorts(
+  resolved: string,
+  worktreePath: string,
+  configPath: string
+): Promise<void> {
+  const portVariables = normalizePortVariables(
+    getRepoSettings(loadConfig(configPath), resolved).portVariables
+  );
+  await reconcilePortsForWorktreeBestEffort(
+    resolved,
+    worktreePath,
+    portVariables
+  );
+}
+
+async function respondWithExistingBranchWorktree(
+  res: Response,
+  result: Awaited<ReturnType<typeof findOrCreateWorktreeForBranch>>,
+  resolved: string,
+  configPath: string,
+  onWorktreeCreated?: (() => void) | undefined
+): Promise<void> {
+  const meta = readMeta(configPath, result.worktreePath);
+  writeMeta(configPath, {
+    worktreePath: result.worktreePath,
+    displayName: meta?.displayName || result.dirName,
+    lastActivity: new Date().toISOString(),
+    branchName: result.branchName,
+  });
+  try {
+    await reconcileExistingBranchWorktreePorts(
+      resolved,
+      result.worktreePath,
+      configPath
+    );
+  } catch (err) {
+    logger.warn(
+      'Failed to reconcile ports or update .env for worktree; continuing without port injection:',
+      err instanceof Error ? err.message : err
+    );
+  }
+  if (!result.existing) {
+    try {
+      onWorktreeCreated?.();
+    } catch (err) {
+      logger.error(
+        'onWorktreeCreated callback failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  res.json({
+    branchName: result.branchName,
+    mountainName: meta?.displayName || result.dirName,
+    worktreePath: result.worktreePath,
+    existing: result.existing,
+  });
+}
 
 /** Extract repo name from a git remote URL (SSH or HTTPS). */
 export function repoNameFromRemoteUrl(url: string): string | undefined {
@@ -739,6 +827,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       'defaultContinue',
       'defaultYolo',
       'launchInTmux',
+      'portVariables',
     ] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
     }
@@ -809,6 +898,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     // Apply updates
     if (Object.keys(keysToUpdate).length > 0) {
       setRepoSettings(configPath, config, resolved, keysToUpdate);
+    }
+
+    if (keysToDelete.length > 0 || Object.keys(keysToUpdate).length > 0) {
+      try {
+        deps.onWorkspacesChanged?.();
+      } catch (err) {
+        logger.error(ERR_ON_WORKSPACES_CHANGED, err);
+      }
     }
 
     // Return the current raw repo settings
@@ -973,29 +1070,13 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         exec
       );
       if (!result.isMain) {
-        const meta = readMeta(configPath, result.worktreePath);
-        writeMeta(configPath, {
-          worktreePath: result.worktreePath,
-          displayName: meta?.displayName || result.dirName,
-          lastActivity: new Date().toISOString(),
-          branchName: result.branchName,
-        });
-        if (!result.existing) {
-          try {
-            deps.onWorktreeCreated?.();
-          } catch (err) {
-            logger.error(
-              'onWorktreeCreated callback failed:',
-              err instanceof Error ? err.message : err
-            );
-          }
-        }
-        res.json({
-          branchName: result.branchName,
-          mountainName: meta?.displayName || result.dirName,
-          worktreePath: result.worktreePath,
-          existing: result.existing,
-        });
+        await respondWithExistingBranchWorktree(
+          res,
+          result,
+          resolved,
+          configPath,
+          deps.onWorktreeCreated
+        );
       } else {
         res.json({
           branchName: result.branchName,
@@ -1059,6 +1140,19 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       lastActivity: new Date().toISOString(),
       branchName,
     });
+
+    try {
+      await reconcilePortsForWorktreeBestEffort(
+        resolved,
+        worktreePath,
+        normalizePortVariables(settings.portVariables)
+      );
+    } catch (err) {
+      logger.warn(
+        'Best-effort port reconciliation/.env update failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
 
     try {
       deps.onWorktreeCreated?.();

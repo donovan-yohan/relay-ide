@@ -364,6 +364,9 @@ export interface WorkspaceSettings {
   webhookId?: number; // GitHub webhook ID for deletion tracking
   webhookEnabled?: boolean; // Per-workspace webhook toggle
   webhookError?: string; // 'not-admin' | 'not-found' | null
+
+  /** Environment variable names that should receive per-worktree allocated ports. */
+  portVariables?: string[];
 }
 
 export const MOUNTAIN_NAMES = [
