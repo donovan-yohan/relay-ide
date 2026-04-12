@@ -488,3 +488,39 @@ The `<dialog>` element has special browser-managed display semantics (hidden whe
 When a project uses multiple `<dialog>` elements with custom CSS, add a structural test that runs after page boot and asserts: (1) `document.querySelectorAll('dialog[open]')` is empty, and (2) no dialog content is within the visible viewport. This catches CSS cascade issues where author styles accidentally override the UA's `display: none` for non-open dialogs. The test is especially important on mobile viewports where fixed-position main containers change paint order.
 
 ---
+
+### L-20260412-gpu-feature-detection: `'gpu' in navigator` detects API availability, not rendering capability — GPU renderer selection must verify actual output
+
+- status: active
+- category: architecture
+- scope: universal
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+When using a GPU-accelerated renderer (WebGPU, WebGL) with a DOM fallback, the feature detection guard (`'gpu' in navigator`, `!!window.WebGLRenderingContext`) only confirms the browser exposes the API — not that the GPU can actually render the content. On mobile devices, the API may be present but the GPU pipeline silently produces no output due to driver limitations, incomplete implementations, or capability gaps. The try/catch around addon loading only catches synchronous errors, but GPU initialization is async (`requestAdapter()`, `requestDevice()`). Either: (1) gate GPU renderers on device class (skip on mobile entirely), (2) verify rendering after async init completes (e.g., canary write + pixel readback), or (3) use an async-aware fallback that waits for the init promise before committing. Never treat "addon loaded without throwing" as "rendering works."
+
+---
+
+### L-20260412-sync-catch-async-init: try/catch around async-initializing addons only catches constructor errors — async failures need separate handling
+
+- status: active
+- category: debugging
+- scope: universal
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+When a library addon has a synchronous `activate()` method that starts an async initialization internally (e.g., xterm.js WebGPU addon calls `_initializeWebgpu()` with `await requestAdapter()`), wrapping the `loadAddon()` call in try/catch gives a false sense of safety. The catch block fires for constructor errors and synchronous activate failures, but the actual initialization happens in a fire-and-forget async path. If the async init fails, no error propagates to the caller. Additionally, checking for a DOM element (`t.element`) after `t.open()` only proves the DOM was created, not that the renderer works. When using addons with async initialization: (1) check if the addon exposes a ready/error event, (2) add a post-init verification step, or (3) at minimum gate the addon on known-good environments rather than relying on the catch.
+
+---
+
+### L-20260412-mobile-gpu-renderer: Mobile devices should not use GPU-accelerated terminal renderers — use DOM rendering as the default
+
+- status: active
+- category: patterns
+- scope: repo
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+In relay-ide's Terminal.tsx, the WebGPU renderer addon should be skipped when `isMobileDevice` is true. Mobile GPU drivers have significantly less mature WebGPU support than desktop, and silent rendering failures (black canvas with working cursor) are indistinguishable from a broken terminal. The DOM renderer works reliably on all mobile browsers. When adding GPU-accelerated features that have a DOM fallback, always include a device-class check alongside the API feature detection: `if ('gpu' in navigator && !isMobileDevice)`.
+
+---

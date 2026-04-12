@@ -775,7 +775,7 @@ function useTerminalSetup(
     registerFileLinkProvider(t, onFilePathClick);
     // Try WebGPU renderer first, fall back to default DOM renderer
     let webgpuAddon: WebgpuAddon | undefined;
-    if ('gpu' in navigator) {
+    if ('gpu' in navigator && !isMobileDevice) {
       try {
         webgpuAddon = new WebgpuAddon();
         t.loadAddon(webgpuAddon);
