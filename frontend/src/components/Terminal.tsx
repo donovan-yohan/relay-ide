@@ -17,7 +17,11 @@ import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
-import { clampFontSize, zoomPercentage } from '../lib/terminal-zoom.js';
+import {
+  clampFontSize,
+  zoomPercentage,
+  shouldUseWebGpuRenderer,
+} from '../lib/terminal-zoom.js';
 import './Terminal.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -775,7 +779,7 @@ function useTerminalSetup(
     registerFileLinkProvider(t, onFilePathClick);
     // Try WebGPU renderer first, fall back to default DOM renderer
     let webgpuAddon: WebgpuAddon | undefined;
-    if ('gpu' in navigator && !isMobileDevice) {
+    if (shouldUseWebGpuRenderer('gpu' in navigator, isMobileDevice)) {
       try {
         webgpuAddon = new WebgpuAddon();
         t.loadAddon(webgpuAddon);
