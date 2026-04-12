@@ -705,4 +705,31 @@ describe('Port allocator + .env block integration', () => {
     );
     expect(withoutPorts.trim()).toBe('EXISTING=true');
   });
+
+  test('removePortsFromEnvFile deletes block-only env files', () => {
+    const worktreeDir = fs.mkdtempSync(path.join(tmpDir, 'wt-'));
+    fs.writeFileSync(
+      path.join(worktreeDir, '.env'),
+      upsertEnvBlock('', { PORT: 10001 }),
+      'utf8'
+    );
+
+    removePortsFromEnvFile(worktreeDir);
+
+    expect(fs.existsSync(path.join(worktreeDir, '.env'))).toBe(false);
+  });
+
+  test('normalizePortVariables filters invalid and non-string values', () => {
+    expect(
+      normalizePortVariables([
+        ' PORT ',
+        'BAD-NAME',
+        '123BAD',
+        'API_PORT',
+      ] as unknown as string[])
+    ).toEqual(['PORT', 'API_PORT']);
+    expect(normalizePortVariables([123 as unknown as string, 'PORT'])).toEqual([
+      'PORT',
+    ]);
+  });
 });

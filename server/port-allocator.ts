@@ -70,8 +70,27 @@ export interface PortVerificationResult {
 export interface PortAllocatorOptions {
   /** Path to config.json (used to derive config directory) */
   configPath: string;
-  /** Optional logger for debug output */
-  logger?: { debug: (msg: string, ...args: unknown[]) => void } | undefined;
+  /** Optional logger for debug/warn output */
+  logger?:
+    | {
+        debug: (msg: string, ...args: unknown[]) => void;
+        warn?: (msg: string, ...args: unknown[]) => void;
+      }
+    | undefined;
+}
+
+type PortAllocatorLogger = NonNullable<PortAllocatorOptions['logger']>;
+
+function logWarn(
+  logger: PortAllocatorLogger | undefined,
+  message: string,
+  ...args: unknown[]
+): void {
+  if (logger?.warn) {
+    logger.warn(message, ...args);
+    return;
+  }
+  logger?.debug(message, ...args);
 }
 
 export function normalizePortVariables(
@@ -79,8 +98,10 @@ export function normalizePortVariables(
 ): string[] {
   const seen = new Set<string>();
   const normalized = (variableNames ?? [])
+    .filter((name): name is string => typeof name === 'string')
     .map((name) => name.trim())
     .filter(Boolean)
+    .filter((name) => /^[A-Z][A-Z0-9_]*$/.test(name))
     .filter((name) => {
       if (seen.has(name)) return false;
       seen.add(name);
@@ -174,7 +195,7 @@ export class PortAllocator {
    *
    * @param repoId - Repository identifier
    * @param worktreeId - Worktree identifier
-   * @returns Map of variable names to port numbers, or undefined if none allocated
+   * @returns Map of variable names to port numbers, or null if none allocated
    */
   getPortsForWorktree(
     repoId: string,
@@ -193,6 +214,14 @@ export class PortAllocator {
     return result;
   }
 
+  /**
+   * Reconcile a worktree's allocated ports against the currently requested
+   * variable set.
+   *
+   * Existing allocations are preserved for variables still requested, stale
+   * variable assignments are removed, and any newly requested variables are
+   * allocated fresh ports.
+   */
   async reconcilePortsForWorktree(
     repoId: string,
     worktreeId: string,
@@ -241,18 +270,33 @@ export class PortAllocator {
   // ── Private Methods ─────────────────────────────────────────────────────
 
   private loadAssignments(): PortAssignmentsFile {
+    if (!fs.existsSync(this.assignmentsPath)) {
+      return { version: 1, assignments: [] };
+    }
+
     try {
-      if (fs.existsSync(this.assignmentsPath)) {
-        const raw = fs.readFileSync(this.assignmentsPath, 'utf8');
-        const data = JSON.parse(raw) as PortAssignmentsFile;
-        if (data.version === 1 && Array.isArray(data.assignments)) {
-          return data;
-        }
+      const raw = fs.readFileSync(this.assignmentsPath, 'utf8');
+      const data = JSON.parse(raw) as PortAssignmentsFile;
+      if (data.version === 1 && Array.isArray(data.assignments)) {
+        return data;
       }
+      logWarn(
+        this.logger,
+        'Invalid port assignments file version or shape, starting fresh:',
+        this.assignmentsPath
+      );
     } catch (err) {
-      this.logger?.debug(
-        'Failed to load port assignments, starting fresh',
-        err
+      const backupPath = `${this.assignmentsPath}.corrupt-${Date.now()}`;
+      try {
+        fs.copyFileSync(this.assignmentsPath, backupPath);
+      } catch {
+        // Best-effort backup only.
+      }
+      logWarn(
+        this.logger,
+        'Failed to load port assignments, starting fresh:',
+        err,
+        backupPath ? `backup=${backupPath}` : ''
       );
     }
     return { version: 1, assignments: [] };
@@ -260,14 +304,19 @@ export class PortAllocator {
 
   private saveAssignments(): void {
     const dir = path.dirname(this.assignmentsPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(
+        this.assignmentsPath,
+        JSON.stringify(this.assignments, null, 2),
+        'utf8'
+      );
+    } catch (err) {
+      logWarn(this.logger, 'Failed to save port assignments:', err);
+      throw err;
     }
-    fs.writeFileSync(
-      this.assignmentsPath,
-      JSON.stringify(this.assignments, null, 2),
-      'utf8'
-    );
   }
 
   private async allocateSinglePort(
@@ -323,6 +372,10 @@ export class PortAllocator {
     }
 
     // Let get-port pick any available port outside our ranges
+    logWarn(
+      this.logger,
+      'All configured port ranges exhausted, falling back to OS-assigned port'
+    );
     return getPort();
   }
 

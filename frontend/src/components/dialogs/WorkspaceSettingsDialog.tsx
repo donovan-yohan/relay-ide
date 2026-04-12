@@ -88,8 +88,11 @@ function buildSavePayload(
   if (values.promptBranchRename)
     settings['promptBranchRename'] = values.promptBranchRename;
   if (values.promptGeneral) settings['promptGeneral'] = values.promptGeneral;
-  // Filter out empty strings before saving env port var names
-  const filteredPortNames = values.portVariables.filter((n) => n.trim());
+  // Normalize env port var names before saving by trimming, removing empties,
+  // and de-duplicating equivalent entries.
+  const filteredPortNames = Array.from(
+    new Set(values.portVariables.map((n) => n.trim()).filter(Boolean))
+  );
   const originalPortVariables = Array.isArray(original['portVariables'])
     ? (original['portVariables'] as string[])
     : [];

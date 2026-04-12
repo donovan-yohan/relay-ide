@@ -16,7 +16,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 
 ### `server/`
 
-Thirty-four TypeScript modules compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
+Thirty-five TypeScript modules compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
 
 | Module                     | Role                                                                                                                                                                                                                                                               |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -38,6 +38,7 @@ Thirty-four TypeScript modules compiled to `dist/server/` via `tsc`. Modules com
 | `hooks.ts`                 | Claude Code hook HTTP endpoints: state detection (Stop, Notification, UserPromptSubmit), activity tracking (PreToolUse, PostToolUse), session cleanup (SessionEnd), and branch rename. Localhost-only with per-session token auth.                                 |
 | `types.ts`                 | Shared TypeScript interfaces (Session, Repo, Workspace entity, Config v4, WorkspaceLevelSettings, PR, CI, Activity types)                                                                                                                                          |
 | `analytics.ts`             | Local analytics: SQLite-backed event tracking, `trackEvent()`, batch ingest endpoint, DB size/clear endpoints                                                                                                                                                      |
+| `port-allocator.ts`        | Durable per-worktree port allocation, persisted assignments, `.env` managed-block reconciliation, and startup verification of allocated ports                                                                                                                      |
 | `review-poller.ts`         | PR review automation: polls GitHub notifications for review requests, creates worktrees, optionally starts review sessions                                                                                                                                         |
 | `output-parsers/`          | Vendor-extensible terminal output parsing for semantic agent state detection (AgentState), keyed by AgentType. Contains `index.ts` (registry + dispatch), `claude-parser.ts`, `codex-parser.ts`                                                                    |
 | `github-app.ts`            | GitHub OAuth App flow: authorization URL generation (with CSRF state), token exchange callback, connection status, disconnect                                                                                                                                      |
@@ -51,7 +52,7 @@ Thirty-four TypeScript modules compiled to `dist/server/` via `tsc`. Modules com
 | `ticket-transitions.ts`    | Automated ticket state machine: transitions GitHub Issues (labels) and Jira tickets (acli) through in-progress → code-review → ready-for-qa based on session creation and PR merge events                                                                          |
 | `agent-events.ts`          | Canonical agent event schema and thin adapter: normalizes lifecycle events (session, tool, permission, telemetry) across agent frameworks into a unified `AgentEvent` type                                                                                         |
 
-**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` consumes `sessions`, `git`, `config`, and `push` via injected dependencies (not direct imports); all other modules are self-contained. **Exception:** `analytics.ts` and `push.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently thirty-four server modules.
+**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` consumes `sessions`, `git`, `config`, and `push` via injected dependencies (not direct imports); all other modules are self-contained. **Exception:** `analytics.ts` and `push.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently thirty-five server modules.
 
 ### `frontend/`
 
@@ -184,7 +185,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 | ADR     | Topic                                                                                |
 | ------- | ------------------------------------------------------------------------------------ |
-| ADR-001 | Modular server architecture (thirty-four modules, composition root, dependency flow) |
+| ADR-001 | Modular server architecture (thirty-five modules, composition root, dependency flow) |
 | ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping)           |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                            |
 | ADR-005 | Built-in test runner (node:test, no external framework)                              |

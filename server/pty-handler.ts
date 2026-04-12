@@ -421,6 +421,7 @@ function injectPortEnvVars(
     allocator = portAllocator ?? getDefaultAllocator();
   } catch {
     // Default allocator not initialized - skip silently
+    logger.debug('Port env injection skipped: allocator not available');
     return;
   }
 

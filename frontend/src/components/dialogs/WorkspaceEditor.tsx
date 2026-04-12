@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import TuiCheckbox from '../TuiCheckbox.js';
 import type { BranchInfo } from '../../lib/types.js';
 import './WorkspaceEditor.css';
@@ -305,6 +305,15 @@ function EnvironmentPortsSection({
   const [newName, setNewName] = useState('');
   const [newNameError, setNewNameError] = useState('');
 
+  useEffect(() => {
+    const allErrors = validateEnvPortVarNames(values.portVariables);
+    onValidationChange?.(
+      Object.keys(allErrors).length > 0
+        ? { portVariables: `${Object.keys(allErrors).length} invalid entries` }
+        : {}
+    );
+  }, [values.portVariables, onValidationChange]);
+
   function handleAdd() {
     const trimmed = newName.trim();
     if (!trimmed) return;
@@ -324,27 +333,11 @@ function EnvironmentPortsSection({
     onChange('portVariables', updated);
     setNewName('');
     setNewNameError('');
-
-    // Validate all and report
-    const allErrors = validateEnvPortVarNames(updated);
-    onValidationChange?.(
-      Object.keys(allErrors).length > 0
-        ? { portVariables: `${Object.keys(allErrors).length} invalid entries` }
-        : {}
-    );
   }
 
   function handleRemove(index: number) {
     const updated = values.portVariables.filter((_, i) => i !== index);
     onChange('portVariables', updated);
-
-    // Validate remaining
-    const allErrors = validateEnvPortVarNames(updated);
-    onValidationChange?.(
-      Object.keys(allErrors).length > 0
-        ? { portVariables: `${Object.keys(allErrors).length} invalid entries` }
-        : {}
-    );
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {

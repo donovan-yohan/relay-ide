@@ -207,6 +207,45 @@ function getRepoPortVariables(config: Config, repoPath: string): string[] {
   return normalizePortVariables(config.repoSettings?.[repoPath]?.portVariables);
 }
 
+function getAllocatorOrNull(): ReturnType<typeof getDefaultAllocator> | null {
+  try {
+    return getDefaultAllocator();
+  } catch {
+    return null;
+  }
+}
+
+function logPortReconciliationFailure(err: unknown): void {
+  logger.warn(
+    'Port reconciliation failed:',
+    err instanceof Error ? err.message : err
+  );
+}
+
+function setupProcessSignalHandlers(): void {
+  process.on('SIGPIPE', () => {});
+  process.on('SIGHUP', () => {});
+}
+
+async function initializePortAllocatorAndReconcile(
+  configPath: string,
+  getConfig: () => Config,
+  reconcilePortsForAllRepos: (repoPaths: string[]) => Promise<void>
+): Promise<void> {
+  try {
+    await initializeDefaultAllocator(configPath, logger);
+  } catch (err) {
+    logger.warn(
+      'Port allocator disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  if (getAllocatorOrNull()) {
+    await reconcilePortsForAllRepos(getConfig().repos ?? []);
+  }
+}
+
 function scanAllRepos(rootDirs: string[]): RepoEntry[] {
   const repos: RepoEntry[] = [];
   for (const rootDir of rootDirs) {
@@ -580,15 +619,16 @@ async function initializePinConfig(startupConfig: Config): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits
-  process.on('SIGPIPE', () => {});
-  // Ignore SIGHUP: keep server alive if controlling terminal disconnects
-  process.on('SIGHUP', () => {});
+  // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
+  // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
+  setupProcessSignalHandlers();
 
   ensureMetaDir(CONFIG_PATH);
 
   async function reconcilePortsForRepo(repoPath: string): Promise<void> {
-    const allocator = getDefaultAllocator();
+    const allocator = getAllocatorOrNull();
+    if (!allocator) return;
+
     const config = getConfig();
     const portVariables = normalizePortVariables(
       config.repoSettings?.[repoPath]?.portVariables
@@ -597,25 +637,46 @@ async function main(): Promise<void> {
     let worktrees: Awaited<ReturnType<typeof listNonMainWorktrees>>;
     try {
       worktrees = await listNonMainWorktrees(repoPath);
-    } catch {
+    } catch (err) {
+      logger.debug(
+        'Failed to list worktrees for port reconciliation:',
+        repoPath,
+        err instanceof Error ? err.message : err
+      );
       return;
     }
 
     const activeWorktreePaths = new Set(worktrees.map((wt) => wt.path));
     for (const worktree of worktrees) {
-      const ports = await allocator.reconcilePortsForWorktree(
-        repoPath,
-        worktree.path,
-        portVariables
-      );
-      upsertPortsInEnvFile(worktree.path, ports);
+      try {
+        const ports = await allocator.reconcilePortsForWorktree(
+          repoPath,
+          worktree.path,
+          portVariables
+        );
+        upsertPortsInEnvFile(worktree.path, ports);
+      } catch (err) {
+        logger.warn(
+          'Port reconciliation failed for worktree:',
+          worktree.path,
+          err instanceof Error ? err.message : err
+        );
+      }
     }
 
     for (const assignment of allocator.getAllAssignments()) {
       if (assignment.repoId !== repoPath) continue;
       if (activeWorktreePaths.has(assignment.worktreeId)) continue;
-      allocator.releasePortsForWorktree(repoPath, assignment.worktreeId);
-      removePortsFromEnvFile(assignment.worktreeId);
+      try {
+        allocator.releasePortsForWorktree(repoPath, assignment.worktreeId);
+        removePortsFromEnvFile(assignment.worktreeId);
+      } catch (err) {
+        logger.warn(
+          'Failed to clean up stale port assignment:',
+          assignment.worktreeId,
+          err instanceof Error ? err.message : err
+        );
+      }
     }
   }
 
@@ -623,6 +684,12 @@ async function main(): Promise<void> {
     for (const repoPath of repoPaths) {
       await reconcilePortsForRepo(repoPath);
     }
+  }
+
+  function queuePortReconciliation(repoPaths: string[]): void {
+    void reconcilePortsForAllRepos(repoPaths).catch(
+      logPortReconciliationFailure
+    );
   }
 
   // Runtime config — always reads fresh from disk.
@@ -666,17 +733,11 @@ async function main(): Promise<void> {
   initFileLogging(path.join(configDir, 'logs'));
   fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
 
-  // Initialize port allocator for per-worktree port env injection
-  try {
-    await initializeDefaultAllocator(CONFIG_PATH, logger);
-  } catch (err) {
-    logger.warn(
-      'Port allocator disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  await reconcilePortsForAllRepos(getConfig().repos ?? []);
+  await initializePortAllocatorAndReconcile(
+    CONFIG_PATH,
+    getConfig,
+    reconcilePortsForAllRepos
+  );
 
   try {
     initAnalytics(configDir);
@@ -837,7 +898,7 @@ async function main(): Promise<void> {
   branchWatcher.rebuild(getConfig().repos || []);
   watcher.on('worktrees-changed', () => {
     branchWatcher.rebuild(getConfig().repos || []);
-    void reconcilePortsForAllRepos(getConfig().repos || []);
+    queuePortReconciliation(getConfig().repos || []);
   });
 
   // Watch upstream tracking refs for push/fetch and broadcast ref-changed events
@@ -897,7 +958,7 @@ async function main(): Promise<void> {
           const repoPaths = getConfig().repos || [];
           watcher.rebuild(repoPaths);
           branchWatcher.rebuild(repoPaths);
-          void reconcilePortsForAllRepos(repoPaths);
+          queuePortReconciliation(repoPaths);
         } catch (err) {
           logger.error('Failed to rebuild workspace watchers:', err);
         }
