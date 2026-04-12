@@ -1,0 +1,29 @@
+docs/bug-analyses/index.md
+  78d116e2e4ec37b6 7
+docs/LEARNINGS.md
+  78d116e2e4ec37b6 491-526
+frontend/src/components/Terminal.tsx
+  78d116e2e4ec37b6 778
+docs/bug-analyses/2026-04-12-mobile-terminal-black-screen-bug-analysis.md
+  78d116e2e4ec37b6 1-93,95-97,99-101,103-117,119-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0e2a39b08d05a60cc9179415c2198c73174e214c",
+  "prompts": {
+    "78d116e2e4ec37b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "73416b08-3175-4622-8685-1b46214ab171",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 169,
+      "total_deletions": 1,
+      "accepted_lines": 171,
+      "overriden_lines": 0
+    }
+  }
+}
