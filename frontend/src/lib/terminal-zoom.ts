@@ -16,6 +16,14 @@ export function zoomPercentage(fontSize: number): number {
   return Math.round((fontSize / DEFAULT_TERMINAL_FONT_SIZE) * 100);
 }
 
+/** Decide whether to attempt the WebGPU renderer. */
+export function shouldUseWebGpuRenderer(
+  hasGpu: boolean,
+  isMobile: boolean
+): boolean {
+  return hasGpu && !isMobile;
+}
+
 export function scaledTerminalDimensions(
   windowWidth: number,
   windowHeight: number,
