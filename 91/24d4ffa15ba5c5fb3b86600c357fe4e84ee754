@@ -1,0 +1,27 @@
+frontend/src/lib/terminal-zoom.ts
+  78d116e2e4ec37b6 19-26
+test/webgpu-renderer-guard.test.ts
+  78d116e2e4ec37b6 1-20
+frontend/src/components/Terminal.tsx
+  78d116e2e4ec37b6 20-24,782
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "9124d4ffa15ba5c5fb3b86600c357fe4e84ee754",
+  "prompts": {
+    "78d116e2e4ec37b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "73416b08-3175-4622-8685-1b46214ab171",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 45,
+      "total_deletions": 13,
+      "accepted_lines": 34,
+      "overriden_lines": 0
+    }
+  }
+}
