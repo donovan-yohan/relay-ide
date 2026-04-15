@@ -405,7 +405,7 @@ When process A (server) spawns process B (Claude Code in tmux) with credentials 
 - source: /harness:bug 2026-03-28
 - branch: nightly
 
-`export const TMUX_PREFIX = process.env.NO_PIN === '1' ? 'relay-dev-' : 'relay-ide-';` evaluates when the module is first imported. Tests that import this module get whatever `NO_PIN` was in the environment at import time — the value cannot be changed per-test. If the user's shell exports `NO_PIN=1` (e.g., from running `npm run dev`), all tests in the same process see the dev value. Either: (1) make it a function that can be called with explicit parameters, (2) use a getter that reads the env on each access, or (3) ensure tests clean the environment before importing the module.
+Even with the current `getTmuxPrefix()` implementation, the same pitfall applies if a module computes a value from it at import time (for example, `const tmuxPrefix = getTmuxPrefix();` at module scope). That expression is evaluated when the module is first imported. Tests that import this module get whatever `NO_PIN` was in the environment at import time — the value cannot be changed per-test. If the user's shell exports `NO_PIN=1` (e.g., from running `npm run dev`), all tests in the same process see the dev value. Either: (1) make it a function that can be called with explicit parameters, (2) use a getter that reads the env on each access, or (3) ensure tests clean the environment before importing the module.
 
 ---
 
