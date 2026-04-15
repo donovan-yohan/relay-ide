@@ -5,11 +5,11 @@ import os from 'node:os';
 /** Source code for the opencode relay plugin — written to opencode's plugin directory */
 const RELAY_PLUGIN_SOURCE = `
 // OpenCode plugin that relays lifecycle events to relay-ide server.
-// Reads CRC_RELAY_URL, CRC_SESSION_ID, CRC_RELAY_TOKEN from env (injected per session by PTY handler).
+// Reads RELAY_IDE_URL, RELAY_IDE_SESSION_ID, RELAY_IDE_TOKEN from env (injected per session by PTY handler).
 export default async () => {
-  const relayUrl = process.env.CRC_RELAY_URL;
-  const sessionId = process.env.CRC_SESSION_ID;
-  const token = process.env.CRC_RELAY_TOKEN;
+  const relayUrl = process.env.RELAY_IDE_URL;
+  const sessionId = process.env.RELAY_IDE_SESSION_ID;
+  const token = process.env.RELAY_IDE_TOKEN;
 
   if (!relayUrl || !sessionId || !token) return {};
 
@@ -48,7 +48,7 @@ export function installOpencodeRelayPlugin(pluginDir?: string): string {
   const dir =
     pluginDir ?? path.join(os.homedir(), '.config', 'opencode', 'plugins');
   fs.mkdirSync(dir, { recursive: true });
-  const pluginPath = path.join(dir, 'crc-relay.ts');
+  const pluginPath = path.join(dir, 'relay-ide-relay.ts');
   fs.writeFileSync(pluginPath, RELAY_PLUGIN_SOURCE, 'utf-8');
   return pluginPath;
 }

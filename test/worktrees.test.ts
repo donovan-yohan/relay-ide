@@ -554,9 +554,9 @@ describe('repo-scoped tmux naming', () => {
   it('truncates long names to 30 chars before appending id', () => {
     const longName = 'a-very-long-repository-name-with-a-very-long-branch-name';
     const name = generateTmuxSessionName(longName, 'c5d6e7f8-1234-5678');
-    // Extract the sanitized middle portion: after "crc-" prefix and before "-{8-char-id}"
+    // Extract the sanitized middle portion: after "relay-ide-" prefix and before "-{8-char-id}"
     const prefix = name
-      .replace(/^(?:crcd?-)/, '')
+      .replace(/^(?:relay-dev-|relay-ide-)/, '')
       .replace(/-[a-zA-Z0-9]{8}$/, '');
     expect(prefix.length).toBeLessThanOrEqual(30);
   });

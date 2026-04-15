@@ -10,7 +10,7 @@ describe('config freshness', () => {
   let configPath: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-config-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-config-test-'));
     configPath = path.join(tmpDir, 'config.json');
     const initial: Config = { ...DEFAULTS } as Config;
     initial.repos = ['/existing/workspace'];
