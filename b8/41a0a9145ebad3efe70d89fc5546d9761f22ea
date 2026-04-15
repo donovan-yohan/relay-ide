@@ -1,0 +1,37 @@
+test/sessions.test.ts
+  55e0ff95514e86fd 379,381,396,400
+docs/DESIGN.md
+  55e0ff95514e86fd 13
+docs/LEARNINGS.md
+  55e0ff95514e86fd 408
+server/pty-handler.ts
+  55e0ff95514e86fd 37
+server/protocol-adapters/opencode-adapter.ts
+  55e0ff95514e86fd 23-25
+test/worktrees.test.ts
+  55e0ff95514e86fd 559
+test/pty-handler-multi-agent.test.ts
+  55e0ff95514e86fd 72-74,90,92-93
+test/opencode-relay.test.ts
+  55e0ff95514e86fd 13-15,35-37,40-42,45-47,89,95,117,131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "b841a0a9145ebad3efe70d89fc5546d9761f22ea",
+  "prompts": {
+    "55e0ff95514e86fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "464c543e-fe67-4d6d-a258-534e0d7da7e8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 31,
+      "total_deletions": 31,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    }
+  }
+}
