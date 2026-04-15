@@ -33,7 +33,9 @@ describe('PTY multi-agent hook/plugin wiring', () => {
   let testHome: string;
 
   beforeEach(() => {
-    testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-multi-agent-home-'));
+    testHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-ide-multi-agent-home-')
+    );
     process.env.HOME = testHome;
   });
 
@@ -67,10 +69,10 @@ describe('PTY multi-agent hook/plugin wiring', () => {
           "const fs=require('node:fs');",
           "const os=require('node:os');",
           "const path=require('node:path');",
-          "console.log('CRC_RELAY_URL='+(process.env.CRC_RELAY_URL||''));",
-          "console.log('CRC_SESSION_ID='+(process.env.CRC_SESSION_ID||''));",
-          "console.log('CRC_RELAY_TOKEN='+(process.env.CRC_RELAY_TOKEN||''));",
-          "const pluginPath=path.join(os.homedir(),'.config','opencode','plugins','crc-relay.ts');",
+          "console.log('RELAY_IDE_URL='+(process.env.RELAY_IDE_URL||''));",
+          "console.log('RELAY_IDE_SESSION_ID='+(process.env.RELAY_IDE_SESSION_ID||''));",
+          "console.log('RELAY_IDE_TOKEN='+(process.env.RELAY_IDE_TOKEN||''));",
+          "const pluginPath=path.join(os.homedir(),'.config','opencode','plugins','relay-ide-relay.ts');",
           "console.log('PLUGIN_EXISTS='+fs.existsSync(pluginPath));",
           'setTimeout(()=>{},10000);',
         ].join(' '),
@@ -85,10 +87,10 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       'PLUGIN_EXISTS=true'
     );
     expect(output).toMatch(
-      new RegExp(`CRC_RELAY_URL=http://127\\.0\\.0\\.1:${port}`)
+      new RegExp(`RELAY_IDE_URL=http://127\\.0\\.0\\.1:${port}`)
     );
-    expect(output).toMatch(new RegExp(`CRC_SESSION_ID=${result.id}`));
-    expect(output).toMatch(new RegExp(`CRC_RELAY_TOKEN=${hookToken}`));
+    expect(output).toMatch(new RegExp(`RELAY_IDE_SESSION_ID=${result.id}`));
+    expect(output).toMatch(new RegExp(`RELAY_IDE_TOKEN=${hookToken}`));
   });
 
   it('writes Codex hooks adapter and injects CODEX_CONFIG_DIR', async () => {

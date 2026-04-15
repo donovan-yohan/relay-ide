@@ -20,9 +20,9 @@ export class OpencodeProtocolAdapter extends BaseHookAdapter {
       command: 'opencode',
       args: [],
       env: {
-        CRC_RELAY_URL: `http://127.0.0.1:${config.port}`,
-        CRC_SESSION_ID: config.sessionId,
-        CRC_RELAY_TOKEN: config.hookToken,
+        RELAY_IDE_URL: `http://127.0.0.1:${config.port}`,
+        RELAY_IDE_SESSION_ID: config.sessionId,
+        RELAY_IDE_TOKEN: config.hookToken,
       },
     };
   }

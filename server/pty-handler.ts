@@ -34,7 +34,7 @@ const MAX_SCROLLBACK = 256 * 1024; // 256KB max
 const logger = createLogger('pty');
 
 export function getTmuxPrefix(): string {
-  return process.env.NO_PIN === '1' ? 'crcd-' : 'crc-';
+  return process.env.NO_PIN === '1' ? 'relay-dev-' : 'relay-ide-';
 }
 
 export function generateTmuxSessionName(
@@ -355,9 +355,9 @@ function setupPluginHooks(
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
     installOpencodeRelayPlugin();
-    env.CRC_RELAY_URL = `http://127.0.0.1:${port}`;
-    env.CRC_SESSION_ID = id;
-    env.CRC_RELAY_TOKEN = hookToken;
+    env.RELAY_IDE_URL = `http://127.0.0.1:${port}`;
+    env.RELAY_IDE_SESSION_ID = id;
+    env.RELAY_IDE_TOKEN = hookToken;
     return { hookToken, hooksActive: true };
   } catch (err) {
     logger.warn(

@@ -12,7 +12,7 @@ let tmpConfigDir: string;
 
 beforeAll(() => {
   tmpConfigDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'crc-codex-hooks-test-')
+    path.join(os.tmpdir(), 'relay-ide-codex-hooks-test-')
   );
 });
 
@@ -327,7 +327,7 @@ describe('writeCodexHooksAdapter', () => {
   it('merges with existing user hooks when ~/.codex/hooks.json has entries', () => {
     // Create a fake user hooks directory
     const fakeHomeDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'crc-fake-home-')
+      path.join(os.tmpdir(), 'relay-ide-fake-home-')
     );
     try {
       const codexDir = path.join(fakeHomeDir, '.codex');

@@ -327,7 +327,7 @@ describe('sessions', () => {
     delete process.env.NO_PIN;
     try {
       const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
-      expect(name.startsWith('crc-')).toBe(true);
+      expect(name.startsWith('relay-ide-')).toBe(true);
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -341,7 +341,7 @@ describe('sessions', () => {
         'feat/auth-flow',
         'abcdef1234567890'
       );
-      expect(name.startsWith('crc-feat-auth-flow-')).toBe(true);
+      expect(name.startsWith('relay-ide-feat-auth-flow-')).toBe(true);
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
@@ -355,9 +355,9 @@ describe('sessions', () => {
         'a-very-long-display-name-that-exceeds-thirty-characters';
       const id = 'abcdef1234567890';
       const name = generateTmuxSessionName(longName, id);
-      // Format is crc-<sanitized up to 30>-<8 char id>
+      // Format is relay-ide-<sanitized up to 30>-<8 char id>
       // The sanitized portion should be at most 30 chars
-      const withoutPrefix = name.slice('crc-'.length);
+      const withoutPrefix = name.slice('relay-ide-'.length);
       const parts = withoutPrefix.split('-');
       const idPart = parts[parts.length - 1];
       const displayPart = withoutPrefix.slice(
@@ -376,28 +376,28 @@ describe('sessions', () => {
     expect(name.endsWith(id.slice(0, 8))).toBe(true);
   });
 
-  it('prod prefix (crc-) does not match dev prefix (crcd-)', () => {
-    const prodPrefix = 'crc-';
-    const devPrefix = 'crcd-';
+  it('prod prefix (relay-ide-) does not match dev prefix (relay-dev-)', () => {
+    const prodPrefix = 'relay-ide-';
+    const devPrefix = 'relay-dev-';
     expect(devPrefix.startsWith(prodPrefix)).toBe(false);
     expect(prodPrefix.startsWith(devPrefix)).toBe(false);
   });
 
-  it('getTmuxPrefix returns crc- when NO_PIN is not set', () => {
+  it('getTmuxPrefix returns relay-ide- when NO_PIN is not set', () => {
     const original = process.env.NO_PIN;
     delete process.env.NO_PIN;
     try {
-      expect(getTmuxPrefix()).toBe('crc-');
+      expect(getTmuxPrefix()).toBe('relay-ide-');
     } finally {
       if (original !== undefined) process.env.NO_PIN = original;
     }
   });
 
-  it('getTmuxPrefix returns crcd- when NO_PIN is 1', () => {
+  it('getTmuxPrefix returns relay-dev- when NO_PIN is 1', () => {
     const original = process.env.NO_PIN;
     process.env.NO_PIN = '1';
     try {
-      expect(getTmuxPrefix()).toBe('crcd-');
+      expect(getTmuxPrefix()).toBe('relay-dev-');
     } finally {
       if (original !== undefined) {
         process.env.NO_PIN = original;
@@ -634,7 +634,7 @@ describe('session persistence', () => {
   });
 
   function createTmpDir(): string {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-test-'));
     return tmpDir;
   }
 
@@ -819,7 +819,7 @@ describe('session persistence', () => {
           createdAt: new Date().toISOString(),
           lastActivity: new Date().toISOString(),
           useTmux: true,
-          tmuxSessionName: 'crc-my-session-tmux-tes',
+          tmuxSessionName: 'relay-ide-my-session-tmux-tes',
           customCommand: '/bin/cat', // Use /bin/cat to avoid spawning real claude binary in test
         },
       ],
@@ -836,7 +836,7 @@ describe('session persistence', () => {
     expect(session).toBeTruthy();
     expect(session!.mode).toBe('pty');
     expect((session as PtySession).tmuxSessionName).toBe(
-      'crc-my-session-tmux-tes'
+      'relay-ide-my-session-tmux-tes'
     );
   });
 
@@ -932,7 +932,7 @@ describe('session persistence', () => {
       createdAt: new Date().toISOString(),
       lastActivity: new Date().toISOString(),
       useTmux: true,
-      tmuxSessionName: 'crc-tmux-session-tmux-rou',
+      tmuxSessionName: 'relay-ide-tmux-session-tmux-rou',
       customCommand: '/bin/cat',
     });
     fs.writeFileSync(pendingPath, JSON.stringify(pending));
@@ -961,7 +961,7 @@ describe('session persistence', () => {
     expect(restoredTmux).toBeTruthy();
     expect(restoredTmux!.mode).toBe('pty');
     expect((restoredTmux as PtySession).tmuxSessionName).toBe(
-      'crc-tmux-session-tmux-rou'
+      'relay-ide-tmux-session-tmux-rou'
     );
     expect(restoredTmux!.displayName).toBe('Tmux Session');
   });

@@ -10,7 +10,9 @@ import {
 let tmpDir: string;
 
 beforeAll(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-opencode-relay-test-'));
+  tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-ide-opencode-relay-test-')
+  );
 });
 
 afterAll(() => {
@@ -30,19 +32,19 @@ describe('RELAY_PLUGIN_SOURCE', () => {
     expect(RELAY_PLUGIN_SOURCE).toContain('message.updated');
   });
 
-  it('reads CRC_RELAY_URL from env', () => {
-    expect(RELAY_PLUGIN_SOURCE).toContain('CRC_RELAY_URL');
-    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.CRC_RELAY_URL');
+  it('reads RELAY_IDE_URL from env', () => {
+    expect(RELAY_PLUGIN_SOURCE).toContain('RELAY_IDE_URL');
+    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.RELAY_IDE_URL');
   });
 
-  it('reads CRC_SESSION_ID from env', () => {
-    expect(RELAY_PLUGIN_SOURCE).toContain('CRC_SESSION_ID');
-    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.CRC_SESSION_ID');
+  it('reads RELAY_IDE_SESSION_ID from env', () => {
+    expect(RELAY_PLUGIN_SOURCE).toContain('RELAY_IDE_SESSION_ID');
+    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.RELAY_IDE_SESSION_ID');
   });
 
-  it('reads CRC_RELAY_TOKEN from env', () => {
-    expect(RELAY_PLUGIN_SOURCE).toContain('CRC_RELAY_TOKEN');
-    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.CRC_RELAY_TOKEN');
+  it('reads RELAY_IDE_TOKEN from env', () => {
+    expect(RELAY_PLUGIN_SOURCE).toContain('RELAY_IDE_TOKEN');
+    expect(RELAY_PLUGIN_SOURCE).toContain('process.env.RELAY_IDE_TOKEN');
   });
 
   it('relays to /hooks/agent-event endpoint', () => {
@@ -84,13 +86,13 @@ describe('installOpencodeRelayPlugin', () => {
     const pluginDir = path.join(tmpDir, 'write-test');
     const pluginPath = installOpencodeRelayPlugin(pluginDir);
     expect(fs.existsSync(pluginPath)).toBeTruthy();
-    expect(path.basename(pluginPath)).toBe('crc-relay.ts');
+    expect(path.basename(pluginPath)).toBe('relay-ide-relay.ts');
   });
 
   it('returns the path to the written plugin file', () => {
     const pluginDir = path.join(tmpDir, 'return-path-test');
     const pluginPath = installOpencodeRelayPlugin(pluginDir);
-    const expectedPath = path.join(pluginDir, 'crc-relay.ts');
+    const expectedPath = path.join(pluginDir, 'relay-ide-relay.ts');
     expect(pluginPath).toBe(expectedPath);
   });
 
@@ -112,7 +114,7 @@ describe('installOpencodeRelayPlugin', () => {
     const pluginDir = path.join(tmpDir, 'idempotent-test');
     installOpencodeRelayPlugin(pluginDir);
     installOpencodeRelayPlugin(pluginDir);
-    const pluginPath = path.join(pluginDir, 'crc-relay.ts');
+    const pluginPath = path.join(pluginDir, 'relay-ide-relay.ts');
     const content = fs.readFileSync(pluginPath, 'utf-8');
     expect(content).toBe(RELAY_PLUGIN_SOURCE);
   });
@@ -126,6 +128,6 @@ describe('installOpencodeRelayPlugin', () => {
     const pluginDir = path.join(tmpDir, 'default-path-test');
     const result = installOpencodeRelayPlugin(pluginDir);
     expect(result).toBeTypeOf('string');
-    expect(result.endsWith('crc-relay.ts')).toBe(true);
+    expect(result.endsWith('relay-ide-relay.ts')).toBe(true);
   });
 });
