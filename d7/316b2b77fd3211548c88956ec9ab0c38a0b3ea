@@ -1,0 +1,25 @@
+docs/LEARNINGS.md
+  55e0ff95514e86fd 408
+test/worktrees.test.ts
+  55e0ff95514e86fd 557
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "d7316b2b77fd3211548c88956ec9ab0c38a0b3ea",
+  "prompts": {
+    "55e0ff95514e86fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "464c543e-fe67-4d6d-a258-534e0d7da7e8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
