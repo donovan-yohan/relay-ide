@@ -1,0 +1,25 @@
+frontend/src/App.svelte
+  8c049051e0da7415 791
+frontend/src/components/RepoDashboard.svelte
+  8c049051e0da7415 6,12-13,24,34,37-39,117-135,288-290,302-310,326-358
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "ce16c5d113b76c119e12875463ff9b7c15e1c66e",
+  "prompts": {
+    "8c049051e0da7415": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "066048a4-39ca-41ae-8f19-0201c59e329a",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 73,
+      "total_deletions": 1,
+      "accepted_lines": 73,
+      "overriden_lines": 0
+    }
+  }
+}
