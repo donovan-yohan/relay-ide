@@ -788,6 +788,7 @@
           onFixConflicts={handleFixConflicts}
           onPrAction={handlePrAction}
           onOpenPrSession={handleOpenPrSession}
+          onSessionCreated={handleNewSessionCreated}
         />
 
       {:else if viewMode === 'session'}

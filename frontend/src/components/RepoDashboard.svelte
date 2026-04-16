@@ -3,12 +3,14 @@
   import { fetchDashboard } from '../lib/api.js';
   import { derivePrAction } from '../lib/pr-state.js';
   import { formatRelativeTime } from '../lib/utils.js';
-  import type { PullRequest, ActivityEntry, DashboardData } from '../lib/types.js';
+  import type { PullRequest, ActivityEntry, DashboardData, AnyIssue } from '../lib/types.js';
   import DataTable from './DataTable.svelte';
   import type { Column } from './DataTable.svelte';
   import StatusDot from './StatusDot.svelte';
   import TuiButton from './TuiButton.svelte';
   import { derivePrDotStatus } from '../lib/pr-status.js';
+  import TicketsPanel from './TicketsPanel.svelte';
+  import StartWorkModal from './StartWorkModal.svelte';
 
   let {
     workspacePath,
@@ -19,6 +21,7 @@
     onFixConflicts,
     onPrAction,
     onOpenPrSession,
+    onSessionCreated,
   }: {
     workspacePath: string;
     workspaceName: string;
@@ -28,7 +31,11 @@
     onFixConflicts: (pr: PullRequest) => void;
     onPrAction: (pr: PullRequest) => void;
     onOpenPrSession: (pr: PullRequest) => void;
+    onSessionCreated?: (sessionId: string) => void;
   } = $props();
+
+  let activeTab = $state<'overview' | 'tickets'>('overview');
+  let startWorkIssue = $state<AnyIssue | null>(null);
 
   const dashQuery = createQuery<DashboardData>(() => ({
     queryKey: ['dashboard', workspacePath],
@@ -107,6 +114,25 @@
       <span class="non-git-msg">Not a git repository</span>
     </div>
   {:else}
+    <!-- Tab strip -->
+    <div class="tab-strip">
+      <button
+        class="tab-btn"
+        class:tab-btn--active={activeTab === 'overview'}
+        onclick={() => { activeTab = 'overview'; }}
+      >
+        Overview
+      </button>
+      <button
+        class="tab-btn"
+        class:tab-btn--active={activeTab === 'tickets'}
+        onclick={() => { activeTab = 'tickets'; }}
+      >
+        Tickets
+      </button>
+    </div>
+
+    {#if activeTab === 'overview'}
     <!-- OPEN PULL REQUESTS section -->
     <section class="dashboard-section dashboard-section--scroll">
       <div class="section-heading">open pull requests</div>
@@ -259,6 +285,9 @@
         </div>
       {/if}
     </section>
+    {:else if activeTab === 'tickets'}
+      <TicketsPanel onStartWork={(issue) => { startWorkIssue = issue; }} />
+    {/if}
   {/if}
 
   <!-- CTA buttons — always shown -->
@@ -270,6 +299,15 @@
       </TuiButton>
     {/if}
   </div>
+
+  {#if startWorkIssue}
+    <StartWorkModal
+      issue={startWorkIssue}
+      open={true}
+      onClose={() => { startWorkIssue = null; }}
+      onSessionCreated={(id) => { startWorkIssue = null; onSessionCreated?.(id); }}
+    />
+  {/if}
 </div>
 
 <style>
@@ -283,6 +321,39 @@
     max-width: none;
     overflow: hidden;
     flex: 1;
+  }
+
+  /* -- Tab strip -- */
+  .tab-strip {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    padding: 8px 12px;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-bottom: -1px;
+    transition: color 0.12s, border-color 0.12s;
+    white-space: nowrap;
+    letter-spacing: 0.06em;
+  }
+
+  .tab-btn:hover {
+    color: var(--text);
+  }
+
+  .tab-btn--active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
   }
 
   /* -- Section -- */
