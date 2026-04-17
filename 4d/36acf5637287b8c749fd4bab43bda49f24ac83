@@ -1,0 +1,37 @@
+server/adapters/claude-telemetry.ts
+  0c09cd245ba49512 10-14,121
+server/pty-handler.ts
+  0c09cd245ba49512 455,460,462-469,474,478,509-512,515-518,520-524,526-554,559-560
+server/adapters/opencode-telemetry.ts
+  0c09cd245ba49512 11-15
+frontend/src/lib/api.ts
+  0c09cd245ba49512 394
+server/telemetry-adapter.ts
+  0c09cd245ba49512 45-52
+frontend/src/components/CommandPalette.tsx
+  0c09cd245ba49512 2-6,9-18,30,38-103,108,111-157,175-189,209,212-215,218-221,227-235,239-262,265-289,291-305,307-318,320-332,334-346,348-359,363-366,370-382,392-395,406-411,421-434,440-442,444-456,459-463,466-574,583-590,596-604,609-640,642-666,668-671,674-675,678-702,706-709,712-736,739-756,760-773,777-779,781-787,790-795,800-804,810-838,840-842,845-846,848-857,868-871
+server/workspaces.ts
+  0c09cd245ba49512 936,939
+frontend/src/components/WorkspaceGroup.tsx
+  0c09cd245ba49512 100,131-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4d36acf5637287b8c749fd4bab43bda49f24ac83",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1545,
+      "total_deletions": 608,
+      "accepted_lines": 2131,
+      "overriden_lines": 0
+    }
+  }
+}
