@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { ChatEvent } from '../../../server/chat-events.js';
+import type { ChatEvent } from '../../../shared/chat-events.js';
 
 const PING_INTERVAL = 30_000;
 const PONG_TIMEOUT = 5_000;

@@ -6,7 +6,7 @@
 // Adapters connect to agent processes/servers and emit ChatEvents over the event bus.
 
 import { createLogger } from './logger.js';
-import type { ChatEvent } from './chat-events.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 
 const logger = createLogger('protocol-adapter');
 

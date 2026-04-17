@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
 import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
-import type { ChatEvent } from './chat-events.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 import { createAdapter } from './protocol-adapters/index.js';
 import type { AdapterConfig } from './protocol-adapter.js';
 import { createLogger } from './logger.js';

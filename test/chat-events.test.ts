@@ -6,7 +6,7 @@ import {
   isFileChangeEvent,
   isTelemetryEvent,
   isLifecycleEvent,
-} from '../server/chat-events.js';
+} from '../shared/chat-events.js';
 import type {
   ChatEvent,
   TextDeltaEvent,
@@ -19,7 +19,7 @@ import type {
   TurnCompletedEvent,
   SessionStatusEvent,
   ErrorEvent,
-} from '../server/chat-events.js';
+} from '../shared/chat-events.js';
 
 const BASE = {
   sessionId: 'test-session',

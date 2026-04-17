@@ -25,6 +25,6 @@
     "src/**/*.d.ts",
     "src/**/*.tsx",
     "vite.config.ts",
-    "../server/mobile-input-pipeline.ts"
+    "../shared/**/*.ts"
   ]
 }

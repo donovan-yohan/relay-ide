@@ -21,7 +21,7 @@ The web chat system is built on three core abstractions:
 
 #### 1. ChatEvent — Canonical Event System
 
-**Location:** `server/chat-events.ts`
+**Location:** `shared/chat-events.ts` (imported by both server and frontend)
 
 A type-safe event system with 18 event types organized into categories:
 
@@ -282,19 +282,19 @@ Available scenarios:
 
 ## Files Reference
 
-| File                                            | Purpose                                  |
-| ----------------------------------------------- | ---------------------------------------- |
-| `server/chat-events.ts`                         | ChatEvent type definitions + type guards |
-| `server/protocol-adapter.ts`                    | ProtocolAdapter interface + base class   |
-| `server/protocol-adapters/index.ts`             | Adapter factory                          |
-| `server/protocol-adapters/base-hook-adapter.ts` | Common hook-based adapter                |
-| `server/protocol-adapters/*-adapter.ts`         | Agent-specific adapters                  |
-| `server/web-session-handler.ts`                 | WebSession creation + event buffering    |
-| `server/ws.ts`                                  | WebSocket relay for web sessions         |
-| `frontend/src/hooks/useChatSocket.ts`           | React hook for WebSocket management      |
-| `frontend/src/components/chat/*.tsx`            | Chat UI components                       |
-| `test/helpers/web-chat-fixtures.ts`             | Test utilities                           |
-| `test/*web*.test.ts`                            | Web chat tests                           |
+| File                                            | Purpose                                                                 |
+| ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `shared/chat-events.ts`                         | ChatEvent type definitions + type guards (cross-boundary wire protocol) |
+| `server/protocol-adapter.ts`                    | ProtocolAdapter interface + base class                                  |
+| `server/protocol-adapters/index.ts`             | Adapter factory                                                         |
+| `server/protocol-adapters/base-hook-adapter.ts` | Common hook-based adapter                                               |
+| `server/protocol-adapters/*-adapter.ts`         | Agent-specific adapters                                                 |
+| `server/web-session-handler.ts`                 | WebSession creation + event buffering                                   |
+| `server/ws.ts`                                  | WebSocket relay for web sessions                                        |
+| `frontend/src/hooks/useChatSocket.ts`           | React hook for WebSocket management                                     |
+| `frontend/src/components/chat/*.tsx`            | Chat UI components                                                      |
+| `test/helpers/web-chat-fixtures.ts`             | Test utilities                                                          |
+| `test/*web*.test.ts`                            | Web chat tests                                                          |
 
 ## Related Work
 

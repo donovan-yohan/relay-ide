@@ -4,7 +4,7 @@ import type {
   ToolCallEvent,
   ToolCallStatus,
   ToolResultEvent,
-} from '../../../../server/chat-events.js';
+} from '../../../../shared/chat-events.js';
 
 interface ToolCardProps {
   event: ToolCallEvent;

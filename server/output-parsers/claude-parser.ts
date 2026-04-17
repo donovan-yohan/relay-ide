@@ -1,4 +1,4 @@
-import type { OutputParser, ParseResult, AgentState } from './index.js';
+import type { OutputParser, ParseResult, AgentState } from './types.js';
 
 // Duplicated from utils.ts to preserve output-parsers/ module boundary
 /* eslint-disable no-control-regex */

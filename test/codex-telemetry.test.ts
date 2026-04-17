@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { CodexTelemetryAdapter } from '../server/adapters/codex-telemetry.js';
-import type { TelemetryDeps } from '../server/telemetry.js';
+import type { TelemetryDeps } from '../server/telemetry-adapter.js';
 
 let tmpDir: string;
 let adapter: CodexTelemetryAdapter;

@@ -1,4 +1,4 @@
-import type { OutputParser, ParseResult } from './index.js';
+import type { OutputParser, ParseResult } from './types.js';
 
 /**
  * Null output parser — always returns null.

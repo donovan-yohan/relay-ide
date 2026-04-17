@@ -5,7 +5,7 @@ import type {
   AdapterStatus,
   SessionOptions,
 } from '../protocol-adapter.js';
-import type { ChatEvent } from '../chat-events.js';
+import type { ChatEvent } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('mock-adapter');

@@ -18,9 +18,6 @@ import './adapters/codex-telemetry.js';
 import './adapters/opencode-telemetry.js';
 import { createLogger } from './logger.js';
 
-// Re-export TelemetryDeps from telemetry-adapter for backward compat
-export type { TelemetryDeps } from './telemetry-adapter.js';
-
 const logger = createLogger('telemetry');
 
 const POLL_INTERVAL_MS = 2_000;

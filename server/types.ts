@@ -2,7 +2,7 @@ import type { IPty } from 'node-pty';
 import type { ChildProcess } from 'node:child_process'; // used by WebSession.process
 import type { OutputParser } from './output-parsers/index.js';
 import type { ProtocolAdapter } from './protocol-adapter.js';
-import type { ChatEvent } from './chat-events.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 
 export type AgentState =
   | 'initializing'
@@ -175,7 +175,8 @@ export function resolveFramework(
   };
 }
 
-// Deprecated aliases derived from BUILTIN_FRAMEWORKS for backward compatibility
+// Lookup maps derived from BUILTIN_FRAMEWORKS — consumed by sessions, pty-handler,
+// workspace-groups, and index.ts to resolve per-agent commands and args.
 export const AGENT_COMMANDS: Record<string, string> = Object.fromEntries(
   Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.command])
 );

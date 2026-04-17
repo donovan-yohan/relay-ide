@@ -2,7 +2,16 @@ import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
-import type { PrDotStatus } from './pr-status.js';
+
+export type PrDotStatus =
+  | 'draft'
+  | 'open'
+  | 'approved'
+  | 'changes-requested'
+  | 'review-requested'
+  | 'merged'
+  | 'closed'
+  | 'unknown';
 
 export type AgentType = string;
 export type AgentState =

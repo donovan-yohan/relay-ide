@@ -8,7 +8,7 @@ import type {
   ToolResultEvent,
   FileChangeEvent,
   ErrorEvent,
-} from '../../../../server/chat-events.js';
+} from '../../../../shared/chat-events.js';
 import { ToolCard } from './ToolCard.js';
 import { FileChangeCard } from './FileChangeCard.js';
 import { ApprovalCard } from './ApprovalCard.js';

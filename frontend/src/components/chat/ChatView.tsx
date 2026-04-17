@@ -3,7 +3,7 @@ import './ChatView.css';
 import { useChatSocket } from '../../hooks/useChatSocket.js';
 import { MessageTimeline } from './MessageTimeline.js';
 import { Composer } from './Composer.js';
-import type { SessionStatusEvent } from '../../../../server/chat-events.js';
+import type { SessionStatusEvent } from '../../../../shared/chat-events.js';
 
 interface ChatViewProps {
   sessionId: string | null;
