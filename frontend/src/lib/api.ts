@@ -391,7 +391,7 @@ export async function switchBranch(
       body: JSON.stringify({ branch }),
     }
   );
-  return res.json() as Promise<{ success: boolean; error?: string }>;
+  return (await res.json()) as { success: boolean; error?: string };
 }
 
 export async function fetchBranches(

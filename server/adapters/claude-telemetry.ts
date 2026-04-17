@@ -7,20 +7,16 @@ import type {
   TelemetryDeps,
   TelemetrySession,
 } from '../telemetry-adapter.js';
-import { registerTelemetryAdapter } from '../telemetry-adapter.js';
+import {
+  asNumber,
+  asString,
+  registerTelemetryAdapter,
+} from '../telemetry-adapter.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('telemetry:claude');
 
 type IncomingTelemetryData = Omit<TelemetryData, 'updatedAt'>;
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function asString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
-}
 
 function telemetryDir(configDir: string): string {
   return path.join(configDir, 'telemetry');
@@ -122,10 +118,7 @@ export class ClaudeTelemetryAdapter implements TelemetryAdapter {
     } catch (err) {
       const error = err as NodeJS.ErrnoException;
       if (error.code !== 'ENOENT') {
-        logger.warn(
-          `Failed to read telemetry for session ${sessionId}:`,
-          err
-        );
+        logger.warn(`Failed to read telemetry for session ${sessionId}:`, err);
       }
       return null;
     }

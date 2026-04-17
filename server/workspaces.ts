@@ -933,9 +933,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     const result = await switchBranch(repoPath, branch);
     if (result.success) {
-      res.json({ path: repoPath, branch });
+      res.json({ success: true, path: repoPath, branch });
     } else {
       res.status(400).json({
+        success: false,
         error: result.error ?? `Failed to switch to branch: ${branch}`,
       });
     }
