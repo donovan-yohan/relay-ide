@@ -8,7 +8,11 @@ export interface Toast {
 
 interface ToastState {
   toasts: Toast[];
-  showToast: (message: string, variant?: 'error' | 'info', durationMs?: number) => void;
+  showToast: (
+    message: string,
+    variant?: 'error' | 'info',
+    durationMs?: number
+  ) => void;
   dismissToast: (id: number) => void;
 }
 

@@ -23,7 +23,13 @@ export function generateScopedToken(): string {
 }
 
 export function validateScopedToken(token: string): boolean {
-  return token.length > 0 && token === scopedToken;
+  if (!token || !scopedToken) return false;
+  const tokenBuf = Buffer.from(token);
+  const scopedBuf = Buffer.from(scopedToken);
+  return (
+    tokenBuf.length === scopedBuf.length &&
+    crypto.timingSafeEqual(tokenBuf, scopedBuf)
+  );
 }
 
 // ── Content tokens ──

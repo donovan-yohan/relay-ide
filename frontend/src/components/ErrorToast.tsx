@@ -1,6 +1,9 @@
 import React from 'react';
-import { useToastStore } from '../lib/state/toasts.store.js';
-import { addNotification, removeNotification } from '../lib/stores/notifications.js';
+import { useToastStore } from '../lib/stores/toasts.js';
+import {
+  addNotification,
+  removeNotification,
+} from '../lib/stores/notifications.js';
 import './ErrorToast.css';
 
 export const ErrorToast: React.FC = () => {
@@ -22,7 +25,11 @@ export const ErrorToast: React.FC = () => {
         type: toast.variant === 'error' ? 'error' : 'info',
         dismissible: true,
         content: (
-          <ErrorToastContent message={toast.message} variant={toast.variant} onDismiss={onDismiss} />
+          <ErrorToastContent
+            message={toast.message}
+            variant={toast.variant}
+            onDismiss={onDismiss}
+          />
         ),
         onDismiss,
       });
@@ -51,10 +58,20 @@ interface ErrorToastContentProps {
   onDismiss: () => void;
 }
 
-const ErrorToastContent: React.FC<ErrorToastContentProps> = ({ message, variant, onDismiss }) => (
-  <div className={`notification-card${variant === 'error' ? ' notification-card--error' : ''}`}>
+const ErrorToastContent: React.FC<ErrorToastContentProps> = ({
+  message,
+  variant,
+  onDismiss,
+}) => (
+  <div
+    className={`notification-card${variant === 'error' ? ' notification-card--error' : ''}`}
+  >
     <span className="notification-card__text error-toast-text">{message}</span>
-    <button className="notification-card__dismiss" onClick={onDismiss} aria-label="Dismiss">
+    <button
+      className="notification-card__dismiss"
+      onClick={onDismiss}
+      aria-label="Dismiss"
+    >
       ×
     </button>
   </div>

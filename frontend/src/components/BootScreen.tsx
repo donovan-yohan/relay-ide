@@ -17,7 +17,7 @@ function badgeText(line: BootLine): string {
   }
 }
 
-function formatDuration(ms: number | undefined): string {
+function formatElapsedMs(ms: number | undefined): string {
   if (ms === undefined) return '';
   return `${ms}ms`;
 }
@@ -100,7 +100,7 @@ export function BootScreen() {
                       : null}
               </span>
               <span className="duration">
-                {formatDuration(line.durationMs)}
+                {formatElapsedMs(line.durationMs)}
               </span>
             </div>
           ))}

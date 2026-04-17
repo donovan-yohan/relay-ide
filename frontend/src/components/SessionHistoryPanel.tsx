@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { AnalyticsSessionSummary } from '../lib/types.js';
 import { fetchAnalyticsSessions } from '../lib/api.js';
-import { formatRelativeTimeCompact } from '../lib/utils.js';
+import { formatRelativeTimeCompact, formatDuration } from '../lib/utils.js';
 import './SessionHistoryPanel.css';
 
 const historySvg = (
@@ -226,16 +226,6 @@ export function SessionHistoryPanel({
       </div>
     </div>
   );
-}
-
-function formatDuration(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return `${minutes}m`;
 }
 
 export default SessionHistoryPanel;

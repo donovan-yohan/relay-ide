@@ -4,7 +4,7 @@ import { createLogger } from '../lib/logger.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
-import { useToastStore } from '../lib/state/toasts.store.js';
+import { useToastStore } from '../lib/stores/toasts.js';
 import { sendPtyData } from '../lib/ws.js';
 import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';

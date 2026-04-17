@@ -11,40 +11,25 @@ import type {
   AnalyticsToolBreakdown,
   AnalyticsRateLimitHistory,
 } from '../lib/types.js';
+import {
+  formatDuration,
+  formatDurationMs,
+  barForPercent,
+} from '../lib/utils.js';
 import './AnalyticsDashboard.css';
 
 // ── Format helpers ──
 
 function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '---';
+  if (value === null || value === undefined || Number.isNaN(value))
+    return '---';
   const abs = Math.abs(value);
   if (abs < 1000) return String(Math.round(value));
-  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
-  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs < 1_000_000)
+    return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  if (abs < 1_000_000_000)
+    return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
   return `${(value / 1_000_000_000).toFixed(1)}B`;
-}
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '---';
-  const s = Math.round(seconds);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
-  const h = Math.floor(m / 60);
-  const remM = m % 60;
-  return remM > 0 ? `${h}h ${remM}m` : `${h}h`;
-}
-
-function formatDurationMs(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined || Number.isNaN(ms)) return '---';
-  return formatDuration(ms / 1000);
-}
-
-function barForPercent(pct: number, width: number): string {
-  const clamped = Math.max(0, Math.min(100, pct));
-  const filled = Math.round((clamped / 100) * width);
-  return '\u2588'.repeat(filled) + '\u2591'.repeat(width - filled);
 }
 
 function formatDateShort(iso: string): string {
@@ -60,7 +45,11 @@ function formatDateShort(iso: string): string {
 function formatTimeShort(iso: string): string {
   try {
     const d = new Date(iso);
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+    return d.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
   } catch {
     return '---';
   }
@@ -86,32 +75,45 @@ function OverviewSection({ overview }: OverviewSectionProps) {
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">tokens:</span>
             <span className="analytics-kv-value">
-              <span className="analytics-token-down">&#x2193;{formatCompact(overview.totalTokensIn)}</span>
-              {' '}
-              <span className="analytics-token-up">&#x2191;{formatCompact(overview.totalTokensOut)}</span>
+              <span className="analytics-token-down">
+                &#x2193;{formatCompact(overview.totalTokensIn)}
+              </span>{' '}
+              <span className="analytics-token-up">
+                &#x2191;{formatCompact(overview.totalTokensOut)}
+              </span>
             </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">cache:</span>
-            <span className="analytics-kv-value">{formatCompact(overview.totalCacheRead)} read</span>
+            <span className="analytics-kv-value">
+              {formatCompact(overview.totalCacheRead)} read
+            </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">avg duration:</span>
-            <span className="analytics-kv-value">{formatDuration(overview.avgSessionDuration)}</span>
+            <span className="analytics-kv-value">
+              {formatDuration(overview.avgSessionDuration)}
+            </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">avg human latency:</span>
-            <span className="analytics-kv-value">{formatDurationMs(overview.avgHumanResponseLatency)}</span>
+            <span className="analytics-kv-value">
+              {formatDurationMs(overview.avgHumanResponseLatency)}
+            </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">agent idle:</span>
             <span className="analytics-kv-value">
-              {overview.avgAgentIdlePercent != null ? overview.avgAgentIdlePercent.toFixed(1) + '%' : '---'}
+              {overview.avgAgentIdlePercent != null
+                ? overview.avgAgentIdlePercent.toFixed(1) + '%'
+                : '---'}
             </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">rate limits:</span>
-            <span className="analytics-kv-value">{overview.totalRateLimitEncounters} encounters</span>
+            <span className="analytics-kv-value">
+              {overview.totalRateLimitEncounters} encounters
+            </span>
           </div>
         </div>
       ) : (
@@ -127,7 +129,10 @@ interface RateLimitSectionProps {
 
 function RateLimitSection({ rateLimits }: RateLimitSectionProps) {
   const latestRateLimit = useMemo(
-    () => (rateLimits?.snapshots?.length ? rateLimits.snapshots[rateLimits.snapshots.length - 1] : null),
+    () =>
+      rateLimits?.snapshots?.length
+        ? rateLimits.snapshots[rateLimits.snapshots.length - 1]
+        : null,
     [rateLimits]
   );
 
@@ -140,15 +145,23 @@ function RateLimitSection({ rateLimits }: RateLimitSectionProps) {
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">5-hour:</span>
             <span className="analytics-kv-value analytics-bar-row">
-              <span className="analytics-bar">{barForPercent(latestRateLimit.fiveHourPercent, 20)}</span>
-              <span className="analytics-bar-pct">{Math.round(latestRateLimit.fiveHourPercent)}%</span>
+              <span className="analytics-bar">
+                {barForPercent(latestRateLimit.fiveHourPercent, 20)}
+              </span>
+              <span className="analytics-bar-pct">
+                {Math.round(latestRateLimit.fiveHourPercent)}%
+              </span>
             </span>
           </div>
           <div className="analytics-kv-row">
             <span className="analytics-kv-label">7-day:</span>
             <span className="analytics-kv-value analytics-bar-row">
-              <span className="analytics-bar">{barForPercent(latestRateLimit.sevenDayPercent, 20)}</span>
-              <span className="analytics-bar-pct">{Math.round(latestRateLimit.sevenDayPercent)}%</span>
+              <span className="analytics-bar">
+                {barForPercent(latestRateLimit.sevenDayPercent, 20)}
+              </span>
+              <span className="analytics-bar-pct">
+                {Math.round(latestRateLimit.sevenDayPercent)}%
+              </span>
             </span>
           </div>
         </div>
@@ -165,7 +178,10 @@ interface ToolSectionProps {
 
 function ToolSection({ tools }: ToolSectionProps) {
   const maxToolUses = useMemo(
-    () => (tools?.tools?.length ? Math.max(...tools.tools.map((t) => t.totalUses)) : 1),
+    () =>
+      tools?.tools?.length
+        ? Math.max(...tools.tools.map((t) => t.totalUses))
+        : 1,
     [tools]
   );
   const barWidth = 16;
@@ -177,12 +193,16 @@ function ToolSection({ tools }: ToolSectionProps) {
       {tools?.tools?.length ? (
         <div className="analytics-tool-list">
           {tools.tools.slice(0, 10).map((tool) => {
-            const filled = maxToolUses > 0 ? Math.round((tool.totalUses / maxToolUses) * barWidth) : 0;
+            const filled =
+              maxToolUses > 0
+                ? Math.round((tool.totalUses / maxToolUses) * barWidth)
+                : 0;
             return (
               <div key={tool.name} className="analytics-tool-row">
                 <span className="analytics-tool-name">{tool.name}</span>
                 <span className="analytics-tool-bar">
-                  {'\u2588'.repeat(filled)}{'\u2591'.repeat(barWidth - filled)}
+                  {'\u2588'.repeat(filled)}
+                  {'\u2591'.repeat(barWidth - filled)}
                 </span>
                 <span className="analytics-tool-count">{tool.totalUses}</span>
               </div>
@@ -228,21 +248,36 @@ function SessionsTable({ sessions, onSelectSession }: SessionsTableProps) {
                     onClick={() => onSelectSession(sess.sessionId)}
                     role="button"
                     tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === 'Enter') onSelectSession(sess.sessionId); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onSelectSession(sess.sessionId);
+                    }}
                   >
                     <td className="analytics-cell-time">
-                      <span className="analytics-date-part">{formatDateShort(sess.startedAt)}</span>
-                      <span className="analytics-time-part">{formatTimeShort(sess.startedAt)}</span>
+                      <span className="analytics-date-part">
+                        {formatDateShort(sess.startedAt)}
+                      </span>
+                      <span className="analytics-time-part">
+                        {formatTimeShort(sess.startedAt)}
+                      </span>
                     </td>
-                    <td className="analytics-cell-repo">{sess.repoName ?? '---'}</td>
-                    <td className="analytics-cell-duration">{formatDuration(sess.durationSeconds)}</td>
+                    <td className="analytics-cell-repo">
+                      {sess.repoName ?? '---'}
+                    </td>
+                    <td className="analytics-cell-duration">
+                      {formatDuration(sess.durationSeconds)}
+                    </td>
                     <td>
-                      <span className="analytics-token-down">&#x2193;{formatCompact(sess.totalInputTokens)}</span>
-                      {' '}
-                      <span className="analytics-token-up">&#x2191;{formatCompact(sess.totalOutputTokens)}</span>
+                      <span className="analytics-token-down">
+                        &#x2193;{formatCompact(sess.totalInputTokens)}
+                      </span>{' '}
+                      <span className="analytics-token-up">
+                        &#x2191;{formatCompact(sess.totalOutputTokens)}
+                      </span>
                     </td>
                     <td className="analytics-cell-turns">{sess.turnCount}</td>
-                    <td className="analytics-cell-tools">{sess.topTools.slice(0, 3).join(', ') || '---'}</td>
+                    <td className="analytics-cell-tools">
+                      {sess.topTools.slice(0, 3).join(', ') || '---'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -268,11 +303,17 @@ export interface AnalyticsDashboardProps {
   onClose?: () => void;
 }
 
-export function AnalyticsDashboard({ onSelectSession, onClose }: AnalyticsDashboardProps) {
+export function AnalyticsDashboard({
+  onSelectSession,
+  onClose,
+}: AnalyticsDashboardProps) {
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
-  const [sessions, setSessions] = useState<AnalyticsSessionsResponse | null>(null);
+  const [sessions, setSessions] = useState<AnalyticsSessionsResponse | null>(
+    null
+  );
   const [tools, setTools] = useState<AnalyticsToolBreakdown | null>(null);
-  const [rateLimits, setRateLimits] = useState<AnalyticsRateLimitHistory | null>(null);
+  const [rateLimits, setRateLimits] =
+    useState<AnalyticsRateLimitHistory | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -295,12 +336,16 @@ export function AnalyticsDashboard({ onSelectSession, onClose }: AnalyticsDashbo
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'failed to load analytics');
+        setError(
+          err instanceof Error ? err.message : 'failed to load analytics'
+        );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loading) {
@@ -308,7 +353,15 @@ export function AnalyticsDashboard({ onSelectSession, onClose }: AnalyticsDashbo
       <div className="analytics-dashboard">
         <div className="analytics-header-row">
           <h1 className="analytics-page-title">analytics</h1>
-          {onClose && <button className="analytics-close-btn" onClick={onClose} title="close analytics">✕</button>}
+          {onClose && (
+            <button
+              className="analytics-close-btn"
+              onClick={onClose}
+              title="close analytics"
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div className="analytics-divider" />
         <div className="analytics-loading-state">loading analytics data...</div>
@@ -321,7 +374,15 @@ export function AnalyticsDashboard({ onSelectSession, onClose }: AnalyticsDashbo
       <div className="analytics-dashboard">
         <div className="analytics-header-row">
           <h1 className="analytics-page-title">analytics</h1>
-          {onClose && <button className="analytics-close-btn" onClick={onClose} title="close analytics">✕</button>}
+          {onClose && (
+            <button
+              className="analytics-close-btn"
+              onClick={onClose}
+              title="close analytics"
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div className="analytics-divider" />
         <div className="analytics-error-state">error: {error}</div>
