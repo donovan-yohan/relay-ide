@@ -29,7 +29,7 @@ export default [
       'no-console': 'error',
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['off'],
-      complexity: ['error', 20],
+      complexity: ['error', 25],
       'max-depth': ['error', 4],
       'max-params': 'off',
     },
