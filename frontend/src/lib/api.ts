@@ -65,6 +65,10 @@ async function jsonOrNull<T>(res: Response): Promise<T | null> {
   return res.json() as Promise<T>;
 }
 
+async function jsonEither<T>(res: Response): Promise<T> {
+  return res.json() as Promise<T>;
+}
+
 async function parseErrorBody(
   res: Response,
   fallback: string
@@ -95,9 +99,7 @@ export async function checkAuth(): Promise<boolean> {
 }
 
 export async function checkAuthStatus(): Promise<{ hasPIN: boolean }> {
-  const res = await fetch('/auth/status');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = (await res.json()) as { hasPIN?: boolean };
+  const data = await json<{ hasPIN?: boolean }>(await fetch('/auth/status'));
   return { hasPIN: data.hasPIN === true };
 }
 
@@ -316,8 +318,7 @@ export async function fetchCiStatusOrNull(
       '&branch=' +
       encodeURIComponent(branch)
   );
-  if (!res.ok) return null;
-  return res.json() as Promise<CiStatus>;
+  return jsonOrNull<CiStatus>(res);
 }
 
 export async function fetchPrForBranchOrNull(
@@ -330,9 +331,8 @@ export async function fetchPrForBranchOrNull(
       '&branch=' +
       encodeURIComponent(branch)
   );
-  if (!res.ok) return null;
-  const data = (await res.json()) as { pr: PrInfo | null };
-  return data.pr;
+  const data = await jsonOrNull<{ pr: PrInfo | null }>(res);
+  return data?.pr ?? null;
 }
 
 export async function fetchCurrentBranch(
@@ -372,11 +372,11 @@ export async function createWorktree(
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to create worktree'));
   }
-  return res.json() as Promise<{
+  return jsonEither<{
     branchName: string;
     mountainName: string;
     worktreePath: string | null;
-  }>;
+  }>(res);
 }
 
 export async function switchBranch(
@@ -391,7 +391,7 @@ export async function switchBranch(
       body: JSON.stringify({ branch }),
     }
   );
-  return (await res.json()) as { success: boolean; error?: string };
+  return jsonEither<{ success: boolean; error?: string }>(res);
 }
 
 export async function fetchBranches(
@@ -416,7 +416,7 @@ export async function enrichBranches(
     body: JSON.stringify({ branches }),
   });
   if (!res.ok) return { results: {} };
-  return res.json() as Promise<EnrichBranchesResult>;
+  return jsonEither<EnrichBranchesResult>(res);
 }
 
 export async function createSession(body: {
@@ -450,7 +450,7 @@ export async function createSession(body: {
   });
   if (res.status === 409) {
     try {
-      const data = (await res.json()) as { sessionId?: string };
+      const data = await jsonEither<{ sessionId?: string }>(res);
       throw new ConflictError(data.sessionId ?? '');
     } catch (e) {
       if (e instanceof ConflictError) throw e;
@@ -486,10 +486,10 @@ export async function fetchWorktreeStatus(
       await parseErrorBody(res, 'Failed to fetch worktree status')
     );
   }
-  return (await res.json()) as {
+  return jsonEither<{
     activeSessions: string[];
     hasUncommittedChanges: boolean;
-  };
+  }>(res);
 }
 
 export async function deleteWorktree(
@@ -933,7 +933,7 @@ export async function createWorkspaceGroup(data: {
   });
   if (!res.ok)
     throw new Error(await parseErrorBody(res, 'Failed to create workspace'));
-  return res.json() as Promise<Workspace>;
+  return jsonEither<Workspace>(res);
 }
 
 export async function updateWorkspaceGroup(
@@ -947,7 +947,7 @@ export async function updateWorkspaceGroup(
   });
   if (!res.ok)
     throw new Error(await parseErrorBody(res, 'Failed to update workspace'));
-  return res.json() as Promise<Workspace>;
+  return jsonEither<Workspace>(res);
 }
 
 export async function deleteWorkspaceGroup(id: string): Promise<void> {
@@ -978,9 +978,9 @@ export async function launchWorkspaceSession(
     throw new Error(
       await parseErrorBody(res, 'Failed to launch workspace session')
     );
-  return res.json() as Promise<
+  return jsonEither<
     SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }
-  >;
+  >(res);
 }
 
 export async function fetchChangedFiles(
@@ -997,7 +997,7 @@ export async function fetchChangedFiles(
       error: `HTTP ${res.status}`,
     };
   }
-  return res.json() as Promise<ChangedFilesResponse>;
+  return jsonEither<ChangedFilesResponse>(res);
 }
 
 export async function fetchFileDiff(
@@ -1011,16 +1011,16 @@ export async function fetchFileDiff(
   if (!res.ok) {
     return { diff: '', error: `HTTP ${res.status}` };
   }
-  return res.json() as Promise<FileDiffResponse>;
+  return jsonEither<FileDiffResponse>(res);
 }
 
 export async function fetchDefaultBranch(repoPath: string): Promise<string> {
   const params = new URLSearchParams({ path: repoPath });
   try {
-    const res = await fetch('/workspaces/default-branch?' + params.toString());
-    if (!res.ok) return 'main';
-    const data = (await res.json()) as { branch: string };
-    return data.branch || 'main';
+    const data = await jsonOrNull<{ branch: string }>(
+      await fetch('/workspaces/default-branch?' + params.toString())
+    );
+    return data?.branch || 'main';
   } catch {
     return 'main';
   }
@@ -1123,12 +1123,12 @@ export async function renameBranch(
       body: JSON.stringify({ newName }),
     }
   );
-  return res.json() as Promise<{
+  return jsonEither<{
     success?: boolean;
     oldName?: string;
     newName?: string;
     error?: string;
-  }>;
+  }>(res);
 }
 
 export async function pushBranch(
@@ -1144,7 +1144,7 @@ export async function pushBranch(
       body: JSON.stringify({ branch, deleteOldBranch }),
     }
   );
-  return res.json() as Promise<{ success?: boolean; error?: string }>;
+  return jsonEither<{ success?: boolean; error?: string }>(res);
 }
 
 export async function setPrBase(
@@ -1160,12 +1160,13 @@ export async function setPrBase(
       body: JSON.stringify({ prNumber, baseBranch }),
     }
   );
-  return res.json() as Promise<{ success?: boolean; error?: string }>;
+  return jsonEither<{ success?: boolean; error?: string }>(res);
 }
 
 export async function fetchWorkspaceBranches(
   path: string
 ): Promise<BranchInfo[]> {
-  const res = await fetch('/branches?path=' + encodeURIComponent(path));
-  return res.json() as Promise<BranchInfo[]>;
+  return json<BranchInfo[]>(
+    await fetch('/branches?path=' + encodeURIComponent(path))
+  );
 }
