@@ -18,7 +18,7 @@ const ANSI_RE =
  *   Agent header: `> build . provider/model` — indicates initializing/resuming
  *   Waiting for input: bare `>` prompt or "Ready" / "assistant: done" patterns
  */
-export class OpencodeOutputParser implements OutputParser {
+export class OpenCodeOutputParser implements OutputParser {
   private currentState: AgentState = 'initializing';
   private hasSeenFirstPrompt = false;
 

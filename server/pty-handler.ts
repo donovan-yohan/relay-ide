@@ -24,7 +24,7 @@ import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
 import type { OutputParser } from './output-parsers/index.js';
-import { installOpencodeRelayPlugin } from './opencode-relay.js';
+import { installOpenCodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
@@ -354,7 +354,7 @@ function setupPluginHooks(
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
-    installOpencodeRelayPlugin();
+    installOpenCodeRelayPlugin();
     env.RELAY_IDE_URL = `http://127.0.0.1:${port}`;
     env.RELAY_IDE_SESSION_ID = id;
     env.RELAY_IDE_TOKEN = hookToken;

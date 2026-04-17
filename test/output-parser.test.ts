@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ClaudeOutputParser } from '../server/output-parsers/claude-parser.js';
 import { CodexOutputParser } from '../server/output-parsers/codex-parser.js';
-import { OpencodeOutputParser } from '../server/output-parsers/opencode-parser.js';
+import { OpenCodeOutputParser } from '../server/output-parsers/opencode-parser.js';
 import { NullOutputParser } from '../server/output-parsers/null-parser.js';
 import { outputParsers } from '../server/output-parsers/index.js';
 
@@ -112,9 +112,9 @@ describe('outputParsers registry', () => {
     expect(parser instanceof CodexOutputParser).toBeTruthy();
   });
 
-  it('creates OpencodeOutputParser for opencode', () => {
+  it('creates OpenCodeOutputParser for opencode', () => {
     const parser = outputParsers['opencode']!();
-    expect(parser instanceof OpencodeOutputParser).toBeTruthy();
+    expect(parser instanceof OpenCodeOutputParser).toBeTruthy();
   });
 
   it('creates NullOutputParser for none', () => {
@@ -142,14 +142,14 @@ describe('NullOutputParser', () => {
   });
 });
 
-describe('OpencodeOutputParser', () => {
+describe('OpenCodeOutputParser', () => {
   it('starts in initializing state', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     expect(parser.state).toBe('initializing');
   });
 
   it('detects permission prompt from ! permission requested line', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     const result = parser.onData(
       '! permission requested: bash (*); allow this tool?',
       []
@@ -158,7 +158,7 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('recognizes agent header and sets hasSeenFirstPrompt (no state change from initializing)', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     // Parser starts in initializing; header keeps it in initializing — no state change, returns null
     const result = parser.onData('> build . anthropic/claude-sonnet-4-5', []);
     expect(result).toBe(null);
@@ -166,7 +166,7 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('detects bash tool icon as processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     // Simulate having seen first prompt first
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     // Now a bash tool invocation
@@ -175,35 +175,35 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('detects file edit tool icon as processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     const result = parser.onData('<- src/index.ts', []);
     expect(result).toEqual({ state: 'processing' });
   });
 
   it('detects file read tool icon as processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     const result = parser.onData('-> src/index.ts', []);
     expect(result).toEqual({ state: 'processing' });
   });
 
   it('detects glob/grep tool icon as processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     const result = parser.onData('* **/*.ts', []);
     expect(result).toEqual({ state: 'processing' });
   });
 
   it('detects webfetch tool icon as processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     const result = parser.onData('% https://example.com', []);
     expect(result).toEqual({ state: 'processing' });
   });
 
   it('detects waiting-for-input on > prompt without provider info', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     parser.onData('$ npm install', []);
     const result = parser.onData('>\n', []);
@@ -211,7 +211,7 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('detects waiting-for-input on "Ready" pattern', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     parser.onData('doing work...', []);
     const result = parser.onData('Ready', []);
@@ -219,14 +219,14 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('strips ANSI sequences before matching', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     // Pure ANSI should return null
     const result = parser.onData('\x1b[32m\x1b[0m', []);
     expect(result).toBe(null);
   });
 
   it('permission prompt has highest priority over processing', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     // Even if there is tool-like content, the permission pattern wins
     const result = parser.onData(
@@ -237,7 +237,7 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('returns null when state does not change', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     // Still initializing, another header line should return null (already initializing)
     const result = parser.onData('> build . anthropic/claude-3-5-sonnet', []);
@@ -245,7 +245,7 @@ describe('OpencodeOutputParser', () => {
   });
 
   it('reset returns to initializing state', () => {
-    const parser = new OpencodeOutputParser();
+    const parser = new OpenCodeOutputParser();
     parser.onData('> build . anthropic/claude-3-5-sonnet', []);
     parser.onData('>\n', []);
     expect(parser.state).toBe('waiting-for-input');

@@ -44,7 +44,7 @@ export default async () => {
  * @param pluginDir - Override the plugin directory (defaults to ~/.config/opencode/plugins). Used in tests.
  * @returns The path to the written plugin file.
  */
-export function installOpencodeRelayPlugin(pluginDir?: string): string {
+export function installOpenCodeRelayPlugin(pluginDir?: string): string {
   const dir =
     pluginDir ?? path.join(os.homedir(), '.config', 'opencode', 'plugins');
   fs.mkdirSync(dir, { recursive: true });
