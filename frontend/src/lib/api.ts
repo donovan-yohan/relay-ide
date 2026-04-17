@@ -407,6 +407,7 @@ export interface EnrichBranchesResult {
   results: Record<string, { pr: PrInfo | null; stale: boolean }>;
 }
 
+/** Swallows HTTP errors and returns `{ results: {} }` on failure. */
 export async function enrichBranches(
   branches: Array<{ repoPath: string; branchName: string }>
 ): Promise<EnrichBranchesResult> {
@@ -983,6 +984,7 @@ export async function launchWorkspaceSession(
   >(res);
 }
 
+/** Swallows HTTP errors and returns an empty ChangedFilesResponse with an `error` field. */
 export async function fetchChangedFiles(
   repoPath: string,
   base?: string
@@ -1000,6 +1002,7 @@ export async function fetchChangedFiles(
   return jsonEither<ChangedFilesResponse>(res);
 }
 
+/** Swallows HTTP errors and returns `{ diff: '', error }` on failure. */
 export async function fetchFileDiff(
   repoPath: string,
   filePath: string,
@@ -1014,6 +1017,7 @@ export async function fetchFileDiff(
   return jsonEither<FileDiffResponse>(res);
 }
 
+/** Swallows HTTP errors and returns `'main'` on failure or when the branch is empty. */
 export async function fetchDefaultBranch(repoPath: string): Promise<string> {
   const params = new URLSearchParams({ path: repoPath });
   try {
