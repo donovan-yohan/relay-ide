@@ -1,0 +1,50 @@
+test/workspace-groups.test.ts
+  11b6669fe8017715 1
+test/components/TuiInput.test.ts
+  11b6669fe8017715 66,77
+test/components/TuiCheckbox.test.ts
+  11b6669fe8017715 145
+test/session-intent.test.ts
+  11b6669fe8017715 11
+test/components/SessionIndicator.test.ts
+  11b6669fe8017715 2-5
+test/port-allocator.test.ts
+  11b6669fe8017715 1
+test/e2e/components/ShortcutHint.spec.ts
+  11b6669fe8017715 87
+frontend/src/components/SessionIndicator.tsx
+  11b6669fe8017715 22-27,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3d431a2711549abb6606293c9587f43a98a2e2c0",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3316,
+      "overriden_lines": 0
+    },
+    "11b6669fe8017715": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94533106-de85-47b7-87d9-29c2e00688d7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 18,
+      "total_deletions": 45,
+      "accepted_lines": 18,
+      "overriden_lines": 0
+    }
+  }
+}
