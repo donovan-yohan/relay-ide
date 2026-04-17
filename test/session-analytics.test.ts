@@ -16,7 +16,6 @@ import {
   runRetentionCleanup,
   recoverOrphanedSessions,
 } from '../server/analytics.js';
-import type { SessionEvent } from '../server/types.js';
 
 let tmpDir!: string;
 

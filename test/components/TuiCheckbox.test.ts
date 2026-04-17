@@ -142,7 +142,7 @@ describe('TuiCheckbox', () => {
         called = true;
       };
 
-      const handleChange = (e: { target: { checked: boolean } }) => {
+      const handleChange = (_e: { target: { checked: boolean } }) => {
         if (!disabled && onChange) {
           onChange();
         }

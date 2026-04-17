@@ -8,11 +8,7 @@ import type {
   SessionIntent,
 } from '../frontend/src/lib/session-intent.js';
 import type { GitHubIssue } from '../frontend/src/lib/types.js';
-import {
-  makePr,
-  makeSession,
-  makeWorktree,
-} from './helpers/frontend-factories.js';
+import { makePr, makeSession } from './helpers/frontend-factories.js';
 
 describe('resolveIntent', () => {
   it('returns review-pr intent for reviewer on open PR', () => {

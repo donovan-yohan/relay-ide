@@ -63,7 +63,7 @@ describe('TuiInput', () => {
         onInput?: (e: React.FormEvent<HTMLInputElement>) => void;
       }
 
-      const handleInput = (e: React.FormEvent<HTMLInputElement>) => {};
+      const handleInput = (_e: React.FormEvent<HTMLInputElement>) => {};
 
       const props: TuiInputProps = { onInput: handleInput };
       expect(typeof props.onInput).toBe('function');
@@ -74,7 +74,7 @@ describe('TuiInput', () => {
         onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
       }
 
-      const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {};
+      const handleKeyDown = (_e: React.KeyboardEvent<HTMLInputElement>) => {};
 
       const props: TuiInputProps = { onKeyDown: handleKeyDown };
       expect(typeof props.onKeyDown).toBe('function');

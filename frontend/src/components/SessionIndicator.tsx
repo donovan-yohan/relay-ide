@@ -19,16 +19,17 @@ export const config: Record<
   inactive: { char: '─', colorClass: 'ind-gray', bold: false },
 };
 
+export function getPulseClass(state: DisplayState): string {
+  if (state === 'permission' || state === 'needs-answer') return 'pulse-fast';
+  if (state === 'unseen-idle') return 'pulse-slow';
+  return '';
+}
+
 export function SessionIndicator({ state }: SessionIndicatorProps) {
   const cfg = config[state];
   const { char, colorClass, bold } = cfg;
 
-  const pulseClass =
-    state === 'permission' || state === 'needs-answer'
-      ? 'pulse-fast'
-      : state === 'unseen-idle'
-        ? 'pulse-slow'
-        : '';
+  const pulseClass = getPulseClass(state);
 
   const label =
     state === 'permission'
