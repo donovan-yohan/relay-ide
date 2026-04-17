@@ -1,0 +1,35 @@
+server/sessions.ts
+  0c09cd245ba49512 185
+frontend/src/components/SearchableSelect.tsx
+  0c09cd245ba49512 8
+frontend/src/components/TargetBranchSwitcher.tsx
+  0c09cd245ba49512 10
+server/watcher.ts
+  0c09cd245ba49512 177-178,182-183,187,192,206,211,216,222,226,229,232,238-240,245-250,255,264,268-270,272-274,277,281,286,300,305,308,336,340,345,350,359,361,372,375,381-382,386-387,390-391,396,408,410-411,420-421,425-427,434-435,438-439,443,490-493,497,500,506,531,540,542,552,556,560,564,567,573-574,577,580-581,586-587,602,604-605,609-612,615-617,621,648,656,659,680,722,734,742,757-758,761,766-767,769,772,807,820-821,824
+frontend/src/components/BranchSwitcher.tsx
+  0c09cd245ba49512 10
+test/worktrees.test.ts
+  0c09cd245ba49512 693-694,711,732-733
+frontend/src/hooks/useClickOutside.ts
+  0c09cd245ba49512 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "bd955058553158ad7366b16c45d49ad1c34c8e44",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 146,
+      "total_deletions": 129,
+      "accepted_lines": 2458,
+      "overriden_lines": 0
+    }
+  }
+}
