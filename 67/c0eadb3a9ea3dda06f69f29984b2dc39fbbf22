@@ -1,0 +1,41 @@
+server/opencode-relay.ts
+  0c09cd245ba49512 47
+test/web-chat-integration.test.ts
+  0c09cd245ba49512 6,462,464
+server/protocol-adapters/opencode-adapter.ts
+  0c09cd245ba49512 3,11,31
+test/adapter-map-hook-event.test.ts
+  0c09cd245ba49512 8,38,261-262,266
+server/output-parsers/index.ts
+  0c09cd245ba49512 3,16
+server/output-parsers/opencode-parser.ts
+  0c09cd245ba49512 21
+server/pty-handler.ts
+  0c09cd245ba49512 27,357
+test/opencode-relay.test.ts
+  0c09cd245ba49512 6,84,87,94,102,108,115-116,126,129
+server/protocol-adapters/index.ts
+  0c09cd245ba49512 5,11
+test/output-parser.test.ts
+  0c09cd245ba49512 4,115,117,145,147,152,161,169,178,185,192,199,206,214,222,229,240,248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "67c0eadb3a9ea3dda06f69f29984b2dc39fbbf22",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 47,
+      "total_deletions": 47,
+      "accepted_lines": 3291,
+      "overriden_lines": 0
+    }
+  }
+}
