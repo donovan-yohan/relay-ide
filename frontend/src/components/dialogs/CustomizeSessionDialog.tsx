@@ -4,6 +4,7 @@ import TuiButton from '../TuiButton.js';
 import TuiCheckbox from '../TuiCheckbox.js';
 import { estimateTerminalDimensions } from '../../lib/utils.js';
 import { useConfigStore } from '../../lib/stores/config.js';
+import { useUiStore } from '../../lib/stores/ui.js';
 import { createAgentSession } from '../../lib/session-utils.js';
 import type { AgentType } from '../../lib/types.js';
 import './CustomizeSessionDialog.css';
@@ -45,7 +46,9 @@ async function createSessionFromForm(
   form: FormState
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
-  const { cols, rows } = estimateTerminalDimensions();
+  const { cols, rows } = estimateTerminalDimensions(
+    useUiStore.getState().terminalFontSize
+  );
   return createAgentSession({
     repoPath: workspacePath,
     worktreePath,

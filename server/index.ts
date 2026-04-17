@@ -24,14 +24,13 @@ import {
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import {
-  AGENT_CONTINUE_ARGS,
-  AGENT_YOLO_ARGS,
   serializeAll,
   restoreFromDisk,
   activeTmuxSessionNames,
   populateMetaCache,
 } from './sessions.js';
 import type { CreateResult } from './sessions.js';
+import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import {

@@ -130,7 +130,9 @@ export function useSessionHandlers({
     const { currentActiveWorkspace, currentWorktreePath } =
       getCurrentSessionContext();
     if (!currentActiveWorkspace) return;
-    const { cols, rows } = estimateTerminalDimensions();
+    const { cols, rows } = estimateTerminalDimensions(
+      useUiStore.getState().terminalFontSize
+    );
     const { session, error } = await createAgentSession({
       repoPath: currentActiveWorkspace.path,
       worktreePath: currentWorktreePath,
@@ -163,7 +165,9 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions();
+      const { cols, rows } = estimateTerminalDimensions(
+        useUiStore.getState().terminalFontSize
+      );
       const { session, error } = await createAgentSession({
         repoPath,
         worktreePath: null,
@@ -739,7 +743,9 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions();
+      const { cols, rows } = estimateTerminalDimensions(
+        useUiStore.getState().terminalFontSize
+      );
       const { session, error } = await createAgentSession({
         repoPath: wt.repoPath,
         worktreePath: wt.path,

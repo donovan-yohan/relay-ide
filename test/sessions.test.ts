@@ -9,7 +9,7 @@ import {
   getTmuxPrefix,
 } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
-import { AGENT_YOLO_ARGS } from '../server/types.js';
+import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
 
 // Track created session IDs so we can clean up after each test
@@ -506,7 +506,7 @@ describe('sessions', () => {
         worktreePath: null,
         cwd: '/tmp',
         command: '/bin/false',
-        args: [...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? [])],
+        args: [...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
       });
       createdIds.push(result.id);
 
@@ -530,7 +530,7 @@ describe('sessions', () => {
         worktreePath: null,
         cwd: '/tmp',
         command: '/bin/false',
-        args: [...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? [])],
+        args: [...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
       });
       createdIds.push(result.id);
 
@@ -554,11 +554,7 @@ describe('sessions', () => {
         worktreePath: null,
         cwd: '/tmp',
         command: '/bin/sh',
-        args: [
-          '-c',
-          'exit 0',
-          ...(sessions.AGENT_CONTINUE_ARGS['claude'] ?? []),
-        ],
+        args: ['-c', 'exit 0', ...(AGENT_CONTINUE_ARGS['claude'] ?? [])],
       });
       createdIds.push(result.id);
 

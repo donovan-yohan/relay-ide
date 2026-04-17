@@ -1,4 +1,3 @@
-import { useUiStore } from './stores/ui.js';
 import { scaledTerminalDimensions } from './terminal-zoom.js';
 
 export function rootShortName(path: string): string {
@@ -63,8 +62,11 @@ export const isMac =
   /Mac/.test(navigator.platform || '') &&
   !/iPhone|iPad|iPod/.test(navigator.platform || '');
 
-export function estimateTerminalDimensions(): { cols: number; rows: number } {
-  const fontSize = isMobileDevice ? 12 : useUiStore.getState().terminalFontSize;
+export function estimateTerminalDimensions(terminalFontSize: number): {
+  cols: number;
+  rows: number;
+} {
+  const fontSize = isMobileDevice ? 12 : terminalFontSize;
   return scaledTerminalDimensions(
     window.innerWidth,
     window.innerHeight,
@@ -94,10 +96,19 @@ export function formatResetAt(value: string | null | undefined): string {
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate();
   if (sameDay) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    return date.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
   }
   const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: '2-digit' });
+  return date.toLocaleDateString(
+    [],
+    sameYear
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: '2-digit' }
+  );
 }
 
 export function formatDuration(seconds: number | null | undefined): string {
