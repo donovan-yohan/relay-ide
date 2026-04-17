@@ -20,7 +20,7 @@ import {
   deriveBackendState,
 } from '../state/sidebar-items.js';
 import { shouldMarkUnread } from '../state/unread-logic.js';
-import useUnreadStore from './unread.js';
+import { useUnreadStore } from './unread.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -558,5 +558,3 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     }
   },
 }));
-
-export default useSessionsStore;

@@ -48,5 +48,3 @@ export const useConfigStore = create<ConfigState>()((set, get) => ({
     set({ frameworks });
   },
 }));
-
-export default useConfigStore;

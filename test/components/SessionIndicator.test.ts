@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { config } from '../frontend/src/components/SessionIndicator.js';
+import { config } from '../../frontend/src/components/SessionIndicator.js';
 
 describe('SessionIndicator shape language', () => {
   it('running uses filled circle (●) with green', () => {

@@ -72,5 +72,3 @@ export const useUnreadStore = create<UnreadState>()((set, get) => ({
     }
   },
 }));
-
-export default useUnreadStore;

@@ -77,5 +77,3 @@ export const useHintsStore = create<HintsState>()((set, get) => ({
       activeHintCount: Math.max(0, s.activeHintCount - 1),
     })),
 }));
-
-export default useHintsStore;
