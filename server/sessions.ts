@@ -173,21 +173,16 @@ export function computeBackendState(session: {
   agentState: AgentState;
   idle: boolean;
 }): BackendDisplayState {
-  // permission-prompt takes highest priority
   if (session.agentState === 'permission-prompt') return 'permission';
-  // error
   if (session.agentState === 'error') return 'error';
-  // processing = running
   if (session.agentState === 'processing') return 'running';
-  // initializing
   if (session.agentState === 'initializing') return 'initializing';
-  // idle or waiting-for-input = idle (explicitly idle-like agent states)
   if (
     session.agentState === 'idle' ||
     session.agentState === 'waiting-for-input'
   )
     return 'idle';
-  // For sessions without a recognized agentState (terminal/custom), fall back to idle flag
+  // Terminal/custom sessions don't report agentState — use the idle flag from PTY activity.
   return session.idle ? 'idle' : 'running';
 }
 

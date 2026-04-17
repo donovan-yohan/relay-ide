@@ -7,7 +7,7 @@ import React, {
 } from 'react';
 import { fetchBranches, switchBranch } from '../lib/api.js';
 import type { BranchInfo } from '../lib/types.js';
-import useClickOutside from '../lib/hooks/useClickOutside.js';
+import useClickOutside from '../hooks/useClickOutside.js';
 import CipherText from './CipherText';
 import TuiMenuItem from './TuiMenuItem';
 import TuiMenuPanel from './TuiMenuPanel';
