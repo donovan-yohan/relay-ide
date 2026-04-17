@@ -6,11 +6,7 @@ import {
   AGENT_YOLO_ARGS,
   resolveFramework,
 } from '../server/types.js';
-import type {
-  AgentFramework,
-  BuiltinFrameworkId,
-  EventSourceType,
-} from '../server/types.js';
+import type { AgentFramework, EventSourceType } from '../server/types.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 

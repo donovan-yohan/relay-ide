@@ -19,7 +19,7 @@ self.addEventListener('push', function (event) {
   var data = {};
   try {
     data = event.data.json();
-  } catch (e) {
+  } catch {
     /* ignore parse errors */
   }
   event.waitUntil(

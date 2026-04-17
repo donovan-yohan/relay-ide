@@ -3,10 +3,7 @@ import {
   resolveIntent,
   issueToBranchName,
 } from '../frontend/src/lib/session-intent.js';
-import type {
-  PickerItem,
-  SessionIntent,
-} from '../frontend/src/lib/session-intent.js';
+import type { PickerItem } from '../frontend/src/lib/session-intent.js';
 import type { GitHubIssue } from '../frontend/src/lib/types.js';
 import { makePr, makeSession } from './helpers/frontend-factories.js';
 

@@ -1133,9 +1133,6 @@ async function main(): Promise<void> {
     const fiveHour = account.rateLimits.find(
       (rl) => rl.name === 'five_hour' || rl.windowMinutes === 300
     );
-    const sevenDay = account.rateLimits.find(
-      (rl) => rl.name === 'seven_day' || rl.windowMinutes === 10080
-    );
     if (!fiveHour || fiveHour.usedPercent < 0) return;
     lastRateLimitSnapshot = now;
     recordRateLimitSnapshot({
