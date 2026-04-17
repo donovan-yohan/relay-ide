@@ -1,0 +1,25 @@
+server/pty-handler.ts
+  0c09cd245ba49512 312-320,707-708,711-727,729-731,733
+server/sessions.ts
+  0c09cd245ba49512 260-268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "65513ace6f3fc86bd6e683a0bcb82fa5767da191",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 44,
+      "total_deletions": 16,
+      "accepted_lines": 3285,
+      "overriden_lines": 1
+    }
+  }
+}
