@@ -257,11 +257,15 @@ function create({
   };
 
   const { session: ptySession, result } = createPtySession(
-    ptyParams,
-    sessions,
-    stateChangeCallbacks,
-    sessionEndCallbacks,
-    fireBackendStateIfChanged
+    {
+      ...ptyParams,
+      callbacks: {
+        onStateChange: stateChangeCallbacks,
+        onSessionEnd: sessionEndCallbacks,
+        fireBackendStateIfChanged,
+      },
+    },
+    sessions
   );
   trackEvent({
     category: 'session',

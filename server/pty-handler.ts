@@ -309,6 +309,15 @@ export type CreatePtyParams = {
   portVariables?: string[] | undefined;
   /** Optional port allocator instance (uses default if not provided) */
   portAllocator?: PortAllocator | undefined;
+  callbacks?:
+    | {
+        onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
+        onSessionEnd?: Array<
+          (sessionId: string, cwd: string, branchName?: string) => void
+        >;
+        fireBackendStateIfChanged?: (session: Session) => void;
+      }
+    | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -695,17 +704,33 @@ function handleParserStateUpdate(
   fireBackendStateIfChanged?.(session);
 }
 
-export function createPtySession(
-  params: CreatePtyParams,
-  sessionsMap: Map<string, Session>,
-  stateChangeCallbacks: Array<
-    (sessionId: string, state: AgentState) => void
-  > = [],
+type ResolvedPtyCallbacks = {
+  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>;
   sessionEndCallbacks: Array<
     (sessionId: string, cwd: string, branchName?: string) => void
-  > = [],
-  fireBackendStateIfChanged?: (session: Session) => void
+  >;
+  fireBackendStateIfChanged: ((session: Session) => void) | undefined;
+};
+
+function resolveCallbacks(
+  callbacks: CreatePtyParams['callbacks']
+): ResolvedPtyCallbacks {
+  return {
+    stateChangeCallbacks: callbacks?.onStateChange ?? [],
+    sessionEndCallbacks: callbacks?.onSessionEnd ?? [],
+    fireBackendStateIfChanged: callbacks?.fireBackendStateIfChanged,
+  };
+}
+
+export function createPtySession(
+  params: CreatePtyParams,
+  sessionsMap: Map<string, Session>
 ): { session: PtySession; result: CreatePtyResult } {
+  const {
+    stateChangeCallbacks,
+    sessionEndCallbacks,
+    fireBackendStateIfChanged,
+  } = resolveCallbacks(params.callbacks);
   const {
     id,
     agent = 'claude',
