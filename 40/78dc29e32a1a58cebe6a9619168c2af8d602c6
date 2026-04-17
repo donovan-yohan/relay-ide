@@ -1,0 +1,110 @@
+test/web-chat-integration.test.ts
+  0c09cd245ba49512 8-9
+test/helpers/web-chat-fixtures.ts
+  0c09cd245ba49512 9
+frontend/src/components/chat/ChatView.tsx
+  0c09cd245ba49512 6
+server/protocol-adapters/base-hook-adapter.ts
+  0c09cd245ba49512 11
+frontend/tsconfig.json
+  0c09cd245ba49512 28
+tsconfig.json
+  0c09cd245ba49512 13
+frontend/src/lib/types.ts
+  0c09cd245ba49512 5-14
+docs/REVIEW_GUIDANCE.md
+  0c09cd245ba49512 41-42
+server/output-parsers/index.ts
+  0c09cd245ba49512 5,7
+server/protocol-adapters/mock-adapter.ts
+  0c09cd245ba49512 8
+server/web-session-handler.ts
+  0c09cd245ba49512 5
+test/web-session-handler.test.ts
+  0c09cd245ba49512 9
+server/output-parsers/codex-parser.ts
+  0c09cd245ba49512 1
+server/protocol-adapter.ts
+  0c09cd245ba49512 9
+CLAUDE.md
+  0c09cd245ba49512 3,27,35
+shared/chat-events.ts
+  0c09cd245ba49512 1-361
+test/chat-events.test.ts
+  0c09cd245ba49512 9,22
+test/mobile-input.test.ts
+  0c09cd245ba49512 5-6
+server/output-parsers/types.ts
+  0c09cd245ba49512 1-16
+docs/WEB_CHAT.md
+  0c09cd245ba49512 24,285-287
+frontend/src/components/chat/FileChangeCard.tsx
+  0c09cd245ba49512 3
+server/output-parsers/opencode-parser.ts
+  0c09cd245ba49512 1
+shared/mobile-input-pipeline.ts
+  0c09cd245ba49512 1-185
+docs/DESIGN.md
+  0c09cd245ba49512 18,22-24
+docs/FRONTEND.md
+  0c09cd245ba49512 143
+docs/ARCHITECTURE.md
+  0c09cd245ba49512 19-57,65,97,99,194-201
+test/codex-telemetry.test.ts
+  0c09cd245ba49512 7
+test/adapter-map-hook-event.test.ts
+  0c09cd245ba49512 9
+frontend/src/hooks/useChatSocket.ts
+  0c09cd245ba49512 2
+server/output-parsers/null-parser.ts
+  0c09cd245ba49512 1
+frontend/src/components/chat/ApprovalCard.tsx
+  0c09cd245ba49512 3
+frontend/src/components/MobileInput.tsx
+  0c09cd245ba49512 11-12
+server/types.ts
+  0c09cd245ba49512 5,178-179
+docs/QUALITY.md
+  0c09cd245ba49512 84,93
+frontend/src/components/chat/ToolCard.tsx
+  0c09cd245ba49512 7
+frontend/src/lib/pr-status.ts
+  0c09cd245ba49512 1,3
+server/output-parsers/claude-parser.ts
+  0c09cd245ba49512 1
+frontend/src/components/chat/MessageTimeline.tsx
+  0c09cd245ba49512 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4078dc29e32a1a58cebe6a9619168c2af8d602c6",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 640,
+      "total_deletions": 142,
+      "accepted_lines": 633,
+      "overriden_lines": 1
+    },
+    "55e0ff95514e86fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "464c543e-fe67-4d6d-a258-534e0d7da7e8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 53,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
