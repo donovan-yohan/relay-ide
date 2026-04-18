@@ -1,0 +1,45 @@
+frontend/src/components/BranchSwitcher.tsx
+  a4a089d5308c5a9a 11-13
+docs/QUALITY.md
+  a4a089d5308c5a9a 9
+frontend/src/lib/api.ts
+  a4a089d5308c5a9a 69-76
+server/sessions.ts
+  a4a089d5308c5a9a 118-121
+frontend/src/components/CommandPalette.tsx
+  a4a089d5308c5a9a 505,512
+docs/ARCHITECTURE.md
+  a4a089d5308c5a9a 19,72,202-204
+test/hooks-router.test.ts
+  a4a089d5308c5a9a 35,37,181,186
+docs/REVIEW_GUIDANCE.md
+  a4a089d5308c5a9a 42
+frontend/src/components/MobileInput.tsx
+  a4a089d5308c5a9a 6,293-307
+test/session-state-callbacks.test.ts
+  a4a089d5308c5a9a 1-6,10-13,40
+CLAUDE.md
+  a4a089d5308c5a9a 35
+docs/DESIGN.md
+  a4a089d5308c5a9a 128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "2b0411a15f1dd2122010ee0be32a71f31c985d27",
+  "prompts": {
+    "a4a089d5308c5a9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c79ebb14-25fb-444d-9064-2936763bf0e6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 2373,
+      "total_deletions": 32,
+      "accepted_lines": 2370,
+      "overriden_lines": 1
+    }
+  }
+}
