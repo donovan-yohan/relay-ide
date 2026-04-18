@@ -3,6 +3,7 @@ import React, {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   forwardRef,
   useImperativeHandle,
 } from 'react';
@@ -289,18 +290,21 @@ export const MobileInput = forwardRef<MobileInputHandle, object>(
     const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
     const [mirrorValue, setMirrorValue] = useState('');
     const [mirrorCursor, setMirrorCursor] = useState(0);
-    const dp = {
-      debugVisible,
-      setDebugVisible,
-      debugLines,
-      setDebugLines,
-      devtoolsEnabled,
-      setDevtoolsEnabled,
-      mirrorValue,
-      setMirrorValue,
-      mirrorCursor,
-      setMirrorCursor,
-    };
+    const dp = useMemo(
+      () => ({
+        debugVisible,
+        setDebugVisible,
+        debugLines,
+        setDebugLines,
+        devtoolsEnabled,
+        setDevtoolsEnabled,
+        mirrorValue,
+        setMirrorValue,
+        mirrorCursor,
+        setMirrorCursor,
+      }),
+      [debugVisible, debugLines, devtoolsEnabled, mirrorValue, mirrorCursor]
+    );
 
     const dbg = useCallback(
       (msg: string) => {

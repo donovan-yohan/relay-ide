@@ -66,7 +66,14 @@ async function jsonOrNull<T>(res: Response): Promise<T | null> {
 }
 
 async function jsonEither<T>(res: Response): Promise<T> {
-  return res.json() as Promise<T>;
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`
+    );
+  }
 }
 
 async function parseErrorBody(

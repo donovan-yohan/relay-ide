@@ -6,7 +6,7 @@ Testing patterns and quality standards for Relay IDE.
 
 - vitest (^4.1.2) as test runner, configured in `vitest.config.ts`
 - TypeScript test files in `test/`, run directly via vitest (no compilation step)
-- 82 unit/integration test files covering server modules and frontend utilities
+- 99 unit/integration test files covering server modules and frontend utilities
 - React 19 frontend with TypeScript strict mode
 - E2E tests (Playwright) in `test/e2e/` are excluded from `npm test` and run separately
 - Pre-push hook (`.husky/pre-push`) runs only changed tests via `vitest run --changed`

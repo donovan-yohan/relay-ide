@@ -1,8 +1,16 @@
-import { describe, it, expect } from 'vitest';
-import { onStateChange, fireStateChange } from '../server/sessions.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  onStateChange,
+  fireStateChange,
+  __resetStateChangeCallbacksForTests,
+} from '../server/sessions.js';
 import type { AgentState } from '../server/types.js';
 
 describe('fireStateChange callbacks', () => {
+  afterEach(() => {
+    __resetStateChangeCallbacksForTests();
+  });
+
   it('calls a registered onStateChange callback with correct args', () => {
     const received: Array<{ sessionId: string; state: AgentState }> = [];
 
@@ -29,7 +37,7 @@ describe('fireStateChange callbacks', () => {
 
     fireStateChange('multi-cb-session', 'idle');
 
-    expect(count).toBeGreaterThanOrEqual(2);
+    expect(count).toBe(2);
   });
 
   it('passes idle state to callback', () => {

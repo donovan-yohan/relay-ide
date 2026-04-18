@@ -8,9 +8,9 @@ import React, {
 import { fetchBranches, switchBranch } from '../lib/api.js';
 import type { BranchInfo } from '../lib/types.js';
 import useClickOutside from '../hooks/useClickOutside.js';
-import CipherText from './CipherText';
-import TuiMenuItem from './TuiMenuItem';
-import TuiMenuPanel from './TuiMenuPanel';
+import CipherText from './CipherText.js';
+import TuiMenuItem from './TuiMenuItem.js';
+import TuiMenuPanel from './TuiMenuPanel.js';
 import './BranchSwitcher.css';
 
 export interface BranchSwitcherProps {

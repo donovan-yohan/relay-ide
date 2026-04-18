@@ -115,6 +115,10 @@ function onStateChange(cb: StateChangeCallback): void {
   stateChangeCallbacks.push(cb);
 }
 
+export function __resetStateChangeCallbacksForTests(): void {
+  stateChangeCallbacks.length = 0;
+}
+
 type SessionCreateCallback = (
   sessionId: string,
   cwd: string,

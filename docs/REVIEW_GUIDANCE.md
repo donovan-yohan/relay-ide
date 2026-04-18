@@ -39,7 +39,7 @@ See `docs/references/review-agent-setup.md` for full config field reference.
 ### Frontend
 
 - Does this follow React 19 + Zustand patterns? (selector hooks from Zustand stores, `useMemo`/`useCallback` at re-render boundaries — not legacy Svelte runes)
-- Does `useEffect` avoid reading TanStack Query reactive proxies inside its dep array? (see `docs/bug-analyses/2026-03-23-pr-query-infinite-loop-bug-analysis.md` — the historical Svelte-era repro)
+- Does `useEffect` avoid depending on unstable TanStack Query result references (e.g., the whole `useQuery` return value or freshly-cloned `data`) in its dep array? Prefer depending on stable primitives or memoized selections. (See `docs/bug-analyses/2026-03-23-pr-query-infinite-loop-bug-analysis.md` for the historical Svelte-era repro.)
 - Are mobile touch and scroll behaviors tested? (see `test/fixtures/mobile-input/` fixture pattern)
 - Is the scrollback buffer cap (256KB FIFO per session) respected in any PTY or buffer changes?
 - Do dropdown/overlay elements avoid CSS `transform` on containing blocks? (breaks fixed positioning — see `2026-03-19-dropdown-and-tmux-resume-bug-analysis.md`)

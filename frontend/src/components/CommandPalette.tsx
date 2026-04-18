@@ -502,12 +502,14 @@ function usePaletteHandlers(
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
+        if (flatItems.length === 0) return;
         setFocusedIndex((p) => Math.min(p + 1, flatItems.length - 1));
         scrollFocusedIntoView();
         return;
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
+        if (flatItems.length === 0) return;
         setFocusedIndex((p) => Math.max(p - 1, 0));
         scrollFocusedIntoView();
         return;

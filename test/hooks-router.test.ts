@@ -32,9 +32,9 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     onPtyReplacedCallbacks: [],
     restored: false,
     outputParser: {
-      feed: () => undefined,
+      onData: () => null,
       reset: () => undefined,
-    } as unknown as Session['outputParser'],
+    },
     hookToken: 'valid-token',
     hooksActive: true,
     cleanedUp: false,
@@ -178,12 +178,12 @@ describe('hooks router — token middleware', () => {
     sessions.delete('web-session');
   });
 
-  it('uses constant-time token comparison (rejects prefix collisions)', async () => {
+  it('uses constant-time token comparison (rejects equal-length mismatches)', async () => {
     sessions.set(
       'prefix-test',
       makeSession({ id: 'prefix-test', hookToken: 'longtoken' })
     );
-    const res = await fetch(url('/stop', 'prefix-test', 'long'), {
+    const res = await fetch(url('/stop', 'prefix-test', 'longtokeX'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',

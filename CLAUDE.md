@@ -32,7 +32,7 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 
 ## Key Patterns
 
-- Forty-two server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
+- Fifty-six server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
 - `node-pty` requires native compilation; `postinstall` script fixes prebuilt binaries on macOS
 - `CLAUDECODE` env var must be stripped from PTY env to allow nesting Claude sessions
 - Scrollback buffer capped at 256KB per session; oldest chunks trimmed first (FIFO)
