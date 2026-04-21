@@ -1,0 +1,27 @@
+docs/ARCHITECTURE.md
+  612acc344f385264 103,105,207
+frontend/src/components/MobileInput.tsx
+  612acc344f385264 94,97-99,115-116,127,240-244,300-306,369,455
+server/sessions.ts
+  612acc344f385264 76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "6398b69909ebd2f9e3693812ab056495bff8b657",
+  "prompts": {
+    "612acc344f385264": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019db13d-1f27-7ec3-ae1c-48ac365c9000",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 49,
+      "total_deletions": 29,
+      "accepted_lines": 49,
+      "overriden_lines": 0
+    }
+  }
+}
