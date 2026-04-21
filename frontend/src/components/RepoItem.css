@@ -215,13 +215,13 @@
 .session-history-btn {
   position: absolute;
   right: 36px;
-  top: 0;
-  bottom: 0;
+  top: 50%;
+  height: 22px;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
-  height: 22px;
   border-radius: 0;
   font-size: var(--font-size-xs);
   color: var(--text-muted);
