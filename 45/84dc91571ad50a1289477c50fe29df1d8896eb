@@ -1,0 +1,510 @@
+CLAUDE.md
+  0c09cd245ba49512 3,7-13,22-27
+  a4a089d5308c5a9a 35
+vitest.config.ts
+  0c09cd245ba49512 5
+server/hooks.ts
+  19f0dd280e79f280 15
+  64c54ae47ff3ea44 26-35,37,47-50,55,58-109,112-119,406,408-411,415-418,421-427,433-434,437-443,446-447,449,457-465,472-473,478-479,481-487,491,493-494,497-500
+  d2d440805ff8cade 340
+  0c09cd245ba49512 193-198
+  1929882cf80d65b0 126-159,162-185,199-222
+test/adapters/opencode-telemetry.test.ts
+  56a1e441d3233436 5-6,9,12,20,39-40,51,58,80,97,107,120-121,123,127-187,197-198,201,227,259,279,293,305,317,329,343,356,366,380,398,417,430,443,455
+  1cd005679d330cc2 404-407
+  caac1af9d36780d4 75
+  a1a38de921e4e95b 79
+  e63a40981405edf3 1-4,7-8,10-11,13-19,21-38,41-50,52-57,59-74,76-78,81-96,98-106,108-119,122,124-126,188-196,199-200,202-226,228-258,260-278,280-292,294-304,306-316,318-328,330-342,344-355,357-365,367-379,381-397,399-403,408-416,418-429,431-442,444-454,456-459
+server/webhook-manager.ts
+  64c54ae47ff3ea44 358-386,417-419,425-427,461-462,476-480,483-486,490-491,558-559,587,592-594,612-617,623-625,641,650
+server/github-graphql.ts
+  64c54ae47ff3ea44 137-197,200,215-216,238,247-248,254-256,259-262,266-268,273-275
+server/workspaces.ts
+  0c09cd245ba49512 936,938-939
+  64c54ae47ff3ea44 54-57,59-64,67-81,83-95,98-132,134-139,142-150,153-172,174,177-184,188-192,201-202,238,251-252,260-264,274-286,309,311,314-346,366-368,373,382,384,386-388,394-404,406-419,424,442,451,454-457,460-470,474-478,482-486,489,491-495,512,516-519,526-529,534,536-540,542,546-560,566-582,599-600,613-616,628-637,639,641-643,650,652-656,664-665,667-668,672-673,678-682,685-688,694-698,711-719,731-746,748-750,756-768,770-775,781-784,787-790,794,797-800,805-808,817-823,825-831,837,839-842,847,851-852,858-861,864,867,869-870,872-873,877,895,900,903-907,911-913,918-919,921-922,1102,1104,1106-1107,1109-1111,1113-1115,1118-1122,1126,1135,1145-1162,1168-1171,1174,1184,1212-1217,1220-1221,1225-1231,1233-1235,1237,1239,1241,1245-1276,1284-1285,1287,1320-1322,1341-1342,1344-1351,1353,1363-1364,1366-1373,1375,1383-1398,1400,1408-1416,1418-1618
+frontend/src/components/chat/FileChangeCard.tsx
+  0c09cd245ba49512 3
+server/ticket-transitions.ts
+  64c54ae47ff3ea44 19-21,45,54-57,66,79-83,85-98,101-104,112-115,136-139,150-156,159,162,167-230,233,244-251
+frontend/src/components/BootScreen.tsx
+  0c09cd245ba49512 20-103
+frontend/public/sw.js
+  64c54ae47ff3ea44 1
+  11b6669fe8017715 22
+test/sessions.test.ts
+  0c09cd245ba49512 12,36-37,43,54-59,62-63,69,79-83,88,94,108,111,115,119-120,124-153,156-157,164,172-173,179,187-188,194,201,204-205,212,219,222-223,230,241,250-255,257-260,263,267,276-280,287,294,299,302-320,325-333,337-347,351-370,376-383,386-393,396-407,413,420,426,434,440,449-451,457,464-465,471,480-481,487,495-498,501-523,525-533
+docs/ARCHITECTURE.md
+  612acc344f385264 103,105,207
+  0c09cd245ba49512 20-71,200
+  a4a089d5308c5a9a 19,72,202-204
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  0c09cd245ba49512 7-51
+test/telemetry.test.ts
+  33af93d5ae65929f 218-498
+server/git.ts
+  64c54ae47ff3ea44 84-122,127,129-130,143,151-152,165-167,174,176-177,185,188,198,200-201,207,218,221-224,238-240,242-249,255,257-258,263-265,289-291,302,309-312,320,332,334-335,348-352,364-368,372-374,383-385,388-391,399-401,413-416,420,422-426,457-462,465-469,471-477,479-482,486-489,496-500,502-505,509-512,520-524,526-529,532-535,539-542,545-552,558-760
+.belayer/pipeline.yaml
+  cf791a1a5806caab 20
+frontend/src/lib/utils.ts
+  0c09cd245ba49512 65-69
+server/watcher.ts
+  64c54ae47ff3ea44 17-19,48-61,68-71,73-78,85-88,90-91,99,106-107,112-116,118,120-126,133,136,138-141,160,163-165,172,177-178,182-183,187,190-195,206,211,216,222,226,229,232-235,238-240,245-250,255,262-274,277,281,284-289,300,305,308,336,340,345-368,372,375-378,381-382,385-393,396-400,402-406,408,410-411,416-422,425-435,438-439,443,490-497,500,503-506,519-521,531,536-538,540,542,552,556,560,564,567-570,573-574,577-583,586-587,593-595,602,604-605,609-612,615-803,807-818
+test/workspace-groups.test.ts
+  11b6669fe8017715 1
+frontend/src/lib/pr-state.ts
+  64c54ae47ff3ea44 34-35,43,61,71-93,95-104,116,118-125,140,147-149,159-163,168-170,172,178-182,189-196,199-212,216-219,229
+test/e2e/components/ShortcutHint.spec.ts
+  11b6669fe8017715 87
+server/output-parsers/index.ts
+  0c09cd245ba49512 3-5,7,9-13,16
+server/telemetry-adapter.ts
+  19f0dd280e79f280 11-15
+  56a1e441d3233436 2,23
+  0c09cd245ba49512 45-52
+frontend/src/components/SessionDetail.tsx
+  0c09cd245ba49512 4
+server/protocol-adapters/index.ts
+  0c09cd245ba49512 5-11
+server/protocol-adapters/opencode-adapter.ts
+  0c09cd245ba49512 3-31
+test/session-analytics.test.ts
+  e749a6728532d8bb 67-77
+  6352dbf87a093bb0 207-239
+server/analytics.ts
+  56a1e441d3233436 162-229,232-234,1241-1244
+  cb518f57201ccbce 89-92
+  f50e89c653202cd4 231
+  d430d9edfa79eee2 1227-1240,1247-1249
+  64c54ae47ff3ea44 102-103,309,340,345-349,358-1213
+  43dd240e232575a4 96
+frontend/src/lib/types.ts
+  0c09cd245ba49512 6-14
+test/web-session-handler.test.ts
+  0c09cd245ba49512 9
+tsconfig.json
+  0c09cd245ba49512 13
+docs/FRONTEND.md
+  0c09cd245ba49512 143
+test/terminal-zoom.test.ts
+  0c09cd245ba49512 2-12,17-18,22-24,28-29,33-34,38-43,47-49,55,59-61,65-70,76-82,88-89,95-96,101-102,109-125
+docs/QUALITY.md
+  a4a089d5308c5a9a 9
+  0c09cd245ba49512 84,90,92-93
+server/codex-hooks-adapter.ts
+  19f0dd280e79f280 81-84
+server/utils.ts
+  cad89341084520e4 71-84
+  64c54ae47ff3ea44 3-4,10-57,59-68
+test/chat-events.test.ts
+  0c09cd245ba49512 9-22
+frontend/src/lib/pr-status.ts
+  0c09cd245ba49512 1,3
+server/index.ts
+  0c09cd245ba49512 33
+  cad89341084520e4 103
+  191d9ca95897ce35 1139
+server/pty-handler.ts
+  64c54ae47ff3ea44 13,325-348,350-365,370-401,572-590,592-604,614-615,617-644,646,651,675,677-678,681-706,709-710,728,734-844,852-856,876,880-884,890,892-893,898-902,906-909,911,923-934,940,943-946,949,953,960,966-976,980-983,990,1010,1033-1034,1036,1040-1043,1048,1050,1053,1059-1065,1070-1071,1076-1111
+  0c09cd245ba49512 27-30,34,36-38,40-48,54,59-77,82-200,203,208-212,214-258,260-270,283,293,296,303-320,366,464-511,514-526,528-532,535-569,707-708,711-727,729-733
+  cad89341084520e4 922,935-939,941-942,1011-1032,1035,1037-1039,1044-1047,1049,1051-1052,1054-1058,1066-1069,1072-1075
+server/output-parsers/claude-parser.ts
+  0c09cd245ba49512 1
+  64c54ae47ff3ea44 4-7
+test/adapter-map-hook-event.test.ts
+  0c09cd245ba49512 8-266
+frontend/src/lib/stores/toasts.ts
+  0c09cd245ba49512 11-56
+frontend/src/components/chat/ChatView.tsx
+  0c09cd245ba49512 6
+frontend/src/components/chat/MessageTimeline.tsx
+  0c09cd245ba49512 11
+server/sessions.ts
+  64c54ae47ff3ea44 561-568,570-572,574-576,579-709,712-774,782-786,794,796,799,802,805-809,812-820,823
+  a4a089d5308c5a9a 118-121
+  0c09cd245ba49512 264-272
+  612acc344f385264 76
+frontend/src/lib/api.ts
+  a4a089d5308c5a9a 69-76
+  0c09cd245ba49512 68,77-82,84,109,129-223,225,228-229,234-241,245-249,253-254,259,266,272-275,279-284,288-290,296,300,306-308,318-342,345-352,357-359,363-378,382-401,404-407,410-427,431,461,475-478,486-507,511,521,528,532-553,556-571,575-577,591-593,609-610,615-621,625-627,629-631,634-637,654-659,667-669,671-673,677-688,690-692,716-723,737-739,742-744,759-763,774-777,781-790,804-807,825-830,834-836,839-843,845-848,854-857,863-866,872-875,879-881,888,892-894,901,907-910,914-916,925-1182
+test/framework-types.test.ts
+  11b6669fe8017715 9
+.gitignore
+  0d4921356e5237c3 14-19
+test/mobile-input.test.ts
+  0c09cd245ba49512 5-6
+docs/DESIGN.md
+  a4a089d5308c5a9a 128
+  0c09cd245ba49512 14-24
+eslint.config.js
+  0c09cd245ba49512 40
+  11b6669fe8017715 31-39,60
+  64c54ae47ff3ea44 49
+server/types.ts
+  4edb1e1dda241337 746
+  56a1e441d3233436 748-755
+  0c09cd245ba49512 5-19,22-26,28,30,32-49,51-114,117-179
+frontend/src/components/SessionStatusBar.tsx
+  3b81c5bf86bb36aa 57-104
+server/protocol-adapters/mock-adapter.ts
+  0c09cd245ba49512 8
+test/output-parser.test.ts
+  0c09cd245ba49512 4-5,11,17,23,32,40,46-50,57,63,71,77,79,86,93-95,106-107,111-248
+frontend/src/lib/session-intent.ts
+  64c54ae47ff3ea44 26-147
+frontend/src/components/chat/ApprovalCard.tsx
+  0c09cd245ba49512 3
+server/review-poller.ts
+  64c54ae47ff3ea44 132-277,289,302-303,305-306,309,313,316
+docs/REVIEW_GUIDANCE.md
+  a4a089d5308c5a9a 42
+  0c09cd245ba49512 41
+server/output-parsers/codex-parser.ts
+  0c09cd245ba49512 1
+frontend/tsconfig.json
+  0c09cd245ba49512 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "4584dc91571ad50a1289477c50fe29df1d8896eb",
+  "prompts": {
+    "0c09cd245ba49512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03136ca6-7653-4738-a6a7-5f5cf6da4d54",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 343,
+      "overriden_lines": 0
+    },
+    "0d4921356e5237c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0c52886-0681-4dfe-bfcf-20f4b4d3473c",
+        "model": "<synthetic>"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    },
+    "11b6669fe8017715": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94533106-de85-47b7-87d9-29c2e00688d7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "191d9ca95897ce35": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-33fce470-3bbb-4179-9efe-08bd4cb09a1f",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "1929882cf80d65b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-50599120-060b-4617-b888-7f3538034a2f",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 84,
+      "overriden_lines": 0
+    },
+    "19f0dd280e79f280": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2468def2-5172-4db8-aaf4-7bf23fcf4e74",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    },
+    "1cd005679d330cc2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-a0981671-83de-4a4d-a80d-b1653b8fdc53",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "33af93d5ae65929f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-b8855fae-1af7-4574-a447-0c2b0e1f33b5",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 120,
+      "overriden_lines": 0
+    },
+    "3b81c5bf86bb36aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-02787c82-5d40-465d-a355-36788f1c1fdf",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 30,
+      "overriden_lines": 0
+    },
+    "43dd240e232575a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-d59e94c5-2613-48c3-a645-a2f071b2234a",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "4edb1e1dda241337": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-15c4a97a-1c90-4dfb-89af-0b75a4dc259a",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "56a1e441d3233436": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf76ba14-d501-435f-8f65-7a4e4bcdd251",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 125,
+      "overriden_lines": 0
+    },
+    "612acc344f385264": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019db13d-1f27-7ec3-ae1c-48ac365c9000",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "6352dbf87a093bb0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-ee9552b9-62de-4c8d-870a-2a16c9786868",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 25,
+      "overriden_lines": 0
+    },
+    "64c54ae47ff3ea44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d7e1f39-da8b-4625-9cc6-5585e24a80c0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1306,
+      "overriden_lines": 0
+    },
+    "a1a38de921e4e95b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-ea8d7db7-83da-4080-96cc-f2e87acadc9e",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "a4a089d5308c5a9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c79ebb14-25fb-444d-9064-2936763bf0e6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 21,
+      "overriden_lines": 0
+    },
+    "caac1af9d36780d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-3f0831c7-ca3f-49bc-93c6-e5d849a5732d",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "cad89341084520e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b12e1ff-6121-49d8-8389-9506bcb71dca",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 71,
+      "overriden_lines": 0
+    },
+    "cb518f57201ccbce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-d3a52596-e347-4603-843c-7fd8fd0887cd",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "cf791a1a5806caab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b073bfb8-5f45-4f04-8ec7-3d5910e0b3ab",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "d2d440805ff8cade": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29a55b754ffeUWDVClfSVuKoBr-587dba64-e1e7-4e27-bb1f-d130257a1fdc",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "d430d9edfa79eee2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-8f11df70-e40f-47d4-94f5-4b034ba5ff42",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 17,
+      "overriden_lines": 0
+    },
+    "e63a40981405edf3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-84544135-9eb1-4c0f-be9e-ad128a7229e2",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 358,
+      "overriden_lines": 0
+    },
+    "e749a6728532d8bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-717dfee4-6c6a-4a2a-956a-e8a9b95e7a78",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "f50e89c653202cd4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_29af5e69bffe58at6uL64ggjcc-02d2fe2d-c3a6-4234-9937-7a0d18d73f91",
+        "model": "unknown"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
