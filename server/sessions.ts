@@ -73,7 +73,7 @@ interface PendingSessionsFile {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-export type CreateParams = Omit<CreatePtyParams, 'id'> & {
+export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;

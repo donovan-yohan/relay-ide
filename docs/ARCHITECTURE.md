@@ -100,9 +100,9 @@ React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 
 ### `test/`
 
-Unit tests using `vitest` (migrated from `node:test` on 2026-04-03). TypeScript source is consumed directly via `vite-node` (no `tsc -p tsconfig.test.json` step).
+Unit/integration tests use `vitest` (migrated from `node:test` on 2026-04-03). TypeScript source is consumed directly via `vite-node` (no `tsc -p tsconfig.test.json` step). E2E tests live under `test/e2e/**/*.spec.ts` and run separately via `playwright.config.ts`.
 
-**Architecture Invariant:** Single test framework (vitest). Tests MUST NOT require a running server instance.
+**Architecture Invariant:** Single unit/integration test runner (`vitest`). Unit/integration tests MUST NOT require a running server instance.
 
 ## Data Flow
 
@@ -204,7 +204,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 | ADR-001 | Modular server architecture (forty modules, composition root, dependency flow) |
 | ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping)     |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                      |
-| ADR-005 | Vitest as single test runner (migrated from node:test 2026-04-03)              |
+| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)    |
 | ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)             |
 | ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)       |
 | ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)       |

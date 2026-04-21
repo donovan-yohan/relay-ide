@@ -91,10 +91,12 @@ function useMobileEffects(
   inputRef: React.RefObject<HTMLInputElement | null>,
   isComposingRef: React.MutableRefObject<boolean>,
   dbg: (m: string) => void,
-  dp: DebugPanelState
+  effectState: MobileEffectState
 ) {
   useEffect(() => {
-    dp.setDevtoolsEnabled(localStorage.getItem('devtools-enabled') === 'true');
+    effectState.setDevtoolsEnabled(
+      localStorage.getItem('devtools-enabled') === 'true'
+    );
     const inputEl = inputRef.current;
     if (!inputEl) return;
     inputEl.setAttribute('autocomplete', 'new-terminal-input');
@@ -110,8 +112,8 @@ function useMobileEffects(
     const onTermDebug = (e: Event) => dbg((e as CustomEvent).detail);
     const onDevtoolsChanged = () => {
       const enabled = localStorage.getItem('devtools-enabled') === 'true';
-      dp.setDevtoolsEnabled(enabled);
-      if (!enabled) dp.setDebugVisible(false);
+      effectState.setDevtoolsEnabled(enabled);
+      if (!enabled) effectState.setDebugVisible(false);
     };
 
     document.addEventListener('selectionchange', onSelectionChange);
@@ -122,7 +124,7 @@ function useMobileEffects(
       window.removeEventListener('term-debug', onTermDebug);
       window.removeEventListener('devtools-changed', onDevtoolsChanged);
     };
-  }, [inputRef, isComposingRef, dbg, dp]);
+  }, [inputRef, isComposingRef, dbg, effectState]);
 }
 
 function useKeydownHandler(
@@ -235,6 +237,11 @@ interface DebugPanelState {
   setMirrorCursor: React.Dispatch<React.SetStateAction<number>>;
 }
 
+interface MobileEffectState {
+  setDebugVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  setDevtoolsEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+}
+
 interface DebugPanelProps {
   dp: DebugPanelState;
   onToggle: (e: React.MouseEvent) => void;
@@ -290,6 +297,13 @@ export const MobileInput = forwardRef<MobileInputHandle, object>(
     const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
     const [mirrorValue, setMirrorValue] = useState('');
     const [mirrorCursor, setMirrorCursor] = useState(0);
+    const mobileEffectState = useMemo(
+      () => ({
+        setDebugVisible,
+        setDevtoolsEnabled,
+      }),
+      []
+    );
     const dp = useMemo(
       () => ({
         debugVisible,
@@ -352,7 +366,7 @@ export const MobileInput = forwardRef<MobileInputHandle, object>(
       [flushComposedText, dbg]
     );
 
-    useMobileEffects(inputRef, isComposingRef, dbg, dp);
+    useMobileEffects(inputRef, isComposingRef, dbg, mobileEffectState);
 
     const handleCompositionStart = (
       e: React.CompositionEvent<HTMLInputElement>
@@ -438,11 +452,7 @@ export const MobileInput = forwardRef<MobileInputHandle, object>(
 
     return (
       <>
-        <form
-          className="mobile-input-form"
-          action="javascript:void(0)"
-          onSubmit={handleFormSubmit}
-        >
+        <form className="mobile-input-form" onSubmit={handleFormSubmit}>
           <input
             ref={inputRef}
             type="search"
