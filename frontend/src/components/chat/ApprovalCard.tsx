@@ -1,6 +1,6 @@
 import React from 'react';
 import './ApprovalCard.css';
-import type { ApprovalRequestEvent } from '../../../../server/chat-events.js';
+import type { ApprovalRequestEvent } from '../../../../shared/chat-events.js';
 
 interface ApprovalCardProps {
   event: ApprovalRequestEvent;

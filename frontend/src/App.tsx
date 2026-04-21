@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createLogger } from './lib/logger.js';
 import { useAuthStore } from './lib/stores/auth.js';
 import { useUiStore } from './lib/stores/ui.js';
 import { useSessionsStore } from './lib/stores/sessions.js';
@@ -72,8 +71,6 @@ import {
 } from './components/FileTreeSidebar.js';
 
 import './App.css';
-
-const logger = createLogger('App');
 
 // QueryClient is created at module level (outside the component)
 const queryClient = new QueryClient({
@@ -365,7 +362,6 @@ function TerminalAreaContent({
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
-  const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -606,7 +602,6 @@ export default function App() {
 
   // ── UI store ───────────────────────────────────────────────────────────────
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
-  const openSidebar = useUiStore((s) => s.openSidebar);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);

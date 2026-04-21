@@ -46,7 +46,8 @@ export const useAuthStore = create<AuthState>()((set) => ({
       await apiAuth(pin);
       set({ authenticated: true });
     } catch (err) {
-      const pinError = err instanceof Error ? err.message : 'Authentication failed';
+      const pinError =
+        err instanceof Error ? err.message : 'Authentication failed';
       set({ pinError });
     }
   },
@@ -66,5 +67,3 @@ export const useAuthStore = create<AuthState>()((set) => ({
     set({ authenticated: false, pinError: null, checking: false });
   },
 }));
-
-export default useAuthStore;

@@ -1,14 +1,6 @@
-import type { PullRequest } from './types.js';
+import type { PullRequest, PrDotStatus } from './types.js';
 
-export type PrDotStatus =
-  | 'draft'
-  | 'open'
-  | 'approved'
-  | 'changes-requested'
-  | 'review-requested'
-  | 'merged'
-  | 'closed'
-  | 'unknown';
+export type { PrDotStatus };
 
 export function derivePrDotStatus(pr: PullRequest): PrDotStatus {
   if (pr.state === 'MERGED') return 'merged';

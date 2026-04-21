@@ -1,6 +1,6 @@
 # relay-ide
 
-Relay Agentic Development Environment — remote web interface for interacting with Claude Code CLI sessions from any device. TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
+Relay Agentic Development Environment — remote web interface for interacting with Claude Code CLI sessions from any device. TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
 ## Quick Reference
 
@@ -24,7 +24,7 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 | Architecture  | `docs/ARCHITECTURE.md` | Module boundaries, data flow, API routes, ADR rules                    |
 | Visual Design | `DESIGN.md`            | TUI aesthetic, colors, buttons, icons, border-radius rules             |
 | Design        | `docs/DESIGN.md`       | Backend patterns, auth flow, PTY management, session types             |
-| Frontend      | `docs/FRONTEND.md`     | Svelte 5 components, state management, UI conventions                  |
+| Frontend      | `docs/FRONTEND.md`     | React 19 components, state management (Zustand + TanStack Query)       |
 | Quality       | `docs/QUALITY.md`      | Test runner, test files, isolation patterns                            |
 | References    | `docs/references/`     | Deployment guide, review agent setup                                   |
 | Learnings     | `docs/LEARNINGS.md`    | Persistent cross-session learnings (architecture, debugging, patterns) |
@@ -32,7 +32,7 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 
 ## Key Patterns
 
-- Thirty-four server modules under `server/`, each owning one concern — update ADRs when adding modules
+- Fifty-six server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
 - `node-pty` requires native compilation; `postinstall` script fixes prebuilt binaries on macOS
 - `CLAUDECODE` env var must be stripped from PTY env to allow nesting Claude sessions
 - Scrollback buffer capped at 256KB per session; oldest chunks trimmed first (FIFO)

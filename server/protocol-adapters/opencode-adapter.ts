@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { AdapterConfig } from '../protocol-adapter.js';
-import { installOpencodeRelayPlugin } from '../opencode-relay.js';
+import { installOpenCodeRelayPlugin } from '../opencode-relay.js';
 import { BaseHookAdapter } from './base-hook-adapter.js';
 import type { HookEventPayload } from './base-hook-adapter.js';
 import { strField, objField } from './adapter-utils.js';
@@ -8,7 +8,7 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-adapter');
 
-export class OpencodeProtocolAdapter extends BaseHookAdapter {
+export class OpenCodeProtocolAdapter extends BaseHookAdapter {
   readonly agentType = 'opencode';
 
   protected buildSpawnCommand(config: AdapterConfig): {
@@ -28,7 +28,7 @@ export class OpencodeProtocolAdapter extends BaseHookAdapter {
   }
 
   protected async setupHooks(_config: AdapterConfig): Promise<void> {
-    const pluginPath = installOpencodeRelayPlugin();
+    const pluginPath = installOpenCodeRelayPlugin();
     logger.info('OpenCode relay plugin installed at', pluginPath);
   }
 

@@ -24,14 +24,13 @@ import {
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import {
-  AGENT_CONTINUE_ARGS,
-  AGENT_YOLO_ARGS,
   serializeAll,
   restoreFromDisk,
   activeTmuxSessionNames,
   populateMetaCache,
 } from './sessions.js';
 import type { CreateResult } from './sessions.js';
+import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import {
@@ -1133,9 +1132,6 @@ async function main(): Promise<void> {
     if (!account) return;
     const fiveHour = account.rateLimits.find(
       (rl) => rl.name === 'five_hour' || rl.windowMinutes === 300
-    );
-    const sevenDay = account.rateLimits.find(
-      (rl) => rl.name === 'seven_day' || rl.windowMinutes === 10080
     );
     if (!fiveHour || fiveHour.usedPercent < 0) return;
     lastRateLimitSnapshot = now;

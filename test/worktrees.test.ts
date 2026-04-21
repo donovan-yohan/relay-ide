@@ -690,8 +690,8 @@ describe('WorktreeWatcher.rebuild', () => {
     watcher.rebuild([repoDir]);
 
     // Verify watchers were created (accessing internal state for deterministic test)
-    const watchers = (watcher as unknown as { _watchers: fs.FSWatcher[] })
-      ._watchers;
+    const watchers = (watcher as unknown as { watchers: fs.FSWatcher[] })
+      .watchers;
     expect(watchers.length).toBeGreaterThan(0);
 
     watcher.close();
@@ -708,7 +708,7 @@ describe('WorktreeWatcher.rebuild', () => {
       });
 
       // Trigger the debounced emit directly (testing our code, not fs.watch)
-      (watcher as unknown as { _debouncedEmit: () => void })._debouncedEmit();
+      (watcher as unknown as { debouncedEmit: () => void }).debouncedEmit();
 
       // Advance past the 500ms debounce
       vi.advanceTimersByTime(500);
@@ -729,8 +729,8 @@ describe('WorktreeWatcher.rebuild', () => {
     // Repo exists but no .worktrees dir — watcher should watch repo root
     watcher.rebuild([bareRepo]);
 
-    const watchers = (watcher as unknown as { _watchers: fs.FSWatcher[] })
-      ._watchers;
+    const watchers = (watcher as unknown as { watchers: fs.FSWatcher[] })
+      .watchers;
     expect(watchers.length).toBeGreaterThan(0);
 
     watcher.close();

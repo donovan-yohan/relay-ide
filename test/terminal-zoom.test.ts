@@ -1,35 +1,15 @@
 import { describe, it, expect } from 'vitest';
-
-// Pure zoom functions inlined here because the frontend source imports from
-// .svelte.ts modules that the Node.js test runner cannot process.
-// These mirror the implementations in frontend/src/lib/terminal-zoom.ts.
-
-const DEFAULT = 14;
-const MIN = 8;
-const MAX = 28;
-
-function clampFontSize(size: number): number {
-  if (!Number.isFinite(size)) return DEFAULT;
-  return Math.max(MIN, Math.min(MAX, Math.round(size)));
-}
-
-function zoomPercentage(fontSize: number): number {
-  return Math.round((fontSize / DEFAULT) * 100);
-}
-
-function scaledTerminalDimensions(
-  windowWidth: number,
-  windowHeight: number,
-  fontSize: number
-): { cols: number; rows: number } {
-  const ratio = fontSize / DEFAULT;
-  const charWidth = 8 * ratio;
-  const lineHeight = 17 * ratio;
-  return {
-    cols: Math.max(80, Math.floor((windowWidth - 60) / charWidth)),
-    rows: Math.max(24, Math.floor((windowHeight - 120) / lineHeight)),
-  };
-}
+import {
+  clampFontSize,
+  zoomPercentage,
+  scaledTerminalDimensions,
+  shouldUseWebGpuRenderer,
+} from '../frontend/src/lib/terminal-zoom.js';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+} from '../frontend/src/lib/stores/ui.js';
 
 describe('terminal zoom', () => {
   describe('clampFontSize', () => {
@@ -39,14 +19,14 @@ describe('terminal zoom', () => {
     });
 
     it('clamps to minimum', () => {
-      expect(clampFontSize(4)).toBe(MIN);
-      expect(clampFontSize(0)).toBe(MIN);
-      expect(clampFontSize(-5)).toBe(MIN);
+      expect(clampFontSize(4)).toBe(MIN_TERMINAL_FONT_SIZE);
+      expect(clampFontSize(0)).toBe(MIN_TERMINAL_FONT_SIZE);
+      expect(clampFontSize(-5)).toBe(MIN_TERMINAL_FONT_SIZE);
     });
 
     it('clamps to maximum', () => {
-      expect(clampFontSize(30)).toBe(MAX);
-      expect(clampFontSize(100)).toBe(MAX);
+      expect(clampFontSize(30)).toBe(MAX_TERMINAL_FONT_SIZE);
+      expect(clampFontSize(100)).toBe(MAX_TERMINAL_FONT_SIZE);
     });
 
     it('rounds fractional values', () => {
@@ -55,20 +35,24 @@ describe('terminal zoom', () => {
     });
 
     it('handles boundary values exactly', () => {
-      expect(clampFontSize(MIN)).toBe(MIN);
-      expect(clampFontSize(MAX)).toBe(MAX);
+      expect(clampFontSize(MIN_TERMINAL_FONT_SIZE)).toBe(
+        MIN_TERMINAL_FONT_SIZE
+      );
+      expect(clampFontSize(MAX_TERMINAL_FONT_SIZE)).toBe(
+        MAX_TERMINAL_FONT_SIZE
+      );
     });
 
     it('returns default for NaN and non-finite values', () => {
-      expect(clampFontSize(NaN)).toBe(DEFAULT);
-      expect(clampFontSize(Infinity)).toBe(DEFAULT);
-      expect(clampFontSize(-Infinity)).toBe(DEFAULT);
+      expect(clampFontSize(NaN)).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+      expect(clampFontSize(Infinity)).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+      expect(clampFontSize(-Infinity)).toBe(DEFAULT_TERMINAL_FONT_SIZE);
     });
   });
 
   describe('zoomPercentage', () => {
     it('returns 100% at default', () => {
-      expect(zoomPercentage(DEFAULT)).toBe(100);
+      expect(zoomPercentage(DEFAULT_TERMINAL_FONT_SIZE)).toBe(100);
     });
 
     it('scales proportionally', () => {
@@ -78,15 +62,22 @@ describe('terminal zoom', () => {
     });
 
     it('handles minimum and maximum', () => {
-      expect(zoomPercentage(MIN)).toBe(Math.round((MIN / DEFAULT) * 100));
-      expect(zoomPercentage(MAX)).toBe(Math.round((MAX / DEFAULT) * 100));
+      expect(zoomPercentage(MIN_TERMINAL_FONT_SIZE)).toBe(
+        Math.round((MIN_TERMINAL_FONT_SIZE / DEFAULT_TERMINAL_FONT_SIZE) * 100)
+      );
+      expect(zoomPercentage(MAX_TERMINAL_FONT_SIZE)).toBe(
+        Math.round((MAX_TERMINAL_FONT_SIZE / DEFAULT_TERMINAL_FONT_SIZE) * 100)
+      );
     });
   });
 
   describe('scaledTerminalDimensions', () => {
     it('matches original hardcoded values at default font size', () => {
-      const dims = scaledTerminalDimensions(1920, 1080, DEFAULT);
-      // Original formula: Math.floor((1920 - 60) / 8) = 232, Math.floor((1080 - 120) / 17) = 56
+      const dims = scaledTerminalDimensions(
+        1920,
+        1080,
+        DEFAULT_TERMINAL_FONT_SIZE
+      );
       expect(dims.cols).toBe(Math.floor((1920 - 60) / 8));
       expect(dims.rows).toBe(Math.floor((1080 - 120) / 17));
     });
@@ -114,11 +105,24 @@ describe('terminal zoom', () => {
     it('scales linearly with font size', () => {
       const at14 = scaledTerminalDimensions(1920, 1080, 14);
       const at28 = scaledTerminalDimensions(1920, 1080, 28);
-      // At 2x font size, char width doubles, so cols should approximately halve
-      // (not exactly due to the (width - 60) offset and Math.floor)
       const ratio = at14.cols / at28.cols;
       expect(ratio).toBeGreaterThan(1.8);
       expect(ratio).toBeLessThan(2.2);
+    });
+  });
+
+  describe('shouldUseWebGpuRenderer', () => {
+    it('enables WebGPU when GPU available and not mobile', () => {
+      expect(shouldUseWebGpuRenderer(true, false)).toBe(true);
+    });
+
+    it('skips WebGPU on mobile even with GPU', () => {
+      expect(shouldUseWebGpuRenderer(true, true)).toBe(false);
+    });
+
+    it('skips WebGPU when GPU unavailable', () => {
+      expect(shouldUseWebGpuRenderer(false, false)).toBe(false);
+      expect(shouldUseWebGpuRenderer(false, true)).toBe(false);
     });
   });
 });

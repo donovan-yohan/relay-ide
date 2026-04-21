@@ -84,10 +84,7 @@ test.describe('ShortcutHint Component', () => {
     });
   });
 
-  test('displays platform-appropriate modifier key', async ({
-    page,
-    browserName,
-  }) => {
+  test('displays platform-appropriate modifier key', async ({ page }) => {
     const hint = page
       .locator('.hint-row')
       .filter({ hasText: 'With shortcut (mod+r)' })

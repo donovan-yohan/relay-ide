@@ -16,7 +16,6 @@ import type {
 } from './types.js';
 export type { BackendDisplayState };
 import {
-  AGENT_COMMANDS,
   AGENT_CONTINUE_ARGS,
   AGENT_YOLO_ARGS,
   resolveFramework,
@@ -74,7 +73,7 @@ interface PendingSessionsFile {
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-export type CreateParams = Omit<CreatePtyParams, 'id'> & {
+export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   id?: string;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
@@ -114,6 +113,10 @@ const stateChangeCallbacks: StateChangeCallback[] = [];
 
 function onStateChange(cb: StateChangeCallback): void {
   stateChangeCallbacks.push(cb);
+}
+
+export function __resetStateChangeCallbacksForTests(): void {
+  stateChangeCallbacks.length = 0;
 }
 
 type SessionCreateCallback = (
@@ -174,21 +177,16 @@ export function computeBackendState(session: {
   agentState: AgentState;
   idle: boolean;
 }): BackendDisplayState {
-  // permission-prompt takes highest priority
   if (session.agentState === 'permission-prompt') return 'permission';
-  // error
   if (session.agentState === 'error') return 'error';
-  // processing = running
   if (session.agentState === 'processing') return 'running';
-  // initializing
   if (session.agentState === 'initializing') return 'initializing';
-  // idle or waiting-for-input = idle (explicitly idle-like agent states)
   if (
     session.agentState === 'idle' ||
     session.agentState === 'waiting-for-input'
   )
     return 'idle';
-  // For sessions without a recognized agentState (terminal/custom), fall back to idle flag
+  // Terminal/custom sessions don't report agentState — use the idle flag from PTY activity.
   return session.idle ? 'idle' : 'running';
 }
 
@@ -263,11 +261,15 @@ function create({
   };
 
   const { session: ptySession, result } = createPtySession(
-    ptyParams,
-    sessions,
-    stateChangeCallbacks,
-    sessionEndCallbacks,
-    fireBackendStateIfChanged
+    {
+      ...ptyParams,
+      callbacks: {
+        onStateChange: stateChangeCallbacks,
+        onSessionEnd: sessionEndCallbacks,
+        fireBackendStateIfChanged,
+      },
+    },
+    sessions
   );
   trackEvent({
     category: 'session',
@@ -954,8 +956,5 @@ export {
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,
-  AGENT_COMMANDS,
-  AGENT_CONTINUE_ARGS,
-  AGENT_YOLO_ARGS,
 };
 export type { CreateWebParams };

@@ -1,6 +1,6 @@
 import React from 'react';
 import './FileChangeCard.css';
-import type { FileChangeEvent } from '../../../../server/chat-events.js';
+import type { FileChangeEvent } from '../../../../shared/chat-events.js';
 
 interface FileChangeCardProps {
   event: FileChangeEvent;

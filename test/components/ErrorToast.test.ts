@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 describe('toasts.store', () => {
-  let useToastStore: typeof import('../../frontend/src/lib/state/toasts.store.js').useToastStore;
-  let showToast: typeof import('../../frontend/src/lib/state/toasts.store.js').showToast;
-  let dismissToast: typeof import('../../frontend/src/lib/state/toasts.store.js').dismissToast;
-  let getToasts: typeof import('../../frontend/src/lib/state/toasts.store.js').getToasts;
+  let useToastStore: typeof import('../../frontend/src/lib/stores/toasts.js').useToastStore;
+  let showToast: typeof import('../../frontend/src/lib/stores/toasts.js').showToast;
+  let dismissToast: typeof import('../../frontend/src/lib/stores/toasts.js').dismissToast;
+  let getToasts: typeof import('../../frontend/src/lib/stores/toasts.js').getToasts;
 
   beforeEach(async () => {
-    const store = await import('../../frontend/src/lib/state/toasts.store.js');
+    const store = await import('../../frontend/src/lib/stores/toasts.js');
     useToastStore = store.useToastStore;
     showToast = store.showToast;
     dismissToast = store.dismissToast;

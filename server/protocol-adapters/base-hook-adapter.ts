@@ -8,7 +8,7 @@ import type {
   SessionOptions,
   Attachment,
 } from '../protocol-adapter.js';
-import type { ChatEvent, ChatEventSource } from '../chat-events.js';
+import type { ChatEvent, ChatEventSource } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('hook-adapter');

@@ -190,7 +190,12 @@ function createAgentEventHandler(deps: HookDeps) {
       return;
     }
 
-    if (session.hookToken !== token) {
+    const tokenBuf = Buffer.from(token);
+    const hookTokenBuf = Buffer.from(session.hookToken);
+    if (
+      tokenBuf.length !== hookTokenBuf.length ||
+      !crypto.timingSafeEqual(tokenBuf, hookTokenBuf)
+    ) {
       res.status(401).json({ error: 'Invalid token' });
       return;
     }

@@ -6,7 +6,7 @@ Testing patterns and quality standards for Relay IDE.
 
 - vitest (^4.1.2) as test runner, configured in `vitest.config.ts`
 - TypeScript test files in `test/`, run directly via vitest (no compilation step)
-- 82 unit/integration test files covering server modules and frontend utilities
+- 99 unit/integration test files covering server modules and frontend utilities
 - React 19 frontend with TypeScript strict mode
 - E2E tests (Playwright) in `test/e2e/` are excluded from `npm test` and run separately
 - Pre-push hook (`.husky/pre-push`) runs only changed tests via `vitest run --changed`
@@ -81,7 +81,7 @@ Playwright component tests live in `test/e2e/`. They are excluded from `npm test
 
 ## Mobile Input Testing
 
-The mobile input event-intent pipeline is extracted into `server/mobile-input-pipeline.ts` and tested via JSON event fixtures.
+The mobile input event-intent pipeline is extracted into `shared/mobile-input-pipeline.ts` and tested via JSON event fixtures.
 
 **Test file:** `test/mobile-input.test.ts`
 **Fixtures:** `test/fixtures/mobile-input/*.json`
@@ -90,7 +90,7 @@ The mobile input event-intent pipeline is extracted into `server/mobile-input-pi
 
 1. Create a fixture JSON in `test/fixtures/mobile-input/` reproducing the event sequence that triggers the bug
 2. Run `npm test` ... the new fixture should fail (TDD red)
-3. Fix the pipeline logic in `server/mobile-input-pipeline.ts`
+3. Fix the pipeline logic in `shared/mobile-input-pipeline.ts`
 4. Run `npm test` ... all fixtures should pass (TDD green)
 
 **Fixture format:**

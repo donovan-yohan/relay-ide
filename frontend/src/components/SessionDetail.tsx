@@ -1,36 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchAnalyticsSessionDetail } from '../lib/api.js';
 import type { AnalyticsSessionDetail } from '../lib/types.js';
+import { formatDuration, formatDurationMs } from '../lib/utils.js';
 import './SessionDetail.css';
 
 // ── Format helpers ──
 
 function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '---';
+  if (value === null || value === undefined || Number.isNaN(value))
+    return '---';
   const abs = Math.abs(value);
   if (abs < 1000) return String(Math.round(value));
-  if (abs < 1_000_000) return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
-  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs < 1_000_000)
+    return `${(value / 1000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  if (abs < 1_000_000_000)
+    return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
   return `${(value / 1_000_000_000).toFixed(1)}B`;
 }
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '---';
-  const s = Math.round(seconds);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
-  const h = Math.floor(m / 60);
-  const remM = m % 60;
-  return remM > 0 ? `${h}h ${remM}m` : `${h}h`;
-}
-
-function formatDurationMs(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined || Number.isNaN(ms)) return '---';
-  return formatDuration(ms / 1000);
-}
-
 
 function formatTimeHMS(iso: string): string {
   try {
@@ -68,7 +54,10 @@ function eventSymbol(type: string): string {
   }
 }
 
-function eventLabel(evt: { type: string; data: Record<string, unknown> }): string {
+function eventLabel(evt: {
+  type: string;
+  data: Record<string, unknown>;
+}): string {
   switch (evt.type) {
     case 'session_start':
       return 'session start';
@@ -84,7 +73,9 @@ function eventLabel(evt: { type: string; data: Record<string, unknown> }): strin
     case 'agent_stop':
       return 'agent stop';
     case 'notification':
-      return String(evt.data['notificationType'] ?? evt.data['message'] ?? 'notification');
+      return String(
+        evt.data['notificationType'] ?? evt.data['message'] ?? 'notification'
+      );
     case 'rate_limit':
       return 'rate limit hit';
     default:
@@ -122,16 +113,26 @@ function MetricsSection({ sess }: MetricsSectionProps) {
       <div className="sd-kv-list">
         <div className="sd-kv-row">
           <span className="sd-kv-label">duration:</span>
-          <span className="sd-kv-value">{formatDuration(sess.durationSeconds)}</span>
+          <span className="sd-kv-value">
+            {formatDuration(sess.durationSeconds)}
+          </span>
         </div>
         <div className="sd-kv-row">
           <span className="sd-kv-label">tokens:</span>
           <span className="sd-kv-value">
-            <span className="sd-token-down">&#x2193;{formatCompact(sess.totalInputTokens)}</span>
-            {' '}
-            <span className="sd-token-up">&#x2191;{formatCompact(sess.totalOutputTokens)}</span>
+            <span className="sd-token-down">
+              &#x2193;{formatCompact(sess.totalInputTokens)}
+            </span>{' '}
+            <span className="sd-token-up">
+              &#x2191;{formatCompact(sess.totalOutputTokens)}
+            </span>
             {sess.totalCacheRead > 0 && (
-              <> <span className="sd-cache-info">(cache: {formatCompact(sess.totalCacheRead)} read)</span></>
+              <>
+                {' '}
+                <span className="sd-cache-info">
+                  (cache: {formatCompact(sess.totalCacheRead)} read)
+                </span>
+              </>
             )}
           </span>
         </div>
@@ -146,15 +147,17 @@ function MetricsSection({ sess }: MetricsSectionProps) {
         <div className="sd-kv-row">
           <span className="sd-kv-label">human latency:</span>
           <span className="sd-kv-value">
-            avg {formatDurationMs(sess.humanResponseLatencyAvgMs)}
-            {' '}p50 {formatDurationMs(sess.humanResponseLatencyP50Ms)}
-            {' '}p95 {formatDurationMs(sess.humanResponseLatencyP95Ms)}
+            avg {formatDurationMs(sess.humanResponseLatencyAvgMs)} p50{' '}
+            {formatDurationMs(sess.humanResponseLatencyP50Ms)} p95{' '}
+            {formatDurationMs(sess.humanResponseLatencyP95Ms)}
           </span>
         </div>
         <div className="sd-kv-row">
           <span className="sd-kv-label">agent idle:</span>
           <span className="sd-kv-value">
-            {sess.agentIdlePercent != null ? sess.agentIdlePercent.toFixed(1) + '%' : '---'}
+            {sess.agentIdlePercent != null
+              ? sess.agentIdlePercent.toFixed(1) + '%'
+              : '---'}
           </span>
         </div>
         <div className="sd-kv-row">
@@ -172,13 +175,17 @@ interface ToolBreakdownSectionProps {
 
 function ToolBreakdownSection({ toolBreakdown }: ToolBreakdownSectionProps) {
   const sortedTools = useMemo(() => {
-    const entries = Object.entries(toolBreakdown).map(([name, data]) => ({ name, count: data.count }));
+    const entries = Object.entries(toolBreakdown).map(([name, data]) => ({
+      name,
+      count: data.count,
+    }));
     entries.sort((a, b) => b.count - a.count);
     return entries;
   }, [toolBreakdown]);
 
   const maxToolCount = useMemo(
-    () => (sortedTools.length > 0 ? Math.max(...sortedTools.map((t) => t.count)) : 1),
+    () =>
+      sortedTools.length > 0 ? Math.max(...sortedTools.map((t) => t.count)) : 1,
     [sortedTools]
   );
   const barWidth = 16;
@@ -190,12 +197,16 @@ function ToolBreakdownSection({ toolBreakdown }: ToolBreakdownSectionProps) {
       {sortedTools.length > 0 ? (
         <div className="sd-tool-list">
           {sortedTools.map((tool) => {
-            const filled = maxToolCount > 0 ? Math.round((tool.count / maxToolCount) * barWidth) : 0;
+            const filled =
+              maxToolCount > 0
+                ? Math.round((tool.count / maxToolCount) * barWidth)
+                : 0;
             return (
               <div key={tool.name} className="sd-tool-row">
                 <span className="sd-tool-name">{tool.name}</span>
                 <span className="sd-tool-bar">
-                  {'\u2588'.repeat(filled)}{'\u2591'.repeat(barWidth - filled)}
+                  {'\u2588'.repeat(filled)}
+                  {'\u2591'.repeat(barWidth - filled)}
                 </span>
                 <span className="sd-tool-count">{tool.count} uses</span>
               </div>
@@ -227,7 +238,10 @@ function TimelineSection({ events }: TimelineSectionProps) {
       if (evt.type === 'agent_stop' && i + 1 < events.length) {
         const next = events[i + 1]!;
         if (next.type === 'user_prompt') {
-          const gap = (new Date(next.timestamp).getTime() - new Date(evt.timestamp).getTime()) / 1000;
+          const gap =
+            (new Date(next.timestamp).getTime() -
+              new Date(evt.timestamp).getTime()) /
+            1000;
           if (gap > 1) {
             items.push({ kind: 'idle', idleSeconds: gap });
           }
@@ -246,14 +260,17 @@ function TimelineSection({ events }: TimelineSectionProps) {
           {timelineItems.map((item, i) =>
             item.kind === 'event' ? (
               <div key={i} className="sd-timeline-event">
-                <span className="sd-tl-time">{formatTimeHMS(item.timestamp)}</span>
+                <span className="sd-tl-time">
+                  {formatTimeHMS(item.timestamp)}
+                </span>
                 <span className="sd-tl-symbol">{item.symbol}</span>
                 <span className="sd-tl-label">{item.label}</span>
               </div>
             ) : (
               <div key={i} className="sd-timeline-idle">
                 <span className="sd-idle-line">
-                  {'\u2500'.repeat(3)} human idle: {formatDuration(item.idleSeconds)} {'\u2500'.repeat(3)}
+                  {'\u2500'.repeat(3)} human idle:{' '}
+                  {formatDuration(item.idleSeconds)} {'\u2500'.repeat(3)}
                 </span>
               </div>
             )
@@ -283,12 +300,21 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
     setLoading(true);
     setError(null);
     fetchAnalyticsSessionDetail(sessionId)
-      .then((d) => { if (!cancelled) setDetail(d); })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'failed to load session');
+      .then((d) => {
+        if (!cancelled) setDetail(d);
       })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setError(
+            err instanceof Error ? err.message : 'failed to load session'
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   const sess = detail?.session ?? null;
@@ -310,10 +336,16 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
           <h1 className="sd-page-title">
             session {shortId(sess.sessionId)}
             {sess.repoName && (
-              <><span className="sd-title-sep">&#x2014;</span><span className="sd-title-meta">{sess.repoName}</span></>
+              <>
+                <span className="sd-title-sep">&#x2014;</span>
+                <span className="sd-title-meta">{sess.repoName}</span>
+              </>
             )}
             {sess.model && (
-              <><span className="sd-title-sep">&#x2014;</span><span className="sd-title-meta">{sess.model}</span></>
+              <>
+                <span className="sd-title-sep">&#x2014;</span>
+                <span className="sd-title-meta">{sess.model}</span>
+              </>
             )}
           </h1>
           <div className="sd-divider" />

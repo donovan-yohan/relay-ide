@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { config } from '../frontend/src/components/SessionIndicator.js';
+import {
+  config,
+  getPulseClass,
+} from '../../frontend/src/components/SessionIndicator.js';
 
 describe('SessionIndicator shape language', () => {
   it('running uses filled circle (●) with green', () => {
@@ -68,12 +71,6 @@ describe('SessionIndicator shape language', () => {
 });
 
 describe('SessionIndicator pulse configuration', () => {
-  function getPulseClass(state: string): string {
-    if (state === 'permission' || state === 'needs-answer') return 'pulse-fast';
-    if (state === 'unseen-idle') return 'pulse-slow';
-    return '';
-  }
-
   it('permission and needs-answer have fast pulse (1.4s)', () => {
     expect(getPulseClass('permission')).toBe('pulse-fast');
     expect(getPulseClass('needs-answer')).toBe('pulse-fast');

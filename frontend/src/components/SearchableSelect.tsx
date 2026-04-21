@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import useClickOutside from '../lib/hooks/useClickOutside.js';
+import useClickOutside from '../hooks/useClickOutside.js';
 import TuiMenuItem from './TuiMenuItem.js';
 import TuiMenuPanel from './TuiMenuPanel.js';
 import './SearchableSelect.css';

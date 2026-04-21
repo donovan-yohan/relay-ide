@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { processIntent } from '../server/mobile-input-pipeline.js';
-import type { CapturedIntent } from '../server/mobile-input-pipeline.js';
+import { processIntent } from '../shared/mobile-input-pipeline.js';
+import type { CapturedIntent } from '../shared/mobile-input-pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, 'fixtures', 'mobile-input');

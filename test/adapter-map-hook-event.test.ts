@@ -5,8 +5,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ClaudeProtocolAdapter } from '../server/protocol-adapters/claude-adapter.js';
 import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.js';
-import { OpencodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
-import type { ChatEvent } from '../server/chat-events.js';
+import { OpenCodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
 
 vi.mock('../server/logger.js', () => ({
@@ -35,7 +35,7 @@ function collectEvents(
   adapter:
     | ClaudeProtocolAdapter
     | CodexProtocolAdapter
-    | OpencodeProtocolAdapter
+    | OpenCodeProtocolAdapter
 ): ChatEvent[] {
   const events: ChatEvent[] = [];
   adapter.on((e) => events.push(e));
@@ -258,12 +258,12 @@ describe('CodexProtocolAdapter.mapHookEvent', () => {
 
 // ── OpenCode Adapter ─────────────────────────────────────────────────────────
 
-describe('OpencodeProtocolAdapter.mapHookEvent', () => {
-  let adapter: OpencodeProtocolAdapter;
+describe('OpenCodeProtocolAdapter.mapHookEvent', () => {
+  let adapter: OpenCodeProtocolAdapter;
   let events: ChatEvent[];
 
   beforeEach(() => {
-    adapter = new OpencodeProtocolAdapter();
+    adapter = new OpenCodeProtocolAdapter();
     events = collectEvents(adapter);
 
     (adapter as any)._currentTurnId = 'turn-1';

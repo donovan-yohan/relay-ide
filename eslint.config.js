@@ -28,8 +28,16 @@ export default [
     rules: {
       'no-console': 'error',
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': ['off'],
-      complexity: ['error', 20],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
+      complexity: ['error', 25],
       'max-depth': ['error', 4],
       'max-params': 'off',
     },
@@ -49,6 +57,7 @@ export default [
       '.claude/**',
       '.belayer/**',
       '.git/**',
+      '.worktrees/**',
       '*.config.js',
     ],
   },

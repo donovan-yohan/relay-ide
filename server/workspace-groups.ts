@@ -142,7 +142,7 @@ export function createWorkspaceGroupsRouter(
     let config: Config;
     try {
       config = loadConfig(configPath);
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
@@ -171,7 +171,7 @@ export function createWorkspaceGroupsRouter(
     let config: Config;
     try {
       config = loadConfig(configPath);
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
@@ -237,7 +237,7 @@ export function createWorkspaceGroupsRouter(
     let config: Config;
     try {
       config = loadConfig(configPath);
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
@@ -281,7 +281,7 @@ export function createWorkspaceGroupsRouter(
     let config: Config;
     try {
       config = loadConfig(configPath);
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }
@@ -347,7 +347,7 @@ export function createWorkspaceGroupsRouter(
     let config: Config;
     try {
       config = loadConfig(configPath);
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: ERR_FAILED_READ_CONFIG });
       return;
     }

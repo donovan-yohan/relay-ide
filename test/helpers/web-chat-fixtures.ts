@@ -6,7 +6,7 @@ import { MockProtocolAdapter } from '../../server/protocol-adapters/mock-adapter
 import type {
   ChatEvent,
   ApprovalRequestEvent,
-} from '../../server/chat-events.js';
+} from '../../shared/chat-events.js';
 import type { WebSession } from '../../server/types.js';
 import type { AdapterConfig } from '../../server/protocol-adapter.js';
 

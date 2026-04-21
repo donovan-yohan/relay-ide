@@ -73,104 +73,6 @@ function getInactiveWorktreesForRepo(
   );
 }
 
-interface GroupBodyProps extends WorkspaceGroupProps {
-  workspaceSessions: SessionSummary[];
-  sessions: SessionSummary[];
-  worktrees: WorktreeInfo[];
-}
-
-function GroupBody({
-  workspace,
-  repos,
-  sessions,
-  worktrees,
-  launching,
-  activeRepoPath,
-  activeSessionId,
-  workspaceSessions,
-  orgPrs,
-  loadingItems,
-  onLaunchSession,
-  onSelectSession,
-  onSelectWorkspace,
-  onNewWorktree,
-  onOpenSettings,
-  onDeleteSession,
-  onDeleteWorktree,
-  onResumeWorktree,
-  onLaunchRepoSession,
-  onViewHistory,
-}: GroupBodyProps) {
-  const sidebarItems = useSessionsStore((s) => s.sidebarItems);
-  return (
-    <div className="group-body">
-      {workspaceSessions.length > 0 ? (
-        <ul className="workspace-sessions">
-          {workspaceSessions.map((session) => (
-            <li
-              key={session.id}
-              className="ws-session-row"
-              onClick={() => onSelectSession(session.id)}
-            >
-              <span className="ws-badge">workspace</span>
-              <span className="ws-session-name">{session.displayName}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <div className="launch-row">
-        <TuiButton
-          variant="primary"
-          disabled={launching ?? false}
-          onClick={(e) => {
-            e.stopPropagation();
-            onLaunchSession(workspace.id);
-          }}
-        >
-          {launching ? (
-            <>
-              <TuiProgress variant="braille" />
-              &nbsp;launching...
-            </>
-          ) : (
-            '> launch workspace session'
-          )}
-        </TuiButton>
-      </div>
-      {repos.length === 0 ? (
-        <div className="empty-repos">no repos</div>
-      ) : (
-        repos.map((repo) => (
-          <RepoItem
-            key={repo.path}
-            repo={repo}
-            sessionGroups={getSessionGroupsForRepo(repo, sessions)}
-            inactiveWorktrees={getInactiveWorktreesForRepo(
-              repo,
-              sessions,
-              worktrees
-            )}
-            isActive={activeRepoPath === repo.path && !activeSessionId}
-            activeSessionId={activeSessionId ?? null}
-            onSelectWorkspace={onSelectWorkspace}
-            onSelectSession={onSelectSession}
-            onNewWorktree={onNewWorktree}
-            onOpenSettings={onOpenSettings}
-            onDeleteSession={onDeleteSession}
-            onDeleteWorktree={onDeleteWorktree}
-            onResumeWorktree={onResumeWorktree}
-            onLaunchRepoSession={onLaunchRepoSession}
-            onViewHistory={onViewHistory}
-            orgPrs={orgPrs ?? []}
-            loadingItems={loadingItems}
-            sidebarItems={sidebarItems}
-          />
-        ))
-      )}
-    </div>
-  );
-}
-
 export function WorkspaceGroup({
   workspace,
   repos,
@@ -195,6 +97,7 @@ export function WorkspaceGroup({
   orgPrs,
   loadingItems = EMPTY_SET,
 }: WorkspaceGroupProps) {
+  const sidebarItems = useSessionsStore((s) => s.sidebarItems);
   const themeColor = workspace.themeColor ?? deriveColor(workspace.name);
   const accentBorder = `color-mix(in srgb, ${themeColor} 30%, transparent)`;
   const workspaceSessions = useMemo(
@@ -225,31 +128,71 @@ export function WorkspaceGroup({
         </div>
       </div>
       {!collapsed ? (
-        <GroupBody
-          workspace={workspace}
-          repos={repos}
-          sessions={sessions}
-          worktrees={worktrees}
-          launching={launching}
-          activeRepoPath={activeRepoPath}
-          activeSessionId={activeSessionId}
-          workspaceSessions={workspaceSessions}
-          orgPrs={orgPrs}
-          loadingItems={loadingItems}
-          onLaunchSession={onLaunchSession}
-          onSelectSession={onSelectSession}
-          onSelectWorkspace={onSelectWorkspace}
-          onNewWorktree={onNewWorktree}
-          onOpenSettings={onOpenSettings}
-          onLaunchRepoSession={onLaunchRepoSession}
-          onViewHistory={onViewHistory}
-          onDeleteSession={onDeleteSession}
-          onDeleteWorktree={onDeleteWorktree}
-          onResumeWorktree={onResumeWorktree}
-          onToggleCollapse={onToggleCollapse}
-          collapsed={collapsed}
-          loading={loading}
-        />
+        <div className="group-body">
+          {workspaceSessions.length > 0 ? (
+            <ul className="workspace-sessions">
+              {workspaceSessions.map((session) => (
+                <li
+                  key={session.id}
+                  className="ws-session-row"
+                  onClick={() => onSelectSession(session.id)}
+                >
+                  <span className="ws-badge">workspace</span>
+                  <span className="ws-session-name">{session.displayName}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="launch-row">
+            <TuiButton
+              variant="primary"
+              disabled={launching ?? false}
+              onClick={(e) => {
+                e.stopPropagation();
+                onLaunchSession(workspace.id);
+              }}
+            >
+              {launching ? (
+                <>
+                  <TuiProgress variant="braille" />
+                  &nbsp;launching...
+                </>
+              ) : (
+                '> launch workspace session'
+              )}
+            </TuiButton>
+          </div>
+          {repos.length === 0 ? (
+            <div className="empty-repos">no repos</div>
+          ) : (
+            repos.map((repo) => (
+              <RepoItem
+                key={repo.path}
+                repo={repo}
+                sessionGroups={getSessionGroupsForRepo(repo, sessions)}
+                inactiveWorktrees={getInactiveWorktreesForRepo(
+                  repo,
+                  sessions,
+                  worktrees
+                )}
+                isActive={activeRepoPath === repo.path && !activeSessionId}
+                activeSessionId={activeSessionId ?? null}
+                onSelectWorkspace={onSelectWorkspace}
+                onSelectSession={onSelectSession}
+                onNewWorktree={onNewWorktree}
+                onOpenSettings={onOpenSettings}
+                onDeleteSession={onDeleteSession}
+                onDeleteWorktree={onDeleteWorktree}
+                onResumeWorktree={onResumeWorktree}
+                onLaunchRepoSession={onLaunchRepoSession}
+                onViewHistory={onViewHistory}
+                orgPrs={orgPrs ?? []}
+                loadingItems={loadingItems}
+                sidebarItems={sidebarItems}
+              />
+            ))
+          )}
+        </div>
       ) : null}
     </div>
   );

@@ -3,10 +3,10 @@ import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js
 import { createAdapter } from '../server/protocol-adapters/index.js';
 import { ClaudeProtocolAdapter } from '../server/protocol-adapters/claude-adapter.js';
 import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.js';
-import { OpencodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
+import { OpenCodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
 import { pushToBuffer } from '../server/web-session-handler.js';
-import { isChatEvent } from '../server/chat-events.js';
-import type { ChatEvent } from '../server/chat-events.js';
+import { isChatEvent } from '../shared/chat-events.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 import type { HookEventPayload } from '../server/protocol-adapters/base-hook-adapter.js';
 import { BaseHookAdapter } from '../server/protocol-adapters/base-hook-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
@@ -459,9 +459,9 @@ describe('createAdapter - registry', () => {
     expect(adapter.agentType).toBe('codex');
   });
 
-  it('returns OpencodeProtocolAdapter for "opencode"', () => {
+  it('returns OpenCodeProtocolAdapter for "opencode"', () => {
     const adapter = createAdapter('opencode');
-    expect(adapter).toBeInstanceOf(OpencodeProtocolAdapter);
+    expect(adapter).toBeInstanceOf(OpenCodeProtocolAdapter);
     expect(adapter.agentType).toBe('opencode');
   });
 

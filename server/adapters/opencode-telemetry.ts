@@ -8,7 +8,11 @@ import type {
   TelemetryDeps,
   TelemetrySession,
 } from '../telemetry-adapter.js';
-import { registerTelemetryAdapter } from '../telemetry-adapter.js';
+import {
+  asNumber,
+  asString,
+  registerTelemetryAdapter,
+} from '../telemetry-adapter.js';
 import { createLogger } from '../logger.js';
 import { createEventAdapter } from '../agent-events.js';
 import type { AgentEventAdapter, AgentEvent } from '../agent-events.js';
@@ -44,14 +48,6 @@ interface OpenCodeTelemetryPayload {
       }>
     | Record<string, unknown>;
   source?: 'statusLine' | 'jsonl';
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function asString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
 }
 
 function extractModelName(model: unknown): string | null {

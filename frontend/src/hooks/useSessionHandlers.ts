@@ -4,7 +4,7 @@ import { createLogger } from '../lib/logger.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
-import { useToastStore } from '../lib/state/toasts.store.js';
+import { useToastStore } from '../lib/stores/toasts.js';
 import { sendPtyData } from '../lib/ws.js';
 import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
@@ -130,7 +130,9 @@ export function useSessionHandlers({
     const { currentActiveWorkspace, currentWorktreePath } =
       getCurrentSessionContext();
     if (!currentActiveWorkspace) return;
-    const { cols, rows } = estimateTerminalDimensions();
+    const { cols, rows } = estimateTerminalDimensions(
+      useUiStore.getState().terminalFontSize
+    );
     const { session, error } = await createAgentSession({
       repoPath: currentActiveWorkspace.path,
       worktreePath: currentWorktreePath,
@@ -163,7 +165,9 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions();
+      const { cols, rows } = estimateTerminalDimensions(
+        useUiStore.getState().terminalFontSize
+      );
       const { session, error } = await createAgentSession({
         repoPath,
         worktreePath: null,
@@ -739,7 +743,9 @@ export function useSessionHandlers({
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
-      const { cols, rows } = estimateTerminalDimensions();
+      const { cols, rows } = estimateTerminalDimensions(
+        useUiStore.getState().terminalFontSize
+      );
       const { session, error } = await createAgentSession({
         repoPath: wt.repoPath,
         worktreePath: wt.path,

@@ -174,22 +174,22 @@ export async function findOrCreateWorktreeForBranch(
 }
 
 export class WorktreeWatcher extends EventEmitter {
-  private _watchers: fs.FSWatcher[];
-  private _debounceTimer: ReturnType<typeof setTimeout> | null;
+  private watchers: fs.FSWatcher[];
+  private debounceTimer: ReturnType<typeof setTimeout> | null;
 
   constructor() {
     super();
-    this._watchers = [];
-    this._debounceTimer = null;
+    this.watchers = [];
+    this.debounceTimer = null;
   }
 
   rebuild(rootDirs: string[]): void {
-    this._closeAll();
+    this.closeAll();
 
     for (const rootDir of rootDirs) {
       // config.repos stores individual repo paths — watch directly if rootDir is a repo
       if (fs.existsSync(path.join(rootDir, '.git'))) {
-        this._watchRepo(rootDir);
+        this.watchRepo(rootDir);
         continue;
       }
       // Fallback: rootDir may be a parent directory containing repos
@@ -203,56 +203,56 @@ export class WorktreeWatcher extends EventEmitter {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
         const repoPath = path.join(rootDir, entry.name);
         if (!fs.existsSync(path.join(repoPath, '.git'))) continue;
-        this._watchRepo(repoPath);
+        this.watchRepo(repoPath);
       }
     }
   }
 
-  private _watchRepo(repoPath: string): void {
+  private watchRepo(repoPath: string): void {
     let anyWatched = false;
     for (const dir of WORKTREE_DIRS) {
       const worktreeDir = path.join(repoPath, dir);
       if (fs.existsSync(worktreeDir)) {
-        this._addWatch(worktreeDir);
+        this.addWatch(worktreeDir);
         anyWatched = true;
       }
     }
     if (!anyWatched) {
       // Watch repo root so we detect when either dir is first created
-      this._addWatch(repoPath);
+      this.addWatch(repoPath);
     }
   }
 
-  private _addWatch(dirPath: string): void {
+  private addWatch(dirPath: string): void {
     try {
       const watcher = fs.watch(dirPath, { persistent: false }, () => {
-        this._debouncedEmit();
+        this.debouncedEmit();
       });
       watcher.on('error', () => {});
-      this._watchers.push(watcher);
+      this.watchers.push(watcher);
     } catch (_) {
       // ignore
     }
   }
 
-  private _debouncedEmit(): void {
-    if (this._debounceTimer) clearTimeout(this._debounceTimer);
-    this._debounceTimer = setTimeout(() => {
+  private debouncedEmit(): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
       this.emit('worktrees-changed');
     }, 500);
   }
 
-  private _closeAll(): void {
-    closeWatchers(this._watchers);
-    this._watchers = [];
-    if (this._debounceTimer) {
-      clearTimeout(this._debounceTimer);
-      this._debounceTimer = null;
+  private closeAll(): void {
+    closeWatchers(this.watchers);
+    this.watchers = [];
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
     }
   }
 
   close(): void {
-    this._closeAll();
+    this.closeAll();
   }
 }
 
@@ -261,29 +261,29 @@ export type BranchChangeCallback = (cwdPath: string, newBranch: string) => void;
 export class BranchWatcher {
   // Map headPath → { watcher, cwdPath } so we can recreate individual watchers
   // after detection (git's atomic checkout can change the inode, killing kqueue watchers)
-  private _watcherMap = new Map<
+  private watcherMap = new Map<
     string,
     { watcher: fs.FSWatcher; cwdPath: string }
   >();
-  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private _lastBranch = new Map<string, string>();
-  private _callback: BranchChangeCallback;
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastBranch = new Map<string, string>();
+  private callback: BranchChangeCallback;
   /** Monotonic generation counter. Incremented on rebuild()/close() so that
-   *  in-flight async _readAndEmit calls from a prior generation don't
-   *  recreate watchers into the new (or cleared) _watcherMap. */
-  private _generation = 0;
+   *  in-flight async readAndEmit calls from a prior generation don't
+   *  recreate watchers into the new (or cleared) watcherMap. */
+  private generation = 0;
 
   constructor(callback: BranchChangeCallback) {
-    this._callback = callback;
+    this.callback = callback;
   }
 
   rebuild(rootDirs: string[]): void {
-    this._closeAll();
+    this.closeAll();
 
     for (const rootDir of rootDirs) {
       // config.repos stores individual repo paths — watch directly if rootDir is a repo
       if (fs.existsSync(path.join(rootDir, '.git'))) {
-        this._watchRepoHeads(rootDir);
+        this.watchRepoHeads(rootDir);
         continue;
       }
       // Fallback: rootDir may be a parent directory containing repos
@@ -297,15 +297,15 @@ export class BranchWatcher {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
         const repoPath = path.join(rootDir, entry.name);
         if (!fs.existsSync(path.join(repoPath, '.git'))) continue;
-        this._watchRepoHeads(repoPath);
+        this.watchRepoHeads(repoPath);
       }
     }
   }
 
-  private _watchRepoHeads(repoPath: string): void {
+  private watchRepoHeads(repoPath: string): void {
     // Watch main repo HEAD
     const mainHead = path.join(repoPath, '.git', 'HEAD');
-    this._watchHeadFile(mainHead, repoPath);
+    this.watchHeadFile(mainHead, repoPath);
 
     // Watch worktree HEADs: <repoPath>/.git/worktrees/*/HEAD
     const worktreesGitDir = path.join(repoPath, '.git', 'worktrees');
@@ -333,21 +333,21 @@ export class BranchWatcher {
         continue;
       }
 
-      this._watchHeadFile(headFile, checkoutPath);
+      this.watchHeadFile(headFile, checkoutPath);
     }
   }
 
-  private _watchHeadFile(headPath: string, cwdPath: string): void {
+  private watchHeadFile(headPath: string, cwdPath: string): void {
     // Seed initial branch to avoid false-positive on first change detection
     try {
       const content = fs.readFileSync(headPath, 'utf-8').trim();
       const match = content.match(/^ref: refs\/heads\/(.+)$/);
-      if (match) this._lastBranch.set(cwdPath, match[1]!);
+      if (match) this.lastBranch.set(cwdPath, match[1]!);
     } catch (_) {
       // ignore
     }
 
-    this._createWatcher(headPath, cwdPath);
+    this.createWatcher(headPath, cwdPath);
   }
 
   /**
@@ -356,9 +356,9 @@ export class BranchWatcher {
    * (write HEAD.lock, rename to HEAD) can change the file's inode, which
    * silently kills kqueue-based watchers on macOS.
    */
-  private _createWatcher(headPath: string, cwdPath: string): void {
+  private createWatcher(headPath: string, cwdPath: string): void {
     // Close existing watcher for this path if any
-    const existing = this._watcherMap.get(headPath);
+    const existing = this.watcherMap.get(headPath);
     if (existing) {
       try {
         existing.watcher.close();
@@ -369,31 +369,31 @@ export class BranchWatcher {
 
     try {
       const watcher = fs.watch(headPath, { persistent: false }, () => {
-        this._debouncedCheck(headPath, cwdPath);
+        this.debouncedCheck(headPath, cwdPath);
       });
       watcher.on('error', () => {});
-      this._watcherMap.set(headPath, { watcher, cwdPath });
+      this.watcherMap.set(headPath, { watcher, cwdPath });
     } catch (_) {
       // ignore
     }
   }
 
-  private _debouncedCheck(headPath: string, cwdPath: string): void {
-    const existing = this._debounceTimers.get(cwdPath);
+  private debouncedCheck(headPath: string, cwdPath: string): void {
+    const existing = this.debounceTimers.get(cwdPath);
     if (existing) clearTimeout(existing);
 
     // Capture generation so the async callback can detect stale invocations
-    const gen = this._generation;
-    this._debounceTimers.set(
+    const gen = this.generation;
+    this.debounceTimers.set(
       cwdPath,
       setTimeout(() => {
-        this._debounceTimers.delete(cwdPath);
-        this._readAndEmit(headPath, cwdPath, gen);
+        this.debounceTimers.delete(cwdPath);
+        this.readAndEmit(headPath, cwdPath, gen);
       }, 300)
     );
   }
 
-  private async _readAndEmit(
+  private async readAndEmit(
     headPath: string,
     cwdPath: string,
     gen: number
@@ -405,10 +405,10 @@ export class BranchWatcher {
         { cwd: cwdPath }
       );
       const newBranch = stdout.trim();
-      const lastBranch = this._lastBranch.get(cwdPath);
+      const lastBranch = this.lastBranch.get(cwdPath);
       if (newBranch && newBranch !== lastBranch) {
-        this._lastBranch.set(cwdPath, newBranch);
-        this._callback(cwdPath, newBranch);
+        this.lastBranch.set(cwdPath, newBranch);
+        this.callback(cwdPath, newBranch);
       }
     } catch (_) {
       // Non-fatal — repo may be in detached HEAD or mid-rebase
@@ -417,30 +417,30 @@ export class BranchWatcher {
     // Recreate the watcher — the inode may have changed due to atomic rename.
     // Only recreate if the generation hasn't changed (rebuild/close didn't happen
     // while git rev-parse was in flight).
-    if (this._generation === gen) {
-      this._createWatcher(headPath, cwdPath);
+    if (this.generation === gen) {
+      this.createWatcher(headPath, cwdPath);
     }
   }
 
-  private _closeAll(): void {
-    this._generation++;
-    for (const { watcher } of this._watcherMap.values()) {
+  private closeAll(): void {
+    this.generation++;
+    for (const { watcher } of this.watcherMap.values()) {
       try {
         watcher.close();
       } catch (_) {
         // ignore
       }
     }
-    this._watcherMap.clear();
-    for (const timer of this._debounceTimers.values()) {
+    this.watcherMap.clear();
+    for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
-    this._debounceTimers.clear();
-    this._lastBranch.clear();
+    this.debounceTimers.clear();
+    this.lastBranch.clear();
   }
 
   close(): void {
-    this._closeAll();
+    this.closeAll();
   }
 }
 
@@ -487,23 +487,23 @@ export function resolveGitDir(cwdPath: string): string | null {
 export type RefChangeCallback = (cwdPath: string, branch: string) => void;
 
 export class RefWatcher {
-  private _watchers: fs.FSWatcher[] = [];
-  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private _lastSha = new Map<string, string | null>();
-  private _entries = new Map<
+  private watchers: fs.FSWatcher[] = [];
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastSha = new Map<string, string | null>();
+  private entries = new Map<
     string,
     { cwdPath: string; branch: string; upstreamRef: string }
   >();
-  private _callback: RefChangeCallback;
+  private callback: RefChangeCallback;
 
   constructor(callback: RefChangeCallback) {
-    this._callback = callback;
+    this.callback = callback;
   }
 
   async rebuild(
     entries: Array<{ cwdPath: string; branch: string }>
   ): Promise<void> {
-    this._closeAll();
+    this.closeAll();
 
     // Dedupe entries — multiple sessions can share the same cwdPath:branch
     const seen = new Set<string>();
@@ -528,7 +528,7 @@ export class RefWatcher {
       }
 
       const key = `${cwdPath}:${branch}`;
-      this._entries.set(key, { cwdPath, branch, upstreamRef });
+      this.entries.set(key, { cwdPath, branch, upstreamRef });
 
       // Seed last known SHA
       try {
@@ -537,9 +537,9 @@ export class RefWatcher {
           ['rev-parse', upstreamRef],
           { cwd: cwdPath }
         );
-        this._lastSha.set(key, stdout.trim());
+        this.lastSha.set(key, stdout.trim());
       } catch (_) {
-        this._lastSha.set(key, null);
+        this.lastSha.set(key, null);
       }
 
       // Resolve git dir (handles worktrees via commondir)
@@ -549,42 +549,42 @@ export class RefWatcher {
       // Watch the loose ref file if it exists (e.g. refs/remotes/origin/feature-x)
       // upstreamRef is like "refs/remotes/origin/feature-x"
       const refFile = path.join(gitDir, upstreamRef);
-      this._addWatch(refFile, key);
+      this.addWatch(refFile, key);
 
       // Watch the remote's ref directory to catch new ref creation
       const refDir = path.dirname(refFile);
-      this._addWatch(refDir, key);
+      this.addWatch(refDir, key);
     }
   }
 
-  private _addWatch(target: string, key: string): void {
+  private addWatch(target: string, key: string): void {
     try {
       if (!fs.existsSync(target)) return;
       const watcher = fs.watch(target, { persistent: false }, () => {
-        this._debouncedCheck(key);
+        this.debouncedCheck(key);
       });
       watcher.on('error', () => {});
-      this._watchers.push(watcher);
+      this.watchers.push(watcher);
     } catch (_) {
       // ignore
     }
   }
 
-  private _debouncedCheck(key: string): void {
-    const existing = this._debounceTimers.get(key);
+  private debouncedCheck(key: string): void {
+    const existing = this.debounceTimers.get(key);
     if (existing) clearTimeout(existing);
 
-    this._debounceTimers.set(
+    this.debounceTimers.set(
       key,
       setTimeout(() => {
-        this._debounceTimers.delete(key);
-        this._checkAndEmit(key);
+        this.debounceTimers.delete(key);
+        this.checkAndEmit(key);
       }, 300)
     );
   }
 
-  private async _checkAndEmit(key: string): Promise<void> {
-    const entry = this._entries.get(key);
+  private async checkAndEmit(key: string): Promise<void> {
+    const entry = this.entries.get(key);
     if (!entry) return;
 
     let newSha: string | null;
@@ -599,26 +599,26 @@ export class RefWatcher {
       newSha = null; // Ref deleted or pruned
     }
 
-    const lastSha = this._lastSha.get(key);
+    const lastSha = this.lastSha.get(key);
     if (newSha !== lastSha) {
-      this._lastSha.set(key, newSha);
-      this._callback(entry.cwdPath, entry.branch);
+      this.lastSha.set(key, newSha);
+      this.callback(entry.cwdPath, entry.branch);
     }
   }
 
-  private _closeAll(): void {
-    closeWatchers(this._watchers);
-    this._watchers = [];
-    for (const timer of this._debounceTimers.values()) {
+  private closeAll(): void {
+    closeWatchers(this.watchers);
+    this.watchers = [];
+    for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
-    this._debounceTimers.clear();
-    this._lastSha.clear();
-    this._entries.clear();
+    this.debounceTimers.clear();
+    this.lastSha.clear();
+    this.entries.clear();
   }
 
   close(): void {
-    this._closeAll();
+    this.closeAll();
   }
 }
 
@@ -645,7 +645,7 @@ const IGNORED_DIRS = new Set([
 ]);
 
 export class GitWatcher extends EventEmitter {
-  private _watchers = new Map<
+  private watchers = new Map<
     string,
     {
       treeWatcher: fs.FSWatcher;
@@ -653,10 +653,10 @@ export class GitWatcher extends EventEmitter {
       refCount: number;
     }
   >();
-  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   watch(workspacePath: string): void {
-    const existing = this._watchers.get(workspacePath);
+    const existing = this.watchers.get(workspacePath);
     if (existing) {
       existing.refCount++;
       return;
@@ -677,7 +677,7 @@ export class GitWatcher extends EventEmitter {
           if (!filename) return;
           const firstSegment = filename.split(path.sep)[0] ?? '';
           if (IGNORED_DIRS.has(firstSegment)) return;
-          this._debouncedEmit(workspacePath);
+          this.debouncedEmit(workspacePath);
         }
       );
       treeWatcher.on('error', (err) => {
@@ -719,7 +719,7 @@ export class GitWatcher extends EventEmitter {
       }
       if (headPath && fs.existsSync(headPath)) {
         headWatcher = fs.watch(headPath, { persistent: false }, () => {
-          this._debouncedEmit(workspacePath);
+          this.debouncedEmit(workspacePath);
         });
         headWatcher.on('error', () => {
           /* HEAD watch is best-effort */
@@ -731,7 +731,7 @@ export class GitWatcher extends EventEmitter {
 
     if (!treeWatcher && !headWatcher) return;
 
-    this._watchers.set(workspacePath, {
+    this.watchers.set(workspacePath, {
       treeWatcher: treeWatcher ?? headWatcher!,
       headWatcher: treeWatcher ? headWatcher : undefined,
       refCount: 1,
@@ -739,7 +739,7 @@ export class GitWatcher extends EventEmitter {
   }
 
   unwatch(workspacePath: string): void {
-    const entry = this._watchers.get(workspacePath);
+    const entry = this.watchers.get(workspacePath);
     if (!entry) return;
     entry.refCount--;
     if (entry.refCount <= 0) {
@@ -754,22 +754,22 @@ export class GitWatcher extends EventEmitter {
         } catch {
           // ignore
         }
-      this._watchers.delete(workspacePath);
-      const timer = this._debounceTimers.get(workspacePath);
+      this.watchers.delete(workspacePath);
+      const timer = this.debounceTimers.get(workspacePath);
       if (timer) {
         clearTimeout(timer);
-        this._debounceTimers.delete(workspacePath);
+        this.debounceTimers.delete(workspacePath);
       }
     }
   }
 
-  private _debouncedEmit(workspacePath: string): void {
-    const existing = this._debounceTimers.get(workspacePath);
+  private debouncedEmit(workspacePath: string): void {
+    const existing = this.debounceTimers.get(workspacePath);
     if (existing) clearTimeout(existing);
-    this._debounceTimers.set(
+    this.debounceTimers.set(
       workspacePath,
       setTimeout(async () => {
-        this._debounceTimers.delete(workspacePath);
+        this.debounceTimers.delete(workspacePath);
         // Collect changed file paths via git status for the sidebar's blue-dot tracking
         const changedFiles: string[] = [];
         try {
@@ -804,7 +804,7 @@ export class GitWatcher extends EventEmitter {
   }
 
   close(): void {
-    for (const entry of this._watchers.values()) {
+    for (const entry of this.watchers.values()) {
       try {
         entry.treeWatcher.close();
       } catch {
@@ -817,10 +817,10 @@ export class GitWatcher extends EventEmitter {
           // ignore
         }
     }
-    this._watchers.clear();
-    for (const timer of this._debounceTimers.values()) {
+    this.watchers.clear();
+    for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
-    this._debounceTimers.clear();
+    this.debounceTimers.clear();
   }
 }

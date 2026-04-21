@@ -24,7 +24,7 @@ import { readMeta, writeMeta } from './config.js';
 import { cleanEnv } from './utils.js';
 import { outputParsers } from './output-parsers/index.js';
 import type { OutputParser } from './output-parsers/index.js';
-import { installOpencodeRelayPlugin } from './opencode-relay.js';
+import { installOpenCodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
@@ -309,6 +309,15 @@ export type CreatePtyParams = {
   portVariables?: string[] | undefined;
   /** Optional port allocator instance (uses default if not provided) */
   portAllocator?: PortAllocator | undefined;
+  callbacks?:
+    | {
+        onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
+        onSessionEnd?: Array<
+          (sessionId: string, cwd: string, branchName?: string) => void
+        >;
+        fireBackendStateIfChanged?: (session: Session) => void;
+      }
+    | undefined;
 };
 
 export type CreatePtyResult = SessionSummary & { pid: number | undefined };
@@ -354,7 +363,7 @@ function setupPluginHooks(
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
-    installOpencodeRelayPlugin();
+    installOpenCodeRelayPlugin();
     env.RELAY_IDE_URL = `http://127.0.0.1:${port}`;
     env.RELAY_IDE_SESSION_ID = id;
     env.RELAY_IDE_TOKEN = hookToken;
@@ -441,106 +450,6 @@ function injectPortEnvVars(
   }
 }
 
-function maybeInjectPortEnvVars(
-  env: Record<string, string>,
-  portInjectionParams?: PortInjectionParams
-): void {
-  if (!portInjectionParams) return;
-  injectPortEnvVars(env, portInjectionParams);
-}
-
-function maybeApplyYoloEnv(
-  env: Record<string, string>,
-  paramYolo: boolean | undefined,
-  framework: AgentFramework
-): void {
-  if (paramYolo && framework.yoloEnv) {
-    Object.assign(env, framework.yoloEnv);
-  }
-}
-
-function maybeSetupPluginHooks(
-  id: string,
-  effectiveEventSource: EventSourceType,
-  port: number | undefined,
-  hookToken: string,
-  hooksActive: boolean,
-  env: Record<string, string>
-): { hookToken: string; hooksActive: boolean } {
-  if (effectiveEventSource === 'plugin' && port !== undefined) {
-    return setupPluginHooks(id, port, hookToken, env);
-  }
-  return { hookToken, hooksActive };
-}
-
-function maybeSetupCodexHooks(
-  id: string,
-  framework: AgentFramework,
-  port: number | undefined,
-  hookToken: string,
-  hooksActive: boolean,
-  configDir: string | undefined,
-  env: Record<string, string>
-): { hookToken: string; hooksActive: boolean } {
-  if (framework.id === 'codex' && port !== undefined) {
-    return setupCodexHooks(
-      id,
-      port,
-      hookToken,
-      configDir ?? process.cwd(),
-      env
-    );
-  }
-  return { hookToken, hooksActive };
-}
-
-function maybeInjectClaudeHooks(
-  id: string,
-  framework: AgentFramework,
-  effectiveEventSource: EventSourceType,
-  command: string | undefined,
-  port: number | undefined,
-  hookToken: string,
-  configDir: string | undefined,
-  args: string[]
-): {
-  hookToken: string;
-  hooksActive: boolean;
-  settingsPath: string;
-  args: string[];
-} {
-  const shouldInjectHooks =
-    framework.id === 'claude' &&
-    framework.capabilities.supportsHooks &&
-    effectiveEventSource === 'hooks' &&
-    !command &&
-    port !== undefined;
-
-  if (!shouldInjectHooks) {
-    return { hookToken, hooksActive: false, settingsPath: '', args };
-  }
-
-  let nextHookToken = hookToken;
-  if (!nextHookToken) nextHookToken = crypto.randomBytes(32).toString('hex');
-  try {
-    const settingsPath = writeHooksSettingsFile(
-      id,
-      port,
-      nextHookToken,
-      configDir ?? process.cwd()
-    );
-    return {
-      hookToken: nextHookToken,
-      hooksActive: true,
-      settingsPath,
-      args: ['--settings', settingsPath, ...args],
-    };
-  } catch (err) {
-    logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
-    return { hookToken: '', hooksActive: false, settingsPath: '', args };
-  }
-}
-
 function buildPortInjectionParams(
   repoPath: string,
   worktreePath: string | null,
@@ -550,6 +459,40 @@ function buildPortInjectionParams(
 ): PortInjectionParams | undefined {
   if (!repoPath || (!portVariables && !portAllocator)) return undefined;
   return { repoPath, worktreePath, cwd, portVariables, portAllocator };
+}
+
+interface ClaudeHookInjection {
+  hookToken: string;
+  hooksActive: boolean;
+  settingsPath: string;
+  args: string[];
+}
+
+function injectClaudeHooks(
+  id: string,
+  port: number,
+  configDir: string | undefined,
+  existingToken: string,
+  args: string[]
+): ClaudeHookInjection {
+  const hookToken = existingToken || crypto.randomBytes(32).toString('hex');
+  try {
+    const settingsPath = writeHooksSettingsFile(
+      id,
+      port,
+      hookToken,
+      configDir ?? process.cwd()
+    );
+    return {
+      hookToken,
+      hooksActive: true,
+      settingsPath,
+      args: ['--settings', settingsPath, ...args],
+    };
+  } catch (err) {
+    logger.warn(`Failed to generate hooks settings for session ${id}:`, err);
+    return { hookToken: '', hooksActive: false, settingsPath: '', args };
+  }
 }
 
 function setupEnvAndHooks(
@@ -572,50 +515,58 @@ function setupEnvAndHooks(
     env.CLAUDE_CODE_NO_FLICKER = '1';
   }
 
+  if (paramYolo && framework.yoloEnv) {
+    Object.assign(env, framework.yoloEnv);
+  }
+
   let hookToken = paramHookToken ?? '';
   let args = rawArgs;
+  let pluginHooksActive = paramHooksActive ?? false;
+  let codexHooksActive = false;
+  let claudeHooksActive = false;
+  let settingsPath = '';
 
-  maybeApplyYoloEnv(env, paramYolo, framework);
-  const pluginHookState = maybeSetupPluginHooks(
-    id,
-    effectiveEventSource,
-    port,
-    hookToken,
-    paramHooksActive ?? false,
-    env
-  );
-  hookToken = pluginHookState.hookToken;
+  if (effectiveEventSource === 'plugin' && port !== undefined) {
+    const result = setupPluginHooks(id, port, hookToken, env);
+    hookToken = result.hookToken;
+    pluginHooksActive = result.hooksActive;
+  }
 
-  const codexHookState = maybeSetupCodexHooks(
-    id,
-    framework,
-    port,
-    hookToken,
-    pluginHookState.hooksActive,
-    configDir,
-    env
-  );
-  hookToken = codexHookState.hookToken;
+  if (framework.id === 'codex' && port !== undefined) {
+    const result = setupCodexHooks(
+      id,
+      port,
+      hookToken,
+      configDir ?? process.cwd(),
+      env
+    );
+    hookToken = result.hookToken;
+    codexHooksActive = result.hooksActive;
+  }
 
-  const claudeHookState = maybeInjectClaudeHooks(
-    id,
-    framework,
-    effectiveEventSource,
-    command,
-    port,
-    hookToken,
-    configDir,
-    args
-  );
-  hookToken = claudeHookState.hookToken;
-  args = claudeHookState.args;
-  maybeInjectPortEnvVars(env, portInjectionParams);
+  if (
+    framework.id === 'claude' &&
+    framework.capabilities.supportsHooks &&
+    effectiveEventSource === 'hooks' &&
+    !command &&
+    port !== undefined
+  ) {
+    const result = injectClaudeHooks(id, port, configDir, hookToken, args);
+    hookToken = result.hookToken;
+    args = result.args;
+    settingsPath = result.settingsPath;
+    claudeHooksActive = result.hooksActive;
+  }
+
+  if (portInjectionParams) {
+    injectPortEnvVars(env, portInjectionParams);
+  }
 
   return {
     env,
     hookToken,
-    hooksActive: claudeHookState.hooksActive || codexHookState.hooksActive,
-    settingsPath: claudeHookState.settingsPath,
+    hooksActive: claudeHooksActive || codexHooksActive || pluginHooksActive,
+    settingsPath,
     args,
   };
 }
@@ -753,17 +704,33 @@ function handleParserStateUpdate(
   fireBackendStateIfChanged?.(session);
 }
 
-export function createPtySession(
-  params: CreatePtyParams,
-  sessionsMap: Map<string, Session>,
-  stateChangeCallbacks: Array<
-    (sessionId: string, state: AgentState) => void
-  > = [],
+type ResolvedPtyCallbacks = {
+  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>;
   sessionEndCallbacks: Array<
     (sessionId: string, cwd: string, branchName?: string) => void
-  > = [],
-  fireBackendStateIfChanged?: (session: Session) => void
+  >;
+  fireBackendStateIfChanged: ((session: Session) => void) | undefined;
+};
+
+function resolveCallbacks(
+  callbacks: CreatePtyParams['callbacks']
+): ResolvedPtyCallbacks {
+  return {
+    stateChangeCallbacks: callbacks?.onStateChange ?? [],
+    sessionEndCallbacks: callbacks?.onSessionEnd ?? [],
+    fireBackendStateIfChanged: callbacks?.fireBackendStateIfChanged,
+  };
+}
+
+export function createPtySession(
+  params: CreatePtyParams,
+  sessionsMap: Map<string, Session>
 ): { session: PtySession; result: CreatePtyResult } {
+  const {
+    stateChangeCallbacks,
+    sessionEndCallbacks,
+    fireBackendStateIfChanged,
+  } = resolveCallbacks(params.callbacks);
   const {
     id,
     agent = 'claude',

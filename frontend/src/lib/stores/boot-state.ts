@@ -12,10 +12,19 @@ export interface BootLine {
   error?: string | undefined;
 }
 
-const SERVICES = ['auth', 'workspaces', 'sessions', 'worktrees', 'groups'] as const;
+const SERVICES = [
+  'auth',
+  'workspaces',
+  'sessions',
+  'worktrees',
+  'groups',
+] as const;
 
 function makePendingLines(): BootLine[] {
-  return SERVICES.map((service) => ({ service, status: 'pending' as FetchStatus }));
+  return SERVICES.map((service) => ({
+    service,
+    status: 'pending' as FetchStatus,
+  }));
 }
 
 export interface BootStateStore {
@@ -79,5 +88,3 @@ export const useBootStateStore = create<BootStateStore>()((set, get) => ({
     set({ lines: makePendingLines(), phase: 'greeting', bootComplete: false });
   },
 }));
-
-export default useBootStateStore;

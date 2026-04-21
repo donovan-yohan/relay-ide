@@ -373,5 +373,3 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   isWorkspaceCollapsed: (path) => get().collapsedWorkspaces.has(path),
 }));
-
-export default useUiStore;

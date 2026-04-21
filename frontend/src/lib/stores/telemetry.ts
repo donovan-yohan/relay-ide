@@ -371,5 +371,3 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     );
   },
 }));
-
-export default useTelemetryStore;
