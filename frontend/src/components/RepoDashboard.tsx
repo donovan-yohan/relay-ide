@@ -6,12 +6,15 @@ import type {
   PullRequest,
   ActivityEntry,
   DashboardData,
+  AnyIssue,
 } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { TuiButton } from './TuiButton.js';
 import { TuiProgress } from './TuiProgress.js';
 import { PrRow } from './PrRow.js';
+import TicketsPanel from './TicketsPanel.js';
+import StartWorkModal from './StartWorkModal.js';
 import { useScrollOverflow } from '../hooks/useScrollOverflow.js';
 import { formatCompact, formatResetAt } from '../lib/utils.js';
 import './RepoDashboard.css';
@@ -27,8 +30,11 @@ export interface RepoDashboardProps {
   onFixConflicts: (pr: PullRequest) => void;
   onPrAction: (pr: PullRequest) => void;
   onOpenPrSession: (pr: PullRequest) => void;
+  onSessionCreated?: (sessionId: string) => void;
   hint?: React.ReactNode;
 }
+
+type ActiveTab = 'overview' | 'tickets';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -351,6 +357,7 @@ export function RepoDashboard({
   onFixConflicts: _onFixConflicts,
   onPrAction,
   onOpenPrSession,
+  onSessionCreated,
   hint,
 }: RepoDashboardProps) {
   const sessions = useSessionsStore((s) => s.sessions);
@@ -360,6 +367,8 @@ export function RepoDashboard({
   );
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
+  const [startWorkIssue, setStartWorkIssue] = useState<AnyIssue | null>(null);
   const sortBy = 'age';
   const sortDir: 'asc' | 'desc' = 'desc';
   const { ref: prScrollRef, hasOverflow: prHasOverflow } = useScrollOverflow();
@@ -395,31 +404,62 @@ export function RepoDashboard({
         </div>
       ) : (
         <>
-          <UsageSection repoSessions={repoSessions} repoPath={repoPath} />
-          <section
-            className={[
-              'dashboard-section',
-              'dashboard-section--scroll',
-              prHasOverflow && 'has-overflow',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            ref={prScrollRef}
-          >
-            <div className="section-heading">open pull requests</div>
-            <PrListBody
-              data={data}
-              isLoading={isLoading}
-              isError={isError}
-              workspaceName={workspaceName}
-              searchQuery={searchQuery}
-              processedPrs={processedPrs}
-              onSearchChange={setSearchQuery}
-              onOpenPrSession={onOpenPrSession}
-              onPrAction={onPrAction}
-            />
-          </section>
-          <ActivitySection data={data} isLoading={isLoading} />
+          <div className="tab-strip">
+            <button
+              className={[
+                'tab-btn',
+                activeTab === 'overview' && 'tab-btn--active',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              onClick={() => setActiveTab('overview')}
+            >
+              Overview
+            </button>
+            <button
+              className={[
+                'tab-btn',
+                activeTab === 'tickets' && 'tab-btn--active',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              onClick={() => setActiveTab('tickets')}
+            >
+              Tickets
+            </button>
+          </div>
+
+          {activeTab === 'overview' ? (
+            <>
+              <UsageSection repoSessions={repoSessions} repoPath={repoPath} />
+              <section
+                className={[
+                  'dashboard-section',
+                  'dashboard-section--scroll',
+                  prHasOverflow && 'has-overflow',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                ref={prScrollRef}
+              >
+                <div className="section-heading">open pull requests</div>
+                <PrListBody
+                  data={data}
+                  isLoading={isLoading}
+                  isError={isError}
+                  workspaceName={workspaceName}
+                  searchQuery={searchQuery}
+                  processedPrs={processedPrs}
+                  onSearchChange={setSearchQuery}
+                  onOpenPrSession={onOpenPrSession}
+                  onPrAction={onPrAction}
+                />
+              </section>
+              <ActivitySection data={data} isLoading={isLoading} />
+            </>
+          ) : (
+            <TicketsPanel onStartWork={setStartWorkIssue} />
+          )}
         </>
       )}
       <div className="cta-row">
@@ -436,6 +476,17 @@ export function RepoDashboard({
           </TuiButton>
         )}
       </div>
+      {startWorkIssue && (
+        <StartWorkModal
+          issue={startWorkIssue}
+          open={true}
+          onClose={() => setStartWorkIssue(null)}
+          onSessionCreated={(sessionId) => {
+            setStartWorkIssue(null);
+            onSessionCreated?.(sessionId);
+          }}
+        />
+      )}
     </div>
   );
 }
