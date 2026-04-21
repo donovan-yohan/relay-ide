@@ -333,6 +333,7 @@ interface TerminalAreaContentProps {
   onArchive: () => Promise<void>;
   onSelectSession: (id: string) => void;
   onCloseSession: (sessionId: string) => void;
+  onSessionCreated: (sessionId: string) => void;
 }
 
 function TerminalAreaContent({
@@ -352,6 +353,7 @@ function TerminalAreaContent({
   onArchive,
   onSelectSession,
   onCloseSession,
+  onSessionCreated,
 }: TerminalAreaContentProps) {
   // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
@@ -501,6 +503,7 @@ function TerminalAreaContent({
           onFixConflicts={onFixConflicts}
           onPrAction={onPrAction}
           onOpenPrSession={onOpenPrSession}
+          onSessionCreated={onSessionCreated}
           hint={
             onboardingHints.showRepoAddedHint ? (
               <Hint id={HINT_REPO_ADDED_NO_SESSIONS} variant="border">
@@ -985,6 +988,7 @@ export default function App() {
           onArchive={handleArchive}
           onSelectSession={handleSelectSession}
           onCloseSession={handleCloseSession}
+          onSessionCreated={handleNewSessionCreated}
         />
       </div>
 
