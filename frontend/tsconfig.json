@@ -3,6 +3,11 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "$lib/*": ["src/lib/*"]
+    },
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -11,7 +16,15 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "../server/mobile-input-pipeline.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.js",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "vite.config.ts",
+    "../shared/**/*.ts"
+  ]
 }

@@ -8,6 +8,7 @@ Categories: `architecture` | `testing` | `patterns` | `workflow` | `debugging` |
 ---
 
 ### L-20260320-alternate-screen-scroll: Non-tmux alternate screen sessions need a viewport freeze layer to support scroll during streaming
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-20
@@ -18,6 +19,7 @@ When building terminal features for alternate screen apps (Claude Code, vim), re
 ---
 
 ### L-20260321-mobile-ws-reconnect: Mobile WebSocket reconnection must not rely solely on `onclose` — use `visibilitychange` + heartbeat
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-21
@@ -28,6 +30,7 @@ When a mobile browser backgrounds an app, the OS silently kills TCP connections 
 ---
 
 ### L-20260321-nav-model-ui-flows: UI flows must be updated when the navigation model changes — dead code paths become user-facing bugs
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-21
@@ -38,6 +41,7 @@ When migrating from a selection-based model (user picks repo/worktree at creatio
 ---
 
 ### L-20260322-session-state-refresh: Session state derived from external systems (git, filesystem) must have a refresh mechanism — snapshot-at-creation is insufficient
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -48,6 +52,7 @@ When storing state that mirrors an external system (e.g., `session.branchName` f
 ---
 
 ### L-20260321-execfile-err-code: Check `err.code` not `err.message` for Node.js execFile errors
+
 - status: active
 - category: debugging
 - source: /harness:loop Phase 1 org-dashboard 2026-03-21
@@ -57,6 +62,7 @@ Node.js `child_process.execFile` throws with `code: 'ENOENT'` and message `'spaw
 ---
 
 ### L-20260321-github-search-pr-filter: GitHub Search API returns issues AND PRs — filter on `pull_request` field
+
 - status: active
 - category: patterns
 - source: /harness:loop Phase 1 org-dashboard 2026-03-21
@@ -66,6 +72,7 @@ Node.js `child_process.execFile` throws with `code: 'ENOENT'` and message `'spaw
 ---
 
 ### L-20260321-github-search-reviewers: GitHub Search API does not return `requested_reviewers` — reviewer detection is best-effort
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -75,6 +82,7 @@ The `search/issues` endpoint returns a subset of PR metadata. Notably, `requeste
 ---
 
 ### L-20260321-github-search-review-decision: GitHub Search API does not return `reviewDecision` — PR status dot defaults to success
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -84,6 +92,7 @@ The `search/issues` endpoint does not include `reviewDecision` (APPROVED, CHANGE
 ---
 
 ### L-20260321-github-search-open-only: Org dashboard "All" filter operates on `is:open` backend data — cannot show closed PRs
+
 - status: active
 - category: patterns
 - source: PR #38 review (org-dashboard Phase 1)
@@ -93,6 +102,7 @@ The org dashboard backend queries `is:open` in its GitHub search. The frontend "
 ---
 
 ### L-20260322-sidebar-group-identity: Sidebar group rows must derive identity from the group, not from individual sessions within it
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -103,6 +113,7 @@ When a sidebar row represents a group of sessions (e.g., all tabs for a worktree
 ---
 
 ### L-20260322-session-creation-params: Session creation parameters must be stored on the session object if they need to survive restarts
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-22
@@ -113,6 +124,7 @@ When session creation accepts flags that affect runtime behavior (yolo mode, cus
 ---
 
 ### L-20260323-tanstack-query-untrack: Never call `.refetch()` on a TanStack Query store inside a Svelte 5 `$effect` without `untrack()`
+
 - status: active
 - category: debugging
 - source: /harness:bug 2026-03-23
@@ -123,6 +135,7 @@ TanStack Query's `createQuery` returns a Svelte 5 reactive proxy. Accessing `.re
 ---
 
 ### L-20260324-config-stale-read: When one module mutates shared config on disk, all modules that read that config must reload — never validate against a startup snapshot
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-24
@@ -133,6 +146,7 @@ When multiple server modules access the same config file, ensure they all use th
 ---
 
 ### L-20260323-shared-naming-counter: When multiple code paths create the same resource type, they must share a single counter/naming mechanism
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-23
@@ -143,6 +157,7 @@ When multiple server modules access the same config file, ensure they all use th
 ---
 
 ### L-20260324-fixed-in-dialog: `position: fixed` inside a `<dialog>` top-layer element uses the dialog as the containing block, not the viewport
+
 - status: active
 - category: debugging
 - source: commit f88d830 (settings-webhooks branch, 2026-03-24)
@@ -153,6 +168,7 @@ When an element with `position: fixed` is a descendant of a `<dialog>` that is i
 ---
 
 ### L-20260324-exact-optional-types: `exactOptionalPropertyTypes: true` requires explicit `| undefined` in object spread and partial-init assignments
+
 - status: active
 - category: patterns
 - source: settings-webhooks branch, frontend tsconfig.json
@@ -163,6 +179,7 @@ The frontend tsconfig enables `exactOptionalPropertyTypes: true`. Under this set
 ---
 
 ### L-20260325-browser-permission-ui: Features gated by browser permissions must surface the permission state in the UI — a settings toggle is not a permission request
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -173,6 +190,7 @@ When a feature depends on a browser permission (Notifications, Geolocation, Came
 ---
 
 ### L-20260325-silent-catch-blocks: Silent catch blocks on browser API calls hide broken features — always log or surface permission/subscription failures
+
 - status: active
 - category: debugging
 - source: /harness:bug 2026-03-25
@@ -183,6 +201,7 @@ When calling browser APIs that can fail due to missing permissions (e.g., `pushM
 ---
 
 ### L-20260325-dnd-device-aware: DnD `dragDisabled` must be device-aware — always-on for mouse, gated for touch
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -193,6 +212,7 @@ When using `svelte-dnd-action` on a scrollable container, `dragDisabled` must us
 ---
 
 ### L-20260325-library-flag-coupling: Never couple a library's technical enable/disable flag to unrelated UI visibility changes
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -203,6 +223,7 @@ When a library provides a boolean to enable/disable its event handling (e.g., `s
 ---
 
 ### L-20260325-resource-name-uniqueness: Auto-generated resource names that interact with external systems must include a uniqueness token
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -213,6 +234,7 @@ When generating names for resources (branches, worktrees, containers) that inter
 ---
 
 ### L-20260325-bug-fix-tracking: When a bug analysis recommends both a short-term and long-term fix, the long-term fix needs a tracking mechanism or it will be forgotten
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -223,6 +245,7 @@ The 2026-03-19 stale-PR bug analysis recommended (1) filter merged/closed PRs (s
 ---
 
 ### L-20260324-status-state-machine: UI status indicators derived from multiple signal sources need a formal state machine — not ad-hoc guards
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-24
@@ -233,6 +256,7 @@ When a display status (e.g., session dot color) is derived from multiple indepen
 ---
 
 ### L-20260325-ws-query-invalidation: WebSocket-driven query invalidation should be scoped to the affected resource — blanket-invalidation is strongly discouraged
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -243,6 +267,7 @@ When WebSocket events carry a payload identifying which resource changed (e.g., 
 ---
 
 ### L-20260325-negative-cache-ttl: Negative query results from external systems need longer cache TTLs than positive results — "nothing exists" rarely changes without user action
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -253,6 +278,7 @@ When a query to an external system (GitHub API, database, etc.) returns "not fou
 ---
 
 ### L-20260325-dual-mobile-mechanism: Never use dual mechanisms (CSS media query + JS matchMedia) to implement mobile-specific behavior — use CSS alone for visibility
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-25
@@ -263,6 +289,7 @@ When a UI element needs different visibility on mobile vs desktop (e.g., "always
 ---
 
 ### L-20260325-template-state-chain: When a template adds explicit checks for a state already handled by a state machine, use `{:else if}` — never independent `{#if}` blocks for mutually exclusive states
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-25
@@ -273,6 +300,7 @@ When a pure-function state machine (e.g., `derivePrAction()`) already maps input
 ---
 
 ### L-20260327-api-error-body-parse: Never call `.json()` on error responses without try-catch — non-JSON error bodies turn server errors into client TypeErrors
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-27
@@ -283,6 +311,7 @@ When parsing error response bodies from API calls, always wrap `.json()` in a tr
 ---
 
 ### L-20260327-express4-async-errors: Express 4 does NOT catch async route handler errors — unhandled throws leave responses hanging
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-27
@@ -293,6 +322,7 @@ Express 4's `Layer.prototype.handle_request` only has a sync try-catch around `f
 ---
 
 ### L-20260326-repo-source-unification: Any endpoint that needs "all repos" must merge config.workspaces and config.rootDirs — never rely on just one
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-26
@@ -303,6 +333,7 @@ The server has two sources of repo paths: `config.workspaces[]` (directly added)
 ---
 
 ### L-20260328-startup-gate-web-setup: When adding a web-based setup flow for a resource that had a CLI-only gate, relax the CLI gate to trust the web layer
+
 - status: active
 - category: architecture
 - source: /harness:bug 2026-03-28
@@ -313,11 +344,183 @@ When a server startup gate (hard exit if precondition not met) is the only way t
 ---
 
 ### L-20260328-service-install-preconditions: Service install commands must verify all runtime preconditions before installing — the service process cannot prompt
+
 - status: active
 - category: patterns
 - source: /harness:bug 2026-03-28
 - branch: master
 
 When a CLI command installs a background service (launchd, systemd) that starts a separate process, the install path must verify all preconditions that the service process needs but cannot interactively satisfy. Background service processes have no TTY, no user interaction, and limited environment. If the server requires a configured PIN to start, the `--bg` / `install` command must either (a) ensure the PIN exists before installing, or (b) the server must be able to start without it and offer a non-interactive setup path. Never assume the background-started process will have the same capabilities as the interactive CLI session.
+
+---
+
+### L-20260328-svelte-runes-testability: Split .svelte.ts modules into pure .ts logic + thin .svelte.ts wrapper for node:test compatibility
+
+- status: active
+- category: testing
+- source: /harness:reflect 2026-03-28
+- branch: design/command-center
+
+Svelte 5 runes (`$state`, `$derived`) are compiler macros that only work when processed by the Svelte compiler. Files with `.svelte.ts` extension cannot be compiled by `tsc` alone, so they cannot be included in `tsconfig.test.json` for `node --test` execution. When a reactive module needs unit tests, split it: put all pure logic in a plain `.ts` file (Map operations, validation, filtering), then create a thin `.svelte.ts` wrapper that imports the pure functions and adds reactivity via `$state`. Tests import from the `.ts` file; components import from the `.svelte.ts` file. This pattern was used for `registry.ts` + `registry.svelte.ts` in the action system.
+
+---
+
+### L-20260328-config-type-field-rename: When renaming a config field's type (e.g., string[] → Entity[]), update ALL consumers before merging — `as any` casts mask runtime type mismatches
+
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: design/true-workspaces
+
+When a config field changes its type (e.g., `Config.workspaces` from `string[]` to `Workspace[]`), using `as any` casts to bypass TypeScript hides runtime breakage. Every consumer that reads the field with the old type assumption will silently receive the wrong shape at runtime — string comparisons against objects, `.startsWith()` on entity objects, `.includes()` on arrays of the wrong type. The fix agent's approach of changing the type declaration and grepping all consumers is correct, but must be verified by running `tsc --noEmit` BEFORE committing. When planning a type rename: (1) grep all files that access the field, (2) update consumers to use the correct accessor (e.g., `config.repos` for paths, `config.workspaces` for entities), (3) verify zero compile errors, THEN commit.
+
+---
+
+### L-20260328-serialization-whitelist-audit: When adding properties to a long-lived object, check whether it needs serialization — whitelist-based serialization silently drops new fields
+
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+When a system uses whitelist-based serialization (`SerializedPtySession` manually picks fields from `PtySession`), adding a new property to the runtime type does NOT cause a compile error if serialization is missing. This has caused the same bug class three times: `tmuxSessionName` (2026-03-17), `yolo`/`claudeArgs` (2026-03-22), `hookToken`/`hooksActive` (2026-03-28). When adding any property to a long-lived object that participates in serialization, always check the serialized type and `serializeAll()`. Better: use `Pick<>` or a compile-time exhaustiveness check so TypeScript flags the gap.
+
+---
+
+### L-20260328-surviving-process-stale-config: When a process survives a restart of its parent, the parent must accept the process's stale credentials — not just its own fresh ones
+
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+When process A (server) spawns process B (Claude Code in tmux) with credentials (hookToken), and process A restarts while process B survives (tmux daemon keeps B alive), the restarted A must still accept B's original credentials. Generating fresh credentials for the "restored" session while the old process still holds the original credentials creates an authentication mismatch. Either serialize and restore the original credentials, or have a mechanism to re-provision credentials to the surviving process.
+
+---
+
+### L-20260328-module-level-env-eval: Module-level constants derived from `process.env` are evaluated once at import time — they cannot be overridden in tests and leak across process boundaries
+
+- status: active
+- category: testing
+- source: /harness:bug 2026-03-28
+- branch: nightly
+
+Even with the current `getTmuxPrefix()` implementation, the same pitfall applies if a module computes a value from it at import time (for example, `const tmuxPrefix = getTmuxPrefix();` at module scope). That expression is evaluated when the module is first imported. Tests that import this module get whatever `NO_PIN` was in the environment at import time — the value cannot be changed per-test. If the user's shell exports `NO_PIN=1` (e.g., from running `npm run dev`), all tests in the same process see the dev value. Either: (1) make it a function that can be called with explicit parameters, (2) use a getter that reads the env on each access, or (3) ensure tests clean the environment before importing the module.
+
+---
+
+### L-20260328-settings-file-recreation: When restoring a process with preserved credentials, the credential FILE must also be re-created — token preservation alone is insufficient
+
+- status: active
+- category: architecture
+- source: /harness:reflect 2026-03-28
+- branch: fix/hooks-403-after-restart
+
+When a server serializes a session's authentication token (e.g., hookToken) and restores it on restart, the token alone is not enough. If the spawned process reads its credentials from a config file on disk (e.g., Claude Code's `--settings` hooks-settings.json in `/tmp/`), that file may have been cleaned up by the OS between restarts. The restore path must distinguish two scenarios: (1) surviving process (e.g., tmux attach) — the old process already has the file path and the file likely still exists, no re-creation needed; (2) dead process being respawned — the new process needs the config file re-written to disk AND the `--settings` arg injected into its spawn args. Gating the file-write block on "token already exists" silently skips file creation for case (2), leaving the new process without its configuration. When preserving credentials across restarts, always ask: "does the consumer need a file on disk, or just an in-memory token?"
+
+---
+
+### L-20260329-nullish-override-shadow: Never pass global defaults as explicit overrides when a server-side merge cascade exists — `false ?? true` evaluates to `false`
+
+- status: active
+- category: architecture
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server function uses nullish coalescing (`??`) to merge settings from multiple layers (global < workspace < repo < per-request), an explicit `false` passed as a per-request override shadows a `true` from a lower layer — because `false ?? true` is `false`. Frontend quick-launch functions should omit fields they don't have explicit user input for (send `undefined`, not the global default) so the server's cascade resolves correctly. The pattern "read global state, pass it as override" defeats the entire purpose of per-repo settings. When calling an API that resolves settings from a cascade, only include fields where the user made an explicit choice.
+
+---
+
+### L-20260329-settings-resolution-boundary: Session settings resolution should happen at one layer — don't pre-resolve on the frontend what the server already resolves
+
+- status: active
+- category: patterns
+- source: /harness:bug 2026-03-29
+- branch: nightly
+
+When a server has a canonical settings resolution function (e.g., `resolveSessionSettings()` that merges global → workspace → repo → override), the frontend should not duplicate this logic by pre-filling overrides from its own partial view of the settings. The frontend's `configState` only has global defaults — it cannot see repo-level overrides. Sending global defaults as explicit overrides creates a shadow that the server's merge cascade cannot penetrate. Either (a) omit the fields and let the server resolve, or (b) fetch the merged settings from the server before populating UI defaults. The `fetchMergedWorkspaceSettings()` API exists for case (b).
+
+---
+
+### L-20260403-migration-button-completeness: Framework migrations must audit ALL interactive elements — not just the primary action buttons
+
+- status: active
+- category: patterns
+- source: /harness:bug DYS-11 2026-04-03
+- branch: worktree-DYS-11
+
+When migrating a UI framework (e.g., Svelte → React), raw `<button>` elements in non-primary positions are the most likely elements to be left unconverted. The migration agent typically converts the "obvious" action buttons (PR row actions, form submits) but misses secondary buttons embedded in sub-components: error state retries, filter management delete buttons, confirmation inline actions. After any framework migration, run a grep for `<button` in all migrated component files and verify each instance either (a) uses the project's design-system button component (`TuiButton`), or (b) is an intentional pattern-exception with a CSS class that reproduces equivalent design-system styling (e.g., tab strip navigation). Bespoke CSS that re-implements button styling is a red flag — it means the component was migrated structurally but not visually.
+
+---
+
+### L-20260404-dialog-display-cascade: Never set `display` unconditionally on `<dialog>` elements — author CSS overrides the UA hidden state
+
+- status: active
+- category: debugging
+- scope: universal
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+The HTML `<dialog>` element is hidden when not open via the browser's UA stylesheet: `dialog:not([open]) { display: none }`. If an author stylesheet sets `display: flex` (or `grid`, `block`, etc.) on the `<dialog>` element without qualifying with `[open]`, the author rule wins — because author stylesheets always beat UA stylesheets in the CSS cascade, regardless of specificity. The dialog content then renders in normal DOM flow even though `.showModal()` was never called. On mobile, where the main app container is `position: fixed`, the unintentionally-visible dialog paints on top of the app. Always either: (1) apply layout `display` only to `dialog[open]` or a child wrapper element, or (2) add an explicit `.dialog-class:not([open]) { display: none; }` rule alongside any `display` override.
+
+---
+
+### L-20260404-dialog-layout-wrapper: Apply layout properties to a child wrapper inside `<dialog>`, not the dialog element itself
+
+- status: active
+- category: architecture
+- scope: universal
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+The `<dialog>` element has special browser-managed display semantics (hidden when not open, top-layer when modal). Setting layout properties (`display: flex`, `flex-direction`, `overflow`) directly on the `<dialog>` element risks overriding these semantics. Instead, structure dialog components as `<dialog><div class="wrapper">...</div></dialog>` and apply all layout CSS to the wrapper. The `<dialog>` element itself should only receive cosmetic properties (background, border, width, max-height) that don't interfere with the UA stylesheet's display management. This project's `WorkspaceSettingsDialog` follows this pattern correctly (`.workspace-settings-dialog-content` wrapper), while `DialogShell` applies `display: flex` directly to the `<dialog>`, causing the bug.
+
+---
+
+### L-20260404-dialog-visibility-test: Page-load tests should assert that no dialog content is visible without user interaction
+
+- status: active
+- category: testing
+- scope: repo
+- source: /harness:bug 2026-04-04
+- branch: everest-24bf
+
+When a project uses multiple `<dialog>` elements with custom CSS, add a structural test that runs after page boot and asserts: (1) `document.querySelectorAll('dialog[open]')` is empty, and (2) no dialog content is within the visible viewport. This catches CSS cascade issues where author styles accidentally override the UA's `display: none` for non-open dialogs. The test is especially important on mobile viewports where fixed-position main containers change paint order.
+
+---
+
+### L-20260412-gpu-feature-detection: `'gpu' in navigator` detects API availability, not rendering capability — GPU renderer selection must verify actual output
+
+- status: active
+- category: architecture
+- scope: universal
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+When using a GPU-accelerated renderer (WebGPU, WebGL) with a DOM fallback, the feature detection guard (`'gpu' in navigator`, `!!window.WebGLRenderingContext`) only confirms the browser exposes the API — not that the GPU can actually render the content. On mobile devices, the API may be present but the GPU pipeline silently produces no output due to driver limitations, incomplete implementations, or capability gaps. The try/catch around addon loading only catches synchronous errors, but GPU initialization is async (`requestAdapter()`, `requestDevice()`). Either: (1) gate GPU renderers on device class (skip on mobile entirely), (2) verify rendering after async init completes (e.g., canary write + pixel readback), or (3) use an async-aware fallback that waits for the init promise before committing. Never treat "addon loaded without throwing" as "rendering works."
+
+---
+
+### L-20260412-sync-catch-async-init: try/catch around async-initializing addons only catches constructor errors — async failures need separate handling
+
+- status: active
+- category: debugging
+- scope: universal
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+When a library addon has a synchronous `activate()` method that starts an async initialization internally (e.g., xterm.js WebGPU addon calls `_initializeWebgpu()` with `await requestAdapter()`), wrapping the `loadAddon()` call in try/catch gives a false sense of safety. The catch block fires for constructor errors and synchronous activate failures, but the actual initialization happens in a fire-and-forget async path. If the async init fails, no error propagates to the caller. Additionally, checking for a DOM element (`t.element`) after `t.open()` only proves the DOM was created, not that the renderer works. When using addons with async initialization: (1) check if the addon exposes a ready/error event, (2) add a post-init verification step, or (3) at minimum gate the addon on known-good environments rather than relying on the catch.
+
+---
+
+### L-20260412-mobile-gpu-renderer: Mobile devices should not use GPU-accelerated terminal renderers — use DOM rendering as the default
+
+- status: active
+- category: patterns
+- scope: repo
+- source: /harness:bug 2026-04-12
+- branch: nightly
+
+In relay-ide's Terminal.tsx, the WebGPU renderer addon should be skipped when `isMobileDevice` is true. Mobile GPU drivers have significantly less mature WebGPU support than desktop, and silent rendering failures (black canvas with working cursor) are indistinguishable from a broken terminal. The DOM renderer works reliably on all mobile browsers. When adding GPU-accelerated features that have a DOM fallback, always include a device-class check alongside the API feature detection: `if ('gpu' in navigator && !isMobileDevice)`.
 
 ---

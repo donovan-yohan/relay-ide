@@ -1,0 +1,134 @@
+.org-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bg);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.org-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.org-title {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.org-subtitle {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.tab-strip {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  margin-top: -4px;
+}
+
+.tab-btn {
+  padding: 8px 12px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition:
+    color 0.12s,
+    border-color 0.12s;
+  white-space: nowrap;
+  letter-spacing: 0.06em;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-badge {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--accent);
+  margin-left: 4px;
+  opacity: 0.8;
+}
+
+.state-message {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.state-message--info a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.state-message--info a:hover {
+  text-decoration: underline;
+}
+
+.state-message--error {
+  color: var(--status-error);
+}
+
+.presets-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.preset-select {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.preset-select:focus,
+.preset-select:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+@media (max-width: 600px) {
+  .org-dashboard {
+    padding: 16px;
+  }
+}

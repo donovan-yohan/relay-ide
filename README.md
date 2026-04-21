@@ -1,28 +1,28 @@
-# claude-remote-cli
+# relay-ide
 
 Control Claude Code from your phone or any browser — manage multiple terminal sessions across repos and worktrees with a mobile-friendly web UI.
 
 ## Prerequisites
 
-| Dependency | Why |
-|------------|-----|
-| **[Node.js 24+](https://nodejs.org/)** | Runtime for the server |
-| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH` |
-| **[Codex CLI](https://github.com/openai/codex)** | *Optional* — alternative coding agent. Install if you want to use Codex sessions |
-| **[GitHub CLI (`gh`)](https://cli.github.com/)** | *Optional* — required for the **PRs tab**. Run `gh auth login` after installing. |
+| Dependency                                                            | Why                                                                              |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **[Node.js 24+](https://nodejs.org/)**                                | Runtime for the server                                                           |
+| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH`                                    |
+| **[Codex CLI](https://github.com/openai/codex)**                      | _Optional_ — alternative coding agent. Install if you want to use Codex sessions |
+| **[GitHub CLI (`gh`)](https://cli.github.com/)**                      | _Optional_ — required for the **PRs tab**. Run `gh auth login` after installing. |
 
 ## Getting Started
 
 ### 1. Install
 
 ```bash
-npm install -g claude-remote-cli
+npm install -g relay-ide
 ```
 
 ### 2. Start the server
 
 ```bash
-claude-remote-cli --bg
+relay-ide --bg
 ```
 
 This installs a persistent background service (launchd on macOS, systemd on Linux) that starts on login and restarts on crash. See [Background Service](#background-service) for more options.
@@ -30,7 +30,7 @@ This installs a persistent background service (launchd on macOS, systemd on Linu
 Or run in the foreground:
 
 ```bash
-claude-remote-cli
+relay-ide
 ```
 
 ### 3. Set your PIN
@@ -43,7 +43,7 @@ If you started the server in the foreground, you can set the PIN in the terminal
 
 Click **Settings** in the app to add root directories — these are parent folders that contain your git repos (scanned one level deep).
 
-You can also edit `~/.config/claude-remote-cli/config.json` directly:
+You can also edit `~/.config/relay-ide/config.json` directly:
 
 ```json
 {
@@ -53,11 +53,11 @@ You can also edit `~/.config/claude-remote-cli/config.json` directly:
 
 ### 5. Access from your phone
 
-claude-remote-cli binds to `0.0.0.0` by default, but you should **not** expose it to the public internet. Use [Tailscale](https://tailscale.com/) for a private encrypted connection between your devices — see [Remote Access](#remote-access) below.
+Relay IDE binds to `0.0.0.0` by default, but you should **not** expose it to the public internet. Use [Tailscale](https://tailscale.com/) for a private encrypted connection between your devices — see [Remote Access](#remote-access) below.
 
 ## Remote Access
 
-The recommended way to access claude-remote-cli from another device (phone, tablet, laptop) is [Tailscale](https://tailscale.com/), which creates a private encrypted network using WireGuard.
+The recommended way to access Relay IDE from another device (phone, tablet, laptop) is [Tailscale](https://tailscale.com/), which creates a private encrypted network using WireGuard.
 
 1. **Install Tailscale** on your computer and on your phone/tablet
    - macOS: `brew install tailscale` or download from [tailscale.com/download](https://tailscale.com/download)
@@ -81,8 +81,8 @@ Tested on **macOS** and **Linux**. Windows is not currently tested — file watc
 ## CLI Usage
 
 ```
-Usage: claude-remote-cli [options]
-       claude-remote-cli <command>
+Usage: relay-ide [options]
+       relay-ide <command>
 
 Commands:
   update             Update to the latest version from npm
@@ -100,7 +100,7 @@ Options:
   --bg               Shortcut: install and start as background service
   --port <port>      Override server port (default: 3456)
   --host <host>      Override bind address (default: 0.0.0.0)
-  --config <path>    Path to config.json (default: ~/.config/claude-remote-cli/config.json)
+  --config <path>    Path to config.json (default: ~/.config/relay-ide/config.json)
   --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
   --help, -h         Show this help
@@ -111,42 +111,42 @@ Options:
 Run as a persistent service that starts on login and restarts on crash:
 
 ```bash
-claude-remote-cli --bg
+relay-ide --bg
 ```
 
 Or with custom options:
 
 ```bash
-claude-remote-cli install --port 4000
+relay-ide install --port 4000
 ```
 
 Manage the service:
 
 ```bash
-claude-remote-cli status      # Check if running
-claude-remote-cli uninstall   # Stop and remove
+relay-ide status      # Check if running
+relay-ide uninstall   # Stop and remove
 ```
 
 - **macOS**: Uses launchd (`~/Library/LaunchAgents/`)
 - **Linux**: Uses systemd user units (`~/.config/systemd/user/`)
-- **Logs (macOS)**: `~/.config/claude-remote-cli/logs/`
-- **Logs (Linux)**: `journalctl --user -u claude-remote-cli -f`
+- **Logs (macOS)**: `~/.config/relay-ide/logs/`
+- **Logs (Linux)**: `journalctl --user -u relay-ide -f`
 
 ## Configuration
 
-Config is stored at `~/.config/claude-remote-cli/config.json` (created on first run).
+Config is stored at `~/.config/relay-ide/config.json` (created on first run).
 
 When running from source, it uses `./config.json` in the project root instead.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address |
-| `port` | `3456` | Server port |
-| `cookieTTL` | `24h` | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`) |
-| `rootDirs` | `[]` | Directories containing your git repos (scanned one level deep) |
-| `claudeCommand` | `claude` | Path to the Claude Code CLI binary |
-| `claudeArgs` | `[]` | Extra arguments passed to every session |
-| `defaultAgent` | `claude` | Default coding agent CLI (`claude` or `codex`) |
+| Field           | Default   | Description                                                    |
+| --------------- | --------- | -------------------------------------------------------------- |
+| `host`          | `0.0.0.0` | Bind address                                                   |
+| `port`          | `3456`    | Server port                                                    |
+| `cookieTTL`     | `24h`     | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`)                 |
+| `rootDirs`      | `[]`      | Directories containing your git repos (scanned one level deep) |
+| `claudeCommand` | `claude`  | Path to the Claude Code CLI binary                             |
+| `claudeArgs`    | `[]`      | Extra arguments passed to every session                        |
+| `defaultAgent`  | `claude`  | Default coding agent CLI (`claude` or `codex`)                 |
 
 Root directories can also be managed from the **Settings** button in the app.
 
@@ -157,20 +157,21 @@ The PIN hash is stored in config under `pinHash`.
 **Reset via CLI** (recommended):
 
 ```bash
-claude-remote-cli pin reset
+relay-ide pin reset
 ```
 
 This requires an interactive terminal. You'll be asked to verify your current PIN (if set), then enter a new one.
 
 **Reset manually:**
 
-1. Delete the `pinHash` field from `~/.config/claude-remote-cli/config.json`
-2. Restart the server (`claude-remote-cli uninstall && claude-remote-cli --bg`)
+1. Delete the `pinHash` field from `~/.config/relay-ide/config.json`
+2. Restart the server (`relay-ide uninstall && relay-ide --bg`)
 3. Open the web UI and set a new PIN
 
 ## Features
 
 ### Session Management
+
 - **Multi-agent support** — choose between Claude Code and Codex as the coding agent per session, with a configurable default in Settings
 - **Repo sessions** — click any idle repo to instantly open Claude with `--continue` (no dialog), or start fresh from the new-session dialog
 - **Branch-aware worktrees** — create worktrees from new or existing branches with a type-to-search branch picker
@@ -182,6 +183,7 @@ This requires an interactive terminal. You'll be asked to verify your current PI
 - **Worktree cleanup** — delete inactive worktrees via the trash pill button (removes worktree, prunes refs, deletes branch)
 
 ### Pull Requests
+
 - **Pull requests tab** — view your open PRs (authored and review-requested) via `gh` CLI, organized in collapsible per-repo groups with count badges, Author/Reviewer filter, and one-click session creation from any PR branch
 
 ### GitHub Webhooks (real-time PR / CI updates)
@@ -195,6 +197,7 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 > No public server is required. The smee.io proxy forwards GitHub webhook payloads to your local instance over a persistent SSE connection.
 
 ### UI
+
 - **Tabbed sidebar** — switch between Repos, Worktrees, and PRs views with shared filters and item counts
 - **Sidebar filters** — filter by root directory, repo, or text search
 - **Inline actions** — pill buttons on session cards for rename, YOLO, worktree creation, and delete (hover on desktop, long-press on mobile)
@@ -204,26 +207,36 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 - **Clipboard image paste** — paste screenshots directly into remote terminal sessions (macOS clipboard + xclip on Linux)
 
 ### Settings
+
 - **Full-screen Settings dialog** — redesigned as a scrollable full-screen modal with a table-of-contents drawer for quick section navigation
 - **GitHub integration** — connect via OAuth App (Device Flow) for PR data, CI status, and webhook management
 - **Webhook management** — self-service webhook CRUD per repo with smee.io proxy, health state, and auto-provision backfill
 - **Jira integration** — connect Jira and configure project mappings for the org dashboard tickets panel
 
 ### Operations
+
 - **PIN-protected access** with rate limiting
 - **Real-time updates** — worktree changes on disk are pushed to the browser instantly via WebSocket
 - **Smart polling** — falls back to 30-second polling for repos without webhooks; switches off automatically once a webhook is active
 - **Update notifications** — toast notification when a new version is available, with one-click update
-- **CLI self-update** — `claude-remote-cli update` to update from npm
+- **CLI self-update** — `relay-ide update` to update from npm
+
+## terminal renderer (xterm.js fork)
+
+relay-ide uses a [fork of xterm.js](https://github.com/donovan-yohan/xterm.js) instead of the official npm package. the fork adds the experimental WebGPU renderer ([xtermjs/xterm.js#5666](https://github.com/xtermjs/xterm.js/pull/5666)) and gives us the ability to patch terminal behavior for our use case.
+
+the fork stays as close to upstream as possible. you can verify the exact differences from upstream and reproduce the build artifacts yourself — see the fork's [FORK.md](https://github.com/donovan-yohan/xterm.js/blob/master/FORK.md) for details.
+
+the dependency in `package.json` is pinned to a specific commit hash so every install is deterministic and auditable.
 
 ## Architecture
 
 TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
 
 ```
-claude-remote-cli/
+relay-ide/
 ├── bin/
-│   └── claude-remote-cli.ts  # CLI entry point
+│   └── relay-ide.ts  # CLI entry point
 ├── server/
 │   ├── index.ts        # Express server, REST API routes
 │   ├── sessions.ts     # PTY session manager (node-pty)

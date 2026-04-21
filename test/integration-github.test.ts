@@ -1,17 +1,22 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
 import type { Server } from 'node:http';
 
-import { createIntegrationGitHubRouter, type IntegrationGitHubDeps } from '../server/integration-github.js';
+import {
+  createIntegrationGitHubRouter,
+  type IntegrationGitHubDeps,
+} from '../server/integration-github.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { GitHubIssuesResponse } from '../server/types.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // Loose mock type — cast to IntegrationGitHubDeps['execAsync'] at call sites
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 
 let tmpDir: string;
 let configPath: string;
@@ -76,27 +81,24 @@ function makeMockExec(opts: {
   };
 }
 
-function startServer(execAsyncFn: MockExec): Promise<void> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
-    const deps = { configPath, execAsync: execAsyncFn } as unknown as IntegrationGitHubDeps;
-    app.use('/integration-github', createIntegrationGitHubRouter(deps));
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+async function startServer(execAsyncFn: MockExec): Promise<void> {
+  const app = express();
+  app.use(express.json());
+  const deps = {
+    configPath,
+    execAsync: execAsyncFn,
+  } as unknown as IntegrationGitHubDeps;
+  app.use('/integration-github', createIntegrationGitHubRouter(deps));
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function getIssues(): Promise<GitHubIssuesResponse> {
@@ -104,12 +106,12 @@ async function getIssues(): Promise<GitHubIssuesResponse> {
   return res.json() as Promise<GitHubIssuesResponse>;
 }
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'integration-github-test-'));
   configPath = path.join(tmpDir, 'config.json');
 });
 
-after(async () => {
+afterAll(async () => {
   await stopServer();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -118,17 +120,29 @@ test('returns issues from all workspace repos merged and sorted', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   const exec = makeMockExec({
     issuesByPath: {
       [WORKSPACE_PATH_A]: [
-        makeIssueItem({ number: 10, title: 'Issue A', updatedAt: '2026-03-21T10:00:00Z' }),
-        makeIssueItem({ number: 11, title: 'Issue A2', updatedAt: '2026-03-19T10:00:00Z' }),
+        makeIssueItem({
+          number: 10,
+          title: 'Issue A',
+          updatedAt: '2026-03-21T10:00:00Z',
+        }),
+        makeIssueItem({
+          number: 11,
+          title: 'Issue A2',
+          updatedAt: '2026-03-19T10:00:00Z',
+        }),
       ],
       [WORKSPACE_PATH_B]: [
-        makeIssueItem({ number: 20, title: 'Issue B', updatedAt: '2026-03-20T10:00:00Z' }),
+        makeIssueItem({
+          number: 20,
+          title: 'Issue B',
+          updatedAt: '2026-03-20T10:00:00Z',
+        }),
       ],
     },
   });
@@ -136,12 +150,12 @@ test('returns issues from all workspace repos merged and sorted', async () => {
   await startServer(exec);
 
   const data = await getIssues();
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.issues.length, 3, 'Should return all 3 issues from both repos');
+  expect(data.error).toBe(undefined);
+  expect(data.issues.length).toBe(3);
 
   // Verify sorted descending by updatedAt
   const updatedAts = data.issues.map((i) => i.updatedAt);
-  assert.deepEqual(updatedAts, [
+  expect(updatedAts).toEqual([
     '2026-03-21T10:00:00Z',
     '2026-03-20T10:00:00Z',
     '2026-03-19T10:00:00Z',
@@ -149,19 +163,19 @@ test('returns issues from all workspace repos merged and sorted', async () => {
 
   // Verify repoPath and repoName are attached
   const issue10 = data.issues.find((i) => i.number === 10);
-  assert.equal(issue10?.repoPath, WORKSPACE_PATH_A);
-  assert.equal(issue10?.repoName, 'repo-a');
+  expect(issue10?.repoPath).toBe(WORKSPACE_PATH_A);
+  expect(issue10?.repoName).toBe('repo-a');
 
   const issue20 = data.issues.find((i) => i.number === 20);
-  assert.equal(issue20?.repoPath, WORKSPACE_PATH_B);
-  assert.equal(issue20?.repoName, 'repo-b');
+  expect(issue20?.repoPath).toBe(WORKSPACE_PATH_B);
+  expect(issue20?.repoName).toBe('repo-b');
 });
 
 test('returns no_workspaces error when empty', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [],
+    repos: [],
   });
 
   // execAsync should never be called — pass a mock that always throws to verify early-return
@@ -170,15 +184,15 @@ test('returns no_workspaces error when empty', async () => {
   await startServer(exec);
 
   const data = await getIssues();
-  assert.equal(data.error, 'no_workspaces');
-  assert.equal(data.issues.length, 0);
+  expect(data.error).toBe('no_workspaces');
+  expect(data.issues.length).toBe(0);
 });
 
 test('returns gh_not_in_path when gh not found', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A],
+    repos: [WORKSPACE_PATH_A],
   });
 
   const err = new Error('spawn gh ENOENT') as NodeJS.ErrnoException;
@@ -189,15 +203,15 @@ test('returns gh_not_in_path when gh not found', async () => {
   await startServer(exec);
 
   const data = await getIssues();
-  assert.equal(data.error, 'gh_not_in_path');
-  assert.equal(data.issues.length, 0);
+  expect(data.error).toBe('gh_not_in_path');
+  expect(data.issues.length).toBe(0);
 });
 
 test('caches per-repo within TTL — gh called once per repo for two requests', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   let ghCallCount = 0;
@@ -221,28 +235,30 @@ test('caches per-repo within TTL — gh called once per repo for two requests', 
 
   // First request — populates cache for both repos
   const first = await getIssues();
-  assert.equal(first.error, undefined);
-  assert.equal(first.issues.length, 2);
-  assert.equal(ghCallCount, 2, 'gh should be called once per repo on first request');
+  expect(first.error).toBe(undefined);
+  expect(first.issues.length).toBe(2);
+  expect(ghCallCount).toBe(2);
 
   // Second request — should be served from per-repo cache, no additional calls
   const second = await getIssues();
-  assert.equal(second.error, undefined);
-  assert.equal(second.issues.length, 2);
-  assert.equal(ghCallCount, 2, 'gh should not be called again within TTL (cache hit)');
+  expect(second.error).toBe(undefined);
+  expect(second.issues.length).toBe(2);
+  expect(ghCallCount).toBe(2);
 });
 
 test('partial failure: repo that throws still returns others', async () => {
   await stopServer();
   saveConfig(configPath, {
     ...DEFAULTS,
-    workspaces: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
+    repos: [WORKSPACE_PATH_A, WORKSPACE_PATH_B],
   });
 
   // repo-b will throw a generic error (not ENOENT, so non-fatal)
   const exec = makeMockExec({
     issuesByPath: {
-      [WORKSPACE_PATH_A]: [makeIssueItem({ number: 99, title: 'Surviving issue' })],
+      [WORKSPACE_PATH_A]: [
+        makeIssueItem({ number: 99, title: 'Surviving issue' }),
+      ],
     },
     errorByPath: {
       [WORKSPACE_PATH_B]: new Error('git command failed'),
@@ -253,8 +269,8 @@ test('partial failure: repo that throws still returns others', async () => {
 
   const data = await getIssues();
   // No top-level error — partial failures are silent
-  assert.equal(data.error, undefined, `Unexpected error: ${data.error}`);
-  assert.equal(data.issues.length, 1, 'Should return the one issue from the succeeding repo');
-  assert.equal(data.issues[0]?.number, 99);
-  assert.equal(data.issues[0]?.repoPath, WORKSPACE_PATH_A);
+  expect(data.error).toBe(undefined);
+  expect(data.issues.length).toBe(1);
+  expect(data.issues[0]?.number).toBe(99);
+  expect(data.issues[0]?.repoPath).toBe(WORKSPACE_PATH_A);
 });

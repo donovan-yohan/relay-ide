@@ -44,7 +44,7 @@ export function track(
   action: string,
   target?: string,
   properties?: Record<string, unknown>,
-  sessionId?: string | null,
+  sessionId?: string | null
 ): void {
   queue.push({
     category,
@@ -72,9 +72,10 @@ function getTrackValue(el: Element): string | null {
 
 function buildSelector(el: Element): string {
   const tag = el.tagName.toLowerCase();
-  const cls = el.className && typeof el.className === 'string'
-    ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.')
-    : '';
+  const cls =
+    el.className && typeof el.className === 'string'
+      ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.')
+      : '';
   return tag + cls;
 }
 
@@ -89,18 +90,25 @@ function handleClick(e: MouseEvent): void {
 
   // Only attach session_id for session-scoped UI (terminal, session-tab).
   // Global UI (sidebar, dialog, search, pr-top-bar) gets session_id: null.
-  const isSessionScoped = trackValue != null && SESSION_SCOPED_PREFIXES.some(p => trackValue.startsWith(p));
+  const isSessionScoped =
+    trackValue != null &&
+    SESSION_SCOPED_PREFIXES.some((p) => trackValue.startsWith(p));
   const sessionId = isSessionScoped ? (getActiveSessionId?.() ?? null) : null;
 
   track('ui', 'click', target, text ? { text } : undefined, sessionId);
 }
 
-export function initAnalytics(activeSessionIdGetter: () => string | null): void {
+export function initAnalytics(
+  activeSessionIdGetter: () => string | null
+): void {
   device = isMobileDevice ? 'mobile' : 'desktop';
   getActiveSessionId = activeSessionIdGetter;
 
   // Auto-capture clicks
-  document.addEventListener('click', handleClick, { capture: true, passive: true });
+  document.addEventListener('click', handleClick, {
+    capture: true,
+    passive: true,
+  });
 
   // Periodic flush
   flushTimer = setInterval(flush, FLUSH_INTERVAL_MS);
@@ -121,6 +129,8 @@ export function destroyAnalytics(): void {
     clearInterval(flushTimer);
     flushTimer = null;
   }
-  document.removeEventListener('click', handleClick, { capture: true } as EventListenerOptions);
+  document.removeEventListener('click', handleClick, {
+    capture: true,
+  } as EventListenerOptions);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
 }

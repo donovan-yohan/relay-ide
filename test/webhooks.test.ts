@@ -1,10 +1,10 @@
-import { describe, it, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import crypto from 'node:crypto';
 import express from 'express';
 import type { Server } from 'node:http';
 
 import { createWebhookRouter } from '../server/webhooks.js';
+import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -13,7 +13,10 @@ import { createWebhookRouter } from '../server/webhooks.js';
 const TEST_SECRET = 'test-webhook-secret';
 
 function signPayload(secret: string, payload: string): string {
-  return 'sha256=' + crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  return (
+    'sha256=' +
+    crypto.createHmac('sha256', secret).update(payload).digest('hex')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -22,37 +25,34 @@ function signPayload(secret: string, payload: string): string {
 
 let server: Server;
 let baseUrl: string;
-let broadcasts: Array<{ type: string; data: Record<string, unknown> | undefined }>;
+let broadcasts: Array<{
+  type: string;
+  data: Record<string, unknown> | undefined;
+}>;
 
-function startServer(): Promise<void> {
-  return new Promise((resolve) => {
-    broadcasts = [];
+async function startServer(): Promise<void> {
+  broadcasts = [];
 
-    const deps = {
-      secret: () => TEST_SECRET,
-      broadcastEvent: (type: string, data?: Record<string, unknown>) => {
-        broadcasts.push({ type, data });
-      },
-    };
+  const deps = {
+    secret: () => TEST_SECRET,
+    broadcastEvent: (type: string, data?: Record<string, unknown>) => {
+      broadcasts.push({ type, data });
+    },
+  };
 
-    const app = express();
-    app.use('/webhooks', createWebhookRouter(deps));
+  const app = express();
+  app.use('/webhooks', createWebhookRouter(deps));
 
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        baseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  });
+  const result = await createTestServer(app);
+  server = result.server;
+  baseUrl = result.url;
 }
 
 function stopServer(): Promise<void> {
-  return new Promise((resolve) => {
-    if (server) server.close(() => resolve());
-    else resolve();
-  });
+  if (server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+  return Promise.resolve();
 }
 
 async function postWebhook(opts: {
@@ -87,8 +87,8 @@ async function postWebhook(opts: {
 // ---------------------------------------------------------------------------
 
 describe('webhook handler', () => {
-  before(() => startServer());
-  after(() => stopServer());
+  beforeAll(() => startServer());
+  afterAll(() => stopServer());
 
   it('rejects request with missing signature (401)', async () => {
     const res = await postWebhook({
@@ -96,8 +96,8 @@ describe('webhook handler', () => {
       event: 'pull_request',
       omitSignature: true,
     });
-    assert.equal(res.status, 401);
-    assert.equal(broadcasts.length, 0);
+    expect(res.status).toBe(401);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('rejects request with invalid signature (401)', async () => {
@@ -106,83 +106,118 @@ describe('webhook handler', () => {
       event: 'pull_request',
       signature: 'sha256=invalidsignature',
     });
-    assert.equal(res.status, 401);
-    assert.equal(broadcasts.length, 0);
+    expect(res.status).toBe(401);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('accepts valid signature and broadcasts pr-updated for pull_request event', async () => {
     broadcasts = [];
     const body = { action: 'opened', number: 42 };
     const res = await postWebhook({ body, event: 'pull_request' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const json = await res.json() as { ok: boolean };
-    assert.equal(json.ok, true);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'pr-updated');
+    const json = (await res.json()) as { ok: boolean };
+    expect(json.ok).toBe(true);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('pr-updated');
   });
 
   it('broadcasts pr-updated for pull_request_review event', async () => {
     broadcasts = [];
     const body = { action: 'submitted', review: {} };
     const res = await postWebhook({ body, event: 'pull_request_review' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'pr-updated');
+    expect(res.status).toBe(200);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('pr-updated');
   });
 
   it('broadcasts ci-updated for check_suite event', async () => {
     broadcasts = [];
     const body = { action: 'completed', check_suite: {} };
     const res = await postWebhook({ body, event: 'check_suite' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts.length, 1);
-    assert.equal(broadcasts[0]?.type, 'ci-updated');
+    expect(res.status).toBe(200);
+    expect(broadcasts.length).toBe(1);
+    expect(broadcasts[0]?.type).toBe('ci-updated');
   });
 
   it('returns 200 but does NOT broadcast for unknown event (star)', async () => {
     broadcasts = [];
     const body = { action: 'created' };
     const res = await postWebhook({ body, event: 'star' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const json = await res.json() as { ok: boolean };
-    assert.equal(json.ok, true);
-    assert.equal(broadcasts.length, 0, 'Should not broadcast for unknown events');
+    const json = (await res.json()) as { ok: boolean };
+    expect(json.ok).toBe(true);
+    expect(broadcasts.length).toBe(0);
   });
 
   it('includes repository full_name in broadcast data', async () => {
     broadcasts = [];
-    const body = { action: 'opened', number: 42, repository: { full_name: 'owner/repo' } };
+    const body = {
+      action: 'opened',
+      number: 42,
+      repository: { full_name: 'owner/repo' },
+    };
     const res = await postWebhook({ body, event: 'pull_request' });
-    assert.equal(res.status, 200);
-    assert.equal(broadcasts[0]?.data?.repo, 'owner/repo');
+    expect(res.status).toBe(200);
+    expect(broadcasts[0]?.data?.repo).toBe('owner/repo');
+  });
+});
+
+describe('webhook merge detection', () => {
+  beforeAll(() => startServer());
+  afterAll(() => stopServer());
+
+  it('pull_request.closed with merged:true broadcasts pr-updated and worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: true, head: { ref: 'fix/auth' } },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    expect(res.status).toBe(200);
+    const types = broadcasts.map((b) => b.type);
+    expect(types).toEqual(['pr-updated', 'worktrees-changed']);
+  });
+
+  it('pull_request.closed without merge does not broadcast worktrees-changed', async () => {
+    broadcasts = [];
+    const res = await postWebhook({
+      body: {
+        action: 'closed',
+        pull_request: { merged: false },
+        repository: { full_name: 'owner/repo' },
+      },
+      event: 'pull_request',
+    });
+    expect(res.status).toBe(200);
+    const types = broadcasts.map((b) => b.type);
+    expect(types).toEqual(['pr-updated']);
   });
 });
 
 describe('webhook handler — no secret configured', () => {
-  let noSecretServer: Server;
   let noSecretBaseUrl: string;
+  let closeNoSecret: () => Promise<void>;
 
-  before(() => new Promise<void>((resolve) => {
+  beforeAll(async () => {
     const app = express();
-    app.use('/webhooks', createWebhookRouter({
-      secret: () => undefined,
-      broadcastEvent: () => {},
-    }));
-    noSecretServer = app.listen(0, '127.0.0.1', () => {
-      const addr = noSecretServer.address();
-      if (typeof addr === 'object' && addr) {
-        noSecretBaseUrl = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve();
-    });
-  }));
+    app.use(
+      '/webhooks',
+      createWebhookRouter({
+        secret: () => undefined,
+        broadcastEvent: () => {},
+      })
+    );
+    const result = await createTestServer(app);
+    noSecretBaseUrl = result.url;
+    closeNoSecret = result.close;
+  });
 
-  after(() => new Promise<void>((resolve) => {
-    if (noSecretServer) noSecretServer.close(() => resolve());
-    else resolve();
-  }));
+  afterAll(() => closeNoSecret());
 
   it('rejects with 401 when webhook secret is not configured', async () => {
     const payload = JSON.stringify({ action: 'opened' });
@@ -196,8 +231,8 @@ describe('webhook handler — no secret configured', () => {
       },
       body: payload,
     });
-    assert.equal(res.status, 401);
-    const json = await res.json() as { error: string };
-    assert.equal(json.error, 'Webhooks not configured');
+    expect(res.status).toBe(401);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe('Webhooks not configured');
   });
 });

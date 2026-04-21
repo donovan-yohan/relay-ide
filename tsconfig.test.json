@@ -1,5 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "include": ["server/**/*.ts", "bin/**/*.ts", "test/**/*.ts", "frontend/src/lib/pr-state.ts", "frontend/src/lib/state/display-state.ts", "frontend/src/lib/state/sidebar-items.ts", "frontend/src/lib/types.ts"],
-  "exclude": ["public/", "node_modules/", "dist/"]
-}

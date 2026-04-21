@@ -15,11 +15,14 @@ const attemptMap = new Map<string, AttemptEntry>();
 
 export async function hashPin(pin: string): Promise<string> {
   const salt = crypto.randomBytes(16).toString('hex');
-  const derived = await scrypt(pin, salt, SCRYPT_KEYLEN) as Buffer;
+  const derived = (await scrypt(pin, salt, SCRYPT_KEYLEN)) as Buffer;
   return `scrypt:${salt}:${derived.toString('hex')}`;
 }
 
-export async function verifyPin(pin: string, hash: string | null | undefined): Promise<boolean> {
+export async function verifyPin(
+  pin: string,
+  hash: string | null | undefined
+): Promise<boolean> {
   if (!hash) return false;
   if (hash.startsWith('scrypt:')) {
     const [, salt, storedHashHex] = hash.split(':');
@@ -27,7 +30,7 @@ export async function verifyPin(pin: string, hash: string | null | undefined): P
     try {
       const storedBuf = Buffer.from(storedHashHex, 'hex');
       if (storedBuf.length !== SCRYPT_KEYLEN) return false;
-      const derived = await scrypt(pin, salt, SCRYPT_KEYLEN) as Buffer;
+      const derived = (await scrypt(pin, salt, SCRYPT_KEYLEN)) as Buffer;
       return crypto.timingSafeEqual(storedBuf, derived);
     } catch {
       return false;

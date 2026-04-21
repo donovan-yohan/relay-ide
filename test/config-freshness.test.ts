@@ -1,5 +1,4 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,10 +10,10 @@ describe('config freshness', () => {
   let configPath: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crc-config-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-config-test-'));
     configPath = path.join(tmpDir, 'config.json');
     const initial: Config = { ...DEFAULTS } as Config;
-    initial.workspaces = ['/existing/workspace'];
+    initial.repos = ['/existing/workspace'];
     fs.writeFileSync(configPath, JSON.stringify(initial, null, 2));
   });
 
@@ -22,61 +21,58 @@ describe('config freshness', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('loadConfig sees workspaces added to disk after initial load', () => {
+  it('loadConfig sees repos added to disk after initial load', () => {
     // Simulate: server starts, loads config
     const initial = loadConfig(configPath);
-    assert.deepEqual(initial.workspaces, ['/existing/workspace']);
+    expect(initial.repos).toEqual(['/existing/workspace']);
 
-    // Simulate: workspace router adds a workspace and saves to disk
+    // Simulate: workspace router adds a repo and saves to disk
     const updated = loadConfig(configPath);
-    updated.workspaces = [...(updated.workspaces ?? []), '/new/workspace'];
+    updated.repos = [...(updated.repos ?? []), '/new/workspace'];
     saveConfig(configPath, updated);
 
     // Simulate: session handler reads config (fresh)
     const fresh = loadConfig(configPath);
-    assert.ok(fresh.workspaces!.includes('/new/workspace'),
-      'Fresh loadConfig should see workspace added after initial load');
-    assert.ok(fresh.workspaces!.includes('/existing/workspace'),
-      'Fresh loadConfig should still see original workspace');
+    expect(fresh.repos).toContain('/new/workspace');
+    expect(fresh.repos).toContain('/existing/workspace');
   });
 
-  it('loadConfig sees workspaces removed from disk after initial load', () => {
+  it('loadConfig sees repos removed from disk after initial load', () => {
     const initial = loadConfig(configPath);
-    assert.deepEqual(initial.workspaces, ['/existing/workspace']);
+    expect(initial.repos).toEqual(['/existing/workspace']);
 
-    // Simulate: workspace router removes the workspace
+    // Simulate: workspace router removes the repo
     const updated = loadConfig(configPath);
-    updated.workspaces = [];
+    updated.repos = [];
     saveConfig(configPath, updated);
 
     // Fresh read should see empty list
     const fresh = loadConfig(configPath);
-    assert.deepEqual(fresh.workspaces, []);
+    expect(fresh.repos).toEqual([]);
   });
 
   it('loadConfig sees workspace settings changes', () => {
-    // Add workspace settings to disk
+    // Add repo settings to disk
     const config = loadConfig(configPath);
-    config.workspaceSettings = { '/existing/workspace': { defaultAgent: 'codex' } };
+    config.repoSettings = {
+      '/existing/workspace': { defaultFramework: 'codex' },
+    };
     saveConfig(configPath, config);
 
     // Fresh read should see settings
     const fresh = loadConfig(configPath);
-    assert.equal(fresh.workspaceSettings?.['/existing/workspace']?.defaultAgent, 'codex');
+    expect(fresh.repoSettings?.['/existing/workspace']?.defaultFramework).toBe(
+      'codex'
+    );
   });
 
   it('loadConfig throws when config file is missing', () => {
     fs.unlinkSync(configPath);
-    assert.throws(
-      () => loadConfig(configPath),
-      { message: /Config file not found/ },
-    );
+    expect(() => loadConfig(configPath)).toThrow(/Config file not found/);
   });
 
   it('loadConfig throws on corrupted JSON', () => {
     fs.writeFileSync(configPath, '{bad json');
-    assert.throws(
-      () => loadConfig(configPath),
-    );
+    expect(() => loadConfig(configPath)).toThrow();
   });
 });

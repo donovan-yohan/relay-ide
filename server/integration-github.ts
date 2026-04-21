@@ -45,7 +45,9 @@ interface GhIssueItem {
  * Caller is responsible for mounting and applying auth middleware:
  *   app.use('/integration-github', requireAuth, createIntegrationGitHubRouter({ configPath }));
  */
-export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Router {
+export function createIntegrationGitHubRouter(
+  deps: IntegrationGitHubDeps
+): Router {
   const { configPath } = deps;
   const exec = deps.execAsync ?? execFileAsync;
 
@@ -61,10 +63,13 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
   // GET /integrations/github/issues — list open issues assigned to @me across all workspaces
   router.get('/issues', async (_req: Request, res: Response) => {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
-      const response: GitHubIssuesResponse = { issues: [], error: 'no_workspaces' };
+      const response: GitHubIssuesResponse = {
+        issues: [],
+        error: 'no_workspaces',
+      };
       res.json(response);
       return;
     }
@@ -85,23 +90,36 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
           ({ stdout } = await exec(
             'gh',
             [
-              'issue', 'list',
-              '--assignee', '@me',
-              '--state', 'open',
-              '--json', 'number,title,url,state,labels,assignees,createdAt,updatedAt',
-              '--limit', '50',
+              'issue',
+              'list',
+              '--assignee',
+              '@me',
+              '--state',
+              'open',
+              '--json',
+              'number,title,url,state,labels,assignees,createdAt,updatedAt',
+              '--limit',
+              '50',
             ],
-            { cwd: wsPath, timeout: GH_TIMEOUT_MS },
+            { cwd: wsPath, timeout: GH_TIMEOUT_MS }
           ));
         } catch (err) {
           const errCode = (err as NodeJS.ErrnoException).code;
           if (errCode === 'ENOENT') {
-            throw Object.assign(new Error('gh_not_in_path'), { code: 'GH_NOT_IN_PATH' });
+            throw Object.assign(new Error('gh_not_in_path'), {
+              code: 'GH_NOT_IN_PATH',
+            });
           }
           // Check for auth failure via stderr
           const stderr = (err as { stderr?: string }).stderr ?? '';
-          if (stderr.includes('not logged') || stderr.includes('auth') || stderr.includes('authentication')) {
-            throw Object.assign(new Error('gh_not_authenticated'), { code: 'GH_NOT_AUTHENTICATED' });
+          if (
+            stderr.includes('not logged') ||
+            stderr.includes('auth') ||
+            stderr.includes('authentication')
+          ) {
+            throw Object.assign(new Error('gh_not_authenticated'), {
+              code: 'GH_NOT_AUTHENTICATED',
+            });
           }
           // Not a github repo or other non-fatal error
           return [];
@@ -132,7 +150,7 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
         // Update per-repo cache
         repoCache.set(wsPath, { issues, fetchedAt: now });
         return issues;
-      }),
+      })
     );
 
     // Check if gh is not in path or not authenticated (any settled rejection with known codes)
@@ -140,12 +158,18 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
       if (result.status === 'rejected') {
         const err = result.reason as { code?: string };
         if (err.code === 'GH_NOT_IN_PATH') {
-          const response: GitHubIssuesResponse = { issues: [], error: 'gh_not_in_path' };
+          const response: GitHubIssuesResponse = {
+            issues: [],
+            error: 'gh_not_in_path',
+          };
           res.json(response);
           return;
         }
         if (err.code === 'GH_NOT_AUTHENTICATED') {
-          const response: GitHubIssuesResponse = { issues: [], error: 'gh_not_authenticated' };
+          const response: GitHubIssuesResponse = {
+            issues: [],
+            error: 'gh_not_authenticated',
+          };
           res.json(response);
           return;
         }
@@ -161,7 +185,10 @@ export function createIntegrationGitHubRouter(deps: IntegrationGitHubDeps): Rout
     }
 
     // Sort by updatedAt descending
-    allIssues.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    allIssues.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
 
     const response: GitHubIssuesResponse = { issues: allIssues };
     res.json(response);

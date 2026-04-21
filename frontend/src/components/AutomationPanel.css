@@ -1,0 +1,89 @@
+.automation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 12px;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.automation-panel .panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.automation-panel .panel-title {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.automation-panel .panel-loading,
+.automation-panel .panel-error {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.automation-panel .retry-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.automation-panel .retry-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.automation-panel .toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.automation-panel .toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.automation-panel .toggle-row--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.automation-panel .toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.automation-panel .toggle-label {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.automation-panel .toggle-desc {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.7;
+}

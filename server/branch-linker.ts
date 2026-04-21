@@ -68,10 +68,13 @@ function extractTicketIds(branchName: string): string[] {
  * Caller is responsible for mounting and applying auth middleware:
  *   app.use('/branch-linker', requireAuth, createBranchLinkerRouter({ configPath }));
  */
-export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fetchLinks: () => Promise<BranchLinksResponse> } {
+export function createBranchLinkerRouter(
+  deps: BranchLinkerDeps
+): Router & { fetchLinks: () => Promise<BranchLinksResponse> } {
   const { configPath } = deps;
   const exec = deps.execAsync ?? execFileAsync;
-  const getActiveBranchNames = deps.getActiveBranchNames ?? (() => new Map<string, Set<string>>());
+  const getActiveBranchNames =
+    deps.getActiveBranchNames ?? (() => new Map<string, Set<string>>());
 
   const router = Router();
 
@@ -82,7 +85,7 @@ export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fet
   /** Core link-building logic, usable both from the HTTP handler and internal callers. */
   async function fetchLinks(): Promise<BranchLinksResponse> {
     const config = getConfig();
-    const workspacePaths = config.workspaces ?? [];
+    const workspacePaths = config.repos ?? [];
 
     if (workspacePaths.length === 0) {
       return {};
@@ -106,7 +109,7 @@ export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fet
           ({ stdout } = await exec(
             'git',
             ['branch', '--format=%(refname:short)'],
-            { cwd: wsPath, timeout: GIT_TIMEOUT_MS },
+            { cwd: wsPath, timeout: GIT_TIMEOUT_MS }
           ));
         } catch {
           // Not a git repo or git not available — non-fatal
@@ -116,7 +119,10 @@ export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fet
         const repoName = path.basename(wsPath);
         const activeInRepo = activeBranchNames.get(wsPath) ?? new Set<string>();
 
-        const branchNames = stdout.split('\n').map((b) => b.trim()).filter(Boolean);
+        const branchNames = stdout
+          .split('\n')
+          .map((b) => b.trim())
+          .filter(Boolean);
         const links: Array<{ ticketId: string; link: BranchLink }> = [];
 
         for (const branchName of branchNames) {
@@ -144,7 +150,7 @@ export function createBranchLinkerRouter(deps: BranchLinkerDeps): Router & { fet
         }
 
         return links;
-      }),
+      })
     );
 
     // Build the ticket -> BranchLink[] map

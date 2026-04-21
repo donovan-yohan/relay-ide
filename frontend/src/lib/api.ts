@@ -1,4 +1,34 @@
-import type { SessionSummary, WorktreeInfo, Workspace, DashboardData, CiStatus, PrInfo, PullRequest, ActivityEntry, WorkspaceSettings, OrgPrsResponse, GitHubIssuesResponse, BranchLinksResponse, JiraIssuesResponse, JiraStatus, AutomationSettings, FilterPreset, BranchInfo } from './types.js';
+import type {
+  SessionSummary,
+  WorktreeInfo,
+  Repo,
+  DashboardData,
+  CiStatus,
+  PrInfo,
+  PullRequest,
+  ActivityEntry,
+  WorkspaceSettings,
+  OrgPrsResponse,
+  GitHubIssuesResponse,
+  BranchLinksResponse,
+  JiraIssuesResponse,
+  JiraStatus,
+  AutomationSettings,
+  FilterPreset,
+  BranchInfo,
+  Workspace,
+  ChangedFilesResponse,
+  FileDiffResponse,
+  SessionTelemetry,
+  AccountTelemetry,
+  AnalyticsOverview,
+  AnalyticsSessionsResponse,
+  AnalyticsSessionDetail,
+  AnalyticsTrend,
+  AnalyticsToolBreakdown,
+  AnalyticsRateLimitHistory,
+  FrameworkInfo,
+} from './types.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -14,6 +44,8 @@ export interface BrowseEntry {
   path: string;
   isGitRepo: boolean;
   hasChildren: boolean;
+  isDirectory?: boolean;
+  size?: number;
 }
 
 export interface BrowseResponse {
@@ -28,9 +60,28 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function parseErrorBody(res: Response, fallback: string): Promise<string> {
+async function jsonOrNull<T>(res: Response): Promise<T | null> {
+  if (!res.ok) return null;
+  return res.json() as Promise<T>;
+}
+
+async function jsonEither<T>(res: Response): Promise<T> {
+  const text = await res.text();
   try {
-    const data = await res.json() as { error?: string };
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`
+    );
+  }
+}
+
+async function parseErrorBody(
+  res: Response,
+  fallback: string
+): Promise<string> {
+  try {
+    const data = (await res.json()) as { error?: string };
     return data.error || fallback;
   } catch {
     return fallback;
@@ -55,9 +106,7 @@ export async function checkAuth(): Promise<boolean> {
 }
 
 export async function checkAuthStatus(): Promise<{ hasPIN: boolean }> {
-  const res = await fetch('/auth/status');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json() as { hasPIN?: boolean };
+  const data = await json<{ hasPIN?: boolean }>(await fetch('/auth/status'));
   return { hasPIN: data.hasPIN === true };
 }
 
@@ -77,69 +126,186 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
 }
 
-export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
-  return json<WorktreeInfo[]>(await fetch('/worktrees'));
+function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
+  if (Array.isArray(data)) {
+    return data.filter(
+      (item): item is SessionTelemetry =>
+        !!item && typeof item === 'object' && 'sessionId' in item
+    ) as SessionTelemetry[];
+  }
+  if (data && typeof data === 'object') {
+    const value = data as { sessions?: unknown; data?: unknown } & Record<
+      string,
+      unknown
+    >;
+    if (Array.isArray(value.sessions))
+      return normalizeTelemetrySessions(value.sessions);
+    if (value.sessions && typeof value.sessions === 'object') {
+      return Object.entries(value.sessions as Record<string, unknown>).flatMap(
+        ([sessionId, raw]) => {
+          if (!raw || typeof raw !== 'object') return [];
+          return [
+            { sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) },
+          ];
+        }
+      );
+    }
+    if (Array.isArray(value.data))
+      return normalizeTelemetrySessions(value.data);
+    if (value.data && typeof value.data === 'object')
+      return normalizeTelemetrySessions(value.data);
+    return Object.entries(value).flatMap(([sessionId, raw]) => {
+      if (!raw || typeof raw !== 'object') return [];
+      return [{ sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) }];
+    });
+  }
+  return [];
 }
 
-export async function fetchWorkspaces(): Promise<Workspace[]> {
-  const data = await json<{ workspaces: Workspace[] }>(await fetch('/workspaces'));
+function normalizeAccountTelemetry(data: unknown): AccountTelemetry | null {
+  if (!data || typeof data !== 'object') return null;
+  const value = data as { data?: unknown; account?: unknown };
+  const raw = value.data ?? value.account ?? data;
+  if (!raw || typeof raw !== 'object') return null;
+  const candidate = raw as Partial<AccountTelemetry>;
+  if (typeof candidate.updatedAt !== 'string') return null;
+  return {
+    framework:
+      typeof candidate.framework === 'string' ? candidate.framework : 'unknown',
+    rateLimits: Array.isArray(candidate.rateLimits) ? candidate.rateLimits : [],
+    planType:
+      typeof candidate.planType === 'string' ? candidate.planType : undefined,
+    updatedAt: candidate.updatedAt,
+  };
+}
+
+export async function fetchSessionTelemetry(): Promise<SessionTelemetry[]> {
+  const res = await fetch('/telemetry/sessions');
+  const data = await jsonOrNull<unknown>(res);
+  return normalizeTelemetrySessions(data);
+}
+
+export async function fetchAccountTelemetry(): Promise<Record<
+  string,
+  AccountTelemetry
+> | null> {
+  const res = await fetch('/telemetry/account');
+  const data = await jsonOrNull<unknown>(res);
+  if (!data || typeof data !== 'object') return null;
+
+  const result: Record<string, AccountTelemetry> = {};
+  for (const [framework, telemetry] of Object.entries(
+    data as Record<string, unknown>
+  )) {
+    if (
+      telemetry &&
+      typeof telemetry === 'object' &&
+      'framework' in telemetry
+    ) {
+      const normalized = normalizeAccountTelemetry(
+        telemetry as Partial<AccountTelemetry>
+      );
+      if (normalized) result[framework] = normalized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+export async function fetchTelemetrySetupStatus(): Promise<{
+  installed: boolean;
+}> {
+  const res = await fetch('/telemetry/setup-status');
+  const data = await jsonOrNull<unknown>(res);
+  if (!data || typeof data !== 'object') return { installed: false };
+  const value = data as { installed?: unknown };
+  return { installed: value.installed === true };
+}
+
+export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
+  return json<WorktreeInfo[]>(await fetch('/git/worktrees'));
+}
+
+export async function fetchWorkspaces(): Promise<Repo[]> {
+  const data = await json<{ workspaces: Repo[] }>(await fetch('/workspaces'));
   return data.workspaces;
 }
 
 export async function addWorkspace(path: string): Promise<void> {
-  const res = await fetch('/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
-  if (!res.ok) { throw new Error(await parseErrorBody(res, 'Failed to add workspace')); }
+  const res = await fetch('/workspaces', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorBody(res, 'Failed to add workspace'));
+  }
 }
 
 export async function removeWorkspace(path: string): Promise<void> {
-  const res = await fetch('/workspaces', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+  const res = await fetch('/workspaces', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
   if (!res.ok) throw new Error('Failed to remove workspace');
 }
 
-export async function reorderWorkspaces(paths: string[]): Promise<Workspace[]> {
-  const data = await json<{ workspaces: Workspace[] }>(
+export async function reorderWorkspaces(paths: string[]): Promise<Repo[]> {
+  const data = await json<{ workspaces: Repo[] }>(
     await fetch('/workspaces/reorder', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paths }),
-    }),
+    })
   );
   return data.workspaces;
 }
 
 export async function browseFsDirectory(
   dirPath?: string,
-  options?: { prefix?: string; showHidden?: boolean },
+  options?: { prefix?: string; showHidden?: boolean; includeFiles?: boolean }
 ): Promise<BrowseResponse> {
   const params = new URLSearchParams();
   if (dirPath) params.set('path', dirPath);
   if (options?.prefix) params.set('prefix', options.prefix);
   if (options?.showHidden) params.set('showHidden', 'true');
-  return json<BrowseResponse>(await fetch('/workspaces/browse?' + params.toString()));
+  if (options?.includeFiles) params.set('includeFiles', 'true');
+  return json<BrowseResponse>(
+    await fetch('/workspaces/browse?' + params.toString())
+  );
 }
 
 export interface BulkAddResult {
-  added: Array<{ path: string; name: string; isGitRepo: boolean; defaultBranch: string | null }>;
+  added: Array<{
+    path: string;
+    name: string;
+    isGitRepo: boolean;
+    defaultBranch: string | null;
+  }>;
   errors: Array<{ path: string; error: string }>;
 }
 
-export async function addWorkspacesBulk(paths: string[]): Promise<BulkAddResult> {
+export async function addWorkspacesBulk(
+  paths: string[]
+): Promise<BulkAddResult> {
   return json<BulkAddResult>(
     await fetch('/workspaces/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paths }),
-    }),
+    })
   );
 }
 
-export async function fetchDashboard(workspacePath: string): Promise<DashboardData> {
+export async function fetchDashboard(repoPath: string): Promise<DashboardData> {
   interface RawDashboard {
     pullRequests: { prs: PullRequest[]; error?: string };
     branches: string[];
     activity: ActivityEntry[];
   }
-  const raw = await json<RawDashboard>(await fetch('/workspaces/dashboard?path=' + encodeURIComponent(workspacePath)));
+  const raw = await json<RawDashboard>(
+    await fetch('/workspaces/dashboard?path=' + encodeURIComponent(repoPath))
+  );
   return {
     prs: raw.pullRequests?.prs ?? [],
     activity: raw.activity ?? [],
@@ -149,56 +315,120 @@ export async function fetchDashboard(workspacePath: string): Promise<DashboardDa
   };
 }
 
-export async function fetchCiStatusOrNull(workspacePath: string, branch: string): Promise<CiStatus | null> {
-  const res = await fetch('/workspaces/ci-status?path=' + encodeURIComponent(workspacePath) + '&branch=' + encodeURIComponent(branch));
-  if (!res.ok) return null;
-  return res.json() as Promise<CiStatus>;
+export async function fetchCiStatusOrNull(
+  repoPath: string,
+  branch: string
+): Promise<CiStatus | null> {
+  const res = await fetch(
+    '/gh/ci-status?path=' +
+      encodeURIComponent(repoPath) +
+      '&branch=' +
+      encodeURIComponent(branch)
+  );
+  return jsonOrNull<CiStatus>(res);
 }
 
-export async function fetchPrForBranchOrNull(workspacePath: string, branch: string): Promise<PrInfo | null> {
-  const res = await fetch('/workspaces/pr?path=' + encodeURIComponent(workspacePath) + '&branch=' + encodeURIComponent(branch));
-  if (!res.ok) return null;
-  const data = await res.json() as { pr: PrInfo | null };
-  return data.pr;
+export async function fetchPrForBranchOrNull(
+  repoPath: string,
+  branch: string
+): Promise<PrInfo | null> {
+  const res = await fetch(
+    '/gh/pr?path=' +
+      encodeURIComponent(repoPath) +
+      '&branch=' +
+      encodeURIComponent(branch)
+  );
+  const data = await jsonOrNull<{ pr: PrInfo | null }>(res);
+  return data?.pr ?? null;
 }
 
-export async function fetchCurrentBranch(workspacePath: string): Promise<string | null> {
-  const data = await json<{ branch: string | null }>(await fetch('/workspaces/current-branch?path=' + encodeURIComponent(workspacePath)));
+export async function fetchCurrentBranch(
+  repoPath: string
+): Promise<string | null> {
+  const data = await json<{ branch: string | null }>(
+    await fetch(
+      '/workspaces/current-branch?path=' + encodeURIComponent(repoPath)
+    )
+  );
   return data.branch;
 }
 
 export async function autocompletePath(prefix: string): Promise<string[]> {
-  const data = await json<{ suggestions: string[] }>(await fetch('/workspaces/autocomplete?prefix=' + encodeURIComponent(prefix)));
+  const data = await json<{ suggestions: string[] }>(
+    await fetch('/workspaces/autocomplete?prefix=' + encodeURIComponent(prefix))
+  );
   return data.suggestions;
 }
 
-export async function createWorktree(workspacePath: string, branch?: string): Promise<{ branchName: string; mountainName: string; worktreePath: string }> {
-  const res = await fetch('/workspaces/worktree?path=' + encodeURIComponent(workspacePath), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ branch }),
-  });
+export async function createWorktree(
+  repoPath: string,
+  branch?: string
+): Promise<{
+  branchName: string;
+  mountainName: string;
+  worktreePath: string | null;
+}> {
+  const res = await fetch(
+    '/workspaces/worktree?path=' + encodeURIComponent(repoPath),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch }),
+    }
+  );
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to create worktree'));
   }
-  return res.json() as Promise<{ branchName: string; mountainName: string; worktreePath: string }>;
+  return jsonEither<{
+    branchName: string;
+    mountainName: string;
+    worktreePath: string | null;
+  }>(res);
 }
 
-export async function switchBranch(workspacePath: string, branch: string): Promise<{ success: boolean; error?: string }> {
-  const res = await fetch('/workspaces/branch?path=' + encodeURIComponent(workspacePath), {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch })
-  });
-  return res.json() as Promise<{ success: boolean; error?: string }>;
+export async function switchBranch(
+  repoPath: string,
+  branch: string
+): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(
+    '/workspaces/branch?path=' + encodeURIComponent(repoPath),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch }),
+    }
+  );
+  return jsonEither<{ success: boolean; error?: string }>(res);
 }
 
-export async function fetchBranches(repoPath: string, options: { refresh?: boolean } = {}): Promise<BranchInfo[]> {
+export async function fetchBranches(
+  repoPath: string,
+  options: { refresh?: boolean } = {}
+): Promise<BranchInfo[]> {
   const params = new URLSearchParams({ repo: repoPath });
   if (options.refresh) params.set('refresh', '1');
-  return json<BranchInfo[]>(await fetch('/branches?' + params.toString()));
+  return json<BranchInfo[]>(await fetch('/git/branches?' + params.toString()));
+}
+
+export interface EnrichBranchesResult {
+  results: Record<string, { pr: PrInfo | null; stale: boolean }>;
+}
+
+/** Swallows HTTP errors and returns `{ results: {} }` on failure. */
+export async function enrichBranches(
+  branches: Array<{ repoPath: string; branchName: string }>
+): Promise<EnrichBranchesResult> {
+  const res = await fetch('/gh/enrich-branches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ branches }),
+  });
+  if (!res.ok) return { results: {} };
+  return jsonEither<EnrichBranchesResult>(res);
 }
 
 export async function createSession(body: {
-  workspacePath: string;
+  repoPath: string;
   worktreePath?: string | null | undefined;
   type?: 'agent' | 'terminal' | undefined;
   continue?: boolean | undefined;
@@ -228,7 +458,7 @@ export async function createSession(body: {
   });
   if (res.status === 409) {
     try {
-      const data = await res.json() as { sessionId?: string };
+      const data = await jsonEither<{ sessionId?: string }>(res);
       throw new ConflictError(data.sessionId ?? '');
     } catch (e) {
       if (e instanceof ConflictError) throw e;
@@ -242,7 +472,10 @@ export async function killSession(id: string): Promise<void> {
   await fetch('/sessions/' + id, { method: 'DELETE' });
 }
 
-export async function renameSession(id: string, displayName: string): Promise<void> {
+export async function renameSession(
+  id: string,
+  displayName: string
+): Promise<void> {
   await fetch('/sessions/' + id, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -250,11 +483,32 @@ export async function renameSession(id: string, displayName: string): Promise<vo
   });
 }
 
-export async function deleteWorktree(worktreePath: string, repoPath: string): Promise<void> {
+export async function fetchWorktreeStatus(
+  worktreePath: string
+): Promise<{ activeSessions: string[]; hasUncommittedChanges: boolean }> {
+  const res = await fetch(
+    '/worktrees/status?path=' + encodeURIComponent(worktreePath)
+  );
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch worktree status')
+    );
+  }
+  return jsonEither<{
+    activeSessions: string[];
+    hasUncommittedChanges: boolean;
+  }>(res);
+}
+
+export async function deleteWorktree(
+  worktreePath: string,
+  repoPath: string,
+  force?: boolean
+): Promise<void> {
   const res = await fetch('/worktrees', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repoPath }),
+    body: JSON.stringify({ worktreePath, repoPath, force }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to delete worktree'));
@@ -264,27 +518,63 @@ export async function deleteWorktree(worktreePath: string, repoPath: string): Pr
 export async function uploadImage(
   sessionId: string,
   data: string,
-  mimeType: string,
+  mimeType: string
 ): Promise<{ path: string; clipboardSet: boolean }> {
   return json<{ path: string; clipboardSet: boolean }>(
     await fetch('/sessions/' + sessionId + '/image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data, mimeType }),
-    }),
+    })
   );
 }
 
-export async function checkVersion(): Promise<{ current: string; latest: string | null; updateAvailable: boolean }> {
-  return json<{ current: string; latest: string | null; updateAvailable: boolean }>(await fetch('/version'));
+export async function checkVersion(): Promise<{
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  channel: string;
+}> {
+  return json<{
+    current: string;
+    latest: string | null;
+    updateAvailable: boolean;
+    channel: string;
+  }>(await fetch('/version'));
 }
 
-export async function triggerUpdate(): Promise<{ ok: boolean; restarting?: boolean; error?: string }> {
-  return json<{ ok: boolean; restarting?: boolean; error?: string }>(await fetch('/update', { method: 'POST' }));
+export async function triggerUpdate(): Promise<{
+  ok: boolean;
+  restarting?: boolean;
+  error?: string;
+}> {
+  return json<{ ok: boolean; restarting?: boolean; error?: string }>(
+    await fetch('/update', { method: 'POST' })
+  );
+}
+
+export async function fetchUpdateChannel(): Promise<'stable' | 'nightly'> {
+  const data = await json<{ channel: 'stable' | 'nightly' }>(
+    await fetch('/update-channel')
+  );
+  return data.channel;
+}
+
+export async function setUpdateChannel(
+  channel: 'stable' | 'nightly'
+): Promise<void> {
+  const res = await fetch('/update-channel', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  });
+  if (!res.ok) throw new Error('Failed to update channel');
 }
 
 export async function fetchDefaultAgent(): Promise<string> {
-  const data = await json<{ defaultAgent: string }>(await fetch('/config/defaultAgent'));
+  const data = await json<{ defaultAgent: string }>(
+    await fetch('/config/defaultAgent')
+  );
   return data.defaultAgent;
 }
 
@@ -298,7 +588,9 @@ export async function setDefaultAgent(agent: string): Promise<void> {
 }
 
 async function fetchConfigBool(key: string): Promise<boolean> {
-  const data = await json<Record<string, boolean>>(await fetch(`/config/${key}`));
+  const data = await json<Record<string, boolean>>(
+    await fetch(`/config/${key}`)
+  );
   return data[key]!;
 }
 
@@ -314,22 +606,35 @@ async function setConfigBool(key: string, value: boolean): Promise<void> {
 }
 
 export const fetchDefaultContinue = () => fetchConfigBool('defaultContinue');
-export const setDefaultContinue = (v: boolean) => setConfigBool('defaultContinue', v);
+export const setDefaultContinue = (v: boolean) =>
+  setConfigBool('defaultContinue', v);
 export const fetchDefaultYolo = () => fetchConfigBool('defaultYolo');
 export const setDefaultYolo = (v: boolean) => setConfigBool('defaultYolo', v);
 export const fetchLaunchInTmux = () => fetchConfigBool('launchInTmux');
 export const setLaunchInTmux = (v: boolean) => setConfigBool('launchInTmux', v);
-export const fetchDefaultNotifications = () => fetchConfigBool('defaultNotifications');
-export const setDefaultNotifications = (v: boolean) => setConfigBool('defaultNotifications', v);
+export const fetchDefaultNotifications = () =>
+  fetchConfigBool('defaultNotifications');
+export const setDefaultNotifications = (v: boolean) =>
+  setConfigBool('defaultNotifications', v);
+export const fetchClaudeFullscreen = () => fetchConfigBool('claudeFullscreen');
+export const setClaudeFullscreen = (v: boolean) =>
+  setConfigBool('claudeFullscreen', v);
 
 export async function fetchVapidKey(): Promise<string | null> {
   try {
-    const data = await json<{ vapidPublicKey: string }>(await fetch('/push/vapid-key'));
+    const data = await json<{ vapidPublicKey: string }>(
+      await fetch('/push/vapid-key')
+    );
     return data.vapidPublicKey;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-export async function pushSubscribe(subscription: PushSubscriptionJSON, sessionIds: string[]): Promise<void> {
+export async function pushSubscribe(
+  subscription: PushSubscriptionJSON,
+  sessionIds: string[]
+): Promise<void> {
   const res = await fetch('/push/subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -346,8 +651,12 @@ export async function pushUnsubscribe(endpoint: string): Promise<void> {
   });
 }
 
-export async function fetchWorkspaceSettings(workspacePath: string): Promise<WorkspaceSettings> {
-  return json<WorkspaceSettings>(await fetch('/workspaces/settings?path=' + encodeURIComponent(workspacePath)));
+export async function fetchWorkspaceSettings(
+  repoPath: string
+): Promise<WorkspaceSettings> {
+  return json<WorkspaceSettings>(
+    await fetch('/workspaces/settings?path=' + encodeURIComponent(repoPath))
+  );
 }
 
 export interface MergedWorkspaceSettings {
@@ -355,20 +664,32 @@ export interface MergedWorkspaceSettings {
   overridden: string[];
 }
 
-export async function fetchMergedWorkspaceSettings(workspacePath: string): Promise<MergedWorkspaceSettings> {
+export async function fetchMergedWorkspaceSettings(
+  repoPath: string
+): Promise<MergedWorkspaceSettings> {
   return json<MergedWorkspaceSettings>(
-    await fetch('/workspaces/settings/merged?path=' + encodeURIComponent(workspacePath))
+    await fetch(
+      '/workspaces/settings/merged?path=' + encodeURIComponent(repoPath)
+    )
   );
 }
 
-export async function updateWorkspaceSettings(workspacePath: string, settings: WorkspaceSettings): Promise<void> {
-  const res = await fetch('/workspaces/settings?path=' + encodeURIComponent(workspacePath), {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings),
-  });
+export async function updateWorkspaceSettings(
+  repoPath: string,
+  settings: WorkspaceSettings
+): Promise<void> {
+  const res = await fetch(
+    '/workspaces/settings?path=' + encodeURIComponent(repoPath),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }
+  );
   if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to update workspace settings'));
+    throw new Error(
+      await parseErrorBody(res, 'Failed to update workspace settings')
+    );
   }
 }
 
@@ -392,8 +713,14 @@ export async function fetchJiraIssues(): Promise<JiraIssuesResponse> {
   return json<JiraIssuesResponse>(res);
 }
 
-export async function fetchJiraStatuses(projectKey: string): Promise<JiraStatus[]> {
-  const data = await json<{ statuses: JiraStatus[] }>(await fetch('/integration-jira/statuses?projectKey=' + encodeURIComponent(projectKey)));
+export async function fetchJiraStatuses(
+  projectKey: string
+): Promise<JiraStatus[]> {
+  const data = await json<{ statuses: JiraStatus[] }>(
+    await fetch(
+      '/integration-jira/statuses?projectKey=' + encodeURIComponent(projectKey)
+    )
+  );
   return data.statuses;
 }
 
@@ -407,10 +734,14 @@ export async function clearAnalytics(): Promise<void> {
 }
 
 export async function fetchAutomations(): Promise<AutomationSettings> {
-  return json<AutomationSettings>(await fetch('/config/automations', { credentials: 'include' }));
+  return json<AutomationSettings>(
+    await fetch('/config/automations', { credentials: 'include' })
+  );
 }
 
-export async function updateAutomations(settings: Partial<AutomationSettings>): Promise<AutomationSettings> {
+export async function updateAutomations(
+  settings: Partial<AutomationSettings>
+): Promise<AutomationSettings> {
   const res = await fetch('/config/automations', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -425,7 +756,11 @@ export async function fetchPresets(): Promise<FilterPreset[]> {
   return json<FilterPreset[]>(res);
 }
 
-export async function savePreset(preset: { name: string; filters: FilterPreset['filters']; sort: FilterPreset['sort'] }): Promise<void> {
+export async function savePreset(preset: {
+  name: string;
+  filters: FilterPreset['filters'];
+  sort: FilterPreset['sort'];
+}): Promise<void> {
   const res = await fetch('/presets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -436,12 +771,23 @@ export async function savePreset(preset: { name: string; filters: FilterPreset['
 }
 
 export async function deletePreset(name: string): Promise<void> {
-  const res = await fetch(`/presets/${encodeURIComponent(name)}`, { method: 'DELETE', credentials: 'include' });
+  const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
   if (!res.ok) throw new Error('Failed to delete preset');
 }
 
-export async function fetchGitHubStatus(): Promise<{ connected: boolean; username: string | null; deviceFlowStatus?: 'polling' | 'denied' | 'expired' }> {
-  return json<{ connected: boolean; username: string | null; deviceFlowStatus?: 'polling' | 'denied' | 'expired' }>(await fetch('/auth/github/status', { credentials: 'include' }));
+export async function fetchGitHubStatus(): Promise<{
+  connected: boolean;
+  username: string | null;
+  deviceFlowStatus?: 'polling' | 'denied' | 'expired';
+}> {
+  return json<{
+    connected: boolean;
+    username: string | null;
+    deviceFlowStatus?: 'polling' | 'denied' | 'expired';
+  }>(await fetch('/auth/github/status', { credentials: 'include' }));
 }
 
 export async function initiateGitHubDevice(): Promise<{
@@ -455,7 +801,10 @@ export async function initiateGitHubDevice(): Promise<{
 }
 
 export async function disconnectGitHub(): Promise<void> {
-  const res = await fetch('/auth/github/disconnect', { method: 'POST', credentials: 'include' });
+  const res = await fetch('/auth/github/disconnect', {
+    method: 'POST',
+    credentials: 'include',
+  });
   if (!res.ok) throw new Error('Failed to disconnect GitHub');
 }
 
@@ -473,66 +822,98 @@ export interface BackfillResult {
   total: number;
   success: number;
   failed: number;
-  results: Array<{ path: string; ownerRepo: string | null; ok: boolean; error?: string }>;
+  results: Array<{
+    path: string;
+    ownerRepo: string | null;
+    ok: boolean;
+    error?: string;
+  }>;
 }
 
 export async function fetchWebhookStatus(): Promise<WebhookStatus> {
-  return json<WebhookStatus>(await fetch('/webhooks/manage/status', { credentials: 'include' }));
+  return json<WebhookStatus>(
+    await fetch('/webhooks/manage/status', { credentials: 'include' })
+  );
 }
 
-export async function setupWebhooks(): Promise<{ ok: boolean; smeeUrl?: string; error?: string }> {
+export async function setupWebhooks(): Promise<{
+  ok: boolean;
+  smeeUrl?: string;
+  error?: string;
+}> {
   return json<{ ok: boolean; smeeUrl?: string; error?: string }>(
-    await fetch('/webhooks/manage/setup', { method: 'POST', credentials: 'include' }),
+    await fetch('/webhooks/manage/setup', {
+      method: 'POST',
+      credentials: 'include',
+    })
   );
 }
 
 export async function removeWebhookSetup(): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    await fetch('/webhooks/manage/setup', { method: 'DELETE', credentials: 'include' }),
+    await fetch('/webhooks/manage/setup', {
+      method: 'DELETE',
+      credentials: 'include',
+    })
   );
 }
 
 export async function reloadWebhooks(): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    await fetch('/webhooks/manage/reload', { method: 'POST', credentials: 'include' }),
+    await fetch('/webhooks/manage/reload', {
+      method: 'POST',
+      credentials: 'include',
+    })
   );
 }
 
 export async function pingWebhook(): Promise<{ ok: boolean; error?: string }> {
   return json<{ ok: boolean; error?: string }>(
-    await fetch('/webhooks/manage/ping', { method: 'POST', credentials: 'include' }),
+    await fetch('/webhooks/manage/ping', {
+      method: 'POST',
+      credentials: 'include',
+    })
   );
 }
 
-export async function createRepoWebhook(repoPath: string): Promise<{ ok: boolean; webhookId?: number; error?: string }> {
+export async function createRepoWebhook(
+  repoPath: string
+): Promise<{ ok: boolean; webhookId?: number; error?: string }> {
   return json<{ ok: boolean; webhookId?: number; error?: string }>(
     await fetch('/webhooks/manage/repos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ repoPath }),
-    }),
+    })
   );
 }
 
-export async function removeRepoWebhook(repoPath: string): Promise<{ ok: boolean }> {
+export async function removeRepoWebhook(
+  repoPath: string
+): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
     await fetch('/webhooks/manage/repos/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ repoPath }),
-    }),
+    })
   );
 }
 
 export async function backfillWebhooks(): Promise<BackfillResult> {
   return json<BackfillResult>(
-    await fetch('/webhooks/manage/backfill', { method: 'POST', credentials: 'include' }),
+    await fetch('/webhooks/manage/backfill', {
+      method: 'POST',
+      credentials: 'include',
+    })
   );
 }
 
-export async function updateConfigAutoProvision(autoProvision: boolean): Promise<void> {
+export async function updateConfigAutoProvision(
+  autoProvision: boolean
+): Promise<void> {
   const res = await fetch('/config/autoProvision', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -540,4 +921,263 @@ export async function updateConfigAutoProvision(autoProvision: boolean): Promise
     body: JSON.stringify({ autoProvision }),
   });
   if (!res.ok) throw new Error('Failed to update auto-provision setting');
+}
+
+// ── Workspace groups ──────────────────────────────────────────────────────────
+
+export async function fetchWorkspaceGroups(): Promise<Workspace[]> {
+  return json<Workspace[]>(await fetch('/workspace-groups'));
+}
+
+export async function createWorkspaceGroup(data: {
+  name: string;
+  repos: string[];
+  themeColor?: string;
+}): Promise<Workspace> {
+  const res = await fetch('/workspace-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok)
+    throw new Error(await parseErrorBody(res, 'Failed to create workspace'));
+  return jsonEither<Workspace>(res);
+}
+
+export async function updateWorkspaceGroup(
+  id: string,
+  data: Partial<Workspace>
+): Promise<Workspace> {
+  const res = await fetch(`/workspace-groups/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok)
+    throw new Error(await parseErrorBody(res, 'Failed to update workspace'));
+  return jsonEither<Workspace>(res);
+}
+
+export async function deleteWorkspaceGroup(id: string): Promise<void> {
+  const res = await fetch(`/workspace-groups/${id}`, { method: 'DELETE' });
+  if (!res.ok)
+    throw new Error(await parseErrorBody(res, 'Failed to delete workspace'));
+}
+
+export async function launchWorkspaceSession(
+  workspaceId: string,
+  opts?: {
+    agent?: string;
+    yolo?: boolean;
+    useTmux?: boolean;
+    claudeArgs?: string[];
+    cols?: number;
+    rows?: number;
+  }
+): Promise<
+  SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }
+> {
+  const res = await fetch(`/workspace-groups/${workspaceId}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  });
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to launch workspace session')
+    );
+  return jsonEither<
+    SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }
+  >(res);
+}
+
+/** Swallows HTTP errors and returns an empty ChangedFilesResponse with an `error` field. */
+export async function fetchChangedFiles(
+  repoPath: string,
+  base?: string
+): Promise<ChangedFilesResponse> {
+  const params = new URLSearchParams({ path: repoPath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/changed-files?' + params.toString());
+  if (!res.ok) {
+    return {
+      files: [],
+      aggregate: { additions: 0, deletions: 0, fileCount: 0 },
+      error: `HTTP ${res.status}`,
+    };
+  }
+  return jsonEither<ChangedFilesResponse>(res);
+}
+
+/** Swallows HTTP errors and returns `{ diff: '', error }` on failure. */
+export async function fetchFileDiff(
+  repoPath: string,
+  filePath: string,
+  base?: string
+): Promise<FileDiffResponse> {
+  const params = new URLSearchParams({ path: repoPath, file: filePath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/file-diff?' + params.toString());
+  if (!res.ok) {
+    return { diff: '', error: `HTTP ${res.status}` };
+  }
+  return jsonEither<FileDiffResponse>(res);
+}
+
+/** Swallows HTTP errors and returns `'main'` on failure or when the branch is empty. */
+export async function fetchDefaultBranch(repoPath: string): Promise<string> {
+  const params = new URLSearchParams({ path: repoPath });
+  try {
+    const data = await jsonOrNull<{ branch: string }>(
+      await fetch('/workspaces/default-branch?' + params.toString())
+    );
+    return data?.branch || 'main';
+  } catch {
+    return 'main';
+  }
+}
+
+// ── Session Analytics API ──
+
+export async function fetchAnalyticsOverview(
+  days = 7,
+  repo?: string
+): Promise<AnalyticsOverview> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  return json<AnalyticsOverview>(
+    await fetch(`/api/analytics/overview?${params}`)
+  );
+}
+
+export async function fetchAnalyticsSessions(opts?: {
+  offset?: number;
+  limit?: number;
+  repo?: string;
+  agent?: string;
+  sort?: string;
+}): Promise<AnalyticsSessionsResponse> {
+  const params = new URLSearchParams();
+  if (opts?.offset) params.set('offset', String(opts.offset));
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.repo) params.set('repo', opts.repo);
+  if (opts?.agent) params.set('agent', opts.agent);
+  if (opts?.sort) params.set('sort', opts.sort);
+  return json<AnalyticsSessionsResponse>(
+    await fetch(`/api/analytics/sessions?${params}`)
+  );
+}
+
+export async function fetchAnalyticsSessionDetail(
+  id: string
+): Promise<AnalyticsSessionDetail> {
+  return json<AnalyticsSessionDetail>(
+    await fetch(`/api/analytics/sessions/${encodeURIComponent(id)}`)
+  );
+}
+
+export async function fetchAnalyticsTrends(
+  days = 30,
+  repo?: string
+): Promise<{ days: AnalyticsTrend[] }> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  return json<{ days: AnalyticsTrend[] }>(
+    await fetch(`/api/analytics/trends?${params}`)
+  );
+}
+
+export async function fetchAnalyticsTools(
+  days = 7,
+  repo?: string,
+  session?: string
+): Promise<AnalyticsToolBreakdown> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (repo) params.set('repo', repo);
+  if (session) params.set('session', session);
+  return json<AnalyticsToolBreakdown>(
+    await fetch(`/api/analytics/tools?${params}`)
+  );
+}
+
+export async function fetchAnalyticsRateLimits(
+  hours = 24
+): Promise<AnalyticsRateLimitHistory> {
+  return json<AnalyticsRateLimitHistory>(
+    await fetch(`/api/analytics/rate-limits?hours=${hours}`)
+  );
+}
+
+export async function fetchFrameworks(): Promise<FrameworkInfo[]> {
+  const data = await json<{ frameworks: FrameworkInfo[] }>(
+    await fetch('/api/frameworks')
+  );
+  return data.frameworks;
+}
+
+// ── Workspace branch operations ───────────────────────────────────────────────
+
+export async function renameBranch(
+  path: string,
+  newName: string
+): Promise<{
+  success?: boolean;
+  oldName?: string;
+  newName?: string;
+  error?: string;
+}> {
+  const res = await fetch(
+    '/workspaces/rename-branch?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newName }),
+    }
+  );
+  return jsonEither<{
+    success?: boolean;
+    oldName?: string;
+    newName?: string;
+    error?: string;
+  }>(res);
+}
+
+export async function pushBranch(
+  path: string,
+  branch: string,
+  deleteOldBranch: string
+): Promise<{ success?: boolean; error?: string }> {
+  const res = await fetch(
+    '/workspaces/push-branch?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch, deleteOldBranch }),
+    }
+  );
+  return jsonEither<{ success?: boolean; error?: string }>(res);
+}
+
+export async function setPrBase(
+  path: string,
+  prNumber: number,
+  baseBranch: string
+): Promise<{ success?: boolean; error?: string }> {
+  const res = await fetch(
+    '/workspaces/pr-base?path=' + encodeURIComponent(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prNumber, baseBranch }),
+    }
+  );
+  return jsonEither<{ success?: boolean; error?: string }>(res);
+}
+
+export async function fetchWorkspaceBranches(
+  path: string
+): Promise<BranchInfo[]> {
+  return json<BranchInfo[]>(
+    await fetch('/branches?path=' + encodeURIComponent(path))
+  );
 }

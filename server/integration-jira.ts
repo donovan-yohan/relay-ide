@@ -57,10 +57,14 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
   async function getSiteUrl(): Promise<string> {
     if (cachedSiteUrl !== null) return cachedSiteUrl;
 
-    const { stdout } = await exec('acli', ['jira', 'auth', 'status'], { timeout: JIRA_TIMEOUT_MS });
+    const { stdout } = await exec('acli', ['jira', 'auth', 'status'], {
+      timeout: JIRA_TIMEOUT_MS,
+    });
     const match = /Site:\s*([\w-]+\.atlassian\.net)/.exec(stdout);
     if (!match || !match[1]) {
-      throw new Error('Could not parse site URL from acli jira auth status output');
+      throw new Error(
+        'Could not parse site URL from acli jira auth status output'
+      );
     }
     cachedSiteUrl = match[1];
     return cachedSiteUrl;
@@ -84,17 +88,30 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
     } catch (err) {
       const errCode = (err as NodeJS.ErrnoException).code;
       if (errCode === 'ENOENT') {
-        const response: JiraIssuesResponse = { issues: [], error: 'acli_not_in_path' };
+        const response: JiraIssuesResponse = {
+          issues: [],
+          error: 'acli_not_in_path',
+        };
         res.json(response);
         return;
       }
       const stderr = (err as { stderr?: string }).stderr ?? '';
-      if (stderr.includes('not logged') || stderr.includes('auth') || stderr.includes('unauthorized')) {
-        const response: JiraIssuesResponse = { issues: [], error: 'acli_not_authenticated' };
+      if (
+        stderr.includes('not logged') ||
+        stderr.includes('auth') ||
+        stderr.includes('unauthorized')
+      ) {
+        const response: JiraIssuesResponse = {
+          issues: [],
+          error: 'acli_not_authenticated',
+        };
         res.json(response);
         return;
       }
-      const response: JiraIssuesResponse = { issues: [], error: 'jira_fetch_failed' };
+      const response: JiraIssuesResponse = {
+        issues: [],
+        error: 'jira_fetch_failed',
+      };
       res.json(response);
       return;
     }
@@ -104,27 +121,44 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
       ({ stdout } = await exec(
         'acli',
         [
-          'jira', 'workitem', 'search',
-          '--jql', 'assignee=currentUser() AND status NOT IN (Done, Closed) ORDER BY updated DESC',
+          'jira',
+          'workitem',
+          'search',
+          '--jql',
+          'assignee=currentUser() AND status NOT IN (Done, Closed) ORDER BY updated DESC',
           '--json',
-          '--limit', '50',
+          '--limit',
+          '50',
         ],
-        { timeout: JIRA_TIMEOUT_MS },
+        { timeout: JIRA_TIMEOUT_MS }
       ));
     } catch (err) {
       const errCode = (err as NodeJS.ErrnoException).code;
       if (errCode === 'ENOENT') {
-        const response: JiraIssuesResponse = { issues: [], error: 'acli_not_in_path' };
+        const response: JiraIssuesResponse = {
+          issues: [],
+          error: 'acli_not_in_path',
+        };
         res.json(response);
         return;
       }
       const stderr = (err as { stderr?: string }).stderr ?? '';
-      if (stderr.includes('not logged') || stderr.includes('auth') || stderr.includes('unauthorized')) {
-        const response: JiraIssuesResponse = { issues: [], error: 'acli_not_authenticated' };
+      if (
+        stderr.includes('not logged') ||
+        stderr.includes('auth') ||
+        stderr.includes('unauthorized')
+      ) {
+        const response: JiraIssuesResponse = {
+          issues: [],
+          error: 'acli_not_authenticated',
+        };
         res.json(response);
         return;
       }
-      const response: JiraIssuesResponse = { issues: [], error: 'jira_fetch_failed' };
+      const response: JiraIssuesResponse = {
+        issues: [],
+        error: 'jira_fetch_failed',
+      };
       res.json(response);
       return;
     }
@@ -133,7 +167,10 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
     try {
       items = JSON.parse(stdout) as AcliWorkItem[];
     } catch {
-      const response: JiraIssuesResponse = { issues: [], error: 'jira_fetch_failed' };
+      const response: JiraIssuesResponse = {
+        issues: [],
+        error: 'jira_fetch_failed',
+      };
       res.json(response);
       return;
     }
@@ -177,13 +214,18 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
       ({ stdout } = await exec(
         'acli',
         [
-          'jira', 'workitem', 'search',
-          '--jql', `project = ${projectKey}`,
-          '--fields', 'status',
+          'jira',
+          'workitem',
+          'search',
+          '--jql',
+          `project = ${projectKey}`,
+          '--fields',
+          'status',
           '--json',
-          '--limit', '50',
+          '--limit',
+          '50',
         ],
-        { timeout: JIRA_TIMEOUT_MS },
+        { timeout: JIRA_TIMEOUT_MS }
       ));
     } catch (err) {
       const errCode = (err as NodeJS.ErrnoException).code;
@@ -192,7 +234,11 @@ export function createIntegrationJiraRouter(deps: IntegrationJiraDeps): Router {
         return;
       }
       const stderr = (err as { stderr?: string }).stderr ?? '';
-      if (stderr.includes('not logged') || stderr.includes('auth') || stderr.includes('unauthorized')) {
+      if (
+        stderr.includes('not logged') ||
+        stderr.includes('auth') ||
+        stderr.includes('unauthorized')
+      ) {
         res.json({ statuses: [], error: 'acli_not_authenticated' });
         return;
       }

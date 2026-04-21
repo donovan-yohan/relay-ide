@@ -4,33 +4,114 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { DEFAULTS } from './config.js';
 import type { Platform, ServicePaths, InstallOpts } from './types.js';
+import { createLogger } from './logger.js';
+import { WORKTREE_DIRS } from './watcher.js';
+
+const logger = createLogger('service');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SERVICE_LABEL = 'com.claude-remote-cli';
+const SERVICE_LABEL = 'com.relay-ide';
 const HOME = process.env.HOME || process.env.USERPROFILE || '~';
-const CONFIG_DIR = path.join(HOME, '.config', 'claude-remote-cli');
+const CONFIG_DIR = path.join(HOME, '.config', 'relay-ide');
+
+/**
+ * Detect whether the current process is running from a global npm install.
+ * Returns false for worktrees, local dev builds, and npm link.
+ */
+function isGlobalInstall(): boolean {
+  // Worktree paths contain /.worktrees/ or /.claude/worktrees/
+  for (const dir of WORKTREE_DIRS) {
+    if (__dirname.includes(path.sep + dir + path.sep)) return false;
+  }
+  // Global installs live under node's prefix/lib/node_modules/relay-ide
+  const nodePrefix = path.resolve(process.execPath, '..', '..');
+  const globalModules = path.join(
+    nodePrefix,
+    'lib',
+    'node_modules',
+    'relay-ide'
+  );
+  return __dirname.startsWith(globalModules);
+}
+
+/**
+ * Resolve the script path for the service file.
+ * Always uses the global npm binary to prevent worktrees/dev builds from
+ * hijacking the production service. Returns null if no global install found.
+ */
+function resolveGlobalScriptPath(): string | null {
+  // Try to find the global relay-ide binary via node's prefix
+  const nodePrefix = path.resolve(process.execPath, '..', '..');
+  const globalScript = path.join(
+    nodePrefix,
+    'lib',
+    'node_modules',
+    'relay-ide',
+    'dist',
+    'bin',
+    'relay-ide.js'
+  );
+  if (fs.existsSync(globalScript)) return globalScript;
+
+  // Fallback: use `npm prefix -g` to find the global root
+  try {
+    const npmPrefix = execSync('npm prefix -g', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const npmGlobalScript = path.join(
+      npmPrefix,
+      'lib',
+      'node_modules',
+      'relay-ide',
+      'dist',
+      'bin',
+      'relay-ide.js'
+    );
+    if (fs.existsSync(npmGlobalScript)) return npmGlobalScript;
+  } catch (_) {
+    // npm not available
+  }
+
+  return null;
+}
 
 function getPlatform(): Platform {
   if (process.platform === 'darwin') return 'macos';
   if (process.platform === 'linux') return 'linux';
-  throw new Error('Unsupported platform: ' + process.platform + '. Only macOS and Linux are supported.');
+  throw new Error(
+    'Unsupported platform: ' +
+      process.platform +
+      '. Only macOS and Linux are supported.'
+  );
 }
 
 function getServicePaths(): ServicePaths {
   const platform = getPlatform();
   if (platform === 'macos') {
     return {
-      servicePath: path.join(HOME, 'Library', 'LaunchAgents', SERVICE_LABEL + '.plist'),
+      servicePath: path.join(
+        HOME,
+        'Library',
+        'LaunchAgents',
+        SERVICE_LABEL + '.plist'
+      ),
       logDir: path.join(CONFIG_DIR, 'logs'),
       label: SERVICE_LABEL,
     };
   }
   return {
-    servicePath: path.join(HOME, '.config', 'systemd', 'user', 'claude-remote-cli.service'),
+    servicePath: path.join(
+      HOME,
+      '.config',
+      'systemd',
+      'user',
+      'relay-ide.service'
+    ),
     logDir: null,
-    label: 'claude-remote-cli',
+    label: 'relay-ide',
   };
 }
 
@@ -43,7 +124,10 @@ type ServiceFileOpts = {
   logDir: string | null;
 };
 
-function generateServiceFile(platform: Platform, opts: ServiceFileOpts): string {
+function generateServiceFile(
+  platform: Platform,
+  opts: ServiceFileOpts
+): string {
   const { nodePath, scriptPath, configPath, port, host, logDir } = opts;
 
   if (platform === 'macos') {
@@ -82,7 +166,7 @@ function generateServiceFile(platform: Platform, opts: ServiceFileOpts): string 
   }
 
   return `[Unit]
-Description=Claude Remote CLI
+Description=Relay IDE
 After=network.target
 
 [Service]
@@ -106,16 +190,52 @@ function install(opts: InstallOpts): void {
   const { servicePath, logDir } = getServicePaths();
 
   if (isInstalled()) {
-    throw new Error('Service is already installed. Run `claude-remote-cli uninstall` first.');
+    throw new Error(
+      'Service is already installed. Run `relay-ide uninstall` first.'
+    );
+  }
+
+  // Resolve the global binary path once and validate it.
+  // The service plist/unit must always point to the global npm binary.
+  const scriptPath = resolveGlobalScriptPath();
+  if (!scriptPath) {
+    throw new Error(
+      'Cannot install service: no global relay-ide installation found. ' +
+        'Install globally first: npm install -g relay-ide'
+    );
+  }
+
+  // Validate the resolved path is not inside a worktree
+  for (const dir of WORKTREE_DIRS) {
+    if (scriptPath.includes(path.sep + dir + path.sep)) {
+      throw new Error(
+        'Cannot install service: resolved script path is inside a worktree (' +
+          scriptPath +
+          '). Install relay-ide globally first: npm install -g relay-ide'
+      );
+    }
+  }
+
+  if (!isGlobalInstall()) {
+    logger.warn(
+      'Running from a non-global path — service will use the global binary at ' +
+        scriptPath
+    );
   }
 
   const nodePath = process.execPath;
-  const scriptPath = path.resolve(__dirname, '..', 'bin', 'claude-remote-cli.js');
   const configPath = opts.configPath || path.join(CONFIG_DIR, 'config.json');
   const port = opts.port || String(DEFAULTS.port);
   const host = opts.host || DEFAULTS.host;
 
-  const content = generateServiceFile(platform, { nodePath, scriptPath, configPath, port, host, logDir });
+  const content = generateServiceFile(platform, {
+    nodePath,
+    scriptPath,
+    configPath,
+    port,
+    host,
+    logDir,
+  });
 
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   if (logDir) fs.mkdirSync(logDir, { recursive: true });
@@ -126,14 +246,16 @@ function install(opts: InstallOpts): void {
     execSync('launchctl load -w ' + servicePath, { stdio: 'inherit' });
   } else {
     execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
-    execSync('systemctl --user enable --now claude-remote-cli', { stdio: 'inherit' });
+    execSync('systemctl --user enable --now relay-ide', {
+      stdio: 'inherit',
+    });
   }
 
-  console.log('Service installed and started.');
+  logger.info('Service installed and started.');
   if (logDir) {
-    console.log('Logs: ' + logDir);
+    logger.info('Logs: ' + logDir);
   } else {
-    console.log('Logs: journalctl --user -u claude-remote-cli -f');
+    logger.info('Logs: journalctl --user -u relay-ide -f');
   }
 }
 
@@ -153,17 +275,21 @@ function uninstall(): void {
     }
   } else {
     try {
-      execSync('systemctl --user disable --now claude-remote-cli', { stdio: 'inherit' });
+      execSync('systemctl --user disable --now relay-ide', {
+        stdio: 'inherit',
+      });
     } catch (_) {
       // Ignore errors from already-disabled services
     }
   }
 
   fs.unlinkSync(servicePath);
-  console.log('Service uninstalled.');
+  logger.info('Service uninstalled.');
 }
 
-type ServiceStatus = { installed: false; running: false } | { installed: true; running: boolean };
+type ServiceStatus =
+  | { installed: false; running: false }
+  | { installed: true; running: boolean };
 
 function status(): ServiceStatus {
   const platform = getPlatform();
@@ -179,7 +305,10 @@ function status(): ServiceStatus {
 function checkRunning(platform: Platform): boolean {
   if (platform === 'macos') {
     try {
-      const out = execSync('launchctl list ' + SERVICE_LABEL, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const out = execSync('launchctl list ' + SERVICE_LABEL, {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
       return !out.includes('"LastExitStatus" = -1');
     } catch (_) {
       return false;
@@ -187,11 +316,25 @@ function checkRunning(platform: Platform): boolean {
   }
 
   try {
-    execSync('systemctl --user is-active claude-remote-cli', { stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync('systemctl --user is-active relay-ide', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     return true;
   } catch (_) {
     return false;
   }
 }
 
-export { getPlatform, getServicePaths, generateServiceFile, isInstalled, install, uninstall, status, SERVICE_LABEL, CONFIG_DIR };
+export {
+  getPlatform,
+  getServicePaths,
+  generateServiceFile,
+  isInstalled,
+  isGlobalInstall,
+  resolveGlobalScriptPath,
+  install,
+  uninstall,
+  status,
+  SERVICE_LABEL,
+  CONFIG_DIR,
+};

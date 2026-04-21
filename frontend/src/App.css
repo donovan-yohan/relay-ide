@@ -1,0 +1,144 @@
+/* ===== CSS Variables — v3 Terminal Aesthetic ===== */
+:root {
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-hover: #141414;
+  --accent: #d97757;
+  --text: #e0e0e0;
+  --text-muted: #888888;
+  --border: #333333;
+
+  /* Status colors */
+  --status-success: #4ade80;
+  --status-error: #f87171;
+  --status-warning: #fbbf24;
+  --status-merged: #a78bfa;
+  --status-info: #60a5fa;
+
+  /* Typography */
+  --font-mono:
+    'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas',
+    monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.875rem;
+  --font-size-lg: 1rem;
+
+  /* Layout */
+  --sidebar-width: 240px;
+  --toolbar-height: auto;
+
+  /* Alignment architecture */
+  --sidebar-padding-x: 16px;
+  --content-padding-x: 20px;
+  --row-padding-y: 10px;
+  --icon-slot-width: 24px;
+  --action-slot-width: 36px;
+  --row-min-height: 44px;
+
+  /* Spacing scale (4px grid) */
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+}
+
+/* ===== Reset & Base ===== */
+[hidden] {
+  display: none !important;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* Restore native <dialog> centering (overridden by the global margin reset) */
+dialog {
+  margin: auto;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  color-scheme: dark;
+}
+
+/* ===== Focus ===== */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 0;
+}
+
+/* ===== App Layout ===== */
+.main-app {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.terminal-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.full-page-diff-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Mobile */
+@media (max-width: 600px) {
+  .main-app {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+
+  /* No overlay needed — sidebar is full-screen on mobile */
+
+  .terminal-area {
+    width: 100%;
+  }
+}

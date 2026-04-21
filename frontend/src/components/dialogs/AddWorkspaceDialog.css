@@ -1,0 +1,38 @@
+.add-workspace-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.add-workspace-selected-count {
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.add-workspace-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.add-workspace-body-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.add-workspace-dialog-desc {
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.add-workspace-error-msg {
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--status-error);
+  font-family: var(--font-mono, monospace);
+  margin: 0;
+}

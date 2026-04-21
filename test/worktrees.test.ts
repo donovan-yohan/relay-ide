@@ -1,43 +1,43 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import { WORKTREE_DIRS, isValidWorktreePath, parseWorktreeListPorcelain, parseAllWorktrees } from '../server/watcher.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {
+  WORKTREE_DIRS,
+  isValidWorktreePath,
+  parseWorktreeListPorcelain,
+  parseAllWorktrees,
+  findOrCreateWorktreeForBranch,
+  WorktreeWatcher,
+} from '../server/watcher.js';
 import { MOUNTAIN_NAMES } from '../server/types.js';
+import { generateTmuxSessionName } from '../server/pty-handler.js';
 
 describe('worktree directories constant', () => {
   it('should include both .worktrees and .claude/worktrees', () => {
-    assert.deepEqual(WORKTREE_DIRS, ['.worktrees', '.claude/worktrees']);
+    expect(WORKTREE_DIRS).toEqual(['.worktrees', '.claude/worktrees']);
   });
 });
 
 describe('isValidWorktreePath', () => {
   it('should reject paths not inside any worktree directory', () => {
-    assert.equal(isValidWorktreePath('/some/random/path'), false);
+    expect(isValidWorktreePath('/some/random/path')).toBe(false);
   });
 
   it('should accept paths inside .worktrees/', () => {
-    assert.equal(isValidWorktreePath('/Users/me/code/repo/.worktrees/my-worktree'), true);
+    expect(
+      isValidWorktreePath('/Users/me/code/repo/.worktrees/my-worktree')
+    ).toBe(true);
   });
 
   it('should accept paths inside .claude/worktrees/', () => {
-    assert.equal(isValidWorktreePath('/Users/me/code/repo/.claude/worktrees/my-worktree'), true);
+    expect(
+      isValidWorktreePath('/Users/me/code/repo/.claude/worktrees/my-worktree')
+    ).toBe(true);
   });
 
   it('should not match partial .worktrees paths', () => {
-    assert.equal(isValidWorktreePath('/Users/me/.worktrees-fake/foo'), false);
-  });
-});
-
-describe('branch name to directory name', () => {
-  it('should replace slashes with dashes', () => {
-    const branchName = 'dy/feat/my-feature';
-    const dirName = branchName.replace(/\//g, '-');
-    assert.equal(dirName, 'dy-feat-my-feature');
-  });
-
-  it('should leave flat branch names unchanged', () => {
-    const branchName = 'my-feature';
-    const dirName = branchName.replace(/\//g, '-');
-    assert.equal(dirName, 'my-feature');
+    expect(isValidWorktreePath('/Users/me/.worktrees-fake/foo')).toBe(false);
   });
 });
 
@@ -57,9 +57,11 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.path, '/Users/me/code/my-repo/.worktrees/feat-branch');
-    assert.equal(result[0]!.branch, 'feat/branch');
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe(
+      '/Users/me/code/my-repo/.worktrees/feat-branch'
+    );
+    expect(result[0]!.branch).toBe('feat/branch');
   });
 
   it('should parse multiple worktree entries', () => {
@@ -79,11 +81,11 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[0]!.path, '/Users/me/code/my-repo/.worktrees/feat-a');
-    assert.equal(result[0]!.branch, 'feat/a');
-    assert.equal(result[1]!.path, '/Users/me/other-path/extend-cli');
-    assert.equal(result[1]!.branch, 'dy/feat/worktree-isolation');
+    expect(result.length).toBe(2);
+    expect(result[0]!.path).toBe('/Users/me/code/my-repo/.worktrees/feat-a');
+    expect(result[0]!.branch).toBe('feat/a');
+    expect(result[1]!.path).toBe('/Users/me/other-path/extend-cli');
+    expect(result[1]!.branch).toBe('dy/feat/worktree-isolation');
   });
 
   it('should skip the main worktree (repo root)', () => {
@@ -95,7 +97,7 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should skip bare entries', () => {
@@ -111,7 +113,7 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should skip detached HEAD worktrees (no branch line)', () => {
@@ -127,12 +129,12 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should handle empty output', () => {
     const result = parseWorktreeListPorcelain('', repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should discover worktrees at arbitrary paths outside .worktrees/', () => {
@@ -148,9 +150,9 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.path, '/completely/different/path/project-checkout');
-    assert.equal(result[0]!.branch, 'feature/my-feature');
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe('/completely/different/path/project-checkout');
+    expect(result[0]!.branch).toBe('feature/my-feature');
   });
 
   it('should handle deeply nested branch names', () => {
@@ -166,8 +168,8 @@ describe('parseWorktreeListPorcelain', () => {
     ].join('\n');
 
     const result = parseWorktreeListPorcelain(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.branch, 'dy/feat/deep/nesting/here');
+    expect(result.length).toBe(1);
+    expect(result[0]!.branch).toBe('dy/feat/deep/nesting/here');
   });
 });
 
@@ -183,10 +185,10 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.path, repoPath);
-    assert.equal(result[0]!.branch, 'main');
-    assert.equal(result[0]!.isMain, true);
+    expect(result.length).toBe(1);
+    expect(result[0]!.path).toBe(repoPath);
+    expect(result[0]!.branch).toBe('main');
+    expect(result[0]!.isMain).toBe(true);
   });
 
   it('should mark non-main worktrees with isMain=false', () => {
@@ -202,11 +204,13 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[0]!.isMain, true);
-    assert.equal(result[1]!.isMain, false);
-    assert.equal(result[1]!.path, '/Users/me/code/my-repo/.worktrees/feat-branch');
-    assert.equal(result[1]!.branch, 'feat/branch');
+    expect(result.length).toBe(2);
+    expect(result[0]!.isMain).toBe(true);
+    expect(result[1]!.isMain).toBe(false);
+    expect(result[1]!.path).toBe(
+      '/Users/me/code/my-repo/.worktrees/feat-branch'
+    );
+    expect(result[1]!.branch).toBe('feat/branch');
   });
 
   it('should still skip bare entries', () => {
@@ -222,8 +226,8 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.isMain, true);
+    expect(result.length).toBe(1);
+    expect(result[0]!.isMain).toBe(true);
   });
 
   it('should include detached HEAD entries with empty branch', () => {
@@ -239,13 +243,13 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    assert.equal(result.length, 2);
-    assert.equal(result[1]!.branch, '');
+    expect(result.length).toBe(2);
+    expect(result[1]!.branch).toBe('');
   });
 
   it('should handle empty output', () => {
     const result = parseAllWorktrees('', repoPath);
-    assert.equal(result.length, 0);
+    expect(result.length).toBe(0);
   });
 
   it('should find worktree by branch name', () => {
@@ -261,10 +265,12 @@ describe('parseAllWorktrees', () => {
     ].join('\n');
 
     const result = parseAllWorktrees(stdout, repoPath);
-    const match = result.find(wt => wt.branch === 'dy/feat/worktree-isolation');
-    assert.ok(match);
-    assert.equal(match!.path, repoPath);
-    assert.equal(match!.isMain, true);
+    const match = result.find(
+      (wt) => wt.branch === 'dy/feat/worktree-isolation'
+    );
+    expect(match).toBeTruthy();
+    expect(match!.path).toBe(repoPath);
+    expect(match!.isMain).toBe(true);
   });
 });
 
@@ -278,14 +284,18 @@ describe('workspace-to-repo merging for worktree discovery', () => {
   function mergeWorkspacesIntoRepos(
     reposToScan: RepoEntry[],
     configWorkspaces: string[],
-    rootDirs: string[],
+    rootDirs: string[]
   ): RepoEntry[] {
     const result = [...reposToScan];
-    const scannedPaths = new Set(result.map(r => r.path));
+    const scannedPaths = new Set(result.map((r) => r.path));
     for (const wp of configWorkspaces) {
       if (scannedPaths.has(wp)) continue;
-      const root = rootDirs.find(r => wp.startsWith(r)) || '';
-      result.push({ path: wp, name: wp.split('/').filter(Boolean).pop() || '', root });
+      const root = rootDirs.find((r) => wp.startsWith(r)) || '';
+      result.push({
+        path: wp,
+        name: wp.split('/').filter(Boolean).pop() || '',
+        root,
+      });
     }
     return result;
   }
@@ -297,11 +307,15 @@ describe('workspace-to-repo merging for worktree discovery', () => {
     const configWorkspaces = ['/other/path/my-project'];
     const rootDirs = ['/root'];
 
-    const merged = mergeWorkspacesIntoRepos(reposFromRootDirs, configWorkspaces, rootDirs);
-    assert.equal(merged.length, 2);
-    assert.equal(merged[1]!.path, '/other/path/my-project');
-    assert.equal(merged[1]!.name, 'my-project');
-    assert.equal(merged[1]!.root, ''); // not under any rootDir
+    const merged = mergeWorkspacesIntoRepos(
+      reposFromRootDirs,
+      configWorkspaces,
+      rootDirs
+    );
+    expect(merged.length).toBe(2);
+    expect(merged[1]!.path).toBe('/other/path/my-project');
+    expect(merged[1]!.name).toBe('my-project');
+    expect(merged[1]!.root).toBe(''); // not under any rootDir
   });
 
   it('should deduplicate workspaces already found via rootDir scan', () => {
@@ -311,8 +325,12 @@ describe('workspace-to-repo merging for worktree discovery', () => {
     const configWorkspaces = ['/root/repo-a']; // same as scanned
     const rootDirs = ['/root'];
 
-    const merged = mergeWorkspacesIntoRepos(reposFromRootDirs, configWorkspaces, rootDirs);
-    assert.equal(merged.length, 1); // no duplicate
+    const merged = mergeWorkspacesIntoRepos(
+      reposFromRootDirs,
+      configWorkspaces,
+      rootDirs
+    );
+    expect(merged.length).toBe(1); // no duplicate
   });
 
   it('should handle empty rootDirs with workspaces-only config', () => {
@@ -320,10 +338,14 @@ describe('workspace-to-repo merging for worktree discovery', () => {
     const configWorkspaces = ['/a/project', '/b/other-project'];
     const rootDirs: string[] = [];
 
-    const merged = mergeWorkspacesIntoRepos(reposFromRootDirs, configWorkspaces, rootDirs);
-    assert.equal(merged.length, 2);
-    assert.equal(merged[0]!.path, '/a/project');
-    assert.equal(merged[1]!.path, '/b/other-project');
+    const merged = mergeWorkspacesIntoRepos(
+      reposFromRootDirs,
+      configWorkspaces,
+      rootDirs
+    );
+    expect(merged.length).toBe(2);
+    expect(merged[0]!.path).toBe('/a/project');
+    expect(merged[1]!.path).toBe('/b/other-project');
   });
 
   it('should set root when workspace is under a rootDir', () => {
@@ -331,51 +353,68 @@ describe('workspace-to-repo merging for worktree discovery', () => {
     const configWorkspaces = ['/root/special-repo'];
     const rootDirs = ['/root'];
 
-    const merged = mergeWorkspacesIntoRepos(reposFromRootDirs, configWorkspaces, rootDirs);
-    assert.equal(merged[0]!.root, '/root');
+    const merged = mergeWorkspacesIntoRepos(
+      reposFromRootDirs,
+      configWorkspaces,
+      rootDirs
+    );
+    expect(merged[0]!.root).toBe('/root');
   });
 });
 
 describe('CLI worktree arg parsing', () => {
   it('should extract --yolo and leave other args intact', () => {
-    const args = ['add', './.worktrees/my-feature', '-b', 'my-feature', '--yolo'];
+    const args = [
+      'add',
+      './.worktrees/my-feature',
+      '-b',
+      'my-feature',
+      '--yolo',
+    ];
     const hasYolo = args.includes('--yolo');
-    const gitArgs = args.filter(a => a !== '--yolo');
-    assert.equal(hasYolo, true);
-    assert.deepEqual(gitArgs, ['add', './.worktrees/my-feature', '-b', 'my-feature']);
+    const gitArgs = args.filter((a) => a !== '--yolo');
+    expect(hasYolo).toBe(true);
+    expect(gitArgs).toEqual([
+      'add',
+      './.worktrees/my-feature',
+      '-b',
+      'my-feature',
+    ]);
   });
 
   it('should detect missing path for add and use default', () => {
     // args: ['add', '-b', 'my-feature'] — no positional path (first arg after 'add' starts with '-')
     const args = ['add', '-b', 'my-feature'];
     const subArgs = args.slice(1); // after 'add'
-    const hasPositionalPath = subArgs.length > 0 && !subArgs[0]!.startsWith('-');
-    assert.equal(hasPositionalPath, false);
+    const hasPositionalPath =
+      subArgs.length > 0 && !subArgs[0]!.startsWith('-');
+    expect(hasPositionalPath).toBe(false);
   });
 
   it('should detect path when provided for add', () => {
     const args = ['add', './my-path', '-b', 'my-feature'];
     const subArgs = args.slice(1);
-    const hasPositionalPath = subArgs.length > 0 && !subArgs[0]!.startsWith('-');
-    assert.equal(hasPositionalPath, true);
-    assert.equal(subArgs[0], './my-path');
+    const hasPositionalPath =
+      subArgs.length > 0 && !subArgs[0]!.startsWith('-');
+    expect(hasPositionalPath).toBe(true);
+    expect(subArgs[0]).toBe('./my-path');
   });
 });
 
 describe('mountain name collision retry', () => {
   it('MOUNTAIN_NAMES is a non-empty array of strings', () => {
-    assert.ok(Array.isArray(MOUNTAIN_NAMES), 'MOUNTAIN_NAMES should be an array');
-    assert.ok(MOUNTAIN_NAMES.length > 0, 'MOUNTAIN_NAMES should not be empty');
+    expect(MOUNTAIN_NAMES).toBeInstanceOf(Array);
+    expect(MOUNTAIN_NAMES.length).toBeGreaterThan(0);
     for (const name of MOUNTAIN_NAMES) {
-      assert.equal(typeof name, 'string', `each mountain name should be a string, got: ${typeof name}`);
-      assert.ok(name.length > 0, 'each mountain name should be non-empty');
+      expect(typeof name).toBe('string');
+      expect(name.length).toBeGreaterThan(0);
     }
   });
 
   it('MOUNTAIN_NAMES contains expected well-known peaks', () => {
-    assert.ok(MOUNTAIN_NAMES.includes('everest'), 'should include everest');
-    assert.ok(MOUNTAIN_NAMES.includes('k2'), 'should include k2');
-    assert.ok(MOUNTAIN_NAMES.includes('fuji'), 'should include fuji');
+    expect(MOUNTAIN_NAMES).toContain('everest');
+    expect(MOUNTAIN_NAMES).toContain('k2');
+    expect(MOUNTAIN_NAMES).toContain('fuji');
   });
 
   it('collision retry logic skips taken names and selects the next available one', () => {
@@ -396,9 +435,9 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.ok(selected !== null, 'should find an available name');
-    assert.equal(selected, MOUNTAIN_NAMES[2], 'should select the third name after skipping first two');
-    assert.equal(selectedIndex, 2);
+    expect(selected).not.toBe(null);
+    expect(selected).toBe(MOUNTAIN_NAMES[2]);
+    expect(selectedIndex).toBe(2);
   });
 
   it('collision retry wraps around when baseIndex is near the end', () => {
@@ -418,9 +457,9 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.ok(selected !== null, 'should find an available name after wrap-around');
+    expect(selected).not.toBe(null);
     // The first candidate tried was lastIndex (taken), so the next is index 0
-    assert.equal(selected, MOUNTAIN_NAMES[0], 'should wrap around to the first name');
+    expect(selected).toBe(MOUNTAIN_NAMES[0]);
   });
 
   it('nextMountainIndex advances to the candidate after the selected one', () => {
@@ -438,17 +477,262 @@ describe('mountain name collision retry', () => {
       }
     }
 
-    assert.equal(nextMountainIndex, 1, 'nextMountainIndex should be 1 after selecting index 0');
+    expect(nextMountainIndex).toBe(1);
   });
 
   it('all mountain names are unique', () => {
     const unique = new Set(MOUNTAIN_NAMES);
-    assert.equal(unique.size, MOUNTAIN_NAMES.length, 'all mountain names should be unique');
+    expect(unique.size).toBe(MOUNTAIN_NAMES.length);
   });
 
   it('mountain names contain only lowercase letters, digits, and hyphens', () => {
     for (const name of MOUNTAIN_NAMES) {
-      assert.ok(/^[a-z0-9-]+$/.test(name), `mountain name "${name}" should only contain lowercase letters, digits, and hyphens`);
+      expect(/^[a-z0-9-]+$/.test(name)).toBeTruthy();
     }
+  });
+});
+
+describe('workspace name from git remote', () => {
+  it('derives repo name from various git remote URLs', async () => {
+    const { repoNameFromRemoteUrl } = await import('../server/workspaces.js');
+
+    const fixtures: Array<{ url: string; expected: string }> = [
+      {
+        url: 'git@github.com:anthropic/relay-ide.git',
+        expected: 'relay-ide',
+      },
+      {
+        url: 'https://github.com/anthropic/relay-ide.git',
+        expected: 'relay-ide',
+      },
+      {
+        url: 'ssh://git@github.com/anthropic/relay-ide.git',
+        expected: 'relay-ide',
+      },
+      {
+        url: 'https://github.com/anthropic/relay-ide',
+        expected: 'relay-ide',
+      },
+      {
+        url: 'https://example.com/some-group/another-repo.git',
+        expected: 'another-repo',
+      },
+      {
+        url: 'https://example.com/some-group/another-repo/',
+        expected: 'another-repo',
+      },
+    ];
+
+    for (const { url, expected } of fixtures) {
+      const name = repoNameFromRemoteUrl(url);
+      expect(name).toBe(expected);
+      expect(name!.length).toBeGreaterThan(0);
+      expect(name).not.toContain('/');
+    }
+  });
+});
+
+describe('repo-scoped tmux naming', () => {
+  it('produces readable tmux names from repo-branch slugs', () => {
+    const name = generateTmuxSessionName(
+      'relay-ide-nightly',
+      'a3b4c5d6-1234-5678'
+    );
+    expect(name).toContain('relay-ide-nightly');
+    expect(name).toContain('a3b4c5d6');
+  });
+
+  it('sanitizes branch names with special characters', () => {
+    const name = generateTmuxSessionName(
+      'myapp-fix-auth-flow',
+      'b4c5d6e7-1234-5678'
+    );
+    expect(name).toContain('myapp-fix-auth-flow');
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBe(true);
+  });
+
+  it('truncates long names to 30 chars before appending id', () => {
+    const longName = 'a-very-long-repository-name-with-a-very-long-branch-name';
+    const name = generateTmuxSessionName(longName, 'c5d6e7f8-1234-5678');
+    // Extract the sanitized middle portion: after the "relay-dev-" or "relay-ide-" prefix and before "-{8-char-id}"
+    const prefix = name
+      .replace(/^(?:relay-dev-|relay-ide-)/, '')
+      .replace(/-[a-zA-Z0-9]{8}$/, '');
+    expect(prefix.length).toBeLessThanOrEqual(30);
+  });
+
+  it('produces no special characters in output', () => {
+    const name = generateTmuxSessionName(
+      'repo/with/slashes and spaces',
+      'deadbeef-0000-1111'
+    );
+    expect(!/[^a-zA-Z0-9-]/.test(name)).toBe(true);
+  });
+});
+
+describe('findOrCreateWorktreeForBranch', () => {
+  it('returns existing: true and isMain: true when branch is in main worktree', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const stdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/nightly',
+      '',
+    ].join('\n');
+
+    const exec = async (
+      _cmd: string,
+      args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
+      if (args[0] === 'worktree') return { stdout, stderr: '' };
+      throw new Error('unexpected call');
+    };
+
+    const result = await findOrCreateWorktreeForBranch(
+      repoPath,
+      'nightly',
+      exec
+    );
+    expect(result.existing).toBe(true);
+    expect(result.isMain).toBe(true);
+    expect(result.worktreePath).toBe(repoPath);
+    expect(result.branchName).toBe('nightly');
+  });
+
+  it('returns existing worktree when branch is in a sub-worktree', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const stdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+      'worktree /Users/me/code/my-repo/.worktrees/fix-auth',
+      'HEAD def456',
+      'branch refs/heads/fix/auth',
+      '',
+    ].join('\n');
+
+    const exec = async (
+      _cmd: string,
+      args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
+      if (args[0] === 'worktree') return { stdout, stderr: '' };
+      throw new Error('unexpected call');
+    };
+
+    const result = await findOrCreateWorktreeForBranch(
+      repoPath,
+      'fix/auth',
+      exec
+    );
+    expect(result.existing).toBe(true);
+    expect(result.isMain).toBe(false);
+    expect(result.worktreePath).toBe(
+      '/Users/me/code/my-repo/.worktrees/fix-auth'
+    );
+  });
+
+  it('creates worktree when branch is not checked out anywhere', async () => {
+    const repoPath = '/Users/me/code/my-repo';
+    const listStdout = [
+      `worktree ${repoPath}`,
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+    ].join('\n');
+
+    const calls: string[][] = [];
+    const exec = async (
+      _cmd: string,
+      args: string[],
+      _opts: { cwd: string; timeout?: number }
+    ) => {
+      calls.push(args);
+      if (args[0] === 'worktree' && args[1] === 'list')
+        return { stdout: listStdout, stderr: '' };
+      if (args[0] === 'worktree' && args[1] === 'add')
+        return { stdout: '', stderr: '' };
+      throw new Error(`unexpected: ${args.join(' ')}`);
+    };
+
+    const result = await findOrCreateWorktreeForBranch(
+      repoPath,
+      'feat/new',
+      exec
+    );
+    expect(result.existing).toBe(false);
+    expect(result.isMain).toBe(false);
+    expect(result.branchName).toBe('feat/new');
+  });
+});
+
+describe('WorktreeWatcher.rebuild', () => {
+  let tmpDir: string;
+  let repoDir: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-watcher-test-'));
+    repoDir = path.join(tmpDir, 'my-repo');
+    fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, '.worktrees'), { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('creates watchers when given individual repo paths (not parent dirs)', () => {
+    const watcher = new WorktreeWatcher();
+
+    // Pass individual repo path (how config.repos actually stores paths)
+    watcher.rebuild([repoDir]);
+
+    // Verify watchers were created (accessing internal state for deterministic test)
+    const watchers = (watcher as unknown as { watchers: fs.FSWatcher[] })
+      .watchers;
+    expect(watchers.length).toBeGreaterThan(0);
+
+    watcher.close();
+  });
+
+  it('emits worktrees-changed on debounced emit', () => {
+    vi.useFakeTimers();
+    try {
+      const watcher = new WorktreeWatcher();
+      let emitted = false;
+
+      watcher.on('worktrees-changed', () => {
+        emitted = true;
+      });
+
+      // Trigger the debounced emit directly (testing our code, not fs.watch)
+      (watcher as unknown as { debouncedEmit: () => void }).debouncedEmit();
+
+      // Advance past the 500ms debounce
+      vi.advanceTimersByTime(500);
+
+      expect(emitted).toBe(true);
+      watcher.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('watches repo root when .worktrees does not exist yet', () => {
+    const bareRepo = path.join(tmpDir, 'bare-repo');
+    fs.mkdirSync(path.join(bareRepo, '.git'), { recursive: true });
+
+    const watcher = new WorktreeWatcher();
+
+    // Repo exists but no .worktrees dir — watcher should watch repo root
+    watcher.rebuild([bareRepo]);
+
+    const watchers = (watcher as unknown as { watchers: fs.FSWatcher[] })
+      .watchers;
+    expect(watchers.length).toBeGreaterThan(0);
+
+    watcher.close();
   });
 });

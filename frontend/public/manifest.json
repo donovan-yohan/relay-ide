@@ -1,6 +1,6 @@
 {
-  "name": "Claude Remote CLI",
-  "short_name": "Claude CLI",
+  "name": "Relay IDE",
+  "short_name": "Relay IDE",
   "display": "standalone",
   "start_url": "/",
   "background_color": "#1a1a1a",

@@ -3,12 +3,13 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-const SUPPORTED_MIME: Record<string, { ext: string; osascriptClass: string }> = {
-  'image/png':  { ext: '.png',  osascriptClass: '«class PNGf»' },
-  'image/jpeg': { ext: '.jpg',  osascriptClass: '«class JPEG»' },
-  'image/gif':  { ext: '.gif',  osascriptClass: '«class GIFf»' },
-  'image/webp': { ext: '.webp', osascriptClass: '«class PNGf»' },
-};
+const SUPPORTED_MIME: Record<string, { ext: string; osascriptClass: string }> =
+  {
+    'image/png': { ext: '.png', osascriptClass: '«class PNGf»' },
+    'image/jpeg': { ext: '.jpg', osascriptClass: '«class JPEG»' },
+    'image/gif': { ext: '.gif', osascriptClass: '«class GIFf»' },
+    'image/webp': { ext: '.webp', osascriptClass: '«class PNGf»' },
+  };
 
 let cachedTool: string | null | undefined;
 
@@ -44,7 +45,10 @@ export function extensionForMime(mimeType: string): string {
   return mimeInfo(mimeType).ext;
 }
 
-export async function setClipboardImage(filePath: string, mimeType: string): Promise<boolean> {
+export async function setClipboardImage(
+  filePath: string,
+  mimeType: string
+): Promise<boolean> {
   const tool = detectClipboardTool();
   const info = mimeInfo(mimeType); // throws if unsupported
 
@@ -55,7 +59,14 @@ export async function setClipboardImage(filePath: string, mimeType: string): Pro
   }
 
   if (tool === 'xclip') {
-    await execFileAsync('xclip', ['-selection', 'clipboard', '-t', mimeType, '-i', filePath]);
+    await execFileAsync('xclip', [
+      '-selection',
+      'clipboard',
+      '-t',
+      mimeType,
+      '-i',
+      filePath,
+    ]);
     return true;
   }
 

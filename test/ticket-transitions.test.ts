@@ -1,14 +1,18 @@
-import { test, describe, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, describe, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createTicketTransitionsRouter, type TicketTransitionsDeps } from '../server/ticket-transitions.js';
+import {
+  createTicketTransitionsRouter,
+  type TicketTransitionsDeps,
+} from '../server/ticket-transitions.js';
 import type { TicketContext, BranchLink } from '../server/types.js';
 
 // Loose mock type — cast to TicketTransitionsDeps['execAsync'] at call sites
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 
 interface ExecCall {
   cmd: string;
@@ -20,19 +24,26 @@ interface ExecCall {
 let sharedTmpDir: string;
 let sharedConfigPath: string;
 
-before(() => {
+beforeAll(() => {
   sharedTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-'));
   sharedConfigPath = path.join(sharedTmpDir, 'config.json');
   const minimalConfig = {
-    host: '0.0.0.0', port: 3456, cookieTTL: '24h', repos: [],
-    claudeCommand: 'claude', claudeArgs: [], defaultAgent: 'claude',
-    defaultContinue: true, defaultYolo: false, launchInTmux: false,
+    host: '0.0.0.0',
+    port: 3456,
+    cookieTTL: '24h',
+    repos: [],
+    claudeCommand: 'claude',
+    claudeArgs: [],
+    defaultAgent: 'claude',
+    defaultContinue: true,
+    defaultYolo: false,
+    launchInTmux: false,
     defaultNotifications: true,
   };
   fs.writeFileSync(sharedConfigPath, JSON.stringify(minimalConfig, null, 2));
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(sharedTmpDir, { recursive: true, force: true });
 });
 
@@ -41,7 +52,11 @@ function makeExecMock(opts: { shouldThrow?: boolean } = {}): {
   calls: ExecCall[];
 } {
   const calls: ExecCall[] = [];
-  const exec: MockExec = async (cmd: unknown, args: unknown, options: unknown) => {
+  const exec: MockExec = async (
+    cmd: unknown,
+    args: unknown,
+    options: unknown
+  ) => {
     const command = cmd as string;
     const argv = args as string[];
     const cwd = (options as { cwd?: string } | undefined)?.cwd;
@@ -55,13 +70,18 @@ function makeExecMock(opts: { shouldThrow?: boolean } = {}): {
 }
 
 function makeApp(execMock: MockExec) {
-  const deps = { configPath: sharedConfigPath, execAsync: execMock } as unknown as TicketTransitionsDeps;
+  const deps = {
+    configPath: sharedConfigPath,
+    execAsync: execMock,
+  } as unknown as TicketTransitionsDeps;
   return createTicketTransitionsRouter(deps);
 }
 
 const REPO_PATH = '/fake/workspace/repo-a';
 
-function makeTicketContext(overrides: Partial<TicketContext> = {}): TicketContext {
+function makeTicketContext(
+  overrides: Partial<TicketContext> = {}
+): TicketContext {
   return {
     ticketId: 'GH-1',
     title: 'Test Issue',
@@ -73,7 +93,10 @@ function makeTicketContext(overrides: Partial<TicketContext> = {}): TicketContex
   };
 }
 
-function makeBranchLinks(ticketId: string, branchName: string): Record<string, BranchLink[]> {
+function makeBranchLinks(
+  ticketId: string,
+  branchName: string
+): Record<string, BranchLink[]> {
   return {
     [ticketId]: [
       {
@@ -96,11 +119,14 @@ describe('ticket-transitions', () => {
       await transitionOnSessionCreate(ctx);
 
       const addLabelCall = calls.find(
-        (c) => c.cmd === 'gh' && c.args.includes('--add-label') && c.args.includes('in-progress'),
+        (c) =>
+          c.cmd === 'gh' &&
+          c.args.includes('--add-label') &&
+          c.args.includes('in-progress')
       );
-      assert.ok(addLabelCall, 'Should have called gh issue edit --add-label in-progress');
-      assert.equal(addLabelCall.cwd, REPO_PATH);
-      assert.ok(addLabelCall.args.includes('100'), 'Should pass issue number 100');
+      expect(addLabelCall).toBeTruthy();
+      expect(addLabelCall.cwd).toBe(REPO_PATH);
+      expect(addLabelCall.args).toContain('100');
     });
 
     test('is idempotent — does not re-fire same transition', async () => {
@@ -112,11 +138,11 @@ describe('ticket-transitions', () => {
       // First call — should fire
       await transitionOnSessionCreate(ctx);
       const firstCallCount = calls.length;
-      assert.ok(firstCallCount > 0, 'First call should trigger gh');
+      expect(firstCallCount).toBeGreaterThan(0);
 
       // Second call — should be a no-op (idempotent)
       await transitionOnSessionCreate(ctx);
-      assert.equal(calls.length, firstCallCount, 'Second call should not trigger additional gh calls');
+      expect(calls.length).toBe(firstCallCount);
     });
   });
 
@@ -127,22 +153,30 @@ describe('ticket-transitions', () => {
 
       const ticketId = 'GH-200';
       const branchName = 'feat/my-feature';
-      const prs = [{ number: 1, headRefName: branchName, state: 'OPEN' as const }];
+      const prs = [
+        { number: 1, headRefName: branchName, state: 'OPEN' as const },
+      ];
       const branchLinks = makeBranchLinks(ticketId, branchName);
 
       await checkPrTransitions(prs, branchLinks);
 
       const addCodeReview = calls.find(
-        (c) => c.cmd === 'gh' && c.args.includes('--add-label') && c.args.includes('code-review'),
+        (c) =>
+          c.cmd === 'gh' &&
+          c.args.includes('--add-label') &&
+          c.args.includes('code-review')
       );
-      assert.ok(addCodeReview, 'Should have called gh issue edit --add-label code-review');
-      assert.equal(addCodeReview.cwd, REPO_PATH);
-      assert.ok(addCodeReview.args.includes('200'), 'Should pass issue number 200');
+      expect(addCodeReview).toBeTruthy();
+      expect(addCodeReview.cwd).toBe(REPO_PATH);
+      expect(addCodeReview.args).toContain('200');
 
       const removeInProgress = calls.find(
-        (c) => c.cmd === 'gh' && c.args.includes('--remove-label') && c.args.includes('in-progress'),
+        (c) =>
+          c.cmd === 'gh' &&
+          c.args.includes('--remove-label') &&
+          c.args.includes('in-progress')
       );
-      assert.ok(removeInProgress, 'Should have removed in-progress label');
+      expect(removeInProgress).toBeTruthy();
     });
 
     test('adds ready-for-qa label when PR is MERGED for a linked ticket', async () => {
@@ -151,22 +185,30 @@ describe('ticket-transitions', () => {
 
       const ticketId = 'GH-300';
       const branchName = 'feat/merged-feature';
-      const prs = [{ number: 2, headRefName: branchName, state: 'MERGED' as const }];
+      const prs = [
+        { number: 2, headRefName: branchName, state: 'MERGED' as const },
+      ];
       const branchLinks = makeBranchLinks(ticketId, branchName);
 
       await checkPrTransitions(prs, branchLinks);
 
       const addReadyForQa = calls.find(
-        (c) => c.cmd === 'gh' && c.args.includes('--add-label') && c.args.includes('ready-for-qa'),
+        (c) =>
+          c.cmd === 'gh' &&
+          c.args.includes('--add-label') &&
+          c.args.includes('ready-for-qa')
       );
-      assert.ok(addReadyForQa, 'Should have called gh issue edit --add-label ready-for-qa');
-      assert.equal(addReadyForQa.cwd, REPO_PATH);
-      assert.ok(addReadyForQa.args.includes('300'), 'Should pass issue number 300');
+      expect(addReadyForQa).toBeTruthy();
+      expect(addReadyForQa.cwd).toBe(REPO_PATH);
+      expect(addReadyForQa.args).toContain('300');
 
       const removeCodeReview = calls.find(
-        (c) => c.cmd === 'gh' && c.args.includes('--remove-label') && c.args.includes('code-review'),
+        (c) =>
+          c.cmd === 'gh' &&
+          c.args.includes('--remove-label') &&
+          c.args.includes('code-review')
       );
-      assert.ok(removeCodeReview, 'Should have removed code-review label');
+      expect(removeCodeReview).toBeTruthy();
     });
 
     test('is idempotent for PR transitions', async () => {
@@ -175,17 +217,19 @@ describe('ticket-transitions', () => {
 
       const ticketId = 'GH-400';
       const branchName = 'feat/idempotent-pr';
-      const prs = [{ number: 3, headRefName: branchName, state: 'OPEN' as const }];
+      const prs = [
+        { number: 3, headRefName: branchName, state: 'OPEN' as const },
+      ];
       const branchLinks = makeBranchLinks(ticketId, branchName);
 
       // First call — should fire
       await checkPrTransitions(prs, branchLinks);
       const firstCallCount = calls.length;
-      assert.ok(firstCallCount > 0, 'First call should trigger gh');
+      expect(firstCallCount).toBeGreaterThan(0);
 
       // Second call with same PR state — should be a no-op (idempotent)
       await checkPrTransitions(prs, branchLinks);
-      assert.equal(calls.length, firstCallCount, 'Second call with same state should not trigger additional gh calls');
+      expect(calls.length).toBe(firstCallCount);
     });
 
     test('handles gh CLI errors gracefully', async () => {
@@ -194,14 +238,13 @@ describe('ticket-transitions', () => {
 
       const ticketId = 'GH-500';
       const branchName = 'feat/error-branch';
-      const prs = [{ number: 4, headRefName: branchName, state: 'OPEN' as const }];
+      const prs = [
+        { number: 4, headRefName: branchName, state: 'OPEN' as const },
+      ];
       const branchLinks = makeBranchLinks(ticketId, branchName);
 
       // Should not throw even when gh CLI fails
-      await assert.doesNotReject(
-        () => checkPrTransitions(prs, branchLinks),
-        'checkPrTransitions should not throw when gh CLI errors',
-      );
+      await expect(checkPrTransitions(prs, branchLinks)).resolves.not.toThrow();
     });
   });
 });
@@ -212,12 +255,12 @@ describe('ticket-transitions (Jira)', () => {
   let tmpDir: string;
   let configPath: string;
 
-  before(() => {
+  beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-jira-'));
     configPath = path.join(tmpDir, 'config.json');
   });
 
-  after(() => {
+  afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -244,7 +287,10 @@ describe('ticket-transitions (Jira)', () => {
   function makeJiraApp(execOverride?: MockExec) {
     const { exec } = makeExecMock();
     const effectiveExec = execOverride ?? exec;
-    const deps = { configPath, execAsync: effectiveExec } as unknown as TicketTransitionsDeps;
+    const deps = {
+      configPath,
+      execAsync: effectiveExec,
+    } as unknown as TicketTransitionsDeps;
     return createTicketTransitionsRouter(deps);
   }
 
@@ -270,10 +316,13 @@ describe('ticket-transitions (Jira)', () => {
     await transitionOnSessionCreate(ctx);
 
     const transitionCall = acliCalls.find(
-      (c) => c.cmd === 'acli' && c.args.includes('transition') && c.args.includes('PROJ-123'),
+      (c) =>
+        c.cmd === 'acli' &&
+        c.args.includes('transition') &&
+        c.args.includes('PROJ-123')
     );
-    assert.ok(transitionCall, `Expected acli jira workitem transition call, got: ${JSON.stringify(acliCalls)}`);
-    assert.ok(transitionCall.args.includes('In Progress'), 'Should pass the mapped status name');
+    expect(transitionCall).toBeTruthy();
+    expect(transitionCall.args).toContain('In Progress');
   });
 
   test('transitionOnSessionCreate skips when no status mapping configured', async () => {
@@ -297,7 +346,7 @@ describe('ticket-transitions (Jira)', () => {
     };
     await transitionOnSessionCreate(ctx);
 
-    assert.equal(acliCalls.length, 0, 'Should not call acli when no status mapping exists');
+    expect(acliCalls.length).toBe(0);
   });
 
   test('transitionOnSessionCreate is idempotent — second call blocked after success', async () => {
@@ -322,15 +371,18 @@ describe('ticket-transitions (Jira)', () => {
 
     await transitionOnSessionCreate(ctx);
     const firstCallCount = acliCalls.length;
-    assert.ok(firstCallCount > 0, 'First call should trigger acli');
+    expect(firstCallCount).toBeGreaterThan(0);
 
     // Second call — should be blocked by idempotency guard
     await transitionOnSessionCreate(ctx);
-    assert.equal(acliCalls.length, firstCallCount, 'Second call should be blocked by idempotency guard after success');
+    expect(acliCalls.length).toBe(firstCallCount);
   });
 
   test('checkPrTransitions calls acli jira workitem transition for OPEN PR with mapped Jira ticket', async () => {
-    writeJiraConfig({ 'code-review': 'Code Review', 'ready-for-qa': 'Ready for QA' });
+    writeJiraConfig({
+      'code-review': 'Code Review',
+      'ready-for-qa': 'Ready for QA',
+    });
 
     const acliCalls: Array<{ cmd: string; args: string[] }> = [];
     const trackingExec: MockExec = async (cmd: unknown, args: unknown) => {
@@ -340,17 +392,29 @@ describe('ticket-transitions (Jira)', () => {
 
     const { checkPrTransitions } = makeJiraApp(trackingExec);
 
-    const prs = [{ number: 10, headRefName: 'feat/jira-pr', state: 'OPEN' as const }];
+    const prs = [
+      { number: 10, headRefName: 'feat/jira-pr', state: 'OPEN' as const },
+    ];
     const branchLinks: Record<string, BranchLink[]> = {
-      'PROJ-789': [{ repoPath: '/fake/repo', repoName: 'repo', branchName: 'feat/jira-pr', hasActiveSession: true }],
+      'PROJ-789': [
+        {
+          repoPath: '/fake/repo',
+          repoName: 'repo',
+          branchName: 'feat/jira-pr',
+          hasActiveSession: true,
+        },
+      ],
     };
 
     await checkPrTransitions(prs, branchLinks);
 
     const transitionCall = acliCalls.find(
-      (c) => c.cmd === 'acli' && c.args.includes('transition') && c.args.includes('PROJ-789'),
+      (c) =>
+        c.cmd === 'acli' &&
+        c.args.includes('transition') &&
+        c.args.includes('PROJ-789')
     );
-    assert.ok(transitionCall, `Expected acli jira workitem transition call, got: ${JSON.stringify(acliCalls)}`);
-    assert.ok(transitionCall.args.includes('Code Review'), 'Should use code-review status name');
+    expect(transitionCall).toBeTruthy();
+    expect(transitionCall.args).toContain('Code Review');
   });
 });

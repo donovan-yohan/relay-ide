@@ -1,10 +1,14 @@
-import { test, before, after, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { startPolling, stopPolling, isPolling, type ReviewPollerDeps } from '../server/review-poller.js';
+import {
+  startPolling,
+  stopPolling,
+  isPolling,
+  type ReviewPollerDeps,
+} from '../server/review-poller.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
@@ -14,12 +18,12 @@ let configPath: string;
 
 const WORKSPACE_PATH = '/fake/workspace/my-repo';
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-poller-test-'));
   configPath = path.join(tmpDir, 'config.json');
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -61,7 +65,9 @@ function makeNotificationLine(overrides: {
   });
 }
 
-type MockExec = (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+type MockExec = (
+  ...args: unknown[]
+) => Promise<{ stdout: string; stderr: string }>;
 type ExecAsync = ReviewPollerDeps['execAsync'];
 
 /**
@@ -79,7 +85,10 @@ function makeMockExec(opts: {
   worktreeError?: Error;
   onExec?: (cmd: string, args: string[]) => void;
 }): MockExec {
-  return async (cmd: unknown, args: unknown): Promise<{ stdout: string; stderr: string }> => {
+  return async (
+    cmd: unknown,
+    args: unknown
+  ): Promise<{ stdout: string; stderr: string }> => {
     const command = cmd as string;
     const argv = args as string[];
 
@@ -115,7 +124,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): ReviewPollerDeps {
   return {
     configPath,
     getWorkspacePaths: () => [WORKSPACE_PATH],
-    getWorkspaceSettings: () => undefined,
+    getRepoSettings: () => undefined,
     createSession: async () => {},
     broadcastEvent: () => {},
     execAsync: makeMockExec({}) as unknown as ExecAsync,
@@ -125,13 +134,15 @@ function makeDeps(overrides: Record<string, unknown> = {}): ReviewPollerDeps {
 
 /** Waits for at least one poll cycle to complete given the interval. */
 function waitForCycles(intervalMs: number, cycles = 1): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, intervalMs * cycles + 20));
+  return new Promise((resolve) =>
+    setTimeout(resolve, intervalMs * cycles + 20)
+  );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 test('isPolling() returns false initially', () => {
-  assert.equal(isPolling(), false);
+  expect(isPolling()).toBe(false);
 });
 
 test('startPolling() sets isPolling() to true', () => {
@@ -142,7 +153,7 @@ test('startPolling() sets isPolling() to true', () => {
 
   startPolling(makeDeps());
 
-  assert.equal(isPolling(), true);
+  expect(isPolling()).toBe(true);
 });
 
 test('stopPolling() sets isPolling() to false', async () => {
@@ -152,10 +163,10 @@ test('stopPolling() sets isPolling() to false', async () => {
   });
 
   startPolling(makeDeps());
-  assert.equal(isPolling(), true);
+  expect(isPolling()).toBe(true);
 
   await stopPolling();
-  assert.equal(isPolling(), false);
+  expect(isPolling()).toBe(false);
 });
 
 test('startPolling() is idempotent — calling twice does not create two timers', async () => {
@@ -186,7 +197,7 @@ test('startPolling() is idempotent — calling twice does not create two timers'
 
   // Two timer cycles elapsed. If only one timer exists, gh was called ~2 times.
   // If startPolling were NOT idempotent (two timers), we would see ~4 calls.
-  assert.ok(callCount <= 3, `Expected at most 3 gh calls (got ${callCount}) — suggests only one timer running`);
+  expect(callCount).toBeLessThanOrEqual(3);
 });
 
 test('first-run guard — when lastPollTimestamp is absent, no notifications are processed', async () => {
@@ -221,15 +232,16 @@ test('first-run guard — when lastPollTimestamp is absent, no notifications are
 
   const deps = makeDeps({
     execAsync: exec as unknown as ExecAsync,
-    broadcastEvent: (event: string, data?: Record<string, unknown>) => broadcastedEvents.push({ event, data }),
+    broadcastEvent: (event: string, data?: Record<string, unknown>) =>
+      broadcastedEvents.push({ event, data }),
   });
 
   startPolling(deps);
   await waitForCycles(INTERVAL);
 
   // The notification predates the first-run "now" baseline, so no checkout should occur
-  assert.equal(fetchCallCount, 0, 'git fetch should not be called for historical notifications');
-  assert.equal(broadcastedEvents.length, 0, 'No review-checkout events should be broadcast');
+  expect(fetchCallCount).toBe(0);
+  expect(broadcastedEvents.length).toBe(0);
 });
 
 test('JSON parse safety — non-JSON lines in gh output do not crash', async () => {
@@ -267,7 +279,8 @@ test('JSON parse safety — non-JSON lines in gh output do not crash', async () 
 
   const deps = makeDeps({
     execAsync: exec as unknown as ExecAsync,
-    broadcastEvent: (event: string, data?: Record<string, unknown>) => broadcastedEvents.push({ event, data }),
+    broadcastEvent: (event: string, data?: Record<string, unknown>) =>
+      broadcastedEvents.push({ event, data }),
   });
 
   // Should not throw
@@ -276,9 +289,9 @@ test('JSON parse safety — non-JSON lines in gh output do not crash', async () 
 
   // The valid notification was newer than lastPollTimestamp — should be processed
   const checkoutEvents = (broadcastedEvents as Array<{ event: string }>).filter(
-    (e) => e.event === 'review-checkout',
+    (e) => e.event === 'review-checkout'
   );
-  assert.equal(checkoutEvents.length, 1, 'Valid notification should still be processed despite surrounding non-JSON lines');
+  expect(checkoutEvents.length).toBe(1);
 });
 
 test('poll skips processing when autoCheckoutReviewRequests is disabled', async () => {
@@ -296,7 +309,9 @@ test('poll skips processing when autoCheckoutReviewRequests is disabled', async 
   let ghCallCount = 0;
 
   const exec = makeMockExec({
-    notificationLines: [makeNotificationLine({ updatedAt: new Date().toISOString() })],
+    notificationLines: [
+      makeNotificationLine({ updatedAt: new Date().toISOString() }),
+    ],
     onExec: (cmd, argv) => {
       if (cmd === 'gh' && argv[0] === 'api') ghCallCount++;
     },
@@ -306,7 +321,7 @@ test('poll skips processing when autoCheckoutReviewRequests is disabled', async 
   await waitForCycles(INTERVAL);
 
   // pollOnce returns early when the flag is off — gh should not even be called
-  assert.equal(ghCallCount, 0, 'gh should not be called when autoCheckoutReviewRequests is false');
+  expect(ghCallCount).toBe(0);
 });
 
 test('stopPolling() awaits the in-flight poll before resolving', async () => {
@@ -326,7 +341,10 @@ test('stopPolling() awaits the in-flight poll before resolving', async () => {
   // Wrap the normal exec with a deliberate delay so the poll stays in-flight
   const normalExec = makeMockExec({
     notificationLines: [
-      makeNotificationLine({ updatedAt: new Date().toISOString(), ownerRepo: 'owner/my-repo' }),
+      makeNotificationLine({
+        updatedAt: new Date().toISOString(),
+        ownerRepo: 'owner/my-repo',
+      }),
     ],
     remoteUrl: 'https://github.com/owner/my-repo.git',
   });
@@ -352,12 +370,9 @@ test('stopPolling() awaits the in-flight poll before resolving', async () => {
 
   // The poll ran to completion — broadcastEvent must have been called
   const checkoutEvents = (broadcastedEvents as Array<{ event: string }>).filter(
-    (e) => e.event === 'review-checkout',
+    (e) => e.event === 'review-checkout'
   );
-  assert.ok(
-    checkoutEvents.length >= 1,
-    'broadcastEvent should have been called before stopPolling() returned',
-  );
+  expect(checkoutEvents.length).toBeGreaterThanOrEqual(1);
 });
 
 test('poll-start watermark: lastPollTimestamp saved is the time before the fetch, not after', async () => {
@@ -393,31 +408,22 @@ test('poll-start watermark: lastPollTimestamp saved is the time before the fetch
   const afterPoll = Date.now();
 
   // Read the config that was written by the poll
-  const savedConfig = JSON.parse(
-    fs.readFileSync(configPath, 'utf8'),
-  ) as { automations?: { lastPollTimestamp?: string } };
+  const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+    automations?: { lastPollTimestamp?: string };
+  };
 
   const savedTs = savedConfig.automations?.lastPollTimestamp;
-  assert.ok(savedTs !== undefined, 'lastPollTimestamp should have been saved');
+  expect(savedTs).not.toBe(undefined);
 
   const savedMs = new Date(savedTs!).getTime();
-  assert.ok(
-    savedMs >= beforePoll,
-    `saved timestamp (${savedTs}) should be >= poll start (${new Date(beforePoll).toISOString()})`,
-  );
-  assert.ok(
-    savedMs <= afterPoll,
-    `saved timestamp (${savedTs}) should be <= poll end (${new Date(afterPoll).toISOString()})`,
-  );
+  expect(savedMs).toBeGreaterThanOrEqual(beforePoll);
+  expect(savedMs).toBeLessThanOrEqual(afterPoll);
 
   // The key invariant: the saved timestamp is the poll-START watermark, not poll-end.
   // We verify this by confirming it precedes the time after stopPolling returned.
   // Because exec has a deliberate delay, a poll-END timestamp would be noticeably later.
   // We simply confirm the saved value is a valid ISO string within the expected window.
-  assert.ok(
-    !isNaN(savedMs),
-    'saved lastPollTimestamp should be a valid date',
-  );
+  expect(isNaN(savedMs)).toBe(false);
 });
 
 test('pollInFlight guard prevents overlapping poll cycles', async () => {
@@ -460,12 +466,6 @@ test('pollInFlight guard prevents overlapping poll cycles', async () => {
   // Without the pollInFlight guard, 150ms / 10ms = ~15 timer fires would each spawn a poll,
   // meaning gh could be called ~15 times. With the guard, at most 2 polls can complete
   // in 150ms (one starting at t=0 finishing at ~100ms, one starting at ~100ms finishing at ~200ms).
-  assert.ok(
-    ghCallCount <= 3,
-    `Expected at most 3 gh calls due to pollInFlight guard (got ${ghCallCount})`,
-  );
-  assert.ok(
-    ghCallCount >= 1,
-    `Expected at least 1 gh call to confirm polling ran (got ${ghCallCount})`,
-  );
+  expect(ghCallCount).toBeLessThanOrEqual(3);
+  expect(ghCallCount).toBeGreaterThanOrEqual(1);
 });

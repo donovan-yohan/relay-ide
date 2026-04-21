@@ -1,0 +1,11 @@
+/* ErrorToast-specific overrides — base card styles in NotificationStack.css */
+
+.notification-card--error {
+  border-color: var(--status-error);
+}
+
+.error-toast-text {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

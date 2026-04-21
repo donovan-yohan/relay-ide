@@ -1,0 +1,45 @@
+.delete-worktree-footer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.delete-worktree-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delete-worktree-confirm-msg {
+  font-size: var(--font-size-base);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.delete-worktree-wt-name {
+  color: var(--text);
+}
+
+.delete-worktree-wt-path {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin: 0;
+  word-break: break-all;
+}
+
+.delete-worktree-warning-msg {
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+  margin: 0;
+}
+
+.delete-worktree-error-msg {
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(231, 76, 60, 0.1);
+  border-radius: 0;
+  border: 1px solid rgba(231, 76, 60, 0.3);
+}

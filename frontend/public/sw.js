@@ -1,15 +1,29 @@
+/* global clients */
 // Service worker for PWA install support and push notifications.
-// Does not cache — all requests pass through to the network.
+// Only intercept navigation requests (page loads). Let API calls, analytics,
+// and other subresource fetches go straight to the network without SW interference.
 self.addEventListener('fetch', function (event) {
-  event.respondWith(fetch(event.request));
+  if (event.request.mode !== 'navigate') return;
+  event.respondWith(
+    fetch(event.request).catch(function () {
+      return new Response('Offline', {
+        status: 503,
+        statusText: 'Service Unavailable',
+      });
+    })
+  );
 });
 
 // Push notification handler
 self.addEventListener('push', function (event) {
   var data = {};
-  try { data = event.data.json(); } catch (e) { /* ignore parse errors */ }
+  try {
+    data = event.data.json();
+  } catch {
+    /* ignore parse errors */
+  }
   event.waitUntil(
-    self.registration.showNotification(data.displayName || 'Claude Remote CLI', {
+    self.registration.showNotification(data.displayName || 'Relay IDE', {
       body: 'Session needs your input',
       tag: 'session-' + (data.sessionId || ''),
       data: { sessionId: data.sessionId, sessionType: data.sessionType },
@@ -29,15 +43,21 @@ self.addEventListener('notificationclick', function (event) {
   var url = '/?session=' + sessionId + '&tab=' + tab;
 
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
-      for (var i = 0; i < clientList.length; i++) {
-        var client = clientList[i];
-        if (client.url.indexOf(self.location.origin) !== -1) {
-          client.postMessage({ type: 'notification-click', sessionId: sessionId, sessionType: sessionType });
-          return client.focus();
+    clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then(function (clientList) {
+        for (var i = 0; i < clientList.length; i++) {
+          var client = clientList[i];
+          if (client.url.indexOf(self.location.origin) !== -1) {
+            client.postMessage({
+              type: 'notification-click',
+              sessionId: sessionId,
+              sessionType: sessionType,
+            });
+            return client.focus();
+          }
         }
-      }
-      return clients.openWindow(url);
-    })
+        return clients.openWindow(url);
+      })
   );
 });

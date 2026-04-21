@@ -1,120 +1,63 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, beforeAll, afterAll, expect } from 'vitest';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import type { Server } from 'node:http';
-
 import { createWebhookManagerRouter } from '../server/webhook-manager.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { Config } from '../server/types.js';
+import { createMockFetch } from './helpers/mock-fetch.js';
+import { createTestServer } from './helpers/test-server.js';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-interface MockResponse {
-  json?: unknown;
-  status?: number;
-  headers?: Record<string, string>;
-  throw?: Error;
-}
-
-// ── Mock fetch ─────────────────────────────────────────────────────────────────
-
-/**
- * Creates a mock fetch function from a map of URL substrings → response sequences.
- * Each call to a matching URL pops the next response from the front of that sequence.
- * Supports `headers` override for redirect simulation (e.g., 302 with Location).
- */
-function createMockFetch(
-  urlMap: Record<string, MockResponse[]>,
-): typeof globalThis.fetch {
-  const queues = new Map<string, MockResponse[]>(
-    Object.entries(urlMap).map(([k, v]) => [k, [...v]]),
-  );
-
-  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
-    const url =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : (input as Request).url;
-
-    for (const [pattern, queue] of queues) {
-      if (url.includes(pattern)) {
-        const next = queue.shift();
-        if (!next) {
-          throw new Error(`Mock fetch: exhausted responses for pattern "${pattern}", url: ${url}`);
-        }
-        if (next.throw) {
-          throw next.throw;
-        }
-
-        const status = next.status ?? 200;
-        const body = next.json != null ? JSON.stringify(next.json) : '';
-        const responseHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-          ...next.headers,
-        };
-        return new Response(body, { status, headers: responseHeaders });
-      }
-    }
-
-    throw new Error(`Mock fetch: no pattern matched url: ${url}`);
-  };
-}
+/** Isolate child git processes from the host worktree environment. */
+const GIT_ISOLATED_ENV = {
+  ...process.env,
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  GIT_COMMON_DIR: undefined,
+};
 
 // ── Server helpers ─────────────────────────────────────────────────────────────
 
 /** No-op requireAuth middleware for testing (bypasses auth). */
-const noopAuth = (_req: express.Request, _res: express.Response, next: express.NextFunction): void => next();
+const noopAuth = (
+  _req: express.Request,
+  _res: express.Response,
+  next: express.NextFunction
+): void => next();
 
-function startServer(opts: {
+async function startServer(opts: {
   configPath: string;
   fetchFn?: typeof globalThis.fetch;
-}): Promise<{ srv: Server; url: string }> {
-  return new Promise((resolve) => {
-    const app = express();
-    app.use(express.json());
+}): Promise<{ url: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
 
-    const router = createWebhookManagerRouter({
-      configPath: opts.configPath,
-      broadcastEvent: () => { /* no-op */ },
-      ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
-      requireAuth: noopAuth,
-    });
-
-    app.use('/webhooks', router);
-
-    const srv = app.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      let url = '';
-      if (typeof addr === 'object' && addr) {
-        url = `http://127.0.0.1:${addr.port}`;
-      }
-      resolve({ srv, url });
-    });
+  const router = createWebhookManagerRouter({
+    configPath: opts.configPath,
+    broadcastEvent: () => {
+      /* no-op */
+    },
+    ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+    requireAuth: noopAuth,
   });
-}
 
-function stopServer(srv: Server | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    if (srv) srv.close(() => resolve());
-    else resolve();
-  });
+  app.use('/webhooks', router);
+
+  const { url, close } = await createTestServer(app);
+  return { url, close };
 }
 
 // ── Shared state ───────────────────────────────────────────────────────────────
 
 let tmpDir: string;
 
-before(() => {
+beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webhook-manager-test-'));
 });
 
-after(() => {
+afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -130,11 +73,19 @@ function makeTempConfig(name: string, overrides: Partial<Config> = {}): string {
  */
 function makeGitRepo(dir: string, owner: string, repo: string): void {
   fs.mkdirSync(dir, { recursive: true });
-  execFileSync('git', ['init', dir], { stdio: 'ignore' });
-  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${owner}/${repo}.git`], {
-    cwd: dir,
+  execFileSync('git', ['init', dir], {
     stdio: 'ignore',
+    env: GIT_ISOLATED_ENV,
   });
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', `https://github.com/${owner}/${repo}.git`],
+    {
+      cwd: dir,
+      stdio: 'ignore',
+      env: GIT_ISOLATED_ENV,
+    }
+  );
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -151,29 +102,32 @@ test('POST /setup — happy path creates smee channel and saves config', async (
     'smee.io/new': [
       {
         status: 302,
-        headers: { location: 'https://smee.io/abc123def456', 'Content-Type': 'text/html' },
+        headers: {
+          location: 'https://smee.io/abc123def456',
+          'Content-Type': 'text/html',
+        },
       },
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { ok: boolean; smeeUrl: string };
-    assert.equal(data.ok, true);
-    assert.equal(data.smeeUrl, 'https://smee.io/abc123def456');
+    const data = (await res.json()) as { ok: boolean; smeeUrl: string };
+    expect(data.ok).toBe(true);
+    expect(data.smeeUrl).toBe('https://smee.io/abc123def456');
 
     // Verify config was saved
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
       github?: { smeeUrl?: string; webhookSecret?: string };
     };
-    assert.equal(saved.github?.smeeUrl, 'https://smee.io/abc123def456');
-    assert.ok(saved.github?.webhookSecret, 'webhookSecret should be set');
-    assert.equal(saved.github!.webhookSecret!.length, 40, 'webhookSecret should be 20 bytes hex = 40 chars');
+    expect(saved.github?.smeeUrl).toBe('https://smee.io/abc123def456');
+    expect(saved.github?.webhookSecret).toBeTruthy();
+    expect(saved.github!.webhookSecret!.length).toBe(40);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -183,26 +137,24 @@ test('POST /setup — smee.io unreachable returns error', async () => {
   const configPath = makeTempConfig('setup-unreachable');
 
   const mockFetch = createMockFetch({
-    'smee.io/new': [
-      { throw: new Error('ECONNREFUSED') },
-    ],
+    'smee.io/new': [{ throw: new Error('ECONNREFUSED') }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/setup`, { method: 'POST' });
-    assert.equal(res.status, 502);
+    expect(res.status).toBe(502);
 
-    const data = await res.json() as { error: string };
-    assert.equal(data.error, 'smee_unreachable');
+    const data = (await res.json()) as { error: string };
+    expect(data.error).toBe('smee_unreachable');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 3. POST /repos — happy path: mock GitHub API 201, verify webhookId saved
 
-test('POST /repos — happy path creates webhook and saves webhookId', async () => {
+test('[needs:git-init] POST /repos — happy path creates webhook and saves webhookId', async () => {
   const repoDir = path.join(tmpDir, 'repos-happy-repo');
   makeGitRepo(repoDir, 'testowner', 'testrepo');
 
@@ -221,33 +173,36 @@ test('POST /repos — happy path creates webhook and saves webhookId', async () 
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { ok: boolean; webhookId: number };
-    assert.equal(data.ok, true);
-    assert.equal(data.webhookId, 99001);
+    const data = (await res.json()) as { ok: boolean; webhookId: number };
+    expect(data.ok).toBe(true);
+    expect(data.webhookId).toBe(99001);
 
     // Verify webhookId saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<
+        string,
+        { webhookId?: number; webhookEnabled?: boolean }
+      >;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, 99001);
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookEnabled, true);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(99001);
+    expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(true);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 4. POST /repos — 403 forbidden: verify webhookError set to 'not-admin'
 
-test('POST /repos — 403 forbidden sets webhookError to not-admin', async () => {
+test('[needs:git-init] POST /repos — 403 forbidden sets webhookError to not-admin', async () => {
   const repoDir = path.join(tmpDir, 'repos-403-repo');
   makeGitRepo(repoDir, 'testowner', 'forbiddenrepo');
 
@@ -265,31 +220,31 @@ test('POST /repos — 403 forbidden sets webhookError to not-admin', async () =>
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 403);
+    expect(res.status).toBe(403);
 
-    const data = await res.json() as { error: string; webhookError: string };
-    assert.equal(data.webhookError, 'not-admin');
+    const data = (await res.json()) as { error: string; webhookError: string };
+    expect(data.webhookError).toBe('not-admin');
 
     // Verify webhookError saved in config
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookError?: string }>;
+      repoSettings?: Record<string, { webhookError?: string }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookError, 'not-admin');
+    expect(saved.repoSettings?.[repoDir]?.webhookError).toBe('not-admin');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 5. POST /repos — 422 conflict: verify treated as success
 
-test('POST /repos — 422 conflict is treated as success (webhook already exists)', async () => {
+test('[needs:git-init] POST /repos — 422 conflict is treated as success (webhook already exists)', async () => {
   const repoDir = path.join(tmpDir, 'repos-422-repo');
   makeGitRepo(repoDir, 'testowner', 'existingrepo');
 
@@ -307,34 +262,32 @@ test('POST /repos — 422 conflict is treated as success (webhook already exists
       { json: { message: 'Hook already exists' }, status: 422 },
       // GET /hooks → 200 with existing hook
       {
-        json: [
-          { id: 77777, config: { url: 'https://smee.io/test123' } },
-        ],
+        json: [{ id: 77777, config: { url: 'https://smee.io/test123' } }],
         status: 200,
       },
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { ok: boolean; webhookId: number };
-    assert.equal(data.ok, true);
-    assert.equal(data.webhookId, 77777);
+    const data = (await res.json()) as { ok: boolean; webhookId: number };
+    expect(data.ok).toBe(true);
+    expect(data.webhookId).toBe(77777);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 6. POST /repos — 401 unauthorized: verify scope error response
 
-test('POST /repos — 401 unauthorized returns unauthorized error', async () => {
+test('[needs:git-init] POST /repos — 401 unauthorized returns unauthorized error', async () => {
   const repoDir = path.join(tmpDir, 'repos-401-repo');
   makeGitRepo(repoDir, 'testowner', 'privaterepo');
 
@@ -347,30 +300,28 @@ test('POST /repos — 401 unauthorized returns unauthorized error', async () => 
   });
 
   const mockFetch = createMockFetch({
-    'api.github.com': [
-      { json: { message: 'Bad credentials' }, status: 401 },
-    ],
+    'api.github.com': [{ json: { message: 'Bad credentials' }, status: 401 }],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 400);
+    expect(res.status).toBe(400);
 
-    const data = await res.json() as { error: string };
-    assert.equal(data.error, 'unauthorized');
+    const data = (await res.json()) as { error: string };
+    expect(data.error).toBe('unauthorized');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 7. POST /repos/remove — happy path: verify webhookId cleared
 
-test('POST /repos/remove — happy path clears webhookId from config', async () => {
+test('[needs:git-init] POST /repos/remove — happy path clears webhookId from config', async () => {
   const repoDir = path.join(tmpDir, 'repos-remove-happy-repo');
   makeGitRepo(repoDir, 'testowner', 'removerepo');
 
@@ -380,7 +331,7 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
       webhookSecret: 'test_secret',
       smeeUrl: 'https://smee.io/test123',
     },
-    workspaceSettings: {
+    repoSettings: {
       [repoDir]: {
         webhookId: 55555,
         webhookEnabled: true,
@@ -395,32 +346,35 @@ test('POST /repos/remove — happy path clears webhookId from config', async () 
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos/remove`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { ok: boolean };
-    assert.equal(data.ok, true);
+    const data = (await res.json()) as { ok: boolean };
+    expect(data.ok).toBe(true);
 
     // Verify webhookId cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number; webhookEnabled?: boolean }>;
+      repoSettings?: Record<
+        string,
+        { webhookId?: number; webhookEnabled?: boolean }
+      >;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, undefined);
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookEnabled, undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookEnabled).toBe(undefined);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 8. DELETE /repos/remove with 404 — verify treated as success
 
-test('POST /repos/remove — GitHub 404 is still treated as success', async () => {
+test('[needs:git-init] POST /repos/remove — GitHub 404 is still treated as success', async () => {
   const repoDir = path.join(tmpDir, 'repos-remove-404-repo');
   makeGitRepo(repoDir, 'testowner', 'alreadydeleted');
 
@@ -430,7 +384,7 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
       webhookSecret: 'test_secret',
       smeeUrl: 'https://smee.io/test123',
     },
-    workspaceSettings: {
+    repoSettings: {
       [repoDir]: {
         webhookId: 11111,
         webhookEnabled: true,
@@ -445,25 +399,25 @@ test('POST /repos/remove — GitHub 404 is still treated as success', async () =
     ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/repos/remove`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath: repoDir }),
     });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { ok: boolean };
-    assert.equal(data.ok, true);
+    const data = (await res.json()) as { ok: boolean };
+    expect(data.ok).toBe(true);
 
     // Local state cleared
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      workspaceSettings?: Record<string, { webhookId?: number }>;
+      repoSettings?: Record<string, { webhookId?: number }>;
     };
-    assert.equal(saved.workspaceSettings?.[repoDir]?.webhookId, undefined);
+    expect(saved.repoSettings?.[repoDir]?.webhookId).toBe(undefined);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -479,26 +433,28 @@ test('GET /status — returns correct configured state', async () => {
     },
   });
 
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       configured: boolean;
       smeeConnected: boolean;
       lastEventAt: string | null;
       autoProvision: boolean;
       secretPreview: string | null;
     };
-    assert.equal(data.configured, true);
-    assert.equal(typeof data.smeeConnected, 'boolean');
-    assert.equal(data.autoProvision, true);
-    assert.ok(data.secretPreview, 'secretPreview should be set');
-    assert.ok(data.secretPreview!.startsWith('****'), 'secretPreview should start with ****');
-    assert.equal(data.secretPreview!.slice(-4), 'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0'));
+    expect(data.configured).toBe(true);
+    expect(typeof data.smeeConnected).toBe('boolean');
+    expect(data.autoProvision).toBe(true);
+    expect(data.secretPreview).toBeTruthy();
+    expect(data.secretPreview!.startsWith('****')).toBe(true);
+    expect(data.secretPreview!.slice(-4)).toBe(
+      'c42'.padStart(4, data.secretPreview!.at(-4) ?? '0')
+    );
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -507,22 +463,25 @@ test('GET /status — returns not configured when no webhook secret', async () =
     github: { accessToken: 'ghs_token' },
   });
 
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/status`);
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { configured: boolean; secretPreview: string | null };
-    assert.equal(data.configured, false);
-    assert.equal(data.secretPreview, null);
+    const data = (await res.json()) as {
+      configured: boolean;
+      secretPreview: string | null;
+    };
+    expect(data.configured).toBe(false);
+    expect(data.secretPreview).toBe(null);
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
 // 10. POST /backfill — partial failure (2 succeed, 1 fails with 403)
 
-test('POST /backfill — partial failure returns correct totals', async () => {
+test('[needs:git-init] POST /backfill — partial failure returns correct totals', async () => {
   // Create 3 fake repos
   const repoA = path.join(tmpDir, 'backfill-repo-a');
   const repoB = path.join(tmpDir, 'backfill-repo-b');
@@ -533,7 +492,7 @@ test('POST /backfill — partial failure returns correct totals', async () => {
   makeGitRepo(repoC, 'ownerC', 'repoC');
 
   const configPath = makeTempConfig('backfill-partial', {
-    workspaces: [repoA, repoB, repoC],
+    repos: [repoA, repoB, repoC],
     github: {
       accessToken: 'ghs_token',
       webhookSecret: 'test_secret',
@@ -547,31 +506,38 @@ test('POST /backfill — partial failure returns correct totals', async () => {
   const mockFetch = createMockFetch({
     'ownerA/repoA': [{ json: { id: 10001 }, status: 201 }],
     'ownerB/repoB': [{ json: { id: 10002 }, status: 201 }],
-    'ownerC/repoC': [{ json: { message: 'Must have admin rights' }, status: 403 }],
+    'ownerC/repoC': [
+      { json: { message: 'Must have admin rights' }, status: 403 },
+    ],
   });
 
-  const { srv, url } = await startServer({ configPath, fetchFn: mockFetch });
+  const { url, close } = await startServer({ configPath, fetchFn: mockFetch });
   try {
     const res = await fetch(`${url}/webhooks/backfill`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       total: number;
       success: number;
       failed: number;
-      results: Array<{ path: string; ownerRepo: string | null; ok: boolean; error?: string }>;
+      results: Array<{
+        path: string;
+        ownerRepo: string | null;
+        ok: boolean;
+        error?: string;
+      }>;
     };
 
-    assert.equal(data.total, 3);
-    assert.equal(data.success, 2);
-    assert.equal(data.failed, 1);
-    assert.equal(data.results.length, 3);
+    expect(data.total).toBe(3);
+    expect(data.success).toBe(2);
+    expect(data.failed).toBe(1);
+    expect(data.results.length).toBe(3);
 
     const failedResult = data.results.find((r) => !r.ok);
-    assert.ok(failedResult, 'Should have one failed result');
-    assert.equal(failedResult!.error, 'forbidden');
+    expect(failedResult).toBeTruthy();
+    expect(failedResult!.error).toBe('forbidden');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
 
@@ -588,14 +554,14 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
   });
 
   // No mock fetch needed — shouldn't call GitHub API
-  const { srv, url } = await startServer({ configPath });
+  const { url, close } = await startServer({ configPath });
   try {
     const res = await fetch(`${url}/webhooks/ping`, { method: 'POST' });
-    assert.equal(res.status, 200);
+    expect(res.status).toBe(200);
 
-    const data = await res.json() as { error: string };
-    assert.equal(data.error, 'no_webhook');
+    const data = (await res.json()) as { error: string };
+    expect(data.error).toBe('no_webhook');
   } finally {
-    await stopServer(srv);
+    await close();
   }
 });
