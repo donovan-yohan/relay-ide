@@ -730,8 +730,22 @@ async function main(): Promise<void> {
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
   const configDir = getConfigDir(CONFIG_PATH);
-  initFileLogging(path.join(configDir, 'logs'));
-  fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+  try {
+    initFileLogging(path.join(configDir, 'logs'));
+  } catch (err) {
+    logger.warn(
+      'File logging disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+  try {
+    fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+  } catch (err) {
+    logger.warn(
+      'Telemetry directory creation failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
 
   await initializePortAllocatorAndReconcile(
     CONFIG_PATH,
@@ -748,14 +762,31 @@ async function main(): Promise<void> {
     );
   }
 
-  await initializePinConfig(startupConfig);
+  try {
+    await initializePinConfig(startupConfig);
+  } catch (err) {
+    logger.warn(
+      'PIN config initialization failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
 
   const authenticatedTokens = new Set<string>();
 
   // Build frontend if missing (e.g. fresh clone in development)
+  // Skip in background service mode — services should use pre-built assets
   const frontendDir = path.join(__dirname, '..', 'frontend');
   const packageRoot = path.join(__dirname, '..', '..');
-  await ensureFrontendBuilt(frontendDir, packageRoot);
+  if (process.env['RELAY_IDE_BACKGROUND'] !== '1') {
+    try {
+      await ensureFrontendBuilt(frontendDir, packageRoot);
+    } catch (err) {
+      logger.warn(
+        'Frontend build check failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
 
   const app = express();
 
@@ -2332,7 +2363,12 @@ async function main(): Promise<void> {
       );
       setTimeout(tryListen, delay);
     } else {
-      throw err;
+      logger.error(
+        'Server failed to start:',
+        err instanceof Error ? err.message : String(err)
+      );
+      // Graceful shutdown instead of unhandled throw
+      void gracefulShutdown();
     }
   });
   tryListen();
