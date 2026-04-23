@@ -126,11 +126,26 @@ export function SplitPaneLayout({
       }
     }
 
+    function onCancel(e: PointerEvent) {
+      setDragging(null);
+      const target = handleRef.current;
+      if (target) {
+        try {
+          target.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        handleRef.current = null;
+      }
+    }
+
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onCancel);
     return () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
     };
   }, [dragging, onRightSidebarWidthChange, onFileViewerRatioChange]);
 

@@ -53,17 +53,36 @@ function useSidebarResize() {
       useUiStore.setState({ sidebarWidth: newWidth });
     }
 
-    function onPointerUp(ev: PointerEvent) {
-      target.releasePointerCapture(ev.pointerId);
+    function cleanup() {
       target.removeEventListener('pointermove', onPointerMove as EventListener);
       target.removeEventListener('pointerup', onPointerUp as EventListener);
+      target.removeEventListener('pointercancel', onPointerCancel as EventListener);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       useUiStore.getState().saveSidebarWidth();
     }
 
+    function onPointerUp(ev: PointerEvent) {
+      try {
+        target.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      cleanup();
+    }
+
+    function onPointerCancel(ev: PointerEvent) {
+      try {
+        target.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      cleanup();
+    }
+
     target.addEventListener('pointermove', onPointerMove as EventListener);
     target.addEventListener('pointerup', onPointerUp as EventListener);
+    target.addEventListener('pointercancel', onPointerCancel as EventListener);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
