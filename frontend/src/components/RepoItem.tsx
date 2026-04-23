@@ -307,8 +307,9 @@ function InactiveRepoRow({
   const isLoading = loadingItems.has(repoLoadingKey);
   const rootItem = sidebarItemById.get(groupPath);
   const branchName =
-    rootItem?.branchName || repoCurrentBranch || repoDefaultBranch;
+    repoCurrentBranch || rootItem?.branchName || repoDefaultBranch;
   const lastActivity = rootItem?.lastActivity;
+  const displayLabel = repoCurrentBranch || 'default';
   return (
     <li
       className={['session-row', 'inactive', isLoading && 'loading']
@@ -322,7 +323,7 @@ function InactiveRepoRow({
       <div className="session-row-primary">
         <SessionIndicator state="inactive" />
         <span className="session-name">
-          <MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText>
+          <MarqueeText>{isLoading ? 'starting...' : displayLabel}</MarqueeText>
         </span>
       </div>
       <div className="session-row-secondary">
