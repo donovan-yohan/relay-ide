@@ -538,11 +538,11 @@ function TerminalAreaContent({
             fileViewerRatio={fileViewerRatio}
             onRightSidebarWidthChange={(w) => {
               setRightSidebarWidth(w);
-              saveRightSidebarWidth(w);
+              saveRightSidebarWidth();
             }}
             onFileViewerRatioChange={(r) => {
               setFileViewerRatio(r);
-              saveFileViewerRatio(r);
+              saveFileViewerRatio();
             }}
             terminal={
               <>
