@@ -775,6 +775,11 @@ async function main(): Promise<void> {
   app.use(cookieParser());
   app.use(express.static(frontendDir));
 
+  // Health check — no auth required (used by sandbox readiness probes and agent discovery)
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', version: getCurrentVersion() });
+  });
+
   const requireAuth: express.RequestHandler = (req, res, next) => {
     const token = req.cookies && req.cookies.token;
     if (!token || !authenticatedTokens.has(token)) {
