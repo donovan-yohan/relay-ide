@@ -359,6 +359,9 @@ function TerminalAreaContent({
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
   const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
+  const rightSidebarMobileOpen = useUiStore((s) => s.rightSidebarMobileOpen);
+  const setRightSidebarMobileOpen = useUiStore((s) => s.setRightSidebarMobileOpen);
+  const toggleRightSidebarMobileOpen = useUiStore((s) => s.toggleRightSidebarMobileOpen);
   const rightSidebarWidth = useUiStore((s) => s.rightSidebarWidth);
   const saveRightSidebarWidth = useUiStore((s) => s.saveRightSidebarWidth);
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
@@ -460,6 +463,7 @@ function TerminalAreaContent({
       <MobileHeader
         title={sessionTitle}
         onMenuClick={openSidebar}
+        onRightSidebarClick={toggleRightSidebarMobileOpen}
         onCommandClick={() => setSpotlightOpen(true)}
         hidden={keyboardOpen}
       />
@@ -526,6 +530,8 @@ function TerminalAreaContent({
           <SplitPaneLayout
             fileViewerOpen={fileViewerOpen}
             rightSidebarCollapsed={rightSidebarCollapsed}
+            rightSidebarMobileOpen={rightSidebarMobileOpen}
+            onRightSidebarMobileClose={() => setRightSidebarMobileOpen(false)}
             rightSidebarWidth={rightSidebarWidth}
             fileViewerRatio={fileViewerRatio}
             onRightSidebarWidthChange={saveRightSidebarWidth}
