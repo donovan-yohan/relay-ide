@@ -2,7 +2,7 @@ schema_version: "1"
 description: "Supervisor — main party lead for relay-ide"
 kind: main
 vendor: nous
-model: kimi-k2.6
+model: moonshotai/kimi-k2.6
 max_turns: 400
 max_duration: "6h"
 ephemeral: false

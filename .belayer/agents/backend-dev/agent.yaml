@@ -2,7 +2,7 @@ schema_version: "1"
 description: "Backend dev — main implementer for relay-ide server code, works in worktree"
 kind: main
 vendor: nous
-model: kimi-k2.6
+model: moonshotai/kimi-k2.6
 max_turns: 200
 max_duration: "3h"
 ephemeral: false
