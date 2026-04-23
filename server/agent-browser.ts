@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import type { Browser, Page } from 'playwright';
 
 let chromium: typeof import('playwright').chromium | undefined;
@@ -9,11 +10,20 @@ try {
   // playwright not installed — functions will throw helpful errors
 }
 
+const MISSING_BINARY_MESSAGE =
+  'Playwright is unavailable. Install this project\'s dependencies, then run `npx playwright install` to install browser binaries if needed.';
+
 function ensurePlaywright(): void {
   if (!chromium) {
-    throw new Error(
-      'Playwright is unavailable. Install this project\'s dependencies, then run `npx playwright install` to install browser binaries if needed.'
-    );
+    throw new Error(MISSING_BINARY_MESSAGE);
+  }
+  try {
+    const execPath = chromium.executablePath();
+    if (!fs.existsSync(execPath)) {
+      throw new Error(MISSING_BINARY_MESSAGE);
+    }
+  } catch {
+    throw new Error(MISSING_BINARY_MESSAGE);
   }
 }
 
