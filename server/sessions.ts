@@ -65,10 +65,34 @@ interface SerializedPtySession {
   additionalDirs?: string[];
 }
 
+interface SerializedWebSession {
+  id: string;
+  type: SessionType;
+  agent: AgentType;
+  repoPath: string;
+  worktreePath: string | null;
+  cwd: string;
+  repoName: string;
+  branchName: string;
+  displayName: string;
+  createdAt: string;
+  lastActivity: string;
+  customCommand: string | null;
+  runtimeOwnership: 'spawned' | 'attached';
+  hookToken: string;
+  adapterType: string;
+  needsBranchRename?: boolean;
+  workspaceId?: string;
+  additionalDirs?: string[];
+  /** Messages buffer persisted for replay (up to 1000 events) */
+  messages?: import('../shared/chat-events.js').ChatEvent[];
+}
+
 interface PendingSessionsFile {
-  version: number; // now 4
+  version: number; // now 5
   timestamp: string;
   sessions: SerializedPtySession[];
+  webSessions?: SerializedWebSession[];
 }
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -417,13 +441,6 @@ function kill(id: string): void {
     session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected — still proceed with cleanup
     });
-    if (session.process) {
-      try {
-        session.process.kill('SIGTERM');
-      } catch {
-        /* may already be dead */
-      }
-    }
   }
   const durationS = Math.round(
     (Date.now() - new Date(session.createdAt).getTime()) / 1000
@@ -498,57 +515,94 @@ function nextAgentName(): string {
   return `Agent ${++agentCounter}`;
 }
 
+function serializePtySession(
+  session: import('./types.js').PtySession,
+  scrollbackDirPath: string
+): SerializedPtySession {
+  const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
+  fs.writeFileSync(scrollbackPath, session.scrollback.join(''), 'utf-8');
+
+  return {
+    id: session.id,
+    type: session.type,
+    agent: session.agent,
+    repoPath: session.repoPath,
+    worktreePath: session.worktreePath,
+    cwd: session.cwd,
+    repoName: session.repoName,
+    branchName: session.branchName,
+    displayName: session.displayName,
+    createdAt: session.createdAt,
+    lastActivity: session.lastActivity,
+    useTmux: session.useTmux,
+    tmuxSessionName: session.tmuxSessionName || '',
+    customCommand: session.customCommand,
+    yolo: session.yolo,
+    claudeArgs: session.sessionArgs ?? session.claudeArgs,
+    hookToken: session.hookToken,
+    hooksActive: session.hooksActive,
+    continuePolicy: session.continuePolicy,
+    ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
+    ...(session.branchRenamePrompt
+      ? { branchRenamePrompt: session.branchRenamePrompt }
+      : {}),
+    ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+    ...(session.additionalDirs?.length
+      ? { additionalDirs: session.additionalDirs }
+      : {}),
+  };
+}
+
+function serializeWebSession(
+  session: import('./types.js').WebSession
+): SerializedWebSession {
+  return {
+    id: session.id,
+    type: session.type,
+    agent: session.agent,
+    repoPath: session.repoPath,
+    worktreePath: session.worktreePath,
+    cwd: session.cwd,
+    repoName: session.repoName,
+    branchName: session.branchName,
+    displayName: session.displayName,
+    createdAt: session.createdAt,
+    lastActivity: session.lastActivity,
+    customCommand: session.customCommand,
+    runtimeOwnership: session.runtimeOwnership,
+    hookToken: session.hookToken,
+    adapterType: session.adapterType,
+    ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
+    ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+    ...(session.additionalDirs?.length
+      ? { additionalDirs: session.additionalDirs }
+      : {}),
+    ...(session.messages.length
+      ? { messages: session.messages.slice(-1000) }
+      : {}),
+  };
+}
+
 function serializeAll(configDir: string): void {
   const scrollbackDirPath = path.join(configDir, 'scrollback');
   fs.mkdirSync(scrollbackDirPath, { recursive: true });
 
   const serializedPty: SerializedPtySession[] = [];
+  const serializedWeb: SerializedWebSession[] = [];
 
   for (const session of sessions.values()) {
-    // Web sessions are not persisted across restarts (adapter state is transient)
     if (session.mode === 'pty') {
-      // Write scrollback to disk
-      const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
-      fs.writeFileSync(scrollbackPath, session.scrollback.join(''), 'utf-8');
-
-      serializedPty.push({
-        id: session.id,
-        type: session.type,
-        agent: session.agent,
-        repoPath: session.repoPath,
-        worktreePath: session.worktreePath,
-        cwd: session.cwd,
-        repoName: session.repoName,
-        branchName: session.branchName,
-        displayName: session.displayName,
-        createdAt: session.createdAt,
-        lastActivity: session.lastActivity,
-        useTmux: session.useTmux,
-        tmuxSessionName: session.tmuxSessionName || '',
-        customCommand: session.customCommand,
-        yolo: session.yolo,
-        claudeArgs: session.sessionArgs ?? session.claudeArgs,
-        hookToken: session.hookToken,
-        hooksActive: session.hooksActive,
-        continuePolicy: session.continuePolicy,
-        ...(session.needsBranchRename
-          ? { needsBranchRename: true as const }
-          : {}),
-        ...(session.branchRenamePrompt
-          ? { branchRenamePrompt: session.branchRenamePrompt }
-          : {}),
-        ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
-        ...(session.additionalDirs?.length
-          ? { additionalDirs: session.additionalDirs }
-          : {}),
-      });
+      serializedPty.push(serializePtySession(session, scrollbackDirPath));
+    } else {
+      serializedWeb.push(serializeWebSession(session));
     }
   }
 
   const pending: PendingSessionsFile = {
-    version: 4,
+    version: 5,
     timestamp: new Date().toISOString(),
     sessions: serializedPty,
+    webSessions: serializedWeb,
   };
 
   fs.writeFileSync(
@@ -750,6 +804,40 @@ function restoreSession(
   create(createParams);
 }
 
+async function restoreWebSession(s: SerializedWebSession): Promise<void> {
+  const createParams: CreateWebParams = {
+    id: s.id,
+    agentType: s.adapterType,
+    cwd: s.cwd,
+    repoPath: s.repoPath,
+    repoName: s.repoName,
+    worktreePath: s.worktreePath,
+    branchName: s.branchName,
+    displayName: s.displayName,
+    port: defaultPort ?? 3456,
+    configDir: defaultConfigDir ?? '',
+    runtimeOwnership: s.runtimeOwnership,
+    ...(s.workspaceId !== undefined ? { workspaceId: s.workspaceId } : {}),
+    ...(s.additionalDirs !== undefined
+      ? { additionalDirs: s.additionalDirs }
+      : {}),
+  };
+
+  const { session } = await createWebSession(
+    createParams,
+    sessions,
+    fireBackendStateIfChanged
+  );
+
+  // Restore persisted message buffer so reconnecting clients see transcript
+  if (s.messages && s.messages.length > 0) {
+    session.messages = s.messages.slice(-1000);
+  }
+
+  // Restore hook token so inbound hook events authenticate correctly
+  session.hookToken = s.hookToken;
+}
+
 function syncDisplayNameCounters(): void {
   for (const s of sessions.values()) {
     const agentMatch = s.displayName?.match(/^Agent (\d+)$/);
@@ -806,6 +894,19 @@ async function restoreFromDisk(
       fs.unlinkSync(scrollbackPath);
     } catch {
       /* ignore */
+    }
+  }
+
+  // Restore web sessions (v5+)
+  for (const s of pending.webSessions ?? []) {
+    try {
+      await restoreWebSession(s);
+      restored++;
+    } catch (err) {
+      logger.error(
+        `Failed to restore web session ${s.id} (${s.displayName})`,
+        err
+      );
     }
   }
 

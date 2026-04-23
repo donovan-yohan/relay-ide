@@ -26,6 +26,7 @@ export interface CreateWebParams {
   workspaceId?: string;
   additionalDirs?: string[];
   process?: ChildProcess;
+  runtimeOwnership?: 'spawned' | 'attached';
 }
 
 export function pushToBuffer(session: WebSession, event: ChatEvent): void {
@@ -83,7 +84,9 @@ export async function createWebSession(
     adapterType: params.agentType,
     messages: [],
     currentTurnId: null,
-    ...(params.process !== undefined ? { process: params.process } : {}),
+    runtimeOwnership: params.runtimeOwnership ?? 'spawned',
+    hookToken: crypto.randomBytes(16).toString('hex'),
+    hooksActive: true,
   };
 
   sessionsMap.set(id, session);

@@ -142,6 +142,7 @@ test('resolveFramework supports fully custom framework from config.frameworks', 
       supportsContinue: true,
       supportsYolo: false,
       supportsTelemetry: false,
+      supportsAttachedRuntime: false,
     },
   };
   const result = resolveFramework(
