@@ -300,6 +300,14 @@
   color: var(--accent);
 }
 
+.secondary-placeholder {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  visibility: hidden;
+  flex-shrink: 0;
+}
+
 .session-name {
   flex: 1;
   overflow: hidden;
