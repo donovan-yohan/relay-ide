@@ -790,6 +790,8 @@ export default function App() {
   // ── Analytics ──────────────────────────────────────────────────────────────
   const openAnalytics = useCallback(() => {
     setAnalyticsView('dashboard');
+    useSessionsStore.getState().setActiveSessionId(null);
+    useUiStore.getState().setActiveRepoPath(null);
   }, []);
 
   // ── Boot screen: hide 300ms after completion ───────────────────────────────
