@@ -73,6 +73,11 @@ test.describe('SplitPaneLayout React component', () => {
     await page.waitForLoadState('networkidle');
 
     await expect(page.locator('.pane-right-sidebar')).toBeHidden();
-    await expect(page.locator('.resize-handle')).toHaveCount(0);
+    // resize handles exist in DOM but are hidden via CSS on mobile
+    const handles = page.locator('.resize-handle');
+    await expect(handles).toHaveCount(2);
+    for (const handle of await handles.all()) {
+      await expect(handle).toBeHidden();
+    }
   });
 });
