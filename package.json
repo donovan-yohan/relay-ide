@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/server/index.js",
   "bin": {
-    "relay-ide": "dist/bin/relay-ide.js"
+    "relay-ide": "dist/bin/relay-ide.js",
+    "relay-ide-browser": "dist/scripts/agent-browser-cli.js"
   },
   "files": [
     "dist/",
@@ -14,7 +15,7 @@
   "scripts": {
     "clean": "rm -rf dist/",
     "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json",
-    "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js && vite build --config frontend/vite.config.ts",
+    "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js dist/scripts/agent-browser-cli.js && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "dev": "RELAY_IDE_CONFIG=./config.dev.json NO_PIN=1 RELAY_IDE_PORT=3457 node dist/server/index.js",

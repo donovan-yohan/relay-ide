@@ -777,7 +777,7 @@ async function main(): Promise<void> {
 
   // Health check — no auth required (used by sandbox readiness probes and agent discovery)
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', version: getCurrentVersion() });
+    res.json({ status: 'ok' });
   });
 
   const requireAuth: express.RequestHandler = (req, res, next) => {

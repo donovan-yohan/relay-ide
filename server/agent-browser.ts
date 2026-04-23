@@ -12,7 +12,7 @@ try {
 function ensurePlaywright(): void {
   if (!chromium) {
     throw new Error(
-      'Playwright is not installed. Run: npm install playwright'
+      'Playwright is unavailable. Install this project\'s dependencies, then run `npx playwright install` to install browser binaries if needed.'
     );
   }
 }
@@ -46,21 +46,26 @@ export async function launchBrowser(
     headless: options?.headless ?? false,
   });
 
-  const page = await browser.newPage();
-  pageErrors.set(page, []);
+  try {
+    const page = await browser.newPage();
+    pageErrors.set(page, []);
 
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      const errs = pageErrors.get(page) ?? [];
-      errs.push(msg.text());
-      pageErrors.set(page, errs);
-    }
-  });
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        const errs = pageErrors.get(page) ?? [];
+        errs.push(msg.text());
+        pageErrors.set(page, errs);
+      }
+    });
 
-  await page.setViewportSize({ width, height });
-  await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    await page.setViewportSize({ width, height });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
 
-  return { browser, page, url: targetUrl };
+    return { browser, page, url: targetUrl };
+  } catch (error) {
+    await browser.close();
+    throw error;
+  }
 }
 
 export async function screenshot(

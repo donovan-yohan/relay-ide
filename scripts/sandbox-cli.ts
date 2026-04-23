@@ -21,12 +21,30 @@ if (
   process.exit(1);
 }
 
+let pendingShutdown: NodeJS.Signals | null = null;
+const onSigint = (): void => {
+  pendingShutdown = 'SIGINT';
+};
+const onSigterm = (): void => {
+  pendingShutdown = 'SIGTERM';
+};
+process.once('SIGINT', onSigint);
+process.once('SIGTERM', onSigterm);
+
 (async () => {
   const sandbox = await startSandbox({
     port,
     workspacePath: workspaceArg,
     noBuild,
   });
+
+  process.removeListener('SIGINT', onSigint);
+  process.removeListener('SIGTERM', onSigterm);
+
+  if (pendingShutdown) {
+    await sandbox.teardown();
+    process.exit(pendingShutdown === 'SIGINT' ? 130 : 143);
+  }
 
   console.log(`Sandbox ready at ${sandbox.url}`);
 

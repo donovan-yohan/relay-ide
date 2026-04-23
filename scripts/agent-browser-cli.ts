@@ -15,10 +15,24 @@ function getArg(flag: string): string | undefined {
   return process.argv[idx + 1];
 }
 
+function getPositionals(): string[] {
+  const args = process.argv.slice(3);
+  const positionals: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === '--out') {
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--')) continue;
+    positionals.push(arg);
+  }
+  return positionals;
+}
+
 function getUrl(defaultUrl?: string): string {
-  // The URL is either the first positional arg after command, or the default
-  const candidates = process.argv.slice(3).filter((a) => !a.startsWith('--'));
-  return candidates[0] ?? defaultUrl ?? process.env.RELAY_IDE_URL ?? 'http://127.0.0.1:3456';
+  const positionals = getPositionals();
+  return positionals[0] ?? defaultUrl ?? process.env.RELAY_IDE_URL ?? 'http://127.0.0.1:3456';
 }
 
 function printUsage(): void {
@@ -85,11 +99,12 @@ if (!command || command === '--help' || command === '-h') {
 
   if (command === 'validate') {
     const url = getUrl();
-    console.log(`Opening ${url} ...`);
+    console.error(`Opening ${url} ...`);
     const session = await launchBrowser(url);
     try {
       const result = await validatePage(session);
       console.log(JSON.stringify(result, null, 2));
+      if (!result.ok) process.exitCode = 1;
     } finally {
       await closeBrowser(session);
     }

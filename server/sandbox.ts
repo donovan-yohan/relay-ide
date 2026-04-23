@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import getPort, { portNumbers } from 'get-port';
@@ -8,7 +9,6 @@ import type { ChildProcess } from 'node:child_process';
 export interface SandboxOptions {
   port?: number | undefined;
   workspacePath?: string | undefined;
-  noBuild?: boolean | undefined;
 }
 
 export interface SandboxInstance {
@@ -28,14 +28,38 @@ export async function findFreePort(preferred?: number): Promise<number> {
   return getPort({ port: portNumbers(3456, 3556) });
 }
 
+async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  child.kill('SIGTERM');
+  const exited = await waitForExit(child, 500);
+
+  if (!exited && child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    await waitForExit(child, 500);
+  }
+}
+
 export async function startSandbox(
   options: SandboxOptions = {}
 ): Promise<SandboxInstance> {
   const uuid = crypto.randomUUID();
-  const dataDir = path.join('/tmp', `relay-ide-sandbox-${uuid}`);
+  const dataDir = path.join(os.tmpdir(), `relay-ide-sandbox-${uuid}`);
   fs.mkdirSync(dataDir, { recursive: true });
 
-  const port = await findFreePort(options.port);
+  const port = options.port ?? await findFreePort();
   const workspacePath = options.workspacePath ?? process.cwd();
 
   const config = {
@@ -47,14 +71,12 @@ export async function startSandbox(
   const configPath = path.join(dataDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 
-  const serverEntry = path.resolve(
-    import.meta.dirname,
-    '..',
-    'dist',
-    'server',
-    'index.js'
-  );
-  const packageRoot = path.resolve(import.meta.dirname, '..', '..');
+  const moduleDir = import.meta.dirname;
+  const packageRoot =
+    path.basename(path.dirname(moduleDir)) === 'dist'
+      ? path.resolve(moduleDir, '..', '..')
+      : path.resolve(moduleDir, '..');
+  const serverEntry = path.resolve(packageRoot, 'dist', 'server', 'index.js');
 
   const child = spawn('node', [serverEntry], {
     cwd: packageRoot,
@@ -87,23 +109,13 @@ export async function startSandbox(
   }
 
   if (!ready) {
-    child.kill('SIGTERM');
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (!child.killed) {
-      child.kill('SIGKILL');
-    }
+    await terminateChild(child);
     fs.rmSync(dataDir, { recursive: true, force: true });
     throw new Error(`Sandbox server did not start within ${timeoutMs}ms`);
   }
 
   const teardown = async (): Promise<void> => {
-    if (!child.killed) {
-      child.kill('SIGTERM');
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      if (!child.killed) {
-        child.kill('SIGKILL');
-      }
-    }
+    await terminateChild(child);
     fs.rmSync(dataDir, { recursive: true, force: true });
   };
 

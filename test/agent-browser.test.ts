@@ -1,10 +1,10 @@
 import { test, expect, describe } from 'vitest';
+import fs from 'node:fs';
 import {
   launchBrowser,
   screenshot,
   validatePage,
   closeBrowser,
-  type BrowserSession,
 } from '../server/agent-browser.js';
 
 // These tests require Playwright browsers to be installed.
@@ -12,8 +12,8 @@ import {
 
 async function hasPlaywright(): Promise<boolean> {
   try {
-    await import('playwright');
-    return true;
+    const { chromium } = await import('playwright');
+    return fs.existsSync(chromium.executablePath());
   } catch {
     return false;
   }
@@ -32,7 +32,7 @@ describe('agent-browser', () => {
     // In practice, @playwright/test is a devDependency so it should be present.
     const pwAvailable = await hasPlaywright();
     if (!pwAvailable) {
-      await expect(launchBrowser('http://127.0.0.1:3456')).rejects.toThrow(/Playwright is not installed/);
+      await expect(launchBrowser('http://127.0.0.1:3456')).rejects.toThrow(/Playwright is unavailable/);
     }
   });
 });
