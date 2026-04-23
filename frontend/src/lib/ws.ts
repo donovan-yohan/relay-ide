@@ -1,4 +1,3 @@
-import type { Terminal } from '@xterm/xterm';
 import type { BackendDisplayState } from './state/display-state.js';
 import type {
   AccountTelemetry,
@@ -7,9 +6,18 @@ import type {
 } from './types.js';
 import { createLogger } from './logger.js';
 import { useSessionsStore } from './stores/sessions.js';
+import { sanitizePtyData } from './pty-sanitizer.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+// Minimal terminal interface for flow-control (works with xterm.js and ghostty-web)
+interface TerminalLike {
+  cols: number;
+  rows: number;
+  write(data: string, callback?: () => void): void;
+  clear(): void;
+}
 
 // Discriminated union for WebSocket event messages.
 // Each event type declares only its required fields.
@@ -83,7 +91,7 @@ let eventPongTimeout: ReturnType<typeof setTimeout> | null = null;
 
 // Track last-known connection params for visibilitychange reconnection
 let lastPtySessionId: string | null = null;
-let lastPtyTerm: Terminal | null = null;
+let lastPtyTerm: TerminalLike | null = null;
 let lastPtyOnResize: (() => void) | null = null;
 let lastPtyOnSessionEnd: (() => void) | null = null;
 let lastEventOnMessage: EventCallback | null = null;
@@ -157,7 +165,7 @@ async function reconnectWithAuthCheck(): Promise<void> {
 
 export function connectPtySocket(
   sessionId: string,
-  term: Terminal,
+  term: TerminalLike,
   onResize: () => void,
   onSessionEnd: () => void
 ): void {
@@ -205,8 +213,8 @@ export function connectPtySocket(
 
   // Flow control constants (thresholds measured in string length / UTF-16 code units,
   // which is close enough to bytes for mostly-ASCII terminal output)
-  const HIGH_WATER_MARK = 512 * 1024; // ~500KB — pause feeding xterm
-  const LOW_WATER_MARK = 128 * 1024; //  ~128KB — resume feeding xterm
+  const HIGH_WATER_MARK = 512 * 1024; // ~500KB — pause feeding terminal
+  const LOW_WATER_MARK = 128 * 1024; //  ~128KB — resume feeding terminal
   const MAX_QUEUE_SIZE = 2 * 1024 * 1024; // ~2MB — cap queued data to prevent OOM
   const BG_FLUSH_INTERVAL = 250; // ms — fallback flush interval when tab is hidden
 
@@ -265,11 +273,22 @@ export function connectPtySocket(
   }
 
   socket.onmessage = (event) => {
-    const str = event.data as string;
+    let str = event.data as string;
     // Any message from server clears pong pending state
     if (ptyPongPending) clearPtyPongTimeout();
     // Handle pong responses silently
     if (str === PONG_MSG) return;
+
+    // Sanitize raw PTY data before queueing (engine-agnostic)
+    const { data, responses } = sanitizePtyData(str);
+    if (data.length === 0 && responses.length === 0) return;
+
+    // Send synthetic responses immediately
+    for (const resp of responses) {
+      sendPtyData(resp);
+    }
+
+    str = data;
 
     // Cap queue size to prevent unbounded memory growth
     if (queueSize + str.length > MAX_QUEUE_SIZE) {
@@ -328,7 +347,7 @@ export function connectPtySocket(
 
 function scheduleReconnect(
   sessionId: string,
-  term: Terminal,
+  term: TerminalLike,
   onResize: () => void,
   onSessionEnd: () => void
 ): void {

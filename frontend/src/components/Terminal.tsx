@@ -6,11 +6,8 @@ import React, {
   useImperativeHandle,
   forwardRef,
 } from 'react';
-import { Terminal as XTerminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebgpuAddon } from '@xterm/addon-webgpu';
-import '@xterm/xterm/css/xterm.css';
+import { init, Terminal as GTerminal, FitAddon } from 'ghostty-web';
+import type { ILink, ILinkProvider } from 'ghostty-web';
 import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
 import { uploadImage } from '../lib/api.js';
@@ -20,14 +17,13 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import {
   clampFontSize,
   zoomPercentage,
-  shouldUseWebGpuRenderer,
 } from '../lib/terminal-zoom.js';
 import './Terminal.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface TerminalHandle {
-  getTerm: () => XTerminal | null;
+  getTerm: () => GTerminal | null;
   focusTerm: () => void;
   fitTerm: () => void;
   exitCopyMode: () => void;
@@ -48,52 +44,10 @@ export interface TerminalProps {
 const FILE_EXT_PATTERN =
   /([\s'"(`[{])?(\/?\/?(?:\.\/)?(?:[\w.@~-]+\/)*(?:[\w.@~-]+\.(?:ts|tsx|js|jsx|svelte|html|htm|css|scss|json|yaml|yml|toml|md|txt|py|rs|go|rb|java|c|cpp|h|sh|sql|graphql|xml|csv|env|log|cfg|conf|ini)|(?:Makefile|Dockerfile|Vagrantfile|Rakefile|Gemfile|Procfile|Brewfile|Justfile|Taskfile|Containerfile)(?:\.\w+)?))(?::(\d+)(?::(\d+))?)?/g;
 
-// ── useScrollbar hook ─────────────────────────────────────────────────────────
-
-interface ScrollbarState {
-  thumbHeight: number;
-  thumbTop: number;
-  thumbVisible: boolean;
-}
-
-function useScrollbar(termRef: React.RefObject<XTerminal | null>) {
-  const [state, setState] = useState<ScrollbarState>({
-    thumbHeight: 0,
-    thumbTop: 0,
-    thumbVisible: false,
-  });
-  const rafRef = useRef(false);
-
-  const update = useCallback(() => {
-    if (rafRef.current) return;
-    rafRef.current = true;
-    requestAnimationFrame(() => {
-      rafRef.current = false;
-      const term = termRef.current;
-      if (!term) return;
-      const buf = term.buffer.active;
-      const totalLines = buf.baseY + term.rows;
-      if (totalLines <= term.rows) {
-        setState((s) => ({ ...s, thumbVisible: false }));
-        return;
-      }
-      const trackHeight =
-        document.querySelector<HTMLElement>('.terminal-scrollbar')
-          ?.clientHeight ?? 0;
-      const minThumb = isMobileDevice ? 44 : 20;
-      const h = Math.max(minThumb, (term.rows / totalLines) * trackHeight);
-      const t = (buf.viewportY / (totalLines - term.rows)) * (trackHeight - h);
-      setState({ thumbHeight: h, thumbTop: t, thumbVisible: true });
-    });
-  }, [termRef]);
-
-  return { scrollbarState: state, updateScrollbar: update };
-}
-
 // ── useTerminalZoom hook ──────────────────────────────────────────────────────
 
 function useTerminalZoom(
-  termRef: React.RefObject<XTerminal | null>,
+  termRef: React.RefObject<GTerminal | null>,
   fitFn: () => void
 ) {
   const [zoomVisible, setZoomVisible] = useState(false);
@@ -129,443 +83,7 @@ function useTerminalZoom(
   return { zoomVisible, zoomText, applyZoom };
 }
 
-// ── useTouchScroll hook ───────────────────────────────────────────────────────
-
-interface TouchScrollState {
-  contentScrolling: boolean;
-  contentTouchStartY: number;
-  contentScrollStartLine: number;
-  contentTouchMoved: boolean;
-  contentScrollAccumulator: number;
-  contentLastTouchY: number;
-  scrollbarDragging: boolean;
-  scrollbarDragStartY: number;
-  scrollbarDragStartTop: number;
-  longPressTimer: ReturnType<typeof setTimeout> | null;
-  longPressStartX: number;
-  longPressStartY: number;
-}
-
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_MOVE_TOLERANCE = 10;
-
-// Scrollbar drag handler (extracted to reduce nesting depth)
-function handleScrollbarDrag(
-  e: TouchEvent,
-  touch: Touch,
-  s: TouchScrollState,
-  term: XTerminal,
-  scrollbarEl: HTMLDivElement
-) {
-  e.preventDefault();
-  const deltaY = touch.clientY - s.scrollbarDragStartY;
-  const buf = term.buffer.active;
-  const totalLines = buf.baseY + term.rows;
-  if (totalLines <= term.rows) return;
-  const trackHeight = scrollbarEl.clientHeight;
-  const th = Math.max(44, (term.rows / totalLines) * trackHeight);
-  const trackUsable = trackHeight - th;
-  const newTop = Math.max(
-    0,
-    Math.min(trackUsable, s.scrollbarDragStartTop + deltaY)
-  );
-  const ratio = newTop / trackUsable;
-  term.scrollToLine(Math.round(ratio * (totalLines - term.rows)));
-}
-
-// Alternate-buffer scroll (extracted to reduce nesting depth)
-function handleAlternateBufferScroll(
-  e: TouchEvent,
-  touch: Touch,
-  s: TouchScrollState,
-  term: XTerminal,
-  lineHeight: number
-) {
-  const incrementalDelta = s.contentLastTouchY - touch.clientY;
-  s.contentLastTouchY = touch.clientY;
-  s.contentScrollAccumulator += incrementalDelta / lineHeight;
-  const rawLines = Math.trunc(s.contentScrollAccumulator);
-  if (rawLines === 0) return;
-  s.contentScrollAccumulator -= rawLines;
-  const button = rawLines > 0 ? 65 : 64;
-  const col = Math.max(1, Math.round(term.cols / 2));
-  const row = Math.max(1, Math.round(term.rows / 2));
-  const seq = `\x1b[<${button};${col};${row}M`;
-  const count = Math.min(Math.abs(rawLines), 5);
-  for (let i = 0; i < count; i++) sendPtyData(seq);
-  void e;
-}
-
-// Extracted helpers to keep useTouchScroll under 100 lines
-function doExitSelectionMode(
-  container: HTMLElement | null,
-  setSelectionMode: (v: boolean) => void
-) {
-  setSelectionMode(false);
-  if (!container) return;
-  const screen = container.querySelector<HTMLElement>('.xterm-screen');
-  if (screen) {
-    screen.style.userSelect = '';
-    screen.style.webkitUserSelect = '';
-  }
-  container.querySelectorAll<HTMLElement>('canvas').forEach((c) => {
-    c.style.pointerEvents = '';
-  });
-  window.getSelection()?.removeAllRanges();
-}
-
-function doEnterSelectionMode(
-  container: HTMLElement | null,
-  setSelectionMode: (v: boolean) => void
-) {
-  setSelectionMode(true);
-  if (!container) return;
-  const screen = container.querySelector<HTMLElement>('.xterm-screen');
-  if (screen) {
-    screen.style.userSelect = 'text';
-    screen.style.webkitUserSelect = 'text';
-  }
-  container.querySelectorAll<HTMLElement>('canvas').forEach((c) => {
-    c.style.pointerEvents = 'none';
-  });
-  const rows = container.querySelector('.xterm-rows');
-  if (!rows) return;
-  const range = document.createRange();
-  range.selectNodeContents(rows);
-  const sel = window.getSelection();
-  sel?.removeAllRanges();
-  sel?.addRange(range);
-}
-
-function useTouchScroll(
-  termRef: React.RefObject<XTerminal | null>,
-  containerRef: React.RefObject<HTMLDivElement | null>,
-  scrollbarRef: React.RefObject<HTMLDivElement | null>,
-  thumbTop: number,
-  useTmux: boolean,
-  onCopyModeChange?: (active: boolean) => void
-) {
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [inCopyMode, setInCopyMode] = useState(false);
-  const stateRef = useRef<TouchScrollState>({
-    contentScrolling: false,
-    contentTouchStartY: 0,
-    contentScrollStartLine: 0,
-    contentTouchMoved: false,
-    contentScrollAccumulator: 0,
-    contentLastTouchY: 0,
-    scrollbarDragging: false,
-    scrollbarDragStartY: 0,
-    scrollbarDragStartTop: 0,
-    longPressTimer: null,
-    longPressStartX: 0,
-    longPressStartY: 0,
-  });
-
-  const exitSelectionMode = useCallback(() => {
-    doExitSelectionMode(containerRef.current, setSelectionMode);
-  }, [containerRef]);
-
-  const enterSelectionMode = useCallback(() => {
-    const s = stateRef.current;
-    if (s.longPressTimer) {
-      clearTimeout(s.longPressTimer);
-      s.longPressTimer = null;
-    }
-    s.contentScrolling = false;
-    if (navigator.vibrate) navigator.vibrate(50);
-    if (useTmux) {
-      setInCopyMode(true);
-      onCopyModeChange?.(true);
-      sendPtyData('\x02[');
-      return;
-    }
-    doEnterSelectionMode(containerRef.current, setSelectionMode);
-  }, [containerRef, useTmux, onCopyModeChange]);
-
-  const exitCopyMode = useCallback(() => {
-    if (inCopyMode) {
-      setInCopyMode(false);
-      onCopyModeChange?.(false);
-    }
-  }, [inCopyMode, onCopyModeChange]);
-
-  const onTerminalTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      const s = stateRef.current;
-      const term = termRef.current;
-      if (selectionMode) {
-        const selectedText = window.getSelection()?.toString() ?? '';
-        if (selectedText.trim().length > 0) {
-          navigator.clipboard.writeText(selectedText).catch(() => {
-            /* ignore */
-          });
-          if (navigator.vibrate) navigator.vibrate(30);
-        }
-        exitSelectionMode();
-        return;
-      }
-      if (inCopyMode) return;
-      const target = e.target as HTMLElement;
-      if (
-        target.closest('.terminal-scrollbar') ||
-        target.closest('.scroll-fabs')
-      )
-        return;
-      if (!term) return;
-      const touch = e.touches[0];
-      if (!touch) return;
-      s.contentTouchStartY = touch.clientY;
-      s.contentLastTouchY = touch.clientY;
-      s.contentScrollStartLine = term.buffer.active.viewportY;
-      s.contentTouchMoved = false;
-      s.contentScrollAccumulator = 0;
-      s.contentScrolling = true;
-      s.longPressStartX = touch.clientX;
-      s.longPressStartY = touch.clientY;
-      if (s.longPressTimer) clearTimeout(s.longPressTimer);
-      s.longPressTimer = setTimeout(enterSelectionMode, LONG_PRESS_MS);
-    },
-    [termRef, selectionMode, inCopyMode, exitSelectionMode, enterSelectionMode]
-  );
-
-  const onTerminalTouchEnd = useCallback(
-    (e: React.TouchEvent) => {
-      const s = stateRef.current;
-      if (s.scrollbarDragging || s.contentTouchMoved) return;
-      const target = e.target as HTMLElement;
-      if (
-        target.closest('.terminal-scrollbar') ||
-        target.closest('.scroll-fabs') ||
-        selectionMode
-      )
-        return;
-      termRef.current?.focus();
-      e.preventDefault();
-    },
-    [termRef, selectionMode]
-  );
-
-  const onThumbTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      const touch = e.touches[0];
-      if (!touch) return;
-      const s = stateRef.current;
-      s.scrollbarDragging = true;
-      s.scrollbarDragStartY = touch.clientY;
-      s.scrollbarDragStartTop = thumbTop;
-    },
-    [thumbTop]
-  );
-
-  useTouchScrollListeners(
-    termRef,
-    containerRef,
-    scrollbarRef,
-    stateRef,
-    selectionMode
-  );
-
-  return {
-    selectionMode,
-    inCopyMode,
-    exitCopyMode,
-    onTerminalTouchStart,
-    onTerminalTouchEnd,
-    onThumbTouchStart,
-  };
-}
-
-// ── useTouchScrollListeners hook ──────────────────────────────────────────────
-
-function useTouchScrollListeners(
-  termRef: React.RefObject<XTerminal | null>,
-  containerRef: React.RefObject<HTMLDivElement | null>,
-  scrollbarRef: React.RefObject<HTMLDivElement | null>,
-  stateRef: React.RefObject<TouchScrollState>,
-  selectionMode: boolean
-) {
-  useEffect(() => {
-    if (!isMobileDevice) return undefined;
-    const handleTouchMove = (e: TouchEvent) => {
-      const touch = e.touches[0];
-      if (!touch) return;
-      const s = stateRef.current;
-      const term = termRef.current;
-      const scrollbarEl = scrollbarRef.current;
-      if (s.scrollbarDragging && term && scrollbarEl) {
-        handleScrollbarDrag(e, touch, s, term, scrollbarEl);
-        return;
-      }
-      const container = containerRef.current;
-      if (!s.contentScrolling || !term || selectionMode || !container) return;
-      if (s.longPressTimer) {
-        const moveX = Math.abs(touch.clientX - s.longPressStartX);
-        const moveY = Math.abs(touch.clientY - s.longPressStartY);
-        if (
-          moveX > LONG_PRESS_MOVE_TOLERANCE ||
-          moveY > LONG_PRESS_MOVE_TOLERANCE
-        ) {
-          clearTimeout(s.longPressTimer);
-          s.longPressTimer = null;
-        }
-      }
-      if (term.rows === 0 || container.clientHeight === 0) return;
-      const deltaY = s.contentTouchStartY - touch.clientY;
-      if (Math.abs(deltaY) <= 5) return;
-      s.contentTouchMoved = true;
-      e.preventDefault();
-      const lineHeight = container.clientHeight / term.rows;
-      if (term.buffer.active.type === 'alternate') {
-        handleAlternateBufferScroll(e, touch, s, term, lineHeight);
-      } else {
-        const lineDelta = deltaY / lineHeight;
-        const maxScroll = term.buffer.active.baseY;
-        term.scrollToLine(
-          Math.max(
-            0,
-            Math.min(
-              maxScroll,
-              Math.round(s.contentScrollStartLine + lineDelta)
-            )
-          )
-        );
-      }
-    };
-    const handleTouchEnd = () => {
-      const s = stateRef.current;
-      if (s.longPressTimer) {
-        clearTimeout(s.longPressTimer);
-        s.longPressTimer = null;
-      }
-      s.scrollbarDragging = false;
-      s.contentScrolling = false;
-      s.contentTouchMoved = false;
-      s.contentScrollAccumulator = 0;
-    };
-    document.addEventListener('touchmove', handleTouchMove, { passive: false });
-    document.addEventListener('touchend', handleTouchEnd);
-    document.addEventListener('touchcancel', handleTouchEnd);
-    return () => {
-      document.removeEventListener('touchmove', handleTouchMove);
-      document.removeEventListener('touchend', handleTouchEnd);
-      document.removeEventListener('touchcancel', handleTouchEnd);
-    };
-  }, [termRef, containerRef, scrollbarRef, stateRef, selectionMode]);
-}
-
-// ── useScrollbarClick hook ────────────────────────────────────────────────────
-
-function useScrollbarClick(
-  termRef: React.RefObject<XTerminal | null>,
-  scrollbarRef: React.RefObject<HTMLDivElement | null>,
-  thumbRef: React.RefObject<HTMLDivElement | null>,
-  thumbTop: number
-) {
-  const scrollToY = useCallback(
-    (clientY: number) => {
-      const term = termRef.current;
-      const scrollbarEl = scrollbarRef.current;
-      if (!term || !scrollbarEl) return;
-      const rect = scrollbarEl.getBoundingClientRect();
-      const buf = term.buffer.active;
-      const totalLines = buf.baseY + term.rows;
-      if (totalLines <= term.rows) return;
-      const trackHeight = scrollbarEl.clientHeight;
-      const th = Math.max(
-        isMobileDevice ? 44 : 20,
-        (term.rows / totalLines) * trackHeight
-      );
-      const trackUsable = trackHeight - th;
-      const relativeY = clientY - rect.top - th / 2;
-      const ratio = Math.max(0, Math.min(1, relativeY / trackUsable));
-      term.scrollToLine(Math.round(ratio * (totalLines - term.rows)));
-    },
-    [termRef, scrollbarRef]
-  );
-
-  const onScrollbarClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === thumbRef.current) return;
-      scrollToY(e.clientY);
-    },
-    [thumbRef, scrollToY]
-  );
-
-  void thumbTop;
-
-  const onScrollFabMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const btn = (e.target as HTMLElement).closest('button');
-      if (!btn) return;
-      const term = termRef.current;
-      if (!term) return;
-      const dir = btn.dataset['dir'];
-      if (term.buffer.active.type === 'alternate') {
-        const col = Math.max(1, Math.round(term.cols / 2));
-        const row = Math.max(1, Math.round(term.rows / 2));
-        if (dir === 'up' || dir === 'down') {
-          const button = dir === 'down' ? 65 : 64;
-          const seq = `\x1b[<${button};${col};${row}M`;
-          const count = Math.max(1, Math.round(term.rows / 2));
-          for (let i = 0; i < count; i++) sendPtyData(seq);
-        } else if (dir === 'bottom') {
-          const seq = `\x1b[<65;${col};${row}M`;
-          for (let i = 0; i < term.rows; i++) sendPtyData(seq);
-        }
-      } else {
-        if (dir === 'up') term.scrollPages(-1);
-        else if (dir === 'down') term.scrollPages(1);
-        else if (dir === 'bottom') term.scrollToBottom();
-      }
-    },
-    [termRef]
-  );
-
-  return { onScrollbarClick, onScrollFabMouseDown };
-}
-
-// ── useTerminalSetup hook ─────────────────────────────────────────────────────
-
-// Extracted: read clipboard for possible image paste (ctrl+v on non-mac)
-function readClipboardForPaste(t: XTerminal) {
-  if (!navigator.clipboard?.read) return;
-  void navigator.clipboard
-    .read()
-    .then((items) => {
-      let blob: ClipboardItem | null = null;
-      let blobType: string | null = null;
-      for (const item of items) {
-        for (const type of item.types) {
-          if (type.startsWith('image/')) {
-            blobType = type;
-            blob = item;
-            break;
-          }
-        }
-        if (blob) break;
-      }
-      if (blob && blobType) {
-        void blob.getType(blobType);
-      } else {
-        void navigator.clipboard.readText().then((text) => {
-          if (text) t.paste(text);
-        });
-      }
-    })
-    .catch(() => {
-      if (navigator.clipboard.readText)
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) t.paste(text);
-          })
-          .catch(() => {
-            /* ignore */
-          });
-    });
-}
+// ── Clipboard helpers ─────────────────────────────────────────────────────────
 
 function isZoomShortcut(
   e: {
@@ -609,247 +127,173 @@ function isCtrlVShortcut(
   );
 }
 
-// Extracted: attach clipboard paste handler to avoid key handler complexity
-function attachClipboardKeyHandler(t: XTerminal, isMac: boolean) {
-  t.attachCustomKeyEventHandler((e) => {
-    if (isZoomShortcut(e, isMac)) {
-      e.preventDefault();
-      return false;
-    }
-    if (
-      isCtrlVShortcut(e, isMac) &&
-      typeof navigator.clipboard?.read === 'function'
-    ) {
-      readClipboardForPaste(t);
-      return false;
-    }
-    return true;
-  });
-}
-
-// Extracted: register file path link provider
-function registerFileLinkProvider(
-  t: XTerminal,
-  onFilePathClick?: (path: string) => void
-) {
-  t.registerLinkProvider({
-    provideLinks(lineNumber, callback) {
-      const line = t.buffer.active.getLine(lineNumber - 1);
-      if (!line) {
-        callback(undefined);
-        return;
+function readClipboardForPaste(t: GTerminal) {
+  if (!navigator.clipboard?.read) return;
+  void navigator.clipboard
+    .read()
+    .then((items) => {
+      let blob: ClipboardItem | null = null;
+      let blobType: string | null = null;
+      for (const item of items) {
+        for (const type of item.types) {
+          if (type.startsWith('image/')) {
+            blobType = type;
+            blob = item;
+            break;
+          }
+        }
+        if (blob) break;
       }
-      const text = line.translateToString(true);
-      const links: import('@xterm/xterm').ILink[] = [];
-      for (const m of text.matchAll(FILE_EXT_PATTERN)) {
-        if (m.index === undefined) continue;
-        const delimiter = m[1] || '';
-        if (m.index > 0 && !delimiter) continue;
-        const pathStart = m.index + delimiter.length;
-        const pathText = m[0].slice(delimiter.length);
-        const pathEnd = pathStart + pathText.length;
-        links.push({
-          range: {
-            start: { x: pathStart + 1, y: lineNumber },
-            end: { x: pathEnd + 1, y: lineNumber },
-          },
-          text: pathText,
-          activate(_event, linkText) {
-            onFilePathClick?.(linkText.replace(/:\d+(?::\d+)?$/, ''));
-          },
+      if (blob && blobType) {
+        void blob.getType(blobType);
+      } else {
+        void navigator.clipboard.readText().then((text) => {
+          if (text) t.paste(text);
         });
       }
-      callback(links.length > 0 ? links : undefined);
-    },
-  });
+    })
+    .catch(() => {
+      if (navigator.clipboard.readText)
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) t.paste(text);
+          })
+          .catch(() => {
+            /* ignore */
+          });
+    });
 }
 
-// Extracted: mobile-specific DOM patches after t.open()
-function applyMobilePatches(container: HTMLDivElement, t: XTerminal) {
-  const viewport = container.querySelector<HTMLElement>('.xterm-viewport');
-  if (viewport) {
-    viewport.style.touchAction = 'none';
-    viewport.style.overflowY = 'hidden';
-  }
-  const screen = container.querySelector<HTMLElement>('.xterm-screen');
-  if (!screen) return;
-  screen.addEventListener(
-    'wheel',
-    (e) => {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    },
-    { capture: true, passive: false }
-  );
-  const suppress = (e: Event) => {
-    if (t.modes.mouseTrackingMode !== 'none') e.stopImmediatePropagation();
-  };
-  for (const evt of ['mousedown', 'mouseup', 'mousemove'] as const)
-    screen.addEventListener(evt, suppress, { capture: true });
-}
-
-// Extracted: register escape sequence sanitizers to prevent parser stalls
-// from non-standard sequences sent by OpenCode / OpenTUI.
-function registerEscapeSequenceSanitizers(t: XTerminal): void {
-  // Kitty keyboard protocol queries — OpenTUI sends these to detect keyboard
-  // enhancement support. xterm.js <6.1 doesn't handle them, which can leave
-  // the parser in a stuck state. Swallow silently.
-  // CSI > u (push keyboard mode) and CSI ? u (query keyboard mode)
-  t.parser.registerCsiHandler({ prefix: '>', final: 'u' }, () => true);
-  t.parser.registerCsiHandler({ prefix: '?', final: 'u' }, () => true);
-
-  // OSC 66 — OpenTUI custom character width detection. Non-standard, not
-  // recognized by xterm.js. Swallow to prevent parser confusion.
-  t.parser.registerOscHandler(66, () => true);
-
-  // DECRQM (DEC Request Mode) — Bubble Tea / OpenTUI probes terminal
-  // capabilities by sending CSI Ps $ p (ANSI) and CSI ? Ps $ p (DEC private).
-  // xterm.js v6's built-in requestMode handler crashes with "ReferenceError:
-  // s is not defined" because the pre-minified xterm.js webpack bundle gets
-  // double-minified by Vite/esbuild, breaking an internal variable reference.
-  // The uncaught error corrupts the parser, the term.write callback never
-  // fires, flow control pauses permanently, and the terminal goes blank.
-  // Intercept both DECRQM forms and respond with "not recognized" (Pm=0) so
-  // the TUI app gets a valid DECRPM response and falls back to defaults.
-  t.parser.registerCsiHandler({ intermediates: '$', final: 'p' }, (params) => {
-    const mode = params[0];
-    if (typeof mode !== 'number') return true;
-    sendPtyData(`\x1b[${mode};0$y`);
-    return true;
-  });
-  t.parser.registerCsiHandler(
-    { prefix: '?', intermediates: '$', final: 'p' },
-    (params) => {
-      const mode = params[0];
-      if (typeof mode !== 'number') return true;
-      sendPtyData(`\x1b[?${mode};0$y`);
-      return true;
-    }
-  );
-
-  // Kitty graphics protocol — OpenTUI may probe for graphics support via
-  // APC sequences (ESC _ G ... ESC \). No explicit APC sanitizer is registered
-  // here; xterm.js handles unknown APC sequences gracefully in recent versions.
-}
+// ── useTerminalSetup hook ─────────────────────────────────────────────────────
 
 function useTerminalSetup(
   containerRef: React.RefObject<HTMLDivElement | null>,
   sessionId: string | null,
   companionMode: boolean,
   onFilePathClick: ((path: string) => void) | undefined,
-  updateScrollbar: () => void
+  fitFnRef: React.MutableRefObject<(() => void) | null>
 ) {
-  const termRef = useRef<XTerminal | null>(null);
+  const termRef = useRef<GTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalFontSize = useUiStore((s) => s.terminalFontSize);
+  const initRef = useRef(false);
 
   const fit = useCallback(() => {
+    fitAddonRef.current?.fit();
     const term = termRef.current;
-    const fa = fitAddonRef.current;
-    if (!term || !fa) return;
-    const buf = term.buffer.active;
-    const wasAtBottom = buf.viewportY >= buf.baseY;
-    const savedViewportY = buf.viewportY;
-    fa.fit();
-    if (wasAtBottom) term.scrollToBottom();
-    else term.scrollToLine(savedViewportY);
-    sendPtyResize(term.cols, term.rows);
-    updateScrollbar();
-  }, [updateScrollbar]);
+    if (term) {
+      sendPtyResize(term.cols, term.rows);
+    }
+  }, []);
+
+  useEffect(() => {
+    fitFnRef.current = fit;
+  }, [fit, fitFnRef]);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return undefined;
-    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
-    const t = new XTerminal({
-      cursorBlink: true,
-      fontSize: isMobileDevice ? 12 : terminalFontSize,
-      fontFamily: 'Menlo, monospace',
-      scrollback: 10000,
-      theme: {
-        background: '#000000',
-        foreground: '#d4d4d4',
-        cursor: '#d4d4d4',
-      },
-    });
-    const fa = new FitAddon();
-    fitAddonRef.current = fa;
-    t.loadAddon(fa);
-    t.loadAddon(new WebLinksAddon());
-    registerFileLinkProvider(t, onFilePathClick);
-    // Try WebGPU renderer first, fall back to default DOM renderer
-    let webgpuAddon: WebgpuAddon | undefined;
-    if (shouldUseWebGpuRenderer('gpu' in navigator, isMobileDevice)) {
+    if (!container || initRef.current) return undefined;
+    initRef.current = true;
+
+    let cancelled = false;
+    let t: GTerminal;
+    let fa: FitAddon;
+
+    (async () => {
+      await init();
+      if (cancelled || !containerRef.current) return;
+
+      const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
+
       try {
-        webgpuAddon = new WebgpuAddon();
-        t.loadAddon(webgpuAddon);
-        t.open(container);
+        t = new GTerminal({
+          cursorBlink: true,
+          fontSize: isMobileDevice ? 12 : terminalFontSize,
+          fontFamily: 'Menlo, monospace',
+          scrollback: 10000,
+          theme: {
+            background: '#000000',
+            foreground: '#d4d4d4',
+            cursor: '#d4d4d4',
+          },
+        });
       } catch (e) {
-        // eslint-disable-next-line no-console -- intentional: surface WebGPU fallback in devtools
-        console.warn('WebGPU renderer unavailable, using DOM renderer:', e);
-        webgpuAddon?.dispose();
-        webgpuAddon = undefined;
+        console.error('Failed to create ghostty terminal:', e);
+        return;
       }
-    }
-    if (!t.element) {
+
+      fa = new FitAddon();
+      fitAddonRef.current = fa;
+      t.loadAddon(fa);
+
       t.open(container);
-    }
-    if (webgpuAddon) {
-      webgpuAddon.onContextLoss(() => {
-        // eslint-disable-next-line no-console -- intentional: surface GPU context loss in devtools
-        console.warn('WebGPU context lost, falling back to DOM renderer');
-        webgpuAddon?.dispose();
-      });
-    }
-    registerEscapeSequenceSanitizers(t);
-    if (isMobileDevice) applyMobilePatches(container, t);
-    fa.fit();
-    t.onData((data) => sendPtyData(data));
-    attachClipboardKeyHandler(t, isMac);
-    t.parser.registerOscHandler(52, (data) => {
-      const semicolonIdx = data.indexOf(';');
-      if (semicolonIdx === -1) return true;
-      const payload = data.slice(semicolonIdx + 1);
-      if (!payload || payload === '?') return true;
-      try {
-        const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-        navigator.clipboard
-          ?.writeText(new TextDecoder('utf-8').decode(bytes))
-          .catch(() => {
-            /* ignore */
-          });
-      } catch {
-        /* ignore */
+      fa.observeResize();
+      fa.fit();
+
+      // File path link provider
+      if (onFilePathClick) {
+        const provider: ILinkProvider = {
+          provideLinks(y, callback) {
+            const line = t.buffer?.active?.getLine(y - 1);
+            if (!line) {
+              callback(undefined);
+              return;
+            }
+            const text = line.translateToString(true);
+            const links: ILink[] = [];
+            for (const m of text.matchAll(FILE_EXT_PATTERN)) {
+              if (m.index === undefined) continue;
+              const delimiter = m[1] || '';
+              if (m.index > 0 && !delimiter) continue;
+              const pathStart = m.index + delimiter.length;
+              const pathText = m[0].slice(delimiter.length);
+              const pathEnd = pathStart + pathText.length;
+            links.push({
+              range: {
+                start: { x: pathStart + 1, y },
+                end: { x: pathEnd + 1, y },
+              },
+              text: pathText,
+              activate(_event: MouseEvent) {
+                onFilePathClick(pathText.replace(/:\d+(?::\d+)?$/, ''));
+              },
+            });
+            }
+            callback(links.length > 0 ? links : undefined);
+          },
+        };
+        t.registerLinkProvider(provider);
       }
-      return true;
-    });
-    t.onScroll(updateScrollbar);
-    t.onWriteParsed(updateScrollbar);
-    let roTimer: ReturnType<typeof setTimeout> | null = null;
-    const ro = new ResizeObserver(() => {
-      if (roTimer) clearTimeout(roTimer);
-      roTimer = setTimeout(
-        () => {
-          const buf = t.buffer.active;
-          const wasAtBottom = buf.viewportY >= buf.baseY;
-          const savedViewportY = buf.viewportY;
-          fa.fit();
-          if (wasAtBottom) t.scrollToBottom();
-          else t.scrollToLine(savedViewportY);
-          sendPtyResize(t.cols, t.rows);
-          updateScrollbar();
-        },
-        isMobileDevice ? 150 : 0
-      );
-    });
-    ro.observe(container);
-    termRef.current = t;
+
+      // Key handler: block zoom shortcuts, intercept Ctrl+V for image paste
+      t.attachCustomKeyEventHandler((e) => {
+        if (isZoomShortcut(e, isMac)) {
+          e.preventDefault();
+          return false;
+        }
+        if (
+          isCtrlVShortcut(e, isMac) &&
+          typeof navigator.clipboard?.read === 'function'
+        ) {
+          readClipboardForPaste(t);
+          return false;
+        }
+        return true;
+      });
+
+      t.onData((data) => sendPtyData(data));
+
+      termRef.current = t;
+    })();
+
     return () => {
-      if (roTimer) clearTimeout(roTimer);
-      ro.disconnect();
-      t.dispose();
+      cancelled = true;
+      if (fa) fa.dispose();
+      if (t) t.dispose();
       termRef.current = null;
       fitAddonRef.current = null;
+      initRef.current = false;
     };
   }, []); // intentionally empty: terminal is created once per mount
 
@@ -857,17 +301,8 @@ function useTerminalSetup(
   useEffect(() => {
     const term = termRef.current;
     if (sessionId && term && !companionMode) {
-      // Full reset (RIS) — synchronously resets parser state, all terminal
-      // modes (mouse tracking, bracketed paste, alternate screen), and clears
-      // the screen. This replaces the previous term.write(escapeSequences)
-      // approach which relied on an async callback. If the parser was stuck
-      // waiting for a string terminator from an unterminated escape sequence
-      // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
-      // would never fire, connectPtySocket would never be called, and every
-      // subsequent session would render blank.
       term.reset();
       fitAddonRef.current?.fit();
-      term.refresh(0, term.rows - 1);
       connectPtySocket(
         sessionId,
         term,
@@ -882,7 +317,7 @@ function useTerminalSetup(
     }
   }, [sessionId, companionMode]);
 
-  return { termRef, fitAddonRef, fit };
+  return { termRef, fit };
 }
 
 // ── useImageUpload hook ───────────────────────────────────────────────────────
@@ -924,7 +359,7 @@ function useImageUpload(
 // ── useTerminalInteractions hook ──────────────────────────────────────────────
 
 function useTerminalInteractions(
-  termRef: React.RefObject<XTerminal | null>,
+  termRef: React.RefObject<GTerminal | null>,
   applyZoom: (size: number) => void,
   handleImageUpload: (blob: Blob, mimeType: string) => Promise<void>
 ) {
@@ -1003,8 +438,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     ref
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
-    const scrollbarRef = useRef<HTMLDivElement>(null);
-    const thumbRef = useRef<HTMLDivElement>(null);
+    const fitFnRef = useRef<(() => void) | null>(null);
 
     const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
     const activeAgent = useSessionsStore(
@@ -1021,33 +455,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       sessionId,
       companionMode,
       onFilePathClick,
-      () => updateSb()
+      fitFnRef
     );
-    const { scrollbarState: sbState, updateScrollbar: updateSb } =
-      useScrollbar(termRef);
+
     const { zoomVisible, zoomText, applyZoom } = useTerminalZoom(termRef, fit);
     const { handleImageUpload } = useImageUpload(sessionId, onImageUpload);
-    const {
-      selectionMode,
-      inCopyMode: _inCopyMode,
-      exitCopyMode,
-      onTerminalTouchStart,
-      onTerminalTouchEnd,
-      onThumbTouchStart,
-    } = useTouchScroll(
-      termRef,
-      containerRef,
-      scrollbarRef,
-      sbState.thumbTop,
-      useTmux,
-      onCopyModeChange
-    );
-    const { onScrollbarClick, onScrollFabMouseDown } = useScrollbarClick(
-      termRef,
-      scrollbarRef,
-      thumbRef,
-      sbState.thumbTop
-    );
     const {
       dragOver,
       handlePaste,
@@ -1062,10 +474,12 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         getTerm: () => termRef.current,
         focusTerm: () => termRef.current?.focus(),
         fitTerm: fit,
-        exitCopyMode,
+        exitCopyMode: () => {
+          /* ghostty handles copy mode natively */
+        },
         handleImageUpload,
       }),
-      [termRef, fit, exitCopyMode, handleImageUpload]
+      [termRef, fit, handleImageUpload]
     );
 
     useEffect(() => {
@@ -1077,42 +491,19 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       ) {
         const term = termRef.current;
         term.reset();
-        const container = containerRef.current;
-        if (container) {
-          const viewport =
-            container.querySelector<HTMLElement>('.xterm-viewport');
-          if (viewport) {
-            viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
-          }
-        }
         fit();
-        term.refresh(0, term.rows - 1);
       }
-    }, [
-      sessionId,
-      reconnectingPtySessionId,
-      companionMode,
-      isFullscreenTerminal,
-      fit,
-    ]);
+    }, [sessionId, reconnectingPtySessionId, companionMode, fit]);
 
-    // Enforce xterm viewport overflow for fullscreen/tmux sessions.
-    // xterm.js defaults .xterm-viewport to overflow-y:scroll; for sessions
-    // that should fill the viewport without scrolling (Claude NO_FLICKER,
-    // tmux) we lock it to hidden and re-fit to avoid stale sizing.
     useEffect(() => {
-      const container = containerRef.current;
-      if (!container) return;
-      const viewport = container.querySelector<HTMLElement>('.xterm-viewport');
-      if (!viewport) return;
-      viewport.style.overflowY = isFullscreenTerminal ? 'hidden' : '';
-      fit();
+      if (isFullscreenTerminal) {
+        fit();
+      }
     }, [isFullscreenTerminal, fit]);
 
     const wrapperClass = [
       'terminal-wrapper',
       dragOver ? 'drag-over' : '',
-      selectionMode ? 'selection-mode' : '',
       isFullscreenTerminal ? 'terminal-fullscreen' : '',
     ]
       .filter(Boolean)
@@ -1122,8 +513,6 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       <div
         className={wrapperClass}
         data-track="terminal.focus"
-        onTouchStart={isMobileDevice ? onTerminalTouchStart : undefined}
-        onTouchEnd={isMobileDevice ? onTerminalTouchEnd : undefined}
       >
         <div
           className="terminal-container"
@@ -1134,54 +523,6 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
           onDrop={handleDrop}
           role="presentation"
         />
-        <div
-          className="terminal-scrollbar"
-          ref={scrollbarRef}
-          onClick={onScrollbarClick}
-          role="scrollbar"
-          aria-valuenow={0}
-          aria-orientation="vertical"
-        >
-          <div
-            className="terminal-scrollbar-thumb"
-            ref={thumbRef}
-            style={{
-              display: sbState.thumbVisible ? 'block' : 'none',
-              height: sbState.thumbHeight,
-              top: sbState.thumbTop,
-            }}
-            onTouchStart={onThumbTouchStart}
-            role="presentation"
-          />
-        </div>
-        {isMobileDevice && sbState.thumbVisible && (
-          <div className="scroll-fabs" onMouseDown={onScrollFabMouseDown}>
-            <button
-              className="scroll-fab"
-              data-dir="up"
-              data-track="terminal.scroll-up"
-              aria-label="Page up"
-            >
-              &#9650;
-            </button>
-            <button
-              className="scroll-fab"
-              data-dir="down"
-              data-track="terminal.scroll-down"
-              aria-label="Page down"
-            >
-              &#9660;
-            </button>
-            <button
-              className="scroll-fab scroll-fab-bottom"
-              data-dir="bottom"
-              data-track="terminal.scroll-bottom"
-              aria-label="Skip to bottom"
-            >
-              &#8615;
-            </button>
-          </div>
-        )}
         {!isMobileDevice && (
           <div
             className={['zoom-overlay', zoomVisible ? 'visible' : '']
