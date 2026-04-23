@@ -25,6 +25,13 @@ export interface FileViewerPaneProps {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const CLOSE_SVG = (
+  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
+    stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" aria-hidden="true">
+    <path d="M2 2l6 6M8 2l-6 6" />
+  </svg>
+);
+
 const GLOBE_SVG = (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
     stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" aria-hidden="true">
@@ -121,7 +128,7 @@ function TabItem({ tab, isActive, onTabClick, onCloseTab }: TabItemProps) {
       {tab.tabType === 'html' && <span className="tab-icon">{GLOBE_SVG}</span>}
       <span className="tab-name">{tab.fileName}</span>
       {tab.isChanged && <span className="tab-badge">M</span>}
-      <button className="tab-close" onClick={(e) => onCloseTab(tab, e)} aria-label={`close ${tab.fileName}`}>×</button>
+      <button className="tab-close" onClick={(e) => onCloseTab(tab, e)} aria-label={`close ${tab.fileName}`}>{CLOSE_SVG}</button>
     </div>
   );
 }

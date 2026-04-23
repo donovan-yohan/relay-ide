@@ -76,6 +76,12 @@
   cursor: pointer;
   padding: 0 2px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 16px;
+  min-height: 16px;
 }
 
 .tab-close:hover {
