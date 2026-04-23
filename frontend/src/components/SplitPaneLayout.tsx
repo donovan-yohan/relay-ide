@@ -20,6 +20,7 @@ export interface SplitPaneLayoutProps {
   fileViewerRatio?: number;
   onRightSidebarWidthChange?: (width: number) => void;
   onFileViewerRatioChange?: (ratio: number) => void;
+  onToggleRightSidebar?: () => void;
 }
 
 export function SplitPaneLayout({
@@ -32,6 +33,7 @@ export function SplitPaneLayout({
   fileViewerRatio: externalFileViewerRatio,
   onRightSidebarWidthChange,
   onFileViewerRatioChange,
+  onToggleRightSidebar,
 }: SplitPaneLayoutProps) {
   const [internalRightSidebarWidth, setInternalRightSidebarWidth] = useState(320);
   const [internalFileViewerRatio, setInternalFileViewerRatio] = useState(0.4);
@@ -53,9 +55,12 @@ export function SplitPaneLayout({
   const handlePointerDown = useCallback(
     (handle: 'right-sidebar' | 'file-viewer', e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
+      if (handle === 'right-sidebar' && rightSidebarCollapsed) {
+        onToggleRightSidebar?.();
+      }
       setDragging(handle);
     },
-    []
+    [rightSidebarCollapsed, onToggleRightSidebar]
   );
 
   // Document-level listeners for drag — avoids pointer capture + React delegation issues
@@ -123,18 +128,35 @@ export function SplitPaneLayout({
         </>
       ) : null}
 
-      {!rightSidebarCollapsed ? (
+      {rightSidebar ? (
         <>
           <div
-            className={['resize-handle', dragging === 'right-sidebar' && 'active'].filter(Boolean).join(' ')}
+            className={[
+              'resize-handle',
+              'resize-handle-right',
+              dragging === 'right-sidebar' && 'active',
+              rightSidebarCollapsed && 'collapsed',
+            ].filter(Boolean).join(' ')}
             role="separator"
             aria-label="resize right sidebar"
             onPointerDown={(e) => handlePointerDown('right-sidebar', e)}
           />
           <div
-            className="pane-right-sidebar"
-            style={{ width: rightSidebarWidthValue }}
+            className={[
+              'pane-right-sidebar',
+              rightSidebarCollapsed && 'collapsed',
+              !rightSidebarCollapsed && 'mobile-open',
+            ].filter(Boolean).join(' ')}
+            style={{ width: rightSidebarCollapsed ? 0 : rightSidebarWidthValue }}
           >
+            <button
+              className="mobile-sidebar-close-btn"
+              aria-label="Close file sidebar"
+              onClick={onToggleRightSidebar}
+              type="button"
+            >
+              ✕
+            </button>
             {rightSidebar}
           </div>
         </>

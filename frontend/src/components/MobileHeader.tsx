@@ -4,6 +4,7 @@ export interface MobileHeaderProps {
   title: string;
   onMenuClick: () => void;
   onCommandClick: () => void;
+  onRightSidebarClick?: () => void;
   hidden?: boolean;
 }
 
@@ -11,6 +12,7 @@ export function MobileHeader({
   title,
   onMenuClick,
   onCommandClick,
+  onRightSidebarClick,
   hidden = false,
 }: MobileHeaderProps) {
   return (
@@ -19,9 +21,20 @@ export function MobileHeader({
         ☰
       </button>
       <span className="mobile-title">{title}</span>
-      <button className="command-trigger" aria-label="Open command palette" onClick={onCommandClick}>
-        {'> command'}
-      </button>
+      <div className="mobile-header-actions">
+        {onRightSidebarClick && (
+          <button
+            className="right-sidebar-btn"
+            aria-label="Open file sidebar"
+            onClick={onRightSidebarClick}
+          >
+            files
+          </button>
+        )}
+        <button className="command-trigger" aria-label="Open command palette" onClick={onCommandClick}>
+          {'> command'}
+        </button>
+      </div>
     </div>
   );
 }
