@@ -322,11 +322,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     if (wsPruned) persistWorkspaceSessions(workspaceLastSession);
 
     const { isUnread } = useUnreadStore.getState();
+    // Read sidebarItems from current state to avoid race conditions with
+    // handleUserViewed / handleBackendStateChanged that may have updated
+    // them while we were awaiting the fetch.
+    const currentSidebarItems = get().sidebarItems;
     sidebarItems = buildSidebarItems(
       sessions,
       worktrees,
       repos,
-      sidebarItems,
+      currentSidebarItems,
       isUnread
     );
 
