@@ -16,11 +16,17 @@ import { sortByAttention } from './attention.js';
  * The idle flag is a fallback for sessions without a defined agentState.
  */
 function sessionToBackendState(session: SessionSummary): BackendDisplayState {
-  const { agentState, idle } = session;
+  const { agentState, idle, createdAt } = session;
   if (agentState === 'permission-prompt') return 'permission';
   if (agentState === 'error') return 'error';
   if (agentState === 'processing') return 'running';
   if (agentState === 'initializing') return 'initializing';
+  // For brand-new sessions without a defined agentState, treat as initializing
+  // rather than running to avoid flashing the active indicator at 0s duration
+  const isVeryNew = createdAt
+    ? Date.now() - new Date(createdAt).getTime() < 30_000
+    : false;
+  if (!agentState && !idle && isVeryNew) return 'initializing';
   // For sessions without agentState (e.g. terminal sessions), fall back to the idle timer flag
   if (!agentState && !idle) return 'running';
   return 'idle';
