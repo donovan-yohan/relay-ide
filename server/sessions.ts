@@ -817,6 +817,7 @@ async function restoreWebSession(s: SerializedWebSession): Promise<void> {
     port: defaultPort ?? 3456,
     configDir: defaultConfigDir ?? '',
     runtimeOwnership: s.runtimeOwnership,
+    hookToken: s.hookToken,
     ...(s.workspaceId !== undefined ? { workspaceId: s.workspaceId } : {}),
     ...(s.additionalDirs !== undefined
       ? { additionalDirs: s.additionalDirs }
@@ -833,9 +834,6 @@ async function restoreWebSession(s: SerializedWebSession): Promise<void> {
   if (s.messages && s.messages.length > 0) {
     session.messages = s.messages.slice(-1000);
   }
-
-  // Restore hook token so inbound hook events authenticate correctly
-  session.hookToken = s.hookToken;
 }
 
 function syncDisplayNameCounters(): void {

@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import type { ChildProcess } from 'node:child_process';
 import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
 import type { ChatEvent } from '../shared/chat-events.js';
@@ -25,8 +24,8 @@ export interface CreateWebParams {
   model?: string;
   workspaceId?: string;
   additionalDirs?: string[];
-  process?: ChildProcess;
   runtimeOwnership?: 'spawned' | 'attached';
+  hookToken?: string;
 }
 
 export function pushToBuffer(session: WebSession, event: ChatEvent): void {
@@ -55,6 +54,7 @@ export async function createWebSession(
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapter = createAdapter(params.agentType);
+  const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
 
   const session: WebSession = {
     mode: 'web',
@@ -85,7 +85,7 @@ export async function createWebSession(
     messages: [],
     currentTurnId: null,
     runtimeOwnership: params.runtimeOwnership ?? 'spawned',
-    hookToken: crypto.randomBytes(16).toString('hex'),
+    hookToken,
     hooksActive: true,
   };
 
@@ -138,7 +138,7 @@ export async function createWebSession(
     cwd: params.cwd,
     port: params.port,
     sessionId: id,
-    hookToken: crypto.randomBytes(16).toString('hex'),
+    hookToken,
     configDir: params.configDir,
     ...(params.permissionMode !== undefined
       ? { permissionMode: params.permissionMode }

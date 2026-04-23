@@ -21,6 +21,8 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
   private _endpoint = 'http://127.0.0.1:4096';
   private _sseAbortController: AbortController | null = null;
   private _messageAbortController: AbortController | null = null;
+  private _turnCounter = 0;
+  private _currentTurnId: string | null = null;
 
   protected async onConnect(config: AdapterConfig): Promise<void> {
     const endpoint =
@@ -68,6 +70,11 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
         ? { signal: this._sseAbortController.signal }
         : {}),
     });
+    if (!res.ok) {
+      throw new Error(
+        `OpenCode SSE endpoint returned ${res.status} ${res.statusText}`
+      );
+    }
     if (!res.body) throw new Error('SSE response has no body');
 
     const reader = res.body.getReader();
@@ -84,7 +91,8 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
       let eventData = '';
       for (const line of lines) {
         if (line.startsWith('data:')) {
-          eventData = line.slice(5).trim();
+          const dataLine = line.slice(5).trim();
+          eventData = eventData ? eventData + '\n' + dataLine : dataLine;
         } else if (line.trim() === '' && eventData) {
           try {
             const data = JSON.parse(eventData) as OpenCodeEvent;
@@ -107,6 +115,7 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     if (!sessionId) throw new Error('No session ID');
 
     this._messageAbortController = new AbortController();
+    this._currentTurnId = turnId;
 
     const url = `${this._endpoint}/session/${encodeURIComponent(sessionId)}/prompt_async`;
     const res = await fetch(url, {
@@ -121,7 +130,11 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
     }
 
     this.fire({ type: 'chat:session-status', status: 'active' });
-    this.fire({ type: 'chat:turn-started', turnId, turnIndex: 0 });
+    this.fire({
+      type: 'chat:turn-started',
+      turnId,
+      turnIndex: this._turnCounter++,
+    });
   }
 
   async interrupt(_turnId: string): Promise<void> {
@@ -195,12 +208,12 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
 
     'message.part.updated': (event) => {
       const delta = event.properties?.['delta'];
-      const sessionId = this._config?.sessionId ?? '';
+      const turnId = this._currentTurnId ?? 'turn-0';
       if (typeof delta === 'string') {
         this.fire({
           type: 'chat:text-delta',
-          turnId: sessionId,
-          messageId: 'msg-1',
+          turnId,
+          messageId: `msg-${turnId}`,
           delta,
         });
       }
@@ -210,7 +223,7 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
       const props = event.properties ?? {};
       this.fire({
         type: 'chat:approval-request',
-        turnId: this._config?.sessionId ?? 'turn-0',
+        turnId: this._currentTurnId ?? 'turn-0',
         requestId: String(props['requestID'] ?? 'req-0'),
         kind: 'permission',
         toolName: String(props['toolName'] ?? 'unknown'),
@@ -221,11 +234,23 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
 
     'question.asked': (event) => {
       const props = event.properties ?? {};
+      const rawQuestions = (props['questions'] as unknown[]) ?? [];
+      // Map OpenCode questions array into canonical { question, fields }
+      const questionText =
+        typeof rawQuestions[0] === 'string'
+          ? String(rawQuestions[0])
+          : 'Agent is asking a question';
+      const fields = rawQuestions.map((q, idx) => ({
+        id: `q${idx}`,
+        label: typeof q === 'string' ? q : String(q),
+        type: 'text' as const,
+      }));
       this.fire({
         type: 'chat:input-request',
-        turnId: this._config?.sessionId ?? 'turn-0',
+        turnId: this._currentTurnId ?? 'turn-0',
         requestId: String(props['requestID'] ?? 'req-0'),
-        questions: (props['questions'] as unknown[]) ?? [],
+        question: questionText,
+        fields,
       });
     },
 
@@ -234,7 +259,7 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
       const tool = props['tool'] as Record<string, unknown> | undefined;
       this.fire({
         type: 'chat:tool-call',
-        turnId: this._config?.sessionId ?? 'turn-0',
+        turnId: this._currentTurnId ?? 'turn-0',
         toolCallId: String(props['toolCallId'] ?? 'tool-0'),
         toolName: String(tool?.['name'] ?? 'unknown'),
         description: String(tool?.['description'] ?? ''),
@@ -248,7 +273,7 @@ export class OpenCodeAttachedAdapter extends AttachedRuntimeAdapter {
       const result = props['result'] as Record<string, unknown> | undefined;
       this.fire({
         type: 'chat:tool-result',
-        turnId: this._config?.sessionId ?? 'turn-0',
+        turnId: this._currentTurnId ?? 'turn-0',
         toolCallId: String(props['toolCallId'] ?? 'tool-0'),
         toolName: String(props['toolName'] ?? 'unknown'),
         status: result?.['error'] ? 'error' : 'completed',
