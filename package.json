@@ -22,7 +22,7 @@
     "dev:vite": "vite --config frontend/vite.config.ts",
     "start": "npm run build && node dist/server/index.js",
     "sandbox": "npm run build && node dist/scripts/sandbox-cli.js",
-    "sandbox:dev": "node dist/scripts/sandbox-cli.js --no-build",
+    "sandbox:dev": "node dist/scripts/sandbox-cli.js",
     "agent-browser": "node dist/scripts/agent-browser-cli.js",
     "test": "vitest run",
     "test:e2e": "playwright test",

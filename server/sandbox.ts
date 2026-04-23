@@ -52,6 +52,35 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   }
 }
 
+async function syncFrontendBuild(packageRoot: string): Promise<void> {
+  const worktreeFrontend = path.join(packageRoot, 'dist', 'frontend');
+  if (fs.existsSync(path.join(worktreeFrontend, 'index.html'))) return;
+
+  // Try to locate the main repo's frontend build for bootstrapping
+  const mainRepoRoot = packageRoot.replace(/\.worktrees[/\\][^/\\]+$/, '');
+  if (mainRepoRoot === packageRoot) return; // already the main repo
+
+  const mainFrontend = path.join(mainRepoRoot, 'dist', 'frontend');
+  if (!fs.existsSync(path.join(mainFrontend, 'index.html'))) return;
+
+  fs.mkdirSync(worktreeFrontend, { recursive: true });
+
+  // Copy recursively (lightweight — frontend builds are ~1-2MB)
+  const entries = fs.readdirSync(mainFrontend, { withFileTypes: true });
+  for (const entry of entries) {
+    const src = path.join(mainFrontend, entry.name);
+    const dest = path.join(worktreeFrontend, entry.name);
+    if (entry.isDirectory()) {
+      fs.cpSync(src, dest, { recursive: true });
+    } else {
+      fs.copyFileSync(src, dest);
+    }
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[sandbox] Bootstrapped frontend build from ${mainFrontend}`);
+}
+
 export async function startSandbox(
   options: SandboxOptions = {}
 ): Promise<SandboxInstance> {
@@ -77,6 +106,9 @@ export async function startSandbox(
       ? path.resolve(moduleDir, '..', '..')
       : path.resolve(moduleDir, '..');
   const serverEntry = path.resolve(packageRoot, 'dist', 'server', 'index.js');
+
+  // Bootstrap frontend build from main repo if this is a worktree without one
+  syncFrontendBuild(packageRoot);
 
   const child = spawn('node', [serverEntry], {
     cwd: packageRoot,

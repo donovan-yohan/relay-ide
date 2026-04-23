@@ -1,87 +1,130 @@
-# Agent Browser Verification — Implementation Plan
+# Agent Browser Verification Pipeline
 
-## Goal
-Enable agents working in relay-ide PTY sessions to launch browsers, screenshot, and validate UI changes without colliding with globally installed relay-ide or other worktrees.
+Verified end-to-end pipeline for agents working in git worktrees to launch an isolated Relay IDE instance, screenshot the UI, and validate changes without colliding with the globally installed `relay-ide`.
 
-## Context
-- Port allocator already gives each worktree unique ports (10000-11999 range)
-- `RELAY_IDE_URL` is already injected into PTY env for OpenCode hooks
-- Playwright is already a dev dependency
-- Basic e2e tests exist but use hardcoded port 3456
+## Prerequisites
 
-## Tasks
+- Node.js >= 24.0.0
+- `npm install` has been run in the main repo (so `node_modules` and Playwright browsers exist)
+- The main repo has a built frontend at `dist/frontend/` (run `npm run build` there once)
 
-### Task 1: Sandbox Mode for relay-ide
-**File**: `server/sandbox.ts` (new)
-**What**: Module that starts an isolated relay-ide instance:
-- Creates ephemeral config dir in `/tmp/relay-ide-sandbox-<uuid>/`
-- Copies minimal config with no PIN, single workspace pointing to cwd
-- Finds free port via get-port (respecting allocated ports if in worktree)
-- Starts server process, waits for health
-- Returns { url, port, configPath, pid }
-- teardown() kills process and cleans up config dir
+## Quick Start
 
-**File**: `scripts/sandbox-cli.ts` (new)
-**What**: CLI entry point for `npm run sandbox`:
-- Parses args: `--port`, `--workspace`, `--no-build`
-- Calls sandbox module
-- Prints URL to stdout for agent consumption
-- Handles SIGINT/SIGTERM for clean teardown
+From any worktree:
 
-**File**: `package.json`
-**What**: Add `"sandbox": "node dist/scripts/sandbox-cli.js"` script
+```bash
+# 1. Build the server (fast — no frontend needed)
+npm run build:server
 
-### Task 2: Agent Browser Bridge
-**File**: `server/agent-browser.ts` (new)
-**What**: Browser automation helper for agents:
-- `launchBrowser(url, options)` — launches Playwright Chromium, returns page
-- `screenshot(page, path)` — takes screenshot
-- `closeBrowser(browser)` — clean teardown
-- Reads `RELAY_IDE_URL` from env if url not provided
+# 2. Start an isolated sandbox
+npm run sandbox:dev
+# → Sandbox ready at http://127.0.0.1:3457
 
-**File**: `scripts/agent-browser-cli.ts` (new)
-**What**: CLI for agents to use from PTY sessions:
-- `relay-ide-browser open [url]` — launches Chrome at URL or RELAY_IDE_URL
-- `relay-ide-browser screenshot [url] --out path` — takes screenshot
-- `relay-ide-browser validate [url]` — loads page, checks no console errors, returns pass/fail
+# 3. In another shell, screenshot the app
+RELAY_IDE_URL=http://127.0.0.1:3457 npx relay-ide-browser screenshot --out before.png
 
-### Task 3: Server API for Browser Discovery
-**File**: `server/index.ts` (modify)
-**What**: Add endpoint `GET /agent/browser-info`:
-- Returns { url: `http://127.0.0.1:${port}`, sessionId, worktreePorts }
-- Useful for agents to discover their relay-ide instance
+# 4. Make your code changes, then screenshot again
+RELAY_IDE_URL=http://127.0.0.1:3457 npx relay-ide-browser screenshot --out after.png
 
-### Task 4: Worktree Dev Script Port Awareness
-**File**: `package.json` (modify)
-**What**: Update dev script to respect allocated PORT env:
-- `"dev": "RELAY_IDE_PORT=\${RELAY_IDE_PORT:-3457} node dist/server/index.js"`
-- Actually: `"dev": "cross-env RELAY_IDE_PORT=${RELAY_IDE_PORT:-3457} NO_PIN=1 node dist/server/index.js"` ... simpler: just use shell default
-- Better: keep it simple, the sandbox script handles port allocation
+# 5. Validate for console errors
+RELAY_IDE_URL=http://127.0.0.1:3457 npx relay-ide-browser validate
+# → {"ok": true, "errors": []}
+```
 
-### Task 5: E2E Foundation Using Sandbox
-**File**: `test/e2e/global-setup.ts` (new)
-**What**: Playwright globalSetup that uses sandbox module to start backend
+## How It Works
 
-**File**: `test/e2e/global-teardown.ts` (new)
-**What**: Cleans up sandbox instance
+### Sandbox Mode (`server/sandbox.ts`)
 
-**File**: `playwright.config.ts` (modify)
-**What**: Use globalSetup/globalTeardown, point webServer at sandbox if not using globalSetup
+`startSandbox()` spawns a completely isolated Relay IDE backend:
 
-**File**: `test/e2e/helpers/sandbox.ts` (new)
-**What**: Helper for e2e tests to interact with sandbox backend
+1. Creates an ephemeral config dir in `os.tmpdir()`
+2. Discovers a free port (3456-3556 range) or uses the one you specify
+3. Writes a config JSON with `host: 127.0.0.1` and your `workspacePath` as the only repo
+4. **Bootstraps the frontend build** from the main repo if the worktree doesn't have one (see below)
+5. Spawns `node dist/server/index.js` with `NO_PIN=1` and the ephemeral config
+6. Polls `/health` every 200ms until the server is ready (30s timeout)
+7. Returns `{ url, port, configPath, dataDir, process, teardown }`
 
-### Task 6: Tests
-**File**: `test/sandbox.test.ts` (new)
-**What**: Unit tests for sandbox module
+### Frontend Build Bootstrapping
 
-**File**: `test/agent-browser.test.ts` (new)
-**What**: Unit tests for agent browser bridge
+Worktrees share `node_modules` with the main repo via git-worktree mechanics, but **build artifacts in `dist/` are not shared**. If a worktree doesn't have `dist/frontend/index.html`, `sandbox.ts` automatically copies the main repo's `dist/frontend/` into the worktree before starting the server.
 
-## Acceptance Criteria
-- [ ] `npm run sandbox` starts isolated relay-ide on unique port
-- [ ] Agents can run `npx relay-ide-browser open` from PTY to launch Chrome
-- [ ] Agents can run `npx relay-ide-browser screenshot --out file.png` 
-- [ ] Multiple worktrees can run dev servers without port collisions
-- [ ] E2E tests use sandbox backend instead of hardcoded port
-- [ ] Global relay-ide on 3456 is unaffected by sandbox instances
+**Important:** This is a convenience fallback. If you modify frontend source files in the worktree, you **must** run `npm run build` in the worktree to see your changes. The bootstrap only copies the main repo's build once; it won't overwrite an existing `dist/frontend/`.
+
+### Browser Bridge (`server/agent-browser.ts` + `relay-ide-browser` CLI)
+
+The `relay-ide-browser` binary (registered in `package.json` `bin`) provides three commands:
+
+| Command | Purpose |
+|---|---|
+| `open [url]` | Launch Chrome and keep it open until Ctrl+C |
+| `screenshot [url] --out <path>` | Full-page screenshot via Playwright |
+| `validate [url]` | Load page, wait 500ms, report console errors as JSON |
+
+Environment:
+- `RELAY_IDE_URL` — default URL if none provided on the command line
+- Falls back to `http://127.0.0.1:3456` if neither is set
+
+### Why No Collision
+
+- **Port:** Each sandbox gets its own ephemeral port. The global `relay-ide` (if running) typically uses 3456; sandboxes use 3457+.
+- **Config:** Each sandbox writes its own `config.json` in a temp dir, so there's no conflict over `~/.config/relay-ide/config.json`.
+- **Tmux:** The sandbox runs with `NO_PIN=1`, so it uses the `relay-dev-` tmux prefix (dev mode), keeping sessions isolated from production `relay-ide-` prefixes.
+
+## API Reference
+
+### `startSandbox(options)`
+
+```typescript
+import { startSandbox } from './server/sandbox.js';
+
+const sandbox = await startSandbox({
+  port: 19997,        // optional — uses this exact port
+  workspacePath: '.', // optional — defaults to process.cwd()
+});
+
+console.log(sandbox.url);     // http://127.0.0.1:19997
+console.log(sandbox.port);    // 19997
+
+// later
+await sandbox.teardown(); // kills process, removes temp dir
+```
+
+### Browser automation
+
+```typescript
+import { launchBrowser, screenshot, validatePage, closeBrowser } from './server/agent-browser.js';
+
+const session = await launchBrowser('http://127.0.0.1:3457', { headless: true });
+await screenshot(session, 'out.png');
+const result = await validatePage(session); // { ok: boolean, errors: string[] }
+await closeBrowser(session);
+```
+
+## CI / Testing
+
+The test suite covers both modules:
+
+```bash
+npx vitest run test/sandbox.test.ts test/agent-browser.test.ts
+```
+
+- Sandbox tests verify port allocation, server startup, config generation, and teardown.
+- Agent-browser tests verify module exports, Playwright availability, screenshot/validation against `data:` URLs, and console-error capture.
+
+Tests skip gracefully when Playwright Chromium binaries are missing (run `npx playwright install` if needed).
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Frontend build failed: Could not load .../addon-webgpu` | This is expected in worktrees. The sandbox auto-copies the main repo's `dist/frontend/`. If you changed frontend code, run `npm run build` in the main repo first, or build in the worktree after fixing node_modules. |
+| `Sandbox server did not start within 30000ms` | Check that `dist/server/index.js` exists (`npm run build:server`). Verify the port isn't already bound. |
+| `Playwright is unavailable` | Run `npm install` then `npx playwright install` to download Chromium binaries. |
+| Screenshot is blank / white | The page may still be loading. `validate` waits 500ms; for screenshots you may want to add an explicit `page.waitForSelector()` call in your script. |
+
+## Future Work
+
+- **Visual diffing:** Integrate pixelmatch or odiff to compare `before.png` and `after.png` automatically.
+- **Agent loop:** A higher-level script that watches for file changes, rebuilds, restarts the sandbox, and re-screenshots.
+- **Port allocator integration:** Tie sandbox ports into `server/port-allocator.ts` for durable, worktree-scoped assignments instead of ephemeral discovery.

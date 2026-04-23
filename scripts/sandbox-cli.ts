@@ -10,7 +10,6 @@ function getArg(flag: string): string | undefined {
 
 const portArg = getArg('--port');
 const workspaceArg = getArg('--workspace');
-const noBuild = process.argv.includes('--no-build');
 
 const port = portArg ? parseInt(portArg, 10) : undefined;
 if (
@@ -35,7 +34,6 @@ process.once('SIGTERM', onSigterm);
   const sandbox = await startSandbox({
     port,
     workspacePath: workspaceArg,
-    noBuild,
   });
 
   process.removeListener('SIGINT', onSigint);
