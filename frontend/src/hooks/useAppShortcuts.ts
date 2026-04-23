@@ -181,6 +181,7 @@ function setupEdgeSwipe(): (() => void) | undefined {
   let swipeStartX = 0;
   let swipeStartY = 0;
   let swipeTracking = false;
+  let swipeDirection: 'left' | 'right' | null = null;
 
   const onSwipeTouchStart = (e: TouchEvent) => {
     const touch = e.touches[0];
@@ -189,6 +190,15 @@ function setupEdgeSwipe(): (() => void) | undefined {
       swipeStartX = touch.clientX;
       swipeStartY = touch.clientY;
       swipeTracking = true;
+      swipeDirection = 'left';
+    } else if (
+      touch.clientX >= window.innerWidth - EDGE_ZONE &&
+      useUiStore.getState().rightSidebarCollapsed
+    ) {
+      swipeStartX = touch.clientX;
+      swipeStartY = touch.clientY;
+      swipeTracking = true;
+      swipeDirection = 'right';
     }
   };
 
@@ -198,18 +208,35 @@ function setupEdgeSwipe(): (() => void) | undefined {
     if (!touch) return;
     const dx = touch.clientX - swipeStartX;
     const dy = Math.abs(touch.clientY - swipeStartY);
-    if (dy > dx && (dy > 8 || dx > 8)) {
-      swipeTracking = false;
-      return;
-    }
-    if (dx >= SWIPE_THRESHOLD) {
-      swipeTracking = false;
-      useUiStore.getState().openSidebar();
+
+    if (swipeDirection === 'left') {
+      if (dy > dx && (dy > 8 || dx > 8)) {
+        swipeTracking = false;
+        swipeDirection = null;
+        return;
+      }
+      if (dx >= SWIPE_THRESHOLD) {
+        swipeTracking = false;
+        swipeDirection = null;
+        useUiStore.getState().openSidebar();
+      }
+    } else if (swipeDirection === 'right') {
+      if (dy > Math.abs(dx) && (dy > 8 || Math.abs(dx) > 8)) {
+        swipeTracking = false;
+        swipeDirection = null;
+        return;
+      }
+      if (dx <= -SWIPE_THRESHOLD) {
+        swipeTracking = false;
+        swipeDirection = null;
+        useUiStore.getState().toggleRightSidebarCollapsed();
+      }
     }
   };
 
   const onSwipeTouchEnd = () => {
     swipeTracking = false;
+    swipeDirection = null;
   };
 
   document.addEventListener('touchstart', onSwipeTouchStart, { passive: true });

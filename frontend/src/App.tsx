@@ -359,6 +359,9 @@ function TerminalAreaContent({
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
   const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
+  const toggleRightSidebarCollapsed = useUiStore(
+    (s) => s.toggleRightSidebarCollapsed
+  );
   const rightSidebarWidth = useUiStore((s) => s.rightSidebarWidth);
   const saveRightSidebarWidth = useUiStore((s) => s.saveRightSidebarWidth);
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
@@ -461,6 +464,7 @@ function TerminalAreaContent({
         title={sessionTitle}
         onMenuClick={openSidebar}
         onCommandClick={() => setSpotlightOpen(true)}
+        onRightSidebarClick={toggleRightSidebarCollapsed}
         hidden={keyboardOpen}
       />
 
@@ -530,6 +534,7 @@ function TerminalAreaContent({
             fileViewerRatio={fileViewerRatio}
             onRightSidebarWidthChange={saveRightSidebarWidth}
             onFileViewerRatioChange={saveFileViewerRatio}
+            onToggleRightSidebar={toggleRightSidebarCollapsed}
             terminal={
               <>
                 <SessionTabBar
