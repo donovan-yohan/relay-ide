@@ -66,8 +66,8 @@ function useSessionStatusBarData(
 ) {
   const sessionTelemetryById = useTelemetryStore((s) => s.sessionTelemetryById);
   const getAccountTelemetry = useTelemetryStore((s) => s.getAccountTelemetry);
-  const accountTelemetry = getAccountTelemetry(framework ?? undefined);
-  const frameworkLabel = framework ?? accountTelemetry?.framework ?? 'claude';
+  const accountTelemetry = framework ? getAccountTelemetry(framework) : null;
+  const frameworkLabel = framework ?? 'unknown';
 
   const telemetry = sessionId
     ? (sessionTelemetryById[sessionId] ?? null)
