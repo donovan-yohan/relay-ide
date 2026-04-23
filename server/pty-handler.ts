@@ -342,6 +342,7 @@ function resolveAgentFramework(
         supportsContinue: false,
         supportsYolo: false,
         supportsTelemetry: false,
+        supportsAttachedRuntime: false,
       },
     };
   }
