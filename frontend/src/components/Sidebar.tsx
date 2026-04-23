@@ -37,12 +37,15 @@ import './Sidebar.css';
 // ── Resize hook ──
 
 function useSidebarResize() {
-  const startResize = useCallback((e: React.MouseEvent) => {
+  const startResize = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const startWidth = useUiStore.getState().sidebarWidth;
 
-    function onMouseMove(ev: MouseEvent) {
+    function onPointerMove(ev: PointerEvent) {
+      ev.preventDefault();
       const newWidth = Math.min(
         MAX_SIDEBAR_WIDTH,
         Math.max(MIN_SIDEBAR_WIDTH, startWidth + (ev.clientX - startX))
@@ -50,16 +53,17 @@ function useSidebarResize() {
       useUiStore.setState({ sidebarWidth: newWidth });
     }
 
-    function onMouseUp() {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
+    function onPointerUp(ev: PointerEvent) {
+      target.releasePointerCapture(ev.pointerId);
+      target.removeEventListener('pointermove', onPointerMove as EventListener);
+      target.removeEventListener('pointerup', onPointerUp as EventListener);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       useUiStore.getState().saveSidebarWidth();
     }
 
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    target.addEventListener('pointermove', onPointerMove as EventListener);
+    target.addEventListener('pointerup', onPointerUp as EventListener);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
@@ -646,7 +650,7 @@ export function Sidebar({
           </div>
           <div
             className="sidebar-resize-handle"
-            onMouseDown={startResize}
+            onPointerDown={startResize}
             onDoubleClick={resetWidth}
           />
         </>

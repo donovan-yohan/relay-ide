@@ -5,6 +5,7 @@ const MIN_RIGHT_SIDEBAR_WIDTH = 200;
 const MAX_RIGHT_SIDEBAR_WIDTH = 600;
 const MIN_TERMINAL_WIDTH = 300;
 const MIN_FILE_VIEWER_WIDTH = 300;
+const MOBILE_BREAKPOINT = 768;
 
 export interface SplitPaneLayoutProps {
   terminal: React.ReactNode;
@@ -14,6 +15,10 @@ export interface SplitPaneLayoutProps {
   fileViewerOpen?: boolean;
   /** Whether the right sidebar is collapsed */
   rightSidebarCollapsed?: boolean;
+  /** Whether the right sidebar mobile overlay is open */
+  rightSidebarMobileOpen?: boolean;
+  /** Called when the mobile overlay should close (backdrop click) */
+  onRightSidebarMobileClose?: () => void;
   /** Current right sidebar width in px */
   rightSidebarWidth?: number;
   /** Current file viewer ratio (0-1) */
@@ -28,6 +33,8 @@ export function SplitPaneLayout({
   rightSidebar,
   fileViewerOpen = false,
   rightSidebarCollapsed = false,
+  rightSidebarMobileOpen = false,
+  onRightSidebarMobileClose,
   rightSidebarWidth: externalRightSidebarWidth,
   fileViewerRatio: externalFileViewerRatio,
   onRightSidebarWidthChange,
@@ -36,11 +43,15 @@ export function SplitPaneLayout({
   const [internalRightSidebarWidth, setInternalRightSidebarWidth] = useState(320);
   const [internalFileViewerRatio, setInternalFileViewerRatio] = useState(0.4);
   const [dragging, setDragging] = useState<'right-sidebar' | 'file-viewer' | null>(null);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false
+  );
 
   const rightSidebarWidthValue = externalRightSidebarWidth ?? internalRightSidebarWidth;
   const fileViewerRatioValue = externalFileViewerRatio ?? internalFileViewerRatio;
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<HTMLDivElement | null>(null);
 
   const rightSidebarEffectiveWidth = rightSidebarCollapsed ? 0 : rightSidebarWidthValue;
 
@@ -50,9 +61,25 @@ export function SplitPaneLayout({
   const rightSidebarEffectiveWidthRef = useRef(rightSidebarEffectiveWidth);
   rightSidebarEffectiveWidthRef.current = rightSidebarEffectiveWidth;
 
+  // Mobile resize listener
+  useEffect(() => {
+    function onResize() {
+      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
+    }
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const handlePointerDown = useCallback(
     (handle: 'right-sidebar' | 'file-viewer', e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
+      const target = e.currentTarget;
+      handleRef.current = target;
+      try {
+        target.setPointerCapture(e.pointerId);
+      } catch {
+        // setPointerCapture can throw if the pointer is already captured
+      }
       setDragging(handle);
     },
     []
@@ -63,6 +90,7 @@ export function SplitPaneLayout({
     if (!dragging) return;
 
     function onMove(e: PointerEvent) {
+      e.preventDefault();
       const container = containerRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
@@ -85,8 +113,17 @@ export function SplitPaneLayout({
       }
     }
 
-    function onUp() {
+    function onUp(e: PointerEvent) {
       setDragging(null);
+      const target = handleRef.current;
+      if (target) {
+        try {
+          target.releasePointerCapture(e.pointerId);
+        } catch {
+          // releasePointerCapture can throw if the pointer is not captured
+        }
+        handleRef.current = null;
+      }
     }
 
     document.addEventListener('pointermove', onMove);
@@ -98,48 +135,71 @@ export function SplitPaneLayout({
   }, [dragging, onRightSidebarWidthChange, onFileViewerRatioChange]);
 
   return (
-    <div className="split-pane-layout" ref={containerRef}>
-      <div
-        className="pane-terminal"
-        style={{ flex: fileViewerOpen ? String(1 - fileViewerRatioValue) : '1' }}
-      >
-        {terminal}
+    <>
+      <div className="split-pane-layout" ref={containerRef}>
+        <div
+          className="pane-terminal"
+          style={{ flex: fileViewerOpen ? String(1 - fileViewerRatioValue) : '1' }}
+        >
+          {terminal}
+        </div>
+
+        {fileViewerOpen ? (
+          <>
+            <div
+              className={['resize-handle', dragging === 'file-viewer' && 'active'].filter(Boolean).join(' ')}
+              role="separator"
+              aria-label="resize terminal and file viewer"
+              onPointerDown={(e) => handlePointerDown('file-viewer', e)}
+            />
+            <div
+              className="pane-file-viewer"
+              style={{ flex: String(fileViewerRatioValue) }}
+            >
+              {fileViewer}
+            </div>
+          </>
+        ) : null}
+
+        {!rightSidebarCollapsed && !isMobile ? (
+          <>
+            <div
+              className={['resize-handle', dragging === 'right-sidebar' && 'active'].filter(Boolean).join(' ')}
+              role="separator"
+              aria-label="resize right sidebar"
+              onPointerDown={(e) => handlePointerDown('right-sidebar', e)}
+            />
+            <div
+              className="pane-right-sidebar"
+              style={{ width: rightSidebarWidthValue }}
+            >
+              {rightSidebar}
+            </div>
+          </>
+        ) : null}
       </div>
 
-      {fileViewerOpen ? (
-        <>
+      {isMobile && rightSidebarMobileOpen ? (
+        <div
+          className="right-sidebar-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="right-sidebar-title"
+        >
           <div
-            className={['resize-handle', dragging === 'file-viewer' && 'active'].filter(Boolean).join(' ')}
-            role="separator"
-            aria-label="resize terminal and file viewer"
-            onPointerDown={(e) => handlePointerDown('file-viewer', e)}
+            className="right-sidebar-overlay-backdrop"
+            onClick={onRightSidebarMobileClose}
+            aria-hidden="true"
           />
-          <div
-            className="pane-file-viewer"
-            style={{ flex: String(fileViewerRatioValue) }}
-          >
-            {fileViewer}
-          </div>
-        </>
-      ) : null}
-
-      {!rightSidebarCollapsed ? (
-        <>
-          <div
-            className={['resize-handle', dragging === 'right-sidebar' && 'active'].filter(Boolean).join(' ')}
-            role="separator"
-            aria-label="resize right sidebar"
-            onPointerDown={(e) => handlePointerDown('right-sidebar', e)}
-          />
-          <div
-            className="pane-right-sidebar"
-            style={{ width: rightSidebarWidthValue }}
-          >
+          <div className="right-sidebar-overlay-panel">
+            <div id="right-sidebar-title" className="visually-hidden">
+              files and changes
+            </div>
             {rightSidebar}
           </div>
-        </>
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

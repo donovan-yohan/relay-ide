@@ -9,7 +9,7 @@
   flex-shrink: 0;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 767px) {
   .mobile-header {
     display: flex;
   }
@@ -46,6 +46,28 @@
 
 .icon-btn:hover {
   background: var(--border);
+}
+
+.right-sidebar-trigger {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 4px 10px;
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  border-radius: 0;
+  touch-action: manipulation;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.right-sidebar-trigger:active {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .command-trigger {
