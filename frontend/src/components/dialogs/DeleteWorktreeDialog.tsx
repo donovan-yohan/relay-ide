@@ -83,7 +83,7 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
               <p className="delete-worktree-confirm-msg">
                 Are you sure you want to delete the worktree{' '}
                 <strong className="delete-worktree-wt-name">
-                  {worktree.displayName || worktree.name}
+                  {worktree.name}
                 </strong>
                 ?
               </p>
