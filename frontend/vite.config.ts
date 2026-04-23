@@ -26,6 +26,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
+        'test-split-pane-layout': resolve(import.meta.dirname, 'test-split-pane-layout.html'),
+        'test-mobile-header': resolve(import.meta.dirname, 'test-mobile-header.html'),
       },
     },
   },

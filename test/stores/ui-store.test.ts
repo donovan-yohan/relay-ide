@@ -52,6 +52,7 @@ function resetStore() {
     fileWordWrap: false,
     rightSidebarVisible: true,
     rightSidebarCollapsed: false,
+    rightSidebarMobileOpen: false,
     rightSidebarWidth: DEFAULT_RIGHT_SIDEBAR_WIDTH,
     rightSidebarTab: 'changes',
     openFileTabs: [],
@@ -108,6 +109,22 @@ describe('ui Zustand store', () => {
     it('toggleRightSidebarCollapsed persists to localStorage', () => {
       useUiStore.getState().toggleRightSidebarCollapsed();
       expect(storage['claude-remote-right-sidebar-collapsed']).toBe('true');
+    });
+
+    it('setRightSidebarMobileOpen sets the mobile overlay state', () => {
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(false);
+      useUiStore.getState().setRightSidebarMobileOpen(true);
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(true);
+      useUiStore.getState().setRightSidebarMobileOpen(false);
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(false);
+    });
+
+    it('toggleRightSidebarMobileOpen flips the mobile overlay state', () => {
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(false);
+      useUiStore.getState().toggleRightSidebarMobileOpen();
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(true);
+      useUiStore.getState().toggleRightSidebarMobileOpen();
+      expect(useUiStore.getState().rightSidebarMobileOpen).toBe(false);
     });
   });
 

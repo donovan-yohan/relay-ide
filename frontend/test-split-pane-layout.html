@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SplitPaneLayout Test</title>
+    <style>
+      :root {
+        --bg: #000;
+        --surface: #111;
+        --border: #333;
+        --accent: #d97757;
+        --text: #eee;
+        --text-muted: #888;
+      }
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/test-fixtures/split-pane-layout.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MobileHeader Test</title>
+    <style>
+      :root {
+        --bg: #000;
+        --surface: #111;
+        --border: #333;
+        --accent: #d97757;
+        --text: #eee;
+        --text-muted: #888;
+        --font-size-base: 14px;
+        --font-size-lg: 16px;
+        --font-size-xs: 12px;
+        --font-mono: monospace;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="visible-container"></div>
+    <div id="hidden-container"></div>
+    <div id="counters">
+      <span id="menu-count">menu: 0</span>
+      <span id="command-count">command: 0</span>
+      <span id="files-count">files: 0</span>
+    </div>
+    <script type="module" src="/src/test-fixtures/mobile-header.tsx"></script>
+  </body>
+</html>

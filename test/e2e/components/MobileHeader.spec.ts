@@ -12,16 +12,19 @@ test.describe('MobileHeader React component', () => {
     await expect(header).toBeVisible();
     await expect(header).toContainText('Active Session');
     await expect(header.getByLabel('Open sessions menu')).toBeVisible();
+    await expect(header.getByLabel('Open files sidebar')).toBeVisible();
     await expect(header.getByLabel('Open command palette')).toBeVisible();
   });
 
-  test('fires click handlers for both buttons', async ({ page }) => {
+  test('fires click handlers for all buttons', async ({ page }) => {
     const header = page.locator('#visible-container .mobile-header');
 
     await header.getByLabel('Open sessions menu').click();
+    await header.getByLabel('Open files sidebar').click();
     await header.getByLabel('Open command palette').click();
 
     await expect(page.locator('#menu-count')).toHaveText('menu: 1');
+    await expect(page.locator('#files-count')).toHaveText('files: 1');
     await expect(page.locator('#command-count')).toHaveText('command: 1');
   });
 
