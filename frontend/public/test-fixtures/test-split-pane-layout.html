@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SplitPaneLayout Test Fixture</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #0a0a0a;
+      --accent: #d97757;
+      --text: #e0e0e0;
+      --border: #333333;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font-mono); }
+
+    .split-pane-layout {
+      display: flex;
+      flex-direction: row;
+      flex: 1;
+      min-width: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    .pane-terminal {
+      display: flex;
+      flex-direction: column;
+      min-width: 300px;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+      padding: 12px;
+    }
+    .pane-file-viewer {
+      min-width: 300px;
+      height: 100%;
+      overflow: hidden;
+      background: #1a1a1a;
+      padding: 12px;
+    }
+    .pane-right-sidebar {
+      flex-shrink: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0d0d0d;
+      padding: 12px;
+    }
+    .resize-handle {
+      width: 8px;
+      cursor: col-resize;
+      position: relative;
+      flex-shrink: 0;
+      z-index: 5;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .resize-handle::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 3px;
+      width: 1px;
+      background: var(--border);
+      pointer-events: none;
+    }
+    .resize-handle.active::after {
+      background: var(--accent);
+    }
+
+    .right-sidebar-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .right-sidebar-overlay-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+    }
+    .right-sidebar-overlay-panel {
+      position: relative;
+      width: 85vw;
+      max-width: 320px;
+      height: 100%;
+      background: var(--bg);
+      border-left: 1px solid var(--border);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      animation: slideInRight 200ms ease-out;
+      padding: 12px;
+    }
+    @keyframes slideInRight {
+      from { transform: translateX(100%); }
+      to { transform: translateX(0); }
+    }
+
+    .mobile-toggle {
+      display: none;
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 200;
+      background: none;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+
+    @media (max-width: 767px) {
+      .pane-right-sidebar { display: none; }
+      .resize-handle { display: none; }
+      .mobile-toggle { display: block; }
+    }
+
+    .width-readout {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      font-size: 12px;
+      z-index: 200;
+    }
+  </style>
+</head>
+<body>
+  <button class="mobile-toggle" id="mobileToggle" aria-label="Toggle files sidebar">files</button>
+
+  <div class="split-pane-layout" id="layout">
+    <div class="pane-terminal" id="terminalPane">
+      <p>terminal pane</p>
+    </div>
+
+    <div class="resize-handle" id="fileViewerHandle" role="separator" aria-label="resize terminal and file viewer"></div>
+    <div class="pane-file-viewer" id="fileViewerPane">
+      <p>file viewer pane</p>
+    </div>
+
+    <div class="resize-handle" id="rightSidebarHandle" role="separator" aria-label="resize right sidebar"></div>
+    <div class="pane-right-sidebar" id="rightSidebarPane">
+      <p>right sidebar pane</p>
+    </div>
+  </div>
+
+  <div class="width-readout" id="readout">right sidebar: 320px</div>
+
+  <script>
+    const MIN_RIGHT = 200;
+    const MAX_RIGHT = 600;
+    const layout = document.getElementById('layout');
+    const rightSidebarPane = document.getElementById('rightSidebarPane');
+    const fileViewerPane = document.getElementById('fileViewerPane');
+    const terminalPane = document.getElementById('terminalPane');
+    const readout = document.getElementById('readout');
+    const mobileToggle = document.getElementById('mobileToggle');
+
+    let rightWidth = 320;
+    let fileViewerRatio = 0.4;
+    let dragging = null;
+    let handleEl = null;
+
+    function updateLayout() {
+      const rect = layout.getBoundingClientRect();
+      const available = rect.width - rightWidth;
+      terminalPane.style.flex = String(1 - fileViewerRatio);
+      fileViewerPane.style.flex = String(fileViewerRatio);
+      rightSidebarPane.style.width = rightWidth + 'px';
+      readout.textContent = `right sidebar: ${rightWidth}px`;
+    }
+
+    function setupHandle(el, type) {
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handleEl = el;
+        try { el.setPointerCapture(e.pointerId); } catch {}
+        dragging = type;
+        el.classList.add('active');
+      });
+    }
+
+    setupHandle(document.getElementById('rightSidebarHandle'), 'right');
+    setupHandle(document.getElementById('fileViewerHandle'), 'file');
+
+    document.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const rect = layout.getBoundingClientRect();
+      if (dragging === 'right') {
+        rightWidth = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, rect.right - e.clientX));
+        updateLayout();
+      } else if (dragging === 'file') {
+        const available = rect.width - rightWidth;
+        const fvWidth = rect.right - rightWidth - e.clientX;
+        const termWidth = e.clientX - rect.left;
+        if (termWidth < 300 || fvWidth < 300) return;
+        fileViewerRatio = fvWidth / available;
+        updateLayout();
+      }
+    });
+
+    document.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      if (handleEl) {
+        try { handleEl.releasePointerCapture(e.pointerId); } catch {}
+        handleEl.classList.remove('active');
+        handleEl = null;
+      }
+      dragging = null;
+    });
+
+    // Mobile overlay
+    let overlay = null;
+    function openOverlay() {
+      if (overlay) return;
+      overlay = document.createElement('div');
+      overlay.className = 'right-sidebar-overlay';
+      overlay.innerHTML = `
+        <div class="right-sidebar-overlay-backdrop"></div>
+        <div class="right-sidebar-overlay-panel">
+          <p>mobile right sidebar overlay</p>
+        </div>
+      `;
+      overlay.querySelector('.right-sidebar-overlay-backdrop').addEventListener('click', closeOverlay);
+      document.body.appendChild(overlay);
+    }
+    function closeOverlay() {
+      if (!overlay) return;
+      overlay.remove();
+      overlay = null;
+    }
+    mobileToggle.addEventListener('click', () => {
+      if (overlay) closeOverlay();
+      else openOverlay();
+    });
+
+    updateLayout();
+    window.addEventListener('resize', updateLayout);
+  </script>
+</body>
+</html>

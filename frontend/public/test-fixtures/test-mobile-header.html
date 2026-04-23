@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MobileHeader Test Fixture</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #0a0a0a;
+      --accent: #d97757;
+      --text: #e0e0e0;
+      --text-muted: #888888;
+      --border: #333333;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font-mono); }
+
+    .mobile-header {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      min-height: 44px;
+    }
+    @media (max-width: 767px) {
+      .mobile-header { display: flex; }
+      .mobile-header.hidden { display: none; }
+    }
+    .mobile-title {
+      font-size: 0.875rem;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .icon-btn {
+      background: none;
+      border: none;
+      color: var(--text);
+      font-size: 1rem;
+      cursor: pointer;
+      padding: 8px;
+      min-width: 36px;
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0;
+      touch-action: manipulation;
+    }
+    .right-sidebar-trigger {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      cursor: pointer;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      border-radius: 0;
+      touch-action: manipulation;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .command-trigger {
+      background: none;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      cursor: pointer;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      border-radius: 0;
+      touch-action: manipulation;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .count-display {
+      padding: 12px;
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="visible-container">
+    <div class="mobile-header" id="header">
+      <button class="icon-btn" aria-label="Open sessions menu" id="menuBtn">☰</button>
+      <span class="mobile-title">Active Session</span>
+      <button class="right-sidebar-trigger" aria-label="Open files sidebar" id="filesBtn">files</button>
+      <button class="command-trigger" aria-label="Open command palette" id="commandBtn">> command</button>
+    </div>
+    <div class="count-display">
+      <div id="menu-count">menu: 0</div>
+      <div id="files-count">files: 0</div>
+      <div id="command-count">command: 0</div>
+    </div>
+  </div>
+
+  <div id="hidden-container">
+    <div class="mobile-header hidden">hidden header</div>
+  </div>
+
+  <script>
+    let menuCount = 0;
+    let filesCount = 0;
+    let commandCount = 0;
+    document.getElementById('menuBtn').addEventListener('click', () => {
+      menuCount++;
+      document.getElementById('menu-count').textContent = 'menu: ' + menuCount;
+    });
+    document.getElementById('filesBtn').addEventListener('click', () => {
+      filesCount++;
+      document.getElementById('files-count').textContent = 'files: ' + filesCount;
+    });
+    document.getElementById('commandBtn').addEventListener('click', () => {
+      commandCount++;
+      document.getElementById('command-count').textContent = 'command: ' + commandCount;
+    });
+  </script>
+</body>
+</html>
