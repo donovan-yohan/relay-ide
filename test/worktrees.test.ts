@@ -586,6 +586,7 @@ describe('findOrCreateWorktreeForBranch', () => {
       _opts: { cwd: string; timeout?: number }
     ) => {
       if (args[0] === 'worktree') return { stdout, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '' };
       throw new Error('unexpected call');
     };
 
@@ -619,6 +620,7 @@ describe('findOrCreateWorktreeForBranch', () => {
       _opts: { cwd: string; timeout?: number }
     ) => {
       if (args[0] === 'worktree') return { stdout, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '' };
       throw new Error('unexpected call');
     };
 
@@ -652,6 +654,17 @@ describe('findOrCreateWorktreeForBranch', () => {
       calls.push(args);
       if (args[0] === 'worktree' && args[1] === 'list')
         return { stdout: listStdout, stderr: '' };
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        // simulate remote-only branch: first rev-parse fails, fetch succeeds, second succeeds
+        if (calls.filter((c) => c[0] === 'rev-parse').length === 1) {
+          const err = new Error(
+            'unknown revision or path not in the working tree'
+          );
+          throw err;
+        }
+        return { stdout: 'abc123\n', stderr: '' };
+      }
+      if (args[0] === 'fetch') return { stdout: '', stderr: '' };
       if (args[0] === 'worktree' && args[1] === 'add')
         return { stdout: '', stderr: '' };
       throw new Error(`unexpected: ${args.join(' ')}`);
