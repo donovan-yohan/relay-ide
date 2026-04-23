@@ -2,6 +2,14 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Resolve via Node's module resolution so it works in worktrees, monorepos,
+// and any node_modules layout without hard-coded relative paths.
+const xtermDir = path.dirname(
+  fileURLToPath(import.meta.resolve('@xterm/xterm/package.json'))
+);
+const addonWebgpu = path.resolve(xtermDir, 'addons', 'addon-webgpu');
 
 export default defineConfig({
   root: import.meta.dirname,
@@ -9,10 +17,7 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: path.resolve(import.meta.dirname, 'src/lib'),
-      '@xterm/addon-webgpu': path.resolve(
-        import.meta.dirname,
-        '../node_modules/@xterm/xterm/addons/addon-webgpu'
-      ),
+      '@xterm/addon-webgpu': addonWebgpu,
     },
   },
   build: {

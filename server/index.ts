@@ -603,6 +603,7 @@ async function initializePinConfig(startupConfig: Config): Promise<void> {
   if (process.env.NO_PIN === '1') {
     logger.info('PIN disabled (NO_PIN=1).');
     startupConfig.pinHash = startupConfig.pinHash || 'disabled';
+    saveConfig(CONFIG_PATH, startupConfig);
   } else if (!startupConfig.pinHash) {
     if (process.stdin.isTTY) {
       const pin = await promptPin('Set up a PIN for relay-ide:');
@@ -781,6 +782,10 @@ async function main(): Promise<void> {
   });
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
+    if (process.env.NO_PIN === '1') {
+      next();
+      return;
+    }
     const token = req.cookies && req.cookies.token;
     if (!token || !authenticatedTokens.has(token)) {
       res.status(401).json({ error: 'Unauthorized' });
@@ -849,7 +854,8 @@ async function main(): Promise<void> {
     server,
     authenticatedTokens,
     watcher,
-    CONFIG_PATH
+    CONFIG_PATH,
+    process.env.NO_PIN === '1'
   );
 
   const browserScopedToken = generateScopedToken();
@@ -1326,7 +1332,8 @@ async function main(): Promise<void> {
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();
-    res.json({ hasPIN: !!config.pinHash });
+    const noPin = config.pinHash === 'disabled';
+    res.json({ hasPIN: !!config.pinHash && !noPin, noPin });
   });
 
   // POST /auth/setup — set initial PIN (only works when no PIN is configured)
@@ -1404,9 +1411,24 @@ async function main(): Promise<void> {
         res.status(412).json({ error: 'No PIN configured', needsSetup: true });
         return;
       }
-      const valid =
-        process.env.NO_PIN === '1' ||
-        (await auth.verifyPin(pin, authConfig.pinHash));
+
+      // No-PIN mode: auto-authenticate without a PIN body
+      if (process.env.NO_PIN === '1') {
+        auth.clearRateLimit(ip);
+        const token = auth.generateCookieToken();
+        authenticatedTokens.add(token);
+        const ttlMs = parseTTL(authConfig.cookieTTL);
+        setTimeout(() => authenticatedTokens.delete(token), ttlMs);
+        res.cookie('token', token, {
+          httpOnly: true,
+          sameSite: 'strict',
+          maxAge: ttlMs,
+        });
+        res.json({ ok: true });
+        return;
+      }
+
+      const valid = await auth.verifyPin(pin, authConfig.pinHash);
       if (!valid) {
         auth.recordFailedAttempt(ip);
         res.status(401).json({ error: 'Invalid PIN' });

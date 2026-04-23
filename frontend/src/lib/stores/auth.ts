@@ -27,6 +27,10 @@ export const useAuthStore = create<AuthState>()((set) => ({
     set({ checking: true });
     try {
       const status = await checkAuthStatus();
+      if (status.noPin) {
+        set({ authenticated: true, needsSetup: false, checking: false });
+        return;
+      }
       if (!status.hasPIN) {
         set({ needsSetup: true, checking: false });
         return;
