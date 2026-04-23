@@ -19,7 +19,7 @@ test.describe('SessionStatusBar React component', () => {
     await expect(bar).toContainText('~$12.34');
     await expect(bar).toContainText('[edit: frontend/src/App.svelte]');
     await expect(bar.locator('.status-rate-limits')).toHaveText(
-      'five_hour: 42% | seven_day: 63%'
+      '5h: 42% | 7d: 63%'
     );
   });
 
