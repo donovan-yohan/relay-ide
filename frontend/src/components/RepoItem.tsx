@@ -325,20 +325,22 @@ function InactiveRepoRow({
           <MarqueeText>{isLoading ? 'starting...' : 'default'}</MarqueeText>
         </span>
       </div>
-      {branchName || lastActivity ? (
-        <div className="session-row-secondary">
-          {lastActivity ? (
-            <span className="secondary-time">
-              {formatRelativeTimeCompact(lastActivity)}
-            </span>
-          ) : null}
-          {branchName ? (
-            <span className="secondary-branch">
-              <MarqueeText>{branchName}</MarqueeText>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      <div className="session-row-secondary">
+        {lastActivity ? (
+          <span className="secondary-time">
+            {formatRelativeTimeCompact(lastActivity)}
+          </span>
+        ) : (
+          <span className="secondary-placeholder" />
+        )}
+        {branchName ? (
+          <span className="secondary-branch">
+            <MarqueeText>{branchName}</MarqueeText>
+          </span>
+        ) : (
+          <span className="secondary-placeholder" />
+        )}
+      </div>
       {onViewHistory ? (
         <button
           className="session-history-btn"
@@ -576,14 +578,20 @@ export function RepoItem({
                   </span>
                 </div>
                 <div className="session-row-secondary">
-                  <span className="secondary-time">
-                    {formatRelativeTimeCompact(wt.lastActivity)}
-                  </span>
+                  {wt.lastActivity ? (
+                    <span className="secondary-time">
+                      {formatRelativeTimeCompact(wt.lastActivity)}
+                    </span>
+                  ) : (
+                    <span className="secondary-placeholder" />
+                  )}
                   {wt.branchName ? (
                     <span className="secondary-branch">
                       <MarqueeText>{wt.branchName}</MarqueeText>
                     </span>
-                  ) : null}
+                  ) : (
+                    <span className="secondary-placeholder" />
+                  )}
                 </div>
                 {onDeleteWorktree ? (
                   <div className="row-menu-overlay">
