@@ -49,7 +49,8 @@ function setupWebSocket(
   server: http.Server,
   authenticatedTokens: Set<string>,
   watcher: WorktreeWatcher | null,
-  _configPath?: string
+  _configPath?: string,
+  noPinMode = false
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -94,7 +95,7 @@ function setupWebSocket(
 
   server.on('upgrade', (request, socket, head) => {
     const cookies = parseCookies(request.headers.cookie);
-    if (!authenticatedTokens.has(cookies['token'] ?? '')) {
+    if (!noPinMode && !authenticatedTokens.has(cookies['token'] ?? '')) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

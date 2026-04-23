@@ -59,6 +59,8 @@ Forty TypeScript modules (plus `adapters/`, `output-parsers/`, and `protocol-ada
 | `protocol-adapter.ts`                   | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,mock}.ts`                                                                                                                                               |
 | `telemetry.ts` / `telemetry-adapter.ts` | Framework-neutral telemetry bus + abstract adapter; concrete adapters in `adapters/{claude,codex,opencode}-telemetry.ts` self-register at import time                                                                                                              |
 | `web-session-handler.ts`                | Request/response handler for web-chat sessions (non-PTY): creation, input delivery, event streaming via `ChatEvent`                                                                                                                                                |
+| `sandbox.ts`                            | Spawns isolated relay-ide server instances with ephemeral config, dynamic port allocation, and readiness polling for agent-driven testing                                                                                                                          |
+| `agent-browser.ts`                      | Playwright-based browser automation for agents: launches Chromium, captures screenshots, validates pages via console-error collection (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`)                                                               |
 
 ### `shared/`
 

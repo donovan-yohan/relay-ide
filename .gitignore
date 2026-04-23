@@ -46,3 +46,4 @@ telemetry/
 test-results/
 playwright-report/
 .omx/
+.env
