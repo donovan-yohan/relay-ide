@@ -464,7 +464,10 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
         let isUnread = item.isUnread;
         if (newDisplayState !== oldDisplayState) {
           const isViewing = item.sessions.some((s) => s.id === activeSessionId);
-          if (shouldMarkUnread(oldDisplayState, newDisplayState, isViewing)) {
+          if (isViewing) {
+            useUnreadStore.getState().markRead(item.id);
+            isUnread = false;
+          } else if (shouldMarkUnread(oldDisplayState, newDisplayState, false)) {
             useUnreadStore.getState().markUnread(item.id);
             isUnread = true;
           }
