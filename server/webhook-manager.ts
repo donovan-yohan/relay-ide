@@ -37,7 +37,7 @@ const logger = createLogger('webhook');
 
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 
-function stopSmartPolling(): void {
+export function stopSmartPolling(): void {
   if (pollingTimer !== null) {
     clearInterval(pollingTimer);
     pollingTimer = null;
@@ -53,11 +53,12 @@ function stopSmartPolling(): void {
  */
 export function startSmartPolling(
   configPath: string,
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void
+  broadcastEvent: (type: string, data?: Record<string, unknown>) => void,
+  opts?: { intervalMs?: number; buildRepoMap?: typeof buildRepoMap }
 ): void {
   stopSmartPolling();
 
-  const POLL_INTERVAL_MS = 30_000;
+  const POLL_INTERVAL_MS = opts?.intervalMs ?? 30_000;
 
   const tick = (): void => {
     const config = loadConfig(configPath);
@@ -82,7 +83,10 @@ export function startSmartPolling(
         args: string[],
         opts: { cwd: string; timeout?: number }
       ) => execFileAsync(file, args, opts);
-      const repoMap = await buildRepoMap(unwebhookedPaths, execFn);
+      const repoMap = await (opts?.buildRepoMap ?? buildRepoMap)(
+        unwebhookedPaths,
+        execFn
+      );
 
       // Single broadcast per poll cycle — frontend debounces invalidation
       if (repoMap.size > 0) {

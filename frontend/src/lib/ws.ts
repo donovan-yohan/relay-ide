@@ -40,8 +40,15 @@ export type EventMessage =
       branchName?: string;
     }
   | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
-  | { type: 'pr-updated' }
-  | { type: 'ci-updated' }
+  | {
+      type: 'pr-updated';
+      repo?: string;
+      number?: number;
+      action?: string;
+      state?: string;
+      merged?: boolean;
+    }
+  | { type: 'ci-updated'; repo?: string }
   | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
   | {
       type: 'session-activity-changed';

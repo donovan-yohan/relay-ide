@@ -1224,7 +1224,7 @@ async function main(): Promise<void> {
   reloadSmee(CONFIG_PATH, startupConfig.port);
 
   // Start smart polling — broadcasts pr-updated/ci-updated only for repos without webhooks
-  startSmartPolling(CONFIG_PATH, broadcastEvent);
+  startSmartPolling(CONFIG_PATH, broadcastEventDelegate);
 
   // Invalidate branch linker cache on session lifecycle changes
   sessions.onSessionCreate(() => {
