@@ -618,6 +618,54 @@ async function initializePinConfig(startupConfig: Config): Promise<void> {
   }
 }
 
+async function initializeServerStartup(
+  configDir: string,
+  startupConfig: Config,
+  getConfig: () => Config,
+  reconcilePortsForAllRepos: (repoPaths: string[]) => Promise<void>
+): Promise<void> {
+  try {
+    initFileLogging(path.join(configDir, 'logs'));
+  } catch (err) {
+    logger.warn(
+      'File logging disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+  try {
+    fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+  } catch (err) {
+    logger.warn(
+      'Telemetry directory creation failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  await initializePortAllocatorAndReconcile(
+    CONFIG_PATH,
+    getConfig,
+    reconcilePortsForAllRepos
+  );
+
+  try {
+    initAnalytics(configDir);
+  } catch (err) {
+    logger.warn(
+      'Analytics disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  try {
+    await initializePinConfig(startupConfig);
+  } catch (err) {
+    logger.warn(
+      'PIN config initialization failed:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
   // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
@@ -730,46 +778,12 @@ async function main(): Promise<void> {
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
   const configDir = getConfigDir(CONFIG_PATH);
-  try {
-    initFileLogging(path.join(configDir, 'logs'));
-  } catch (err) {
-    logger.warn(
-      'File logging disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-  try {
-    fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
-  } catch (err) {
-    logger.warn(
-      'Telemetry directory creation failed:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  await initializePortAllocatorAndReconcile(
-    CONFIG_PATH,
+  await initializeServerStartup(
+    configDir,
+    startupConfig,
     getConfig,
     reconcilePortsForAllRepos
   );
-
-  try {
-    initAnalytics(configDir);
-  } catch (err) {
-    logger.warn(
-      'Analytics disabled: failed to initialize:',
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  try {
-    await initializePinConfig(startupConfig);
-  } catch (err) {
-    logger.warn(
-      'PIN config initialization failed:',
-      err instanceof Error ? err.message : err
-    );
-  }
 
   const authenticatedTokens = new Set<string>();
 
