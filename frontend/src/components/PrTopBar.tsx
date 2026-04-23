@@ -517,6 +517,10 @@ export function PrTopBar({
   const secondaryAction = deriveSecondaryAction(prAction, prStateInput);
 
   function handleActionClick(action: PrAction = prAction) {
+    if (action.type === 'merge-pr' && pr?.url) {
+      window.open(pr.url, '_blank');
+      return;
+    }
     const ctx = {
       branchName: currentBranch,
       baseBranch: pr?.baseRefName ?? '',
