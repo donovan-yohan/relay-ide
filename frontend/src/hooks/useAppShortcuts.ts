@@ -237,7 +237,7 @@ function setupRightEdgeSwipe(): (() => void) | undefined {
   const onSwipeTouchStart = (e: TouchEvent) => {
     const touch = e.touches[0];
     if (!touch) return;
-    if (window.innerWidth - touch.clientX <= EDGE_ZONE && useUiStore.getState().rightSidebarCollapsed) {
+    if (window.innerWidth - touch.clientX <= EDGE_ZONE && !useUiStore.getState().rightSidebarMobileOpen) {
       swipeStartX = touch.clientX;
       swipeStartY = touch.clientY;
       swipeTracking = true;
@@ -256,7 +256,7 @@ function setupRightEdgeSwipe(): (() => void) | undefined {
     }
     if (dx <= -SWIPE_THRESHOLD) {
       swipeTracking = false;
-      useUiStore.getState().toggleRightSidebarCollapsed();
+      useUiStore.getState().toggleRightSidebarMobileOpen();
     }
   };
 

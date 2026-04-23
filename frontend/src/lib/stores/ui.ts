@@ -169,6 +169,9 @@ export interface UiState {
   setFileDiffViewMode: (v: DiffViewMode) => void;
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
+  rightSidebarMobileOpen: boolean;
+  setRightSidebarMobileOpen: (v: boolean) => void;
+  toggleRightSidebarMobileOpen: () => void;
   saveRightSidebarWidth: () => void;
   saveFileViewerRatio: () => void;
   openFileTab: (
@@ -208,6 +211,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   fileWordWrap: ls(WORD_WRAP_KEY) === 'true',
   rightSidebarVisible: true,
   rightSidebarCollapsed: ls(RIGHT_SIDEBAR_COLLAPSED_KEY) === 'true',
+  rightSidebarMobileOpen: false,
   rightSidebarWidth: loadRightSidebarWidth(),
   rightSidebarTab: 'changes',
   openFileTabs: [],
@@ -260,6 +264,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
     lsSave(RIGHT_SIDEBAR_COLLAPSED_KEY, String(next));
     set({ rightSidebarCollapsed: next });
   },
+
+  setRightSidebarMobileOpen: (v) => set({ rightSidebarMobileOpen: v }),
+  toggleRightSidebarMobileOpen: () =>
+    set({ rightSidebarMobileOpen: !get().rightSidebarMobileOpen }),
 
   setRightSidebarTab: (tab) => set({ rightSidebarTab: tab }),
   setFileDiffSource: (source) => set({ fileDiffSource: source }),
