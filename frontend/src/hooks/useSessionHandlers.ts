@@ -756,6 +756,10 @@ export function useSessionHandlers({
       });
       if (session?.id) {
         useUiStore.getState().setActiveRepoPath(wt.repoPath);
+        useSessionsStore.getState().setActiveSessionId(session.id);
+        useSessionsStore
+          .getState()
+          .rememberSessionForWorkspace(wt.repoPath, session.id);
         if (!(error instanceof ConflictError)) {
           useSessionsStore
             .getState()
@@ -775,6 +779,13 @@ export function useSessionHandlers({
               : 'failed to resume worktree session'
           );
       }
+    } catch (e) {
+      logger.error('Failed to resume worktree:', e);
+      useToastStore
+        .getState()
+        .showToast(
+          e instanceof Error ? e.message : 'failed to resume worktree session'
+        );
     } finally {
       useSessionsStore.getState().clearLoading(loadingKey);
     }
