@@ -33,6 +33,9 @@
   position: relative;
   flex-shrink: 0;
   z-index: 5;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .resize-handle::after {
@@ -49,6 +52,56 @@
 .resize-handle:hover::after,
 .resize-handle.active::after {
   background: var(--accent, #d97757);
+}
+
+/* ── Mobile overlay ────────────────────────────────────────────────────────── */
+
+.right-sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.right-sidebar-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.right-sidebar-overlay-panel {
+  position: relative;
+  width: 85vw;
+  max-width: 320px;
+  height: 100%;
+  background: var(--bg, #000);
+  border-left: 1px solid var(--border, #333);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: slideInRight 200ms ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 767px) {
