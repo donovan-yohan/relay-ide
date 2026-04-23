@@ -407,6 +407,7 @@ export function Sidebar({
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
+  const analyticsView = useUiStore((s) => s.analyticsView);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
   const repos = useSessionsStore((s) => s.repos);
@@ -605,7 +606,9 @@ export function Sidebar({
               + add repo
             </TuiButton>
             <button
-              className="sidebar-settings-icon-btn"
+              className={['sidebar-settings-icon-btn', analyticsView !== null && 'active']
+                .filter(Boolean)
+                .join(' ')}
               data-track="sidebar.analytics"
               onClick={onOpenAnalytics}
               aria-label="Analytics"
