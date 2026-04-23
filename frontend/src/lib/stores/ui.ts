@@ -172,7 +172,9 @@ export interface UiState {
   rightSidebarMobileOpen: boolean;
   setRightSidebarMobileOpen: (v: boolean) => void;
   toggleRightSidebarMobileOpen: () => void;
+  setRightSidebarWidth: (width: number) => void;
   saveRightSidebarWidth: () => void;
+  setFileViewerRatio: (ratio: number) => void;
   saveFileViewerRatio: () => void;
   openFileTab: (
     filePath: string,
@@ -279,8 +281,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
   saveRightSidebarWidth: () =>
     lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
 
+  setRightSidebarWidth: (width) => set({ rightSidebarWidth: width }),
+
   saveFileViewerRatio: () =>
     lsSave(FILE_VIEWER_WIDTH_KEY, String(get().fileViewerRatio)),
+
+  setFileViewerRatio: (ratio) => set({ fileViewerRatio: ratio }),
 
   openFileTab: (filePath, isChanged, tabType, token) => {
     const { openFileTabs } = get();

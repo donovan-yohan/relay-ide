@@ -364,8 +364,10 @@ function TerminalAreaContent({
   const toggleRightSidebarMobileOpen = useUiStore((s) => s.toggleRightSidebarMobileOpen);
   const rightSidebarWidth = useUiStore((s) => s.rightSidebarWidth);
   const saveRightSidebarWidth = useUiStore((s) => s.saveRightSidebarWidth);
+  const setRightSidebarWidth = useUiStore((s) => s.setRightSidebarWidth);
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
+  const setFileViewerRatio = useUiStore((s) => s.setFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
@@ -534,8 +536,14 @@ function TerminalAreaContent({
             onRightSidebarMobileClose={() => setRightSidebarMobileOpen(false)}
             rightSidebarWidth={rightSidebarWidth}
             fileViewerRatio={fileViewerRatio}
-            onRightSidebarWidthChange={saveRightSidebarWidth}
-            onFileViewerRatioChange={saveFileViewerRatio}
+            onRightSidebarWidthChange={(w) => {
+              setRightSidebarWidth(w);
+              saveRightSidebarWidth(w);
+            }}
+            onFileViewerRatioChange={(r) => {
+              setFileViewerRatio(r);
+              saveFileViewerRatio(r);
+            }}
             terminal={
               <>
                 <SessionTabBar
