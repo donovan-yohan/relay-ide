@@ -275,7 +275,6 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       activeSessionId,
       notificationSessions,
       workspaceLastSession,
-      sidebarItems,
     } = state;
 
     if (sResult.status === 'fulfilled') sessions = sResult.value;
@@ -325,12 +324,11 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     // Read sidebarItems from current state to avoid race conditions with
     // handleUserViewed / handleBackendStateChanged that may have updated
     // them while we were awaiting the fetch.
-    const currentSidebarItems = get().sidebarItems;
-    sidebarItems = buildSidebarItems(
+    const sidebarItems = buildSidebarItems(
       sessions,
       worktrees,
       repos,
-      currentSidebarItems,
+      get().sidebarItems,
       isUnread
     );
 
