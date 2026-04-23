@@ -240,8 +240,7 @@ function setupRightEdgeSwipe(): (() => void) | undefined {
     const state = useUiStore.getState();
     if (
       window.innerWidth - touch.clientX <= EDGE_ZONE &&
-      !state.rightSidebarMobileOpen &&
-      state.rightSidebarCollapsed
+      !state.rightSidebarMobileOpen
     ) {
       swipeStartX = touch.clientX;
       swipeStartY = touch.clientY;
