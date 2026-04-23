@@ -38,6 +38,11 @@ function getContextLabel(telemetry: { contextPercent: number } | null): string {
   return `${'░'.repeat(BAR_WIDTH)} —%`;
 }
 
+const RATE_LIMIT_DISPLAY_NAMES: Record<string, string> = {
+  five_hour: '5h',
+  seven_day: '7d',
+};
+
 function buildRateLimitLabel(
   accountTelemetry:
     | import('../lib/types.js').AccountTelemetry
@@ -48,7 +53,8 @@ function buildRateLimitLabel(
   const parts: string[] = [];
   for (const rl of accountTelemetry.rateLimits) {
     if (rl.usedPercent >= 0) {
-      parts.push(`${rl.name}: ${Math.round(rl.usedPercent)}%`);
+      const label = RATE_LIMIT_DISPLAY_NAMES[rl.name] ?? rl.name;
+      parts.push(`${label}: ${Math.round(rl.usedPercent)}%`);
     }
   }
   return parts.length > 0 ? parts.join(' | ') : '—';
