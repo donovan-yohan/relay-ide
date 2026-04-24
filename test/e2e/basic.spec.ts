@@ -24,12 +24,17 @@ test.describe('smoke', () => {
     expect(errors).toHaveLength(0);
   });
 
-  test('PIN screen appears on first visit', async ({ page }) => {
+  test('auth flow matches configured PIN mode', async ({ page }) => {
     await page.goto('/');
 
-    await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
-      timeout: 10000,
-    });
+    const setPinButton = page.getByRole('button', { name: /set PIN/i });
+
+    if (process.env.NO_PIN === '1') {
+      await expect(page.locator('.main-app')).toBeVisible({ timeout: 10000 });
+      await expect(setPinButton).toHaveCount(0);
+    } else {
+      await expect(setPinButton).toBeVisible({ timeout: 10000 });
+    }
   });
 
   test('no console errors on load', async ({ page }) => {

@@ -1,5 +1,4 @@
 import type { IPty } from 'node-pty';
-import type { ChildProcess } from 'node:child_process'; // used by WebSession.process
 import type { OutputParser } from './output-parsers/index.js';
 import type { ProtocolAdapter } from './protocol-adapter.js';
 import type { ChatEvent } from '../shared/chat-events.js';
@@ -45,6 +44,7 @@ export interface AgentFramework {
     supportsContinue: boolean;
     supportsYolo: boolean;
     supportsTelemetry: boolean;
+    supportsAttachedRuntime: boolean;
   };
 }
 
@@ -62,6 +62,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsContinue: true,
       supportsYolo: true,
       supportsTelemetry: true,
+      supportsAttachedRuntime: false,
     },
   },
   codex: {
@@ -77,6 +78,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsContinue: true,
       supportsYolo: true,
       supportsTelemetry: false,
+      supportsAttachedRuntime: false,
     },
   },
   opencode: {
@@ -110,6 +112,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsContinue: true,
       supportsYolo: true,
       supportsTelemetry: true,
+      supportsAttachedRuntime: true,
     },
   },
 };
@@ -151,7 +154,8 @@ export function resolveFramework(
       typeof custom.capabilities.supportsHooks !== 'boolean' ||
       typeof custom.capabilities.supportsContinue !== 'boolean' ||
       typeof custom.capabilities.supportsYolo !== 'boolean' ||
-      typeof custom.capabilities.supportsTelemetry !== 'boolean'
+      typeof custom.capabilities.supportsTelemetry !== 'boolean' ||
+      typeof custom.capabilities.supportsAttachedRuntime !== 'boolean'
     ) {
       throw new Error(
         `Custom framework "${frameworkId}" must define id, displayName, command, continueArgs, yoloArgs, parserType, eventSource, and complete capabilities.`
@@ -261,8 +265,12 @@ export interface WebSession extends BaseSession {
   messages: ChatEvent[];
   /** Currently active turn ID, or null when idle */
   currentTurnId: string | null;
-  /** Spawned agent subprocess (codex app-server, opencode serve, claude subprocess) */
-  process?: ChildProcess;
+  /** Who owns the agent runtime process */
+  runtimeOwnership: 'spawned' | 'attached';
+  /** Token for authenticating inbound hook callbacks */
+  hookToken: string;
+  /** Whether hook infrastructure is currently active */
+  hooksActive: boolean;
 }
 
 export type Session = PtySession | WebSession;

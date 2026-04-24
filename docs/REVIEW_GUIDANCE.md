@@ -22,7 +22,7 @@ See `docs/references/review-agent-setup.md` for full config field reference.
 
 ### Architecture
 
-- Does this change respect the one-concern-per-module boundary? (27 server modules, each owning a single concern)
+- Does this change respect the one-concern-per-module boundary? (58 server modules, each owning a single concern)
 - If a new server module is added, is the module count updated in `ARCHITECTURE.md` and the ADRs?
 - Does cross-module dependency flow downward? (`index.ts` is the composition root — no other module may import it)
 - Does this maintain TypeScript + ESM conventions (`.js` extensions on relative imports, `node:` prefix on builtins)?
@@ -48,8 +48,8 @@ See `docs/references/review-agent-setup.md` for full config field reference.
 
 - Are new server modules accompanied by test files in `test/`?
 - Do mobile input changes include fixture-based tests in `test/fixtures/mobile-input/`?
-- Does `npm test` pass cleanly? (runs `tsc` + `node --test`)
-- Does `npm run build` succeed? (`node-pty` requires native compilation — `postinstall` script handles macOS prebuilt binaries)
+- Does `npm test` pass cleanly? (runs `vitest run` — `node-pty` is a native addon and may compile if no compatible prebuild is available; `postinstall` fixes macOS ARM64 `spawn-helper` permissions)
+- Does `npm run build` succeed? (`node-pty` is a native addon and may compile if no compatible prebuild is available; `postinstall` fixes macOS ARM64 `spawn-helper` permissions)
 
 ## Escape Log
 
