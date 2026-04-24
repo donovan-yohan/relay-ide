@@ -1,72 +1,85 @@
 name: relay-ide
 
-# Trigger contract: checks GitHub Issues for todo-labeled issues
-# Workflow: backlog → refined → [planning skill] → todo → [belayer picks up]
+# Trigger contract: checks GitHub Issues for todo-labeled issues with autoplan specs.
+# Workflow: issue opened → /autoplan run by orchestrator → spec written to .belayer/.internal/specs/ → todo label added → belayer picks up
 intake:
   - name: github-issue
     type: trigger
     check: .belayer/scripts/check-ready.sh
 
 nodes:
-  # Implementation: receives a todo issue spec (planned upstream by the planning skill).
-  # Uses OpenCode with ultrawork/autopilot for parallel agent execution.
-  - name: implement
-    type: node
-    command: .belayer/scripts/implement.sh
-    description: |
-      Implement the GitHub issue spec. OpenCode with ultrawork/autopilot
-      handles parallel execution. The issue body contains the full
-      implementation plan written by the planning skill.
+  # Supervisor orchestration: the supervisor reads the autoplan spec and coordinates
+  # backend-dev / web-dev implementers, reviewers, and QA. All agents use nous/kimi-k2.6.
+  - name: orchestrate
+    type: agent
+    vendor: nous
+    model: kimi-k2.6
+    identity: supervisor
+    prompt: |
+      Read the autoplan spec at %{INPUT}. This is a fully-reviewed implementation plan for relay-ide.
+      Your job:
+      1. Read the spec in full.
+      2. Determine if the issue touches server/, frontend/, or both.
+      3. Spawn the appropriate implementer(s) with a worktree branch.
+      4. When implementer(s) finish, spawn a reviewer on the diff.
+      5. When review passes, spawn QA to verify.
+      6. When QA passes, commit, push, and open a PR targeting nightly.
+      7. Call belayer_request_completion.
+
+      Do NOT write code yourself. Coordinate only.
     input: { type: file, key: design_doc }
     output: { type: commit }
-    on_pass: review-router
-    on_fail: stop
-    max_retries: 3
-
-  # Review Router: classifies the change and routes to appropriate review depth.
-  # Each route is an isolated subpipeline with its own gate + ship.
-  - name: review-router
-    type: agent
-    vendor: claude
-    prompt: |
-      Read the diff at %{INPUT}. Classify this change for relay-ide
-      and choose the appropriate review depth.
-
-      Consider:
-      - Scope: how many modules touched (server/, src/components/, src/stores/)
-      - Risk: PTY management, auth, WebSocket, session state
-      - API surface: REST endpoints, WebSocket messages, config schema
-      - Frontend vs backend: React components vs Express routes
-      - Test coverage: vitest test additions or modifications
-    input: { type: commit, key: implement }
-    output: { type: route_result, path: .belayer/.internal/output/route-result.json }
-    routes:
-      mode: choose_one
-      options:
-        full-feature-review:
-          pipeline: .belayer/pipelines/full-feature-review.yaml
-          description: >
-            Broad or risky change spanning multiple modules.
-            Thorough review with 5 dimensions covering code quality,
-            spec compliance, production readiness, test coverage,
-            and relay-ide architecture patterns.
-        quick-bugfix-review:
-          pipeline: .belayer/pipelines/quick-bugfix-review.yaml
-          description: >
-            Small localized fix in a single module.
-            Lightweight review with 3 dimensions: correctness,
-            regression risk, and test coverage. 1 retry max.
-        refactor-review:
-          pipeline: .belayer/pipelines/refactor-review.yaml
-          description: >
-            Structural change with no new behavior.
-            Focus on behavioral preservation, architecture
-            improvement, and migration safety. Higher pass
-            threshold (7.5).
-    on_pass: stop
-    on_retry: self
+    on_pass: review
     on_fail: stop
     max_retries: 2
+
+  # Review gate: adversarial review of the implementation diff.
+  - name: review
+    type: agent
+    vendor: nous
+    model: kimi-k2.6
+    identity: reviewer
+    prompt: |
+      Review the diff at %{INPUT} against the autoplan spec for relay-ide.
+      Run all six dimensions + adversarial pass. Return structured findings.
+    input: { type: commit, key: orchestrate }
+    output: { type: gate_result }
+    on_pass: qa
+    on_retry: orchestrate
+    on_fail: stop
+    max_retries: 2
+
+  # QA gate: outside-in validation via tests and browser automation.
+  - name: qa
+    type: agent
+    vendor: nous
+    model: kimi-k2.6
+    identity: qa
+    prompt: |
+      Verify the implementation at %{INPUT} against the spec acceptance criteria.
+      Run npm test. Boot the dev server if needed. Register a qa-report artifact.
+    input: { type: commit, key: orchestrate }
+    output: { type: artifact, kind: qa-report }
+    on_pass: ship
+    on_retry: orchestrate
+    on_fail: stop
+    max_retries: 1
+
+  # Ship gate: create PR targeting nightly.
+  - name: ship
+    type: agent
+    vendor: nous
+    model: kimi-k2.6
+    identity: supervisor
+    prompt: |
+      Create a pull request targeting nightly for the completed work.
+      Include the issue number, autoplan summary, and any known followups.
+      Run `npm run build` and `npm test` to verify before pushing.
+      Write the PR URL to .belayer/.internal/output/pr.json as {"url": "...", "number": N}.
+    input: { type: commit, key: orchestrate }
+    output: { type: pr, path: .belayer/.internal/output/pr.json }
+    on_pass: stop
+    on_fail: stop
 
 safety:
   max_concurrent_runs: 2

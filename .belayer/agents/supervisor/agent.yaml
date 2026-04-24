@@ -1,0 +1,13 @@
+schema_version: "1"
+description: "Supervisor — main party lead for relay-ide"
+kind: main
+vendor: nous
+model: moonshotai/kimi-k2.6
+max_turns: 400
+max_duration: "6h"
+ephemeral: false
+workspace: none
+belayer_tools:
+  - belayer_spawn_agent
+  - belayer_request_completion
+  - belayer_escalate_to_human

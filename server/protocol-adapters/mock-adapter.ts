@@ -55,6 +55,7 @@ const DEFAULT_DELAYS: MockAdapterDelays = {
 
 export class MockProtocolAdapter extends BaseProtocolAdapter {
   readonly agentType = 'mock';
+  readonly runtimeOwnership = 'spawned' as const;
 
   _status: AdapterStatus = 'disconnected';
   _config: AdapterConfig | null = null;
