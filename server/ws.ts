@@ -7,6 +7,8 @@ import type { Session } from './types.js';
 import type { Attachment } from './protocol-adapter.js';
 import { trackEvent } from './analytics.js';
 import { createLogger } from './logger.js';
+import { loadConfig } from './config.js';
+import { verifyCookieToken } from './auth.js';
 
 const logger = createLogger('ws');
 
@@ -49,7 +51,7 @@ function setupWebSocket(
   server: http.Server,
   authenticatedTokens: Set<string>,
   watcher: WorktreeWatcher | null,
-  _configPath?: string,
+  configPath?: string,
   noPinMode = false
 ): {
   wss: WebSocketServer;
@@ -58,6 +60,20 @@ function setupWebSocket(
 } {
   const wss = new WebSocketServer({ noServer: true });
   const eventClients = new Set<WebSocket>();
+
+  function isAuthenticated(cookieHeader: string | undefined): boolean {
+    if (noPinMode) return true;
+    const cookies = parseCookies(cookieHeader);
+    const token = cookies['token'] ?? '';
+    if (authenticatedTokens.has(token)) return true;
+    if (!configPath) return false;
+    try {
+      const config = loadConfig(configPath);
+      return verifyCookieToken(token, config.pinHash);
+    } catch {
+      return false;
+    }
+  }
 
   function broadcastEvent(type: string, data?: Record<string, unknown>): void {
     const msg = JSON.stringify({ type, ...data });
@@ -94,8 +110,7 @@ function setupWebSocket(
   }
 
   server.on('upgrade', (request, socket, head) => {
-    const cookies = parseCookies(request.headers.cookie);
-    if (!noPinMode && !authenticatedTokens.has(cookies['token'] ?? '')) {
+    if (!isAuthenticated(request.headers.cookie)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

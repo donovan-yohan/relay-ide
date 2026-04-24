@@ -37,7 +37,8 @@ export const DEFAULTS: Omit<
   defaultFramework: 'claude',
   defaultContinue: true,
   defaultYolo: false,
-  launchInTmux: false,
+  maxPtySessions: 64,
+  launchInTmux: true,
   defaultNotifications: true,
   claudeFullscreen: true,
   updateChannel: 'stable',
@@ -50,6 +51,7 @@ export function loadConfig(configPath: string): Config {
   const raw = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(raw) as Partial<Config>;
   const config: Config = { ...DEFAULTS, ...parsed };
+  config.launchInTmux = true;
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
@@ -126,12 +128,12 @@ export function getRepoSettings(
     defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
-    launchInTmux: config.launchInTmux,
+    launchInTmux: true,
     claudeArgs: config.claudeArgs,
   };
   const perWorkspace = config.repoSettings?.[repoPath] ?? {};
   // Per-repo settings override global — only for defined keys
-  return { ...globalDefaults, ...perWorkspace };
+  return { ...globalDefaults, ...perWorkspace, launchInTmux: true };
 }
 
 export interface ResolvedSessionSettings {
@@ -160,7 +162,7 @@ export function resolveSessionSettings(
     defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
-    launchInTmux: config.launchInTmux,
+    launchInTmux: true,
     claudeArgs: config.claudeArgs,
   };
 
@@ -196,7 +198,7 @@ export function resolveSessionSettings(
     agent: overrides.agent ?? agentFromLayers,
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
-    useTmux: overrides.useTmux ?? merged.launchInTmux ?? false,
+    useTmux: true,
     claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };
 }

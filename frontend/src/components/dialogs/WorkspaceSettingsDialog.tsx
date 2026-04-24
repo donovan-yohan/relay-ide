@@ -32,7 +32,6 @@ const EMPTY_VALUES: WorkspaceEditorValues = {
   defaultAgent: 'claude',
   defaultContinue: false,
   defaultYolo: false,
-  launchInTmux: false,
   promptCodeReview: '',
   promptCreatePr: '',
   promptBranchRename: '',
@@ -44,7 +43,6 @@ const SESSION_DEFAULT_KEYS = [
   'defaultAgent',
   'defaultContinue',
   'defaultYolo',
-  'launchInTmux',
 ];
 
 function settingsToValues(s: WorkspaceSettings): WorkspaceEditorValues {
@@ -57,7 +55,6 @@ function settingsToValues(s: WorkspaceSettings): WorkspaceEditorValues {
       | 'codex',
     defaultContinue: s.defaultContinue ?? false,
     defaultYolo: s.defaultYolo ?? false,
-    launchInTmux: s.launchInTmux ?? false,
     promptCodeReview: s.promptCodeReview ?? '',
     promptCreatePr: s.promptCreatePr ?? '',
     promptBranchRename: s.promptBranchRename ?? '',
@@ -77,8 +74,6 @@ function buildSavePayload(
     settings['defaultContinue'] = values.defaultContinue;
   if (values.defaultYolo !== original['defaultYolo'])
     settings['defaultYolo'] = values.defaultYolo;
-  if (values.launchInTmux !== original['launchInTmux'])
-    settings['launchInTmux'] = values.launchInTmux;
   if (values.defaultBranch) settings['defaultBranch'] = values.defaultBranch;
   if (values.remote) settings['remote'] = values.remote;
   if (values.branchPrefix) settings['branchPrefix'] = values.branchPrefix;
@@ -192,7 +187,6 @@ const WorkspaceSettingsDialog = forwardRef<
           defaultAgent: mergedResult.settings.defaultAgent,
           defaultContinue: mergedResult.settings.defaultContinue,
           defaultYolo: mergedResult.settings.defaultYolo,
-          launchInTmux: mergedResult.settings.launchInTmux,
           portVariables: mergedResult.settings.portVariables ?? [],
         });
         setOverriddenKeys(mergedResult.overridden);
@@ -237,7 +231,6 @@ const WorkspaceSettingsDialog = forwardRef<
         defaultAgent: null,
         defaultContinue: null,
         defaultYolo: null,
-        launchInTmux: null,
       } as unknown as Record<string, unknown>);
       const merged = await fetchMergedWorkspaceSettings(workspacePath);
       setValues(settingsToValues(merged.settings));
@@ -245,7 +238,6 @@ const WorkspaceSettingsDialog = forwardRef<
         defaultAgent: merged.settings.defaultAgent,
         defaultContinue: merged.settings.defaultContinue,
         defaultYolo: merged.settings.defaultYolo,
-        launchInTmux: merged.settings.launchInTmux,
         portVariables: merged.settings.portVariables ?? [],
       });
       setOverriddenKeys(merged.overridden);

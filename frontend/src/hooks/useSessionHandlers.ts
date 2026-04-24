@@ -283,6 +283,7 @@ export function useSessionHandlers({
           type: 'agent',
           branchName,
           needsBranchRename: true,
+          newWorktree: true,
         });
         if (error && !(error instanceof ConflictError)) throw error;
         if (!session) throw new Error('failed to create worktree session');
@@ -381,6 +382,7 @@ export function useSessionHandlers({
     try {
       let worktreePath: string | null;
       let branchName: string;
+      let newWorktree = false;
 
       if (existingSession) {
         worktreePath = existingSession.worktreePath;
@@ -392,6 +394,7 @@ export function useSessionHandlers({
         const wt = await createWorktree(repoPath, pr.headRefName);
         worktreePath = wt.worktreePath;
         branchName = wt.branchName;
+        newWorktree = true;
       }
 
       const { session, error } = await createAgentSession({
@@ -399,6 +402,7 @@ export function useSessionHandlers({
         worktreePath,
         type: 'agent',
         branchName,
+        newWorktree,
       });
       if (!session)
         throw error ?? new Error('failed to start conflict resolution');
@@ -447,6 +451,7 @@ export function useSessionHandlers({
       try {
         let worktreePath: string | null;
         let branchName: string;
+        let newWorktree = false;
 
         if (existingSession) {
           worktreePath = existingSession.worktreePath;
@@ -458,6 +463,7 @@ export function useSessionHandlers({
           const wt = await createWorktree(repoPath, pr.headRefName);
           worktreePath = wt.worktreePath;
           branchName = wt.branchName;
+          newWorktree = true;
         }
 
         const { session, error } = await createAgentSession({
@@ -465,6 +471,7 @@ export function useSessionHandlers({
           worktreePath,
           type: 'agent',
           branchName,
+          newWorktree,
         });
         if (!session)
           throw error ?? new Error('failed to open PR branch session');
@@ -513,6 +520,7 @@ export function useSessionHandlers({
 
         let worktreePath: string | null;
         let resolvedBranch: string;
+        let newWorktree = false;
 
         if (existingSession) {
           worktreePath = existingSession.worktreePath;
@@ -524,6 +532,7 @@ export function useSessionHandlers({
           const wt = await createWorktree(repoPath, branchName);
           worktreePath = wt.worktreePath;
           resolvedBranch = wt.branchName;
+          newWorktree = true;
         }
 
         const { session, error } = await createAgentSession({
@@ -531,6 +540,7 @@ export function useSessionHandlers({
           worktreePath,
           type: 'agent',
           branchName: resolvedBranch,
+          newWorktree,
         });
         if (!session) throw error ?? new Error('failed to open branch session');
         useUiStore.getState().setActiveRepoPath(repoPath);

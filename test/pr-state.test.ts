@@ -261,7 +261,7 @@ describe('derivePrAction', () => {
     const action = derivePrAction(input);
     expect(action.type).toBe('review-pr');
     expect(action.color).toBe('info');
-    expect(action.label).toBe('Review');
+    expect(action.label).toBe('Review PR');
   });
 
   it('returns muted checks-running for reviewer when CI failing', () => {

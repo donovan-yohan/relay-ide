@@ -214,7 +214,7 @@ function useTerminalDerivedState() {
 
   const activeSessionMode = useMemo(() => activeSession?.mode, [activeSession]);
   const activeSessionUseTmux = useMemo(
-    () => activeSession?.useTmux ?? false,
+    () => activeSession?.useTmux ?? activeSession?.mode === 'pty',
     [activeSession]
   );
   const activeWorkspaceCwd = useMemo(

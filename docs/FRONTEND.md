@@ -6,7 +6,7 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 
 - React 19 with hooks, Zustand 5 for state management, TanStack React Query 5 for server state — TypeScript throughout
 - Vite builds `frontend/` to `dist/frontend/`; Express serves compiled output
-- xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`)
+- xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while tmux owns the server-side session/process substrate
 - Mobile-first responsive design with touch toolbar (hidden on desktop)
 
 ## Component Map
@@ -135,7 +135,7 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 ## Mobile Touch & Input
 
 - Custom touch scroll replaces xterm.js built-in (smoother UX); handlers use `addEventListener({ passive: false })` on `document`
-- Long-press (500ms) triggers text selection: tmux sessions enter copy-mode (vi bindings, toolbar buttons for navigation); non-tmux sessions use browser-native selection with copy-on-tap
+- Long-press (500ms) triggers text selection by entering tmux copy-mode (vi bindings, toolbar buttons for navigation)
 - `MobileInput` uses event-intent architecture: `beforeinput` captures intent, `input` dispatches to typed handlers (insert, delete, replacement, paste). Autocorrect at cursor-0 (iOS Safari bug) is recovered by sending backspaces + corrected text instead of reverting
 - `visualViewport` API tracks keyboard state; layout adjusts dynamically (header hidden, terminal re-fit)
 - xterm's internal `.xterm-helper-textarea` disabled on mobile to prevent focus fights with `MobileInput`

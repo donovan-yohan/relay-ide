@@ -102,6 +102,11 @@ import type {
 import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
+  buildPtyCapacityResponse,
+  countActivePtySessions,
+  sessionCreateErrorResponse,
+} from './session-capacity.js';
+import {
   createBrowserContentRouter,
   generateScopedToken,
   cleanExpiredTokens,
@@ -327,6 +332,18 @@ async function cleanupOrphanedTmuxSessions(
   }
 }
 
+async function ensureTmuxAvailable(): Promise<void> {
+  try {
+    await execFileAsync('tmux', ['-V']);
+  } catch (err) {
+    const detail = execErrorMessage(err, 'tmux is not available');
+    throw new Error(
+      `tmux is required to run relay-ide sessions: ${detail}. Install tmux and restart relay-ide (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux).`,
+      { cause: err }
+    );
+  }
+}
+
 async function ensureFrontendBuilt(
   frontendDir: string,
   packageRoot: string
@@ -487,14 +504,15 @@ function buildAgentArgs(
 
 /**
  * Resolves the effective continue policy for an agent session.
- * For new worktrees (needsBranchRename), always returns 'never'.
+ * For new worktrees, always returns 'never'.
  */
 function resolveContinuePolicy(
   explicitContinuePolicy: ContinuePolicy | undefined,
   explicitContinue: boolean | undefined,
-  needsBranchRename: boolean | undefined
+  needsBranchRename: boolean | undefined,
+  newWorktree: boolean = false
 ): ContinuePolicy | undefined {
-  if (needsBranchRename) return 'never';
+  if (needsBranchRename || newWorktree) return 'never';
   if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
   if (explicitContinue === undefined) return undefined;
   return explicitContinue ? 'always' : 'never';
@@ -588,6 +606,37 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
   }
 
   return session;
+}
+
+function activePtySessionCount(): number {
+  return countActivePtySessions(sessions.list());
+}
+
+function sendPtyCapacityError(
+  res: express.Response,
+  response: ReturnType<typeof buildPtyCapacityResponse>
+): boolean {
+  if (!response) return false;
+  res.status(503).json(response);
+  return true;
+}
+
+function sendSessionCreateError(
+  res: express.Response,
+  err: unknown,
+  maxPtySessions: unknown
+): void {
+  const response = sessionCreateErrorResponse(
+    err,
+    activePtySessionCount(),
+    maxPtySessions
+  );
+  if (sendPtyCapacityError(res, response)) return;
+  logger.error('[sessions] failed to create session:', err);
+  res.status(500).json({
+    error: 'session_create_failed',
+    message: 'Failed to create session.',
+  });
 }
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
@@ -774,6 +823,7 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
+  await ensureTmuxAvailable();
 
   await initializePortAllocatorAndReconcile(
     CONFIG_PATH,
@@ -829,7 +879,11 @@ async function main(): Promise<void> {
       return;
     }
     const token = req.cookies && req.cookies.token;
-    if (!token || !authenticatedTokens.has(token)) {
+    const config = getConfig();
+    const tokenAccepted =
+      authenticatedTokens.has(token) ||
+      auth.verifyCookieToken(token, config.pinHash);
+    if (!token || !tokenAccepted) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -886,6 +940,33 @@ async function main(): Promise<void> {
     );
   }
 
+  app.get('/config/launchInTmux', requireAuth, (_req, res) => {
+    res.json({ launchInTmux: true, required: true });
+  });
+  app.patch('/config/launchInTmux', requireAuth, async (req, res) => {
+    const value = (req.body as Record<string, unknown>).launchInTmux;
+    if (typeof value !== 'boolean') {
+      res.status(400).json({ error: 'launchInTmux must be a boolean' });
+      return;
+    }
+    if (!value) {
+      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
+      return;
+    }
+    try {
+      await ensureTmuxAvailable();
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'tmux is not available',
+      });
+      return;
+    }
+    const c = getConfig();
+    c.launchInTmux = true;
+    saveConfig(CONFIG_PATH, c);
+    res.json({ launchInTmux: true, required: true });
+  });
+
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
 
@@ -908,10 +989,19 @@ async function main(): Promise<void> {
     process.env['RELAY_IDE_PORT'] = String(startupConfig.port);
   }
 
-  // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
-  // Also clear the PR cache on real webhook events — these indicate actual PR state changes
+  // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available).
+  // Smart polling includes workspace paths, so clear those caches without flushing every repo.
   broadcastEventDelegate = (type, data) => {
-    if (type === 'pr-updated') clearPrCache();
+    if (type === 'pr-updated') {
+      const workspacePaths = data?.workspacePaths;
+      if (Array.isArray(workspacePaths)) {
+        for (const workspacePath of workspacePaths) {
+          if (typeof workspacePath === 'string') clearPrCache(workspacePath);
+        }
+      } else {
+        clearPrCache();
+      }
+    }
     broadcastEvent(type, data);
   };
 
@@ -1266,7 +1356,7 @@ async function main(): Promise<void> {
   reloadSmee(CONFIG_PATH, startupConfig.port);
 
   // Start smart polling — broadcasts pr-updated/ci-updated only for repos without webhooks
-  startSmartPolling(CONFIG_PATH, broadcastEvent);
+  startSmartPolling(CONFIG_PATH, broadcastEventDelegate);
 
   // Invalidate branch linker cache on session lifecycle changes
   sessions.onSessionCreate(() => {
@@ -1415,9 +1505,12 @@ async function main(): Promise<void> {
 
       // Auto-login: generate token and set cookie
       auth.clearRateLimit(ip);
-      const token = auth.generateCookieToken();
-      authenticatedTokens.add(token);
       const ttlMs = parseTTL(freshConfig.cookieTTL);
+      const token = auth.generateCookieToken({
+        pinHash: freshConfig.pinHash,
+        ttlMs,
+      });
+      authenticatedTokens.add(token);
       setTimeout(() => authenticatedTokens.delete(token), ttlMs);
 
       res.cookie('token', token, {
@@ -1457,9 +1550,11 @@ async function main(): Promise<void> {
       // No-PIN mode: auto-authenticate without a PIN body
       if (process.env.NO_PIN === '1') {
         auth.clearRateLimit(ip);
-        const token = auth.generateCookieToken();
-        authenticatedTokens.add(token);
         const ttlMs = parseTTL(authConfig.cookieTTL);
+        const token = authConfig.pinHash
+          ? auth.generateCookieToken({ pinHash: authConfig.pinHash, ttlMs })
+          : auth.generateCookieToken();
+        authenticatedTokens.add(token);
         setTimeout(() => authenticatedTokens.delete(token), ttlMs);
         res.cookie('token', token, {
           httpOnly: true,
@@ -1478,10 +1573,12 @@ async function main(): Promise<void> {
       }
 
       auth.clearRateLimit(ip);
-      const token = auth.generateCookieToken();
-      authenticatedTokens.add(token);
-
       const ttlMs = parseTTL(authConfig.cookieTTL);
+      const token = auth.generateCookieToken({
+        pinHash: authConfig.pinHash,
+        ttlMs,
+      });
+      authenticatedTokens.add(token);
       setTimeout(() => authenticatedTokens.delete(token), ttlMs);
 
       res.cookie('token', token, {
@@ -1666,9 +1763,6 @@ async function main(): Promise<void> {
 
   boolConfigEndpoints('defaultContinue', true);
   boolConfigEndpoints('defaultYolo', false);
-  boolConfigEndpoints('launchInTmux', false, async () => {
-    await execFileAsync('tmux', ['-V']);
-  });
   boolConfigEndpoints('defaultNotifications', true);
   boolConfigEndpoints('claudeFullscreen', true);
   boolConfigEndpoints('autoProvision', false);
@@ -1977,6 +2071,7 @@ async function main(): Promise<void> {
       rows,
       branchName: requestBranchName,
       needsBranchRename,
+      newWorktree,
       branchRenamePrompt,
       initialPrompt,
       continue: explicitContinue,
@@ -1994,6 +2089,7 @@ async function main(): Promise<void> {
       rows?: number;
       branchName?: string;
       needsBranchRename?: boolean;
+      newWorktree?: boolean;
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
@@ -2037,38 +2133,49 @@ async function main(): Promise<void> {
 
     const name = repoPath.split('/').filter(Boolean).pop() || 'session';
     const portVariables = getRepoPortVariables(freshConfig, repoPath);
+    const capacityResponse = buildPtyCapacityResponse(
+      activePtySessionCount(),
+      freshConfig.maxPtySessions
+    );
+    if (sendPtyCapacityError(res, capacityResponse)) return;
 
     if (type === 'terminal') {
       // Terminal session — bare shell
       const shell = process.env.SHELL || '/bin/sh';
       const displayName = sessions.nextTerminalName();
-      const session = sessions.create({
-        type: 'terminal',
-        agent: 'claude' as AgentType,
-        repoName: name,
-        repoPath,
-        worktreePath: worktreePath ?? null,
-        cwd,
-        displayName,
-        branchName: '',
-        command: shell,
-        args: [],
-        ...(safeCols != null && { cols: safeCols }),
-        ...(safeRows != null && { rows: safeRows }),
-        // Pass port env var names for per-worktree port injection
-        portVariables,
-      });
+      let session: CreateResult;
+      try {
+        session = sessions.create({
+          type: 'terminal',
+          agent: 'claude' as AgentType,
+          repoName: name,
+          repoPath,
+          worktreePath: worktreePath ?? null,
+          cwd,
+          displayName,
+          branchName: '',
+          command: shell,
+          args: [],
+          ...(safeCols != null && { cols: safeCols }),
+          ...(safeRows != null && { rows: safeRows }),
+          // Pass port env var names for per-worktree port injection
+          portVariables,
+        });
+      } catch (err) {
+        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        return;
+      }
       gitWatcher.watch(session.cwd);
       res.status(201).json(session);
       return;
     }
 
-    // Agent session
     // Resolve continue policy (handles legacy boolean continue + new worktree override)
     const effectivePolicy = resolveContinuePolicy(
       explicitContinuePolicy,
       explicitContinue,
-      needsBranchRename
+      needsBranchRename,
+      newWorktree ?? false
     );
 
     const resolved = resolveSessionSettings(freshConfig, repoPath, {
@@ -2083,19 +2190,23 @@ async function main(): Promise<void> {
     // Web-only agents bypass PTY and use ProtocolAdapter + WebSocket
     if (resolvedAgent === 'hermes') {
       const displayName = sessions.nextAgentName();
-      const { session } = await sessions.createWeb({
-        agentType: resolvedAgent,
-        cwd,
-        repoPath,
-        repoName: name,
-        worktreePath: worktreePath ?? null,
-        branchName: requestBranchName ?? '',
-        displayName,
-        port: startupConfig.port,
-        configDir,
-      });
-      gitWatcher.watch(session.cwd);
-      res.status(201).json(session);
+      try {
+        const { session } = await sessions.createWeb({
+          agentType: resolvedAgent,
+          cwd,
+          repoPath,
+          repoName: name,
+          worktreePath: worktreePath ?? null,
+          branchName: requestBranchName ?? '',
+          displayName,
+          port: startupConfig.port,
+          configDir,
+        });
+        gitWatcher.watch(session.cwd);
+        res.status(201).json(session);
+      } catch (err) {
+        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+      }
       return;
     }
 
@@ -2131,28 +2242,34 @@ async function main(): Promise<void> {
       ? `${name}-${requestBranchName}`
       : name;
 
-    const session = createAgentSessionRecord({
-      repoName: name,
-      repoPath,
-      worktreePath,
-      cwd,
-      requestBranchName,
-      displayName,
-      tmuxDisplayName,
-      args,
-      resolvedAgent,
-      resolvedUseTmux: resolved.useTmux,
-      resolvedYolo: resolved.yolo,
-      resolvedClaudeArgs: resolved.claudeArgs,
-      resolvedContinuePolicy: resolved.continuePolicy,
-      safeCols,
-      safeRows,
-      needsBranchRename: needsBranchRename ?? false,
-      branchRenamePrompt: branchRenamePrompt ?? '',
-      computedInitialPrompt,
-      claudeFullscreen: freshConfig.claudeFullscreen,
-      portVariables,
-    });
+    let session: CreateResult;
+    try {
+      session = createAgentSessionRecord({
+        repoName: name,
+        repoPath,
+        worktreePath,
+        cwd,
+        requestBranchName,
+        displayName,
+        tmuxDisplayName,
+        args,
+        resolvedAgent,
+        resolvedUseTmux: resolved.useTmux,
+        resolvedYolo: resolved.yolo,
+        resolvedClaudeArgs: resolved.claudeArgs,
+        resolvedContinuePolicy: resolved.continuePolicy,
+        safeCols,
+        safeRows,
+        needsBranchRename: needsBranchRename ?? false,
+        branchRenamePrompt: branchRenamePrompt ?? '',
+        computedInitialPrompt,
+        claudeFullscreen: freshConfig.claudeFullscreen,
+        portVariables,
+      });
+    } catch (err) {
+      sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+      return;
+    }
 
     gitWatcher.watch(session.cwd);
 
@@ -2359,17 +2476,16 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
-    // Serialize sessions to disk BEFORE killing them
+    // Serialize sessions before detaching the node-pty tmux clients. The tmux
+    // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir);
-    // Kill all active sessions (PTY + tmux)
     for (const s of sessions.list()) {
       try {
-        sessions.kill(s.id);
+        sessions.detachForRestart(s.id);
       } catch {
         /* already exiting */
       }
     }
-    // Brief delay to let async tmux kill-session calls fire
     setTimeout(() => process.exit(0), 200);
   }
   process.on('SIGTERM', gracefulShutdown);
@@ -2400,4 +2516,7 @@ async function main(): Promise<void> {
   tryListen();
 }
 
-main().catch((err) => logger.error('Unhandled fatal error:', err));
+main().catch((err) => {
+  logger.error('Unhandled fatal error:', err);
+  process.exitCode = 1;
+});
