@@ -1,0 +1,35 @@
+frontend/src/components/chat/MessageTimeline.tsx
+  31725874810c7636 96-108
+test/hermes-session-api.e2e.test.ts
+  31725874810c7636 23-27,29-30,37,51-57,114-172,176-212,216-241
+server/protocol-adapters/opencode-adapter.ts
+  31725874810c7636 22-25,68,88,287-293,510,517-549,554-556,605-606,625-648,664-683,685-690,694,715-717
+test/fixtures/opencode-serve-stub.cjs
+  31725874810c7636 111,130-159,166,174
+server/protocol-adapters/hermes-adapter.ts
+  31725874810c7636 86-88,117-119,365-369
+server/index.ts
+  31725874810c7636 638,642-650
+test/opencode-adapter.e2e.test.ts
+  31725874810c7636 51-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "391639bb1c3b71293d33131c9e90ff870d6e0556",
+  "prompts": {
+    "31725874810c7636": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc1a8-6cf5-7941-984b-e0b4392444ff",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 765,
+      "total_deletions": 289,
+      "accepted_lines": 620,
+      "overriden_lines": 0
+    }
+  }
+}
