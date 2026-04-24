@@ -5,6 +5,7 @@
 > **Date:** 2026-04-23  
 > **Issue:** [#260](https://github.com/donovan-yohan/relay-ide/issues/260)  
 > **Sources pinned at:**
+>
 > - `outsourc-e/hermes-workspace@60ee8ea2d0dd9092258246388134125845fbfe2b` (main)
 > - `nesquena/hermes-webui@537c8271db4308cc8b255ee8444b84ea107a8759` (master)
 > - `NousResearch/hermes-agent@b6ca3c28dc434d1d0dca3bd2a029f394014eefbc` (main)
@@ -29,17 +30,18 @@ Hermes is a Python-based gateway service (REST + SSE). A relay-ide integration i
 
 Hermes is a Python package (`NousResearch/hermes-agent`) installed via pip or an installer script. The user-facing entrypoints are:
 
-| Command | Purpose | Protocol |
-|---------|---------|----------|
-| `hermes setup` | Interactive provider/model configuration | CLI (one-shot) |
-| `hermes gateway run` | Starts the agent gateway HTTP server | REST on `:8642` |
-| `hermes dashboard` | Starts a dashboard API server | REST on `:9119` |
-| `hermes chat` | One-shot CLI chat (non-interactive) | CLI (one-shot) |
-| `hermes` (bare) | Interactive REPL for the agent | CLI (interactive, but **not** a PTY-friendly coding assistant) |
+| Command              | Purpose                                  | Protocol                                                       |
+| -------------------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `hermes setup`       | Interactive provider/model configuration | CLI (one-shot)                                                 |
+| `hermes gateway run` | Starts the agent gateway HTTP server     | REST on `:8642`                                                |
+| `hermes dashboard`   | Starts a dashboard API server            | REST on `:9119`                                                |
+| `hermes chat`        | One-shot CLI chat (non-interactive)      | CLI (one-shot)                                                 |
+| `hermes` (bare)      | Interactive REPL for the agent           | CLI (interactive, but **not** a PTY-friendly coding assistant) |
 
 The last row is important: `hermes` without subcommands drops into a conversational REPL, but it is not designed to be wrapped by `node-pty` as a persistent workspace-aware coding session. It lacks the `--continue`, worktree-awareness, and hook systems that make `claude` and `codex` suitable for relay-ide's PTY path.
 
 **Evidence:**
+
 - `outsourc-e/hermes-workspace` README, "Quick Start" section: `hermes gateway run` + `pnpm dev` (two terminals) [^hw-readme-57-68].
 - Gateway API client in `src/lib/gateway-api.ts`: `BASE_URL` defaults to `window.location.origin` with fallback `http://localhost:4444` (Agent W managed-companion mode) [^hw-gateway-api-1-4].
 - `nesquena/hermes-webui` `api/routes.py`: routes like `/api/chat/start` return SSE streams; the agent is invoked via `agent.run_conversation()` inside a Python thread, not as a subprocess [^hw-streaming-py].
@@ -56,21 +58,24 @@ A Hermes integration cannot reuse the PTY path (`node-pty` + `output-parsers`). 
 Hermes gateway auth has two layers:
 
 ### Layer A: Gateway API Key (optional)
+
 - Set `API_SERVER_KEY=***` in the environment where `hermes gateway run` starts.
 - Clients must pass the same value in the `HERMES_API_TOKEN` env var (workspace) or as a Bearer token.
 - If `API_SERVER_KEY` is unset, the gateway accepts unauthenticated requests from any reachable origin (CORS is configured for the workspace port).
 
 ### Layer B: Workspace UI Password (optional)
+
 - `HERMES_PASSWORD=***` protects the web UI itself (signed cookie).
 - This is a UI-layer concern; it does not affect the gateway REST API.
 
 **Evidence:**
+
 - `outsourc-e/hermes-workspace` README: "If `API_SERVER_KEY` is set, the workspace must pass the same value via `HERMES_API_TOKEN`" [^hw-readme-90-101].
 - `src/lib/hermes-auth.ts`: auth check is just `fetch('/api/auth-check')` returning `{ authenticated, authRequired }` [^hw-hermes-auth-1-33].
 - `nesquena/hermes-webui` `api/auth.py`: optional password auth with signed cookies (~149 lines). No OAuth, no token rotation, no refresh flows.
 
 **Implication for relay-ide:**
-The existing `config.json` `frameworks` override system can already store a `hermesApiToken` field without schema changes. The adapter would read it from `config.frameworks.hermes.apiToken` (or similar) and pass it as a Bearer header or query param. Auth is **not a blocker**.
+relay-ide should not store Hermes gateway secrets in `config.frameworks`: that object is currently an `AgentFramework` command/capability override registry, not a secret store. A Hermes adapter would need either environment-variable based auth (for example `HERMES_API_TOKEN`) or a dedicated integration settings path. Auth is **not a protocol blocker**, but it is a product/configuration decision.
 
 ---
 
@@ -82,22 +87,23 @@ The existing `config.json` `frameworks` override system can already store a `her
 
 The SSE stream emits typed events. Key event types observed in the source:
 
-| Event Type | Payload Shape | relay-ide Equivalent |
-|-----------|---------------|----------------------|
-| `token` | `{ text: string }` | `chat:stream-chunk` |
-| `thinking` | `{ text: string }` | *No equivalent — would need new event type* |
-| `tool_start` | `{ tool: string, input: unknown }` | `chat:tool-call` |
-| `tool_end` | `{ tool: string, output: unknown }` | `chat:tool-result` |
-| `done` | `{ session, usage }` | `chat:turn-completed` |
-| `stream_end` | `{ session_id }` | `chat:session-status` (disconnected) |
-| `apperror` | `{ message, type, hint }` | `chat:session-status` (error) |
-| `title_status` | `{ status, title }` | *No equivalent* |
-| `compressed` | `{ message }` | *No equivalent* |
-| `cancel` | `{ message }` | *No equivalent — cancellation is async* |
-| `clarify` | `{ question, tool_call_id }` | `chat:approval-request` (partial match) |
-| `approval_request` | `{ id, action, tool, input }` | `chat:approval-request` |
+| Event Type         | Payload Shape                       | relay-ide Equivalent                                                           |
+| ------------------ | ----------------------------------- | ------------------------------------------------------------------------------ |
+| `token`            | `{ text: string }`                  | `chat:text-delta`                                                              |
+| `thinking`         | `{ text: string }`                  | `chat:reasoning`                                                               |
+| `tool_start`       | `{ tool: string, input: unknown }`  | `chat:tool-call`                                                               |
+| `tool_end`         | `{ tool: string, output: unknown }` | `chat:tool-result`                                                             |
+| `done`             | `{ session, usage }`                | `chat:message-complete`, `chat:turn-completed`, `chat:telemetry`               |
+| `stream_end`       | `{ session_id }`                    | `chat:session-status` (disconnected)                                           |
+| `apperror`         | `{ message, type, hint }`           | `chat:session-status` (error)                                                  |
+| `title_status`     | `{ status, title }`                 | _No equivalent_                                                                |
+| `compressed`       | `{ message }`                       | `chat:compaction`                                                              |
+| `cancel`           | `{ message }`                       | `chat:turn-completed` with `reason: 'interrupted'`                             |
+| `clarify`          | `{ question, tool_call_id }`        | `chat:input-request` or `chat:approval-request`, depending on prompt semantics |
+| `approval_request` | `{ id, action, tool, input }`       | `chat:approval-request`                                                        |
 
 **Evidence:**
+
 - `api/streaming.py`: `put('token', ...)`, `put('tool_start', ...)`, `put('thinking', ...)`, `put('done', ...)`, `put('apperror', ...)`, `put('compressed', ...)`, `put('stream_end', ...)` [^hw-streaming-py].
 - `api/streaming.py`: `put('clarify', ...)` for blocked tool calls that need user clarification before proceeding [^hw-streaming-py-clarify].
 
@@ -110,13 +116,14 @@ relay-ide's current states (`initializing`, `waiting-for-input`, `processing`, `
 - `idle` ← `done` / `stream_end`
 - `error` ← `apperror`
 
-**Missing states in relay-ide that Hermes would benefit from:**
-- `thinking` — Hermes explicitly surfaces reasoning traces as separate events. relay-ide would need a new `ChatEvent` type (`chat:thinking-start`, `chat:thinking-end`) and UI chrome.
-- `context-compressed` — Hermes auto-compresses context when thresholds are hit and emits a `compressed` event. This is user-visible (session file may be renamed).
-- `cancelled` — Hermes supports mid-stream cancellation with partial-text preservation. relay-ide's `idle` state does not capture "cancelled mid-turn."
+**Main integration gaps:**
+
+- `thinking` — Hermes explicitly surfaces reasoning traces. relay-ide already has `chat:reasoning`; the gap is adapter mapping and UI presentation, not a new event type.
+- `context-compressed` — Hermes auto-compresses context when thresholds are hit and emits a `compressed` event. relay-ide already has `chat:compaction`; the gap is payload mapping and user-facing treatment.
+- `cancelled` — Hermes supports mid-stream cancellation with partial-text preservation. relay-ide can represent this as `chat:turn-completed` with `reason: 'interrupted'`, but the adapter would need careful partial-message handling.
 
 **Implication:**
-Hermes events **do not fit** relay-ide's current 6-state model without extension. The `shared/chat-events.ts` type system would need new event variants, and the React frontend would need new UI components (thinking cards, compression banners, cancellation recovery). This is **non-trivial** — not just an adapter, but a protocol upgrade.
+Hermes events only partially fit relay-ide's current 6-state `AgentState` model, but they mostly fit the richer `shared/chat-events.ts` protocol. The work is **non-trivial**, but the likely shape is adapter mapping plus UI affordances (reasoning cards, compression banners, cancellation recovery), not a wholesale protocol expansion.
 
 ---
 
@@ -136,12 +143,14 @@ Hermes sessions are persisted server-side by the gateway:
 ### Reattach semantics
 
 If relay-ide restarts:
+
 1. The adapter would call `GET /api/sessions` to list active sessions.
 2. Match on `sessionKey` or `friendlyId`.
 3. Hydrate conversation state via `GET /api/session-history?key={key}`.
 4. Send the next user message via `POST /api/session-send` (the gateway handles SSE streaming for the response).
 
 **Evidence:**
+
 - `gateway-api.ts`: `fetchSessions()`, `fetchSessionHistory()`, `fetchSessionStatus()`, `sendToSession()` [^hw-gateway-api-147-168] [^hw-gateway-api-175-203] [^hw-gateway-api-205-231].
 - `api/streaming.py`: On cancellation, the session state is eagerly cleared (`active_stream_id = None`) so new message sends succeed immediately [^hw-streaming-py-cancel].
 
@@ -177,22 +186,23 @@ Resume is **possible but not automatic**. relay-ide would need to implement sess
 
 ### Feature divergence
 
-| Feature | hermes-workspace | hermes-webui |
-|---------|-----------------|--------------|
-| Chat | ✓ SSE | ✓ SSE |
-| Terminal | ✓ (xterm.js) | ✗ |
-| Memory browser | ✓ | ✓ |
-| Skills hub | ✓ | ✓ |
-| Jobs (cron) | ✓ | ✗ |
-| Tasks (kanban) | ✓ | ✗ |
-| Agent personas | ✓ | ✗ |
-| Multi-agent orchestration | ✓ | ✗ |
-| Model switching | ✓ | ✓ |
-| Approval UI | ✓ | ✓ |
-| Context compression indicator | ✓ | ✓ |
-| Mobile PWA | ✓ | ✓ |
+| Feature                       | hermes-workspace | hermes-webui |
+| ----------------------------- | ---------------- | ------------ |
+| Chat                          | ✓ SSE            | ✓ SSE        |
+| Terminal                      | ✓ (xterm.js)     | ✗            |
+| Memory browser                | ✓                | ✓            |
+| Skills hub                    | ✓                | ✓            |
+| Jobs (cron)                   | ✓                | ✗            |
+| Tasks (kanban)                | ✓                | ✗            |
+| Agent personas                | ✓                | ✗            |
+| Multi-agent orchestration     | ✓                | ✗            |
+| Model switching               | ✓                | ✓            |
+| Approval UI                   | ✓                | ✓            |
+| Context compression indicator | ✓                | ✓            |
+| Mobile PWA                    | ✓                | ✓            |
 
 **Evidence:**
+
 - `outsourc-e/hermes-workspace` README: "Not a chat wrapper. A complete workspace — orchestrate agents, browse memory, manage skills, and control everything from one interface." [^hw-readme-14-15].
 - `nesquena/hermes-webui` ARCHITECTURE.md: "The Hermes Web UI is a lightweight web application that gives you a browser-based interface to the Hermes agent that is functionally equivalent to the CLI." [^hw-architecture-1-9].
 - `nesquena/hermes-webui` explicitly avoids a build step: "There is no build step, no bundler, no frontend framework." [^hw-architecture-1].
@@ -234,15 +244,15 @@ Nice-to-have but not blocking.
 
 Based on current relay-ide architecture (`nightly` @ `d727cc9`):
 
-| Layer | Current State | Hermes Change |
-|-------|--------------|---------------|
-| `server/types.ts` `BUILTIN_FRAMEWORKS` | `claude`, `codex`, `opencode` | Add `hermes` entry with `eventSource: 'plugin'` or `'timer'` (no hooks) |
-| `server/protocol-adapters/` | Claude, Codex, OpenCode adapters | New `hermes-adapter.ts` — REST polling + SSE consume |
-| `server/output-parsers/` | `claude-parser`, `codex-parser`, `opencode-parser` | Likely **not needed** — Hermes emits structured JSON events, not terminal escape sequences |
-| `server/web-session-handler.ts` | Creates `WebSession` with adapter | No change — reuse existing path |
-| `shared/chat-events.ts` | 8 event types | Add `chat:thinking-start`, `chat:thinking-end`, `chat:context-compressed` |
-| Frontend | React 19 + Zustand | New components: `ThinkingCard`, `CompressionBanner`, `HermesModelSwitcher` |
-| `docs/ARCHITECTURE.md` | 58 server modules | +1 adapter module |
+| Layer                                  | Current State                                                      | Hermes Change                                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `server/types.ts` `BUILTIN_FRAMEWORKS` | `claude`, `codex`, `opencode`                                      | Add `hermes` entry with `eventSource: 'plugin'` or `'timer'` (no hooks)                        |
+| `server/protocol-adapters/`            | Claude, Codex, OpenCode adapters                                   | New `hermes-adapter.ts` — REST polling + SSE consume                                           |
+| `server/output-parsers/`               | `claude-parser`, `codex-parser`, `opencode-parser`                 | Likely **not needed** — Hermes emits structured JSON events, not terminal escape sequences     |
+| `server/web-session-handler.ts`        | Creates `WebSession` with adapter                                  | No change — reuse existing path                                                                |
+| `shared/chat-events.ts`                | 19 event variants including `chat:reasoning` and `chat:compaction` | Mostly reuse existing events; possibly add Hermes-specific source support and payload adapters |
+| Frontend                               | React 19 + Zustand                                                 | New components: `ThinkingCard`, `CompressionBanner`, `HermesModelSwitcher`                     |
+| `docs/ARCHITECTURE.md`                 | 58 server modules                                                  | +1 adapter module                                                                              |
 
 ---
 
@@ -261,14 +271,14 @@ Based on current relay-ide architecture (`nightly` @ `d727cc9`):
 
 ### C.1 Files to create / modify
 
-| # | File | Action | Lines |
-|---|------|--------|-------|
-| 1 | `server/protocol-adapters/hermes-adapter.ts` | **Create** — `HermesProtocolAdapter extends BaseProtocolAdapter` | ~200 |
-| 2 | `server/protocol-adapters/index.ts` | **Modify** — add `hermes: () => new HermesProtocolAdapter()` to `adapters` record | +1 |
-| 3 | `server/types.ts` | **Modify** — add `hermes` to `BUILTIN_FRAMEWORKS`; `eventSource: 'parser'` or `'timer'` | +20 |
-| 4 | `shared/chat-events.ts` | **Modify** — add `'hermes'` to `ChatEventSource` and `VALID_SOURCES` | +2 |
-| 5 | `docs/ARCHITECTURE.md` | **Modify** — list `hermes-adapter.ts` in module inventory | +1 |
-| 6 | `docs/spikes/hermes-integration.md` | **Move** to `docs/references/hermes-integration.md` on merge | — |
+| #   | File                                         | Action                                                                                  | Lines |
+| --- | -------------------------------------------- | --------------------------------------------------------------------------------------- | ----- |
+| 1   | `server/protocol-adapters/hermes-adapter.ts` | **Create** — `HermesProtocolAdapter extends BaseProtocolAdapter`                        | ~200  |
+| 2   | `server/protocol-adapters/index.ts`          | **Modify** — add `hermes: () => new HermesProtocolAdapter()` to `adapters` record       | +1    |
+| 3   | `server/types.ts`                            | **Modify** — add `hermes` to `BUILTIN_FRAMEWORKS`; `eventSource: 'parser'` or `'timer'` | +20   |
+| 4   | `shared/chat-events.ts`                      | **Modify** — add `'hermes'` to `ChatEventSource` and `VALID_SOURCES`                    | +2    |
+| 5   | `docs/ARCHITECTURE.md`                       | **Modify** — list `hermes-adapter.ts` in module inventory                               | +1    |
+| 6   | `docs/spikes/hermes-integration.md`          | **Move** to `docs/references/hermes-integration.md` on merge                            | —     |
 
 ### C.2 `HermesProtocolAdapter` implementation sketch
 
@@ -281,7 +291,9 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _abortController: AbortController | null = null;
   private _reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-  get status(): AdapterStatus { return this._status; }
+  get status(): AdapterStatus {
+    return this._status;
+  }
 
   async connect(config: AdapterConfig): Promise<void> {
     this._config = config;
@@ -316,7 +328,10 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
     // Optional: POST /api/agent-kill { sessionKey }
   }
 
-  async respondToApproval(requestId: string, decision: 'allow' | 'allow-always' | 'deny'): Promise<void> {
+  async respondToApproval(
+    requestId: string,
+    decision: 'allow' | 'allow-always' | 'deny'
+  ): Promise<void> {
     const action = decision === 'deny' ? 'deny' : 'approve';
     // POST /api/gateway/approvals/${requestId}/${action}
   }
@@ -336,8 +351,15 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
     // cancel         → chat:turn-completed reason:interrupted
   }
 
-  private fire(partial: { type: ChatEvent['type'] } & Record<string, unknown>): void {
-    this.emit({ ...partial, sessionId: this._config!.sessionId, timestamp: new Date().toISOString(), source: 'hermes' } as ChatEvent);
+  private fire(
+    partial: { type: ChatEvent['type'] } & Record<string, unknown>
+  ): void {
+    this.emit({
+      ...partial,
+      sessionId: this._config!.sessionId,
+      timestamp: new Date().toISOString(),
+      source: 'hermes',
+    } as ChatEvent);
   }
 }
 ```
@@ -345,10 +367,10 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
 ### C.3 Open questions for implementer
 
 1. **Gateway lifecycle:** Does relay-ide spawn `hermes gateway run` as a managed subprocess (like `codex`/`opencode`), or does the adapter assume a user-managed gateway?  
-   *Recommendation:* Spawn it. Add `command: 'hermes'` and `args: ['gateway', 'run']` to `BUILTIN_FRAMEWORKS['hermes']`, then spawn in `connect()` and kill in `onDisconnect()`. Gateway is lightweight enough to be per-session.
+   _Recommendation:_ Spawn it. Add `command: 'hermes'` and `args: ['gateway', 'run']` to `BUILTIN_FRAMEWORKS['hermes']`, then spawn in `connect()` and kill in `onDisconnect()`. Gateway is lightweight enough to be per-session.
 
 2. **Model switching:** Hermes gateway supports `POST /api/model-switch`. Should the adapter expose this?  
-   *Recommendation:* Defer. Add to adapter's `extra` config if needed later.
+   _Recommendation:_ Defer. Add to adapter's `extra` config if needed later.
 
 3. **Telemetry:** Hermes emits token usage in `done` events. Map to `chat:telemetry`.
 
@@ -370,15 +392,26 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
 
 ## References
 
-[^hw-readme-57-68]: `outsourc-e/hermes-workspace/README.md` lines 57-68 — quick start (`hermes gateway run` + `pnpm dev`).  
-[^hw-readme-90-101]: `outsourc-e/hermes-workspace/README.md` lines 90-101 — `API_SERVER_KEY` / `HERMES_API_TOKEN` auth.  
-[^hw-gateway-api-1-4]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 1-4 — `BASE_URL` default.  
+[^hw-readme-57-68]: `outsourc-e/hermes-workspace/README.md` lines 57-68 — quick start (`hermes gateway run` + `pnpm dev`).
+
+[^hw-readme-90-101]: `outsourc-e/hermes-workspace/README.md` lines 90-101 — `API_SERVER_KEY` / `HERMES_API_TOKEN` auth.
+
+[^hw-gateway-api-1-4]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 1-4 — `BASE_URL` default.
+
 [^hw-gateway-api-147-168]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 147-168 — `fetchSessionHistory()`.
+
 [^hw-gateway-api-175-203]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 175-203 — `sendToSession()`.
-[^hw-gateway-api-205-211]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 205-211 — `fetchSessions()`.  
-[^hw-hermes-auth-1-33]: `outsourc-e/hermes-workspace/src/lib/hermes-auth.ts` lines 1-33 — auth check endpoint.  
-[^hw-connection-errors-67-91]: `outsourc-e/hermes-workspace/src/lib/connection-errors.ts` lines 67-91 — "ClawSuite" rebrand references in error messages.  
-[^hw-architecture-1]: `nesquena/hermes-webui/ARCHITECTURE.md` line 1 — "no build step, no bundler, no frontend framework."  
-[^hw-streaming-py]: `nesquena/hermes-webui/api/streaming.py` — SSE event emission (`token`, `thinking`, `tool_start`, `done`, `apperror`, `compressed`).  
-[^hw-streaming-py-clarify]: `nesquena/hermes-webui/api/streaming.py` — `clarify` event for blocked tool calls.  
+
+[^hw-gateway-api-205-211]: `outsourc-e/hermes-workspace/src/lib/gateway-api.ts` lines 205-211 — `fetchSessions()`.
+
+[^hw-hermes-auth-1-33]: `outsourc-e/hermes-workspace/src/lib/hermes-auth.ts` lines 1-33 — auth check endpoint.
+
+[^hw-connection-errors-67-91]: `outsourc-e/hermes-workspace/src/lib/connection-errors.ts` lines 67-91 — "ClawSuite" rebrand references in error messages.
+
+[^hw-architecture-1]: `nesquena/hermes-webui/ARCHITECTURE.md` line 1 — "no build step, no bundler, no frontend framework."
+
+[^hw-streaming-py]: `nesquena/hermes-webui/api/streaming.py` — SSE event emission (`token`, `thinking`, `tool_start`, `done`, `apperror`, `compressed`).
+
+[^hw-streaming-py-clarify]: `nesquena/hermes-webui/api/streaming.py` — `clarify` event for blocked tool calls.
+
 [^hw-streaming-py-cancel]: `nesquena/hermes-webui/api/streaming.py` `cancel_stream()` — eager session lock release on cancel.
