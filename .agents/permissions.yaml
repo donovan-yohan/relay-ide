@@ -19,17 +19,32 @@ bash:
 
 read:
   allow:
-    - "./src/**"
-    - "./tests/**"
+    - "./server/**"
+    - "./frontend/**"
+    - "./shared/**"
+    - "./test/**"
+    - "./scripts/**"
+    - "./docs/**"
+    - "./bin/**"
   deny:
     - "./secrets/**"
+    - "./.env"
+    - "./config.json"
+    - "./config.dev.json"
 
 write:
   allow:
-    - "./src/**"
-    - "./tests/**"
+    - "./server/**"
+    - "./frontend/**"
+    - "./shared/**"
+    - "./test/**"
+    - "./scripts/**"
+    - "./docs/**"
   deny:
     - "./secrets/**"
+    - "./.env"
+    - "./config.json"
+    - "./config.dev.json"
 
 webfetch:
   allow:

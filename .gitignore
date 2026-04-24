@@ -11,6 +11,9 @@ analytics.db
 analytics.db-shm
 analytics.db-wal
 
+# Husky runtime shims
+.husky/_/
+
 # IDE
 .vscode/
 .gemini/

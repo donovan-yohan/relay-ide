@@ -42,7 +42,7 @@ Repo-local skills live under `.agents/skills/`. Projected to `.claude/skills/` (
 - `/scope` → `.agents/skills/scope/SKILL.md` — issue scoping and brainstorming guardrails
 - `/ticket` → `.agents/skills/ticket/SKILL.md` — GitHub Issue creation + sub-issue / blocker graphql
 
-See `docs/references/tickets.md` for the full ticket-labeling reference (types, states, priorities, projects).
+See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined → todo → in-progress).
 
 ## Key Patterns
 
@@ -68,7 +68,7 @@ See `docs/references/tickets.md` for the full ticket-labeling reference (types, 
 GitHub Issues on `donovan-yohan/relay-ide`. Every issue needs:
 
 - Type: `bug` | `feature` | `improvement` | `spike`
-- State: `backlog` (rough) | `todo` (scoped)
+- State: `backlog` (rough) → `refined` (scoped, awaiting plan) → `todo` (planned, belayer-ready) → `in-progress` (belayer claimed). See `.belayer/README.md`.
 - Priority: `p1-urgent` | `p2-high` | `p3-normal` | `p4-low`
 - Project (when applicable): `project:sidebar-nav`, `project:code-file-tools`, `project:verification-testing`, `project:command-center`, `project:agent-platform`, `project:true-workspaces`
 - `epic` label on parents
