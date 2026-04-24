@@ -163,8 +163,13 @@ export async function findOrCreateWorktreeForBranch(
 
   // Ensure the branch exists locally before attempting worktree add.
   // If it only lives on the remote, fetch it first.
-  const branchResult = await ensureBranchLocal(repoPath, branch, { exec: execFn });
+  const branchResult = await ensureBranchLocal(repoPath, branch, {
+    exec: execFn,
+  });
   if (!branchResult.found) {
+    if (branchResult.reason === 'fetch_failed') {
+      throw new Error(`Could not fetch branch "${branch}" from origin`);
+    }
     throw new Error(
       `Branch "${branch}" not found` +
         (branchResult.reason ? ` (${branchResult.reason})` : '')

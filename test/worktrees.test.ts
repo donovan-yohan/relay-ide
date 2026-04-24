@@ -586,7 +586,6 @@ describe('findOrCreateWorktreeForBranch', () => {
       _opts: { cwd: string; timeout?: number }
     ) => {
       if (args[0] === 'worktree') return { stdout, stderr: '' };
-      if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '' };
       throw new Error('unexpected call');
     };
 
@@ -620,7 +619,6 @@ describe('findOrCreateWorktreeForBranch', () => {
       _opts: { cwd: string; timeout?: number }
     ) => {
       if (args[0] === 'worktree') return { stdout, stderr: '' };
-      if (args[0] === 'rev-parse') return { stdout: 'abc123\n', stderr: '' };
       throw new Error('unexpected call');
     };
 
@@ -678,6 +676,13 @@ describe('findOrCreateWorktreeForBranch', () => {
     expect(result.existing).toBe(false);
     expect(result.isMain).toBe(false);
     expect(result.branchName).toBe('feat/new');
+    expect(calls).toContainEqual([
+      'fetch',
+      'origin',
+      '--',
+      'feat/new:feat/new',
+    ]);
+    expect(calls.filter((c) => c[0] === 'rev-parse')).toHaveLength(1);
   });
 });
 
