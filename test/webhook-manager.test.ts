@@ -605,4 +605,5 @@ test('startSmartPolling broadcasts pr-updated and ci-updated for unwebhooked rep
   expect(broadcasts.some((b) => b.type === 'ci-updated')).toBe(true);
   const prUpdate = broadcasts.find((b) => b.type === 'pr-updated');
   expect(prUpdate?.data?.repos).toContain('testowner/testrepo');
+  expect(prUpdate?.data?.workspacePaths).toContain(repoDir);
 });

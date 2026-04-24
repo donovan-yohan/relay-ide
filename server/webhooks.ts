@@ -40,12 +40,13 @@ function buildPrPayload(
   body: Record<string, unknown>,
   repoFullName: string | undefined
 ): Record<string, unknown> | undefined {
+  const eventName = Array.isArray(event) ? event[0] : event;
   const pr = body.pull_request as Record<string, unknown> | undefined;
   const payload: Record<string, unknown> = {};
   if (repoFullName) payload.repo = repoFullName;
   if (pr?.number !== undefined) payload.number = pr.number;
 
-  if (event === 'pull_request') {
+  if (eventName === 'pull_request') {
     const action = body.action as string | undefined;
     if (action) payload.action = action;
     if (pr?.state) payload.state = pr.state;
@@ -61,7 +62,8 @@ function shouldBroadcastWorktreesChanged(
   event: string | string[] | undefined,
   body: Record<string, unknown>
 ): boolean {
-  if (event !== 'pull_request') return false;
+  const eventName = Array.isArray(event) ? event[0] : event;
+  if (eventName !== 'pull_request') return false;
   const action = body.action as string | undefined;
   const pr = body.pull_request as Record<string, unknown> | undefined;
   return action === 'closed' && pr?.merged === true;

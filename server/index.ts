@@ -908,10 +908,19 @@ async function main(): Promise<void> {
     process.env['RELAY_IDE_PORT'] = String(startupConfig.port);
   }
 
-  // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available)
-  // Also clear the PR cache on real webhook events — these indicate actual PR state changes
+  // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available).
+  // Smart polling includes workspace paths, so clear those caches without flushing every repo.
   broadcastEventDelegate = (type, data) => {
-    if (type === 'pr-updated') clearPrCache();
+    if (type === 'pr-updated') {
+      const workspacePaths = data?.workspacePaths;
+      if (Array.isArray(workspacePaths)) {
+        for (const workspacePath of workspacePaths) {
+          if (typeof workspacePath === 'string') clearPrCache(workspacePath);
+        }
+      } else {
+        clearPrCache();
+      }
+    }
     broadcastEvent(type, data);
   };
 

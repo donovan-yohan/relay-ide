@@ -90,10 +90,14 @@ export function startSmartPolling(
 
       // Single broadcast per poll cycle — frontend debounces invalidation
       if (repoMap.size > 0) {
-        broadcastEvent('pr-updated', { repos: [...repoMap.keys()] });
-        broadcastEvent('ci-updated', { repos: [...repoMap.keys()] });
+        const repos = [...repoMap.keys()];
+        const workspacePaths = [...repoMap.values()];
+        broadcastEvent('pr-updated', { repos, workspacePaths });
+        broadcastEvent('ci-updated', { repos, workspacePaths });
       }
-    })();
+    })().catch((err: unknown) => {
+      logger.warn('Smart polling failed', { err });
+    });
   };
 
   pollingTimer = setInterval(tick, POLL_INTERVAL_MS);

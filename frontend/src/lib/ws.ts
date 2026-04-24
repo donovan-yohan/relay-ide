@@ -47,8 +47,15 @@ export type EventMessage =
       action?: string;
       state?: string;
       merged?: boolean;
+      repos?: string[];
+      workspacePaths?: string[];
     }
-  | { type: 'ci-updated'; repo?: string }
+  | {
+      type: 'ci-updated';
+      repo?: string;
+      repos?: string[];
+      workspacePaths?: string[];
+    }
   | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
   | {
       type: 'session-activity-changed';
