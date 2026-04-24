@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { createLogger } from './logger.js';
+import { ensureBranchLocal } from './git.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('watcher');
@@ -158,6 +159,21 @@ export async function findOrCreateWorktreeForBranch(
     }
   } catch {
     // Directory may not exist in test environments
+  }
+
+  // Ensure the branch exists locally before attempting worktree add.
+  // If it only lives on the remote, fetch it first.
+  const branchResult = await ensureBranchLocal(repoPath, branch, {
+    exec: execFn,
+  });
+  if (!branchResult.found) {
+    if (branchResult.reason === 'fetch_failed') {
+      throw new Error(`Could not fetch branch "${branch}" from origin`);
+    }
+    throw new Error(
+      `Branch "${branch}" not found` +
+        (branchResult.reason ? ` (${branchResult.reason})` : '')
+    );
   }
 
   await execFn('git', ['worktree', 'add', worktreePath, branch], {

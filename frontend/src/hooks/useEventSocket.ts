@@ -28,8 +28,8 @@ export function useEventSocket({
     let pollInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
 
     function invalidatePrData(): void {
-      queryClient.invalidateQueries({ queryKey: ['pr'] });
-      queryClient.invalidateQueries({ queryKey: ['ci-status'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['org-prs'] });
       useSessionsStore.getState().enrichSidebarBranches();
     }
 
@@ -41,7 +41,6 @@ export function useEventSocket({
       pollInvalidateTimer = setTimeout(() => {
         pollInvalidateTimer = null;
         invalidatePrData();
-        queryClient.invalidateQueries({ queryKey: ['org-prs'] });
       }, 500);
     }
 

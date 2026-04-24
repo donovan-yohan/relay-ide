@@ -1,10 +1,14 @@
-import { test, beforeAll, afterAll, expect } from 'vitest';
+import { test, beforeAll, afterAll, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { createWebhookManagerRouter } from '../server/webhook-manager.js';
+import {
+  startSmartPolling,
+  stopSmartPolling,
+} from '../server/webhook-manager.js';
 import { saveConfig, DEFAULTS } from '../server/config.js';
 import type { Config } from '../server/types.js';
 import { createMockFetch } from './helpers/mock-fetch.js';
@@ -564,4 +568,42 @@ test('POST /ping — no webhook registered returns no_webhook error', async () =
   } finally {
     await close();
   }
+});
+
+// ── Smart polling ──────────────────────────────────────────────────────────────
+
+test('startSmartPolling broadcasts pr-updated and ci-updated for unwebhooked repos', async () => {
+  const repoDir = path.join(tmpDir, 'smart-polling-repo');
+  makeGitRepo(repoDir, 'testowner', 'testrepo');
+
+  const configPath = makeTempConfig('smart-polling', {
+    repos: [repoDir],
+    repoSettings: {
+      [repoDir]: { webhookEnabled: false },
+    },
+  });
+
+  const broadcasts: Array<{ type: string; data?: Record<string, unknown> }> =
+    [];
+  const broadcastEvent = (type: string, data?: Record<string, unknown>) => {
+    broadcasts.push({ type, data });
+  };
+
+  vi.useFakeTimers();
+  startSmartPolling(configPath, broadcastEvent, {
+    intervalMs: 1_000,
+    buildRepoMap: async () => new Map([['testowner/testrepo', repoDir]]),
+  });
+
+  await vi.advanceTimersByTimeAsync(1_000);
+  await vi.advanceTimersByTimeAsync(0);
+
+  stopSmartPolling();
+  vi.useRealTimers();
+
+  expect(broadcasts.some((b) => b.type === 'pr-updated')).toBe(true);
+  expect(broadcasts.some((b) => b.type === 'ci-updated')).toBe(true);
+  const prUpdate = broadcasts.find((b) => b.type === 'pr-updated');
+  expect(prUpdate?.data?.repos).toContain('testowner/testrepo');
+  expect(prUpdate?.data?.workspacePaths).toContain(repoDir);
 });

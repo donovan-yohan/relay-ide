@@ -35,6 +35,40 @@ function verifySignature(
   }
 }
 
+function buildPrPayload(
+  event: string | string[] | undefined,
+  body: Record<string, unknown>,
+  repoFullName: string | undefined
+): Record<string, unknown> | undefined {
+  const eventName = Array.isArray(event) ? event[0] : event;
+  const pr = body.pull_request as Record<string, unknown> | undefined;
+  const payload: Record<string, unknown> = {};
+  if (repoFullName) payload.repo = repoFullName;
+  if (pr?.number !== undefined) payload.number = pr.number;
+
+  if (eventName === 'pull_request') {
+    const action = body.action as string | undefined;
+    if (action) payload.action = action;
+    if (pr?.state) payload.state = pr.state;
+    if (action === 'closed' && pr?.merged === true) {
+      payload.merged = true;
+    }
+  }
+
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function shouldBroadcastWorktreesChanged(
+  event: string | string[] | undefined,
+  body: Record<string, unknown>
+): boolean {
+  const eventName = Array.isArray(event) ? event[0] : event;
+  if (eventName !== 'pull_request') return false;
+  const action = body.action as string | undefined;
+  const pr = body.pull_request as Record<string, unknown> | undefined;
+  return action === 'closed' && pr?.merged === true;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -93,19 +127,12 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
       : undefined;
 
     if (event === 'pull_request' || event === 'pull_request_review') {
-      deps.broadcastEvent(
-        'pr-updated',
-        repoFullName ? { repo: repoFullName } : undefined
-      );
+      const body = req.body as Record<string, unknown>;
+      const payload = buildPrPayload(event, body, repoFullName);
+      deps.broadcastEvent('pr-updated', payload);
 
-      // If PR was merged, also broadcast worktrees-changed so sidebar refreshes with branchState: 'merged'
-      if (event === 'pull_request') {
-        const body = req.body as Record<string, unknown>;
-        const action = body.action as string | undefined;
-        const pr = body.pull_request as Record<string, unknown> | undefined;
-        if (action === 'closed' && pr?.merged === true) {
-          deps.broadcastEvent('worktrees-changed');
-        }
+      if (shouldBroadcastWorktreesChanged(event, body)) {
+        deps.broadcastEvent('worktrees-changed');
       }
     } else if (event === 'check_suite' || event === 'check_run') {
       deps.broadcastEvent(
