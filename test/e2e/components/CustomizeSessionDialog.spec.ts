@@ -5,14 +5,16 @@ test.describe('CustomizeSessionDialog', () => {
     await page.goto('/test-customize-session-dialog.html');
   });
 
-  test('opens with agent select and checkboxes', async ({ page }) => {
+  test('opens with agent select and session option checkboxes', async ({
+    page,
+  }) => {
     await page.getByText('Open Customize Session').click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByText('Customize Session')).toBeVisible();
     await expect(page.getByLabel('Coding agent')).toBeVisible();
     await expect(page.getByText('Continue existing session')).toBeVisible();
     await expect(page.getByText('Yolo mode')).toBeVisible();
-    await expect(page.getByText('Launch in tmux')).toBeVisible();
+    await expect(page.getByText('Launch in tmux')).toHaveCount(0);
   });
 
   test('has Start Session and Cancel buttons', async ({ page }) => {

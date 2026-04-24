@@ -104,14 +104,6 @@ export const settingsToggleContinue: ActionMeta = {
   icon: '↻',
 };
 
-export const settingsToggleTmux: ActionMeta = {
-  id: 'settings.toggle-tmux',
-  label: 'toggle tmux',
-  description: 'wrap sessions in tmux',
-  category: 'settings',
-  icon: '>',
-};
-
 export const settingsToggleNotifications: ActionMeta = {
   id: 'settings.toggle-notifications',
   label: 'toggle notifications',
@@ -142,7 +134,6 @@ export const settingsActions: ActionMeta[] = [
   settingsToggleDevTools,
   settingsClearAnalytics,
   settingsToggleContinue,
-  settingsToggleTmux,
   settingsToggleNotifications,
   settingsChangeDefaultAgent,
 ];

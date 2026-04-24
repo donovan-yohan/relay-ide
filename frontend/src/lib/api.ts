@@ -39,6 +39,31 @@ export class ConflictError extends Error {
   }
 }
 
+export class HttpError extends Error {
+  status: number;
+  code: string | undefined;
+  constructor(
+    status: number,
+    message = httpErrorMessage(status),
+    code?: string | undefined
+  ) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function httpErrorMessage(status: number, fallback?: string): string {
+  if (status === 502) {
+    return 'Relay backend is unavailable (HTTP 502). The server may be restarting; try again in a moment.';
+  }
+  if (status === 503 || status === 504) {
+    return `Relay backend is unavailable (HTTP ${status}). Try again in a moment.`;
+  }
+  return fallback ?? `HTTP ${status}`;
+}
+
 export interface BrowseEntry {
   name: string;
   path: string;
@@ -56,7 +81,7 @@ export interface BrowseResponse {
 }
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw await httpErrorFromResponse(res);
   return res.json() as Promise<T>;
 }
 
@@ -80,11 +105,25 @@ async function parseErrorBody(
   res: Response,
   fallback: string
 ): Promise<string> {
+  return (await httpErrorFromResponse(res, fallback)).message;
+}
+
+async function httpErrorFromResponse(
+  res: Response,
+  fallback?: string
+): Promise<HttpError> {
   try {
-    const data = (await res.json()) as { error?: string };
-    return data.error || fallback;
+    const data = (await res.json()) as { error?: unknown; message?: unknown };
+    const code = typeof data.error === 'string' ? data.error : undefined;
+    const message =
+      typeof data.message === 'string'
+        ? data.message
+        : typeof data.error === 'string'
+          ? httpErrorMessage(res.status, data.error)
+          : httpErrorMessage(res.status, fallback);
+    return new HttpError(res.status, message, code);
   } catch {
-    return fallback;
+    return new HttpError(res.status, httpErrorMessage(res.status, fallback));
   }
 }
 
@@ -105,8 +144,13 @@ export async function checkAuth(): Promise<boolean> {
   return res.ok;
 }
 
-export async function checkAuthStatus(): Promise<{ hasPIN: boolean; noPin?: boolean }> {
-  const data = await json<{ hasPIN?: boolean; noPin?: boolean }>(await fetch('/auth/status'));
+export async function checkAuthStatus(): Promise<{
+  hasPIN: boolean;
+  noPin?: boolean;
+}> {
+  const data = await json<{ hasPIN?: boolean; noPin?: boolean }>(
+    await fetch('/auth/status')
+  );
   return { hasPIN: data.hasPIN === true, noPin: data.noPin === true };
 }
 
@@ -441,6 +485,7 @@ export async function createSession(body: {
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;
+  newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
   ticketContext?: {
     ticketId: string;
@@ -611,8 +656,6 @@ export const setDefaultContinue = (v: boolean) =>
   setConfigBool('defaultContinue', v);
 export const fetchDefaultYolo = () => fetchConfigBool('defaultYolo');
 export const setDefaultYolo = (v: boolean) => setConfigBool('defaultYolo', v);
-export const fetchLaunchInTmux = () => fetchConfigBool('launchInTmux');
-export const setLaunchInTmux = (v: boolean) => setConfigBool('launchInTmux', v);
 export const fetchDefaultNotifications = () =>
   fetchConfigBool('defaultNotifications');
 export const setDefaultNotifications = (v: boolean) =>

@@ -2,6 +2,8 @@ import { describe, it, afterEach, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as sessions from '../server/sessions.js';
 import {
   resolveTmuxSpawn,
@@ -14,6 +16,31 @@ import type { PtySession } from '../server/types.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
+const execFileAsync = promisify(execFile);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForTmuxSession(name: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    try {
+      await execFileAsync('tmux', ['has-session', '-t', name]);
+      return;
+    } catch {
+      await delay(50);
+    }
+  }
+  await execFileAsync('tmux', ['has-session', '-t', name]);
+}
+
+async function waitForSessionRemoval(id: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (!sessions.get(id)) return;
+    await delay(50);
+  }
+  expect(sessions.get(id)).toBeUndefined();
+}
 
 afterEach(() => {
   // Kill any remaining sessions created during tests
@@ -322,6 +349,35 @@ describe('sessions', () => {
     });
   });
 
+  it('resolveTmuxSpawn propagates valid environment variables into tmux', () => {
+    const result = resolveTmuxSpawn(
+      'node',
+      ['-e', 'console.log(process.env.RELAY_IDE_TOKEN)'],
+      'test-session',
+      {
+        RELAY_IDE_TOKEN: 'abc123',
+        OPENCODE_CONFIG_CONTENT: '{"permission":{"read":"allow"}}',
+        GITHUB_TOKEN: 'must-not-cross-tmux-argv',
+        'bad-env-name': 'ignored',
+        EMPTY_VALUE: undefined,
+      }
+    );
+
+    expect(result.args).toContain('-e');
+    expect(result.args).toContain('RELAY_IDE_TOKEN=abc123');
+    expect(result.args).toContain(
+      'OPENCODE_CONFIG_CONTENT={"permission":{"read":"allow"}}'
+    );
+    expect(result.args).not.toContain('bad-env-name=ignored');
+    expect(result.args).not.toContain('EMPTY_VALUE=undefined');
+    expect(result.args).not.toContain(
+      'GITHUB_TOKEN=must-not-cross-tmux-argv'
+    );
+    expect(result.args.indexOf('RELAY_IDE_TOKEN=abc123')).toBeLessThan(
+      result.args.indexOf('-s')
+    );
+  });
+
   it('generateTmuxSessionName has correct prefix', () => {
     const original = process.env.NO_PIN;
     delete process.env.NO_PIN;
@@ -451,34 +507,33 @@ describe('sessions', () => {
     expect(session!.agent).toBe('codex');
   });
 
-  it('useTmux defaults to false when not specified', () => {
+  it('useTmux defaults to true when not specified', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
+      command: '/bin/cat',
+      args: [],
     });
     createdIds.push(result.id);
-    expect(result.useTmux).toBe(false);
-    expect(result.tmuxSessionName).toBe('');
+    expect(result.useTmux).toBe(true);
+    expect(result.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
   });
 
-  it('useTmux is disabled when custom command is provided even if useTmux is true', () => {
+  it('useTmux cannot be disabled by custom command sessions or useTmux:false', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
-      useTmux: true,
+      command: '/bin/cat',
+      args: [],
+      useTmux: false,
     });
     createdIds.push(result.id);
-    // Custom command sessions should never use tmux
-    expect(result.useTmux).toBe(false);
-    expect(result.tmuxSessionName).toBe('');
+    expect(result.useTmux).toBe(true);
+    expect(result.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
   });
 
   it('list includes useTmux and tmuxSessionName fields', () => {
@@ -487,15 +542,73 @@ describe('sessions', () => {
       repoPath: '/tmp',
       worktreePath: null,
       cwd: '/tmp',
-      command: '/bin/echo',
-      args: ['hello'],
+      command: '/bin/cat',
+      args: [],
     });
     createdIds.push(result.id);
     const list = sessions.list();
     const session = list.find((s) => s.id === result.id);
     expect(session).toBeTruthy();
-    expect(session!.useTmux).toBe(false);
-    expect(session!.tmuxSessionName).toBe('');
+    expect(session!.useTmux).toBe(true);
+    expect(session!.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
+  });
+
+  it('exposes targeted tmux send and capture helpers', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+    });
+    createdIds.push(result.id);
+    await waitForTmuxSession(result.tmuxSessionName!);
+
+    await sessions.sendTmuxText(result.id, 'printf TMUX_TARGET_READY');
+    await sessions.sendTmuxKeys(result.id, ['Enter']);
+
+    let captured = '';
+    for (let i = 0; i < 20; i++) {
+      captured = await sessions.captureTmuxPane(result.id);
+      if (captured.includes('TMUX_TARGET_READY')) break;
+      await delay(50);
+    }
+    expect(captured).toContain('TMUX_TARGET_READY');
+  });
+
+  it('detachForRestart leaves the tmux session alive for restore adoption', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+    });
+    const tmuxSessionName = result.tmuxSessionName!;
+    const runtimeDir = path.join(os.tmpdir(), 'relay-ide', result.id);
+    const sentinelPath = path.join(runtimeDir, 'restart-detach-sentinel');
+    createdIds.push(result.id);
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(sentinelPath, 'keep');
+
+    try {
+      await waitForTmuxSession(tmuxSessionName);
+
+      sessions.detachForRestart(result.id);
+      await waitForSessionRemoval(result.id);
+
+      await expect(
+        execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+      ).resolves.toBeTruthy();
+      expect(fs.existsSync(sentinelPath)).toBe(true);
+    } finally {
+      await execFileAsync('tmux', ['kill-session', '-t', tmuxSessionName]).catch(
+        () => {}
+      );
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
   });
 
   it('calls onPtyReplaced when continue-arg process fails quickly', () =>
@@ -831,9 +944,64 @@ describe('session persistence', () => {
     const session = sessions.get('tmux-test-id');
     expect(session).toBeTruthy();
     expect(session!.mode).toBe('pty');
+    expect((session as PtySession).useTmux).toBe(true);
     expect((session as PtySession).tmuxSessionName).toBe(
       'relay-ide-my-session-tmux-tes'
     );
+  });
+
+  it('restoreFromDisk attaches to an alive tmux session and keeps tmux compatibility fields', async () => {
+    const configDir = createTmpDir();
+    const tmuxName = `relay-ide-restore-alive-${Date.now()}`;
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'tmux',
+        ['new-session', '-d', '-s', tmuxName, '--', '/bin/sh'],
+        (err) => (err ? reject(err) : resolve())
+      );
+    });
+
+    const pending = {
+      version: 5,
+      timestamp: new Date().toISOString(),
+      sessions: [
+        {
+          id: 'tmux-alive-restore-id',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test-repo',
+          branchName: 'my-branch',
+          displayName: 'alive-session',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: true,
+          tmuxSessionName: tmuxName,
+          customCommand: null,
+          yolo: true,
+          claudeArgs: ['--model', 'opus'],
+          hookToken: 'restore-token',
+          hooksActive: true,
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+
+    const restored = await restoreFromDisk(configDir);
+    expect(restored).toBe(1);
+
+    const session = sessions.get('tmux-alive-restore-id');
+    expect(session).toBeTruthy();
+    expect((session as PtySession).useTmux).toBe(true);
+    expect((session as PtySession).tmuxSessionName).toBe(tmuxName);
+    expect((session as PtySession).hookToken).toBe('restore-token');
+    expect((session as PtySession).yolo).toBe(true);
+    expect((session as PtySession).claudeArgs).toEqual(['--model', 'opus']);
   });
 
   it('restored session remains in list after PTY exits (disconnected status)', async () => {
@@ -885,9 +1053,9 @@ describe('session persistence', () => {
     const agentSession = sessions.create({
       type: 'agent',
       repoName: 'my-repo',
-      repoPath: '/tmp/repo',
+      repoPath: '/tmp',
       worktreePath: null,
-      cwd: '/tmp/repo',
+      cwd: '/tmp',
       command: '/bin/cat',
       args: [],
       displayName: 'My Agent',
@@ -1150,6 +1318,10 @@ describe('session persistence', () => {
     expect(session!.repoPath).toBe('/tmp/my-repo');
     // worktreePath should be null since cwd === repoPath
     expect(session!.worktreePath).toBe(null);
+    expect((session as PtySession).useTmux).toBe(true);
+    expect((session as PtySession).tmuxSessionName).toMatch(
+      /^relay-(ide|dev)-v2-session-/
+    );
   });
 
   it('restoreFromDisk handles v3 pending files (v3→v4 migration: workspacePath→repoPath)', async () => {

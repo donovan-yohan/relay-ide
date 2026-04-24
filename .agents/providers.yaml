@@ -1,0 +1,14 @@
+# Enable each provider your team uses. Disabling a provider removes its
+# generated artifacts on the next `chalkbag build`.
+providers:
+  claude:
+    enabled: true
+  codex:
+    enabled: true
+  opencode:
+    enabled: true
+
+# Paths (relative to the repo root) that the renderer should skip entirely.
+# Typical entries: generated output dirs, vendored code, draft sketches.
+ignore:
+  - _drafts/**

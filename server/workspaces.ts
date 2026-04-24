@@ -826,7 +826,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       'defaultFramework',
       'defaultContinue',
       'defaultYolo',
-      'launchInTmux',
       'portVariables',
     ] as const) {
       if (wsOverrides[key] !== undefined) overridden.push(key);
@@ -878,11 +877,23 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
+    if (
+      Object.hasOwn(updates, 'launchInTmux') &&
+      updates.launchInTmux !== true &&
+      updates.launchInTmux !== null
+    ) {
+      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
+      return;
+    }
 
     // Separate null values (deletions) from actual updates
     const keysToDelete: string[] = [];
     const keysToUpdate: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
+      if (key === 'launchInTmux' && value === true) {
+        keysToDelete.push(key);
+        continue;
+      }
       if (value === null) {
         keysToDelete.push(key);
       } else {

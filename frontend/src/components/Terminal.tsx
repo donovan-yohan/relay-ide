@@ -995,7 +995,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     {
       sessionId,
       onImageUpload,
-      useTmux = false,
+      useTmux = true,
       onCopyModeChange,
       onFilePathClick,
       companionMode = false,

@@ -69,8 +69,49 @@ export function clearRateLimit(ip: string): void {
   attemptMap.delete(ip);
 }
 
-export function generateCookieToken(): string {
-  return crypto.randomBytes(32).toString('hex');
+export interface SignedCookieTokenOptions {
+  pinHash: string;
+  ttlMs: number;
+  now?: number;
+}
+
+function signCookieToken(
+  expiresAt: number,
+  nonce: string,
+  pinHash: string
+): string {
+  return crypto
+    .createHmac('sha256', pinHash)
+    .update(`${expiresAt}.${nonce}`)
+    .digest('base64url');
+}
+
+export function generateCookieToken(
+  options?: SignedCookieTokenOptions
+): string {
+  if (!options) return crypto.randomBytes(32).toString('hex');
+  const now = options.now ?? Date.now();
+  const expiresAt = now + options.ttlMs;
+  const nonce = crypto.randomBytes(16).toString('base64url');
+  const signature = signCookieToken(expiresAt, nonce, options.pinHash);
+  return `v1.${expiresAt}.${nonce}.${signature}`;
+}
+
+export function verifyCookieToken(
+  token: string | null | undefined,
+  pinHash: string | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!token || !pinHash || !token.startsWith('v1.')) return false;
+  const [, expiresAtRaw, nonce, signature] = token.split('.');
+  if (!expiresAtRaw || !nonce || !signature) return false;
+  const expiresAt = Number(expiresAtRaw);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return false;
+  const expected = signCookieToken(expiresAt, nonce, pinHash);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 export function isLegacyHash(hash: string): boolean {

@@ -7,6 +7,7 @@ Control Claude Code from your phone or any browser — manage multiple terminal 
 | Dependency                                                            | Why                                                                              |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | **[Node.js 24+](https://nodejs.org/)**                                | Runtime for the server                                                           |
+| **[tmux](https://github.com/tmux/tmux/wiki)**                         | Required server-side PTY/session substrate for all interactive sessions          |
 | **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH`                                    |
 | **[Codex CLI](https://github.com/openai/codex)**                      | _Optional_ — alternative coding agent. Install if you want to use Codex sessions |
 | **[GitHub CLI (`gh`)](https://cli.github.com/)**                      | _Optional_ — required for the **PRs tab**. Run `gh auth login` after installing. |
@@ -176,7 +177,8 @@ This requires an interactive terminal. You'll be asked to verify your current PI
 - **Repo sessions** — click any idle repo to instantly open Claude with `--continue` (no dialog), or start fresh from the new-session dialog
 - **Branch-aware worktrees** — create worktrees from new or existing branches with a type-to-search branch picker
 - **Worktree isolation** — each worktree session runs in its own git worktree under `.worktrees/`
-- **Resume sessions** — click inactive worktrees to reconnect with `--continue`
+- **Tmux-backed sessions** — every interactive agent or terminal session runs inside tmux on the server; xterm.js remains the browser renderer
+- **Resume sessions** — click inactive worktrees to reconnect to the surviving tmux session, falling back to agent continue args only if the tmux session is gone
 - **Persistent session names** — display names, branch names, and timestamps survive server restarts
 - **Scrollback buffer** — reconnect to a session and see prior output
 - **Yolo mode** — skip permission prompts with `--dangerously-skip-permissions` (per-session pill button)
@@ -221,7 +223,11 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 - **Update notifications** — toast notification when a new version is available, with one-click update
 - **CLI self-update** — `relay-ide update` to update from npm
 
-## terminal renderer (xterm.js fork)
+## Terminal Renderer And Session Substrate
+
+relay-ide uses xterm.js as the browser terminal renderer and tmux as the required server-side PTY/session substrate. xterm.js owns display, input capture, fit/resize, and renderer fallback in the browser. tmux owns the durable process tree on the host, including session survival across browser disconnects, server restarts, and workspace tab changes.
+
+The browser never talks to tmux directly. The server attaches `node-pty` to tmux, relays I/O over WebSocket, and lets xterm.js render the resulting terminal stream.
 
 relay-ide uses a [fork of xterm.js](https://github.com/donovan-yohan/xterm.js) instead of the official npm package. the fork adds the experimental WebGPU renderer ([xtermjs/xterm.js#5666](https://github.com/xtermjs/xterm.js/pull/5666)) and gives us the ability to patch terminal behavior for our use case.
 
@@ -231,7 +237,7 @@ the dependency in `package.json` is pinned to a specific commit hash so every in
 
 ## Architecture
 
-TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`. Svelte 5 frontend (runes + Vite) compiled to `dist/frontend/`.
+TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) compiled to `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
 ```
 relay-ide/
@@ -239,7 +245,7 @@ relay-ide/
 │   └── relay-ide.ts  # CLI entry point
 ├── server/
 │   ├── index.ts        # Express server, REST API routes
-│   ├── sessions.ts     # PTY session manager (node-pty)
+│   ├── sessions.ts     # tmux-backed PTY session manager (node-pty)
 │   ├── ws.ts           # WebSocket relay (PTY ↔ browser)
 │   ├── watcher.ts      # File watcher for .worktrees/ changes
 │   ├── auth.ts         # PIN hashing, verification, rate limiting
@@ -249,14 +255,14 @@ relay-ide/
 │   └── types.ts        # Shared TypeScript interfaces
 ├── frontend/
 │   └── src/
-│       ├── components/  # Svelte 5 components (Sidebar, Terminal, SessionList, etc.)
-│       ├── lib/state/   # Reactive state modules (.svelte.ts)
+│       ├── components/  # React components (Sidebar, Terminal, SessionTabBar, etc.)
+│       ├── lib/state/   # Pure UI state modules
 │       ├── lib/api.ts   # REST API client
 │       ├── lib/ws.ts    # WebSocket connection management
 │       ├── lib/types.ts # Frontend TypeScript interfaces
 │       ├── lib/utils.ts # Shared utilities (path display, time formatting, device detection)
-│       └── lib/actions.ts # Svelte actions (scroll-on-hover, longpress-click)
-├── test/               # Unit tests (node:test)
+│       └── hooks/       # React hooks for app behavior
+├── test/               # Unit/integration tests (Vitest)
 ├── dist/               # Compiled output (gitignored)
 ├── config.example.json
 └── package.json

@@ -11,25 +11,19 @@ analytics.db
 analytics.db-shm
 analytics.db-wal
 
-# Claude Code (track project-specific skills only)
-.claude/*
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/scope/
-!.claude/skills/ticket/
+# Husky runtime shims
+.husky/_/
 
 # IDE
 .vscode/
 .gemini/
 
 # Agent/plugin runtime data
-.agents/
 .claire/
 .desloppify/
 .lead/
 .omc/
 .omo/
-.opencode/
 .gstack/
 .worktrees/
 relay-ide-tmp/
@@ -53,3 +47,16 @@ playwright-report/
 # belayer — per-run state (.belayer/ contains runs/ and worktrees/; hermes_bridge is in runtime dir)
 /.belayer/runs/
 /.belayer/worktrees/
+
+# chalkbag — generated artifacts
+/.claude/
+/.codex/
+/opencode.json
+/.opencode/
+!/AGENTS.md
+!/CLAUDE.md
+
+# chalkbag — state
+/.agents/.state.json
+/.agents/.state.lock
+/.agents-tmp/

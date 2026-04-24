@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as sessions from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
 
 const createdIds: string[] = [];
+const execFileAsync = promisify(execFile);
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -176,5 +179,45 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       'OPENCODE_CONFIG_CONTENT='
     );
     expect(output).toMatch(/OPENCODE_CONFIG_CONTENT=.*"permission"/);
+  });
+
+  it('keeps inherited sensitive env out of tmux argv while preserving child env', async () => {
+    const originalToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'relay-secret-token-for-tmux-test';
+    try {
+      const result = sessions.create({
+        repoName: 'test-repo',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'claude',
+        command: process.execPath,
+        args: [
+          '-e',
+          [
+            "console.log('GITHUB_TOKEN_PRESENT='+(!!process.env.GITHUB_TOKEN&&process.env.GITHUB_TOKEN.startsWith('relay-secret-token')));",
+            'setTimeout(()=>{},10000);',
+          ].join(' '),
+        ],
+      });
+      createdIds.push(result.id);
+
+      const output = await waitForScrollbackContains(
+        result.id,
+        'GITHUB_TOKEN_PRESENT=true'
+      );
+      expect(output).toContain('GITHUB_TOKEN_PRESENT=true');
+
+      const { stdout } = await execFileAsync('ps', ['axo', 'command=']);
+      const tmuxCommandLines = stdout
+        .split('\n')
+        .filter((line) => line.includes(result.tmuxSessionName ?? ''));
+      expect(tmuxCommandLines.join('\n')).not.toContain(
+        'relay-secret-token-for-tmux-test'
+      );
+    } finally {
+      if (originalToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = originalToken;
+    }
   });
 });

@@ -17,6 +17,7 @@ export interface CreateAgentSessionOptions {
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;
+  newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
   ticketContext?: {
     ticketId: string;
