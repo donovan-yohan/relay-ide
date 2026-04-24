@@ -26,13 +26,14 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 | Design        | `docs/DESIGN.md`       | Backend patterns, auth flow, PTY management, session types             |
 | Frontend      | `docs/FRONTEND.md`     | React 19 components, state management (Zustand + TanStack Query)       |
 | Quality       | `docs/QUALITY.md`      | Test runner, test files, isolation patterns                            |
+| Review        | `docs/REVIEW_GUIDANCE.md` | Review agent config, question bank, escape log                      |
 | References    | `docs/references/`     | Deployment guide, review agent setup                                   |
 | Learnings     | `docs/LEARNINGS.md`    | Persistent cross-session learnings (architecture, debugging, patterns) |
 | Work Tracking | GitHub Issues          | Bugs, features, spikes, epics — use `/ticket` skill or `gh issue`      |
 
 ## Key Patterns
 
-- Fifty-six server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
+- 58 server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
 - `node-pty` requires native compilation; `postinstall` script fixes prebuilt binaries on macOS
 - `CLAUDECODE` env var must be stripped from PTY env to allow nesting Claude sessions
 - Scrollback buffer capped at 256KB per session; oldest chunks trimmed first (FIFO)

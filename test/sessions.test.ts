@@ -658,7 +658,7 @@ describe('session persistence', () => {
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    expect(pending.version).toBe(4);
+    expect(pending.version).toBe(5);
     expect(pending.timestamp).toBeTruthy();
     expect(pending.sessions.length).toBe(1);
     expect(pending.sessions[0].id).toBe(s.id);
@@ -986,7 +986,7 @@ describe('session persistence', () => {
     const pending = JSON.parse(
       fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
     );
-    expect(pending.version).toBe(4);
+    expect(pending.version).toBe(5);
     expect(pending.sessions[0].yolo).toBe(true);
 
     await restoreFromDisk(configDir);
@@ -1212,7 +1212,7 @@ describe('session persistence', () => {
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    expect(pending.version).toBe(4);
+    expect(pending.version).toBe(5);
     expect(pending.sessions[0].repoPath).toBe('/tmp');
     expect('workspacePath' in pending.sessions[0]).toBe(false);
   });

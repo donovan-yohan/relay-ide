@@ -1563,30 +1563,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    if (path.isAbsolute(expandedFile)) {
-      try {
-        const stat = await fs.promises.stat(expandedFile);
-        if (!stat.isFile()) {
-          res.status(400).json({ diff: '', error: 'not a regular file' });
-          return;
-        }
-        if (stat.size > 2 * 1024 * 1024) {
-          res.status(413).json({ diff: '', error: 'file too large' });
-          return;
-        }
-        const content = await fs.promises.readFile(expandedFile, 'utf-8');
-        res.json({ diff: content });
-      } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'EACCES' || code === 'EPERM') {
-          res.status(403).json({ diff: '', error: 'permission denied' });
-        } else {
-          res.status(404).json({ diff: '', error: 'file not found' });
-        }
-      }
-      return;
-    }
-
     if (base && base.startsWith('-')) {
       res.status(400).json({ diff: '', error: 'invalid base ref' });
       return;

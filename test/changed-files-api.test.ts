@@ -121,7 +121,7 @@ describe('GET /workspaces/file-diff', () => {
     expect(data.error).toBe('invalid file path');
   });
 
-  test('reads ~/file paths directly via fs', async () => {
+  test('reads ~/file paths via git diff instead of raw fs', async () => {
     const testFile = path.join(os.homedir(), '.relay-ide-test-tilde');
     fs.writeFileSync(testFile, 'tilde-test-content', 'utf-8');
     try {
@@ -130,7 +130,8 @@ describe('GET /workspaces/file-diff', () => {
       );
       expect(res.status).toBe(200);
       const data = (await res.json()) as any;
-      expect(data.diff).toBe('tilde-test-content');
+      // Mock returns this for any git diff --unified=3 call
+      expect(data.diff).toBe('diff output for file');
     } finally {
       fs.unlinkSync(testFile);
     }
@@ -145,23 +146,25 @@ describe('GET /workspaces/file-diff', () => {
     expect(data.error).toBe('invalid file path');
   });
 
-  test('returns 404 for non-existent ~/file', async () => {
+  test('returns 200 for non-existent ~/file via git diff (empty diff)', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-nonexistent-file`
     );
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(typeof data.diff).toBe('string');
   });
 
-  test('returns 400 for directory ~/path', async () => {
+  test('returns 200 for directory ~/path via git diff', async () => {
     const testDir = path.join(os.homedir(), '.relay-ide-test-dir');
     fs.mkdirSync(testDir, { recursive: true });
     try {
       const res = await fetch(
         `${baseUrl}/workspaces/file-diff?path=${encodeURIComponent(repoDir)}&file=~/.relay-ide-test-dir`
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
       const data = (await res.json()) as any;
-      expect(data.error).toBe('not a regular file');
+      expect(typeof data.diff).toBe('string');
     } finally {
       fs.rmdirSync(testDir);
     }
