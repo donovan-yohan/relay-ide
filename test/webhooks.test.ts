@@ -112,7 +112,11 @@ describe('webhook handler', () => {
 
   it('accepts valid signature and broadcasts pr-updated for pull_request event', async () => {
     broadcasts = [];
-    const body = { action: 'opened', number: 42 };
+    const body = {
+      action: 'opened',
+      number: 42,
+      pull_request: { number: 42, state: 'open' },
+    };
     const res = await postWebhook({ body, event: 'pull_request' });
     expect(res.status).toBe(200);
 
@@ -120,15 +124,23 @@ describe('webhook handler', () => {
     expect(json.ok).toBe(true);
     expect(broadcasts.length).toBe(1);
     expect(broadcasts[0]?.type).toBe('pr-updated');
+    expect(broadcasts[0]?.data?.number).toBe(42);
+    expect(broadcasts[0]?.data?.action).toBe('opened');
+    expect(broadcasts[0]?.data?.state).toBe('open');
   });
 
   it('broadcasts pr-updated for pull_request_review event', async () => {
     broadcasts = [];
-    const body = { action: 'submitted', review: {} };
+    const body = {
+      action: 'submitted',
+      review: {},
+      pull_request: { number: 7 },
+    };
     const res = await postWebhook({ body, event: 'pull_request_review' });
     expect(res.status).toBe(200);
     expect(broadcasts.length).toBe(1);
     expect(broadcasts[0]?.type).toBe('pr-updated');
+    expect(broadcasts[0]?.data?.number).toBe(7);
   });
 
   it('broadcasts ci-updated for check_suite event', async () => {
@@ -156,11 +168,14 @@ describe('webhook handler', () => {
     const body = {
       action: 'opened',
       number: 42,
+      pull_request: { number: 42, state: 'open' },
       repository: { full_name: 'owner/repo' },
     };
     const res = await postWebhook({ body, event: 'pull_request' });
     expect(res.status).toBe(200);
     expect(broadcasts[0]?.data?.repo).toBe('owner/repo');
+    expect(broadcasts[0]?.data?.number).toBe(42);
+    expect(broadcasts[0]?.data?.action).toBe('opened');
   });
 });
 
@@ -173,7 +188,12 @@ describe('webhook merge detection', () => {
     const res = await postWebhook({
       body: {
         action: 'closed',
-        pull_request: { merged: true, head: { ref: 'fix/auth' } },
+        pull_request: {
+          number: 99,
+          merged: true,
+          state: 'closed',
+          head: { ref: 'fix/auth' },
+        },
         repository: { full_name: 'owner/repo' },
       },
       event: 'pull_request',
@@ -181,6 +201,10 @@ describe('webhook merge detection', () => {
     expect(res.status).toBe(200);
     const types = broadcasts.map((b) => b.type);
     expect(types).toEqual(['pr-updated', 'worktrees-changed']);
+    const prUpdate = broadcasts.find((b) => b.type === 'pr-updated');
+    expect(prUpdate?.data?.number).toBe(99);
+    expect(prUpdate?.data?.merged).toBe(true);
+    expect(prUpdate?.data?.state).toBe('closed');
   });
 
   it('pull_request.closed without merge does not broadcast worktrees-changed', async () => {
@@ -188,7 +212,7 @@ describe('webhook merge detection', () => {
     const res = await postWebhook({
       body: {
         action: 'closed',
-        pull_request: { merged: false },
+        pull_request: { number: 88, merged: false, state: 'closed' },
         repository: { full_name: 'owner/repo' },
       },
       event: 'pull_request',
@@ -196,6 +220,10 @@ describe('webhook merge detection', () => {
     expect(res.status).toBe(200);
     const types = broadcasts.map((b) => b.type);
     expect(types).toEqual(['pr-updated']);
+    const prUpdate = broadcasts[0];
+    expect(prUpdate?.data?.number).toBe(88);
+    expect(prUpdate?.data?.merged).toBeUndefined();
+    expect(prUpdate?.data?.state).toBe('closed');
   });
 });
 
