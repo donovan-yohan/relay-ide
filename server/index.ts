@@ -2190,19 +2190,23 @@ async function main(): Promise<void> {
     // Web-only agents bypass PTY and use ProtocolAdapter + WebSocket
     if (resolvedAgent === 'hermes') {
       const displayName = sessions.nextAgentName();
-      const { session } = await sessions.createWeb({
-        agentType: resolvedAgent,
-        cwd,
-        repoPath,
-        repoName: name,
-        worktreePath: worktreePath ?? null,
-        branchName: requestBranchName ?? '',
-        displayName,
-        port: startupConfig.port,
-        configDir,
-      });
-      gitWatcher.watch(session.cwd);
-      res.status(201).json(session);
+      try {
+        const { session } = await sessions.createWeb({
+          agentType: resolvedAgent,
+          cwd,
+          repoPath,
+          repoName: name,
+          worktreePath: worktreePath ?? null,
+          branchName: requestBranchName ?? '',
+          displayName,
+          port: startupConfig.port,
+          configDir,
+        });
+        gitWatcher.watch(session.cwd);
+        res.status(201).json(session);
+      } catch (err) {
+        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+      }
       return;
     }
 
