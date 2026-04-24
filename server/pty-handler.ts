@@ -109,7 +109,7 @@ function writeTmuxEnvWrapper(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv
-): { command: string; args: string[] } {
+): { command: string; args: string[]; wrapperPath: string } {
   const dir = path.join(os.tmpdir(), 'relay-ide', id);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const wrapperPath = tmuxEnvWrapperPath(id);
@@ -131,7 +131,25 @@ exec "$@"
     { encoding: 'utf-8', mode: 0o700 }
   );
   fs.chmodSync(wrapperPath, 0o700);
-  return { command: '/bin/sh', args: [wrapperPath, command, ...args] };
+  return {
+    command: '/bin/sh',
+    args: [wrapperPath, command, ...args],
+    wrapperPath,
+  };
+}
+
+export function resolveTmuxWrappedSpawn(
+  id: string,
+  command: string,
+  args: string[],
+  tmuxSessionName: string,
+  env: NodeJS.ProcessEnv
+): { command: string; args: string[]; wrapperPath: string } {
+  const wrapped = writeTmuxEnvWrapper(id, command, args, env);
+  return {
+    ...resolveTmuxSpawn(wrapped.command, wrapped.args, tmuxSessionName),
+    wrapperPath: wrapped.wrapperPath,
+  };
 }
 
 function shellQuote(value: string): string {
@@ -708,11 +726,12 @@ function resolveSpawnTarget(
       tmuxSessionName,
     };
   } else {
-    const wrapped = writeTmuxEnvWrapper(id, resolvedCommand, args, env);
-    const tmux = resolveTmuxSpawn(
-      wrapped.command,
-      wrapped.args,
-      tmuxSessionName
+    const tmux = resolveTmuxWrappedSpawn(
+      id,
+      resolvedCommand,
+      args,
+      tmuxSessionName,
+      env
     );
     return {
       spawnCommand: tmux.command,
@@ -1183,16 +1202,12 @@ function tryRetrySpawn(
   if (ctx.useTmux && ctx.tmuxSessionName) {
     const retryTmuxName = ctx.tmuxSessionName + '-retry';
     session.tmuxSessionName = retryTmuxName;
-    const wrapped = writeTmuxEnvWrapper(
+    const tmux = resolveTmuxWrappedSpawn(
       ctx.id,
       ctx.resolvedCommand,
       retryArgs,
+      retryTmuxName,
       ctx.env
-    );
-    const tmux = resolveTmuxSpawn(
-      wrapped.command,
-      wrapped.args,
-      retryTmuxName
     );
     retryCommand = tmux.command;
     retrySpawnArgs = tmux.args;

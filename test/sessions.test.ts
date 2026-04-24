@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import * as sessions from '../server/sessions.js';
 import {
   resolveTmuxSpawn,
+  resolveTmuxWrappedSpawn,
   generateTmuxSessionName,
   getTmuxPrefix,
 } from '../server/pty-handler.js';
@@ -379,6 +380,44 @@ describe('sessions', () => {
     expect(result.args.indexOf('RELAY_IDE_TOKEN=abc123')).toBeLessThan(
       result.args.indexOf('-s')
     );
+  });
+
+  it('resolveTmuxWrappedSpawn keeps inherited secrets in the child wrapper, not tmux argv', () => {
+    const secret = 'relay-secret-token-for-tmux-test';
+    const result = resolveTmuxWrappedSpawn(
+      'tmux-wrapper-env-test',
+      'node',
+      ['-e', 'console.log(process.env.GITHUB_TOKEN)'],
+      'test-session',
+      {
+        GITHUB_TOKEN: secret,
+        RELAY_IDE_TOKEN: 'relay-token',
+        SAFE_ENV: 'safe-value',
+        'bad-env-name': 'ignored',
+        EMPTY_VALUE: undefined,
+      }
+    );
+
+    try {
+      const argv = result.args.join('\0');
+      expect(argv).not.toContain(secret);
+      expect(argv).not.toContain('GITHUB_TOKEN=');
+      expect(argv).not.toContain('RELAY_IDE_TOKEN=relay-token');
+      expect(argv).toContain(result.wrapperPath);
+
+      const wrapper = fs.readFileSync(result.wrapperPath, 'utf8');
+      expect(wrapper).toContain(`export GITHUB_TOKEN='${secret}'`);
+      expect(wrapper).toContain("export RELAY_IDE_TOKEN='relay-token'");
+      expect(wrapper).toContain("export SAFE_ENV='safe-value'");
+      expect(wrapper).not.toContain('bad-env-name');
+      expect(wrapper).not.toContain('EMPTY_VALUE');
+      expect(fs.statSync(result.wrapperPath).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(path.dirname(result.wrapperPath), {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 
   it('generateTmuxSessionName has correct prefix', () => {
