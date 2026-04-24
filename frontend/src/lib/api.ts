@@ -475,6 +475,7 @@ export async function createSession(body: {
   repoPath: string;
   worktreePath?: string | null | undefined;
   type?: 'agent' | 'terminal' | undefined;
+  mode?: 'pty' | 'web' | undefined;
   continue?: boolean | undefined;
   branchName?: string | undefined;
   claudeArgs?: string[] | undefined;

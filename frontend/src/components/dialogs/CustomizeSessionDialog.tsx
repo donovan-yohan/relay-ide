@@ -51,6 +51,7 @@ async function createSessionFromForm(
     repoPath: workspacePath,
     worktreePath,
     type: 'agent',
+    mode: form.selectedAgent === 'hermes' ? 'web' : 'pty',
     continue: form.continueExisting,
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,

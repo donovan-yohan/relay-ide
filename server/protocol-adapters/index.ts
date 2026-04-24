@@ -5,12 +5,15 @@ import { CodexProtocolAdapter } from './codex-adapter.js';
 import { OpenCodeProtocolAdapter } from './opencode-adapter.js';
 import { OpenCodeAttachedAdapter } from './opencode-attached-adapter.js';
 
+import { HermesProtocolAdapter } from './hermes-adapter.js';
+
 export const adapters: Record<string, () => ProtocolAdapter> = {
   mock: () => new MockProtocolAdapter(),
   claude: () => new ClaudeProtocolAdapter(),
   codex: () => new CodexProtocolAdapter(),
   opencode: () => new OpenCodeProtocolAdapter(),
   'opencode-attached': () => new OpenCodeAttachedAdapter(),
+  hermes: () => new HermesProtocolAdapter(),
 };
 
 export function createAdapter(agentType: string): ProtocolAdapter {
