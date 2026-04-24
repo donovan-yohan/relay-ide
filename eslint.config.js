@@ -59,6 +59,7 @@ export default [
       '.git/**',
       '.worktrees/**',
       '*.config.js',
+      'test/fixtures/**',
     ],
   },
 ];

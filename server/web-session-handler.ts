@@ -26,6 +26,8 @@ export interface CreateWebParams {
   additionalDirs?: string[];
   runtimeOwnership?: 'spawned' | 'attached';
   hookToken?: string;
+  /** Additional agent-specific configuration passed through to the protocol adapter */
+  extra?: Record<string, unknown>;
 }
 
 export function pushToBuffer(session: WebSession, event: ChatEvent): void {
@@ -144,6 +146,7 @@ export async function createWebSession(
       ? { permissionMode: params.permissionMode }
       : {}),
     ...(params.model !== undefined ? { model: params.model } : {}),
+    ...(params.extra !== undefined ? { extra: params.extra } : {}),
   };
 
   try {

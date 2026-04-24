@@ -19,7 +19,7 @@ export type BackendDisplayState =
 
 export type SessionType = 'agent' | 'terminal';
 export type AgentType = string;
-export type BuiltinFrameworkId = 'claude' | 'codex' | 'opencode';
+export type BuiltinFrameworkId = 'claude' | 'codex' | 'opencode' | 'hermes';
 export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
@@ -113,6 +113,22 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
+    },
+  },
+  hermes: {
+    id: 'hermes',
+    displayName: 'Hermes',
+    command: 'hermes',
+    continueArgs: ['--continue'],
+    yoloArgs: ['--yolo'],
+    parserType: 'hermes',
+    eventSource: 'parser',
+    capabilities: {
+      supportsHooks: false,
+      supportsContinue: true,
+      supportsYolo: true,
+      supportsTelemetry: true,
+      supportsAttachedRuntime: false,
     },
   },
 };

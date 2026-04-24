@@ -16,7 +16,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 
 ### `server/`
 
-58 TypeScript modules (including `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories) compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
+59 TypeScript modules (including `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories) compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
 
 | Module                                  | Role                                                                                                                                                                                                                                                               |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -56,7 +56,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | `git-routes.ts`                         | Express Router for git operations that don't live on workspaces (branch lifecycle, PR lookups, branch switches) — delegates to `git.ts`                                                                                                                            |
 | `logger.ts`                             | `createLogger(name)` factory; pino-backed, used uniformly across server modules (zero raw `console.*` in production)                                                                                                                                               |
 | `opencode-relay.ts`                     | OpenCode agent transport relay: WebSocket/SSE proxy that bridges web sessions to the OpenCode CLI                                                                                                                                                                  |
-| `protocol-adapter.ts`                   | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,mock}.ts`                                                                                                                                               |
+| `protocol-adapter.ts`                   | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,hermes,mock}.ts`                                                                                                                                               |
 | `telemetry.ts` / `telemetry-adapter.ts` | Framework-neutral telemetry bus + abstract adapter; concrete adapters in `adapters/{claude,codex,opencode}-telemetry.ts` self-register at import time                                                                                                              |
 | `web-session-handler.ts`                | Request/response handler for web-chat sessions (non-PTY): creation, input delivery, event streaming via `ChatEvent`                                                                                                                                                |
 | `sandbox.ts`                            | Spawns isolated relay-ide server instances with ephemeral config, dynamic port allocation, and readiness polling for agent-driven testing                                                                                                                          |
@@ -203,7 +203,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 | ADR     | Topic                                                                          |
 | ------- | ------------------------------------------------------------------------------ |
-| ADR-001 | Modular server architecture (58 modules, composition root, dependency flow) |
+| ADR-001 | Modular server architecture (59 modules, composition root, dependency flow) |
 | ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping)     |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                      |
 | ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)    |
