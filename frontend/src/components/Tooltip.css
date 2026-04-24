@@ -26,7 +26,7 @@
 }
 
 .tui-tooltip:hover .tui-tooltip__bubble,
-.tui-tooltip:focus-within .tui-tooltip__bubble {
+.tui-tooltip:has(:focus-visible) .tui-tooltip__bubble {
   opacity: 1;
   visibility: visible;
 }

@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, beforeEach, expect, it } from 'vitest';
 import Tooltip from '../../frontend/src/components/Tooltip.js';
@@ -55,5 +57,15 @@ describe('Tooltip', () => {
     expect(html).toContain('refresh PR data');
     expect(html).toMatch(/⌘R|ctrl\+R/);
     expect(html).toContain('tui-tooltip');
+  });
+
+  it('does not keep tooltips open from mouse-click focus', () => {
+    const css = readFileSync(
+      resolve(process.cwd(), 'frontend/src/components/Tooltip.css'),
+      'utf8'
+    );
+
+    expect(css).not.toContain(':focus-within');
+    expect(css).toContain(':focus-visible');
   });
 });

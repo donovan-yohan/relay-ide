@@ -132,7 +132,6 @@ export function WorkspaceUtilityRail({
               {TAB_META.find((tab) => tab.id === railState.selectedRailTab)
                 ?.label ?? railState.selectedRailTab}
             </span>
-            <span className="utility-pane-context">rail-selected pane</span>
           </div>
           <div className="utility-pane-body">
             {railState.selectedRailTab === 'files' ? (
