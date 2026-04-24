@@ -65,7 +65,11 @@ const ErrorToastContent: React.FC<ErrorToastContentProps> = ({
 }) => (
   <div
     className={`notification-card${variant === 'error' ? ' notification-card--error' : ''}`}
+    role={variant === 'error' ? 'alert' : 'status'}
   >
+    {variant === 'error' ? (
+      <span className="error-toast-label">Error</span>
+    ) : null}
     <span className="notification-card__text error-toast-text">{message}</span>
     <button
       className="notification-card__dismiss"

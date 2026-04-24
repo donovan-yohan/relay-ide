@@ -39,6 +39,25 @@ export class ConflictError extends Error {
   }
 }
 
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, message = httpErrorMessage(status)) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
+function httpErrorMessage(status: number, fallback?: string): string {
+  if (status === 502) {
+    return 'Relay backend is unavailable (HTTP 502). The server may be restarting; try again in a moment.';
+  }
+  if (status === 503 || status === 504) {
+    return `Relay backend is unavailable (HTTP ${status}). Try again in a moment.`;
+  }
+  return fallback ?? `HTTP ${status}`;
+}
+
 export interface BrowseEntry {
   name: string;
   path: string;
@@ -56,7 +75,7 @@ export interface BrowseResponse {
 }
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status);
   return res.json() as Promise<T>;
 }
 
@@ -82,9 +101,9 @@ async function parseErrorBody(
 ): Promise<string> {
   try {
     const data = (await res.json()) as { error?: string };
-    return data.error || fallback;
+    return data.error || httpErrorMessage(res.status, fallback);
   } catch {
-    return fallback;
+    return httpErrorMessage(res.status, fallback);
   }
 }
 

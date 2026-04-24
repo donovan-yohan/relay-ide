@@ -830,7 +830,11 @@ async function main(): Promise<void> {
       return;
     }
     const token = req.cookies && req.cookies.token;
-    if (!token || !authenticatedTokens.has(token)) {
+    const config = getConfig();
+    const tokenAccepted =
+      authenticatedTokens.has(token) ||
+      auth.verifyCookieToken(token, config.pinHash);
+    if (!token || !tokenAccepted) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -1425,9 +1429,12 @@ async function main(): Promise<void> {
 
       // Auto-login: generate token and set cookie
       auth.clearRateLimit(ip);
-      const token = auth.generateCookieToken();
-      authenticatedTokens.add(token);
       const ttlMs = parseTTL(freshConfig.cookieTTL);
+      const token = auth.generateCookieToken({
+        pinHash: freshConfig.pinHash,
+        ttlMs,
+      });
+      authenticatedTokens.add(token);
       setTimeout(() => authenticatedTokens.delete(token), ttlMs);
 
       res.cookie('token', token, {
@@ -1467,9 +1474,11 @@ async function main(): Promise<void> {
       // No-PIN mode: auto-authenticate without a PIN body
       if (process.env.NO_PIN === '1') {
         auth.clearRateLimit(ip);
-        const token = auth.generateCookieToken();
-        authenticatedTokens.add(token);
         const ttlMs = parseTTL(authConfig.cookieTTL);
+        const token = authConfig.pinHash
+          ? auth.generateCookieToken({ pinHash: authConfig.pinHash, ttlMs })
+          : auth.generateCookieToken();
+        authenticatedTokens.add(token);
         setTimeout(() => authenticatedTokens.delete(token), ttlMs);
         res.cookie('token', token, {
           httpOnly: true,
@@ -1488,10 +1497,12 @@ async function main(): Promise<void> {
       }
 
       auth.clearRateLimit(ip);
-      const token = auth.generateCookieToken();
-      authenticatedTokens.add(token);
-
       const ttlMs = parseTTL(authConfig.cookieTTL);
+      const token = auth.generateCookieToken({
+        pinHash: authConfig.pinHash,
+        ttlMs,
+      });
+      authenticatedTokens.add(token);
       setTimeout(() => authenticatedTokens.delete(token), ttlMs);
 
       res.cookie('token', token, {

@@ -6,6 +6,7 @@ import {
   isRateLimited,
   recordFailedAttempt,
   generateCookieToken,
+  verifyCookieToken,
   _resetForTesting,
 } from '../server/auth.js';
 
@@ -123,6 +124,36 @@ test('generateCookieToken returns non-empty string', () => {
   const token = generateCookieToken();
   expect(token).toBeTypeOf('string');
   expect(token.length).toBeGreaterThan(0);
+});
+
+test('signed cookie tokens verify after in-memory auth state is reset', async () => {
+  _resetForTesting();
+  const pinHash = await hashPin('1234');
+  const now = Date.now();
+  const token = generateCookieToken({
+    pinHash,
+    ttlMs: 60_000,
+    now,
+  });
+
+  _resetForTesting();
+
+  expect(verifyCookieToken(token, pinHash, now + 30_000)).toBe(true);
+});
+
+test('signed cookie tokens reject expired or wrong-pin-hash tokens', async () => {
+  _resetForTesting();
+  const pinHash = await hashPin('1234');
+  const otherPinHash = await hashPin('9999');
+  const now = Date.now();
+  const token = generateCookieToken({
+    pinHash,
+    ttlMs: 60_000,
+    now,
+  });
+
+  expect(verifyCookieToken(token, pinHash, now + 60_001)).toBe(false);
+  expect(verifyCookieToken(token, otherPinHash, now + 30_000)).toBe(false);
 });
 
 test('verifyPin returns false for undefined hash', async () => {
