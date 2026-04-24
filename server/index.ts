@@ -487,14 +487,15 @@ function buildAgentArgs(
 
 /**
  * Resolves the effective continue policy for an agent session.
- * For new worktrees (needsBranchRename), always returns 'never'.
+ * For new worktrees, always returns 'never'.
  */
 function resolveContinuePolicy(
   explicitContinuePolicy: ContinuePolicy | undefined,
   explicitContinue: boolean | undefined,
-  needsBranchRename: boolean | undefined
+  needsBranchRename: boolean | undefined,
+  newWorktree: boolean = false
 ): ContinuePolicy | undefined {
-  if (needsBranchRename) return 'never';
+  if (needsBranchRename || newWorktree) return 'never';
   if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
   if (explicitContinue === undefined) return undefined;
   return explicitContinue ? 'always' : 'never';
@@ -1986,6 +1987,7 @@ async function main(): Promise<void> {
       rows,
       branchName: requestBranchName,
       needsBranchRename,
+      newWorktree,
       branchRenamePrompt,
       initialPrompt,
       continue: explicitContinue,
@@ -2003,6 +2005,7 @@ async function main(): Promise<void> {
       rows?: number;
       branchName?: string;
       needsBranchRename?: boolean;
+      newWorktree?: boolean;
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
@@ -2072,12 +2075,12 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Agent session
     // Resolve continue policy (handles legacy boolean continue + new worktree override)
     const effectivePolicy = resolveContinuePolicy(
       explicitContinuePolicy,
       explicitContinue,
-      needsBranchRename
+      needsBranchRename,
+      newWorktree ?? false
     );
 
     const resolved = resolveSessionSettings(freshConfig, repoPath, {
