@@ -34,6 +34,14 @@ async function waitForTmuxSession(name: string): Promise<void> {
   await execFileAsync('tmux', ['has-session', '-t', name]);
 }
 
+async function waitForSessionRemoval(id: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (!sessions.get(id)) return;
+    await delay(50);
+  }
+  expect(sessions.get(id)).toBeUndefined();
+}
+
 afterEach(() => {
   // Kill any remaining sessions created during tests
   for (const id of createdIds) {
@@ -579,19 +587,28 @@ describe('sessions', () => {
       args: ['-i'],
     });
     const tmuxSessionName = result.tmuxSessionName!;
+    const runtimeDir = path.join(os.tmpdir(), 'relay-ide', result.id);
+    const sentinelPath = path.join(runtimeDir, 'restart-detach-sentinel');
     createdIds.push(result.id);
-    await waitForTmuxSession(tmuxSessionName);
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(sentinelPath, 'keep');
 
-    sessions.detachForRestart(result.id);
-    await delay(100);
+    try {
+      await waitForTmuxSession(tmuxSessionName);
 
-    await expect(
-      execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
-    ).resolves.toBeTruthy();
+      sessions.detachForRestart(result.id);
+      await waitForSessionRemoval(result.id);
 
-    await execFileAsync('tmux', ['kill-session', '-t', tmuxSessionName]).catch(
-      () => {}
-    );
+      await expect(
+        execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+      ).resolves.toBeTruthy();
+      expect(fs.existsSync(sentinelPath)).toBe(true);
+    } finally {
+      await execFileAsync('tmux', ['kill-session', '-t', tmuxSessionName]).catch(
+        () => {}
+      );
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
   });
 
   it('calls onPtyReplaced when continue-arg process fails quickly', () =>

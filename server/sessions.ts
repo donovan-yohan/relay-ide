@@ -481,6 +481,7 @@ function detachForRestart(id: string): void {
     throw new Error(`Session not found: ${id}`);
   }
   if (session.mode === 'pty') {
+    session.preserveRuntimeFilesOnExit = true;
     try {
       session.pty.kill('SIGTERM');
     } catch {

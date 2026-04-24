@@ -1250,6 +1250,8 @@ function runExitCleanup(
     }
   }
   sessionsMap.delete(id);
-  const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
-  fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+  if (!session.preserveRuntimeFilesOnExit) {
+    const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
+    fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+  }
 }

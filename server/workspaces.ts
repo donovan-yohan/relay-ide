@@ -877,7 +877,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
-    if (updates.launchInTmux === false) {
+    if (
+      Object.hasOwn(updates, 'launchInTmux') &&
+      updates.launchInTmux !== true &&
+      updates.launchInTmux !== null
+    ) {
       res.status(400).json({ error: 'tmux is required for all PTY sessions' });
       return;
     }
