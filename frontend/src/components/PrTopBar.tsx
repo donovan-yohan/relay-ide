@@ -525,6 +525,10 @@ export function PrTopBar({
     };
     const prompt = getActionPrompt(action, ctx);
     if (prompt === null) {
+      if (action.type === 'merge-pr' && pr?.url) {
+        window.open(pr.url, '_blank');
+        return;
+      }
       onArchive?.();
       return;
     }

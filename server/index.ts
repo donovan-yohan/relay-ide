@@ -618,6 +618,49 @@ async function initializePinConfig(startupConfig: Config): Promise<void> {
   }
 }
 
+function logStartupWarning(message: string, err: unknown): void {
+  logger.warn(message, err instanceof Error ? err.message : err);
+}
+
+function initializeRuntimeDirectories(configDir: string): void {
+  try {
+    initFileLogging(path.join(configDir, 'logs'));
+  } catch (err) {
+    logStartupWarning('File logging disabled: failed to initialize:', err);
+  }
+
+  try {
+    fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+  } catch (err) {
+    logStartupWarning('Telemetry directory creation failed:', err);
+  }
+}
+
+async function ensureFrontendAvailableForStartup(
+  frontendDir: string,
+  packageRoot: string
+): Promise<void> {
+  // Services should use pre-built assets; background startup must not invoke build tooling.
+  if (process.env['RELAY_IDE_BACKGROUND'] === '1') return;
+
+  try {
+    await ensureFrontendBuilt(frontendDir, packageRoot);
+  } catch (err) {
+    logStartupWarning('Frontend build check failed:', err);
+  }
+}
+
+function shutdownAfterListenFailure(
+  err: unknown,
+  gracefulShutdown: () => Promise<void>
+): void {
+  logger.error(
+    'Server failed to start:',
+    err instanceof Error ? err.message : String(err)
+  );
+  void gracefulShutdown();
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
   // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
@@ -730,8 +773,7 @@ async function main(): Promise<void> {
   push.ensureVapidKeys(startupConfig, CONFIG_PATH, saveConfig);
 
   const configDir = getConfigDir(CONFIG_PATH);
-  initFileLogging(path.join(configDir, 'logs'));
-  fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
+  initializeRuntimeDirectories(configDir);
 
   await initializePortAllocatorAndReconcile(
     CONFIG_PATH,
@@ -755,7 +797,7 @@ async function main(): Promise<void> {
   // Build frontend if missing (e.g. fresh clone in development)
   const frontendDir = path.join(__dirname, '..', 'frontend');
   const packageRoot = path.join(__dirname, '..', '..');
-  await ensureFrontendBuilt(frontendDir, packageRoot);
+  await ensureFrontendAvailableForStartup(frontendDir, packageRoot);
 
   const app = express();
 
@@ -2332,7 +2374,7 @@ async function main(): Promise<void> {
       );
       setTimeout(tryListen, delay);
     } else {
-      throw err;
+      shutdownAfterListenFailure(err, gracefulShutdown);
     }
   });
   tryListen();

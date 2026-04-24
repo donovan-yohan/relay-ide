@@ -2,11 +2,12 @@
 set -euo pipefail
 
 # Belayer relay-ide framework: implementation node runner
-# Invokes OpenCode with ultrawork/autopilot for parallel agent execution.
+# Legacy script — the new pipeline uses belayer agent nodes directly.
+# Kept for manual invocation or fallback scenarios.
 #
-# Reads node-context.json for the spec file path, then delegates to opencode.
+# Reads node-context.json for the spec file path, then spawns a belayer agent.
 
-for cmd in jq opencode belayer; do
+for cmd in jq belayer; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not found" >&2; exit 1; }
 done
 
@@ -18,7 +19,6 @@ if [ ! -f "$CONTEXT_FILE" ]; then
 fi
 
 # Extract the input artifact path from node context.
-# Core writes artifacts as a map (e.g. {"design_doc": "path/to/spec.md"}).
 INPUT_PATH=$(jq -r '.artifacts.design_doc // (.artifacts | to_entries | first | .value) // empty' "$CONTEXT_FILE")
 
 if [ -z "$INPUT_PATH" ]; then
@@ -26,20 +26,10 @@ if [ -z "$INPUT_PATH" ]; then
   exit 1
 fi
 
-# Read the prompt template
-PROMPT_FILE=".belayer/prompts/implement.md"
-if [ -f "$PROMPT_FILE" ]; then
-  PROMPT=$(cat "$PROMPT_FILE")
-  # Replace %{INPUT} with actual path
-  PROMPT="${PROMPT//%\{INPUT\}/$INPUT_PATH}"
-else
-  PROMPT="Implement the specification at $INPUT_PATH. Use /ultrawork and /autopilot for parallel execution."
-fi
+# Spawn the supervisor agent to orchestrate implementation.
+# The supervisor will read the spec and spawn backend-dev/web-dev as needed.
+belayer spawn --name supervisor --identity supervisor --profile default \
+  --task "Implement the autoplan spec at $INPUT_PATH. Read the spec, spawn the appropriate implementers, run review and QA, then commit, push, and open a PR targeting nightly."
 
-# Invoke OpenCode in headless mode (opencode run).
-# OpenCode reads CLAUDE.md/AGENTS.md and activates ultrawork/autopilot from keywords in the prompt.
-opencode run "$PROMPT"
-
-# Signal completion to belayer. BELAYER_* env vars are set by the spawner.
-# outcome.Detect checks for new commits (output type: commit).
+# Signal completion to belayer.
 belayer node-complete

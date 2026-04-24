@@ -379,3 +379,15 @@ describe('OpenCodeProtocolAdapter.mapHookEvent', () => {
     expect(evt.inputTokens).toBe(100);
   });
 });
+
+import { createAdapter } from '../server/protocol-adapters/index.js';
+import { OpenCodeAttachedAdapter } from '../server/protocol-adapters/opencode-attached-adapter.js';
+
+describe('Adapter registry', () => {
+  it('createAdapter returns OpenCodeAttachedAdapter for opencode-attached', () => {
+    const adapter = createAdapter('opencode-attached');
+    expect(adapter).toBeInstanceOf(OpenCodeAttachedAdapter);
+    expect(adapter.agentType).toBe('opencode');
+    expect(adapter.runtimeOwnership).toBe('attached');
+  });
+});
