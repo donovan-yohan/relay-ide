@@ -63,8 +63,19 @@ const server = http.createServer((req, res) => {
     req.method === 'POST'
   ) {
     drain(req, (body) => {
-      const payload = JSON.parse(body);
-      if (!Array.isArray(payload.parts)) {
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON body' }));
+        return;
+      }
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        !Array.isArray(payload.parts)
+      ) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'parts is required' }));
         return;

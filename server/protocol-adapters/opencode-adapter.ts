@@ -77,6 +77,8 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     this._status = 'connecting';
     this._processExitCode = null;
     this._processOutputBuffer = '';
+    this._currentTurnId = null;
+    this._openCodeSessionId = null;
     this._partText.clear();
 
     this._apiPort = await getPort();
@@ -277,6 +279,22 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
         turnIndex: this._turnCounter++,
       });
     } catch (err) {
+      const isAbort = err instanceof Error && err.name === 'AbortError';
+      if (isAbort) {
+        if (this._currentTurnId) {
+          this.fire({
+            type: 'chat:turn-completed',
+            turnId: this._currentTurnId,
+            reason: 'interrupted',
+            durationMs: 0,
+            toolCallCount: 0,
+            messageCount: 0,
+          });
+        }
+        this._currentTurnId = null;
+        this.fire({ type: 'chat:session-status', status: 'idle' });
+        return;
+      }
       this._currentTurnId = null;
       this.fire({
         type: 'chat:error',
@@ -308,21 +326,35 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     requestId: string,
     decision: 'allow' | 'allow-always' | 'deny'
   ): Promise<void> {
-    const response = decision === 'deny' ? 'deny' : 'allow';
-    await fetch(
+    if (!this._openCodeSessionId) {
+      throw new Error(
+        'Cannot respond to approval before OpenCode session exists'
+      );
+    }
+    const response =
+      decision === 'deny'
+        ? 'reject'
+        : decision === 'allow-always'
+          ? 'always'
+          : 'once';
+    const res = await fetch(
       `${this._endpoint}/session/${encodeURIComponent(
-        this._openCodeSessionId ?? ''
+        this._openCodeSessionId
       )}/permissions/${encodeURIComponent(requestId)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ response }),
       }
-    ).catch(() => {});
+    );
+    if (!res.ok) {
+      throw new Error(`OpenCode approval response failed: ${res.status}`);
+    }
     this.fire({
       type: 'chat:approval-response',
       requestId,
       decision,
+      respondedBy: 'user',
       turnId: this._currentTurnId ?? 'turn-0',
     });
   }
@@ -347,14 +379,18 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     _cwd: string,
     _options?: SessionOptions
   ): Promise<string> {
+    // OpenCode REST sessions are created in connect() via createOpenCodeSession().
+    // This returns only Relay's placeholder id for generic session APIs.
     return this._config?.sessionId ?? crypto.randomBytes(8).toString('hex');
   }
 
   async resumeSession(_sessionId: string): Promise<void> {
-    // no-op; the OpenCode session is created on connect
+    // no-op; the OpenCode REST session is created on connect.
   }
 
   async forkSession(_sessionId: string): Promise<string> {
+    // Forking is not exposed by the OpenCode REST transport here; return a
+    // placeholder id for callers that require one.
     return crypto.randomBytes(8).toString('hex');
   }
 
@@ -373,6 +409,11 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       }
       if (this._processExitCode !== null) {
         const output = this._processOutputBuffer.trim();
+        if (output.includes('EADDRINUSE')) {
+          throw new Error(
+            `OpenCode server failed to bind port ${this._apiPort}: ${output}`
+          );
+        }
         throw new Error(
           `OpenCode server exited before becoming ready (code ${this._processExitCode})${
             output ? `: ${output}` : ''
@@ -523,6 +564,17 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       return;
     }
     if (status === 'error') {
+      if (this._currentTurnId) {
+        this.fire({
+          type: 'chat:turn-completed',
+          turnId: this._currentTurnId,
+          reason: 'failed',
+          durationMs: 0,
+          toolCallCount: 0,
+          messageCount: 0,
+        });
+        this._currentTurnId = null;
+      }
       this.fire({ type: 'chat:session-status', status: 'error' });
       return;
     }
@@ -579,9 +631,12 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   }
 
   private deltaForPart(part: TextPart, rawDelta: unknown): string {
-    if (typeof rawDelta === 'string') return rawDelta;
     const id = textPartId(part);
     const next = typeof part.text === 'string' ? part.text : '';
+    if (typeof rawDelta === 'string') {
+      this._partText.set(id, next);
+      return rawDelta;
+    }
     const prev = this._partText.get(id) ?? '';
     this._partText.set(id, next);
     return next.startsWith(prev) ? next.slice(prev.length) : next;

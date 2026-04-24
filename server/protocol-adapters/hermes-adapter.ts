@@ -67,6 +67,10 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._status = 'connecting';
     this._processExitCode = null;
     this._processOutputBuffer = '';
+    this._messageAbortController = null;
+    this._currentTurnId = null;
+    this._lastResponseId = null;
+    this._turnCounter = 0;
 
     this._apiKey =
       (config.extra?.['apiToken'] as string | undefined) ??
@@ -145,6 +149,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   protected async onDisconnect(): Promise<void> {
     this._messageAbortController?.abort();
     this._messageAbortController = null;
+    this._currentTurnId = null;
+    this._lastResponseId = null;
 
     if (this._process) {
       try {
@@ -220,6 +226,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
+        this._lastResponseId = null;
         this.fire({
           type: 'chat:turn-completed',
           turnId,
@@ -229,6 +236,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
           messageCount: 0,
         });
         this.fire({ type: 'chat:session-status', status: 'idle' });
+        this._currentTurnId = null;
+        return;
       } else {
         this.fire({
           type: 'chat:error',
@@ -237,6 +246,14 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
             err instanceof Error ? err.message : 'Hermes sendMessage failed',
           retryable: true,
           turnId,
+        });
+        this.fire({
+          type: 'chat:turn-completed',
+          turnId,
+          reason: 'failed',
+          durationMs: 0,
+          toolCallCount: 0,
+          messageCount: 0,
         });
         this.fire({ type: 'chat:session-status', status: 'error' });
       }
@@ -249,26 +266,43 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
   async interrupt(_turnId: string): Promise<void> {
     this._messageAbortController?.abort();
+    const sessionId = this._config?.sessionId;
+    if (!sessionId) return;
+    try {
+      await fetch(
+        `${this.baseUrl()}/session/${encodeURIComponent(sessionId)}/abort`,
+        { method: 'POST' }
+      );
+    } catch (err) {
+      logger.warn('Failed to send Hermes abort request:', err);
+    }
   }
 
   async respondToApproval(
     requestId: string,
     decision: 'allow' | 'allow-always' | 'deny'
   ): Promise<void> {
+    const action = decision === 'deny' ? 'deny' : 'allow';
+    const res = await fetch(
+      `${this.baseUrl()}/permission/${encodeURIComponent(requestId)}/${action}`,
+      { method: 'POST' }
+    );
+    if (!res.ok) {
+      throw new Error(`Hermes approval response failed: ${res.status}`);
+    }
     this.fire({
       type: 'chat:approval-response',
       requestId,
       decision,
+      respondedBy: 'user',
       turnId: this._currentTurnId ?? 'turn-0',
     });
   }
 
   async respondToInput(
     _requestId: string,
-    answers: Record<string, string[]>
+    _answers: Record<string, string[]>
   ): Promise<void> {
-    const firstAnswer = Object.values(answers)[0]?.[0];
-    if (!firstAnswer) return;
     // Hermes gateway does not currently support structured input questions
     // via REST; this is a no-op.
   }
@@ -438,6 +472,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         const error = response?.['error'] as
           | Record<string, unknown>
           | undefined;
+        this._lastResponseId = null;
         this.fire({
           type: 'chat:error',
           kind: 'protocol',
@@ -459,9 +494,39 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         this.fire({ type: 'chat:session-status', status: 'error' });
         break;
       }
+      case 'permission.requested':
+      case 'permission.asked': {
+        this.handlePermissionRequested(event);
+        break;
+      }
       default:
         logger.debug('Unhandled Hermes Responses event:', type);
     }
+  }
+
+  private handlePermissionRequested(event: SseEvent): void {
+    const props = event.data;
+    const permission = props['permission'] as
+      | Record<string, unknown>
+      | undefined;
+    this.fire({
+      type: 'chat:approval-request',
+      turnId: this._currentTurnId ?? 'turn-0',
+      requestId: String(
+        props['requestID'] ?? props['requestId'] ?? props['id'] ?? 'req-0'
+      ),
+      kind: 'permission',
+      toolName: String(permission?.['tool'] ?? props['toolName'] ?? 'unknown'),
+      description: String(
+        permission?.['description'] ?? props['description'] ?? ''
+      ),
+      target: String(permission?.['target'] ?? props['target'] ?? ''),
+    });
+    this.fire({
+      type: 'chat:session-status',
+      status: 'idle',
+      waitingOn: 'approval',
+    });
   }
 
   /** Helper to build full ChatEvent from partial fields. */

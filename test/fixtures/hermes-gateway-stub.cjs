@@ -14,7 +14,9 @@ const url = require('url');
 
 const port = parseInt(process.env.API_SERVER_PORT || process.argv[2], 10);
 if (!port || isNaN(port)) {
-  console.error('Usage: node hermes-gateway-stub.js <port>');
+  console.error(
+    'Usage: API_SERVER_PORT=1234 node hermes-gateway-stub.js (or: node hermes-gateway-stub.js <port>)'
+  );
   process.exit(1);
 }
 
@@ -44,7 +46,15 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      const data = JSON.parse(body);
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (err) {
+        console.error('Invalid Hermes stub request JSON:', err);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON body' }));
+        return;
+      }
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',

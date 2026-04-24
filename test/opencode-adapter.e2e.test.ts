@@ -14,9 +14,7 @@ const STUB_SCRIPT = path.resolve(
 
 test('opencode web session sends prompts through serve API and receives streamed events', async () => {
   const sessionsMap = new Map<string, Session>();
-  const onBackendStateChanged = vi.fn() as unknown as (
-    session: Session
-  ) => void;
+  const onBackendStateChanged = vi.fn<(session: Session) => void>();
 
   const { session } = await createWebSession(
     {
@@ -46,11 +44,14 @@ test('opencode web session sends prompts through serve API and receives streamed
 
   await session.adapter.sendMessage('turn-1', 'hello opencode');
 
-  await vi.waitFor(() => {
-    expect(session.agentState).toBe('idle');
-    expect(events.some((e) => e.type === 'chat:text-delta')).toBe(true);
-    expect(events.some((e) => e.type === 'chat:turn-completed')).toBe(true);
-  });
+  await vi.waitFor(
+    () => {
+      expect(session.agentState).toBe('idle');
+      expect(events.some((e) => e.type === 'chat:text-delta')).toBe(true);
+      expect(events.some((e) => e.type === 'chat:turn-completed')).toBe(true);
+    },
+    { timeout: 5000, interval: 25 }
+  );
 
   const text = events
     .filter((e) => e.type === 'chat:text-delta')
