@@ -712,9 +712,12 @@ async function getChangedFiles(
 
   if (statusEntries.length === 0) return [];
 
-  const numstatArgs = base
-    ? ['diff', '--numstat', FIND_RENAMES, `${base}...HEAD`]
-    : ['diff', '--numstat', FIND_RENAMES, 'HEAD'];
+  const numstatArgs =
+    base === 'cached'
+      ? ['diff', '--cached', '--numstat', FIND_RENAMES]
+      : base
+        ? ['diff', '--numstat', FIND_RENAMES, `${base}...HEAD`]
+        : ['diff', '--numstat', FIND_RENAMES, 'HEAD'];
   const numstatMap = await buildNumstatMap(repoPath, numstatArgs, exec);
 
   const files: ChangedFile[] = [];
@@ -765,8 +768,22 @@ async function getFileDiff(
 
   const { stdout } = await exec('git', args, { cwd: repoPath, timeout: 10000 });
 
-  // If empty (no changes or untracked), try --no-index for new files
-  if (!stdout.trim()) {
+  // If empty, try --no-index for untracked files only
+  if (!stdout.trim() && !base) {
+    try {
+      const { stdout: statusOut } = await exec(
+        'git',
+        ['status', '--porcelain', '--', filePath],
+        { cwd: repoPath, timeout: 10000 }
+      );
+      const isUntracked = statusOut.trim().startsWith('??');
+      if (!isUntracked) {
+        return stdout;
+      }
+    } catch {
+      // If status check fails, fall through to --no-index
+    }
+
     try {
       const { stdout: noIndexOut } = await exec(
         'git',

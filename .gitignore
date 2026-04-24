@@ -32,6 +32,7 @@ analytics.db-wal
 .opencode/
 .gstack/
 .worktrees/
+relay-ide-tmp/
 worktree-meta/
 pending-sessions.json
 pending-telemetry.json
@@ -39,6 +40,7 @@ skills-lock.json
 scorecard.png
 
 # Runtime data
+logs/
 scrollback/
 telemetry/
 
