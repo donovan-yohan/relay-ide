@@ -158,7 +158,7 @@ describe('hooks router — token middleware', () => {
     sessions.delete('token-mismatch');
   });
 
-  it('returns 400 when session is not PTY mode', async () => {
+  it('allows web sessions to receive hooks', async () => {
     sessions.set(
       'web-session',
       makeSession({
@@ -172,9 +172,7 @@ describe('hooks router — token middleware', () => {
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/PTY/);
+    expect(res.status).toBe(200);
     sessions.delete('web-session');
   });
 

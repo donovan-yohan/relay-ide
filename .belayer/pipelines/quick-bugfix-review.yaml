@@ -3,7 +3,8 @@ name: quick-bugfix-review
 nodes:
   - name: code-review
     type: agent
-    vendor: codex
+    vendor: nous
+    model: kimi-k2.6
     prompt: "$review"
     input: { type: commit }
     output: { type: gate_result }
@@ -19,7 +20,8 @@ nodes:
 
   - name: ship
     type: agent
-    vendor: claude
+    vendor: nous
+    model: kimi-k2.6
     prompt: |
       Create a pull request targeting nightly for the bug fix.
       Include what was broken and how it was fixed.
