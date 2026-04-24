@@ -124,6 +124,9 @@ export interface ProtocolAdapter {
   /** Current connection status */
   readonly status: AdapterStatus;
 
+  /** Who owns the agent runtime process */
+  readonly runtimeOwnership: 'spawned' | 'attached';
+
   /** Agent type identifier (e.g. 'codex', 'opencode', 'claude', 'mock') */
   readonly agentType: string;
 }
@@ -175,6 +178,7 @@ export abstract class BaseProtocolAdapter implements ProtocolAdapter {
   abstract resumeSession(sessionId: string): Promise<void>;
   abstract forkSession(sessionId: string): Promise<string>;
   abstract readonly status: AdapterStatus;
+  abstract readonly runtimeOwnership: 'spawned' | 'attached';
   abstract readonly agentType: string;
 
   on(handler: ChatEventHandler): () => void {

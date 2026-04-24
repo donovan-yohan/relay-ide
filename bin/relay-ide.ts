@@ -341,6 +341,7 @@ if (
     });
   } else {
     runServiceCommand(() => {
+      process.env['RELAY_IDE_BACKGROUND'] = '1';
       service.install({
         configPath: resolveConfigPath(),
         port: getArg('--port') ?? String(DEFAULTS.port),

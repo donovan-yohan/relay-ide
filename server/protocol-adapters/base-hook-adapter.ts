@@ -27,6 +27,8 @@ export abstract class BaseHookAdapter extends BaseProtocolAdapter {
   protected _turnCounter = 0;
   protected _currentTurnId: string | null = null;
 
+  readonly runtimeOwnership = 'spawned' as const;
+
   get status(): AdapterStatus {
     return this._status;
   }
