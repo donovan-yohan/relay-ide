@@ -1,0 +1,23 @@
+AGENTS.md
+  b7901de65aa7a4be 3-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "430bad5d265dffed3deb8151d0e355655147c411",
+  "prompts": {
+    "b7901de65aa7a4be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8494ec73-ebbe-46a2-a1c5-04b26948997a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 54,
+      "total_deletions": 74,
+      "accepted_lines": 49,
+      "overriden_lines": 0
+    }
+  }
+}
