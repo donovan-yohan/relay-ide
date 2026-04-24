@@ -6,7 +6,7 @@ import { estimateTerminalDimensions } from '../../lib/utils.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { createAgentSession } from '../../lib/session-utils.js';
-import type { AgentType } from '../../lib/types.js';
+import type { AgentType, FrameworkInfo } from '../../lib/types.js';
 import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
@@ -22,9 +22,41 @@ interface Props {
   onSessionCreated?: (sessionId: string) => void;
 }
 
+type SessionLaunchMode = 'pty' | 'web';
+
+export interface SessionModeOption {
+  value: SessionLaunchMode;
+  label: string;
+}
+
+export function getSessionModeOptions(
+  frameworks: FrameworkInfo[],
+  selectedAgent: AgentType
+): SessionModeOption[] {
+  const selectedFramework = frameworks.find((f) => f.id === selectedAgent);
+  if (selectedFramework?.capabilities.supportsWebSessions === true) {
+    return [
+      { value: 'pty', label: 'tui' },
+      { value: 'web', label: 'web' },
+    ];
+  }
+  return [{ value: 'pty', label: 'tui' }];
+}
+
+export function defaultSessionModeForAgent(
+  frameworks: FrameworkInfo[],
+  selectedAgent: AgentType
+): SessionLaunchMode {
+  const supportsWeb = getSessionModeOptions(frameworks, selectedAgent).some(
+    (option) => option.value === 'web'
+  );
+  return selectedAgent === 'hermes' && supportsWeb ? 'web' : 'pty';
+}
+
 interface FormState {
   claudeArgsInput: string;
   selectedAgent: AgentType;
+  sessionMode: SessionLaunchMode;
   yoloMode: boolean;
   continueExisting: boolean;
 }
@@ -33,6 +65,7 @@ function defaultForm(): FormState {
   return {
     claudeArgsInput: '',
     selectedAgent: 'claude',
+    sessionMode: 'pty',
     yoloMode: false,
     continueExisting: false,
   };
@@ -51,7 +84,7 @@ async function createSessionFromForm(
     repoPath: workspacePath,
     worktreePath,
     type: 'agent',
-    mode: form.selectedAgent === 'hermes' ? 'web' : 'pty',
+    mode: form.sessionMode,
     continue: form.continueExisting,
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
@@ -80,8 +113,19 @@ function CustomizeSessionBody({
           {
             id: form.selectedAgent,
             displayName: form.selectedAgent,
-          },
+            command: form.selectedAgent,
+            capabilities: {
+              supportsContinue: false,
+              supportsYolo: false,
+              supportsHooks: false,
+              supportsTelemetry: false,
+              supportsWebSessions: false,
+            },
+            eventSource: 'parser',
+          } satisfies FrameworkInfo,
         ];
+
+  const modeOptions = getSessionModeOptions(frameworkOptions, form.selectedAgent);
 
   return (
     <div className="customize-session-body-fields">
@@ -97,9 +141,16 @@ function CustomizeSessionBody({
           className="customize-session-dialog-select"
           data-track="dialog.customize-session.agent"
           value={form.selectedAgent}
-          onChange={(e) =>
-            onFormChange({ selectedAgent: e.currentTarget.value as AgentType })
-          }
+          onChange={(e) => {
+            const selectedAgent = e.currentTarget.value as AgentType;
+            onFormChange({
+              selectedAgent,
+              sessionMode: defaultSessionModeForAgent(
+                frameworkOptions,
+                selectedAgent
+              ),
+            });
+          }}
         >
           {frameworkOptions.map((framework) => (
             <option key={framework.id} value={framework.id}>
@@ -108,6 +159,30 @@ function CustomizeSessionBody({
           ))}
         </select>
       </div>
+      {modeOptions.length > 1 && (
+        <div className="customize-session-dialog-field">
+          <label className="customize-session-dialog-label" htmlFor="cs-mode">
+            interface
+          </label>
+          <select
+            id="cs-mode"
+            className="customize-session-dialog-select"
+            data-track="dialog.customize-session.mode"
+            value={form.sessionMode}
+            onChange={(e) =>
+              onFormChange({
+                sessionMode: e.currentTarget.value as SessionLaunchMode,
+              })
+            }
+          >
+            {modeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <TuiCheckbox
         checked={form.continueExisting}
         onChange={(checked) => onFormChange({ continueExisting: checked })}
@@ -163,10 +238,12 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setWorkspaceName(workspace.name);
         await useConfigStore.getState().refreshConfig();
         const config = useConfigStore.getState();
+        const selectedAgent =
+          preselectedFramework ?? (config.defaultAgent as AgentType);
         setForm({
           claudeArgsInput: '',
-          selectedAgent:
-            preselectedFramework ?? (config.defaultAgent as AgentType),
+          selectedAgent,
+          sessionMode: defaultSessionModeForAgent(config.frameworks, selectedAgent),
           yoloMode: config.defaultYolo,
           continueExisting: config.defaultContinue,
         });

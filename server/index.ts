@@ -2063,6 +2063,7 @@ async function main(): Promise<void> {
       repoPath,
       worktreePath,
       type = 'agent',
+      mode,
       agent,
       yolo,
       useTmux,
@@ -2081,6 +2082,7 @@ async function main(): Promise<void> {
       repoPath?: string;
       worktreePath?: string | null;
       type?: 'agent' | 'terminal';
+      mode?: 'pty' | 'web';
       agent?: AgentType;
       yolo?: boolean;
       useTmux?: boolean;
@@ -2187,22 +2189,29 @@ async function main(): Promise<void> {
     });
     const resolvedAgent = resolved.agent;
 
-    // Web-only agents bypass PTY and use ProtocolAdapter + WebSocket
-    if (resolvedAgent === 'hermes') {
+    // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
+    // Hermes remains web by default for backwards compatibility with the
+    // original native-Hermes launch path.
+    const requestedMode = mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
+    if (requestedMode === 'web') {
       const displayName = sessions.nextAgentName();
-      const { session } = await sessions.createWeb({
-        agentType: resolvedAgent,
-        cwd,
-        repoPath,
-        repoName: name,
-        worktreePath: worktreePath ?? null,
-        branchName: requestBranchName ?? '',
-        displayName,
-        port: startupConfig.port,
-        configDir,
-      });
-      gitWatcher.watch(session.cwd);
-      res.status(201).json(session);
+      try {
+        const { session } = await sessions.createWeb({
+          agentType: resolvedAgent,
+          cwd,
+          repoPath,
+          repoName: name,
+          worktreePath: worktreePath ?? null,
+          branchName: requestBranchName ?? '',
+          displayName,
+          port: startupConfig.port,
+          configDir,
+        });
+        gitWatcher.watch(session.cwd);
+        res.status(201).json(session);
+      } catch (err) {
+        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+      }
       return;
     }
 
