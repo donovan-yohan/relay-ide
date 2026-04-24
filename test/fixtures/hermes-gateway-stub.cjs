@@ -3,23 +3,22 @@
 /**
  * Mock Hermes Gateway Stub
  *
- * Lightweight HTTP server that mimics the Hermes gateway protocol
+ * Lightweight HTTP server that mimics the Hermes API server protocol
  * expected by server/protocol-adapters/hermes-adapter.ts.
  *
- * Usage: node hermes-gateway-stub.js <port>
+ * Usage: API_SERVER_PORT=1234 node hermes-gateway-stub.js
  */
 
 const http = require('http');
 const url = require('url');
 
-const port = parseInt(process.argv[2], 10);
+const port = parseInt(process.env.API_SERVER_PORT || process.argv[2], 10);
 if (!port || isNaN(port)) {
-  console.error('Usage: node hermes-gateway-stub.js <port>');
+  console.error(
+    'Usage: API_SERVER_PORT=1234 node hermes-gateway-stub.js (or: node hermes-gateway-stub.js <port>)'
+  );
   process.exit(1);
 }
-
-/** @type {http.ServerResponse | null} */
-let sseClient = null;
 
 const server = http.createServer((req, res) => {
   const parsed = url.parse(req.url, true);
@@ -42,28 +41,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // SSE events stream
-  if (parsed.pathname === '/events') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    sseClient = res;
-    return;
-  }
-
-  // Send a prompt
-  if (parsed.pathname.match(/^\/session\/[^/]+\/prompt$/)) {
+  // OpenAI-compatible Responses streaming endpoint
+  if (parsed.pathname === '/v1/responses') {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      const data = JSON.parse(body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ accepted: true }));
-
-      // Emit mock SSE events after a short delay
-      setTimeout(() => emitTurn(data.text), 50);
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (err) {
+        console.error('Invalid Hermes stub request JSON:', err);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON body' }));
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      emitTurn(res, data.input);
     });
     return;
   }
@@ -86,26 +83,44 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-function sendEvent(event) {
-  if (!sseClient) return;
-  sseClient.write(`data: ${JSON.stringify(event)}\n\n`);
+function sendEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify({ type: event, ...data })}\n\n`);
 }
 
-function emitTurn(userText) {
-  const turnId = `turn-${Date.now()}`;
+function emitTurn(res, userText) {
+  const responseId = `resp_${Date.now()}`;
+  sendEvent(res, 'response.created', {
+    response: { id: responseId, status: 'in_progress', output: [] },
+  });
 
   // Stream a few tokens
   const words = ['hello', 'from', 'hermes', 'stub'];
   words.forEach((word, i) => {
     setTimeout(() => {
-      sendEvent({ type: 'token', data: { token: word + ' ' } });
+      sendEvent(res, 'response.output_text.delta', { delta: word + ' ' });
     }, i * 30);
   });
 
-  // Done event
-  setTimeout(() => {
-    sendEvent({ type: 'done', data: {} });
-  }, words.length * 30 + 50);
+  setTimeout(
+    () => {
+      sendEvent(res, 'response.completed', {
+        response: {
+          id: responseId,
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: `echo: ${userText}` }],
+            },
+          ],
+        },
+      });
+      res.end();
+    },
+    words.length * 30 + 50
+  );
 }
 
 server.listen(port, '127.0.0.1', () => {

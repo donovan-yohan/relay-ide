@@ -13,17 +13,31 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('hermes-adapter');
 
-interface HermesEvent {
-  type: string;
-  data?: Record<string, unknown>;
+interface SseEvent {
+  event?: string;
+  data: Record<string, unknown>;
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return { raw: value };
+  }
 }
 
 /**
  * Hermes protocol adapter.
  *
- * Spawns `hermes gateway run` as a per-session lightweight daemon,
- * discovers the gateway port, then consumes the SSE event stream
- * and drives the agent via REST calls.
+ * Spawns `hermes gateway run` with its local API server enabled, then drives
+ * the agent through Hermes' OpenAI-compatible Responses streaming endpoint.
  */
 export class HermesProtocolAdapter extends BaseProtocolAdapter {
   readonly agentType = 'hermes';
@@ -32,13 +46,15 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _status: AdapterStatus = 'disconnected';
   private _config: AdapterConfig | null = null;
   private _process: ChildProcess | null = null;
-  private _gatewayPort = 0;
-  private _gatewayHost = '127.0.0.1';
-  private _sseAbortController: AbortController | null = null;
+  private _processExitCode: number | null = null;
+  private _processOutputBuffer = '';
+  private _apiPort = 0;
+  private _apiHost = '127.0.0.1';
   private _messageAbortController: AbortController | null = null;
   private _turnCounter = 0;
   private _currentTurnId: string | null = null;
-  private _apiToken: string | null = null;
+  private _apiKey: string | null = null;
+  private _lastResponseId: string | null = null;
 
   get status(): AdapterStatus {
     return this._status;
@@ -49,25 +65,35 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   async connect(config: AdapterConfig): Promise<void> {
     this._config = config;
     this._status = 'connecting';
+    this._processExitCode = null;
+    this._processOutputBuffer = '';
+    this._messageAbortController = null;
+    this._currentTurnId = null;
+    this._lastResponseId = null;
+    this._turnCounter = 0;
 
-    // Resolve auth token from framework override or extra config
-    this._apiToken =
-      (config.extra?.['apiToken'] as string | undefined) ?? null;
+    this._apiKey =
+      (config.extra?.['apiToken'] as string | undefined) ??
+      crypto.randomBytes(24).toString('hex');
 
-    // Find an open port for the gateway
-    this._gatewayPort = await getPort();
+    this._apiPort = await getPort();
+    this._apiHost =
+      (config.extra?.['host'] as string | undefined) ?? '127.0.0.1';
 
     // Build spawn command — allow commandOverride via extra config for tests
     const command =
       (config.extra?.['command'] as string | undefined) ?? 'hermes';
-    const defaultArgs = ['gateway', 'run', '--port', String(this._gatewayPort)];
-    const args = ((config.extra?.['args'] as string[] | undefined) ?? defaultArgs).map(
-      (arg) => arg.replace(/\{\{PORT\}\}/g, String(this._gatewayPort))
-    );
-    const env: Record<string, string> = {};
-    if (this._apiToken) {
-      env['HERMES_API_TOKEN'] = this._apiToken;
-    }
+    const defaultArgs = ['gateway', 'run', '--accept-hooks', '--replace'];
+    const args = (
+      (config.extra?.['args'] as string[] | undefined) ?? defaultArgs
+    ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
+    const env: Record<string, string> = {
+      API_SERVER_ENABLED: '1',
+      API_SERVER_HOST: this._apiHost,
+      API_SERVER_PORT: String(this._apiPort),
+      API_SERVER_KEY: this._apiKey,
+      HERMES_ACCEPT_HOOKS: '1',
+    };
 
     this._process = spawn(command, args, {
       cwd: config.cwd,
@@ -75,7 +101,16 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    const captureProcessOutput = (chunk: Buffer): void => {
+      this._processOutputBuffer = (
+        this._processOutputBuffer + chunk.toString()
+      ).slice(-2000);
+    };
+    this._process.stdout?.on('data', captureProcessOutput);
+    this._process.stderr?.on('data', captureProcessOutput);
+
     this._process.on('exit', (code) => {
+      this._processExitCode = code;
       logger.info(`[hermes] process exited with code ${code}`);
       if (this._status === 'connected') {
         this._status = 'error';
@@ -100,25 +135,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       });
     });
 
-    // Wait for gateway HTTP health endpoint to become available
     await this.waitForGateway();
-
-    // Start SSE consumer
-    this._sseAbortController = new AbortController();
-    this.consumeSse().catch((err) => {
-      if (err instanceof Error && err.name !== 'AbortError') {
-        logger.error('Hermes SSE error:', err);
-        if (this._status === 'connected') {
-          this._status = 'error';
-          this.fire({
-            type: 'chat:error',
-            kind: 'protocol',
-            message: 'Hermes SSE connection error',
-            retryable: true,
-          });
-        }
-      }
-    });
 
     this._status = 'connected';
     this.fire({
@@ -130,10 +147,10 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   }
 
   protected async onDisconnect(): Promise<void> {
-    this._sseAbortController?.abort();
     this._messageAbortController?.abort();
-    this._sseAbortController = null;
     this._messageAbortController = null;
+    this._currentTurnId = null;
+    this._lastResponseId = null;
 
     if (this._process) {
       try {
@@ -167,62 +184,125 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = new AbortController();
     this._currentTurnId = turnId;
 
-    const url = `${this.baseUrl()}/session/${encodeURIComponent(sessionId)}/prompt`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this._apiToken ? { Authorization: `Bearer ${this._apiToken}` } : {}),
-      },
-      body: JSON.stringify({ text: content }),
-      signal: this._messageAbortController.signal,
-    });
-
-    if (!res.ok) {
-      throw new Error(`Hermes sendMessage failed: ${res.status}`);
-    }
-
     this.fire({ type: 'chat:session-status', status: 'active' });
     this.fire({
       type: 'chat:turn-started',
       turnId,
       turnIndex: this._turnCounter++,
     });
+
+    const body: Record<string, unknown> = {
+      input: content,
+      stream: true,
+      store: true,
+      session_id: sessionId,
+    };
+    if (this._lastResponseId) {
+      body['previous_response_id'] = this._lastResponseId;
+    }
+
+    try {
+      const url = `${this.baseUrl()}/v1/responses`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this._apiKey ? { Authorization: `Bearer ${this._apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: this._messageAbortController.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Hermes sendMessage failed: ${res.status}`);
+      }
+      if (!res.body) {
+        throw new Error(
+          'Hermes sendMessage failed: streaming response has no body'
+        );
+      }
+
+      await this.consumeResponsesSse(res.body);
+    } catch (err) {
+      const isAbort = err instanceof Error && err.name === 'AbortError';
+      if (isAbort) {
+        this._lastResponseId = null;
+        this.fire({
+          type: 'chat:turn-completed',
+          turnId,
+          reason: 'interrupted',
+          durationMs: 0,
+          toolCallCount: 0,
+          messageCount: 0,
+        });
+        this.fire({ type: 'chat:session-status', status: 'idle' });
+        this._currentTurnId = null;
+        return;
+      } else {
+        this.fire({
+          type: 'chat:error',
+          kind: 'protocol',
+          message:
+            err instanceof Error ? err.message : 'Hermes sendMessage failed',
+          retryable: true,
+          turnId,
+        });
+        this.fire({
+          type: 'chat:turn-completed',
+          turnId,
+          reason: 'failed',
+          durationMs: 0,
+          toolCallCount: 0,
+          messageCount: 0,
+        });
+        this.fire({ type: 'chat:session-status', status: 'error' });
+      }
+      this._currentTurnId = null;
+      throw err;
+    } finally {
+      this._messageAbortController = null;
+    }
   }
 
   async interrupt(_turnId: string): Promise<void> {
+    this._messageAbortController?.abort();
     const sessionId = this._config?.sessionId;
     if (!sessionId) return;
-
-    const url = `${this.baseUrl()}/session/${encodeURIComponent(sessionId)}/abort`;
-    await fetch(url, {
-      method: 'POST',
-      ...(this._messageAbortController
-        ? { signal: this._messageAbortController.signal }
-        : {}),
-    }).catch(() => {});
+    try {
+      await fetch(
+        `${this.baseUrl()}/session/${encodeURIComponent(sessionId)}/abort`,
+        { method: 'POST' }
+      );
+    } catch (err) {
+      logger.warn('Failed to send Hermes abort request:', err);
+    }
   }
 
   async respondToApproval(
     requestId: string,
     decision: 'allow' | 'allow-always' | 'deny'
   ): Promise<void> {
-    const allow = decision === 'allow' || decision === 'allow-always';
-    const url = `${this.baseUrl()}/permission/${encodeURIComponent(requestId)}/${allow ? 'allow' : 'deny'}`;
-    await fetch(url, {
-      method: 'POST',
-      ...(this._messageAbortController
-        ? { signal: this._messageAbortController.signal }
-        : {}),
-    }).catch(() => {});
+    const action = decision === 'deny' ? 'deny' : 'allow';
+    const res = await fetch(
+      `${this.baseUrl()}/permission/${encodeURIComponent(requestId)}/${action}`,
+      { method: 'POST' }
+    );
+    if (!res.ok) {
+      throw new Error(`Hermes approval response failed: ${res.status}`);
+    }
+    this.fire({
+      type: 'chat:approval-response',
+      requestId,
+      decision,
+      respondedBy: 'user',
+      turnId: this._currentTurnId ?? 'turn-0',
+    });
   }
 
   async respondToInput(
     _requestId: string,
-    answers: Record<string, string[]>
+    _answers: Record<string, string[]>
   ): Promise<void> {
-    const firstAnswer = Object.values(answers)[0]?.[0];
-    if (!firstAnswer) return;
     // Hermes gateway does not currently support structured input questions
     // via REST; this is a no-op.
   }
@@ -247,7 +327,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private baseUrl(): string {
-    return `http://${this._gatewayHost}:${this._gatewayPort}`;
+    return `http://${this._apiHost}:${this._apiPort}`;
   }
 
   private async waitForGateway(): Promise<void> {
@@ -256,13 +336,23 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(healthUrl, { signal: AbortSignal.timeout(500) });
+        const res = await fetch(healthUrl, {
+          signal: AbortSignal.timeout(500),
+        });
         if (res.ok) {
-          logger.info('Hermes gateway ready on port', this._gatewayPort);
+          logger.info('Hermes API server ready on port', this._apiPort);
           return;
         }
       } catch {
         // expected while gateway is starting
+      }
+      if (this._processExitCode !== null) {
+        const output = this._processOutputBuffer.trim();
+        throw new Error(
+          `Hermes gateway exited before API server became ready (code ${this._processExitCode})${
+            output ? `: ${output}` : ''
+          }`
+        );
       }
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -272,22 +362,14 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     );
   }
 
-  private async consumeSse(): Promise<void> {
-    const url = `${this.baseUrl()}/events`;
-    const res = await fetch(url, {
-      ...(this._sseAbortController
-        ? { signal: this._sseAbortController.signal }
-        : {}),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Hermes SSE endpoint returned ${res.status}`);
-    }
-    if (!res.body) throw new Error('SSE response has no body');
-
-    const reader = res.body.getReader();
+  private async consumeResponsesSse(
+    body: ReadableStream<Uint8Array>
+  ): Promise<void> {
+    const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventName: string | undefined;
+    let eventData = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -295,156 +377,163 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
-
-      let eventData = '';
       for (const line of lines) {
-        if (line.startsWith('data:')) {
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
           const dataLine = line.slice(5).trim();
           eventData = eventData ? eventData + '\n' + dataLine : dataLine;
         } else if (line.trim() === '' && eventData) {
           try {
-            const data = JSON.parse(eventData) as HermesEvent;
-            this.mapHermesEvent(data);
+            const data = JSON.parse(eventData) as Record<string, unknown>;
+            this.mapResponsesEvent(
+              eventName ? { event: eventName, data } : { data }
+            );
           } catch (err) {
             logger.debug('Failed to parse Hermes SSE event:', err);
           }
+          eventName = undefined;
           eventData = '';
         }
       }
     }
   }
 
-  private mapHermesEvent(event: HermesEvent): void {
-    const handler = this._eventHandlers[event.type];
-    if (handler) {
-      handler.call(this, event);
-    } else {
-      logger.debug('Unhandled Hermes event:', event.type);
+  private mapResponsesEvent(event: SseEvent): void {
+    const type =
+      typeof event.data['type'] === 'string' ? event.data['type'] : event.event;
+    const turnId = this._currentTurnId ?? 'turn-0';
+
+    switch (type) {
+      case 'response.created': {
+        const response = event.data['response'] as
+          | Record<string, unknown>
+          | undefined;
+        const responseId = response?.['id'];
+        if (typeof responseId === 'string') {
+          this._lastResponseId = responseId;
+        }
+        break;
+      }
+      case 'response.output_text.delta': {
+        const delta = event.data['delta'];
+        if (typeof delta === 'string' && delta) {
+          this.fire({
+            type: 'chat:text-delta',
+            turnId,
+            messageId: `msg-${turnId}`,
+            delta,
+          });
+        }
+        break;
+      }
+      case 'response.output_item.added': {
+        const item = event.data['item'] as Record<string, unknown> | undefined;
+        if (item?.['type'] !== 'function_call') break;
+        this.fire({
+          type: 'chat:tool-call',
+          turnId,
+          toolCallId: String(
+            item['call_id'] ?? item['id'] ?? crypto.randomUUID()
+          ),
+          toolName: String(item['name'] ?? 'unknown'),
+          description: '',
+          input: parseToolArguments(item['arguments']),
+          status: 'running',
+        });
+        break;
+      }
+      case 'response.completed': {
+        const response = event.data['response'] as
+          | Record<string, unknown>
+          | undefined;
+        const responseId = response?.['id'];
+        if (typeof responseId === 'string') {
+          this._lastResponseId = responseId;
+        }
+        if (this._currentTurnId) {
+          this.fire({
+            type: 'chat:turn-completed',
+            turnId: this._currentTurnId,
+            reason: 'completed',
+            durationMs: 0,
+            toolCallCount: 0,
+            messageCount: 1,
+          });
+          this._currentTurnId = null;
+        }
+        this.fire({ type: 'chat:session-status', status: 'idle' });
+        break;
+      }
+      case 'response.failed': {
+        const response = event.data['response'] as
+          | Record<string, unknown>
+          | undefined;
+        const error = response?.['error'] as
+          | Record<string, unknown>
+          | undefined;
+        this._lastResponseId = null;
+        this.fire({
+          type: 'chat:error',
+          kind: 'protocol',
+          message: String(error?.['message'] ?? 'Hermes response failed'),
+          retryable: true,
+          turnId,
+        });
+        if (this._currentTurnId) {
+          this.fire({
+            type: 'chat:turn-completed',
+            turnId: this._currentTurnId,
+            reason: 'failed',
+            durationMs: 0,
+            toolCallCount: 0,
+            messageCount: 0,
+          });
+          this._currentTurnId = null;
+        }
+        this.fire({ type: 'chat:session-status', status: 'error' });
+        break;
+      }
+      case 'permission.requested':
+      case 'permission.asked': {
+        this.handlePermissionRequested(event);
+        break;
+      }
+      default:
+        logger.debug('Unhandled Hermes Responses event:', type);
     }
   }
 
-  private readonly _eventHandlers: Record<
-    string,
-    ((event: HermesEvent) => void) | undefined
-  > = {
-    token: (event) => {
-      const turnId = this._currentTurnId ?? 'turn-0';
-      const token = String(event.data?.['token'] ?? '');
-      if (!token) return;
-      this.fire({
-        type: 'chat:text-delta',
-        turnId,
-        messageId: `msg-${turnId}`,
-        delta: token,
-      });
-    },
-
-    thinking: (event) => {
-      const turnId = this._currentTurnId ?? 'turn-0';
-      const content = String(event.data?.['content'] ?? '');
-      if (!content) return;
-      this.fire({
-        type: 'chat:reasoning',
-        turnId,
-        messageId: `msg-${turnId}`,
-        content,
-        isDelta: Boolean(event.data?.['isDelta'] ?? true),
-      });
-    },
-
-    tool_start: (event) => {
-      const turnId = this._currentTurnId ?? 'turn-0';
-      const tool = event.data?.['tool'] as Record<string, unknown> | undefined;
-      this.fire({
-        type: 'chat:tool-call',
-        turnId,
-        toolCallId: String(event.data?.['toolCallId'] ?? crypto.randomUUID()),
-        toolName: String(tool?.['name'] ?? event.data?.['toolName'] ?? 'unknown'),
-        description: String(tool?.['description'] ?? ''),
-        input: (tool?.['input'] ?? event.data?.['input'] ?? {}) as Record<
-          string,
-          unknown
-        >,
-        status: 'running',
-      });
-    },
-
-    tool_end: (event) => {
-      const turnId = this._currentTurnId ?? 'turn-0';
-      const result = event.data?.['result'] as Record<string, unknown> | undefined;
-      const errorVal = result?.['error'] ?? event.data?.['error'];
-      this.fire({
-        type: 'chat:tool-result',
-        turnId,
-        toolCallId: String(event.data?.['toolCallId'] ?? 'tool-0'),
-        toolName: String(
-          event.data?.['toolName'] ?? result?.['toolName'] ?? 'unknown'
-        ),
-        status: errorVal ? 'error' : 'completed',
-        output: String(result?.['output'] ?? event.data?.['output'] ?? ''),
-        durationMs: Number(result?.['durationMs'] ?? event.data?.['durationMs'] ?? 0),
-        ...(errorVal ? { error: String(errorVal) } : {}),
-      });
-    },
-
-    approval_request: (event) => {
-      const turnId = this._currentTurnId ?? 'turn-0';
-      this.fire({
-        type: 'chat:approval-request',
-        turnId,
-        requestId: String(event.data?.['requestId'] ?? 'req-0'),
-        kind: 'permission',
-        toolName: String(event.data?.['toolName'] ?? 'unknown'),
-        description: String(event.data?.['description'] ?? ''),
-        target: String(event.data?.['target'] ?? ''),
-      });
-      this.fire({
-        type: 'chat:session-status',
-        status: 'idle',
-        waitingOn: 'approval',
-      });
-    },
-
-    done: () => {
-      if (this._currentTurnId) {
-        this.fire({
-          type: 'chat:turn-completed',
-          turnId: this._currentTurnId,
-          reason: 'completed',
-          durationMs: 0,
-          toolCallCount: 0,
-          messageCount: 1,
-        });
-        this._currentTurnId = null;
-      }
-      this.fire({ type: 'chat:session-status', status: 'idle' });
-    },
-
-    apperror: (event) => {
-      const message = String(event.data?.['message'] ?? 'Unknown error');
-      this.fire({
-        type: 'chat:error',
-        kind: 'unknown',
-        message,
-        retryable: true,
-      });
-      this.fire({ type: 'chat:session-status', status: 'error' });
-    },
-
-    compressed: (event) => {
-      this.fire({
-        type: 'chat:compaction',
-        turnId: this._currentTurnId ?? undefined,
-        summary: String(event.data?.['summary'] ?? ''),
-        tokensBefore: Number(event.data?.['tokensBefore'] ?? 0),
-        tokensAfter: Number(event.data?.['tokensAfter'] ?? 0),
-      });
-    },
-  };
+  private handlePermissionRequested(event: SseEvent): void {
+    const props = event.data;
+    const permission = props['permission'] as
+      | Record<string, unknown>
+      | undefined;
+    this.fire({
+      type: 'chat:approval-request',
+      turnId: this._currentTurnId ?? 'turn-0',
+      requestId: String(
+        props['requestID'] ?? props['requestId'] ?? props['id'] ?? 'req-0'
+      ),
+      kind: 'permission',
+      toolName: String(permission?.['tool'] ?? props['toolName'] ?? 'unknown'),
+      description: String(
+        permission?.['description'] ?? props['description'] ?? ''
+      ),
+      target: String(permission?.['target'] ?? props['target'] ?? ''),
+    });
+    this.fire({
+      type: 'chat:session-status',
+      status: 'idle',
+      waitingOn: 'approval',
+    });
+  }
 
   /** Helper to build full ChatEvent from partial fields. */
   private fire(
-    partial: { type: import('../../shared/chat-events.js').ChatEvent['type'] } & Record<string, unknown>
+    partial: {
+      type: import('../../shared/chat-events.js').ChatEvent['type'];
+    } & Record<string, unknown>
   ): void {
     const sessionId = this._config?.sessionId ?? '';
     this.emit({
