@@ -18,7 +18,7 @@ import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
 import BranchSwitcher from './BranchSwitcher.js';
 import TargetBranchSwitcher from './TargetBranchSwitcher.js';
-import { useUiStore } from '../lib/stores/ui.js';
+import { DEFAULT_UTILITY_RAIL_STATE, useUiStore } from '../lib/stores/ui.js';
 import RenameWarningModal from './dialogs/RenameWarningModal.js';
 import Tooltip from './Tooltip.js';
 import './PrTopBar.css';
@@ -349,14 +349,21 @@ function PrActions({
   onRefresh,
   onAction,
 }: PrActionsProps) {
-  const utilityRailByWorkspace = useUiStore((s) => s.utilityRailByWorkspace);
-  const getUtilityRailState = useUiStore((s) => s.getUtilityRailState);
+  const workspaceUtilityRailState = useUiStore((s) =>
+    utilityRailWorkspacePath
+      ? s.utilityRailByWorkspace[utilityRailWorkspacePath]
+      : undefined
+  );
+  const hydrateUtilityRailState = useUiStore((s) => s.hydrateUtilityRailState);
   const toggleUtilityRailVisible = useUiStore(
     (s) => s.toggleUtilityRailVisible
   );
+  useEffect(() => {
+    if (utilityRailWorkspacePath)
+      hydrateUtilityRailState(utilityRailWorkspacePath);
+  }, [hydrateUtilityRailState, utilityRailWorkspacePath]);
   const utilityRailState = utilityRailWorkspacePath
-    ? (utilityRailByWorkspace[utilityRailWorkspacePath] ??
-      getUtilityRailState(utilityRailWorkspacePath))
+    ? (workspaceUtilityRailState ?? DEFAULT_UTILITY_RAIL_STATE)
     : null;
   const utilityRailVisible = utilityRailState?.visible ?? true;
 

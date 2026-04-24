@@ -21,35 +21,40 @@ import './WorkspaceUtilityRail.css';
 
 export interface UtilityRailReviewPanelProps {
   workspacePath: string;
+  reviewFilePath?: string | undefined;
 }
 
 export function UtilityRailReviewPanel({
   workspacePath,
+  reviewFilePath,
 }: UtilityRailReviewPanelProps) {
   const fileDiffSource = useUiStore((s) => s.fileDiffSource);
-  const fileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const setFileDiffSource = useUiStore((s) => s.setFileDiffSource);
-  const setFileDiffDefaultBranch = useUiStore(
-    (s) => s.setFileDiffDefaultBranch
-  );
   const setFileDiffViewMode = useUiStore((s) => s.setFileDiffViewMode);
-  const railState = useUiStore((s) => s.getUtilityRailState(workspacePath));
+  const [defaultBranch, setDefaultBranch] = useState('main');
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [diffLoading, setDiffLoading] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(
-    railState.reviewFilePath ?? null
+    reviewFilePath ?? null
   );
   const [fileDiff, setFileDiff] = useState('');
   const [summary, setSummary] = useState('');
   const filesRef = useRef<ChangedFile[]>([]);
-  filesRef.current = files;
 
   const base = useMemo(
-    () => diffSourceToBase(fileDiffSource, fileDiffDefaultBranch) ?? '',
-    [fileDiffSource, fileDiffDefaultBranch]
+    () => diffSourceToBase(fileDiffSource, defaultBranch) ?? '',
+    [fileDiffSource, defaultBranch]
   );
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    setActiveFilePath(reviewFilePath ?? null);
+  }, [reviewFilePath, workspacePath]);
 
   useEffect(() => {
     if (!workspacePath) return;
@@ -77,11 +82,18 @@ export function UtilityRailReviewPanel({
   }, [workspacePath, base]);
 
   useEffect(() => {
-    if (!workspacePath || fileDiffDefaultBranch !== 'main') return;
+    if (!workspacePath) return;
+    let cancelled = false;
+    setDefaultBranch('main');
     fetchDefaultBranch(workspacePath)
-      .then(setFileDiffDefaultBranch)
+      .then((branch) => {
+        if (!cancelled) setDefaultBranch(branch);
+      })
       .catch(() => undefined);
-  }, [workspacePath, fileDiffDefaultBranch, setFileDiffDefaultBranch]);
+    return () => {
+      cancelled = true;
+    };
+  }, [workspacePath]);
 
   useEffect(() => {
     if (!workspacePath || !activeFilePath) {
@@ -132,7 +144,7 @@ export function UtilityRailReviewPanel({
         <DiffSourceToggle
           value={fileDiffSource}
           onchange={setFileDiffSource}
-          defaultBranch={fileDiffDefaultBranch}
+          defaultBranch={defaultBranch}
         />
         <button
           className="utility-panel-btn"

@@ -23,6 +23,7 @@ export interface SplitPaneLayoutProps {
   /** Current file viewer ratio (0-1) */
   fileViewerRatio?: number;
   onRightSidebarWidthChange?: (width: number) => void;
+  onRightSidebarResizeEnd?: (width: number) => void;
   onFileViewerRatioChange?: (ratio: number) => void;
   onToggleRightSidebar?: () => void;
   rightSidebarResizable?: boolean;
@@ -39,6 +40,7 @@ export function SplitPaneLayout({
   rightSidebarWidth: externalRightSidebarWidth,
   fileViewerRatio: externalFileViewerRatio,
   onRightSidebarWidthChange,
+  onRightSidebarResizeEnd,
   onFileViewerRatioChange,
   onToggleRightSidebar,
   rightSidebarResizable = true,
@@ -66,6 +68,8 @@ export function SplitPaneLayout({
   draggingRef.current = dragging;
   const rightSidebarEffectiveWidthRef = useRef(rightSidebarEffectiveWidth);
   rightSidebarEffectiveWidthRef.current = rightSidebarEffectiveWidth;
+  const rightSidebarWidthValueRef = useRef(rightSidebarWidthValue);
+  rightSidebarWidthValueRef.current = rightSidebarWidthValue;
 
   const handlePointerDown = useCallback(
     (handle: DragHandle, e: React.PointerEvent<HTMLDivElement>) => {
@@ -96,6 +100,7 @@ export function SplitPaneLayout({
           Math.min(rightSidebarMaxWidth, newRightWidth)
         );
         setInternalRightSidebarWidth(clamped);
+        rightSidebarWidthValueRef.current = clamped;
         onRightSidebarWidthChange?.(clamped);
       } else if (currentDragging === FILE_VIEWER_HANDLE) {
         const rsw = rightSidebarEffectiveWidthRef.current;
@@ -114,6 +119,9 @@ export function SplitPaneLayout({
     }
 
     function onUp() {
+      if (draggingRef.current === RIGHT_SIDEBAR_HANDLE) {
+        onRightSidebarResizeEnd?.(rightSidebarWidthValueRef.current);
+      }
       setDragging(null);
     }
 
@@ -126,6 +134,7 @@ export function SplitPaneLayout({
   }, [
     dragging,
     onRightSidebarWidthChange,
+    onRightSidebarResizeEnd,
     onFileViewerRatioChange,
     rightSidebarMaxWidth,
     rightSidebarMinWidth,

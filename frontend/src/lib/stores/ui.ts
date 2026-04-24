@@ -52,6 +52,12 @@ export interface OpenUtilityRailTabOptions {
   preserveSelectedTab?: boolean;
 }
 
+export const DEFAULT_UTILITY_RAIL_STATE: WorkspaceUtilityRailState = {
+  visible: true,
+  selectedRailTab: null,
+  width: DEFAULT_UTILITY_RAIL_WIDTH,
+};
+
 export function fileTabKey(filePath: string, tabType?: FileTabType): string {
   return `${tabType ?? 'code'}::${filePath}`;
 }
@@ -172,12 +178,14 @@ function utilityRailStorageKey(workspacePath: string): string {
   return `${UTILITY_RAIL_STATE_KEY_PREFIX}${workspacePath}`;
 }
 
+const utilityRailStateCache = new Map<string, WorkspaceUtilityRailState>();
+
+export function clearUtilityRailStateCacheForTesting(): void {
+  utilityRailStateCache.clear();
+}
+
 function defaultUtilityRailState(): WorkspaceUtilityRailState {
-  return {
-    visible: true,
-    selectedRailTab: null,
-    width: DEFAULT_UTILITY_RAIL_WIDTH,
-  };
+  return { ...DEFAULT_UTILITY_RAIL_STATE };
 }
 
 function normalizeUtilityRailState(
@@ -234,18 +242,28 @@ function normalizeUtilityRailState(
 function loadUtilityRailState(
   workspacePath: string
 ): WorkspaceUtilityRailState {
+  const cached = utilityRailStateCache.get(workspacePath);
+  if (cached) return cached;
   const stored = ls(utilityRailStorageKey(workspacePath));
-  if (!stored) return defaultUtilityRailState();
+  if (!stored) {
+    const state = defaultUtilityRailState();
+    utilityRailStateCache.set(workspacePath, state);
+    return state;
+  }
   try {
-    return normalizeUtilityRailState(
+    const state = normalizeUtilityRailState(
       JSON.parse(stored) as Partial<WorkspaceUtilityRailState>
     );
+    utilityRailStateCache.set(workspacePath, state);
+    return state;
   } catch {
-    return defaultUtilityRailState();
+    const state = defaultUtilityRailState();
+    utilityRailStateCache.set(workspacePath, state);
+    return state;
   }
 }
 
-function saveUtilityRailState(
+function persistUtilityRailState(
   workspacePath: string,
   state: WorkspaceUtilityRailState
 ): void {
@@ -254,12 +272,17 @@ function saveUtilityRailState(
 
 function mutateUtilityRailState(
   workspacePath: string,
-  mutate: (state: WorkspaceUtilityRailState) => void
+  currentState: WorkspaceUtilityRailState | undefined,
+  mutate: (state: WorkspaceUtilityRailState) => void,
+  persist = true
 ): WorkspaceUtilityRailState {
-  const next = loadUtilityRailState(workspacePath);
+  const next = normalizeUtilityRailState(
+    currentState ?? loadUtilityRailState(workspacePath)
+  );
   mutate(next);
   const normalized = normalizeUtilityRailState(next);
-  saveUtilityRailState(workspacePath, normalized);
+  utilityRailStateCache.set(workspacePath, normalized);
+  if (persist) persistUtilityRailState(workspacePath, normalized);
   return normalized;
 }
 
@@ -292,6 +315,7 @@ export interface UiState {
   rightSidebarTab: RightSidebarTab;
   utilityRailByWorkspace: Record<string, WorkspaceUtilityRailState>;
   getUtilityRailState: (workspacePath: string) => WorkspaceUtilityRailState;
+  hydrateUtilityRailState: (workspacePath: string) => void;
   setSelectedUtilityRailTab: (
     workspacePath: string,
     tab: UtilityRailTab | null
@@ -304,6 +328,7 @@ export interface UiState {
   setUtilityRailVisible: (workspacePath: string, visible: boolean) => void;
   toggleUtilityRailVisible: (workspacePath: string) => void;
   setUtilityRailWidth: (workspacePath: string, width: number) => void;
+  saveUtilityRailState: (workspacePath: string) => void;
   setAnchoredUtilityPaneWidth: (
     workspacePath: string,
     tab: UtilityRailTab,
@@ -430,10 +455,24 @@ export const useUiStore = create<UiState>()((set, get) => ({
   getUtilityRailState: (workspacePath) =>
     get().utilityRailByWorkspace[workspacePath] ??
     loadUtilityRailState(workspacePath),
-  setSelectedUtilityRailTab: (workspacePath, tab) => {
-    const next = mutateUtilityRailState(workspacePath, (state) => {
-      state.selectedRailTab = tab;
+  hydrateUtilityRailState: (workspacePath) => {
+    if (!workspacePath || get().utilityRailByWorkspace[workspacePath]) return;
+    const next = loadUtilityRailState(workspacePath);
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
     });
+  },
+  setSelectedUtilityRailTab: (workspacePath, tab) => {
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.selectedRailTab = tab;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -442,10 +481,14 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   openUtilityRailTab: (workspacePath, tab, options) => {
-    const next = mutateUtilityRailState(workspacePath, (state) => {
-      state.visible = true;
-      if (!options?.preserveSelectedTab) state.selectedRailTab = tab;
-    });
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.visible = true;
+        if (!options?.preserveSelectedTab) state.selectedRailTab = tab;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -454,9 +497,13 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   setUtilityRailVisible: (workspacePath, visible) => {
-    const next = mutateUtilityRailState(workspacePath, (state) => {
-      state.visible = visible;
-    });
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.visible = visible;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -465,9 +512,13 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   toggleUtilityRailVisible: (workspacePath) => {
-    const next = mutateUtilityRailState(workspacePath, (state) => {
-      state.visible = !state.visible;
-    });
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.visible = !state.visible;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -476,9 +527,14 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   setUtilityRailWidth: (workspacePath, width) => {
-    const next = mutateUtilityRailState(workspacePath, (state) => {
-      state.width = clampUtilityRailWidth(width);
-    });
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.width = clampUtilityRailWidth(width);
+      },
+      false
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -486,14 +542,24 @@ export const useUiStore = create<UiState>()((set, get) => ({
       },
     });
   },
+  saveUtilityRailState: (workspacePath) => {
+    const state =
+      get().utilityRailByWorkspace[workspacePath] ??
+      loadUtilityRailState(workspacePath);
+    persistUtilityRailState(workspacePath, state);
+  },
   setAnchoredUtilityPaneWidth: (workspacePath, tab, width) => {
-    const nextState = mutateUtilityRailState(workspacePath, (state) => {
-      const next = state.anchoredPaneWidths
-        ? { ...state.anchoredPaneWidths }
-        : {};
-      next[tab] = clampUtilityRailWidth(width);
-      state.anchoredPaneWidths = next;
-    });
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const next = state.anchoredPaneWidths
+          ? { ...state.anchoredPaneWidths }
+          : {};
+        next[tab] = clampUtilityRailWidth(width);
+        state.anchoredPaneWidths = next;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
@@ -502,11 +568,15 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   setUtilitySurfacePlacement: (workspacePath, tab, placement) => {
-    const nextState = mutateUtilityRailState(workspacePath, (state) => {
-      const next = state.placements ? { ...state.placements } : {};
-      next[tab] = placement;
-      state.placements = next;
-    });
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const next = state.placements ? { ...state.placements } : {};
+        next[tab] = placement;
+        state.placements = next;
+      }
+    );
     set({
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,

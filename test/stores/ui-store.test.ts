@@ -34,10 +34,12 @@ import {
   DEFAULT_UTILITY_RAIL_WIDTH,
   MIN_UTILITY_RAIL_WIDTH,
   MAX_UTILITY_RAIL_WIDTH,
+  clearUtilityRailStateCacheForTesting,
 } from '../../frontend/src/lib/stores/ui.js';
 
 function resetStore() {
   for (const key of Object.keys(storage)) delete storage[key];
+  clearUtilityRailStateCacheForTesting();
   useUiStore.setState({
     sidebarOpen: false,
     sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -188,6 +190,25 @@ describe('ui Zustand store', () => {
       expect(useUiStore.getState().getUtilityRailState('/repo/a').width).toBe(
         MAX_UTILITY_RAIL_WIDTH
       );
+    });
+
+    it('persists utility rail width only when saved', () => {
+      useUiStore.getState().hydrateUtilityRailState('/repo/a');
+      useUiStore.getState().setUtilityRailWidth('/repo/a', 999);
+
+      expect(storage['relay-utility-rail::/repo/a']).toBe(undefined);
+
+      useUiStore.getState().saveUtilityRailState('/repo/a');
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        `"width":${MAX_UTILITY_RAIL_WIDTH}`
+      );
+    });
+
+    it('returns a stable default utility rail state before hydration', () => {
+      const first = useUiStore.getState().getUtilityRailState('/repo/a');
+      const second = useUiStore.getState().getUtilityRailState('/repo/a');
+
+      expect(second).toBe(first);
     });
 
     it('clamps anchored utility pane widths and stores placements', () => {

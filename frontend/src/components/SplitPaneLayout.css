@@ -38,6 +38,15 @@
   background: var(--border, #333);
 }
 
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
 .resize-handle:hover,
 .resize-handle.active {
   background-color: var(--accent, #d97757);
@@ -50,6 +59,11 @@
 
 .resize-handle.disabled {
   cursor: default;
+}
+
+.resize-handle.disabled:hover,
+.resize-handle.disabled.active {
+  background-color: var(--border, #333);
 }
 
 .pane-right-sidebar.collapsed {

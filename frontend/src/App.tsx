@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './lib/stores/auth.js';
 import {
   useUiStore,
+  DEFAULT_UTILITY_RAIL_STATE,
   MAX_UTILITY_RAIL_WIDTH,
   MIN_UTILITY_RAIL_WIDTH,
   UTILITY_ICON_RAIL_WIDTH,
@@ -364,9 +365,9 @@ function TerminalAreaContent({
   // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
-  const utilityRailByWorkspace = useUiStore((s) => s.utilityRailByWorkspace);
-  const getUtilityRailState = useUiStore((s) => s.getUtilityRailState);
+  const hydrateUtilityRailState = useUiStore((s) => s.hydrateUtilityRailState);
   const setUtilityRailWidth = useUiStore((s) => s.setUtilityRailWidth);
+  const saveUtilityRailState = useUiStore((s) => s.saveUtilityRailState);
   const toggleUtilityRailVisible = useUiStore(
     (s) => s.toggleUtilityRailVisible
   );
@@ -391,6 +392,11 @@ function TerminalAreaContent({
     repos,
     sessions,
   } = useTerminalDerivedState();
+  const utilityRailWorkspaceState = useUiStore((s) =>
+    activeWorkspaceCwd
+      ? s.utilityRailByWorkspace[activeWorkspaceCwd]
+      : undefined
+  );
 
   // ── Onboarding hints ──────────────────────────────────────────────────────
   const { sessionJustStarted } = useTerminalOnboardingHints(
@@ -467,9 +473,12 @@ function TerminalAreaContent({
     [openFileTab]
   );
 
+  useEffect(() => {
+    if (activeWorkspaceCwd) hydrateUtilityRailState(activeWorkspaceCwd);
+  }, [activeWorkspaceCwd, hydrateUtilityRailState]);
+
   const utilityRailState =
-    utilityRailByWorkspace[activeWorkspaceCwd] ??
-    getUtilityRailState(activeWorkspaceCwd);
+    utilityRailWorkspaceState ?? DEFAULT_UTILITY_RAIL_STATE;
   const utilityRailWidth = utilityRailRenderedWidth(utilityRailState);
   const utilityRailResizable =
     utilityRailState.visible && utilityRailState.selectedRailTab !== null;
@@ -481,6 +490,11 @@ function TerminalAreaContent({
     },
     [activeWorkspaceCwd, setUtilityRailWidth, utilityRailResizable]
   );
+
+  const handleUtilityRailResizeEnd = useCallback(() => {
+    if (activeWorkspaceCwd && utilityRailResizable)
+      saveUtilityRailState(activeWorkspaceCwd);
+  }, [activeWorkspaceCwd, saveUtilityRailState, utilityRailResizable]);
 
   const handleToggleUtilityRail = useCallback(() => {
     if (activeWorkspaceCwd) toggleUtilityRailVisible(activeWorkspaceCwd);
@@ -562,6 +576,7 @@ function TerminalAreaContent({
             rightSidebarWidth={utilityRailWidth}
             fileViewerRatio={fileViewerRatio}
             onRightSidebarWidthChange={handleUtilityRailWidthChange}
+            onRightSidebarResizeEnd={handleUtilityRailResizeEnd}
             onFileViewerRatioChange={saveFileViewerRatio}
             onToggleRightSidebar={handleToggleUtilityRail}
             rightSidebarResizable={utilityRailResizable}

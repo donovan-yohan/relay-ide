@@ -25,6 +25,11 @@ vi.mock('../frontend/src/lib/ws.js', () => ({
 }));
 
 vi.mock('../frontend/src/lib/stores/ui.js', () => ({
+  DEFAULT_UTILITY_RAIL_STATE: {
+    visible: true,
+    selectedRailTab: null,
+    width: 320,
+  },
   useUiStore: (selector: (state: unknown) => unknown) =>
     selector({
       utilityRailByWorkspace: {},
@@ -33,6 +38,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => ({
         selectedRailTab: null,
         width: 320,
       }),
+      hydrateUtilityRailState: vi.fn(),
       toggleUtilityRailVisible: vi.fn(),
     }),
 }));

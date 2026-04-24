@@ -55,6 +55,16 @@
   overflow: hidden;
 }
 
+.utility-pane-panel {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.utility-pane-panel[hidden] {
+  display: none;
+}
+
 .utility-icon-rail {
   height: 100%;
   background: var(--bg, #000);
@@ -94,15 +104,10 @@
   width: 18px;
   height: 18px;
   fill: none;
-  stroke: currentColor;
+  stroke: currentcolor;
   stroke-width: 1.5;
   stroke-linecap: square;
   stroke-linejoin: miter;
-}
-
-.utility-icon-btn--bottom {
-  align-self: end;
-  font-size: var(--font-size-sm, 0.8125rem);
 }
 
 .utility-review-panel {

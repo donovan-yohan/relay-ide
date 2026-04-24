@@ -49,7 +49,7 @@ export function UtilityRailStatsPanel({
       <div className="utility-kv-row">
         <span>tokens</span>
         <span>
-          d
+          d{' '}
           {activeTelemetry
             ? formatCompact(activeTelemetry.totalInputTokens)
             : '-'}{' '}
@@ -78,7 +78,7 @@ export function UtilityRailStatsPanel({
       <div className="utility-kv-row">
         <span>tokens</span>
         <span>
-          d{formatCompact(aggregate.totalInputTokens)} u
+          d {formatCompact(aggregate.totalInputTokens)} u{' '}
           {formatCompact(aggregate.totalOutputTokens)}
         </span>
       </div>

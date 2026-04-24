@@ -97,21 +97,43 @@ export function WorkspaceUtilityRail({
     (s) => s.setSelectedUtilityRailTab
   );
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
+  const selectedTab = railState.selectedRailTab;
+  const selectedMeta = TAB_META.find((tab) => tab.id === selectedTab);
 
   const handleTabClick = useCallback(
     (tab: UtilityRailTab) => {
-      if (railState.selectedRailTab === tab) {
+      if (selectedTab === tab) {
         setSelectedUtilityRailTab(workspacePath, null);
       } else {
         openUtilityRailTab(workspacePath, tab);
       }
     },
-    [
-      openUtilityRailTab,
-      railState.selectedRailTab,
-      setSelectedUtilityRailTab,
-      workspacePath,
-    ]
+    [openUtilityRailTab, selectedTab, setSelectedUtilityRailTab, workspacePath]
+  );
+
+  const handleTabKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>, tab: UtilityRailTab) => {
+      const currentIndex = TAB_META.findIndex((item) => item.id === tab);
+      let nextIndex: number | null = null;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+        nextIndex = (currentIndex + 1) % TAB_META.length;
+      } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+        nextIndex = (currentIndex - 1 + TAB_META.length) % TAB_META.length;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = TAB_META.length - 1;
+      }
+      if (nextIndex === null) return;
+      event.preventDefault();
+      const nextTab = TAB_META[nextIndex]?.id;
+      if (!nextTab) return;
+      openUtilityRailTab(workspacePath, nextTab);
+      requestAnimationFrame(() => {
+        document.getElementById(`utility-rail-tab-${nextTab}`)?.focus();
+      });
+    },
+    [openUtilityRailTab, workspacePath]
   );
 
   if (!railState.visible) return null;
@@ -125,38 +147,66 @@ export function WorkspaceUtilityRail({
         .filter(Boolean)
         .join(' ')}
     >
-      {railState.selectedRailTab ? (
-        <div className="utility-selected-pane">
-          <div className="utility-pane-header">
-            <span className="utility-pane-title">
-              {TAB_META.find((tab) => tab.id === railState.selectedRailTab)
-                ?.label ?? railState.selectedRailTab}
-            </span>
+      <div className="utility-selected-pane">
+        <div className="utility-pane-header">
+          <span className="utility-pane-title">
+            {selectedMeta?.label ?? selectedTab ?? ''}
+          </span>
+        </div>
+        <div className="utility-pane-body">
+          <div
+            id="utility-rail-panel-files"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-files"
+            tabIndex={selectedTab === 'files' ? 0 : -1}
+            hidden={selectedTab !== 'files'}
+          >
+            <UtilityRailFilesPanel
+              workspacePath={workspacePath}
+              changedFilesData={changedFilesData}
+              onFileSelect={onFileSelect}
+              {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
+            />
           </div>
-          <div className="utility-pane-body">
-            {railState.selectedRailTab === 'files' ? (
-              <UtilityRailFilesPanel
-                workspacePath={workspacePath}
-                changedFilesData={changedFilesData}
-                onFileSelect={onFileSelect}
-                {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
-              />
-            ) : null}
-            {railState.selectedRailTab === 'review' ? (
-              <UtilityRailReviewPanel workspacePath={workspacePath} />
-            ) : null}
-            {railState.selectedRailTab === 'logs' ? (
-              <UtilityRailLogsPanel activeSession={activeSession} />
-            ) : null}
-            {railState.selectedRailTab === 'stats' ? (
-              <UtilityRailStatsPanel
-                activeSession={activeSession}
-                workspaceSessions={workspaceSessions}
-              />
-            ) : null}
+          <div
+            id="utility-rail-panel-review"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-review"
+            tabIndex={selectedTab === 'review' ? 0 : -1}
+            hidden={selectedTab !== 'review'}
+          >
+            <UtilityRailReviewPanel
+              workspacePath={workspacePath}
+              reviewFilePath={railState.reviewFilePath}
+            />
+          </div>
+          <div
+            id="utility-rail-panel-logs"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-logs"
+            tabIndex={selectedTab === 'logs' ? 0 : -1}
+            hidden={selectedTab !== 'logs'}
+          >
+            <UtilityRailLogsPanel activeSession={activeSession} />
+          </div>
+          <div
+            id="utility-rail-panel-stats"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-stats"
+            tabIndex={selectedTab === 'stats' ? 0 : -1}
+            hidden={selectedTab !== 'stats'}
+          >
+            <UtilityRailStatsPanel
+              activeSession={activeSession}
+              workspaceSessions={workspaceSessions}
+            />
           </div>
         </div>
-      ) : null}
+      </div>
       <div
         className="utility-icon-rail"
         style={{ width: UTILITY_ICON_RAIL_WIDTH }}
@@ -172,32 +222,26 @@ export function WorkspaceUtilityRail({
               side="left"
             >
               <button
+                id={`utility-rail-tab-${tab.id}`}
                 className={[
                   'utility-icon-btn',
-                  railState.selectedRailTab === tab.id && 'active',
+                  selectedTab === tab.id && 'active',
                 ]
                   .filter(Boolean)
                   .join(' ')}
                 type="button"
                 role="tab"
-                aria-selected={railState.selectedRailTab === tab.id}
+                aria-selected={selectedTab === tab.id}
+                aria-controls={`utility-rail-panel-${tab.id}`}
                 aria-label={tab.label}
                 onClick={() => handleTabClick(tab.id)}
+                onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
               >
                 {tab.icon}
               </button>
             </Tooltip>
           ))}
         </div>
-        <Tooltip label="more utility tools" side="left">
-          <button
-            className="utility-icon-btn utility-icon-btn--bottom"
-            type="button"
-            aria-label="more utility tools"
-          >
-            ...
-          </button>
-        </Tooltip>
       </div>
     </div>
   );
