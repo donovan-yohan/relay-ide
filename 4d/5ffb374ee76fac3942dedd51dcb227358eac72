@@ -1,0 +1,25 @@
+.gitignore
+  b7901de65aa7a4be 14-15
+.agents/permissions.yaml
+  b7901de65aa7a4be 22-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "4d5ffb374ee76fac3942dedd51dcb227358eac72",
+  "prompts": {
+    "b7901de65aa7a4be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8494ec73-ebbe-46a2-a1c5-04b26948997a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 22,
+      "overriden_lines": 0
+    }
+  }
+}
