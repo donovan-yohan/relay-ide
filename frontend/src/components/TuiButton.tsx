@@ -1,7 +1,14 @@
 import React from 'react';
+import Tooltip from './Tooltip.js';
+import type { TooltipSide } from './Tooltip.js';
 import './TuiButton.css';
 
-export type TuiButtonVariant = 'primary' | 'ghost' | 'danger' | 'success' | 'info';
+export type TuiButtonVariant =
+  | 'primary'
+  | 'ghost'
+  | 'danger'
+  | 'success'
+  | 'info';
 
 export interface TuiButtonProps {
   variant?: TuiButtonVariant;
@@ -10,9 +17,20 @@ export interface TuiButtonProps {
   type?: 'button' | 'submit' | 'reset';
   href?: string;
   shortcut?: string;
-  onClick?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
-  onMouseEnter?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
-  onMouseLeave?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void;
+  tooltip?: string;
+  tooltipDescription?: string;
+  tooltipActionId?: string;
+  tooltipShortcut?: string;
+  tooltipSide?: TooltipSide;
+  onClick?: (
+    e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>
+  ) => void;
+  onMouseEnter?: (
+    e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>
+  ) => void;
+  onMouseLeave?: (
+    e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>
+  ) => void;
   className?: string;
   children: React.ReactNode;
   [key: string]: unknown;
@@ -25,6 +43,11 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
   type = 'button',
   href,
   shortcut,
+  tooltip,
+  tooltipDescription,
+  tooltipActionId,
+  tooltipShortcut,
+  tooltipSide,
   onClick,
   onMouseEnter,
   onMouseLeave,
@@ -47,8 +70,30 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
     <kbd className="tui-btn__shortcut">{shortcut}</kbd>
   ) : null;
 
-  if (href) {
+  function withTooltip(element: React.ReactElement) {
+    if (
+      !tooltip &&
+      !tooltipDescription &&
+      !tooltipActionId &&
+      !tooltipShortcut
+    ) {
+      return element;
+    }
     return (
+      <Tooltip
+        {...(tooltip ? { label: tooltip } : {})}
+        {...(tooltipDescription ? { description: tooltipDescription } : {})}
+        {...(tooltipActionId ? { actionId: tooltipActionId } : {})}
+        {...(tooltipShortcut ? { shortcut: tooltipShortcut } : {})}
+        {...(tooltipSide ? { side: tooltipSide } : {})}
+      >
+        {element}
+      </Tooltip>
+    );
+  }
+
+  if (href) {
+    return withTooltip(
       <a
         className={classes}
         href={href}
@@ -65,7 +110,7 @@ export const TuiButton: React.FC<TuiButtonProps> = ({
     );
   }
 
-  return (
+  return withTooltip(
     <button
       className={classes}
       type={type}

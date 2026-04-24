@@ -48,6 +48,7 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 | `TuiButton.tsx`                      | TUI-styled button with box-drawing corner characters                                                                                                                 |
 | `TuiCheckbox.tsx`                    | Terminal-style `[x]`/`[ ]` checkbox component                                                                                                                        |
 | `TuiInput.tsx`                       | Terminal-style input with block cursor                                                                                                                               |
+| `Tooltip.tsx`                        | Design-system hover/focus tooltip for controls; can resolve labels/descriptions/shortcuts from command registry action IDs                                           |
 | `MarqueeText.tsx`                    | Horizontal scroll-on-hover for overflow text (Spotify-style)                                                                                                         |
 | `CipherText.tsx`                     | Cipher-decode loading/transition animation                                                                                                                           |
 | `Hint.tsx`                           | Progressive disclosure onboarding hint component                                                                                                                     |

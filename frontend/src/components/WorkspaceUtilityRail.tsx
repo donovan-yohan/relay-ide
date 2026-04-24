@@ -11,11 +11,13 @@ import UtilityRailFilesPanel from './UtilityRailFilesPanel.js';
 import UtilityRailReviewPanel from './UtilityRailReviewPanel.js';
 import UtilityRailLogsPanel from './UtilityRailLogsPanel.js';
 import UtilityRailStatsPanel from './UtilityRailStatsPanel.js';
+import Tooltip from './Tooltip.js';
 import './WorkspaceUtilityRail.css';
 
 const TAB_META: Array<{
   id: UtilityRailTab;
   label: string;
+  actionId?: string;
   icon: React.ReactNode;
 }> = [
   {
@@ -31,6 +33,7 @@ const TAB_META: Array<{
   {
     id: 'review',
     label: 'git diff',
+    actionId: 'workspace.open-diff-view',
     icon: (
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M7 4v16" />
@@ -163,33 +166,39 @@ export function WorkspaceUtilityRail({
       >
         <div className="utility-icon-group">
           {TAB_META.map((tab) => (
-            <button
+            <Tooltip
               key={tab.id}
-              className={[
-                'utility-icon-btn',
-                railState.selectedRailTab === tab.id && 'active',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              type="button"
-              role="tab"
-              aria-selected={railState.selectedRailTab === tab.id}
-              aria-label={tab.label}
-              title={tab.label}
-              onClick={() => handleTabClick(tab.id)}
+              label={tab.label}
+              {...(tab.actionId ? { actionId: tab.actionId } : {})}
+              side="left"
             >
-              {tab.icon}
-            </button>
+              <button
+                className={[
+                  'utility-icon-btn',
+                  railState.selectedRailTab === tab.id && 'active',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                type="button"
+                role="tab"
+                aria-selected={railState.selectedRailTab === tab.id}
+                aria-label={tab.label}
+                onClick={() => handleTabClick(tab.id)}
+              >
+                {tab.icon}
+              </button>
+            </Tooltip>
           ))}
         </div>
-        <button
-          className="utility-icon-btn utility-icon-btn--bottom"
-          type="button"
-          aria-label="more utility tools"
-          title="more"
-        >
-          ...
-        </button>
+        <Tooltip label="more utility tools" side="left">
+          <button
+            className="utility-icon-btn utility-icon-btn--bottom"
+            type="button"
+            aria-label="more utility tools"
+          >
+            ...
+          </button>
+        </Tooltip>
       </div>
     </div>
   );
