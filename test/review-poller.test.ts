@@ -110,6 +110,10 @@ function makeMockExec(opts: {
       return { stdout: '', stderr: '' };
     }
 
+    if (command === 'git' && argv[0] === 'rev-parse') {
+      return { stdout: 'abc123\n', stderr: '' };
+    }
+
     if (command === 'git' && argv[0] === 'worktree') {
       if (opts.worktreeError) throw opts.worktreeError;
       return { stdout: '', stderr: '' };
