@@ -1,0 +1,53 @@
+frontend/src/components/SplitPaneLayout.tsx
+  dae19f803cfeb644 8-11,28-30,44-46,48-49,51,53-56,60-62,71,73,91-92,94-97,100,105-109,126-133,139-141,149-154,157,174,176-179,182-185,192-197
+frontend/src/hooks/useActionRegistry.ts
+  dae19f803cfeb644 446-447,460-467
+frontend/src/components/WorkspaceUtilityRail.css
+  dae19f803cfeb644 1-210
+docs/FRONTEND.md
+  dae19f803cfeb644 14-62,137
+test/stores/ui-store.test.ts
+  dae19f803cfeb644 34-36,60,118-214
+frontend/src/components/WorkspaceUtilityRail.tsx
+  dae19f803cfeb644 1-198
+frontend/src/components/SplitPaneLayout.css
+  dae19f803cfeb644 28,32,47,51-52
+frontend/src/components/PrTopBar.tsx
+  dae19f803cfeb644 27,325,335,343-346,348-352,420-423,425,427,494,615
+frontend/src/lib/stores/ui.ts
+  dae19f803cfeb644 11,28-31,36-53,149-265,293-316,377,430-516
+frontend/src/components/UtilityRailReviewPanel.tsx
+  dae19f803cfeb644 1-184
+docs/plans/issue-251-utility-rail-layout-sketch.html
+  dae19f803cfeb644 1-771
+frontend/src/components/UtilityRailStatsPanel.tsx
+  dae19f803cfeb644 1-93
+frontend/src/components/UtilityRailLogsPanel.tsx
+  dae19f803cfeb644 1-42
+frontend/src/components/UtilityRailFilesPanel.tsx
+  dae19f803cfeb644 1-31
+docs/plans/2026-04-24-issue-251-utility-rail-implementation.md
+  dae19f803cfeb644 1-396
+frontend/src/App.tsx
+  dae19f803cfeb644 1,5-10,74-77,367-371,462-465,470-488,495,553,561-562,564,566-573,623-624,626,629-630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "22e4a076646a617c97529fbad8d3591751ec5d4d",
+  "prompts": {
+    "dae19f803cfeb644": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbdea-abb7-70b2-9262-6800f15630e7",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 9320,
+      "total_deletions": 327,
+      "accepted_lines": 9253,
+      "overriden_lines": 0
+    }
+  }
+}
