@@ -10,7 +10,12 @@ function useClickOutside(
     if (!enabled) return;
     const handleWindowClick = (event: MouseEvent) => {
       const target = event.target as Node | null;
-      if (target && ref.current && document.contains(target) && !ref.current.contains(target)) {
+      if (
+        target &&
+        ref.current &&
+        document.contains(target) &&
+        !ref.current.contains(target)
+      ) {
         handler();
       }
     };
