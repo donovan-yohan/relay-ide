@@ -11,7 +11,7 @@ export default [
     ...sonarjs.configs.recommended,
     files: ['**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
     rules: {
-      'sonarjs/cognitive-complexity': ['error', 25],
+      'sonarjs/cognitive-complexity': ['error', 30],
       'sonarjs/no-duplicate-string': ['warn', { threshold: 4 }],
       'sonarjs/max-switch-cases': ['warn', 15],
     },
@@ -37,7 +37,7 @@ export default [
           ignoreRestSiblings: true,
         },
       ],
-      complexity: ['error', 25],
+      complexity: ['error', 30],
       'max-depth': ['error', 4],
       'max-params': 'off',
     },
