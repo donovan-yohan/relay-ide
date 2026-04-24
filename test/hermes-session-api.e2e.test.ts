@@ -13,10 +13,10 @@ interface StartedServer {
   tmpDir: string;
 }
 
-function writeHermesStub(tmpDir: string, body: string): void {
+function writeAgentStub(tmpDir: string, agent: string, body: string): void {
   const binDir = path.join(tmpDir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(binDir, 'hermes'), body, { mode: 0o755 });
+  fs.writeFileSync(path.join(binDir, agent), body, { mode: 0o755 });
 }
 
 function writeWorkingHermesStub(tmpDir: string): void {
@@ -24,8 +24,9 @@ function writeWorkingHermesStub(tmpDir: string): void {
 
   // The adapter calls: hermes gateway run --port <port>
   // Our stub expects: node stub.js <port>
-  writeHermesStub(
+  writeAgentStub(
     tmpDir,
+    'hermes',
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
@@ -154,11 +155,54 @@ test(
 );
 
 test(
+  'POST /sessions honors web mode for claude protocol adapter sessions',
+  async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-claude-api-e2e-'));
+    writeAgentStub(
+      tmpDir,
+      'claude',
+      `#!/usr/bin/env node
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`
+    );
+    const server = await startRelayServer(tmpDir);
+
+    try {
+      const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: tmpDir,
+          type: 'agent',
+          agent: 'claude',
+          mode: 'web',
+        }),
+      });
+
+      expect(createRes.status).toBe(201);
+      const session = (await createRes.json()) as {
+        agent: string;
+        mode: string;
+        adapterType?: string;
+      };
+      expect(session.agent).toBe('claude');
+      expect(session.mode).toBe('web');
+      expect(session.adapterType).toBe('claude');
+    } finally {
+      await stopRelayServer(server);
+    }
+  },
+  20_000
+);
+
+test(
   'POST /sessions returns structured json when hermes gateway startup fails',
   async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hermes-api-e2e-'));
-    writeHermesStub(
+    writeAgentStub(
       tmpDir,
+      'hermes',
       `#!/usr/bin/env node
 process.stderr.write('mock hermes gateway failed to start\\n');
 process.exit(2);

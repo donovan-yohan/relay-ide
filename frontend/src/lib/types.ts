@@ -33,6 +33,7 @@ export interface FrameworkInfo {
     supportsYolo: boolean;
     supportsHooks: boolean;
     supportsTelemetry: boolean;
+    supportsWebSessions?: boolean;
   };
   eventSource: EventSourceType;
 }

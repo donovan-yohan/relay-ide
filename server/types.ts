@@ -45,6 +45,7 @@ export interface AgentFramework {
     supportsYolo: boolean;
     supportsTelemetry: boolean;
     supportsAttachedRuntime: boolean;
+    supportsWebSessions?: boolean;
   };
 }
 
@@ -63,6 +64,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: false,
+      supportsWebSessions: true,
     },
   },
   codex: {
@@ -79,6 +81,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
+      supportsWebSessions: true,
     },
   },
   opencode: {
@@ -113,6 +116,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
+      supportsWebSessions: true,
     },
   },
   hermes: {
@@ -129,6 +133,7 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: false,
+      supportsWebSessions: true,
     },
   },
 };

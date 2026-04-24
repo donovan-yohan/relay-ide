@@ -2063,6 +2063,7 @@ async function main(): Promise<void> {
       repoPath,
       worktreePath,
       type = 'agent',
+      mode,
       agent,
       yolo,
       useTmux,
@@ -2081,6 +2082,7 @@ async function main(): Promise<void> {
       repoPath?: string;
       worktreePath?: string | null;
       type?: 'agent' | 'terminal';
+      mode?: 'pty' | 'web';
       agent?: AgentType;
       yolo?: boolean;
       useTmux?: boolean;
@@ -2187,8 +2189,11 @@ async function main(): Promise<void> {
     });
     const resolvedAgent = resolved.agent;
 
-    // Web-only agents bypass PTY and use ProtocolAdapter + WebSocket
-    if (resolvedAgent === 'hermes') {
+    // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
+    // Hermes remains web by default for backwards compatibility with the
+    // original native-Hermes launch path.
+    const requestedMode = mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
+    if (requestedMode === 'web') {
       const displayName = sessions.nextAgentName();
       try {
         const { session } = await sessions.createWeb({
