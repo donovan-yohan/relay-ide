@@ -31,6 +31,9 @@ import {
   DEFAULT_RIGHT_SIDEBAR_WIDTH,
   DEFAULT_FILE_VIEWER_RATIO,
   DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_UTILITY_RAIL_WIDTH,
+  MIN_UTILITY_RAIL_WIDTH,
+  MAX_UTILITY_RAIL_WIDTH,
 } from '../../frontend/src/lib/stores/ui.js';
 
 function resetStore() {
@@ -54,6 +57,7 @@ function resetStore() {
     rightSidebarCollapsed: false,
     rightSidebarWidth: DEFAULT_RIGHT_SIDEBAR_WIDTH,
     rightSidebarTab: 'changes',
+    utilityRailByWorkspace: {},
     openFileTabs: [],
     activeFileTabKey: null,
     fileViewerRatio: DEFAULT_FILE_VIEWER_RATIO,
@@ -108,6 +112,106 @@ describe('ui Zustand store', () => {
     it('toggleRightSidebarCollapsed persists to localStorage', () => {
       useUiStore.getState().toggleRightSidebarCollapsed();
       expect(storage['claude-remote-right-sidebar-collapsed']).toBe('true');
+    });
+  });
+
+  describe('utility rail', () => {
+    it('stores utility rail state per workspace path', () => {
+      const a = useUiStore.getState().getUtilityRailState('/repo/a');
+      const b = useUiStore.getState().getUtilityRailState('/repo/b');
+
+      expect(a).toEqual({
+        visible: true,
+        selectedRailTab: null,
+        width: DEFAULT_UTILITY_RAIL_WIDTH,
+      });
+      expect(b).toEqual({
+        visible: true,
+        selectedRailTab: null,
+        width: DEFAULT_UTILITY_RAIL_WIDTH,
+      });
+
+      useUiStore.getState().setSelectedUtilityRailTab('/repo/a', 'review');
+      useUiStore.getState().setUtilityRailWidth('/repo/a', 999);
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
+        visible: true,
+        selectedRailTab: 'review',
+        width: MAX_UTILITY_RAIL_WIDTH,
+      });
+      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toEqual({
+        visible: true,
+        selectedRailTab: null,
+        width: DEFAULT_UTILITY_RAIL_WIDTH,
+      });
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        '"selectedRailTab":"review"'
+      );
+      expect(storage['relay-utility-rail::/repo/b']).toBe(undefined);
+    });
+
+    it('openUtilityRailTab makes the rail visible and selects the requested tab', () => {
+      useUiStore.getState().setUtilityRailVisible('/repo/a', false);
+      useUiStore.getState().openUtilityRailTab('/repo/a', 'files');
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
+        visible: true,
+        selectedRailTab: 'files',
+      });
+    });
+
+    it('openUtilityRailTab can preserve the current selected tab', () => {
+      useUiStore.getState().setSelectedUtilityRailTab('/repo/a', 'logs');
+      useUiStore.getState().openUtilityRailTab('/repo/a', 'stats', {
+        preserveSelectedTab: true,
+      });
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
+        visible: true,
+        selectedRailTab: 'logs',
+      });
+    });
+
+    it('clamps utility rail widths', () => {
+      useUiStore.getState().setUtilityRailWidth('/repo/a', 100);
+      expect(useUiStore.getState().getUtilityRailState('/repo/a').width).toBe(
+        MIN_UTILITY_RAIL_WIDTH
+      );
+
+      useUiStore.getState().setUtilityRailWidth('/repo/a', 999);
+      expect(useUiStore.getState().getUtilityRailState('/repo/a').width).toBe(
+        MAX_UTILITY_RAIL_WIDTH
+      );
+    });
+
+    it('clamps anchored utility pane widths and stores placements', () => {
+      useUiStore
+        .getState()
+        .setAnchoredUtilityPaneWidth('/repo/a', 'review', 10);
+      useUiStore.getState().setUtilitySurfacePlacement('/repo/a', 'review', {
+        kind: 'anchored-pane',
+        paneId: 'pane-1',
+      });
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
+        anchoredPaneWidths: {
+          review: MIN_UTILITY_RAIL_WIDTH,
+        },
+        placements: {
+          review: {
+            kind: 'anchored-pane',
+            paneId: 'pane-1',
+          },
+        },
+      });
     });
   });
 

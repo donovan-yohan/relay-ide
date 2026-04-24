@@ -1,0 +1,210 @@
+.workspace-utility-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--utility-icon-rail-width, 48px);
+  height: 100%;
+  min-width: 0;
+  background: var(--bg, #000);
+}
+
+.workspace-utility-rail--icons-only {
+  grid-template-columns: var(--utility-icon-rail-width, 48px);
+}
+
+.utility-selected-pane {
+  min-width: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 38px 1fr;
+  overflow: hidden;
+  border-right: 1px solid var(--border, #333);
+}
+
+.workspace-utility-rail--icons-only .utility-selected-pane {
+  display: none;
+}
+
+.utility-pane-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.utility-pane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text, #e0e0e0);
+  font-size: var(--font-size-sm, 0.8125rem);
+  font-weight: 600;
+}
+
+.utility-pane-context,
+.utility-muted {
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.utility-pane-body {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.utility-icon-rail {
+  height: 100%;
+  background: var(--bg, #000);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-width: var(--utility-icon-rail-width, 48px);
+}
+
+.utility-icon-group {
+  display: grid;
+}
+
+.utility-icon-btn {
+  width: var(--utility-icon-rail-width, 48px);
+  height: 48px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.utility-icon-btn:hover {
+  background: var(--surface-hover, #141414);
+  color: var(--text, #e0e0e0);
+}
+
+.utility-icon-btn.active {
+  color: var(--accent, #d97757);
+  box-shadow: inset 2px 0 0 var(--accent, #d97757);
+}
+
+.utility-icon-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+.utility-icon-btn--bottom {
+  align-self: end;
+  font-size: var(--font-size-sm, 0.8125rem);
+}
+
+.utility-review-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.utility-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.utility-panel-btn {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.utility-panel-btn:hover {
+  color: var(--text, #e0e0e0);
+  border-color: var(--accent, #d97757);
+}
+
+.utility-review-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(120px, 34%) 1fr;
+}
+
+.utility-review-files {
+  min-height: 0;
+  overflow: auto;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.utility-review-diff {
+  min-height: 0;
+  overflow: auto;
+}
+
+.utility-review-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #333);
+  color: var(--text, #e0e0e0);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.utility-empty {
+  padding: 12px 8px;
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.utility-simple-panel {
+  padding: 10px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  height: 100%;
+  overflow: auto;
+}
+
+.utility-section-title {
+  margin-top: 8px;
+  color: var(--text, #e0e0e0);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.utility-kv-row {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border, #333);
+  padding: 0 8px;
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.utility-kv-row span:last-child {
+  color: var(--text, #e0e0e0);
+  text-align: right;
+}
+
+.utility-log-box {
+  min-height: 160px;
+  border: 1px solid var(--border, #333);
+  padding: 8px;
+  color: var(--text, #e0e0e0);
+  font-size: var(--font-size-xs, 0.75rem);
+}

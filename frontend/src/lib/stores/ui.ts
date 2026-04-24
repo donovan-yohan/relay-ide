@@ -8,6 +8,7 @@ const ACTIVE_WORKSPACE_GROUP_KEY = 'claude-remote-active-workspace-group';
 const TERMINAL_FONT_SIZE_KEY = 'claude-remote-terminal-font-size';
 const RIGHT_SIDEBAR_WIDTH_KEY = 'claude-remote-right-sidebar-width';
 const RIGHT_SIDEBAR_COLLAPSED_KEY = 'claude-remote-right-sidebar-collapsed';
+const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
 const FILE_VIEWER_WIDTH_KEY = 'claude-remote-file-viewer-width';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
@@ -24,10 +25,32 @@ export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 220;
 export const MIN_RIGHT_SIDEBAR_WIDTH = 160;
 export const MAX_RIGHT_SIDEBAR_WIDTH = 400;
 export const DEFAULT_FILE_VIEWER_RATIO = 0.35;
+export const DEFAULT_UTILITY_RAIL_WIDTH = 320;
+export const MIN_UTILITY_RAIL_WIDTH = 220;
+export const MAX_UTILITY_RAIL_WIDTH = 640;
+export const UTILITY_ICON_RAIL_WIDTH = 48;
 
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 export type FileTabType = 'diff' | 'code' | 'html';
 export type DiffViewMode = 'unified' | 'side-by-side';
+export type UtilityRailTab = 'files' | 'review' | 'logs' | 'stats';
+export type UtilitySurfacePlacement =
+  | { kind: 'rail' }
+  | { kind: 'anchored-pane'; paneId: string };
+
+export interface WorkspaceUtilityRailState {
+  visible: boolean;
+  selectedRailTab: UtilityRailTab | null;
+  width: number;
+  anchoredPaneWidths?: Partial<Record<UtilityRailTab, number>>;
+  placements?: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>>;
+  reviewFilePath?: string;
+  filesMode?: 'changes' | 'all-files';
+}
+
+export interface OpenUtilityRailTabOptions {
+  preserveSelectedTab?: boolean;
+}
 
 export function fileTabKey(filePath: string, tabType?: FileTabType): string {
   return `${tabType ?? 'code'}::${filePath}`;
@@ -123,6 +146,123 @@ function loadCollapsedWorkspaces(): Set<string> {
   return new Set();
 }
 
+const UTILITY_RAIL_TABS: UtilityRailTab[] = [
+  'files',
+  'review',
+  'logs',
+  'stats',
+];
+
+function isUtilityRailTab(value: unknown): value is UtilityRailTab {
+  return (
+    typeof value === 'string' &&
+    UTILITY_RAIL_TABS.includes(value as UtilityRailTab)
+  );
+}
+
+function clampUtilityRailWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_UTILITY_RAIL_WIDTH;
+  return Math.min(
+    MAX_UTILITY_RAIL_WIDTH,
+    Math.max(MIN_UTILITY_RAIL_WIDTH, Math.round(width))
+  );
+}
+
+function utilityRailStorageKey(workspacePath: string): string {
+  return `${UTILITY_RAIL_STATE_KEY_PREFIX}${workspacePath}`;
+}
+
+function defaultUtilityRailState(): WorkspaceUtilityRailState {
+  return {
+    visible: true,
+    selectedRailTab: null,
+    width: DEFAULT_UTILITY_RAIL_WIDTH,
+  };
+}
+
+function normalizeUtilityRailState(
+  value: Partial<WorkspaceUtilityRailState> | null | undefined
+): WorkspaceUtilityRailState {
+  const next = defaultUtilityRailState();
+  if (!value) return next;
+
+  next.visible = value.visible ?? next.visible;
+  next.selectedRailTab = isUtilityRailTab(value.selectedRailTab)
+    ? value.selectedRailTab
+    : value.selectedRailTab === null
+      ? null
+      : next.selectedRailTab;
+  next.width = clampUtilityRailWidth(value.width ?? next.width);
+
+  if (value.anchoredPaneWidths) {
+    const anchoredPaneWidths: Partial<Record<UtilityRailTab, number>> = {};
+    for (const tab of UTILITY_RAIL_TABS) {
+      const width = value.anchoredPaneWidths[tab];
+      if (typeof width === 'number')
+        anchoredPaneWidths[tab] = clampUtilityRailWidth(width);
+    }
+    if (Object.keys(anchoredPaneWidths).length > 0)
+      next.anchoredPaneWidths = anchoredPaneWidths;
+  }
+
+  if (value.placements) {
+    const placements: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> =
+      {};
+    for (const tab of UTILITY_RAIL_TABS) {
+      const placement = value.placements[tab];
+      if (
+        placement &&
+        (placement.kind === 'rail' ||
+          (placement.kind === 'anchored-pane' &&
+            typeof placement.paneId === 'string'))
+      ) {
+        placements[tab] = placement;
+      }
+    }
+    if (Object.keys(placements).length > 0) next.placements = placements;
+  }
+
+  if (typeof value.reviewFilePath === 'string')
+    next.reviewFilePath = value.reviewFilePath;
+  if (value.filesMode === 'changes' || value.filesMode === 'all-files') {
+    next.filesMode = value.filesMode;
+  }
+
+  return next;
+}
+
+function loadUtilityRailState(
+  workspacePath: string
+): WorkspaceUtilityRailState {
+  const stored = ls(utilityRailStorageKey(workspacePath));
+  if (!stored) return defaultUtilityRailState();
+  try {
+    return normalizeUtilityRailState(
+      JSON.parse(stored) as Partial<WorkspaceUtilityRailState>
+    );
+  } catch {
+    return defaultUtilityRailState();
+  }
+}
+
+function saveUtilityRailState(
+  workspacePath: string,
+  state: WorkspaceUtilityRailState
+): void {
+  lsSave(utilityRailStorageKey(workspacePath), JSON.stringify(state));
+}
+
+function mutateUtilityRailState(
+  workspacePath: string,
+  mutate: (state: WorkspaceUtilityRailState) => void
+): WorkspaceUtilityRailState {
+  const next = loadUtilityRailState(workspacePath);
+  mutate(next);
+  const normalized = normalizeUtilityRailState(next);
+  saveUtilityRailState(workspacePath, normalized);
+  return normalized;
+}
+
 export type AnalyticsView = 'dashboard' | { sessionId: string } | null;
 
 export type ActiveModal =
@@ -150,6 +290,30 @@ export interface UiState {
   rightSidebarCollapsed: boolean;
   rightSidebarWidth: number;
   rightSidebarTab: RightSidebarTab;
+  utilityRailByWorkspace: Record<string, WorkspaceUtilityRailState>;
+  getUtilityRailState: (workspacePath: string) => WorkspaceUtilityRailState;
+  setSelectedUtilityRailTab: (
+    workspacePath: string,
+    tab: UtilityRailTab | null
+  ) => void;
+  openUtilityRailTab: (
+    workspacePath: string,
+    tab: UtilityRailTab,
+    options?: OpenUtilityRailTabOptions
+  ) => void;
+  setUtilityRailVisible: (workspacePath: string, visible: boolean) => void;
+  toggleUtilityRailVisible: (workspacePath: string) => void;
+  setUtilityRailWidth: (workspacePath: string, width: number) => void;
+  setAnchoredUtilityPaneWidth: (
+    workspacePath: string,
+    tab: UtilityRailTab,
+    width: number
+  ) => void;
+  setUtilitySurfacePlacement: (
+    workspacePath: string,
+    tab: UtilityRailTab,
+    placement: UtilitySurfacePlacement
+  ) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
   fileViewerRatio: number;
@@ -210,6 +374,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   rightSidebarCollapsed: ls(RIGHT_SIDEBAR_COLLAPSED_KEY) === 'true',
   rightSidebarWidth: loadRightSidebarWidth(),
   rightSidebarTab: 'changes',
+  utilityRailByWorkspace: {},
   openFileTabs: [],
   activeFileTabKey: null,
   fileViewerRatio: loadFileViewerRatio(),
@@ -262,6 +427,93 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   setRightSidebarTab: (tab) => set({ rightSidebarTab: tab }),
+  getUtilityRailState: (workspacePath) =>
+    get().utilityRailByWorkspace[workspacePath] ??
+    loadUtilityRailState(workspacePath),
+  setSelectedUtilityRailTab: (workspacePath, tab) => {
+    const next = mutateUtilityRailState(workspacePath, (state) => {
+      state.selectedRailTab = tab;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  openUtilityRailTab: (workspacePath, tab, options) => {
+    const next = mutateUtilityRailState(workspacePath, (state) => {
+      state.visible = true;
+      if (!options?.preserveSelectedTab) state.selectedRailTab = tab;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  setUtilityRailVisible: (workspacePath, visible) => {
+    const next = mutateUtilityRailState(workspacePath, (state) => {
+      state.visible = visible;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  toggleUtilityRailVisible: (workspacePath) => {
+    const next = mutateUtilityRailState(workspacePath, (state) => {
+      state.visible = !state.visible;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  setUtilityRailWidth: (workspacePath, width) => {
+    const next = mutateUtilityRailState(workspacePath, (state) => {
+      state.width = clampUtilityRailWidth(width);
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  setAnchoredUtilityPaneWidth: (workspacePath, tab, width) => {
+    const nextState = mutateUtilityRailState(workspacePath, (state) => {
+      const next = state.anchoredPaneWidths
+        ? { ...state.anchoredPaneWidths }
+        : {};
+      next[tab] = clampUtilityRailWidth(width);
+      state.anchoredPaneWidths = next;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  setUtilitySurfacePlacement: (workspacePath, tab, placement) => {
+    const nextState = mutateUtilityRailState(workspacePath, (state) => {
+      const next = state.placements ? { ...state.placements } : {};
+      next[tab] = placement;
+      state.placements = next;
+    });
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
   setFileDiffSource: (source) => set({ fileDiffSource: source }),
   setFileDiffDefaultBranch: (branch) => set({ fileDiffDefaultBranch: branch }),
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),

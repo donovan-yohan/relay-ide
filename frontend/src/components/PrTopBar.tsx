@@ -24,6 +24,7 @@ import './PrTopBar.css';
 
 export interface PrTopBarProps {
   workspacePath: string;
+  utilityRailWorkspacePath?: string;
   branchName: string;
   sessionId: string | null;
   agentRunning?: boolean;
@@ -321,6 +322,7 @@ function BranchSection({
 }
 
 interface PrActionsProps {
+  utilityRailWorkspacePath: string;
   isRefreshing: boolean;
   prLoading: boolean;
   prAction: PrAction;
@@ -330,6 +332,7 @@ interface PrActionsProps {
 }
 
 function PrActions({
+  utilityRailWorkspacePath,
   isRefreshing,
   prLoading,
   prAction,
@@ -337,10 +340,16 @@ function PrActions({
   onRefresh,
   onAction,
 }: PrActionsProps) {
-  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
-  const toggleRightSidebarCollapsed = useUiStore(
-    (s) => s.toggleRightSidebarCollapsed
+  const utilityRailByWorkspace = useUiStore((s) => s.utilityRailByWorkspace);
+  const getUtilityRailState = useUiStore((s) => s.getUtilityRailState);
+  const toggleUtilityRailVisible = useUiStore(
+    (s) => s.toggleUtilityRailVisible
   );
+  const utilityRailState = utilityRailWorkspacePath
+    ? (utilityRailByWorkspace[utilityRailWorkspacePath] ??
+      getUtilityRailState(utilityRailWorkspacePath))
+    : null;
+  const utilityRailVisible = utilityRailState?.visible ?? true;
 
   return (
     <div className="bar-right">
@@ -408,13 +417,14 @@ function PrActions({
       )}
       <button
         className="sidebar-toggle-btn"
-        onClick={toggleRightSidebarCollapsed}
+        onClick={() => {
+          if (utilityRailWorkspacePath)
+            toggleUtilityRailVisible(utilityRailWorkspacePath);
+        }}
         aria-label={
-          rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'
+          utilityRailVisible ? 'Hide utility rail' : 'Show utility rail'
         }
-        title={
-          rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'
-        }
+        title={utilityRailVisible ? 'Hide utility rail' : 'Show utility rail'}
         type="button"
       >
         <svg
@@ -481,6 +491,7 @@ function deriveBarClass(pr: PrInfo | null): string {
 
 export function PrTopBar({
   workspacePath,
+  utilityRailWorkspacePath = workspacePath,
   branchName,
   sessionId,
   agentRunning = false,
@@ -601,6 +612,7 @@ export function PrTopBar({
         </>
       ) : null}
       <PrActions
+        utilityRailWorkspacePath={utilityRailWorkspacePath}
         isRefreshing={isRefreshing}
         prLoading={prLoading}
         prAction={prAction}

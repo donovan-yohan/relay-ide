@@ -1,7 +1,13 @@
+import type React from 'react';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './lib/stores/auth.js';
-import { useUiStore } from './lib/stores/ui.js';
+import {
+  useUiStore,
+  MAX_UTILITY_RAIL_WIDTH,
+  MIN_UTILITY_RAIL_WIDTH,
+  UTILITY_ICON_RAIL_WIDTH,
+} from './lib/stores/ui.js';
 import { useSessionsStore } from './lib/stores/sessions.js';
 import { useConfigStore } from './lib/stores/config.js';
 import { useBootStateStore } from './lib/stores/boot-state.js';
@@ -65,10 +71,10 @@ import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
 import FileViewerPane from './components/FileViewerPane.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
-import {
-  FileTreeSidebar,
-  type FileTreeSidebarHandle,
-} from './components/FileTreeSidebar.js';
+import WorkspaceUtilityRail, {
+  utilityRailRenderedWidth,
+} from './components/WorkspaceUtilityRail.js';
+import type { FileTreeSidebarHandle } from './components/FileTreeSidebar.js';
 
 import './App.css';
 
@@ -358,12 +364,12 @@ function TerminalAreaContent({
   // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
-  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
-  const toggleRightSidebarCollapsed = useUiStore(
-    (s) => s.toggleRightSidebarCollapsed
+  const utilityRailByWorkspace = useUiStore((s) => s.utilityRailByWorkspace);
+  const getUtilityRailState = useUiStore((s) => s.getUtilityRailState);
+  const setUtilityRailWidth = useUiStore((s) => s.setUtilityRailWidth);
+  const toggleUtilityRailVisible = useUiStore(
+    (s) => s.toggleUtilityRailVisible
   );
-  const rightSidebarWidth = useUiStore((s) => s.rightSidebarWidth);
-  const saveRightSidebarWidth = useUiStore((s) => s.saveRightSidebarWidth);
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
@@ -453,10 +459,32 @@ function TerminalAreaContent({
         currentActiveSession?.repoPath ??
         '';
       const relative = resolveTerminalFilePath(clickedPath, cwd);
-      if (relative !== null) openFileTab(relative, false);
+      if (relative !== null) {
+        if (cwd) useUiStore.getState().openUtilityRailTab(cwd, 'files');
+        openFileTab(relative, false);
+      }
     },
     [openFileTab]
   );
+
+  const utilityRailState =
+    utilityRailByWorkspace[activeWorkspaceCwd] ??
+    getUtilityRailState(activeWorkspaceCwd);
+  const utilityRailWidth = utilityRailRenderedWidth(utilityRailState);
+  const utilityRailResizable =
+    utilityRailState.visible && utilityRailState.selectedRailTab !== null;
+
+  const handleUtilityRailWidthChange = useCallback(
+    (width: number) => {
+      if (!activeWorkspaceCwd || !utilityRailResizable) return;
+      setUtilityRailWidth(activeWorkspaceCwd, width - UTILITY_ICON_RAIL_WIDTH);
+    },
+    [activeWorkspaceCwd, setUtilityRailWidth, utilityRailResizable]
+  );
+
+  const handleToggleUtilityRail = useCallback(() => {
+    if (activeWorkspaceCwd) toggleUtilityRailVisible(activeWorkspaceCwd);
+  }, [activeWorkspaceCwd, toggleUtilityRailVisible]);
 
   return (
     <div className="terminal-area">
@@ -464,7 +492,7 @@ function TerminalAreaContent({
         title={sessionTitle}
         onMenuClick={openSidebar}
         onCommandClick={() => setSpotlightOpen(true)}
-        onRightSidebarClick={toggleRightSidebarCollapsed}
+        onRightSidebarClick={handleToggleUtilityRail}
         hidden={keyboardOpen}
       />
 
@@ -522,6 +550,7 @@ function TerminalAreaContent({
         <>
           <PrTopBar
             workspacePath={activeRepoPath ?? ''}
+            utilityRailWorkspacePath={activeWorkspaceCwd}
             branchName={activeSession?.branchName ?? ''}
             sessionId={activeSessionId}
             agentRunning={activeSession?.agentState === 'processing'}
@@ -529,12 +558,19 @@ function TerminalAreaContent({
           />
           <SplitPaneLayout
             fileViewerOpen={fileViewerOpen}
-            rightSidebarCollapsed={rightSidebarCollapsed}
-            rightSidebarWidth={rightSidebarWidth}
+            rightSidebarCollapsed={!utilityRailState.visible}
+            rightSidebarWidth={utilityRailWidth}
             fileViewerRatio={fileViewerRatio}
-            onRightSidebarWidthChange={saveRightSidebarWidth}
+            onRightSidebarWidthChange={handleUtilityRailWidthChange}
             onFileViewerRatioChange={saveFileViewerRatio}
-            onToggleRightSidebar={toggleRightSidebarCollapsed}
+            onToggleRightSidebar={handleToggleUtilityRail}
+            rightSidebarResizable={utilityRailResizable}
+            rightSidebarMinWidth={
+              MIN_UTILITY_RAIL_WIDTH + UTILITY_ICON_RAIL_WIDTH
+            }
+            rightSidebarMaxWidth={
+              MAX_UTILITY_RAIL_WIDTH + UTILITY_ICON_RAIL_WIDTH
+            }
             terminal={
               <>
                 <SessionTabBar
@@ -584,11 +620,14 @@ function TerminalAreaContent({
               />
             }
             rightSidebar={
-              <FileTreeSidebar
-                ref={fileTreeSidebarRef}
+              <WorkspaceUtilityRail
+                fileTreeSidebarRef={fileTreeSidebarRef}
                 workspacePath={activeWorkspaceCwd}
+                railState={utilityRailState}
                 changedFilesData={changedFilesData}
                 onFileSelect={handleFileSelect}
+                activeSession={activeSession}
+                workspaceSessions={workspaceSessions}
               />
             }
           />

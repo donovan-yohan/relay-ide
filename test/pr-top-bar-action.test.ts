@@ -27,8 +27,13 @@ vi.mock('../frontend/src/lib/ws.js', () => ({
 vi.mock('../frontend/src/lib/stores/ui.js', () => ({
   useUiStore: (selector: (state: unknown) => unknown) =>
     selector({
-      rightSidebarCollapsed: false,
-      toggleRightSidebarCollapsed: vi.fn(),
+      utilityRailByWorkspace: {},
+      getUtilityRailState: () => ({
+        visible: true,
+        selectedRailTab: null,
+        width: 320,
+      }),
+      toggleUtilityRailVisible: vi.fn(),
     }),
 }));
 
@@ -43,7 +48,8 @@ vi.mock('../frontend/src/components/TargetBranchSwitcher.js', () => ({
 }));
 
 vi.mock('../frontend/src/components/CipherText.js', () => ({
-  default: ({ text }: { text: string }) => React.createElement('span', null, text),
+  default: ({ text }: { text: string }) =>
+    React.createElement('span', null, text),
 }));
 
 vi.mock('../frontend/src/components/dialogs/RenameWarningModal.js', () => ({
