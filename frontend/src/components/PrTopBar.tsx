@@ -518,7 +518,7 @@ export function PrTopBar({
 
   function handleActionClick(action: PrAction = prAction) {
     if (action.type === 'merge-pr' && pr?.url) {
-      window.open(pr.url, '_blank');
+      window.open(pr.url, '_blank', 'noopener,noreferrer');
       return;
     }
     const ctx = {
@@ -529,11 +529,12 @@ export function PrTopBar({
     };
     const prompt = getActionPrompt(action, ctx);
     if (prompt === null) {
-      if (action.type === 'merge-pr' && pr?.url) {
-        window.open(pr.url, '_blank');
-        return;
+      if (
+        action.type === 'archive-merged' ||
+        action.type === 'archive-closed'
+      ) {
+        onArchive?.();
       }
-      onArchive?.();
       return;
     }
     if (sessionId) sendPtyData(prompt + '\r');
