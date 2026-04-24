@@ -1,0 +1,25 @@
+server/pty-handler.ts
+  c3bce31373e9a160 112,134-152,729-734,1205,1209
+test/sessions.test.ts
+  c3bce31373e9a160 10,385-420
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "9cc6bfe907a51b61acd7d16aecd817f839ac2ba5",
+  "prompts": {
+    "c3bce31373e9a160": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc0f8-046c-7e33-8b19-6feb920fc3fa",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 302,
+      "total_deletions": 13,
+      "accepted_lines": 626,
+      "overriden_lines": 0
+    }
+  }
+}
