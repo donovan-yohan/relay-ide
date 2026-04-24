@@ -83,7 +83,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     // Build spawn command — allow commandOverride via extra config for tests
     const command =
       (config.extra?.['command'] as string | undefined) ?? 'hermes';
-    const defaultArgs = ['gateway', 'run', '--accept-hooks', '--replace'];
+    const profile =
+      (config.extra?.['profile'] as string | undefined) ?? 'default';
+    const defaultArgs = ['-p', profile, 'gateway', 'run', '--accept-hooks'];
     const args = (
       (config.extra?.['args'] as string[] | undefined) ?? defaultArgs
     ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
@@ -112,7 +114,9 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._process.on('exit', (code) => {
       this._processExitCode = code;
       logger.info(`[hermes] process exited with code ${code}`);
-      if (this._status === 'connected') {
+      if (this._status === 'connecting') {
+        this._status = 'error';
+      } else if (this._status === 'connected') {
         this._status = 'error';
         this.fire({
           type: 'chat:error',
@@ -358,7 +362,11 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     }
 
     throw new Error(
-      `Hermes gateway did not become ready within 10s (tried ${healthUrl})`
+      `Hermes gateway did not become ready within 10s (tried ${healthUrl})${
+        this._processOutputBuffer.trim()
+          ? `: ${this._processOutputBuffer.trim()}`
+          : ''
+      }`
     );
   }
 

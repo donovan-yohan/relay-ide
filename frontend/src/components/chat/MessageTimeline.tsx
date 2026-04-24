@@ -93,6 +93,19 @@ function routeEvent(
       );
       break;
     }
+    case 'chat:message-complete': {
+      const group = getOrCreateGroup(
+        groupMap,
+        groupOrder,
+        event.turnId,
+        counter
+      );
+      if (!group.textByMessageId.has(event.messageId)) {
+        group.textMessageOrder.push(event.messageId);
+      }
+      group.textByMessageId.set(event.messageId, event.content);
+      break;
+    }
     case 'chat:tool-call': {
       const group = getOrCreateGroup(
         groupMap,

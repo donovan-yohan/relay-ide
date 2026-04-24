@@ -108,7 +108,7 @@ function drain(req, done) {
 }
 
 function sendEvent(res, event) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  res.write(`data: ${JSON.stringify({ payload: event })}\n\n`);
 }
 
 function broadcast(event) {
@@ -127,14 +127,43 @@ function emitTurn() {
 
   broadcast({
     type: 'session.status',
-    properties: { sessionID: sessionId, status: 'active' },
+    properties: { sessionID: sessionId, status: { type: 'busy' } },
+  });
+
+  const userPart = {
+    id: 'part_user',
+    sessionID: sessionId,
+    messageID: 'msg_user',
+    type: 'text',
+    text: 'hello opencode',
+  };
+
+  broadcast({
+    type: 'message.updated',
+    properties: {
+      sessionID: sessionId,
+      info: { id: 'msg_user', role: 'user', sessionID: sessionId },
+    },
+  });
+
+  broadcast({
+    type: 'message.part.updated',
+    properties: { sessionID: sessionId, part: userPart },
+  });
+
+  broadcast({
+    type: 'message.updated',
+    properties: {
+      sessionID: sessionId,
+      info: { id: 'msg_1', role: 'assistant', sessionID: sessionId },
+    },
   });
 
   ['hello ', 'from ', 'opencode'].forEach((delta, index) => {
     setTimeout(() => {
       broadcast({
         type: 'message.part.updated',
-        properties: { part, delta },
+        properties: { sessionID: sessionId, part, delta },
       });
     }, index * 25);
   });
@@ -142,7 +171,7 @@ function emitTurn() {
   setTimeout(() => {
     broadcast({
       type: 'session.status',
-      properties: { sessionID: sessionId, status: 'idle' },
+      properties: { sessionID: sessionId, status: { type: 'idle' } },
     });
   }, 100);
 }

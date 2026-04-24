@@ -635,8 +635,19 @@ function sendSessionCreateError(
   logger.error('[sessions] failed to create session:', err);
   res.status(500).json({
     error: 'session_create_failed',
-    message: 'Failed to create session.',
+    message: sessionCreateFailureMessage(err),
   });
+}
+
+function sessionCreateFailureMessage(err: unknown): string {
+  if (!(err instanceof Error)) return 'Failed to create session.';
+  if (
+    err.message.startsWith('Hermes ') ||
+    err.message.startsWith('OpenCode ')
+  ) {
+    return err.message;
+  }
+  return 'Failed to create session.';
 }
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
