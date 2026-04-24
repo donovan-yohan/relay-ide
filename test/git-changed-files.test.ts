@@ -149,7 +149,13 @@ describe('getFileDiff', () => {
           // First call: git diff returns empty (untracked file)
           return { stdout: '', stderr: '' };
         }
-        // Second call: git diff --no-index exits with code 1 but has stdout
+        if (callCount === 2) {
+          // Second call: git status --porcelain confirms untracked
+          expect(args[0]).toBe('status');
+          expect(args).toContain('--porcelain');
+          return { stdout: '?? new-file.ts\n', stderr: '' };
+        }
+        // Third call: git diff --no-index exits with code 1 but has stdout
         expect(args).toContain('--no-index');
         const err = new Error('exit code 1') as Error & { stdout: string };
         err.stdout =
@@ -158,7 +164,7 @@ describe('getFileDiff', () => {
       }
     );
     expect(diff).toContain('+content');
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(3);
   });
 
   it('throws on git failure', async () => {

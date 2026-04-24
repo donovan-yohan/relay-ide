@@ -183,13 +183,6 @@ function createAgentEventHandler(deps: HookDeps) {
       return;
     }
 
-    if (session.mode !== 'pty') {
-      res
-        .status(400)
-        .json({ error: 'Hooks are only supported for PTY sessions' });
-      return;
-    }
-
     const tokenBuf = Buffer.from(token);
     const hookTokenBuf = Buffer.from(session.hookToken);
     if (
@@ -356,12 +349,6 @@ export function createHooksRouter(deps: HookDeps): Router {
     const session = deps.getSession(sessionId);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
-      return;
-    }
-    if (session.mode !== 'pty') {
-      res
-        .status(400)
-        .json({ error: 'Hooks are only supported for PTY sessions' });
       return;
     }
     const tokenBuf = Buffer.from(token);

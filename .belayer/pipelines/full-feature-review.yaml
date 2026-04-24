@@ -3,7 +3,8 @@ name: full-feature-review
 nodes:
   - name: code-review
     type: agent
-    vendor: codex
+    vendor: nous
+    model: kimi-k2.6
     prompt: "$review"
     input: { type: commit }
     output: { type: gate_result }
@@ -21,7 +22,8 @@ nodes:
 
   - name: ship
     type: agent
-    vendor: claude
+    vendor: nous
+    model: kimi-k2.6
     prompt: |
       Create a pull request targeting nightly for the completed feature.
       Include a summary of what was implemented and any architectural decisions.
