@@ -1,0 +1,27 @@
+test/components/TerminalLayout.test.ts
+  dae19f803cfeb644 1-17
+frontend/src/components/Terminal.css
+  dae19f803cfeb644 17-30
+server/sessions.ts
+  dae19f803cfeb644 4,9,12,47,441,488-500,517,562,567,572,590,627,775,814,821,838,947
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "6c32db0273345f96338b3dd065300fdd87973e9b",
+  "prompts": {
+    "dae19f803cfeb644": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbdea-abb7-70b2-9262-6800f15630e7",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1215,
+      "total_deletions": 15,
+      "accepted_lines": 8532,
+      "overriden_lines": 0
+    }
+  }
+}
