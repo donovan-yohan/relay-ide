@@ -1,0 +1,37 @@
+server/session-capacity.ts
+  28c4a901cc48c6a4 1-65
+frontend/src/lib/api.ts
+  28c4a901cc48c6a4 44-49,53,84,108-114,116-124,126
+server/types.ts
+  28c4a901cc48c6a4 424
+server/config.ts
+  28c4a901cc48c6a4 40
+server/workspace-groups.ts
+  28c4a901cc48c6a4 28-32,41,492-518
+test/api-error.test.ts
+  28c4a901cc48c6a4 48-77
+test/session-capacity.test.ts
+  28c4a901cc48c6a4 1-42
+server/index.ts
+  28c4a901cc48c6a4 105-108,599-629,2099-2103,2109-2130,2184-2211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "8396edc156a3a676eb5e1dd37322d75ca0aa937c",
+  "prompts": {
+    "28c4a901cc48c6a4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd55-c756-7310-96b4-a7ba9ee13b69",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 683,
+      "total_deletions": 44,
+      "accepted_lines": 683,
+      "overriden_lines": 0
+    }
+  }
+}
