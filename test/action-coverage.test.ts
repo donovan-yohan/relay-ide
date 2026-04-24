@@ -14,7 +14,7 @@ import { dashboardActions } from '../frontend/src/lib/actions/definitions/dashbo
 import { terminalActions } from '../frontend/src/lib/actions/definitions/terminal.js';
 import { navigationActions } from '../frontend/src/lib/actions/definitions/navigation.js';
 
-// Full allowlist: 60 palettable action IDs (15 Phase 2 + 45 Phase 3)
+// Full allowlist: 59 palettable action IDs (15 Phase 2 + 44 Phase 3)
 const ACTION_ALLOWLIST = [
   // Session (9)
   'session.new-agent',
@@ -41,7 +41,7 @@ const ACTION_ALLOWLIST = [
   'pr.refresh',
   'pr.change-target',
   'pr.skip-checks',
-  // Settings (16)
+  // Settings (15)
   'settings.open',
   'settings.connect-github',
   'settings.toggle-yolo',
@@ -55,7 +55,6 @@ const ACTION_ALLOWLIST = [
   'settings.toggle-devtools',
   'settings.clear-analytics',
   'settings.toggle-continue',
-  'settings.toggle-tmux',
   'settings.toggle-notifications',
   'settings.change-default-agent',
   // Sidebar (7)

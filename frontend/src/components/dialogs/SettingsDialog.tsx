@@ -18,7 +18,6 @@ import {
   setDefaultAgent,
   setDefaultContinue,
   setDefaultYolo,
-  setLaunchInTmux,
   setDefaultNotifications,
   setClaudeFullscreen,
   checkVersion,
@@ -30,7 +29,6 @@ import {
   fetchDefaultAgent,
   fetchDefaultContinue,
   fetchDefaultYolo,
-  fetchLaunchInTmux,
   fetchDefaultNotifications,
   fetchClaudeFullscreen,
   fetchUpdateChannel,
@@ -54,7 +52,6 @@ interface ConfigState {
   defaultAgent: string;
   defaultContinue: boolean;
   defaultYolo: boolean;
-  launchInTmux: boolean;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
 }
@@ -63,7 +60,6 @@ const DEFAULT_CONFIG: ConfigState = {
   defaultAgent: 'claude',
   defaultContinue: true,
   defaultYolo: false,
-  launchInTmux: false,
   defaultNotifications: true,
   claudeFullscreen: true,
 };
@@ -89,13 +85,7 @@ const TOC_SECTIONS = [
 ];
 
 const SECTION_KEYWORDS: Record<string, string[]> = {
-  general: [
-    'default coding agent',
-    'continue',
-    'yolo',
-    'tmux',
-    'notifications',
-  ],
+  general: ['default coding agent', 'continue', 'yolo', 'notifications'],
   agents: ['claude', 'claude code', 'fullscreen', 'no flicker'],
   integrations: [
     'github',
@@ -111,11 +101,10 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
 };
 
 async function loadConfig(): Promise<ConfigState> {
-  const [agent, cont, yolo, tmux, notif, fullscreen] = await Promise.all([
+  const [agent, cont, yolo, notif, fullscreen] = await Promise.all([
     fetchDefaultAgent().catch(() => DEFAULT_CONFIG.defaultAgent),
     fetchDefaultContinue().catch(() => DEFAULT_CONFIG.defaultContinue),
     fetchDefaultYolo().catch(() => DEFAULT_CONFIG.defaultYolo),
-    fetchLaunchInTmux().catch(() => DEFAULT_CONFIG.launchInTmux),
     fetchDefaultNotifications().catch(
       () => DEFAULT_CONFIG.defaultNotifications
     ),
@@ -125,7 +114,6 @@ async function loadConfig(): Promise<ConfigState> {
     defaultAgent: agent,
     defaultContinue: cont,
     defaultYolo: yolo,
-    launchInTmux: tmux,
     defaultNotifications: notif,
     claudeFullscreen: fullscreen,
   };
@@ -183,19 +171,6 @@ function useConfigHandlers(
       setError('Failed to update yolo default.');
     }
   }
-  async function handleTmuxChange(v: boolean) {
-    const prev = config.launchInTmux;
-    setConfig((c) => ({ ...c, launchInTmux: v }));
-    setError('');
-    try {
-      await setLaunchInTmux(v);
-    } catch (err) {
-      setConfig((c) => ({ ...c, launchInTmux: prev }));
-      setError(
-        err instanceof Error ? err.message : 'Failed to update tmux setting.'
-      );
-    }
-  }
   async function handleNotifChange(v: boolean) {
     const prev = config.defaultNotifications;
     setConfig((c) => ({ ...c, defaultNotifications: v }));
@@ -242,7 +217,6 @@ function useConfigHandlers(
     handleAgentChange,
     handleContinueChange,
     handleYoloChange,
-    handleTmuxChange,
     handleNotifChange,
     handleClaudeFullscreenChange,
   };
@@ -536,15 +510,6 @@ function GeneralSection({
         <TuiCheckbox
           checked={config.defaultYolo}
           onChange={(v) => void handlers.handleYoloChange(v)}
-        />
-      </SettingRow>
-      <SettingRow
-        name="Launch in tmux"
-        description="Wrap sessions in tmux for scroll and copy"
-      >
-        <TuiCheckbox
-          checked={config.launchInTmux}
-          onChange={(v) => void handlers.handleTmuxChange(v)}
         />
       </SettingRow>
       <SettingRow name="Notifications" description={notifDescription}>

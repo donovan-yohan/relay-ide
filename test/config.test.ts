@@ -83,7 +83,7 @@ test('DEFAULTS has expected keys and values', () => {
   expect(DEFAULTS.defaultFramework).toBe('claude');
   expect(DEFAULTS.defaultContinue).toBe(true);
   expect(DEFAULTS.defaultYolo).toBe(false);
-  expect(DEFAULTS.launchInTmux).toBe(false);
+  expect(DEFAULTS.launchInTmux).toBe(true);
 });
 
 test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and launchInTmux', () => {
@@ -93,7 +93,7 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   const config = loadConfig(configPath);
   expect(config.defaultContinue).toBe(true);
   expect(config.defaultYolo).toBe(false);
-  expect(config.launchInTmux).toBe(false);
+  expect(config.launchInTmux).toBe(true);
 });
 
 test('ensureMetaDir creates worktree-meta directory', () => {
@@ -173,7 +173,7 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   expect(result.agent).toBe('claude');
   expect(result.yolo).toBe(false);
   expect(result.continuePolicy).toBe('always');
-  expect(result.useTmux).toBe(false);
+  expect(result.useTmux).toBe(true);
   expect(result.claudeArgs).toEqual([]);
 });
 
@@ -198,6 +198,45 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
   expect(result.agent).toBe('codex');
   expect(result.yolo).toBe(true);
   expect(result.continuePolicy).toBe('always');
+});
+
+test('resolveSessionSettings treats tmux as mandatory even when explicitly disabled', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const wsId = 'ws-tmux-required';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      defaultFramework: 'claude',
+      defaultYolo: false,
+      defaultContinue: true,
+      launchInTmux: false,
+      claudeArgs: [],
+      repos: ['/my/repo'],
+      workspaces: [
+        {
+          id: wsId,
+          name: 'My Workspace',
+          repos: ['/my/repo'],
+          order: 0,
+          settings: { launchInTmux: false },
+        },
+      ],
+      repoSettings: {
+        '/my/repo': { launchInTmux: false },
+      },
+    }),
+    'utf8'
+  );
+
+  const config = loadConfig(configPath);
+  const result = resolveSessionSettings(
+    config,
+    '/my/repo',
+    { useTmux: false },
+    wsId
+  );
+
+  expect(result.useTmux).toBe(true);
 });
 
 test('resolveSessionSettings explicit overrides beat workspace settings', () => {

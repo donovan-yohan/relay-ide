@@ -332,6 +332,18 @@ async function cleanupOrphanedTmuxSessions(
   }
 }
 
+async function ensureTmuxAvailable(): Promise<void> {
+  try {
+    await execFileAsync('tmux', ['-V']);
+  } catch (err) {
+    const detail = execErrorMessage(err, 'tmux is not available');
+    throw new Error(
+      `tmux is required to run relay-ide sessions: ${detail}. Install tmux and restart relay-ide (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux).`,
+      { cause: err }
+    );
+  }
+}
+
 async function ensureFrontendBuilt(
   frontendDir: string,
   packageRoot: string
@@ -811,6 +823,7 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
+  await ensureTmuxAvailable();
 
   await initializePortAllocatorAndReconcile(
     CONFIG_PATH,
@@ -926,6 +939,33 @@ async function main(): Promise<void> {
       }
     );
   }
+
+  app.get('/config/launchInTmux', requireAuth, (_req, res) => {
+    res.json({ launchInTmux: true, required: true });
+  });
+  app.patch('/config/launchInTmux', requireAuth, async (req, res) => {
+    const value = (req.body as Record<string, unknown>).launchInTmux;
+    if (typeof value !== 'boolean') {
+      res.status(400).json({ error: 'launchInTmux must be a boolean' });
+      return;
+    }
+    if (!value) {
+      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
+      return;
+    }
+    try {
+      await ensureTmuxAvailable();
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'tmux is not available',
+      });
+      return;
+    }
+    const c = getConfig();
+    c.launchInTmux = true;
+    saveConfig(CONFIG_PATH, c);
+    res.json({ launchInTmux: true, required: true });
+  });
 
   const watcher = new WorktreeWatcher();
   watcher.rebuild(getConfig().repos || []);
@@ -1723,9 +1763,6 @@ async function main(): Promise<void> {
 
   boolConfigEndpoints('defaultContinue', true);
   boolConfigEndpoints('defaultYolo', false);
-  boolConfigEndpoints('launchInTmux', false, async () => {
-    await execFileAsync('tmux', ['-V']);
-  });
   boolConfigEndpoints('defaultNotifications', true);
   boolConfigEndpoints('claudeFullscreen', true);
   boolConfigEndpoints('autoProvision', false);
@@ -2415,17 +2452,16 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
-    // Serialize sessions to disk BEFORE killing them
+    // Serialize sessions before detaching the node-pty tmux clients. The tmux
+    // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir);
-    // Kill all active sessions (PTY + tmux)
     for (const s of sessions.list()) {
       try {
-        sessions.kill(s.id);
+        sessions.detachForRestart(s.id);
       } catch {
         /* already exiting */
       }
     }
-    // Brief delay to let async tmux kill-session calls fire
     setTimeout(() => process.exit(0), 200);
   }
   process.on('SIGTERM', gracefulShutdown);
@@ -2456,4 +2492,7 @@ async function main(): Promise<void> {
   tryListen();
 }
 
-main().catch((err) => logger.error('Unhandled fatal error:', err));
+main().catch((err) => {
+  logger.error('Unhandled fatal error:', err);
+  process.exitCode = 1;
+});

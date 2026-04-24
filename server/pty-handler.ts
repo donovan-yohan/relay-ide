@@ -51,13 +51,16 @@ export function generateTmuxSessionName(
 export function resolveTmuxSpawn(
   command: string,
   args: string[],
-  tmuxSessionName: string
+  tmuxSessionName: string,
+  env?: NodeJS.ProcessEnv
 ): { command: string; args: string[] } {
+  const envArgs = tmuxEnvArgs(env);
   return {
     command: 'tmux',
     args: [
       '-u',
       'new-session',
+      ...envArgs,
       '-s',
       tmuxSessionName,
       '--',
@@ -77,6 +80,58 @@ export function resolveTmuxSpawn(
       'vi',
     ],
   };
+}
+
+const VALID_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TMUX_ENV_SENSITIVE_NAME = /(TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|KEY)/i;
+const TMUX_ENV_SENSITIVE_ALLOWLIST = new Set(['RELAY_IDE_TOKEN']);
+
+function tmuxEnvArgs(env: NodeJS.ProcessEnv | undefined): string[] {
+  if (!env) return [];
+  return Object.entries(env).flatMap(([key, value]) => {
+    if (!VALID_ENV_NAME.test(key) || value === undefined) return [];
+    if (
+      TMUX_ENV_SENSITIVE_NAME.test(key) &&
+      !TMUX_ENV_SENSITIVE_ALLOWLIST.has(key)
+    ) {
+      return [];
+    }
+    return ['-e', `${key}=${value}`];
+  });
+}
+
+function tmuxEnvWrapperPath(id: string): string {
+  return path.join(os.tmpdir(), 'relay-ide', id, 'tmux-env-wrapper.sh');
+}
+
+function writeTmuxEnvWrapper(
+  id: string,
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): { command: string; args: string[] } {
+  const dir = path.join(os.tmpdir(), 'relay-ide', id);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const wrapperPath = tmuxEnvWrapperPath(id);
+  const exports = Object.entries(env)
+    .filter(
+      (entry): entry is [string, string] =>
+        VALID_ENV_NAME.test(entry[0]) && entry[1] !== undefined
+    )
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+    .join('\n');
+  fs.writeFileSync(
+    wrapperPath,
+    `#!/bin/sh
+set -eu
+rm -f "$0"
+${exports}
+exec "$@"
+`,
+    { encoding: 'utf-8', mode: 0o700 }
+  );
+  fs.chmodSync(wrapperPath, 0o700);
+  return { command: '/bin/sh', args: [wrapperPath, command, ...args] };
 }
 
 function shellQuote(value: string): string {
@@ -294,6 +349,8 @@ export type CreatePtyParams = {
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
   tmuxDisplayName?: string | undefined;
+  tmuxAttach?: boolean | undefined;
+  sessionCustomCommand?: string | null | undefined;
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;
@@ -350,6 +407,7 @@ function resolveAgentFramework(
 
 type HookSetupResult = {
   env: NodeJS.ProcessEnv;
+  tmuxEnv: NodeJS.ProcessEnv;
   hookToken: string;
   hooksActive: boolean;
   settingsPath: string;
@@ -360,14 +418,19 @@ function setupPluginHooks(
   id: string,
   port: number,
   hookToken: string,
-  env: Record<string, string>
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
     installOpenCodeRelayPlugin();
-    env.RELAY_IDE_URL = `http://127.0.0.1:${port}`;
-    env.RELAY_IDE_SESSION_ID = id;
-    env.RELAY_IDE_TOKEN = hookToken;
+    const pluginEnv = {
+      RELAY_IDE_URL: `http://127.0.0.1:${port}`,
+      RELAY_IDE_SESSION_ID: id,
+      RELAY_IDE_TOKEN: hookToken,
+    };
+    Object.assign(env, pluginEnv);
+    Object.assign(tmuxEnv, pluginEnv);
     return { hookToken, hooksActive: true };
   } catch (err) {
     logger.warn(
@@ -383,7 +446,8 @@ function setupCodexHooks(
   port: number,
   hookToken: string,
   configDir: string,
-  env: Record<string, string>
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
@@ -394,6 +458,7 @@ function setupCodexHooks(
       configDir
     );
     env.CODEX_CONFIG_DIR = codexConfigDir;
+    tmuxEnv.CODEX_CONFIG_DIR = codexConfigDir;
     return { hookToken, hooksActive: true };
   } catch (err) {
     logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
@@ -418,6 +483,7 @@ type PortInjectionParams = {
  */
 function injectPortEnvVars(
   env: Record<string, string>,
+  tmuxEnv: Record<string, string>,
   params: PortInjectionParams
 ): void {
   const { repoPath, worktreePath, cwd, portVariables, portAllocator } = params;
@@ -447,6 +513,7 @@ function injectPortEnvVars(
   for (const [varName, port] of Object.entries(portMapping)) {
     if (portVariables.includes(varName)) {
       env[varName] = String(port);
+      tmuxEnv[varName] = String(port);
     }
   }
 }
@@ -511,13 +578,36 @@ function setupEnvAndHooks(
   portInjectionParams?: PortInjectionParams
 ): HookSetupResult {
   const env = cleanEnv();
+  const tmuxEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (
+      value !== undefined &&
+      ([
+        'HOME',
+        'PATH',
+        'SHELL',
+        'TMPDIR',
+        'TEMP',
+        'TMP',
+        'LANG',
+        'LC_ALL',
+        'USER',
+        'LOGNAME',
+      ].includes(key) ||
+        key.startsWith('LC_'))
+    ) {
+      tmuxEnv[key] = value;
+    }
+  }
 
   if (framework.id === 'claude' && paramClaudeFullscreen === true) {
     env.CLAUDE_CODE_NO_FLICKER = '1';
+    tmuxEnv.CLAUDE_CODE_NO_FLICKER = '1';
   }
 
   if (paramYolo && framework.yoloEnv) {
     Object.assign(env, framework.yoloEnv);
+    Object.assign(tmuxEnv, framework.yoloEnv);
   }
 
   let hookToken = paramHookToken ?? '';
@@ -528,7 +618,7 @@ function setupEnvAndHooks(
   let settingsPath = '';
 
   if (effectiveEventSource === 'plugin' && port !== undefined) {
-    const result = setupPluginHooks(id, port, hookToken, env);
+    const result = setupPluginHooks(id, port, hookToken, env, tmuxEnv);
     hookToken = result.hookToken;
     pluginHooksActive = result.hooksActive;
   }
@@ -539,7 +629,8 @@ function setupEnvAndHooks(
       port,
       hookToken,
       configDir ?? process.cwd(),
-      env
+      env,
+      tmuxEnv
     );
     hookToken = result.hookToken;
     codexHooksActive = result.hooksActive;
@@ -560,11 +651,12 @@ function setupEnvAndHooks(
   }
 
   if (portInjectionParams) {
-    injectPortEnvVars(env, portInjectionParams);
+    injectPortEnvVars(env, tmuxEnv, portInjectionParams);
   }
 
   return {
     env,
+    tmuxEnv,
     hookToken,
     hooksActive: claudeHooksActive || codexHooksActive || pluginHooksActive,
     settingsPath,
@@ -576,43 +668,60 @@ function resolveSpawnTarget(
   command: string | undefined,
   resolvedCommand: string,
   args: string[],
-  paramUseTmux: boolean | undefined,
+  _paramUseTmux: boolean | undefined,
   paramTmuxSessionName: string | undefined,
+  tmuxAttach: boolean | undefined,
   tmuxDisplayName: string | undefined,
   displayName: string | undefined,
   repoName: string | undefined,
   cwd: string,
-  id: string
+  id: string,
+  env: NodeJS.ProcessEnv,
+  tmuxEnv: NodeJS.ProcessEnv
 ): {
   spawnCommand: string;
   spawnArgs: string[];
+  spawnEnv: NodeJS.ProcessEnv;
   useTmux: boolean;
   tmuxSessionName: string;
 } {
-  const useTmux = !command && !!paramUseTmux;
+  const useTmux = true;
   const tmuxSessionName =
     paramTmuxSessionName ||
-    (useTmux
-      ? generateTmuxSessionName(
-          tmuxDisplayName ||
-            displayName ||
-            repoName ||
-            path.basename(cwd) ||
-            'session',
-          id
-        )
-      : '');
+    generateTmuxSessionName(
+      tmuxDisplayName ||
+        displayName ||
+        repoName ||
+        path.basename(cwd) ||
+        'session',
+      id
+    );
 
-  let spawnCommand = resolvedCommand;
-  let spawnArgs = args;
+  const spawnEnv = tmuxEnv;
 
-  if (useTmux) {
-    const tmux = resolveTmuxSpawn(resolvedCommand, args, tmuxSessionName);
-    spawnCommand = tmux.command;
-    spawnArgs = tmux.args;
+  if (tmuxAttach) {
+    return {
+      spawnCommand: resolvedCommand,
+      spawnArgs: args,
+      spawnEnv,
+      useTmux,
+      tmuxSessionName,
+    };
+  } else {
+    const wrapped = writeTmuxEnvWrapper(id, resolvedCommand, args, env);
+    const tmux = resolveTmuxSpawn(
+      wrapped.command,
+      wrapped.args,
+      tmuxSessionName
+    );
+    return {
+      spawnCommand: tmux.command,
+      spawnArgs: tmux.args,
+      spawnEnv,
+      useTmux,
+      tmuxSessionName,
+    };
   }
-
-  return { spawnCommand, spawnArgs, useTmux, tmuxSessionName };
 }
 
 function buildSessionObject(
@@ -638,6 +747,7 @@ function buildSessionObject(
     branchName,
     displayName,
     command,
+    sessionCustomCommand,
     restored: paramRestored,
     yolo: paramYolo,
     claudeArgs: paramClaudeArgs,
@@ -660,7 +770,10 @@ function buildSessionObject(
     scrollback,
     idle: false,
     cwd,
-    customCommand: command || null,
+    customCommand:
+      sessionCustomCommand !== undefined
+        ? sessionCustomCommand
+        : command || null,
     useTmux,
     tmuxSessionName,
     onPtyReplacedCallbacks: [],
@@ -748,6 +861,7 @@ export function createPtySession(
     configDir,
     useTmux: paramUseTmux,
     tmuxSessionName: paramTmuxSessionName,
+    tmuxAttach,
     initialScrollback,
     port,
     forceOutputParser,
@@ -794,30 +908,45 @@ export function createPtySession(
     portInjectionParams
   );
 
-  const { env, hookToken, hooksActive, settingsPath } = hookSetup;
+  const { env, tmuxEnv, hookToken, hooksActive, settingsPath } = hookSetup;
   const args = hookSetup.args;
 
-  const { spawnCommand, spawnArgs, useTmux, tmuxSessionName } =
+  const { spawnCommand, spawnArgs, spawnEnv, useTmux, tmuxSessionName } =
     resolveSpawnTarget(
       command,
       resolvedCommand,
       args,
       paramUseTmux,
       paramTmuxSessionName,
+      tmuxAttach,
       params.tmuxDisplayName,
       displayName,
       repoName,
       cwd,
-      id
+      id,
+      env,
+      tmuxEnv
     );
 
-  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env,
-  });
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: spawnEnv,
+    });
+  } catch (err) {
+    if (!tmuxAttach) {
+      try {
+        fs.rmSync(tmuxEnvWrapperPath(id), { force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+    throw err;
+  }
 
   const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
   // Use a ref so tryRetrySpawn (called from onExit) can reset the byte counter
@@ -931,6 +1060,7 @@ export function createPtySession(
           rows,
           cwd,
           env,
+          tmuxEnv,
           scrollback,
           scrollbackRef,
           timers: {
@@ -998,7 +1128,7 @@ export function createPtySession(
     lastActivity: createdAt,
     idle: false,
     cwd,
-    customCommand: command || null,
+    customCommand: session.customCommand,
     useTmux,
     tmuxSessionName,
     status: 'active' as SessionStatus,
@@ -1020,6 +1150,7 @@ type RetryContext = {
   rows: number;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  tmuxEnv: NodeJS.ProcessEnv;
   scrollback: string[];
   scrollbackRef: { bytes: number };
   timers: {
@@ -1052,9 +1183,15 @@ function tryRetrySpawn(
   if (ctx.useTmux && ctx.tmuxSessionName) {
     const retryTmuxName = ctx.tmuxSessionName + '-retry';
     session.tmuxSessionName = retryTmuxName;
-    const tmux = resolveTmuxSpawn(
+    const wrapped = writeTmuxEnvWrapper(
+      ctx.id,
       ctx.resolvedCommand,
       retryArgs,
+      ctx.env
+    );
+    const tmux = resolveTmuxSpawn(
+      wrapped.command,
+      wrapped.args,
       retryTmuxName
     );
     retryCommand = tmux.command;
@@ -1067,9 +1204,14 @@ function tryRetrySpawn(
       cols: ctx.cols,
       rows: ctx.rows,
       cwd: ctx.cwd,
-      env: ctx.env,
+      env: ctx.tmuxEnv,
     });
   } catch {
+    try {
+      fs.rmSync(tmuxEnvWrapperPath(ctx.id), { force: true });
+    } catch {
+      /* best effort */
+    }
     if (ctx.timers.restoredClear) clearTimeout(ctx.timers.restoredClear);
     if (ctx.timers.idle) clearTimeout(ctx.timers.idle);
     if (ctx.timers.metaFlush) clearTimeout(ctx.timers.metaFlush);

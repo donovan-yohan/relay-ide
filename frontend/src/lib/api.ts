@@ -655,8 +655,6 @@ export const setDefaultContinue = (v: boolean) =>
   setConfigBool('defaultContinue', v);
 export const fetchDefaultYolo = () => fetchConfigBool('defaultYolo');
 export const setDefaultYolo = (v: boolean) => setConfigBool('defaultYolo', v);
-export const fetchLaunchInTmux = () => fetchConfigBool('launchInTmux');
-export const setLaunchInTmux = (v: boolean) => setConfigBool('launchInTmux', v);
 export const fetchDefaultNotifications = () =>
   fetchConfigBool('defaultNotifications');
 export const setDefaultNotifications = (v: boolean) =>

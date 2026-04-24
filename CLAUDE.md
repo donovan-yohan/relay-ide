@@ -36,6 +36,7 @@ Always read `DESIGN.md` before making any visual or UI decisions. All font choic
 - 58 server modules under `server/` (including `adapters/`, `output-parsers/`, `protocol-adapters/` subdirs), each owning one concern — update ADRs when adding modules
 - `node-pty` requires native compilation; `postinstall` script fixes prebuilt binaries on macOS
 - `CLAUDECODE` env var must be stripped from PTY env to allow nesting Claude sessions
+- tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer
 - Scrollback buffer capped at 256KB per session; oldest chunks trimmed first (FIFO)
 - Config at `~/.config/relay-ide/config.json` (global) or `./config.json` (local dev)
 - PIN reset: run `relay-ide pin reset` on the host machine (interactive TTY required)

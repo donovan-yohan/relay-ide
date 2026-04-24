@@ -10,7 +10,6 @@ export interface WorkspaceEditorValues {
   defaultAgent: 'claude' | 'codex' | 'opencode';
   defaultContinue: boolean;
   defaultYolo: boolean;
-  launchInTmux: boolean;
   promptCodeReview: string;
   promptCreatePr: string;
   promptBranchRename: string;
@@ -146,7 +145,6 @@ const SESSION_DEFAULT_KEYS = [
   'defaultAgent',
   'defaultContinue',
   'defaultYolo',
-  'launchInTmux',
 ];
 
 interface SessionDefaultsSectionProps {
@@ -206,12 +204,6 @@ function SessionDefaultsSection({
           onChange={(v) => onChange('defaultYolo', v)}
         >
           YOLO
-        </TuiCheckbox>
-        <TuiCheckbox
-          checked={values.launchInTmux}
-          onChange={(v) => onChange('launchInTmux', v)}
-        >
-          Tmux
         </TuiCheckbox>
       </div>
     </section>

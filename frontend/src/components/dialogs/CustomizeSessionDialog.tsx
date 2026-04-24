@@ -27,7 +27,6 @@ interface FormState {
   selectedAgent: AgentType;
   yoloMode: boolean;
   continueExisting: boolean;
-  useTmux: boolean;
 }
 
 function defaultForm(): FormState {
@@ -36,7 +35,6 @@ function defaultForm(): FormState {
     selectedAgent: 'claude',
     yoloMode: false,
     continueExisting: false,
-    useTmux: false,
   };
 }
 
@@ -57,7 +55,6 @@ async function createSessionFromForm(
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
     agent: form.selectedAgent,
-    useTmux: form.useTmux,
     cols,
     rows,
   });
@@ -122,12 +119,6 @@ function CustomizeSessionBody({
       >
         Yolo mode (skip permission checks)
       </TuiCheckbox>
-      <TuiCheckbox
-        checked={form.useTmux}
-        onChange={(checked) => onFormChange({ useTmux: checked })}
-      >
-        Launch in tmux
-      </TuiCheckbox>
       <div className="customize-session-dialog-field">
         <label className="customize-session-dialog-label" htmlFor="cs-args">
           Extra args (optional)
@@ -177,7 +168,6 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             preselectedFramework ?? (config.defaultAgent as AgentType),
           yoloMode: config.defaultYolo,
           continueExisting: config.defaultContinue,
-          useTmux: config.launchInTmux,
         });
         shellRef.current?.open();
       },
