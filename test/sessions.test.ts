@@ -43,8 +43,13 @@ async function waitForSessionRemoval(id: string): Promise<void> {
 }
 
 afterEach(() => {
-  // Kill any remaining sessions created during tests
-  for (const id of createdIds) {
+  // Kill any remaining sessions created during tests. Some restore tests add
+  // sessions directly from disk, so cleanup must inspect the live registry too.
+  const ids = new Set([
+    ...createdIds,
+    ...sessions.list().map((session) => session.id),
+  ]);
+  for (const id of ids) {
     try {
       const session = sessions.get(id);
       if (session) {
@@ -370,9 +375,7 @@ describe('sessions', () => {
     );
     expect(result.args).not.toContain('bad-env-name=ignored');
     expect(result.args).not.toContain('EMPTY_VALUE=undefined');
-    expect(result.args).not.toContain(
-      'GITHUB_TOKEN=must-not-cross-tmux-argv'
-    );
+    expect(result.args).not.toContain('GITHUB_TOKEN=must-not-cross-tmux-argv');
     expect(result.args.indexOf('RELAY_IDE_TOKEN=abc123')).toBeLessThan(
       result.args.indexOf('-s')
     );
@@ -604,9 +607,11 @@ describe('sessions', () => {
       ).resolves.toBeTruthy();
       expect(fs.existsSync(sentinelPath)).toBe(true);
     } finally {
-      await execFileAsync('tmux', ['kill-session', '-t', tmuxSessionName]).catch(
-        () => {}
-      );
+      await execFileAsync('tmux', [
+        'kill-session',
+        '-t',
+        tmuxSessionName,
+      ]).catch(() => {});
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
   });

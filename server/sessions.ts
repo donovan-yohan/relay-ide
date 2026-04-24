@@ -1,13 +1,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
   AgentType,
   AgentState,
+  AgentFramework,
   BackendDisplayState,
   ContinuePolicy,
+  PtySession,
   Session,
   SessionSummary,
   SessionMeta,
@@ -42,6 +44,7 @@ import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
+const TMUX_COMMAND = 'tmux';
 
 interface SerializedPtySession {
   id: string;
@@ -435,7 +438,7 @@ function kill(id: string): void {
     }
     if (session.tmuxSessionName) {
       execFile(
-        'tmux',
+        TMUX_COMMAND,
         ['kill-session', '-t', session.tmuxSessionName],
         () => {}
       );
@@ -482,6 +485,19 @@ function detachForRestart(id: string): void {
   }
   if (session.mode === 'pty') {
     session.preserveRuntimeFilesOnExit = true;
+    if (session.tmuxSessionName) {
+      try {
+        execFileSync(
+          TMUX_COMMAND,
+          ['detach-client', '-s', session.tmuxSessionName],
+          {
+            stdio: 'ignore',
+          }
+        );
+      } catch {
+        // If no tmux client is attached, killing the PTY below is still safe.
+      }
+    }
     try {
       session.pty.kill('SIGTERM');
     } catch {
@@ -498,7 +514,7 @@ function killAllTmuxSessions(): void {
   for (const session of sessions.values()) {
     if (session.mode === 'pty' && session.tmuxSessionName) {
       execFile(
-        'tmux',
+        TMUX_COMMAND,
         ['kill-session', '-t', session.tmuxSessionName],
         () => {}
       );
@@ -543,17 +559,17 @@ function tmuxTargetForSession(id: string): string {
 
 async function sendTmuxKeys(id: string, keys: string[]): Promise<void> {
   const target = tmuxTargetForSession(id);
-  await execFileAsync('tmux', ['send-keys', '-t', target, ...keys]);
+  await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, ...keys]);
 }
 
 async function sendTmuxText(id: string, text: string): Promise<void> {
   const target = tmuxTargetForSession(id);
-  await execFileAsync('tmux', ['send-keys', '-t', target, '-l', text]);
+  await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, '-l', text]);
 }
 
 async function captureTmuxPane(id: string): Promise<string> {
   const target = tmuxTargetForSession(id);
-  const { stdout } = await execFileAsync('tmux', [
+  const { stdout } = await execFileAsync(TMUX_COMMAND, [
     'capture-pane',
     '-p',
     '-t',
@@ -571,7 +587,7 @@ function nextAgentName(): string {
 }
 
 function serializePtySession(
-  session: import('./types.js').PtySession,
+  session: PtySession,
   scrollbackDirPath: string
 ): SerializedPtySession {
   const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
@@ -608,9 +624,7 @@ function serializePtySession(
   };
 }
 
-function serializeWebSession(
-  session: import('./types.js').WebSession
-): SerializedWebSession {
+function serializeWebSession(session: WebSession): SerializedWebSession {
   return {
     id: session.id,
     type: session.type,
@@ -758,7 +772,7 @@ function loadScrollback(
 
 function buildAgentArgs(
   s: SerializedPtySession,
-  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+  frameworks?: Record<string, Partial<AgentFramework>>
 ): string[] {
   let continueArgsList: string[];
   let yoloArgsList: string[];
@@ -797,14 +811,14 @@ function stableTmuxSessionName(s: SerializedPtySession): string {
 
 async function resolveSessionSpawnParams(
   s: SerializedPtySession,
-  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+  frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<RestoredPtySpawnParams> {
   const tmuxSessionName = stableTmuxSessionName(s);
 
   if (tmuxSessionName) {
     let tmuxAlive = false;
     try {
-      await execFileAsync('tmux', ['has-session', '-t', tmuxSessionName]);
+      await execFileAsync(TMUX_COMMAND, ['has-session', '-t', tmuxSessionName]);
       tmuxAlive = true;
     } catch {
       // tmux session is gone
@@ -821,7 +835,7 @@ async function resolveSessionSpawnParams(
         }
       }
       return {
-        command: 'tmux',
+        command: TMUX_COMMAND,
         args: ['-u', 'attach-session', '-t', tmuxSessionName],
         tmuxSessionName,
         tmuxAttach: true,
@@ -930,7 +944,7 @@ function syncDisplayNameCounters(): void {
 async function restoreFromDisk(
   configDir: string,
   workspaces?: string[],
-  frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
+  frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<number> {
   const pendingPath = path.join(configDir, 'pending-sessions.json');
   if (!fs.existsSync(pendingPath)) return 0;
