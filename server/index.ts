@@ -487,15 +487,15 @@ function buildAgentArgs(
 
 /**
  * Resolves the effective continue policy for an agent session.
- * For new worktrees (needsBranchRename or no existing sessions), always returns 'never'.
+ * For new worktrees, always returns 'never'.
  */
 function resolveContinuePolicy(
   explicitContinuePolicy: ContinuePolicy | undefined,
   explicitContinue: boolean | undefined,
   needsBranchRename: boolean | undefined,
-  isNewWorktreeSession: boolean = false
+  newWorktree: boolean = false
 ): ContinuePolicy | undefined {
-  if (needsBranchRename || isNewWorktreeSession) return 'never';
+  if (needsBranchRename || newWorktree) return 'never';
   if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
   if (explicitContinue === undefined) return undefined;
   return explicitContinue ? 'always' : 'never';
@@ -1978,6 +1978,7 @@ async function main(): Promise<void> {
       rows,
       branchName: requestBranchName,
       needsBranchRename,
+      newWorktree,
       branchRenamePrompt,
       initialPrompt,
       continue: explicitContinue,
@@ -1995,6 +1996,7 @@ async function main(): Promise<void> {
       rows?: number;
       branchName?: string;
       needsBranchRename?: boolean;
+      newWorktree?: boolean;
       branchRenamePrompt?: string;
       initialPrompt?: string;
       continue?: boolean;
@@ -2064,28 +2066,12 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Agent session
-    // Detect brand-new worktrees (no existing sessions) so we don't pass
-    // --continue when there's nothing to resume.
-    let isNewWorktreeSession = false;
-    if (worktreePath) {
-      const resolvedWtPath = path.resolve(worktreePath);
-      const existingSessions = sessions
-        .list()
-        .filter(
-          (s) => s.worktreePath === resolvedWtPath || s.cwd === resolvedWtPath
-        );
-      if (existingSessions.length === 0) {
-        isNewWorktreeSession = true;
-      }
-    }
-
     // Resolve continue policy (handles legacy boolean continue + new worktree override)
     const effectivePolicy = resolveContinuePolicy(
       explicitContinuePolicy,
       explicitContinue,
       needsBranchRename,
-      isNewWorktreeSession
+      newWorktree ?? false
     );
 
     const resolved = resolveSessionSettings(freshConfig, repoPath, {
