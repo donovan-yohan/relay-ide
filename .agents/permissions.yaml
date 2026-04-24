@@ -1,0 +1,60 @@
+# Optional. When present, this file translates into per-provider
+# permission outputs:
+#   - Claude: `.claude/settings.json#permissions`
+#   - Codex:  `.codex/config.toml` (sandbox_mode, approval_policy,
+#             [permissions.default.filesystem], [sandbox_workspace_write])
+#   - opencode: `opencode.json#permission`
+#
+# Delete any section you don't want to set — all fields are optional.
+
+bash:
+  allow:
+    - "git pull"
+    - "git fetch *"
+  ask:
+    - "curl *"
+  deny:
+    - "git push --force*"
+    - "rm -rf *"
+
+read:
+  allow:
+    - "./src/**"
+    - "./tests/**"
+  deny:
+    - "./secrets/**"
+
+write:
+  allow:
+    - "./src/**"
+    - "./tests/**"
+  deny:
+    - "./secrets/**"
+
+webfetch:
+  allow:
+    - "domain:github.com"
+  deny:
+    - "domain:*"
+
+# MCP tool patterns. Applied to Claude/opencode; Codex does not support
+# MCP permission rules and will emit a warning at render time.
+mcp:
+  allow:
+    - "mcp__github__repo_*"
+  deny:
+    - "mcp__puppeteer__*"
+
+# Claude permission mode. Mapped to the closest equivalent on each
+# provider:
+#   default / acceptEdits → codex on-request, opencode default
+#   plan                  → codex untrusted, opencode plan
+#   auto / dontAsk        → codex never, opencode auto
+defaultMode: "default"
+
+# Codex-focused sandbox switches. `mode` is emitted as `sandbox_mode`;
+# `networkAccess` flows into `[sandbox_workspace_write]` only when
+# `mode = workspace-write` (codex ignores it otherwise).
+sandbox:
+  mode: "workspace-write"
+  networkAccess: true
