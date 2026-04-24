@@ -25,6 +25,11 @@ import { detectGitRepo } from './workspaces.js';
 import type { CreateParams, CreateResult } from './sessions.js';
 import { createLogger } from './logger.js';
 import { clampDimension } from './utils.js';
+import {
+  buildPtyCapacityResponse,
+  countActivePtySessions,
+  sessionCreateErrorResponse,
+} from './session-capacity.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspace-groups');
@@ -33,6 +38,7 @@ const ERR_FAILED_READ_CONFIG = 'Failed to read config';
 interface SessionDeps {
   sessions: {
     create: (params: CreateParams) => CreateResult;
+    list?: () => Array<{ mode?: string; status?: string }>;
     nextAgentName: () => string;
   };
   gitWatcher: { watch(cwd: string): void };
@@ -483,7 +489,33 @@ export function createWorkspaceGroupsRouter(
           if (safeCols != null) createParams.cols = safeCols;
           if (safeRows != null) createParams.rows = safeRows;
 
-          const session = sessionDeps.sessions.create(createParams);
+          const activePtySessions = countActivePtySessions(
+            sessionDeps.sessions.list?.() ?? []
+          );
+          const capacityResponse = buildPtyCapacityResponse(
+            activePtySessions,
+            config.maxPtySessions
+          );
+          if (capacityResponse) {
+            res.status(503).json(capacityResponse);
+            return;
+          }
+
+          let session: CreateResult;
+          try {
+            session = sessionDeps.sessions.create(createParams);
+          } catch (err) {
+            const response = sessionCreateErrorResponse(
+              err,
+              activePtySessions,
+              config.maxPtySessions
+            );
+            if (response) {
+              res.status(503).json(response);
+              return;
+            }
+            throw err;
+          }
 
           // Write worktree metadata (matches pattern in server/index.ts)
           if (worktreePath) {

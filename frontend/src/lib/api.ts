@@ -41,10 +41,16 @@ export class ConflictError extends Error {
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message = httpErrorMessage(status)) {
+  code: string | undefined;
+  constructor(
+    status: number,
+    message = httpErrorMessage(status),
+    code?: string | undefined
+  ) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -75,7 +81,7 @@ export interface BrowseResponse {
 }
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new HttpError(res.status);
+  if (!res.ok) throw await httpErrorFromResponse(res);
   return res.json() as Promise<T>;
 }
 
@@ -99,11 +105,25 @@ async function parseErrorBody(
   res: Response,
   fallback: string
 ): Promise<string> {
+  return (await httpErrorFromResponse(res, fallback)).message;
+}
+
+async function httpErrorFromResponse(
+  res: Response,
+  fallback?: string
+): Promise<HttpError> {
   try {
-    const data = (await res.json()) as { error?: string };
-    return data.error || httpErrorMessage(res.status, fallback);
+    const data = (await res.json()) as { error?: unknown; message?: unknown };
+    const code = typeof data.error === 'string' ? data.error : undefined;
+    const message =
+      typeof data.message === 'string'
+        ? data.message
+        : typeof data.error === 'string'
+          ? httpErrorMessage(res.status, data.error)
+          : httpErrorMessage(res.status, fallback);
+    return new HttpError(res.status, message, code);
   } catch {
-    return httpErrorMessage(res.status, fallback);
+    return new HttpError(res.status, httpErrorMessage(res.status, fallback));
   }
 }
 

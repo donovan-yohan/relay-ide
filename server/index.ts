@@ -102,6 +102,11 @@ import type {
 import { BUILTIN_FRAMEWORKS } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
+  buildPtyCapacityResponse,
+  countActivePtySessions,
+  sessionCreateErrorResponse,
+} from './session-capacity.js';
+import {
   createBrowserContentRouter,
   generateScopedToken,
   cleanExpiredTokens,
@@ -589,6 +594,37 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
   }
 
   return session;
+}
+
+function activePtySessionCount(): number {
+  return countActivePtySessions(sessions.list());
+}
+
+function sendPtyCapacityError(
+  res: express.Response,
+  response: ReturnType<typeof buildPtyCapacityResponse>
+): boolean {
+  if (!response) return false;
+  res.status(503).json(response);
+  return true;
+}
+
+function sendSessionCreateError(
+  res: express.Response,
+  err: unknown,
+  maxPtySessions: unknown
+): void {
+  const response = sessionCreateErrorResponse(
+    err,
+    activePtySessionCount(),
+    maxPtySessions
+  );
+  if (sendPtyCapacityError(res, response)) return;
+  logger.error('[sessions] failed to create session:', err);
+  res.status(500).json({
+    error: 'session_create_failed',
+    message: 'Failed to create session.',
+  });
 }
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
@@ -2060,27 +2096,38 @@ async function main(): Promise<void> {
 
     const name = repoPath.split('/').filter(Boolean).pop() || 'session';
     const portVariables = getRepoPortVariables(freshConfig, repoPath);
+    const capacityResponse = buildPtyCapacityResponse(
+      activePtySessionCount(),
+      freshConfig.maxPtySessions
+    );
+    if (sendPtyCapacityError(res, capacityResponse)) return;
 
     if (type === 'terminal') {
       // Terminal session — bare shell
       const shell = process.env.SHELL || '/bin/sh';
       const displayName = sessions.nextTerminalName();
-      const session = sessions.create({
-        type: 'terminal',
-        agent: 'claude' as AgentType,
-        repoName: name,
-        repoPath,
-        worktreePath: worktreePath ?? null,
-        cwd,
-        displayName,
-        branchName: '',
-        command: shell,
-        args: [],
-        ...(safeCols != null && { cols: safeCols }),
-        ...(safeRows != null && { rows: safeRows }),
-        // Pass port env var names for per-worktree port injection
-        portVariables,
-      });
+      let session: CreateResult;
+      try {
+        session = sessions.create({
+          type: 'terminal',
+          agent: 'claude' as AgentType,
+          repoName: name,
+          repoPath,
+          worktreePath: worktreePath ?? null,
+          cwd,
+          displayName,
+          branchName: '',
+          command: shell,
+          args: [],
+          ...(safeCols != null && { cols: safeCols }),
+          ...(safeRows != null && { rows: safeRows }),
+          // Pass port env var names for per-worktree port injection
+          portVariables,
+        });
+      } catch (err) {
+        sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+        return;
+      }
       gitWatcher.watch(session.cwd);
       res.status(201).json(session);
       return;
@@ -2134,28 +2181,34 @@ async function main(): Promise<void> {
       ? `${name}-${requestBranchName}`
       : name;
 
-    const session = createAgentSessionRecord({
-      repoName: name,
-      repoPath,
-      worktreePath,
-      cwd,
-      requestBranchName,
-      displayName,
-      tmuxDisplayName,
-      args,
-      resolvedAgent,
-      resolvedUseTmux: resolved.useTmux,
-      resolvedYolo: resolved.yolo,
-      resolvedClaudeArgs: resolved.claudeArgs,
-      resolvedContinuePolicy: resolved.continuePolicy,
-      safeCols,
-      safeRows,
-      needsBranchRename: needsBranchRename ?? false,
-      branchRenamePrompt: branchRenamePrompt ?? '',
-      computedInitialPrompt,
-      claudeFullscreen: freshConfig.claudeFullscreen,
-      portVariables,
-    });
+    let session: CreateResult;
+    try {
+      session = createAgentSessionRecord({
+        repoName: name,
+        repoPath,
+        worktreePath,
+        cwd,
+        requestBranchName,
+        displayName,
+        tmuxDisplayName,
+        args,
+        resolvedAgent,
+        resolvedUseTmux: resolved.useTmux,
+        resolvedYolo: resolved.yolo,
+        resolvedClaudeArgs: resolved.claudeArgs,
+        resolvedContinuePolicy: resolved.continuePolicy,
+        safeCols,
+        safeRows,
+        needsBranchRename: needsBranchRename ?? false,
+        branchRenamePrompt: branchRenamePrompt ?? '',
+        computedInitialPrompt,
+        claudeFullscreen: freshConfig.claudeFullscreen,
+        portVariables,
+      });
+    } catch (err) {
+      sendSessionCreateError(res, err, freshConfig.maxPtySessions);
+      return;
+    }
 
     gitWatcher.watch(session.cwd);
 

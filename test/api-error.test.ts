@@ -45,4 +45,34 @@ describe('frontend api errors', () => {
         'Relay backend is unavailable (HTTP 503). Try again in a moment.',
     });
   });
+
+  it('uses structured session capacity messages from the server', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: 'pty_capacity_exhausted',
+              message:
+                'Too many terminal sessions are already active. Close inactive sessions and try again.',
+            }),
+            {
+              status: 503,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(
+      createSession({ repoPath: '/repo', type: 'agent' })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 503,
+      code: 'pty_capacity_exhausted',
+      message:
+        'Too many terminal sessions are already active. Close inactive sessions and try again.',
+    });
+  });
 });

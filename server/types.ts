@@ -421,6 +421,7 @@ export interface Config {
   frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks
   defaultContinue: boolean;
   defaultYolo: boolean;
+  maxPtySessions: number;
   launchInTmux: boolean;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;

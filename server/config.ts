@@ -37,6 +37,7 @@ export const DEFAULTS: Omit<
   defaultFramework: 'claude',
   defaultContinue: true,
   defaultYolo: false,
+  maxPtySessions: 64,
   launchInTmux: false,
   defaultNotifications: true,
   claudeFullscreen: true,
