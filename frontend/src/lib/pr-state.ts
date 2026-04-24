@@ -166,7 +166,7 @@ export function derivePrAction(input: PrStateInput): PrAction {
     // Unresolved review comments
     if (unresolvedCommentCount > 0) {
       if (role === 'reviewer') {
-        return { type: 'review-pr', color: 'info', label: 'Review' };
+        return { type: 'review-pr', color: 'info', label: 'Review PR' };
       }
       return {
         type: RESOLVE_COMMENTS,
@@ -177,7 +177,7 @@ export function derivePrAction(input: PrStateInput): PrAction {
 
     // All CI checks passing (or no checks configured) — all clear
     if (role === 'reviewer') {
-      return { type: 'review-pr', color: 'info', label: 'Review' };
+      return { type: 'review-pr', color: 'info', label: 'Review PR' };
     }
     return { type: 'merge-pr', color: 'success', label: 'Merge' };
   }
