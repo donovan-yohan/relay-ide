@@ -1,0 +1,33 @@
+server/protocol-adapters/opencode-adapter.ts
+  c3bce31373e9a160 1-2,4-12,17-47,50-113,115-154,157-171,174-179,182-187,190-193,196-204,207-210,213,216-219,222-225,228-494,497,501-529,544,548,550,552-562,566-568,570-572,574,576-599,601-602,604,606,615,621-623,626-628,630,638-642,645-647,649-650,655-677,679,694-705
+test/fixtures/opencode-serve-stub.cjs
+  c3bce31373e9a160 1-144
+test/fixtures/hermes-gateway-stub.cjs
+  c3bce31373e9a160 6,9,15,42-43,48-53,76-78,81-85,91,95-113
+test/hermes-session-api.e2e.test.ts
+  c3bce31373e9a160 23-27,29-30,47-53,110-168,172-208,212-236
+test/opencode-adapter.e2e.test.ts
+  c3bce31373e9a160 1-64
+server/protocol-adapters/hermes-adapter.ts
+  c3bce31373e9a160 16-33,39-40,49-52,56-57,68-69,71-73,75-77,82-92,100-107,109,187-247,251,258-263,296,305-307,309,315-322,331-334,337-338,347-349,354-357,361,368-398,400-408,410,412-465,469-471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "5177d5335e3e02977598f556c9a0220252b9188e",
+  "prompts": {
+    "c3bce31373e9a160": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc0f8-046c-7e33-8b19-6feb920fc3fa",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1823,
+      "total_deletions": 741,
+      "accepted_lines": 1553,
+      "overriden_lines": 0
+    }
+  }
+}
