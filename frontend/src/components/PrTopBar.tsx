@@ -18,12 +18,14 @@ import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
 import BranchSwitcher from './BranchSwitcher.js';
 import TargetBranchSwitcher from './TargetBranchSwitcher.js';
-import { useUiStore } from '../lib/stores/ui.js';
+import { DEFAULT_UTILITY_RAIL_STATE, useUiStore } from '../lib/stores/ui.js';
 import RenameWarningModal from './dialogs/RenameWarningModal.js';
+import Tooltip from './Tooltip.js';
 import './PrTopBar.css';
 
 export interface PrTopBarProps {
   workspacePath: string;
+  utilityRailWorkspacePath?: string;
   branchName: string;
   sessionId: string | null;
   agentRunning?: boolean;
@@ -267,29 +269,37 @@ function BranchSection({
             onSwitch={onBranchSwitch}
           />
           <div className="hover-icons">
-            <button
-              className="hover-icon"
-              onClick={onCopy}
-              title={copyFeedback ? 'Copied!' : 'Copy branch name'}
-              aria-label="Copy branch name"
-              type="button"
+            <Tooltip
+              label={copyFeedback ? 'copied' : 'copy branch name'}
+              actionId="pr.copy-branch-name"
             >
-              {copyFeedback ? COPY_SVG_CHECK : COPY_SVG_DEFAULT}
-            </button>
-            <button
-              className="hover-icon"
-              onClick={rename.startRename}
-              disabled={agentRunning}
-              title={
+              <button
+                className="hover-icon"
+                onClick={onCopy}
+                aria-label="Copy branch name"
+                type="button"
+              >
+                {copyFeedback ? COPY_SVG_CHECK : COPY_SVG_DEFAULT}
+              </button>
+            </Tooltip>
+            <Tooltip
+              label={
                 agentRunning
-                  ? 'Unavailable while agent is running'
-                  : 'Rename branch'
+                  ? 'unavailable while agent is running'
+                  : 'rename branch'
               }
-              aria-label="Rename branch"
-              type="button"
+              actionId="pr.rename-branch"
             >
-              {RENAME_SVG}
-            </button>
+              <button
+                className="hover-icon"
+                onClick={rename.startRename}
+                disabled={agentRunning}
+                aria-label="Rename branch"
+                type="button"
+              >
+                {RENAME_SVG}
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
@@ -321,6 +331,7 @@ function BranchSection({
 }
 
 interface PrActionsProps {
+  utilityRailWorkspacePath: string;
   isRefreshing: boolean;
   prLoading: boolean;
   prAction: PrAction;
@@ -330,6 +341,7 @@ interface PrActionsProps {
 }
 
 function PrActions({
+  utilityRailWorkspacePath,
   isRefreshing,
   prLoading,
   prAction,
@@ -337,46 +349,60 @@ function PrActions({
   onRefresh,
   onAction,
 }: PrActionsProps) {
-  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
-  const toggleRightSidebarCollapsed = useUiStore(
-    (s) => s.toggleRightSidebarCollapsed
+  const workspaceUtilityRailState = useUiStore((s) =>
+    utilityRailWorkspacePath
+      ? s.utilityRailByWorkspace[utilityRailWorkspacePath]
+      : undefined
   );
+  const hydrateUtilityRailState = useUiStore((s) => s.hydrateUtilityRailState);
+  const toggleUtilityRailVisible = useUiStore(
+    (s) => s.toggleUtilityRailVisible
+  );
+  useEffect(() => {
+    if (utilityRailWorkspacePath)
+      hydrateUtilityRailState(utilityRailWorkspacePath);
+  }, [hydrateUtilityRailState, utilityRailWorkspacePath]);
+  const utilityRailState = utilityRailWorkspacePath
+    ? (workspaceUtilityRailState ?? DEFAULT_UTILITY_RAIL_STATE)
+    : null;
+  const utilityRailVisible = utilityRailState?.visible ?? true;
 
   return (
     <div className="bar-right">
-      <button
-        className={['refresh-btn', isRefreshing && 'refreshing']
-          .filter(Boolean)
-          .join(' ')}
-        onClick={onRefresh}
-        disabled={isRefreshing}
-        aria-label="Refresh PR data"
-        title="Refresh PR data"
-        type="button"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          aria-hidden="true"
+      <Tooltip label="refresh PR data" actionId="pr.refresh">
+        <button
+          className={['refresh-btn', isRefreshing && 'refreshing']
+            .filter(Boolean)
+            .join(' ')}
+          onClick={onRefresh}
+          disabled={isRefreshing}
+          aria-label="Refresh PR data"
+          type="button"
         >
-          <path
-            d="M14 8A6 6 0 1 1 8 2"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-          />
-          <path
-            d="M8 0L14 2L12 4"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
             fill="none"
-          />
-        </svg>
-      </button>
+            aria-hidden="true"
+          >
+            <path
+              d="M14 8A6 6 0 1 1 8 2"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+            <path
+              d="M8 0L14 2L12 4"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+      </Tooltip>
       {prLoading ? (
         <CipherText text="loading" loading={true} />
       ) : (
@@ -406,45 +432,49 @@ function PrActions({
           ) : null}
         </>
       )}
-      <button
-        className="sidebar-toggle-btn"
-        onClick={toggleRightSidebarCollapsed}
-        aria-label={
-          rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'
-        }
-        title={
-          rightSidebarCollapsed ? 'Show file sidebar' : 'Hide file sidebar'
-        }
-        type="button"
+      <Tooltip
+        label={utilityRailVisible ? 'hide utility rail' : 'show utility rail'}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          aria-hidden="true"
+        <button
+          className="sidebar-toggle-btn"
+          onClick={() => {
+            if (utilityRailWorkspacePath)
+              toggleUtilityRailVisible(utilityRailWorkspacePath);
+          }}
+          aria-label={
+            utilityRailVisible ? 'Hide utility rail' : 'Show utility rail'
+          }
+          type="button"
         >
-          <rect
-            x="1"
-            y="2"
+          <svg
             width="14"
-            height="12"
-            stroke="currentColor"
-            strokeWidth="1.5"
+            height="14"
+            viewBox="0 0 16 16"
             fill="none"
-            strokeLinecap="square"
-          />
-          <line
-            x1="10"
-            y1="2"
-            x2="10"
-            y2="14"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="square"
-          />
-        </svg>
-      </button>
+            aria-hidden="true"
+          >
+            <rect
+              x="1"
+              y="2"
+              width="14"
+              height="12"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              fill="none"
+              strokeLinecap="square"
+            />
+            <line
+              x1="10"
+              y1="2"
+              x2="10"
+              y2="14"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="square"
+            />
+          </svg>
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -481,6 +511,7 @@ function deriveBarClass(pr: PrInfo | null): string {
 
 export function PrTopBar({
   workspacePath,
+  utilityRailWorkspacePath = workspacePath,
   branchName,
   sessionId,
   agentRunning = false,
@@ -601,6 +632,7 @@ export function PrTopBar({
         </>
       ) : null}
       <PrActions
+        utilityRailWorkspacePath={utilityRailWorkspacePath}
         isRefreshing={isRefreshing}
         prLoading={prLoading}
         prAction={prAction}

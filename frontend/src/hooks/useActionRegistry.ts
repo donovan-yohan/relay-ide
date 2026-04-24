@@ -443,8 +443,8 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       // ── Diff view ────────────────────────────────────────────────────────────
       {
         id: 'workspace.open-diff-view' as const,
-        label: 'open diff view',
-        description: 'open full-page diff viewer for changed files',
+        label: 'open review pane',
+        description: 'open the review utility pane for changed files',
         category: 'workspace' as const,
         shortcut: { key: 'd' },
         when: (ctx: ActionContext) => ctx.view === 'session',
@@ -457,8 +457,14 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
                 .sessions.find((s) => s.id === currentActiveSessionId)
             : undefined;
           const ws =
-            currentActiveSession?.cwd ?? currentActiveSession?.repoPath ?? '';
-          if (ws) useUiStore.setState({ fullPageDiff: { workspacePath: ws } });
+            currentActiveSession?.worktreePath ??
+            currentActiveSession?.repoPath ??
+            '';
+          if (ws) {
+            const ui = useUiStore.getState();
+            ui.openUtilityRailTab(ws, 'review');
+            useUiStore.setState({ fullPageDiff: null });
+          }
         },
       },
       {

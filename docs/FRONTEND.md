@@ -11,50 +11,56 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 
 ## Component Map
 
-| Component                            | Role                                                                                                                                                            |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `App.tsx`                            | Root layout: left sidebar + SplitPaneLayout (terminal / FileViewerPane / FileTreeSidebar) for session view; dashboard / PR top bar + tabs for non-session views |
-| `Sidebar.tsx`                        | Flat workspace list with command palette search                                                                                                                 |
-| `RepoItem.tsx`                       | Repo tree item: sessions, inactive worktrees, context menus, workspace group membership                                                                         |
-| `CommandPalette.tsx`                 | Terminal-style command palette with action registry                                                                                                             |
-| `PrTopBar.tsx`                       | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                            |
-| `SessionTabBar.tsx`                  | Multi-tab session management per worktree (role=tablist)                                                                                                        |
-| `RepoDashboard.tsx`                  | Workspace dashboard: PRs with merge status, activity feed, CTAs                                                                                                 |
-| `BranchSwitcher.tsx`                 | Worktree-aware branch dropdown: filter, create new branch, jump-to-session links, agent-running guard                                                           |
-| `TargetBranchSwitcher.tsx`           | PR base branch dropdown: remote-only branches, changes base via `gh pr edit`                                                                                    |
-| `FileBrowser.tsx`                    | Lazy-loading tree-view filesystem browser with multi-select, filter, keyboard nav                                                                               |
-| `Terminal.tsx`                       | xterm.js terminal wrapper with WebSocket connection, escape sequence sanitization                                                                               |
-| `Toolbar.tsx`                        | Mobile touch toolbar for terminal interaction                                                                                                                   |
-| `MobileInput.tsx`                    | Event-intent mobile keyboard input handler                                                                                                                      |
-| `ContextMenu.tsx`                    | Universal "..." dropdown menu for session/item actions                                                                                                          |
-| `PinGate.tsx`                        | PIN authentication screen with PinInput component                                                                                                               |
-| `SessionIndicator.tsx`               | Unicode shape-based session state indicator (shapes + colors + pulse animations)                                                                                |
-| `SessionStatusBar.tsx`               | Multi-framework telemetry status bar (model, context %, tokens)                                                                                                 |
-| `AgentBadge.tsx`                     | Agent type indicator badge (Claude/Codex/OpenCode)                                                                                                              |
-| `FileTreeSidebar.tsx`                | Right sidebar: changes tab (git diff tree), all files tab (lazy filesystem browser)                                                                             |
-| `FileViewerPane.tsx`                 | File viewer pane: tab bar, DiffViewer for changed files, CodeBlock for raw files                                                                                |
-| `SplitPaneLayout.tsx`                | Resizable 3-pane layout (terminal / file viewer / right sidebar) with draggable resize handles                                                                  |
-| `DiffViewer.tsx`                     | Unified diff renderer with diff2html parsing and Shiki syntax highlighting                                                                                      |
-| `CodeBlock.tsx`                      | Shared Shiki syntax highlighting wrapper component                                                                                                              |
-| `OrgDashboard.tsx`                   | Cross-repo PR list and tickets panel with tab navigation                                                                                                        |
-| `TicketsPanel.tsx`                   | Multi-provider ticket list: GitHub Issues, Jira, Linear tabs                                                                                                    |
-| `TicketCard.tsx`                     | Individual ticket row: status dot, provider metadata, branch link, Start Work button                                                                            |
-| `StartWorkModal.tsx`                 | Start Work modal: ticket info, workspace selector, branch name input                                                                                            |
-| `TuiButton.tsx`                      | TUI-styled button with box-drawing corner characters                                                                                                            |
-| `TuiCheckbox.tsx`                    | Terminal-style `[x]`/`[ ]` checkbox component                                                                                                                   |
-| `TuiInput.tsx`                       | Terminal-style input with block cursor                                                                                                                          |
-| `MarqueeText.tsx`                    | Horizontal scroll-on-hover for overflow text (Spotify-style)                                                                                                    |
-| `CipherText.tsx`                     | Cipher-decode loading/transition animation                                                                                                                      |
-| `Hint.tsx`                           | Progressive disclosure onboarding hint component                                                                                                                |
-| `WorkspaceGroup.tsx`                 | Workspace container with color-coded border grouping                                                                                                            |
-| **Dialogs**                          |                                                                                                                                                                 |
-| `dialogs/DialogShell.tsx`            | Shared dialog wrapper (fullscreen/compact, terminal aesthetic, popover-based stacking)                                                                          |
-| `dialogs/SettingsDialog.tsx`         | Full settings dialog with TOC, sections, integrations                                                                                                           |
-| `dialogs/CustomizeSessionDialog.tsx` | Session creation/customization with agent selection, args, workspace                                                                                            |
-| `dialogs/AddWorkspaceDialog.tsx`     | Workspace path browser and add flow                                                                                                                             |
-| `dialogs/DeleteWorktreeDialog.tsx`   | Worktree deletion with dirty-check confirmation                                                                                                                 |
-| `dialogs/RenameWarningModal.tsx`     | Rename + PR warning: push, ignore, or undo                                                                                                                      |
-| `dialogs/WorkspaceEditor.tsx`        | Workspace entity editor: name, repo assignment, theme color                                                                                                     |
+| Component                            | Role                                                                                                                                                                 |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `App.tsx`                            | Root layout: left sidebar + SplitPaneLayout (terminal / FileViewerPane / WorkspaceUtilityRail) for session view; dashboard / PR top bar + tabs for non-session views |
+| `Sidebar.tsx`                        | Flat workspace list with command palette search                                                                                                                      |
+| `RepoItem.tsx`                       | Repo tree item: sessions, inactive worktrees, context menus, workspace group membership                                                                              |
+| `CommandPalette.tsx`                 | Terminal-style command palette with action registry                                                                                                                  |
+| `PrTopBar.tsx`                       | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                                 |
+| `SessionTabBar.tsx`                  | Multi-tab session management per worktree (role=tablist)                                                                                                             |
+| `RepoDashboard.tsx`                  | Workspace dashboard: PRs with merge status, activity feed, CTAs                                                                                                      |
+| `BranchSwitcher.tsx`                 | Worktree-aware branch dropdown: filter, create new branch, jump-to-session links, agent-running guard                                                                |
+| `TargetBranchSwitcher.tsx`           | PR base branch dropdown: remote-only branches, changes base via `gh pr edit`                                                                                         |
+| `FileBrowser.tsx`                    | Lazy-loading tree-view filesystem browser with multi-select, filter, keyboard nav                                                                                    |
+| `Terminal.tsx`                       | xterm.js terminal wrapper with WebSocket connection, escape sequence sanitization                                                                                    |
+| `Toolbar.tsx`                        | Mobile touch toolbar for terminal interaction                                                                                                                        |
+| `MobileInput.tsx`                    | Event-intent mobile keyboard input handler                                                                                                                           |
+| `ContextMenu.tsx`                    | Universal "..." dropdown menu for session/item actions                                                                                                               |
+| `PinGate.tsx`                        | PIN authentication screen with PinInput component                                                                                                                    |
+| `SessionIndicator.tsx`               | Unicode shape-based session state indicator (shapes + colors + pulse animations)                                                                                     |
+| `SessionStatusBar.tsx`               | Multi-framework telemetry status bar (model, context %, tokens)                                                                                                      |
+| `AgentBadge.tsx`                     | Agent type indicator badge (Claude/Codex/OpenCode)                                                                                                                   |
+| `WorkspaceUtilityRail.tsx`           | Right utility rail: fixed icon strip, selected utility pane host, visible/hidden shell model                                                                         |
+| `UtilityRailFilesPanel.tsx`          | Files utility pane wrapper around changed files and lazy filesystem browsing                                                                                         |
+| `UtilityRailReviewPanel.tsx`         | Review utility pane: changed-file list, diff source controls, and embedded DiffViewer                                                                                |
+| `UtilityRailLogsPanel.tsx`           | Logs utility pane shell for current session/activity output                                                                                                          |
+| `UtilityRailStatsPanel.tsx`          | Stats utility pane using telemetry summaries for active session and workspace                                                                                        |
+| `FileTreeSidebar.tsx`                | Reusable files panel implementation: changes tab (git diff tree), all files tab (lazy filesystem browser)                                                            |
+| `FileViewerPane.tsx`                 | File viewer pane: tab bar, DiffViewer for changed files, CodeBlock for raw files                                                                                     |
+| `SplitPaneLayout.tsx`                | Resizable 3-pane layout (terminal / file viewer / utility rail) with draggable resize handles                                                                        |
+| `DiffViewer.tsx`                     | Unified diff renderer with diff2html parsing and Shiki syntax highlighting                                                                                           |
+| `CodeBlock.tsx`                      | Shared Shiki syntax highlighting wrapper component                                                                                                                   |
+| `OrgDashboard.tsx`                   | Cross-repo PR list and tickets panel with tab navigation                                                                                                             |
+| `TicketsPanel.tsx`                   | Multi-provider ticket list: GitHub Issues, Jira, Linear tabs                                                                                                         |
+| `TicketCard.tsx`                     | Individual ticket row: status dot, provider metadata, branch link, Start Work button                                                                                 |
+| `StartWorkModal.tsx`                 | Start Work modal: ticket info, workspace selector, branch name input                                                                                                 |
+| `TuiButton.tsx`                      | TUI-styled button with box-drawing corner characters                                                                                                                 |
+| `TuiCheckbox.tsx`                    | Terminal-style `[x]`/`[ ]` checkbox component                                                                                                                        |
+| `TuiInput.tsx`                       | Terminal-style input with block cursor                                                                                                                               |
+| `Tooltip.tsx`                        | Design-system hover/focus tooltip for controls; can resolve labels/descriptions/shortcuts from command registry action IDs                                           |
+| `MarqueeText.tsx`                    | Horizontal scroll-on-hover for overflow text (Spotify-style)                                                                                                         |
+| `CipherText.tsx`                     | Cipher-decode loading/transition animation                                                                                                                           |
+| `Hint.tsx`                           | Progressive disclosure onboarding hint component                                                                                                                     |
+| `WorkspaceGroup.tsx`                 | Workspace container with color-coded border grouping                                                                                                                 |
+| **Dialogs**                          |                                                                                                                                                                      |
+| `dialogs/DialogShell.tsx`            | Shared dialog wrapper (fullscreen/compact, terminal aesthetic, popover-based stacking)                                                                               |
+| `dialogs/SettingsDialog.tsx`         | Full settings dialog with TOC, sections, integrations                                                                                                                |
+| `dialogs/CustomizeSessionDialog.tsx` | Session creation/customization with agent selection, args, workspace                                                                                                 |
+| `dialogs/AddWorkspaceDialog.tsx`     | Workspace path browser and add flow                                                                                                                                  |
+| `dialogs/DeleteWorktreeDialog.tsx`   | Worktree deletion with dirty-check confirmation                                                                                                                      |
+| `dialogs/RenameWarningModal.tsx`     | Rename + PR warning: push, ignore, or undo                                                                                                                           |
+| `dialogs/WorkspaceEditor.tsx`        | Workspace entity editor: name, repo assignment, theme color                                                                                                          |
 
 ## State Management
 
@@ -129,7 +135,7 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 - Settings dialog close triggers `refreshAll()` for immediate sidebar update
 - All dialogs are built on `DialogShell.tsx` — use the `fullscreen` prop for the Settings modal and omit it for compact dialogs (AddWorkspace, CustomizeSession, DeleteWorktree). DialogShell uses `popover="manual"` + `showPopover()`/`hidePopover()` to guarantee top-layer stacking above xterm.js canvas elements (z-index alone is insufficient for canvas stacking contexts)
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
-- **Right sidebar + file viewer split** — `SplitPaneLayout` wraps the session view with `FileTreeSidebar` (right, resizable/collapsible via Ctrl+B) and `FileViewerPane` (center, appears on demand when files are opened). Both share `fileDiffSource` and `fileDiffDefaultBranch` via `UI hooks` so switching diff source in the sidebar updates all open file viewer tabs. `openFileTab()`/`closeFileTab()` in `UI hooks` drive file viewer tab state
+- **Utility rail + file viewer split** — `SplitPaneLayout` wraps the session view with `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle) and `FileViewerPane` (center, appears on demand when files are opened). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is persisted per workspace path in the UI store with stable tab identities for future draggable/anchored panes. `openFileTab()`/`closeFileTab()` in `UI hooks` drive file viewer tab state.
 - Root directory scanning: one level deep for git repos, hidden directories excluded
 
 ## Mobile Touch & Input
