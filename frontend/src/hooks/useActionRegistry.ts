@@ -48,7 +48,6 @@ import {
   settingsToggleDevTools,
   settingsClearAnalytics,
   settingsToggleContinue,
-  settingsToggleTmux,
   settingsToggleNotifications,
   settingsChangeDefaultAgent,
 } from '../lib/actions/definitions/settings.js';
@@ -151,7 +150,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       [settingsToggleDevTools, SECTION_ADVANCED],
       [settingsClearAnalytics, SECTION_ADVANCED],
       [settingsToggleContinue, SECTION_GENERAL],
-      [settingsToggleTmux, SECTION_GENERAL],
       [settingsToggleNotifications, SECTION_GENERAL],
       [settingsChangeDefaultAgent, SECTION_GENERAL],
     ] as const;

@@ -49,6 +49,7 @@ See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined �
 - 58 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
+- tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer.
 - 256KB scrollback cap per session; oldest trimmed FIFO.
 - Config: `~/.config/relay-ide/config.json` (global) or `./config.json` (local dev).
 - PIN reset: `relay-ide pin reset` on the host (interactive TTY).

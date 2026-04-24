@@ -235,6 +235,7 @@ export interface PtySession extends BaseSession {
   hookToken: string;
   hooksActive: boolean;
   cleanedUp: boolean;
+  preserveRuntimeFilesOnExit?: boolean;
   _lastHookTime?: number | undefined;
   yolo: boolean;
   /** Framework-specific args (replaces deprecated claudeArgs) */

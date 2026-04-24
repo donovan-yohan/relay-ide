@@ -5,12 +5,12 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 ## Bird's Eye View
 
-Relay IDE is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a Claude Code CLI process running on the host machine. The server manages PTY processes, relays I/O over WebSocket, and watches for git worktree changes.
+Relay IDE is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a tmux-backed CLI process running on the host machine. The server manages tmux-backed PTY sessions, relays I/O over WebSocket, and watches for git worktree changes.
 
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
 
-The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
+The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
 ## Code Map
 
@@ -23,8 +23,8 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | `index.ts`                              | Composition root: Express app, REST routes, auth middleware, static serving                                                                                                                                                                                        |
 | `workspaces.ts`                         | Repo CRUD, Express Router: dashboard, settings, CI status, branch switch, path autocomplete                                                                                                                                                                        |
 | `workspace-groups.ts`                   | Workspace grouping entity CRUD: Express Router at `/workspace-groups` for create/read/update/delete/reorder workspace entities                                                                                                                                     |
-| `sessions.ts`                           | Session registry: routes `create()` to pty-handler, lifecycle ops, idle sweep                                                                                                                                                                                      |
-| `pty-handler.ts`                        | PTY session creation via node-pty, scrollback buffering (256KB), tmux wrapping, continue-retry                                                                                                                                                                     |
+| `sessions.ts`                           | Session registry: routes `create()` to pty-handler, lifecycle ops, restore/reattach, idle sweep                                                                                                                                                                    |
+| `pty-handler.ts`                        | PTY session creation via node-pty attached to tmux, scrollback buffering (256KB), tmux session naming, continue-retry                                                                                                                                              |
 | `git.ts`                                | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
 | `ws.ts`                                 | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel                                                                                                                                                                         |
 | `utils.ts`                              | Shared server utilities                                                                                                                                                                                                                                            |
@@ -111,7 +111,7 @@ Unit/integration tests use `vitest` (migrated from `node:test` on 2026-04-03). T
 **PTY relay:**
 
 ```
-Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--PTY I/O--> node-pty <--spawns--> agent CLI / shell
+Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--PTY I/O--> node-pty <--attaches/spawns--> tmux session <--runs--> agent CLI / shell
                                               |
                                          scrollback buffer (in-memory, per session)
 ```
@@ -131,6 +131,25 @@ PTY flow:
 4. PTY stdout/stderr relayed back over WebSocket
 5. xterm.js renders output in browser
 6. Resize events sent as JSON: `{type: 'resize', cols, rows}`
+
+## Tmux Substrate
+
+xterm.js remains the browser renderer. tmux is the required server-side session and process substrate for interactive agent and terminal sessions. `node-pty` is the adapter between the WebSocket relay and tmux; it is not the durable owner of the agent process tree.
+
+Tmux session names are stable and human-readable:
+
+```
+<prefix><sanitized repo-or-repo-branch slug>-<first 8 chars of session id>
+```
+
+- Production sessions use the `relay-ide-` prefix.
+- Dev mode sessions (`NO_PIN=1`) use the `relay-dev-` prefix.
+- The slug is sanitized to alphanumeric/hyphen characters and capped before the session id suffix.
+- Restore paths preserve the original session id and tmux session name so browser tabs can reconnect to the same server-side process after a server restart.
+- On startup, the server checks whether the named tmux session still exists. If it does, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed process.
+- `sessions.ts` exposes targeted tmux helpers (`sendTmuxKeys`, `sendTmuxText`, `captureTmuxPane`) so future workspace panes can address a specific tmux-backed process by session id instead of relying only on the currently attached PTY stream.
+
+This makes workspace, tab, and pane customization (#263) viable without losing process ownership. Browser-level tabs and panes can be rearranged freely while the underlying tmux session remains the stable process identity for reconnect, restore, resize, copy-mode, and cleanup.
 
 ## REST API
 
@@ -193,7 +212,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 **Auth:** Every HTTP request (except `/auth` POST) and every WebSocket upgrade requires a valid session cookie. Rate limiting is per-IP.
 
-**Session lifecycle:** Sessions are in-memory during normal operation. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart.
+**Session lifecycle:** Runtime session records are in-memory during normal operation, while tmux owns the durable process tree. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart by reattaching to the preserved tmux name when possible.
 
 ---
 
@@ -204,7 +223,7 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 | ADR     | Topic                                                                          |
 | ------- | ------------------------------------------------------------------------------ |
 | ADR-001 | Modular server architecture (58 modules, composition root, dependency flow) |
-| ADR-003 | PTY session management (in-memory state, scrollback, CLAUDECODE stripping)     |
+| ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping) |
 | ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                      |
 | ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)    |
 | ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)             |

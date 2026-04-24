@@ -20,7 +20,11 @@ import {
   AGENT_YOLO_ARGS,
   resolveFramework,
 } from './types.js';
-import { createPtySession, upgradeHooksSettings } from './pty-handler.js';
+import {
+  createPtySession,
+  generateTmuxSessionName,
+  upgradeHooksSettings,
+} from './pty-handler.js';
 import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import {
@@ -471,6 +475,25 @@ function kill(id: string): void {
   sessions.delete(id);
 }
 
+function detachForRestart(id: string): void {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  if (session.mode === 'pty') {
+    session.preserveRuntimeFilesOnExit = true;
+    try {
+      session.pty.kill('SIGTERM');
+    } catch {
+      // The tmux session is intentionally left alive for restore/reattach.
+    }
+  } else {
+    session.adapter.disconnect().catch(() => {
+      // Adapter may already be disconnected during shutdown.
+    });
+  }
+}
+
 function killAllTmuxSessions(): void {
   for (const session of sessions.values()) {
     if (session.mode === 'pty' && session.tmuxSessionName) {
@@ -505,6 +528,38 @@ function write(id: string, data: string): void {
   } else {
     logger.warn(`write() called on web session ${id} — no-op`);
   }
+}
+
+function tmuxTargetForSession(id: string): string {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  if (session.mode !== 'pty' || !session.tmuxSessionName) {
+    throw new Error(`Session ${id} does not have a tmux target`);
+  }
+  return session.tmuxSessionName;
+}
+
+async function sendTmuxKeys(id: string, keys: string[]): Promise<void> {
+  const target = tmuxTargetForSession(id);
+  await execFileAsync('tmux', ['send-keys', '-t', target, ...keys]);
+}
+
+async function sendTmuxText(id: string, text: string): Promise<void> {
+  const target = tmuxTargetForSession(id);
+  await execFileAsync('tmux', ['send-keys', '-t', target, '-l', text]);
+}
+
+async function captureTmuxPane(id: string): Promise<string> {
+  const target = tmuxTargetForSession(id);
+  const { stdout } = await execFileAsync('tmux', [
+    'capture-pane',
+    '-p',
+    '-t',
+    target,
+  ]);
+  return stdout;
 }
 
 function nextTerminalName(): string {
@@ -726,18 +781,30 @@ function buildAgentArgs(
   ];
 }
 
+type RestoredPtySpawnParams = {
+  command: string | undefined;
+  args: string[];
+  tmuxSessionName: string;
+  tmuxAttach: boolean;
+};
+
+function stableTmuxSessionName(s: SerializedPtySession): string {
+  return (
+    s.tmuxSessionName ||
+    generateTmuxSessionName(s.displayName || s.repoName || 'session', s.id)
+  );
+}
+
 async function resolveSessionSpawnParams(
   s: SerializedPtySession,
   frameworks?: Record<string, Partial<import('./types.js').AgentFramework>>
-): Promise<{ command: string | undefined; args: string[] }> {
-  if (s.customCommand) {
-    return { command: s.customCommand, args: [] };
-  }
+): Promise<RestoredPtySpawnParams> {
+  const tmuxSessionName = stableTmuxSessionName(s);
 
-  if (s.useTmux && s.tmuxSessionName) {
+  if (tmuxSessionName) {
     let tmuxAlive = false;
     try {
-      await execFileAsync('tmux', ['has-session', '-t', s.tmuxSessionName]);
+      await execFileAsync('tmux', ['has-session', '-t', tmuxSessionName]);
       tmuxAlive = true;
     } catch {
       // tmux session is gone
@@ -755,22 +822,33 @@ async function resolveSessionSpawnParams(
       }
       return {
         command: 'tmux',
-        args: ['-u', 'attach-session', '-t', s.tmuxSessionName],
+        args: ['-u', 'attach-session', '-t', tmuxSessionName],
+        tmuxSessionName,
+        tmuxAttach: true,
       };
     }
-
-    // Tmux session died — fall back to agent with continue args + preserved flags
-    return { command: undefined, args: buildAgentArgs(s, frameworks) };
   }
 
-  // Non-tmux agent session — respawn with continue args + preserved flags
-  return { command: undefined, args: buildAgentArgs(s, frameworks) };
+  if (s.customCommand) {
+    return {
+      command: s.customCommand,
+      args: [],
+      tmuxSessionName,
+      tmuxAttach: false,
+    };
+  }
+
+  return {
+    command: undefined,
+    args: buildAgentArgs(s, frameworks),
+    tmuxSessionName,
+    tmuxAttach: false,
+  };
 }
 
 function restoreSession(
   s: SerializedPtySession,
-  command: string | undefined,
-  args: string[],
+  spawn: RestoredPtySpawnParams,
   initialScrollback: string[] | undefined
 ): void {
   const createParams: CreateParams = {
@@ -783,9 +861,11 @@ function restoreSession(
     cwd: s.cwd,
     branchName: s.branchName,
     displayName: s.displayName,
-    args,
-    useTmux: false, // Don't re-wrap in tmux — either attaching to existing or using plain agent
-    tmuxSessionName: s.tmuxSessionName,
+    args: spawn.args,
+    useTmux: true,
+    tmuxSessionName: spawn.tmuxSessionName,
+    tmuxAttach: spawn.tmuxAttach,
+    sessionCustomCommand: s.customCommand,
     restored: true,
     yolo: s.yolo ?? false,
     claudeArgs: s.claudeArgs ?? [],
@@ -799,7 +879,7 @@ function restoreSession(
     ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
     ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
   };
-  if (command) createParams.command = command;
+  if (spawn.command) createParams.command = spawn.command;
   if (initialScrollback) createParams.initialScrollback = initialScrollback;
   create(createParams);
 }
@@ -879,10 +959,10 @@ async function restoreFromDisk(
     const scrollbackPath = path.join(scrollbackDirPath, s.id + '.buf');
     const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
 
-    const { command, args } = await resolveSessionSpawnParams(s, frameworks);
+    const spawn = await resolveSessionSpawnParams(s, frameworks);
 
     try {
-      restoreSession(s, command, args, initialScrollback);
+      restoreSession(s, spawn, initialScrollback);
       restored++;
     } catch (err) {
       logger.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
@@ -1040,8 +1120,12 @@ export {
   get,
   list,
   kill,
+  detachForRestart,
   killAllTmuxSessions,
   resize,
+  sendTmuxKeys,
+  sendTmuxText,
+  captureTmuxPane,
   updateDisplayName,
   write,
   onStateChange,

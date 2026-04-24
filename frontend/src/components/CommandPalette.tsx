@@ -54,12 +54,6 @@ const SETTINGS_ENTRIES = [
     section: SEC_GENERAL,
   },
   {
-    id: 'setting-tmux',
-    label: 'Launch in tmux',
-    description: 'Wrap sessions in tmux',
-    section: SEC_GENERAL,
-  },
-  {
     id: 'setting-notifications',
     label: 'Notifications',
     description: 'Push notifications for sessions',
