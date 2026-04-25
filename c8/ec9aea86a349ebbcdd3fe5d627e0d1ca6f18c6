@@ -1,0 +1,61 @@
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  31725874810c7636 32-44,141-149,177-181,183,187-192,259,274-277,281-284,297-306,343-351
+docs/WEB_CHAT.md
+  31725874810c7636 92,183,255-260
+test/framework-availability.test.ts
+  31725874810c7636 1-76
+test/framework-types.test.ts
+  31725874810c7636 13,17,70-84
+server/index.ts
+  31725874810c7636 94-97,106,509-555,620-651,1323,2236,2241-2242,2270-2277
+frontend/src/hooks/useActionRegistry.ts
+  31725874810c7636 20,489-503,505,507-512,514-521,523-532
+test/fixtures/hermes-gateway-stub.cjs
+  31725874810c7636 16,38-44
+server/frameworks.ts
+  31725874810c7636 1-99
+docs/spikes/hermes-integration.md
+  31725874810c7636 370
+frontend/src/components/dialogs/CustomizeSessionDialog.css
+  31725874810c7636 48-52
+test/customize-session-dialog.test.ts
+  31725874810c7636 6-7,11,21-23,26-28,34-38,53-71
+server/types.ts
+  31725874810c7636 66,135
+server/protocol-adapters/hermes-adapter.ts
+  31725874810c7636 2-4,21-153,172-173,177,181-182,203-206,269,332,346,388-397,402-404,409,412,414,417-421,426-431,433-434
+test/frameworks-api.test.ts
+  31725874810c7636 3,20,43,50,53,62-66,81-82
+frontend/src/lib/types.ts
+  31725874810c7636 39-43
+frontend/src/components/dialogs/SettingsDialog.tsx
+  31725874810c7636 39,476,494-516
+frontend/src/components/dialogs/WorkspaceEditor.tsx
+  31725874810c7636 4-5,12,146,159,182,184-206
+server/web-session-handler.ts
+  31725874810c7636 89
+test/hermes-session-api.e2e.test.ts
+  31725874810c7636 7,23-40,46-56,58-80,83-86,108,150-157,161-162,169-180,201,207,224,268,276,279-282,300-335,339
+test/hermes-adapter.e2e.test.ts
+  31725874810c7636 2-3,6,12-56,66,68-86,88-90,92-96,98-100,102,104-107,109,111-114,116,118-120,122-124,126-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "c8ec9aea86a349ebbcdd3fe5d627e0d1ca6f18c6",
+  "prompts": {
+    "31725874810c7636": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc1a8-6cf5-7941-984b-e0b4392444ff",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3142,
+      "total_deletions": 336,
+      "accepted_lines": 3409,
+      "overriden_lines": 0
+    }
+  }
+}
