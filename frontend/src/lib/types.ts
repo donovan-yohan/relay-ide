@@ -36,6 +36,11 @@ export interface FrameworkInfo {
     supportsWebSessions?: boolean;
   };
   eventSource: EventSourceType;
+  availability?: {
+    installed: boolean;
+    path?: string;
+    reason?: string;
+  };
 }
 
 export interface CurrentActivity {

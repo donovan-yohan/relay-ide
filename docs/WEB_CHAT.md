@@ -89,7 +89,7 @@ interface ProtocolAdapter {
 | `ClaudeProtocolAdapter`   | `protocol-adapters/claude-adapter.ts`   | `--output-format stream-json` + env hooks |
 | `CodexProtocolAdapter`    | `protocol-adapters/codex-adapter.ts`    | Hook file callbacks                       |
 | `OpenCodeProtocolAdapter` | `protocol-adapters/opencode-adapter.ts` | Relay plugin events                       |
-| `HermesProtocolAdapter`   | `protocol-adapters/hermes-adapter.ts`   | Spawned gateway (`hermes gateway run`) + SSE/REST |
+| `HermesProtocolAdapter`   | `protocol-adapters/hermes-adapter.ts`   | Attached host gateway + SSE/REST          |
 | `MockProtocolAdapter`     | `protocol-adapters/mock-adapter.ts`     | Programmable test scenarios               |
 
 #### 3. WebSession — Session Container
@@ -180,7 +180,7 @@ All messages are JSON-serialized `ChatEvent` objects. The server sends a snapsho
 | Claude Code | `claude`   | `--output-format stream-json` + env hooks | ✅ Implemented |
 | Codex       | `codex`    | Hook file callbacks                       | ✅ Implemented |
 | OpenCode    | `opencode` | Relay plugin events                       | ✅ Implemented |
-| Hermes      | `hermes`   | Spawned gateway + SSE/REST                | ✅ Implemented |
+| Hermes      | `hermes`   | Attached host gateway + SSE/REST          | ✅ Implemented |
 | Mock        | `mock`     | Programmable scenarios                    | ✅ Implemented |
 
 ## Creating a New Protocol Adapter
@@ -252,7 +252,12 @@ const adapters = {
 4. **Add to frontend types** (`frontend/src/lib/types.ts`):
 
 ```typescript
-export type AgentFramework = 'claude' | 'codex' | 'opencode' | 'hermes' | 'myagent';
+export type AgentFramework =
+  | 'claude'
+  | 'codex'
+  | 'opencode'
+  | 'hermes'
+  | 'myagent';
 ```
 
 ## Testing with Mock Adapter

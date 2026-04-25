@@ -48,6 +48,14 @@ test('opencode web session sends prompts through serve API and receives streamed
     () => {
       expect(session.agentState).toBe('idle');
       expect(events.some((e) => e.type === 'chat:text-delta')).toBe(true);
+      expect(
+        events.some(
+          (e) =>
+            e.type === 'chat:message-complete' &&
+            e.role === 'user' &&
+            e.content === 'hello opencode'
+        )
+      ).toBe(true);
       expect(events.some((e) => e.type === 'chat:turn-completed')).toBe(true);
     },
     { timeout: 5000, interval: 25 }

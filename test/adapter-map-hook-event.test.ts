@@ -301,6 +301,57 @@ describe('OpenCodeProtocolAdapter.mapHookEvent', () => {
     expect(evt.durationMs).toBe(100);
   });
 
+  it('suppresses echoed user text while bounding tracked user message ids', () => {
+    for (let i = 0; i < 101; i++) {
+      (adapter as any).mapOpenCodeEvent({
+        type: 'message.updated',
+        properties: { info: { id: `user-${i}`, role: 'user' } },
+      });
+    }
+
+    const trackedUserIds = (adapter as any)._userMessageIds as Set<string>;
+    expect(trackedUserIds.size).toBe(100);
+    expect(trackedUserIds.has('user-0')).toBe(false);
+    expect(trackedUserIds.has('user-100')).toBe(true);
+
+    (adapter as any).mapOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'part-100',
+          messageID: 'user-100',
+          type: 'text',
+          text: 'echoed user prompt',
+        },
+      },
+    });
+
+    expect(events).toHaveLength(0);
+  });
+
+  it('does not retain assistant message ids while streaming assistant text', () => {
+    (adapter as any).mapOpenCodeEvent({
+      type: 'message.updated',
+      properties: { info: { id: 'assistant-1', role: 'assistant' } },
+    });
+    (adapter as any).mapOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'part-a',
+          messageID: 'assistant-1',
+          type: 'text',
+          text: 'assistant text',
+        },
+      },
+    });
+
+    const trackedUserIds = (adapter as any)._userMessageIds as Set<string>;
+    expect(trackedUserIds.has('assistant-1')).toBe(false);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe('chat:text-delta');
+  });
+
   it('maps "session.idle" to turn-completed + session-status idle', () => {
     adapter.handleHookEvent({ type: 'session.idle', sessionId: 'sess-test' });
 

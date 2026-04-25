@@ -13,10 +13,15 @@ import type { ChatEvent, ChatEventSource } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-adapter');
+const MAX_TRACKED_USER_MESSAGES = 100;
 
 interface OpenCodeEvent {
   type: string;
   properties?: Record<string, unknown>;
+}
+
+interface OpenCodeSseEnvelope {
+  payload?: unknown;
 }
 
 interface LegacyHookEventPayload {
@@ -61,6 +66,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   private _currentTurnId: string | null = null;
   private _openCodeSessionId: string | null = null;
   private _partText = new Map<string, string>();
+  private _userMessageIds = new Set<string>();
 
   readonly runtimeOwnership = 'spawned' as const;
 
@@ -80,6 +86,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     this._currentTurnId = null;
     this._openCodeSessionId = null;
     this._partText.clear();
+    this._userMessageIds.clear();
 
     this._apiPort = await getPort();
     this._apiHost =
@@ -277,6 +284,13 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
         type: 'chat:turn-started',
         turnId,
         turnIndex: this._turnCounter++,
+      });
+      this.fire({
+        type: 'chat:message-complete',
+        turnId,
+        messageId: `user-${turnId}`,
+        role: 'user',
+        content,
       });
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
@@ -494,22 +508,53 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
           const dataLine = line.slice(5).trim();
           eventData = eventData ? eventData + '\n' + dataLine : dataLine;
         } else if (line.trim() === '' && eventData) {
-          try {
-            const data = JSON.parse(eventData) as OpenCodeEvent;
-            this.mapOpenCodeEvent(data);
-          } catch (err) {
-            logger.debug('Failed to parse OpenCode SSE event:', err);
-          }
+          this.handleSseEventData(eventData);
           eventData = '';
         }
       }
     }
   }
 
+  private handleSseEventData(eventData: string): void {
+    try {
+      const data = JSON.parse(eventData) as OpenCodeEvent | OpenCodeSseEnvelope;
+      const event = this.normalizeOpenCodeEvent(data);
+      if (event) this.mapOpenCodeEvent(event);
+    } catch (err) {
+      logger.debug('Failed to parse OpenCode SSE event:', err);
+    }
+  }
+
+  private normalizeOpenCodeEvent(
+    raw: OpenCodeEvent | OpenCodeSseEnvelope
+  ): OpenCodeEvent | null {
+    if (
+      raw &&
+      typeof raw === 'object' &&
+      'payload' in raw &&
+      raw.payload &&
+      typeof raw.payload === 'object'
+    ) {
+      const payload = raw.payload as Record<string, unknown>;
+      return typeof payload['type'] === 'string'
+        ? (payload as unknown as OpenCodeEvent)
+        : null;
+    }
+    return raw &&
+      typeof raw === 'object' &&
+      'type' in raw &&
+      typeof raw.type === 'string'
+      ? raw
+      : null;
+  }
+
   private mapOpenCodeEvent(event: OpenCodeEvent): void {
     if (!this.isCurrentSessionEvent(event)) return;
 
     switch (event.type) {
+      case 'message.updated':
+        this.handleMessageUpdated(event);
+        break;
       case 'session.status':
         this.handleSessionStatus(event);
         break;
@@ -558,8 +603,8 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   }
 
   private handleSessionStatus(event: OpenCodeEvent): void {
-    const status = event.properties?.['status'];
-    if (status === 'active') {
+    const status = this.statusType(event.properties?.['status']);
+    if (status === 'active' || status === 'busy') {
       this.fire({ type: 'chat:session-status', status: 'active' });
       return;
     }
@@ -578,6 +623,30 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       this.fire({ type: 'chat:session-status', status: 'error' });
       return;
     }
+    if (status === 'retry') {
+      const rawStatus = event.properties?.['status'];
+      const message =
+        rawStatus && typeof rawStatus === 'object'
+          ? (rawStatus as Record<string, unknown>)['message']
+          : undefined;
+      if (message) {
+        this.fire({
+          type: 'chat:error',
+          kind: String(message).toLowerCase().includes('quota')
+            ? 'rate-limit'
+            : 'protocol',
+          message: String(message),
+          retryable: true,
+          turnId: this._currentTurnId ?? undefined,
+        });
+      }
+      this.fire({
+        type: 'chat:session-status',
+        status: 'retry',
+        waitingOn: 'network',
+      });
+      return;
+    }
     if (status !== 'idle') return;
     if (this._currentTurnId) {
       this.fire({
@@ -593,11 +662,55 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     this.fire({ type: 'chat:session-status', status: 'idle' });
   }
 
+  private statusType(status: unknown): string | undefined {
+    if (typeof status === 'string') return status;
+    if (status && typeof status === 'object') {
+      const type = (status as Record<string, unknown>)['type'];
+      return typeof type === 'string' ? type : undefined;
+    }
+    return undefined;
+  }
+
+  private handleMessageUpdated(event: OpenCodeEvent): void {
+    const info = event.properties?.['info'] as
+      | Record<string, unknown>
+      | undefined;
+    const messageId = info?.['id'];
+    const role = info?.['role'];
+    if (typeof messageId === 'string' && typeof role === 'string') {
+      if (role === 'user') {
+        this.trackUserMessageId(messageId);
+      } else {
+        this._userMessageIds.delete(messageId);
+      }
+    }
+  }
+
+  private trackUserMessageId(messageId: string): void {
+    if (this._userMessageIds.has(messageId)) {
+      this._userMessageIds.delete(messageId);
+    }
+    this._userMessageIds.add(messageId);
+    while (this._userMessageIds.size > MAX_TRACKED_USER_MESSAGES) {
+      const oldest = this._userMessageIds.values().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this._userMessageIds.delete(oldest);
+    }
+  }
+
   private handleSessionError(event: OpenCodeEvent): void {
+    const rawError = event.properties?.['error'];
+    const message =
+      rawError && typeof rawError === 'object'
+        ? ((rawError as Record<string, unknown>)['message'] ??
+          (rawError as Record<string, unknown>)['name'])
+        : rawError;
     this.fire({
       type: 'chat:error',
       kind: 'unknown',
-      message: String(event.properties?.['error'] ?? 'OpenCode session error'),
+      message: String(message ?? 'OpenCode session error'),
       retryable: true,
       turnId: this._currentTurnId ?? undefined,
     });
@@ -618,6 +731,11 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   private handleMessagePartUpdated(event: OpenCodeEvent): void {
     const part = event.properties?.['part'] as TextPart | undefined;
     if (!part || part.type !== 'text') return;
+    // OpenCode sends message.updated before message.part.updated, so a bounded
+    // set of recent user message ids is enough to suppress echoed user text.
+    if (part.messageID && this._userMessageIds.has(part.messageID)) {
+      return;
+    }
     const turnId = this._currentTurnId ?? 'turn-0';
     const messageId = part.messageID ?? `msg-${turnId}`;
     const delta = this.deltaForPart(part, event.properties?.['delta']);

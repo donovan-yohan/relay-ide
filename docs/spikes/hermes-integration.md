@@ -367,7 +367,7 @@ class HermesProtocolAdapter extends BaseProtocolAdapter {
 ### C.3 Open questions for implementer
 
 1. **Gateway lifecycle:** Does relay-ide spawn `hermes gateway run` as a managed subprocess (like `codex`/`opencode`), or does the adapter assume a user-managed gateway?  
-   _Recommendation:_ Spawn it. Add `command: 'hermes'` and `args: ['gateway', 'run']` to `BUILTIN_FRAMEWORKS['hermes']`, then spawn in `connect()` and kill in `onDisconnect()`. Gateway is lightweight enough to be per-session.
+   _Decision:_ Attach to the host-managed Hermes gateway API server. Relay should not start a private Hermes gateway per web session because the gateway owns platform connections, profile state, API auth, and long-lived session/runtime resources.
 
 2. **Model switching:** Hermes gateway supports `POST /api/model-switch`. Should the adapter expose this?  
    _Recommendation:_ Defer. Add to adapter's `extra` config if needed later.

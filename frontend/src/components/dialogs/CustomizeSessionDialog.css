@@ -45,3 +45,8 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.customize-session-field-note {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}

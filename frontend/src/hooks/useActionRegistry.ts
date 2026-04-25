@@ -17,6 +17,7 @@ import {
   sessionRename,
 } from '../lib/actions/definitions/session.js';
 import { createFrameworkAction } from '../lib/actions/definitions/frameworks.js';
+import { isFrameworkAvailable } from '../components/dialogs/CustomizeSessionDialog.js';
 import {
   workspaceAdd,
   workspaceNewWorktree,
@@ -485,48 +486,50 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
   }, []);
 
   useEffect(() => {
-    const frameworkActions = frameworks.map((framework) => ({
-      ...createFrameworkAction(framework),
-      handler: async () => {
-        const currentRepoPath = useUiStore.getState().activeRepoPath;
-        const state = useSessionsStore.getState();
-        const workspace = currentRepoPath
-          ? state.repos.find((repo) => repo.path === currentRepoPath)
-          : undefined;
-        const activeSession = state.activeSessionId
-          ? state.sessions.find(
-              (session) => session.id === state.activeSessionId
-            )
-          : undefined;
+    const frameworkActions = frameworks
+      .filter(isFrameworkAvailable)
+      .map((framework) => ({
+        ...createFrameworkAction(framework),
+        handler: async () => {
+          const currentRepoPath = useUiStore.getState().activeRepoPath;
+          const state = useSessionsStore.getState();
+          const workspace = currentRepoPath
+            ? state.repos.find((repo) => repo.path === currentRepoPath)
+            : undefined;
+          const activeSession = state.activeSessionId
+            ? state.sessions.find(
+                (session) => session.id === state.activeSessionId
+              )
+            : undefined;
 
-        if (!workspace) return;
+          if (!workspace) return;
 
-        const { session, error } = await createAgentSession({
-          repoPath: workspace.path,
-          worktreePath: activeSession?.worktreePath ?? null,
-          type: 'agent',
-          agent: framework.id,
-        });
+          const { session, error } = await createAgentSession({
+            repoPath: workspace.path,
+            worktreePath: activeSession?.worktreePath ?? null,
+            type: 'agent',
+            agent: framework.id,
+          });
 
-        if (session?.id && !(error instanceof ConflictError)) {
-          useSessionsStore
-            .getState()
-            .initSessionNotification(
-              session.id,
-              useConfigStore.getState().defaultNotifications
+          if (session?.id && !(error instanceof ConflictError)) {
+            useSessionsStore
+              .getState()
+              .initSessionNotification(
+                session.id,
+                useConfigStore.getState().defaultNotifications
+              );
+          }
+
+          if (error && !(error instanceof ConflictError)) {
+            logger.error(`Failed to create ${framework.id} session`, error);
+            customizeDialogRef.current?.open(
+              { name: workspace.name, path: workspace.path },
+              activeSession?.worktreePath ?? null,
+              framework.id
             );
-        }
-
-        if (error && !(error instanceof ConflictError)) {
-          logger.error(`Failed to create ${framework.id} session`, error);
-          customizeDialogRef.current?.open(
-            { name: workspace.name, path: workspace.path },
-            activeSession?.worktreePath ?? null,
-            framework.id
-          );
-        }
-      },
-    }));
+          }
+        },
+      }));
 
     if (frameworkActions.length === 0) return;
 

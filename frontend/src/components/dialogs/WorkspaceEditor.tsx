@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import TuiCheckbox from '../TuiCheckbox.js';
 import type { BranchInfo } from '../../lib/types.js';
+import { useConfigStore } from '../../lib/stores/config.js';
+import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
 import './WorkspaceEditor.css';
 
 export interface WorkspaceEditorValues {
   defaultBranch: string;
   remote: string;
   branchPrefix: string;
-  defaultAgent: 'claude' | 'codex' | 'opencode';
+  defaultAgent: string;
   defaultContinue: boolean;
   defaultYolo: boolean;
   promptCodeReview: string;
@@ -141,11 +143,7 @@ function GitSettingsSection({ values, branches, onChange }: GitSectionProps) {
   );
 }
 
-const SESSION_DEFAULT_KEYS = [
-  'defaultAgent',
-  'defaultContinue',
-  'defaultYolo',
-];
+const SESSION_DEFAULT_KEYS = ['defaultAgent', 'defaultContinue', 'defaultYolo'];
 
 interface SessionDefaultsSectionProps {
   values: WorkspaceEditorValues;
@@ -158,6 +156,7 @@ function SessionDefaultsSection({
   overriddenKeys,
   onChange,
 }: SessionDefaultsSectionProps) {
+  const frameworks = useConfigStore((state) => state.frameworks);
   const hasOverride = overriddenKeys.some((k) =>
     SESSION_DEFAULT_KEYS.includes(k)
   );
@@ -180,16 +179,31 @@ function SessionDefaultsSection({
             'workspace-editor__field-select-inline',
           ].join(' ')}
           value={values.defaultAgent}
-          onChange={(e) =>
-            onChange(
-              'defaultAgent',
-              e.currentTarget.value as 'claude' | 'codex' | 'opencode'
-            )
-          }
+          onChange={(e) => onChange('defaultAgent', e.currentTarget.value)}
         >
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="opencode">OpenCode</option>
+          {(frameworks.length > 0
+            ? frameworks
+            : [
+                { id: 'claude', displayName: 'Claude' },
+                { id: 'codex', displayName: 'Codex' },
+                { id: 'opencode', displayName: 'OpenCode' },
+              ]
+          ).map((framework) => (
+            <option
+              key={framework.id}
+              value={framework.id}
+              disabled={
+                'availability' in framework &&
+                !isFrameworkAvailable(framework as (typeof frameworks)[number])
+              }
+            >
+              {framework.displayName}
+              {'availability' in framework &&
+              !isFrameworkAvailable(framework as (typeof frameworks)[number])
+                ? ' (not installed)'
+                : ''}
+            </option>
+          ))}
         </select>
       </div>
       <div className="workspace-editor__checkbox-row">

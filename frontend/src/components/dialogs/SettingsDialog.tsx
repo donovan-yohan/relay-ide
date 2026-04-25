@@ -36,6 +36,7 @@ import {
 } from '../../lib/api.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
+import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
 import {
   requestPermission,
   getPermissionState,
@@ -472,6 +473,7 @@ function GeneralSection({
   const notifDisabled =
     (notifPerm === 'denied' || notifPerm === 'unsupported') &&
     !config.defaultNotifications;
+  const frameworks = useConfigStore((state) => state.frameworks);
   return (
     <section
       id="section-general"
@@ -489,9 +491,29 @@ function GeneralSection({
             void handlers.handleAgentChange(e.currentTarget.value)
           }
         >
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="opencode">OpenCode</option>
+          {(frameworks.length > 0
+            ? frameworks
+            : [
+                { id: 'claude', displayName: 'Claude' },
+                { id: 'codex', displayName: 'Codex' },
+                { id: 'opencode', displayName: 'OpenCode' },
+              ]
+          ).map((framework) => (
+            <option
+              key={framework.id}
+              value={framework.id}
+              disabled={
+                'availability' in framework &&
+                !isFrameworkAvailable(framework as (typeof frameworks)[number])
+              }
+            >
+              {framework.displayName}
+              {'availability' in framework &&
+              !isFrameworkAvailable(framework as (typeof frameworks)[number])
+                ? ' (not installed)'
+                : ''}
+            </option>
+          ))}
         </select>
       </SettingRow>
       <SettingRow
