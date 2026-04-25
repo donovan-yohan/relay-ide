@@ -1,5 +1,9 @@
 # Unified Web Chat Interface
 
+> Agent Chat Protocol v2 is the canonical web-chat protocol. The older
+> `ChatEvent` protocol is deprecated and exists only as a temporary migration
+> input until all adapters and UI surfaces consume v2.
+
 This document describes the unified web chat interface architecture for multi-agent support in relay-ide. The system enables browser-based chat with multiple AI agents (Claude, Codex, OpenCode) through a normalized protocol.
 
 ## Overview
