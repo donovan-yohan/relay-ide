@@ -1,0 +1,37 @@
+frontend/src/components/AgentBadge.tsx
+  31725874810c7636 11-16,28-33,44-71
+shared/agent-chat-v1-compat.ts
+  31725874810c7636 6-9,25-34,51-86,162-206
+test/opencode-adapter.e2e.test.ts
+  31725874810c7636 74-168
+frontend/src/components/SessionTabBar.tsx
+  31725874810c7636 3,18-28,33-44,49-57,70-75,78-84,87-93,97-103,119-132,136-142,144-146,148-155,162-171,202-203,210-213,217-221,230-239,244-256,259-270
+test/agent-chat-v1-compat.test.ts
+  31725874810c7636 90-168
+test/session-tab-bar-agent-icons.test.tsx
+  31725874810c7636 1-68
+server/protocol-adapters/opencode-adapter.ts
+  31725874810c7636 325-327,594-596,666-667,783-812
+test/fixtures/opencode-serve-stub.cjs
+  31725874810c7636 84-96,211-237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "f8ef3e81141cb401558476944b65f5cb14415dcc",
+  "prompts": {
+    "31725874810c7636": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc1a8-6cf5-7941-984b-e0b4392444ff",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 1033,
+      "total_deletions": 100,
+      "accepted_lines": 4497,
+      "overriden_lines": 0
+    }
+  }
+}
