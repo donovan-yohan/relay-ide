@@ -1,0 +1,25 @@
+shared/agent-chat-protocol-v2.ts
+  7193e65dae609c43 388-395,745-747,763-766
+test/agent-chat-protocol-v2.test.ts
+  7193e65dae609c43 99-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "d309b17cc1176dcb56af68fb5d5d0eccd8343062",
+  "prompts": {
+    "7193e65dae609c43": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc54f-ad6f-7c80-a1c0-56f0ba6b7f0a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 52,
+      "total_deletions": 1,
+      "accepted_lines": 52,
+      "overriden_lines": 0
+    }
+  }
+}
