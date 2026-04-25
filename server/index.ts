@@ -93,7 +93,8 @@ import {
 } from './telemetry.js';
 import {
   getFrameworkAvailability,
-  getFrameworkClientInfo,
+  getFrameworkClientInfoWithRuntime,
+  getFrameworkWebAvailability,
 } from './frameworks.js';
 import type {
   AgentType,
@@ -547,6 +548,39 @@ function validateAgentFrameworkAvailable(
           err instanceof Error
             ? err.message
             : `Unknown agent: ${resolvedAgent}`,
+        agent: resolvedAgent,
+      },
+    };
+  }
+}
+
+async function validateAgentWebRuntimeAvailable(
+  config: Config,
+  resolvedAgent: AgentType
+): Promise<AgentAvailabilityValidation> {
+  try {
+    const framework = resolveFramework(
+      config.frameworks ? { frameworks: config.frameworks } : {},
+      resolvedAgent
+    );
+    const availability = await getFrameworkWebAvailability(framework);
+    if (availability.available) return { ok: true };
+    return {
+      ok: false,
+      body: {
+        error: 'agent_unavailable',
+        message:
+          availability.reason ??
+          `${framework.displayName} web runtime is not available on this host.`,
+        agent: resolvedAgent,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      body: {
+        error: 'unknown_agent',
+        message: err instanceof Error ? err.message : String(err),
         agent: resolvedAgent,
       },
     };
@@ -1319,8 +1353,10 @@ async function main(): Promise<void> {
   });
 
   // GET /api/frameworks — returns available agent frameworks with capabilities
-  app.get('/api/frameworks', requireAuth, (_req, res) => {
-    const frameworks = getFrameworkClientInfo(getConfig().frameworks);
+  app.get('/api/frameworks', requireAuth, async (_req, res) => {
+    const frameworks = await getFrameworkClientInfoWithRuntime(
+      getConfig().frameworks
+    );
     res.json({ frameworks });
   });
 
@@ -2281,6 +2317,14 @@ async function main(): Promise<void> {
     // original native-Hermes launch path.
     const requestedMode = mode ?? (resolvedAgent === 'hermes' ? 'web' : 'pty');
     if (requestedMode === 'web') {
+      const webAvailability = await validateAgentWebRuntimeAvailable(
+        freshConfig,
+        resolvedAgent
+      );
+      if (!webAvailability.ok) {
+        res.status(400).json(webAvailability.body);
+        return;
+      }
       const displayName = sessions.nextAgentName();
       try {
         const { session } = await sessions.createWeb({

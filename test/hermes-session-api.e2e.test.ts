@@ -293,10 +293,11 @@ process.exit(0);
       }),
     });
 
-    expect(createRes.status).toBe(500);
+    expect(createRes.status).toBe(400);
     expect(createRes.headers.get('content-type')).toContain('application/json');
     await expect(createRes.json()).resolves.toMatchObject({
-      error: 'session_create_failed',
+      error: 'agent_unavailable',
+      agent: 'hermes',
       message: expect.stringContaining('Hermes gateway API is not reachable'),
     });
   } finally {
