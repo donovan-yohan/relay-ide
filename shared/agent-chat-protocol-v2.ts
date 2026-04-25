@@ -385,6 +385,14 @@ const LIVE_STATUSES = new Set<string>([
   'disconnected',
 ]);
 
+const WAITING_ON_VALUES = new Set<string>([
+  'approval',
+  'question',
+  'plan',
+  'tool',
+  'network',
+]);
+
 const DELTA_STRING_FIELDS = [
   'text',
   'output',
@@ -734,7 +742,9 @@ function isLiveState(value: unknown): value is AgentSessionLiveStateV2 {
     typeof value.status === 'string' &&
     LIVE_STATUSES.has(value.status) &&
     (value.activeTurnId === null || typeof value.activeTurnId === 'string') &&
-    (value.waitingOn === null || typeof value.waitingOn === 'string') &&
+    (value.waitingOn === null ||
+      (typeof value.waitingOn === 'string' &&
+        WAITING_ON_VALUES.has(value.waitingOn))) &&
     Array.isArray(value.activeRequestIds) &&
     value.activeRequestIds.every(
       (requestId) => typeof requestId === 'string'
@@ -750,6 +760,10 @@ function isLiveState(value: unknown): value is AgentSessionLiveStateV2 {
 function isDelta(value: unknown): value is AgentItemDeltaPatchV2['delta'] {
   return (
     isRecord(value) &&
+    DELTA_STRING_FIELDS.every(
+      (field) =>
+        !Object.hasOwn(value, field) || typeof value[field] === 'string'
+    ) &&
     DELTA_STRING_FIELDS.some((field) => typeof value[field] === 'string')
   );
 }

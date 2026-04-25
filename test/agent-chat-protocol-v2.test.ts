@@ -96,6 +96,43 @@ describe('Agent Chat Protocol v2', () => {
         delta: { text: 42, ignored: 'value' },
       })
     ).toBe(false);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-item-delta-v2',
+        sessionId: 's1',
+        timestamp,
+        turnId: 't1',
+        itemId: 'm1',
+        delta: { text: 'ok', output: 42 },
+      })
+    ).toBe(false);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-snapshot-v2',
+        sessionId: 's1',
+        timestamp,
+        session: {
+          ...makeSession(),
+          live: {
+            ...makeSession().live,
+            waitingOn: 'bogus',
+          },
+        },
+      })
+    ).toBe(false);
+  });
+
+  it('accepts well-formed session snapshots', () => {
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-snapshot-v2',
+        sessionId: 's1',
+        timestamp,
+        session: makeSession(),
+      })
+    ).toBe(true);
   });
 
   it('applies the reducer full flow with text deltas and turn completion', () => {
