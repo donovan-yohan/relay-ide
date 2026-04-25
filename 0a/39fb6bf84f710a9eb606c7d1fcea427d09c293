@@ -1,0 +1,25 @@
+shared/agent-chat-v1-compat.ts
+  bebd574255f574c8 1-4,6-250
+test/agent-chat-v1-compat.test.ts
+  bebd574255f574c8 1-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "0a39fb6bf84f710a9eb606c7d1fcea427d09c293",
+  "prompts": {
+    "bebd574255f574c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc565-3ba3-7611-98cd-166a55908211",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 374,
+      "total_deletions": 0,
+      "accepted_lines": 372,
+      "overriden_lines": 1
+    }
+  }
+}
