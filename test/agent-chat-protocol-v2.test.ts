@@ -304,4 +304,65 @@ describe('Agent Chat Protocol v2', () => {
       text: 'final',
     });
   });
+
+  it('creates transcript items from legacy-compatible deltas and updates', () => {
+    const withTurn = applyAgentPatchV2(makeSession(), {
+      type: 'agent-turn-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turn: {
+        id: 't1',
+        status: 'running',
+        inputMessageId: 'user-t1',
+        items: [],
+        startedAt: timestamp,
+      },
+    });
+
+    const withUser = applyAgentPatchV2(withTurn, {
+      type: 'agent-item-updated-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't1',
+      item: {
+        type: 'userMessage',
+        id: 'user-t1',
+        text: 'hello from v1',
+      },
+    });
+
+    const withAssistantDelta = applyAgentPatchV2(withUser, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't1',
+      itemId: 'assistant-t1',
+      delta: { text: 'partial' },
+    });
+
+    const withMoreAssistant = applyAgentPatchV2(withAssistantDelta, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't1',
+      itemId: 'assistant-t1',
+      delta: { text: ' response' },
+    });
+
+    expect(withMoreAssistant.turns[0]?.items).toEqual([
+      {
+        type: 'userMessage',
+        id: 'user-t1',
+        text: 'hello from v1',
+      },
+      {
+        type: 'assistantMessage',
+        id: 'assistant-t1',
+        text: 'partial response',
+        phase: 'answer',
+        status: 'running',
+        startedAt: timestamp,
+      },
+    ]);
+  });
 });

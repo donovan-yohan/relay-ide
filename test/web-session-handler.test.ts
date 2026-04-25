@@ -357,7 +357,9 @@ describe('createWebSession', () => {
     expect(session.agentState).toBe('idle');
 
     // Send a message and check state transitions
-    const sendPromise = session.adapter.sendMessage('turn-1', 'hello');
+    const sendPromise = session.adapterV2
+      ? session.adapterV2.sendMessage({ turnId: 'turn-1', content: 'hello' })
+      : session.adapter.sendMessage('turn-1', 'hello');
 
     // Wait for turn-started to fire
     await vi.waitFor(() => {

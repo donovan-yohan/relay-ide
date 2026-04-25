@@ -1,28 +1,22 @@
 import React, { useCallback, useMemo } from 'react';
 import './ChatView.css';
-import { useChatSocket } from '../../hooks/useChatSocket.js';
-import { MessageTimeline } from './MessageTimeline.js';
+import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
+import { AgentTimeline } from '../chat-v2/AgentTimeline.js';
 import { Composer } from './Composer.js';
-import type { SessionStatusEvent } from '../../../../shared/chat-events.js';
 
 interface ChatViewProps {
   sessionId: string | null;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
-  const { events, sendMessage, interrupt, approve } = useChatSocket(sessionId);
+  const { session, sendMessage, interrupt, approve } =
+    useAgentChatSocket(sessionId);
 
-  // Determine if agent is active by looking at the latest session-status event
   const isActive = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
-      if (e && e.type === 'chat:session-status') {
-        const status = (e as SessionStatusEvent).status;
-        return status === 'active';
-      }
-    }
-    return false;
-  }, [events]);
+    return (
+      session?.live.status === 'working' || session?.live.status === 'waiting'
+    );
+  }, [session]);
 
   const handleSend = useCallback(
     (content: string) => {
@@ -33,24 +27,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   );
 
   const handleInterrupt = useCallback(() => {
-    // Find the latest active turnId — skip if none found
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
-      if (
-        e &&
-        'turnId' in e &&
-        typeof (e as { turnId?: string }).turnId === 'string' &&
-        (e as { turnId: string }).turnId.length > 0
-      ) {
-        interrupt((e as { turnId: string }).turnId);
-        return;
-      }
-    }
-  }, [events, interrupt]);
+    interrupt(session?.live.activeTurnId ?? undefined);
+  }, [interrupt, session]);
 
   return (
     <div className="chat-view" role="main" aria-label="chat">
-      <MessageTimeline events={events} onApprove={approve} />
+      <AgentTimeline session={session} onApprove={approve} />
       <Composer
         onSend={handleSend}
         onInterrupt={handleInterrupt}

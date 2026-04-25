@@ -516,16 +516,12 @@ export function applyAgentPatchV2(
     case 'agent-item-delta-v2':
       return updateTurn(session, patch.turnId, (turn) => ({
         ...turn,
-        items: turn.items.map((item) =>
-          item.id === patch.itemId ? appendItemDelta(item, patch.delta) : item
-        ),
+        items: applyItemDelta(turn.items, patch),
       }));
     case 'agent-item-updated-v2':
       return updateTurn(session, patch.turnId, (turn) => ({
         ...turn,
-        items: turn.items.map(
-          (item): AgentItemV2 => (item.id === patch.item.id ? patch.item : item)
-        ),
+        items: upsertById(turn.items, patch.item),
       }));
     case 'agent-turn-completed-v2':
       return updateTurn(
@@ -585,6 +581,35 @@ function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
   }
 
   return [...items.slice(0, index), item, ...items.slice(index + 1)];
+}
+
+function applyItemDelta(
+  items: AgentItemV2[],
+  patch: Extract<AgentPatchV2, { type: 'agent-item-delta-v2' }>
+): AgentItemV2[] {
+  const existing = items.find((item) => item.id === patch.itemId);
+
+  if (existing) {
+    return items.map((item) =>
+      item.id === patch.itemId ? appendItemDelta(item, patch.delta) : item
+    );
+  }
+
+  if (patch.delta.text === undefined) {
+    return items;
+  }
+
+  return [
+    ...items,
+    {
+      type: 'assistantMessage',
+      id: patch.itemId,
+      text: patch.delta.text,
+      phase: 'answer',
+      status: 'running',
+      startedAt: patch.timestamp,
+    },
+  ];
 }
 
 function completeTurn(

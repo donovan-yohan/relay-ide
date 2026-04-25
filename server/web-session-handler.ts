@@ -2,9 +2,16 @@ import crypto from 'node:crypto';
 import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
 import type { ChatEvent } from '../shared/chat-events.js';
-import { createAdapter } from './protocol-adapters/index.js';
+import { createAdapter, createAdapterV2 } from './protocol-adapters/index.js';
 import type { AdapterConfig } from './protocol-adapter.js';
+import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
+import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
 import { createLogger } from './logger.js';
+import { mapChatEventToAgentPatchV2 } from '../shared/agent-chat-v1-compat.js';
+import {
+  applyWebSessionPatchV2,
+  createInitialAgentSessionV2,
+} from './web-session-v2-state.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -56,6 +63,8 @@ export async function createWebSession(
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapter = createAdapter(params.agentType);
+  const adapterV2 = tryCreateAdapterV2(params.agentType);
+  const activeRuntime = adapterV2 ?? adapter;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
 
   const session: WebSession = {
@@ -83,58 +92,87 @@ export async function createWebSession(
       ? { additionalDirs: params.additionalDirs }
       : {}),
     adapter,
+    ...(adapterV2 !== undefined ? { adapterV2 } : {}),
     adapterType: params.agentType,
+    agentSessionV2: createInitialAgentSessionV2({
+      id,
+      provider: params.agentType,
+      cwd: params.cwd,
+      ...(adapterV2 !== undefined
+        ? { capabilities: adapterV2.capabilities }
+        : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.permissionMode !== undefined
+        ? { permissionMode: params.permissionMode }
+        : {}),
+      ...(params.additionalDirs !== undefined
+        ? { additionalDirs: params.additionalDirs }
+        : {}),
+      ...(params.extra !== undefined ? { providerOptions: params.extra } : {}),
+    }),
+    agentPatchesV2: [],
+    protocolVersion: 2,
     messages: [],
     currentTurnId: null,
-    runtimeOwnership: params.runtimeOwnership ?? adapter.runtimeOwnership,
+    runtimeOwnership: params.runtimeOwnership ?? activeRuntime.runtimeOwnership,
     hookToken,
     hooksActive: true,
   };
 
   sessionsMap.set(id, session);
 
-  adapter.on((event) => {
-    pushToBuffer(session, event);
+  if (adapterV2) {
+    adapterV2.onPatch((patch) => {
+      handleAgentPatchV2(session, patch, onBackendStateChanged);
+    });
+  } else {
+    adapter.on((event) => {
+      pushToBuffer(session, event);
 
-    if (event.type === 'chat:turn-started') {
-      session.currentTurnId = event.turnId;
-      session.agentState = 'processing';
-      session.idle = false;
-      onBackendStateChanged(session);
-    } else if (event.type === 'chat:turn-completed') {
-      session.currentTurnId = null;
-      session.agentState = 'idle';
-      session.idle = true;
-      onBackendStateChanged(session);
-    } else if (event.type === 'chat:approval-request') {
-      session.agentState = 'permission-prompt';
-      onBackendStateChanged(session);
-    } else if (event.type === 'chat:approval-response') {
-      session.agentState = 'processing';
-      session.idle = false;
-      onBackendStateChanged(session);
-    } else if (event.type === 'chat:session-status') {
-      if (event.status === 'idle') {
-        session.agentState = 'idle';
-        session.idle = true;
-        onBackendStateChanged(session);
-      } else if (event.status === 'active') {
+      for (const patch of mapChatEventToAgentPatchV2(event)) {
+        handleAgentPatchV2(session, patch, onBackendStateChanged);
+      }
+
+      if (event.type === 'chat:turn-started') {
+        session.currentTurnId = event.turnId;
         session.agentState = 'processing';
         session.idle = false;
         onBackendStateChanged(session);
-      } else if (event.status === 'error') {
-        session.agentState = 'error';
-        session.idle = true;
-        onBackendStateChanged(session);
-      } else if (event.status === 'disconnected') {
+      } else if (event.type === 'chat:turn-completed') {
+        session.currentTurnId = null;
         session.agentState = 'idle';
         session.idle = true;
         onBackendStateChanged(session);
+      } else if (event.type === 'chat:approval-request') {
+        session.agentState = 'permission-prompt';
+        onBackendStateChanged(session);
+      } else if (event.type === 'chat:approval-response') {
+        session.agentState = 'processing';
+        session.idle = false;
+        onBackendStateChanged(session);
+      } else if (event.type === 'chat:session-status') {
+        if (event.status === 'idle') {
+          session.agentState = 'idle';
+          session.idle = true;
+          onBackendStateChanged(session);
+        } else if (event.status === 'active') {
+          session.agentState = 'processing';
+          session.idle = false;
+          onBackendStateChanged(session);
+        } else if (event.status === 'error') {
+          session.agentState = 'error';
+          session.idle = true;
+          onBackendStateChanged(session);
+        } else if (event.status === 'disconnected') {
+          session.agentState = 'idle';
+          session.idle = true;
+          onBackendStateChanged(session);
+        }
       }
-    }
 
-    session.lastActivity = new Date().toISOString();
-  });
+      session.lastActivity = new Date().toISOString();
+    });
+  }
 
   const config: AdapterConfig = {
     cwd: params.cwd,
@@ -150,10 +188,15 @@ export async function createWebSession(
   };
 
   try {
-    await adapter.connect(config);
+    if (adapterV2) {
+      await adapterV2.connect(config);
+    } else {
+      await adapter.connect(config);
+    }
   } catch (err) {
     // Clean up zombie: remove from map and disconnect adapter to clear handlers
     sessionsMap.delete(id);
+    await adapterV2?.disconnect().catch(() => {});
     await adapter.disconnect().catch(() => {});
     session.agentState = 'error';
     throw err;
@@ -162,4 +205,41 @@ export async function createWebSession(
   logger.info('web session created', { id, agentType: params.agentType });
 
   return { session };
+}
+
+function tryCreateAdapterV2(agentType: string): ProtocolAdapterV2 | undefined {
+  try {
+    return createAdapterV2(agentType);
+  } catch {
+    return undefined;
+  }
+}
+
+function handleAgentPatchV2(
+  session: WebSession,
+  patch: AgentPatchV2,
+  onBackendStateChanged: (session: Session) => void
+): void {
+  applyWebSessionPatchV2(session, patch);
+
+  const live = session.agentSessionV2.live;
+  session.currentTurnId = live.activeTurnId;
+
+  if (live.status === 'working') {
+    session.agentState = 'processing';
+    session.idle = false;
+  } else if (live.status === 'waiting') {
+    session.agentState =
+      live.waitingOn === 'approval' ? 'permission-prompt' : 'waiting-for-input';
+    session.idle = false;
+  } else if (live.status === 'error') {
+    session.agentState = 'error';
+    session.idle = true;
+  } else {
+    session.agentState = 'idle';
+    session.idle = true;
+  }
+
+  session.lastActivity = new Date().toISOString();
+  onBackendStateChanged(session);
 }

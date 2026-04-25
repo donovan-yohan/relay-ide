@@ -38,6 +38,14 @@ interface TextPart {
   text?: string;
 }
 
+interface OpenCodePromptResponse {
+  info?: {
+    id?: string;
+    role?: string;
+  };
+  parts?: TextPart[];
+}
+
 function textPartId(part: TextPart): string {
   return String(part.id ?? `${part.messageID ?? 'message'}:text`);
 }
@@ -261,10 +269,28 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       }
     }
 
+    this.fire({ type: 'chat:session-status', status: 'active' });
+    this.fire({
+      type: 'chat:turn-started',
+      turnId,
+      turnIndex: this._turnCounter++,
+    });
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: `user-${turnId}`,
+      role: 'user',
+      content,
+    });
+
     try {
-      const url = `${this._endpoint}/session/${encodeURIComponent(
-        this._openCodeSessionId
-      )}/prompt_async`;
+      const url = new URL(
+        `/session/${encodeURIComponent(this._openCodeSessionId)}/message`,
+        this._endpoint
+      );
+      if (this._config?.cwd) {
+        url.searchParams.set('directory', this._config.cwd);
+      }
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,19 +305,20 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
         );
       }
 
-      this.fire({ type: 'chat:session-status', status: 'active' });
+      const response = (await res
+        .json()
+        .catch(() => null)) as OpenCodePromptResponse | null;
+      this.emitAssistantMessageFromPromptResponse(turnId, response);
       this.fire({
-        type: 'chat:turn-started',
+        type: 'chat:turn-completed',
         turnId,
-        turnIndex: this._turnCounter++,
+        reason: 'completed',
+        durationMs: 0,
+        toolCallCount: 0,
+        messageCount: 1,
       });
-      this.fire({
-        type: 'chat:message-complete',
-        turnId,
-        messageId: `user-${turnId}`,
-        role: 'user',
-        content,
-      });
+      this._currentTurnId = null;
+      this.fire({ type: 'chat:session-status', status: 'idle' });
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
@@ -684,6 +711,32 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
         this._userMessageIds.delete(messageId);
       }
     }
+  }
+
+  private emitAssistantMessageFromPromptResponse(
+    turnId: string,
+    response: OpenCodePromptResponse | null
+  ): void {
+    if (!response || !Array.isArray(response.parts)) {
+      return;
+    }
+
+    const text = response.parts
+      .filter((part) => part.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('');
+
+    if (!text) {
+      return;
+    }
+
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: response.info?.id ?? `assistant-${turnId}`,
+      role: 'assistant',
+      content: text,
+    });
   }
 
   private trackUserMessageId(messageId: string): void {

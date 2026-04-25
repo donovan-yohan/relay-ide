@@ -93,6 +93,10 @@ interface SerializedWebSession {
   additionalDirs?: string[];
   /** Messages buffer persisted for replay (up to 1000 events) */
   messages?: import('../shared/chat-events.js').ChatEvent[];
+  /** Canonical v2 state persisted for web-chat reconnect/restore */
+  agentSessionV2?: import('../shared/agent-chat-protocol-v2.js').AgentSessionV2;
+  /** Recent v2 patches persisted for reconnect catch-up */
+  agentPatchesV2?: import('../shared/agent-chat-protocol-v2.js').AgentPatchV2[];
 }
 
 interface PendingSessionsFile {
@@ -445,6 +449,9 @@ function kill(id: string): void {
     }
   } else {
     // Web session: disconnect adapter (tears down network connections and event handlers)
+    session.adapterV2?.disconnect().catch(() => {
+      // Adapter may already be disconnected — still proceed with cleanup
+    });
     session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected — still proceed with cleanup
     });
@@ -504,6 +511,9 @@ function detachForRestart(id: string): void {
       // The tmux session is intentionally left alive for restore/reattach.
     }
   } else {
+    session.adapterV2?.disconnect().catch(() => {
+      // Adapter may already be disconnected during shutdown.
+    });
     session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected during shutdown.
     });
@@ -648,6 +658,10 @@ function serializeWebSession(session: WebSession): SerializedWebSession {
       : {}),
     ...(session.messages.length
       ? { messages: session.messages.slice(-1000) }
+      : {}),
+    agentSessionV2: session.agentSessionV2,
+    ...(session.agentPatchesV2.length
+      ? { agentPatchesV2: session.agentPatchesV2.slice(-1000) }
       : {}),
   };
 }
@@ -927,6 +941,12 @@ async function restoreWebSession(s: SerializedWebSession): Promise<void> {
   // Restore persisted message buffer so reconnecting clients see transcript
   if (s.messages && s.messages.length > 0) {
     session.messages = s.messages.slice(-1000);
+  }
+  if (s.agentSessionV2) {
+    session.agentSessionV2 = s.agentSessionV2;
+  }
+  if (s.agentPatchesV2 && s.agentPatchesV2.length > 0) {
+    session.agentPatchesV2 = s.agentPatchesV2.slice(-1000);
   }
 }
 

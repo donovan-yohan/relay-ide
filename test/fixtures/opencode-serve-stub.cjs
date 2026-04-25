@@ -59,7 +59,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (
-    parsed.pathname === `/session/${sessionId}/prompt_async` &&
+    parsed.pathname === `/session/${sessionId}/message` &&
     req.method === 'POST'
   ) {
     drain(req, (body) => {
@@ -81,9 +81,28 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      res.writeHead(204);
-      res.end();
       emitTurn();
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              sessionID: sessionId,
+            },
+            parts: [
+              {
+                id: 'part_1',
+                sessionID: sessionId,
+                messageID: 'msg_1',
+                type: 'text',
+                text: 'hello from opencode',
+              },
+            ],
+          })
+        );
+      }, 125);
     });
     return;
   }

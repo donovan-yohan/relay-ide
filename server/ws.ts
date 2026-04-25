@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { RawData } from 'ws';
 import http from 'node:http';
 import type { IPty } from 'node-pty';
 import * as sessions from './sessions.js';
@@ -9,6 +10,8 @@ import { trackEvent } from './analytics.js';
 import { createLogger } from './logger.js';
 import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
+import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
+import { mapChatEventToAgentPatchV2 } from '../shared/agent-chat-v1-compat.js';
 
 const logger = createLogger('ws');
 
@@ -30,6 +33,272 @@ function sendChatError(ws: WebSocket, context: string, err: unknown): void {
       source: 'claude',
     })
   );
+}
+
+function sendAgentErrorV2(
+  ws: WebSocket,
+  sessionId: string,
+  context: string,
+  err: unknown
+): void {
+  if (ws.readyState !== ws.OPEN) return;
+  const message = err instanceof Error ? err.message : String(err);
+  ws.send(
+    JSON.stringify({
+      type: 'agent-error-v2',
+      sessionId,
+      timestamp: new Date().toISOString(),
+      message: `${context}: ${message}`,
+    })
+  );
+}
+
+function handleAgentCommandV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  switch (parsed['type']) {
+    case 'agent-send-message-v2':
+      sendAgentMessageV2(ws, session, parsed);
+      break;
+    case 'agent-interrupt-v2':
+      interruptAgentV2(ws, session, parsed);
+      break;
+    case 'agent-approve-v2':
+      approveAgentV2(ws, session, parsed);
+      break;
+    case 'agent-answer-v2':
+      answerAgentV2(ws, session, parsed);
+      break;
+  }
+}
+
+function sendAgentMessageV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  if (session.adapterV2) {
+    const input = {
+      turnId: String(parsed['turnId'] ?? ''),
+      content: String(parsed['content'] ?? ''),
+      ...(parsed['attachments'] !== undefined
+        ? { attachments: parsed['attachments'] as Attachment[] }
+        : {}),
+      ...(typeof parsed['clientMessageId'] === 'string'
+        ? { clientMessageId: parsed['clientMessageId'] }
+        : {}),
+    };
+    session.adapterV2.sendMessage(input).catch((err: unknown) => {
+      logger.error('v2 sendMessage error:', err);
+      sendAgentErrorV2(ws, session.id, 'v2 sendMessage failed', err);
+    });
+    return;
+  }
+
+  session.adapter
+    .sendMessage(
+      String(parsed['turnId'] ?? ''),
+      String(parsed['content'] ?? ''),
+      parsed['attachments'] as Attachment[] | undefined
+    )
+    .catch((err: unknown) => {
+      logger.error('sendMessage error:', err);
+      sendAgentErrorV2(ws, session.id, 'sendMessage failed', err);
+    });
+}
+
+function interruptAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  if (session.adapterV2) {
+    const input =
+      typeof parsed['turnId'] === 'string' ? { turnId: parsed['turnId'] } : {};
+    session.adapterV2.interrupt(input).catch((err: unknown) => {
+      logger.error('v2 interrupt error:', err);
+      sendAgentErrorV2(ws, session.id, 'v2 interrupt failed', err);
+    });
+    return;
+  }
+
+  session.adapter.interrupt(String(parsed['turnId'] ?? '')).catch((err) => {
+    logger.error('interrupt error:', err);
+    sendAgentErrorV2(ws, session.id, 'interrupt failed', err);
+  });
+}
+
+function approvalDecision(
+  parsed: Record<string, unknown>
+): 'allow' | 'allow-always' | 'deny' | null {
+  const decision = parsed['decision'];
+  if (
+    decision === 'allow' ||
+    decision === 'allow-always' ||
+    decision === 'deny'
+  ) {
+    return decision;
+  }
+  return null;
+}
+
+function approveAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const decision = approvalDecision(parsed);
+  if (decision === null) {
+    logger.warn('ws: invalid v2 approval decision', {
+      decision: parsed['decision'],
+    });
+    return;
+  }
+
+  if (session.adapterV2) {
+    session.adapterV2
+      .respondToApproval({
+        requestId: String(parsed['requestId'] ?? ''),
+        decision,
+      })
+      .catch((err: unknown) => {
+        logger.error('v2 respondToApproval error:', err);
+        sendAgentErrorV2(ws, session.id, 'v2 approval delivery failed', err);
+      });
+    return;
+  }
+
+  session.adapter
+    .respondToApproval(String(parsed['requestId'] ?? ''), decision)
+    .catch((err: unknown) => {
+      logger.error('respondToApproval error:', err);
+      sendAgentErrorV2(ws, session.id, 'approval delivery failed', err);
+    });
+}
+
+function answerAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const answers =
+    (parsed['answers'] as Record<string, string[]> | undefined) ?? {};
+
+  if (session.adapterV2) {
+    session.adapterV2
+      .respondToInput({
+        requestId: String(parsed['requestId'] ?? ''),
+        answers,
+      })
+      .catch((err: unknown) => {
+        logger.error('v2 respondToInput error:', err);
+        sendAgentErrorV2(ws, session.id, 'v2 input delivery failed', err);
+      });
+    return;
+  }
+
+  session.adapter
+    .respondToInput(String(parsed['requestId'] ?? ''), answers)
+    .catch((err: unknown) => {
+      logger.error('respondToInput error:', err);
+      sendAgentErrorV2(ws, session.id, 'input delivery failed', err);
+    });
+}
+
+function handleLegacyWebCommand(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  switch (parsed['type']) {
+    case 'send-message':
+      session.adapter
+        .sendMessage(
+          String(parsed['turnId'] ?? ''),
+          String(parsed['content'] ?? ''),
+          parsed['attachments'] as Attachment[] | undefined
+        )
+        .catch((err: unknown) => {
+          logger.error('sendMessage error:', err);
+          sendChatError(ws, 'sendMessage failed', err);
+        });
+      break;
+    case 'interrupt':
+      session.adapter.interrupt(String(parsed['turnId'] ?? '')).catch((err) => {
+        logger.error('interrupt error:', err);
+        sendChatError(ws, 'interrupt failed', err);
+      });
+      break;
+    case 'approve':
+      approveLegacyWebCommand(ws, session, parsed);
+      break;
+    case 'input-response':
+      session.adapter
+        .respondToInput(
+          String(parsed['requestId'] ?? ''),
+          (parsed['answers'] as Record<string, string[]> | undefined) ?? {}
+        )
+        .catch((err: unknown) => {
+          logger.error('respondToInput error:', err);
+          sendChatError(ws, 'input delivery failed', err);
+        });
+      break;
+  }
+}
+
+function approveLegacyWebCommand(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const decision = approvalDecision(parsed);
+  if (decision === null) {
+    logger.warn('ws: invalid approval decision', {
+      decision: parsed['decision'],
+    });
+    return;
+  }
+
+  session.adapter
+    .respondToApproval(String(parsed['requestId'] ?? ''), decision)
+    .catch((err: unknown) => {
+      logger.error('respondToApproval error:', err);
+      sendChatError(ws, 'approval delivery failed', err);
+    });
+}
+
+function handleWebSessionMessage(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  msg: RawData
+): void {
+  const body = Array.isArray(msg)
+    ? Buffer.concat(msg).toString()
+    : msg.toString();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    logger.warn('web session: malformed JSON from client', {
+      sessionId: session.id,
+      preview: body.slice(0, 200),
+    });
+    return;
+  }
+
+  if (parsed['type'] === 'ping') {
+    replyPing(ws);
+    return;
+  }
+
+  if (typeof parsed['type'] === 'string' && parsed['type'].endsWith('-v2')) {
+    handleAgentCommandV2(ws, session, parsed);
+    return;
+  }
+
+  handleLegacyWebCommand(ws, session, parsed);
 }
 
 function parseCookies(
@@ -234,86 +503,30 @@ function setupWebSocket(
       ws.on('error', cleanup);
     } else {
       // Web session — JSON relay
-      // Register the live listener BEFORE replaying the snapshot so no events
-      // are lost in the window between replay completion and listener registration.
-      const snapshot = [...session.messages];
-      const unlisten = session.adapter.on((event) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      const patchReplayStart = session.agentPatchesV2.length;
+      const snapshotPatch = createAgentSessionSnapshotPatch(session);
+      const unlistenV2 = session.adapterV2?.onPatch((patch) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
       });
-      for (const event of snapshot) {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      const unlistenV1 =
+        session.adapterV2 === undefined
+          ? session.adapter.on((event) => {
+              for (const patch of mapChatEventToAgentPatchV2(event)) {
+                if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
+              }
+            })
+          : undefined;
+
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(snapshotPatch));
+      for (const patch of session.agentPatchesV2.slice(patchReplayStart)) {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
       }
 
-      ws.on('message', (msg) => {
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(msg.toString()) as Record<string, unknown>;
-        } catch {
-          logger.warn('web session: malformed JSON from client', {
-            sessionId: session.id,
-            preview: msg.toString().slice(0, 200),
-          });
-          return;
-        }
-        switch (parsed['type']) {
-          case 'ping':
-            replyPing(ws);
-            break;
-          case 'send-message':
-            session.adapter
-              .sendMessage(
-                String(parsed['turnId'] ?? ''),
-                String(parsed['content'] ?? ''),
-                parsed['attachments'] as Attachment[] | undefined
-              )
-              .catch((err: unknown) => {
-                logger.error('sendMessage error:', err);
-                sendChatError(ws, 'sendMessage failed', err);
-              });
-            break;
-          case 'interrupt':
-            session.adapter
-              .interrupt(String(parsed['turnId'] ?? ''))
-              .catch((err: unknown) => {
-                logger.error('interrupt error:', err);
-                sendChatError(ws, 'interrupt failed', err);
-              });
-            break;
-          case 'approve': {
-            const decision = parsed['decision'];
-            if (
-              decision !== 'allow' &&
-              decision !== 'allow-always' &&
-              decision !== 'deny'
-            ) {
-              logger.warn('ws: invalid approval decision', { decision });
-              break;
-            }
-            session.adapter
-              .respondToApproval(String(parsed['requestId'] ?? ''), decision)
-              .catch((err: unknown) => {
-                logger.error('respondToApproval error:', err);
-                sendChatError(ws, 'approval delivery failed', err);
-              });
-            break;
-          }
-          case 'input-response':
-            session.adapter
-              .respondToInput(
-                String(parsed['requestId'] ?? ''),
-                (parsed['answers'] as Record<string, string[]> | undefined) ??
-                  {}
-              )
-              .catch((err: unknown) => {
-                logger.error('respondToInput error:', err);
-                sendChatError(ws, 'input delivery failed', err);
-              });
-            break;
-        }
-      });
+      ws.on('message', (msg) => handleWebSessionMessage(ws, session, msg));
 
       const cleanup = () => {
-        unlisten();
+        unlistenV2?.();
+        unlistenV1?.();
         sessionMap.delete(ws);
       };
       ws.on('close', cleanup);
