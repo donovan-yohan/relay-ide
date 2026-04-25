@@ -13,6 +13,7 @@ import type { ChatEvent, ChatEventSource } from '../../shared/chat-events.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('opencode-adapter');
+const MAX_TRACKED_USER_MESSAGES = 100;
 
 interface OpenCodeEvent {
   type: string;
@@ -65,7 +66,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   private _currentTurnId: string | null = null;
   private _openCodeSessionId: string | null = null;
   private _partText = new Map<string, string>();
-  private _messageRoles = new Map<string, string>();
+  private _userMessageIds = new Set<string>();
 
   readonly runtimeOwnership = 'spawned' as const;
 
@@ -85,7 +86,7 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     this._currentTurnId = null;
     this._openCodeSessionId = null;
     this._partText.clear();
-    this._messageRoles.clear();
+    this._userMessageIds.clear();
 
     this._apiPort = await getPort();
     this._apiHost =
@@ -677,7 +678,25 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     const messageId = info?.['id'];
     const role = info?.['role'];
     if (typeof messageId === 'string' && typeof role === 'string') {
-      this._messageRoles.set(messageId, role);
+      if (role === 'user') {
+        this.trackUserMessageId(messageId);
+      } else {
+        this._userMessageIds.delete(messageId);
+      }
+    }
+  }
+
+  private trackUserMessageId(messageId: string): void {
+    if (this._userMessageIds.has(messageId)) {
+      this._userMessageIds.delete(messageId);
+    }
+    this._userMessageIds.add(messageId);
+    while (this._userMessageIds.size > MAX_TRACKED_USER_MESSAGES) {
+      const oldest = this._userMessageIds.values().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this._userMessageIds.delete(oldest);
     }
   }
 
@@ -712,7 +731,9 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
   private handleMessagePartUpdated(event: OpenCodeEvent): void {
     const part = event.properties?.['part'] as TextPart | undefined;
     if (!part || part.type !== 'text') return;
-    if (part.messageID && this._messageRoles.get(part.messageID) === 'user') {
+    // OpenCode sends message.updated before message.part.updated, so a bounded
+    // set of recent user message ids is enough to suppress echoed user text.
+    if (part.messageID && this._userMessageIds.has(part.messageID)) {
       return;
     }
     const turnId = this._currentTurnId ?? 'turn-0';
