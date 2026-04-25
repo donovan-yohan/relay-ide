@@ -371,7 +371,13 @@ describe('MockProtocolAdapterV2', () => {
 
     await adapter.interrupt({ turnId: 'turn-2' });
 
-    await expectSettledWithin(second);
+    await expect(second).resolves.toBeUndefined();
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' && patch.turn.id === 'turn-2'
+      )
+    ).toBe(false);
     expect(
       patches.some(
         (patch) =>
@@ -486,5 +492,15 @@ describe('MockProtocolAdapterV2', () => {
 
   it('registers a v2 mock adapter factory without changing v1 createAdapter', () => {
     expect(createAdapterV2('mock')).toBeInstanceOf(MockProtocolAdapterV2);
+  });
+
+  it('advertises queued cancellation capability', () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+
+    expect(adapter.capabilities).toMatchObject({
+      queue: true,
+      interrupt: true,
+      cancelQueued: true,
+    });
   });
 });

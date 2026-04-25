@@ -67,6 +67,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     approvals: true,
     queue: true,
     interrupt: true,
+    cancelQueued: true,
   };
 
   private _status: AdapterStatus = 'disconnected';
