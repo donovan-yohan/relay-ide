@@ -51,6 +51,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (parsed.pathname === '/v1/models') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'hermes-stub' }] }));
+    return;
+  }
+
   // OpenAI-compatible Responses streaming endpoint
   if (parsed.pathname === '/v1/responses') {
     let body = '';

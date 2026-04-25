@@ -27,10 +27,16 @@ type SessionLaunchMode = 'pty' | 'web';
 export interface SessionModeOption {
   value: SessionLaunchMode;
   label: string;
+  disabled?: boolean;
+  reason?: string;
 }
 
 export function isFrameworkAvailable(framework: FrameworkInfo): boolean {
   return framework.availability?.installed !== false;
+}
+
+export function isFrameworkWebAvailable(framework: FrameworkInfo): boolean {
+  return framework.webAvailability?.available !== false;
 }
 
 export function selectLaunchAgent(
@@ -48,9 +54,17 @@ export function getSessionModeOptions(
 ): SessionModeOption[] {
   const selectedFramework = frameworks.find((f) => f.id === selectedAgent);
   if (selectedFramework?.capabilities.supportsWebSessions === true) {
+    const webAvailable = isFrameworkWebAvailable(selectedFramework);
     return [
       { value: 'pty', label: 'tui' },
-      { value: 'web', label: 'web' },
+      {
+        value: 'web',
+        label: webAvailable ? 'web' : 'web (unavailable)',
+        ...(!webAvailable ? { disabled: true } : {}),
+        ...(selectedFramework.webAvailability?.reason
+          ? { reason: selectedFramework.webAvailability.reason }
+          : {}),
+      },
     ];
   }
   return [{ value: 'pty', label: 'tui' }];
@@ -61,7 +75,7 @@ export function defaultSessionModeForAgent(
   selectedAgent: AgentType
 ): SessionLaunchMode {
   const supportsWeb = getSessionModeOptions(frameworks, selectedAgent).some(
-    (option) => option.value === 'web'
+    (option) => option.value === 'web' && !option.disabled
   );
   return selectedAgent === 'hermes' && supportsWeb ? 'web' : 'pty';
 }
@@ -147,6 +161,10 @@ function CustomizeSessionBody({
   );
   const selectedUnavailable =
     selectedFramework && !isFrameworkAvailable(selectedFramework);
+  const selectedWebUnavailable =
+    selectedFramework &&
+    form.sessionMode === 'web' &&
+    !isFrameworkWebAvailable(selectedFramework);
 
   return (
     <div className="customize-session-body-fields">
@@ -208,11 +226,21 @@ function CustomizeSessionBody({
             }
           >
             {modeOptions.map((option) => (
-              <option key={option.value} value={option.value}>
+              <option
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled}
+              >
                 {option.label}
               </option>
             ))}
           </select>
+          {selectedWebUnavailable && (
+            <div className="customize-session-field-note">
+              {selectedFramework.webAvailability?.reason ??
+                `${selectedFramework.displayName} web runtime is not available`}
+            </div>
+          )}
         </div>
       )}
       <TuiCheckbox
@@ -304,6 +332,17 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         );
         return;
       }
+      if (
+        selectedFramework &&
+        form.sessionMode === 'web' &&
+        !isFrameworkWebAvailable(selectedFramework)
+      ) {
+        setError(
+          selectedFramework.webAvailability?.reason ??
+            `${selectedFramework.displayName} web runtime is not available`
+        );
+        return;
+      }
       setCreating(true);
       setError(null);
       const { session, error: submitError } = await createSessionFromForm(
@@ -346,7 +385,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             frameworks.some(
               (framework) =>
                 framework.id === form.selectedAgent &&
-                !isFrameworkAvailable(framework)
+                (!isFrameworkAvailable(framework) ||
+                  (form.sessionMode === 'web' &&
+                    !isFrameworkWebAvailable(framework)))
             )
           }
         >

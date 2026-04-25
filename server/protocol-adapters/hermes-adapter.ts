@@ -18,10 +18,18 @@ interface SseEvent {
   data: Record<string, unknown>;
 }
 
-interface HermesGatewaySettings {
+export interface HermesGatewaySettings {
   endpoint: string;
   apiKey: string | null;
   source: string;
+}
+
+export interface HermesGatewayProbeResult {
+  available: boolean;
+  endpoint: string;
+  source: string;
+  retryable: boolean;
+  reason?: string;
 }
 
 const DEFAULT_HERMES_ENDPOINT = 'http://127.0.0.1:8642';
@@ -122,7 +130,7 @@ function endpointFromApiServerEnv(
   return `http://${host}:${port}`;
 }
 
-function resolveGatewaySettings(
+export function resolveHermesGatewaySettings(
   extra: Record<string, unknown> | undefined
 ): HermesGatewaySettings {
   const fileEnv = readHermesEnv();
@@ -149,6 +157,104 @@ function resolveGatewaySettings(
         ? 'environment'
         : 'default',
   };
+}
+
+async function fetchWithTimeout(
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs: number
+): Promise<Response> {
+  return fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+
+function gatewayHeaders(apiKey: string | null): Record<string, string> {
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+export async function probeHermesGatewayApi(
+  extra: Record<string, unknown> | undefined,
+  timeoutMs = 500
+): Promise<HermesGatewayProbeResult> {
+  const settings = resolveHermesGatewaySettings(extra);
+  const headers = gatewayHeaders(settings.apiKey);
+
+  try {
+    const health = await fetchWithTimeout(
+      `${settings.endpoint}/health`,
+      headers,
+      timeoutMs
+    );
+    if (health.status === 401 || health.status === 403) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: false,
+        reason: `Hermes gateway at ${settings.endpoint} rejected Relay authentication. Set HERMES_API_TOKEN to the gateway API_SERVER_KEY.`,
+      };
+    }
+    if (!health.ok) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: health.status >= 500,
+        reason: `Hermes gateway health check failed at ${settings.endpoint}: HTTP ${health.status}`,
+      };
+    }
+
+    const models = await fetchWithTimeout(
+      `${settings.endpoint}/v1/models`,
+      headers,
+      timeoutMs
+    );
+    if (models.status === 401 || models.status === 403) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: false,
+        reason: `Hermes API server at ${settings.endpoint} rejected Relay authentication. Set HERMES_API_TOKEN to the gateway API_SERVER_KEY.`,
+      };
+    }
+    if (models.status === 404) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: false,
+        reason: `Hermes gateway is reachable at ${settings.endpoint}, but the Responses API is not enabled there. Start the host Hermes gateway with API_SERVER_ENABLED=1, or set HERMES_API_ENDPOINT to the Hermes API server.`,
+      };
+    }
+    if (!models.ok) {
+      return {
+        available: false,
+        endpoint: settings.endpoint,
+        source: settings.source,
+        retryable: models.status >= 500,
+        reason: `Hermes API server probe failed at ${settings.endpoint}: HTTP ${models.status}`,
+      };
+    }
+
+    return {
+      available: true,
+      endpoint: settings.endpoint,
+      source: settings.source,
+      retryable: false,
+    };
+  } catch (err) {
+    const lastError = err instanceof Error ? err.message : String(err);
+    return {
+      available: false,
+      endpoint: settings.endpoint,
+      source: settings.source,
+      retryable: true,
+      reason: `Hermes gateway API is not reachable at ${settings.endpoint} (${settings.source}). Start the host Hermes gateway with API_SERVER_ENABLED=1, or set HERMES_API_ENDPOINT for relay-ide. Last error: ${lastError}`,
+    };
+  }
 }
 
 function parseToolArguments(value: unknown): Record<string, unknown> {
@@ -200,7 +306,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._lastResponseId = null;
     this._turnCounter = 0;
 
-    const settings = resolveGatewaySettings(config.extra);
+    const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
     this._apiKey = settings.apiKey;
     this._settingsSource = settings.source;
@@ -393,46 +499,28 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   ): Record<string, string> {
     return {
       ...headers,
-      ...(this._apiKey ? { Authorization: `Bearer ${this._apiKey}` } : {}),
+      ...gatewayHeaders(this._apiKey),
     };
   }
 
   private async waitForGateway(): Promise<void> {
-    const healthUrl = `${this.baseUrl()}/health`;
     const deadline = Date.now() + 3000;
-    let lastStatus: number | null = null;
-    let lastError: string | null = null;
+    let lastReason: string | undefined;
 
     while (Date.now() < deadline) {
-      try {
-        const res = await fetch(healthUrl, {
-          headers: this.headers(),
-          signal: AbortSignal.timeout(500),
-        });
-        lastStatus = res.status;
-        if (res.ok) {
-          logger.info('Hermes API server reachable at', this._endpoint);
-          return;
-        }
-        if (res.status === 401 || res.status === 403) {
-          break;
-        }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
+      const probe = await probeHermesGatewayApi(this._config?.extra, 500);
+      lastReason = probe.reason;
+      if (probe.available) {
+        logger.info('Hermes API server reachable at', this._endpoint);
+        return;
       }
+      if (!probe.retryable) break;
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    if (lastStatus === 401 || lastStatus === 403) {
-      throw new Error(
-        `Hermes gateway at ${this._endpoint} rejected Relay authentication. Set HERMES_API_TOKEN to the gateway API_SERVER_KEY.`
-      );
-    }
-
     throw new Error(
-      `Hermes gateway API is not reachable at ${this._endpoint} (${this._settingsSource}). Start the host Hermes gateway with API_SERVER_ENABLED=1, or set HERMES_API_ENDPOINT for relay-ide.${
-        lastError ? ` Last error: ${lastError}` : ''
-      }`
+      lastReason ??
+        `Hermes gateway API is not reachable at ${this._endpoint} (${this._settingsSource}). Start the host Hermes gateway with API_SERVER_ENABLED=1, or set HERMES_API_ENDPOINT for relay-ide.`
     );
   }
 

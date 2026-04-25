@@ -4,6 +4,7 @@ import {
   defaultSessionModeForAgent,
   getSessionModeOptions,
   isFrameworkAvailable,
+  isFrameworkWebAvailable,
   selectLaunchAgent,
 } from '../frontend/src/components/dialogs/CustomizeSessionDialog.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
@@ -56,6 +57,27 @@ describe('CustomizeSessionDialog session mode options', () => {
     expect(defaultSessionModeForAgent([framework('claude')], 'claude')).toBe(
       'pty'
     );
+  });
+
+  it('disables web mode when an installed agent runtime is unavailable', () => {
+    const hermes = framework('hermes');
+    hermes.webAvailability = {
+      available: false,
+      reason: 'Hermes API server is not reachable',
+    };
+
+    expect(isFrameworkAvailable(hermes)).toBe(true);
+    expect(isFrameworkWebAvailable(hermes)).toBe(false);
+    expect(getSessionModeOptions([hermes], 'hermes')).toEqual([
+      { value: 'pty', label: 'tui' },
+      {
+        value: 'web',
+        label: 'web (unavailable)',
+        disabled: true,
+        reason: 'Hermes API server is not reachable',
+      },
+    ]);
+    expect(defaultSessionModeForAgent([hermes], 'hermes')).toBe('pty');
   });
 
   it('treats missing legacy availability as available', () => {

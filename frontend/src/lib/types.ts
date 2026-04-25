@@ -41,6 +41,11 @@ export interface FrameworkInfo {
     path?: string;
     reason?: string;
   };
+  webAvailability?: {
+    available: boolean;
+    endpoint?: string;
+    reason?: string;
+  };
 }
 
 export interface CurrentActivity {

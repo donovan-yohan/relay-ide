@@ -7,10 +7,17 @@ import {
   type AgentFramework,
   type EventSourceType,
 } from './types.js';
+import { probeHermesGatewayApi } from './protocol-adapters/hermes-adapter.js';
 
 export interface FrameworkAvailability {
   installed: boolean;
   path?: string;
+  reason?: string;
+}
+
+export interface FrameworkWebAvailability {
+  available: boolean;
+  endpoint?: string;
   reason?: string;
 }
 
@@ -21,6 +28,7 @@ export interface FrameworkClientInfo {
   capabilities: AgentFramework['capabilities'];
   eventSource: EventSourceType;
   availability: FrameworkAvailability;
+  webAvailability?: FrameworkWebAvailability;
 }
 
 function executableCandidates(
@@ -96,4 +104,41 @@ export function getFrameworkClientInfo(
     eventSource: framework.eventSource,
     availability: getFrameworkAvailability(framework, env),
   }));
+}
+
+export async function getFrameworkClientInfoWithRuntime(
+  frameworkOverrides?: Record<string, Partial<AgentFramework>>,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<FrameworkClientInfo[]> {
+  const frameworks = getFrameworkClientInfo(frameworkOverrides, env);
+  return Promise.all(
+    frameworks.map(async (framework) => {
+      if (framework.id !== 'hermes' || !framework.availability.installed) {
+        return framework;
+      }
+      const probe = await probeHermesGatewayApi(undefined, 300);
+      return {
+        ...framework,
+        webAvailability: {
+          available: probe.available,
+          endpoint: probe.endpoint,
+          ...(probe.reason ? { reason: probe.reason } : {}),
+        },
+      };
+    })
+  );
+}
+
+export async function getFrameworkWebAvailability(
+  framework: AgentFramework
+): Promise<FrameworkWebAvailability> {
+  if (framework.id !== 'hermes') {
+    return { available: true };
+  }
+  const probe = await probeHermesGatewayApi(undefined, 500);
+  return {
+    available: probe.available,
+    endpoint: probe.endpoint,
+    ...(probe.reason ? { reason: probe.reason } : {}),
+  };
 }

@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import express from 'express';
-import { getFrameworkClientInfo } from '../server/frameworks.js';
+import { getFrameworkClientInfoWithRuntime } from '../server/frameworks.js';
 import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
@@ -10,14 +13,38 @@ import { createTestServer } from './helpers/test-server.js';
 
 let baseUrl: string;
 let closeServer: () => Promise<void>;
+let closeHermesProbeServer: () => Promise<void>;
+let fakeBinDir: string;
+let hermesProbeUrl: string;
+let originalHermesEndpoint: string | undefined;
+let originalPath: string | undefined;
 
 beforeAll(async () => {
+  originalHermesEndpoint = process.env.HERMES_API_ENDPOINT;
+  originalPath = process.env.PATH;
+  fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-frameworks-'));
+  const fakeHermes = path.join(fakeBinDir, 'hermes');
+  fs.writeFileSync(fakeHermes, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(fakeHermes, 0o755);
+
+  const hermesProbeApp = express();
+  hermesProbeApp.get('/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+  const hermesProbeServer = await createTestServer(hermesProbeApp);
+  hermesProbeUrl = hermesProbeServer.url;
+  closeHermesProbeServer = hermesProbeServer.close;
+  process.env.HERMES_API_ENDPOINT = hermesProbeUrl;
+
   const app = express();
   app.use(express.json());
 
   // Register the same route logic as server/index.ts will expose
-  app.get('/api/frameworks', (_req, res) => {
-    const frameworks = getFrameworkClientInfo();
+  app.get('/api/frameworks', async (_req, res) => {
+    const frameworks = await getFrameworkClientInfoWithRuntime(undefined, {
+      ...process.env,
+      PATH: `${fakeBinDir}${path.delimiter}${originalPath ?? ''}`,
+    });
     res.json({ frameworks });
   });
 
@@ -26,7 +53,17 @@ beforeAll(async () => {
   closeServer = result.close;
 });
 
-afterAll(() => closeServer());
+afterAll(async () => {
+  await closeServer();
+  await closeHermesProbeServer();
+  if (originalHermesEndpoint === undefined) {
+    delete process.env.HERMES_API_ENDPOINT;
+  } else {
+    process.env.HERMES_API_ENDPOINT = originalHermesEndpoint;
+  }
+  process.env.PATH = originalPath;
+  fs.rmSync(fakeBinDir, { recursive: true, force: true });
+});
 
 function url(p: string): string {
   return `${baseUrl}${p}`;
@@ -111,6 +148,32 @@ describe('GET /api/frameworks', () => {
     const opencode = body.frameworks.find((f) => f.id === 'opencode');
     expect(opencode).toBeTruthy();
     expect(opencode!.eventSource).toBe('plugin');
+  });
+
+  it('surfaces Hermes web runtime availability from the async route', async () => {
+    const res = await fetch(url('/api/frameworks'));
+    const body = (await res.json()) as {
+      frameworks: Array<{
+        id: string;
+        availability?: { installed: boolean; path?: string };
+        webAvailability?: {
+          available: boolean;
+          endpoint?: string;
+          reason?: string;
+        };
+      }>;
+    };
+    const hermes = body.frameworks.find((f) => f.id === 'hermes');
+    expect(hermes).toBeTruthy();
+    expect(hermes!.availability?.installed).toBe(true);
+    expect(hermes!.availability?.path).toBe(path.join(fakeBinDir, 'hermes'));
+    expect(hermes!.webAvailability).toMatchObject({
+      available: false,
+      endpoint: hermesProbeUrl,
+    });
+    expect(hermes!.webAvailability?.reason).toContain(
+      'Responses API is not enabled'
+    );
   });
 
   it('does not include internal fields like parserType or continueArgs', async () => {
