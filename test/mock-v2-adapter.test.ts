@@ -45,6 +45,25 @@ async function waitFor(
   }
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function expectSettledWithin<T>(
+  promise: Promise<T>,
+  timeoutMs = 250
+): Promise<PromiseSettledResult<T>> {
+  return Promise.race([
+    promise.then(
+      (value): PromiseSettledResult<T> => ({ status: 'fulfilled', value }),
+      (reason): PromiseSettledResult<T> => ({ status: 'rejected', reason })
+    ),
+    delay(timeoutMs).then(() => {
+      throw new Error('Promise did not settle before timeout');
+    }),
+  ]);
+}
+
 describe('MockProtocolAdapterV2', () => {
   it('connect emits an idle session live-state patch', async () => {
     const adapter = new MockProtocolAdapterV2(zeroDelays);
@@ -215,6 +234,153 @@ describe('MockProtocolAdapterV2', () => {
           patch.type === 'agent-turn-started-v2' && patch.turn.id === 'turn-2'
       )
     ).toBe(true);
+  });
+
+  it('rejects queued sendMessage promises on disconnect', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 50 });
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    const first = adapter.sendMessage({
+      turnId: 'turn-1',
+      content: 'first',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' && patch.turn.id === 'turn-1'
+      )
+    );
+
+    const second = adapter.sendMessage({
+      turnId: 'turn-2',
+      content: 'second',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.queueLength === 1
+      )
+    );
+    const queuedResultPromise = expectSettledWithin(second);
+
+    await adapter.disconnect();
+
+    const queuedResult = await queuedResultPromise;
+    expect(queuedResult.status).toBe('rejected');
+    expect(queuedResult).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        message: 'MockProtocolAdapterV2 disconnected with 1 queued message(s)',
+      }),
+    });
+    await first;
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.queueLength === 0
+      )
+    ).toBe(true);
+  });
+
+  it('settles queued sendMessage promises when reconnect disconnects the active session', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 50 });
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    const first = adapter.sendMessage({
+      turnId: 'turn-1',
+      content: 'first',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' && patch.turn.id === 'turn-1'
+      )
+    );
+
+    const second = adapter.sendMessage({
+      turnId: 'turn-2',
+      content: 'second',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.queueLength === 1
+      )
+    );
+    const queuedResultPromise = expectSettledWithin(second);
+
+    await adapter.reconnect();
+
+    const queuedResult = await queuedResultPromise;
+    expect(queuedResult.status).toBe('rejected');
+    expect(queuedResult).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        message: 'MockProtocolAdapterV2 disconnected with 1 queued message(s)',
+      }),
+    });
+    await first;
+    expect(adapter.status).toBe('connected');
+  });
+
+  it('does not emit idle or become connected from a stale connect after disconnect', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 25, stepMs: 0 });
+    const patches = collectPatches(adapter);
+
+    const connect = adapter.connect(config);
+    await delay(1);
+    await adapter.disconnect();
+    await connect;
+
+    expect(adapter.status).toBe('disconnected');
+    expect(patches).toEqual([]);
+  });
+
+  it('interrupting a queued turn cancels that queued send and emits queueLength update', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 50 });
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    const first = adapter.sendMessage({
+      turnId: 'turn-1',
+      content: 'first',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-turn-started-v2' && patch.turn.id === 'turn-1'
+      )
+    );
+
+    const second = adapter.sendMessage({
+      turnId: 'turn-2',
+      content: 'second',
+    });
+    await waitFor(() =>
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.queueLength === 1
+      )
+    );
+
+    await adapter.interrupt({ turnId: 'turn-2' });
+
+    await expectSettledWithin(second);
+    expect(
+      patches.some(
+        (patch) =>
+          patch.type === 'agent-live-state-updated-v2' &&
+          patch.live.queueLength === 0
+      )
+    ).toBe(true);
+    await adapter.interrupt({ turnId: 'turn-1' });
+    await first;
   });
 
   it('approval scenario emits an approval item and waiting patch, then resolves after respondToApproval', async () => {

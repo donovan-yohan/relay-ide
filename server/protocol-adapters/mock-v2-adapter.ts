@@ -30,6 +30,12 @@ const DEFAULT_DELAYS: MockProtocolAdapterV2Delays = {
   stepMs: 20,
 };
 
+function queuedDisconnectError(count: number): Error {
+  return new Error(
+    `MockProtocolAdapterV2 disconnected with ${count} queued message(s)`
+  );
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -73,6 +79,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     (decision: AgentApprovalResponseInputV2['decision']) => void
   >();
   private readonly delays: MockProtocolAdapterV2Delays;
+  private connectGeneration = 0;
 
   constructor(delays: Partial<MockProtocolAdapterV2Delays> = {}) {
     super();
@@ -84,9 +91,18 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   async connect(config: AdapterConfig): Promise<void> {
+    const generation = ++this.connectGeneration;
     this.config = config;
     this._status = 'connecting';
     await sleep(this.delays.connectMs);
+
+    if (
+      generation !== this.connectGeneration ||
+      this._status !== 'connecting'
+    ) {
+      return;
+    }
+
     this._status = 'connected';
     this.emitLiveState({
       status: 'idle',
@@ -101,9 +117,10 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   protected async onDisconnect(): Promise<void> {
+    this.connectGeneration++;
+    this.rejectQueuedMessages();
     this.activeController?.abort();
     this.pendingApprovals.clear();
-    this.queue.splice(0);
     this.activeTurnId = null;
     this._status = 'disconnected';
   }
@@ -194,6 +211,10 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   private drainQueue(): void {
+    if (this._status !== 'connected') {
+      return;
+    }
+
     const queued = this.queue.shift();
 
     if (queued === undefined) {
@@ -201,6 +222,23 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     }
 
     this.startTurn(queued.input).then(queued.resolve, queued.reject);
+  }
+
+  private rejectQueuedMessages(): void {
+    const queued = this.queue.splice(0);
+
+    if (queued.length === 0) {
+      return;
+    }
+
+    this.emitLiveState({
+      queueLength: 0,
+    });
+
+    const err = queuedDisconnectError(queued.length);
+    for (const message of queued) {
+      message.reject(err);
+    }
   }
 
   private async runTurn(
