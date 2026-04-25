@@ -362,6 +362,38 @@ const PATCH_TYPES = new Set<string>([
   'agent-error-v2',
 ]);
 
+const TURN_STATUSES = new Set<string>([
+  'queued',
+  'running',
+  'waiting',
+  'completed',
+  'interrupted',
+  'failed',
+]);
+
+const TURN_COMPLETION_STATUSES = new Set<string>([
+  'completed',
+  'interrupted',
+  'failed',
+]);
+
+const LIVE_STATUSES = new Set<string>([
+  'idle',
+  'working',
+  'waiting',
+  'error',
+  'disconnected',
+]);
+
+const DELTA_STRING_FIELDS = [
+  'text',
+  'output',
+  'summary',
+  'detail',
+  'patch',
+  'content',
+] as const;
+
 export function emptyAgentSessionV2(input: {
   id: string;
   provider: AgentProviderV2;
@@ -414,7 +446,7 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
 
   switch (value.type) {
     case 'agent-session-snapshot-v2':
-      return isRecord(value.session);
+      return isSession(value.session);
     case 'agent-live-state-updated-v2':
       return isRecord(value.live);
     case 'agent-turn-started-v2':
@@ -425,13 +457,15 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
       return (
         typeof value.turnId === 'string' &&
         typeof value.itemId === 'string' &&
-        isRecord(value.delta)
+        isDelta(value.delta)
       );
     case 'agent-item-updated-v2':
       return typeof value.turnId === 'string' && isItem(value.item);
     case 'agent-turn-completed-v2':
       return (
-        typeof value.turnId === 'string' && typeof value.status === 'string'
+        typeof value.turnId === 'string' &&
+        typeof value.status === 'string' &&
+        TURN_COMPLETION_STATUSES.has(value.status)
       );
     case 'agent-error-v2':
       return typeof value.message === 'string';
@@ -482,26 +516,12 @@ export function applyAgentPatchV2(
       return updateTurn(session, patch.turnId, (turn) => ({
         ...turn,
         items: turn.items.map(
-          (item): AgentItemV2 =>
-            item.id === patch.item.id
-              ? ({ ...item, ...patch.item } as AgentItemV2)
-              : item
+          (item): AgentItemV2 => (item.id === patch.item.id ? patch.item : item)
         ),
       }));
     case 'agent-turn-completed-v2':
       return updateTurn(
-        {
-          ...session,
-          live: {
-            ...session.live,
-            status: patch.status === 'failed' ? 'error' : 'idle',
-            activeTurnId:
-              session.live.activeTurnId === patch.turnId
-                ? null
-                : session.live.activeTurnId,
-            error: patch.error ?? session.live.error,
-          },
-        },
+        completeLiveStateForActiveTurn(session, patch),
         patch.turnId,
         (turn) => completeTurn(turn, patch)
       );
@@ -515,6 +535,25 @@ export function applyAgentPatchV2(
         },
       };
   }
+}
+
+function completeLiveStateForActiveTurn(
+  session: AgentSessionV2,
+  patch: AgentTurnCompletedPatchV2
+): AgentSessionV2 {
+  if (session.live.activeTurnId !== patch.turnId) {
+    return session;
+  }
+
+  return {
+    ...session,
+    live: {
+      ...session.live,
+      status: patch.status === 'failed' ? 'error' : 'idle',
+      activeTurnId: null,
+      error: patch.error ?? session.live.error,
+    },
+  };
 }
 
 function updateTurn(
@@ -604,17 +643,114 @@ function isTurn(value: unknown): value is AgentTurnV2 {
     isRecord(value) &&
     typeof value.id === 'string' &&
     typeof value.status === 'string' &&
+    TURN_STATUSES.has(value.status) &&
     typeof value.inputMessageId === 'string' &&
     Array.isArray(value.items) &&
+    value.items.every(isItem) &&
     typeof value.startedAt === 'string'
   );
 }
 
 function isItem(value: unknown): value is AgentItemV2 {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    typeof value.type !== 'string'
+  ) {
+    return false;
+  }
+
+  switch (value.type) {
+    case 'userMessage':
+    case 'assistantMessage':
+      return typeof value.text === 'string';
+    case 'reasoning':
+      return typeof value.summary === 'string';
+    case 'plan':
+      return typeof value.text === 'string';
+    case 'commandExecution':
+      return (
+        typeof value.command === 'string' && typeof value.output === 'string'
+      );
+    case 'fileChange':
+      return (
+        Array.isArray(value.paths) &&
+        value.paths.every(
+          (path) => isRecord(path) && typeof path.path === 'string'
+        )
+      );
+    case 'mcpToolCall':
+      return typeof value.server === 'string' && typeof value.tool === 'string';
+    case 'dynamicToolCall':
+      return (
+        typeof value.namespace === 'string' && typeof value.tool === 'string'
+      );
+    case 'approval':
+      return (
+        typeof value.requestId === 'string' &&
+        typeof value.kind === 'string' &&
+        typeof value.description === 'string' &&
+        typeof value.target === 'string'
+      );
+    case 'question':
+      return (
+        typeof value.requestId === 'string' &&
+        typeof value.question === 'string'
+      );
+    case 'compaction':
+      return typeof value.summary === 'string';
+    case 'webSearch':
+      return typeof value.query === 'string';
+    case 'imageView':
+      return typeof value.source === 'string';
+    case 'imageGeneration':
+      return typeof value.prompt === 'string';
+    case 'hookPrompt':
+      return typeof value.prompt === 'string';
+    case 'providerExtension':
+      return typeof value.namespace === 'string' && isRecord(value.payload);
+  }
+
+  return false;
+}
+
+function isSession(value: unknown): value is AgentSessionV2 {
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
-    typeof value.type === 'string'
+    typeof value.provider === 'string' &&
+    isRecord(value.capabilities) &&
+    isRecord(value.config) &&
+    typeof value.config.cwd === 'string' &&
+    isLiveState(value.live) &&
+    Array.isArray(value.turns) &&
+    value.turns.every(isTurn)
+  );
+}
+
+function isLiveState(value: unknown): value is AgentSessionLiveStateV2 {
+  return (
+    isRecord(value) &&
+    typeof value.status === 'string' &&
+    LIVE_STATUSES.has(value.status) &&
+    (value.activeTurnId === null || typeof value.activeTurnId === 'string') &&
+    (value.waitingOn === null || typeof value.waitingOn === 'string') &&
+    Array.isArray(value.activeRequestIds) &&
+    value.activeRequestIds.every(
+      (requestId) => typeof requestId === 'string'
+    ) &&
+    (value.proposedPlanItemId === null ||
+      typeof value.proposedPlanItemId === 'string') &&
+    typeof value.queueLength === 'number' &&
+    typeof value.fastModeAvailable === 'boolean' &&
+    (value.error === null || typeof value.error === 'string')
+  );
+}
+
+function isDelta(value: unknown): value is AgentItemDeltaPatchV2['delta'] {
+  return (
+    isRecord(value) &&
+    DELTA_STRING_FIELDS.some((field) => typeof value[field] === 'string')
   );
 }
 
