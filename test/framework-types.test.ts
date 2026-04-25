@@ -10,10 +10,11 @@ import type { AgentFramework, EventSourceType } from '../server/types.js';
 
 // ── BUILTIN_FRAMEWORKS structure ──
 
-test('BUILTIN_FRAMEWORKS contains claude, codex, and opencode', () => {
+test('BUILTIN_FRAMEWORKS contains claude, codex, opencode, and hermes', () => {
   expect('claude' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('codex' in BUILTIN_FRAMEWORKS).toBeTruthy();
   expect('opencode' in BUILTIN_FRAMEWORKS).toBeTruthy();
+  expect('hermes' in BUILTIN_FRAMEWORKS).toBeTruthy();
 });
 
 test('claude framework has correct values', () => {
@@ -64,6 +65,23 @@ test('opencode framework has correct values', () => {
   expect(opencode.capabilities.supportsContinue).toBe(true);
   expect(opencode.capabilities.supportsYolo).toBe(true);
   expect(opencode.capabilities.supportsTelemetry).toBe(true);
+});
+
+test('hermes framework has correct values', () => {
+  const hermes = BUILTIN_FRAMEWORKS['hermes'];
+  expect(hermes.id).toBe('hermes');
+  expect(hermes.displayName).toBe('Hermes');
+  expect(hermes.command).toBe('hermes');
+  expect(hermes.continueArgs).toEqual(['--continue']);
+  expect(hermes.yoloArgs).toEqual(['--yolo']);
+  expect(hermes.parserType).toBe('hermes');
+  expect(hermes.eventSource).toBe('parser');
+  expect(hermes.capabilities.supportsHooks).toBe(false);
+  expect(hermes.capabilities.supportsContinue).toBe(true);
+  expect(hermes.capabilities.supportsYolo).toBe(true);
+  expect(hermes.capabilities.supportsTelemetry).toBe(true);
+  expect(hermes.capabilities.supportsAttachedRuntime).toBe(true);
+  expect(hermes.capabilities.supportsWebSessions).toBe(true);
 });
 
 test('opencode yoloEnv contains OPENCODE_CONFIG_CONTENT with permission JSON', () => {

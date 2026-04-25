@@ -1,6 +1,6 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import express from 'express';
-import { BUILTIN_FRAMEWORKS } from '../server/types.js';
+import { getFrameworkClientInfo } from '../server/frameworks.js';
 import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
@@ -17,13 +17,7 @@ beforeAll(async () => {
 
   // Register the same route logic as server/index.ts will expose
   app.get('/api/frameworks', (_req, res) => {
-    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map((f) => ({
-      id: f.id,
-      displayName: f.displayName,
-      command: f.command,
-      capabilities: f.capabilities,
-      eventSource: f.eventSource,
-    }));
+    const frameworks = getFrameworkClientInfo();
     res.json({ frameworks });
   });
 
@@ -46,16 +40,17 @@ describe('GET /api/frameworks', () => {
     expect(body.frameworks).toBeInstanceOf(Array);
   });
 
-  it('returns all three builtin frameworks', async () => {
+  it('returns all builtin frameworks', async () => {
     const res = await fetch(url('/api/frameworks'));
     const body = (await res.json()) as { frameworks: Array<{ id: string }> };
     const ids = body.frameworks.map((f) => f.id);
     expect(ids).toContain('claude');
     expect(ids).toContain('codex');
     expect(ids).toContain('opencode');
+    expect(ids).toContain('hermes');
   });
 
-  it('each framework entry has id, displayName, command, capabilities, eventSource', async () => {
+  it('each framework entry has id, displayName, command, capabilities, eventSource, and availability', async () => {
     const res = await fetch(url('/api/frameworks'));
     const body = (await res.json()) as {
       frameworks: Array<{
@@ -64,6 +59,11 @@ describe('GET /api/frameworks', () => {
         command: string;
         capabilities: Record<string, boolean>;
         eventSource: string;
+        availability?: {
+          installed: boolean;
+          path?: string;
+          reason?: string;
+        };
       }>;
     };
     for (const fw of body.frameworks) {
@@ -78,6 +78,8 @@ describe('GET /api/frameworks', () => {
       expect(fw.capabilities.supportsContinue).toBeTypeOf('boolean');
       expect(fw.capabilities.supportsYolo).toBeTypeOf('boolean');
       expect(fw.capabilities.supportsTelemetry).toBeTypeOf('boolean');
+      expect(fw.availability).toBeTruthy();
+      expect(fw.availability!.installed).toBeTypeOf('boolean');
     }
   });
 

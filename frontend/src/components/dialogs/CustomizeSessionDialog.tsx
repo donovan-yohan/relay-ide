@@ -29,6 +29,19 @@ export interface SessionModeOption {
   label: string;
 }
 
+export function isFrameworkAvailable(framework: FrameworkInfo): boolean {
+  return framework.availability?.installed !== false;
+}
+
+export function selectLaunchAgent(
+  frameworks: FrameworkInfo[],
+  preferredAgent: AgentType
+): AgentType {
+  const preferred = frameworks.find((f) => f.id === preferredAgent);
+  if (!preferred || isFrameworkAvailable(preferred)) return preferredAgent;
+  return frameworks.find(isFrameworkAvailable)?.id ?? preferredAgent;
+}
+
 export function getSessionModeOptions(
   frameworks: FrameworkInfo[],
   selectedAgent: AgentType
@@ -125,7 +138,15 @@ function CustomizeSessionBody({
           } satisfies FrameworkInfo,
         ];
 
-  const modeOptions = getSessionModeOptions(frameworkOptions, form.selectedAgent);
+  const modeOptions = getSessionModeOptions(
+    frameworkOptions,
+    form.selectedAgent
+  );
+  const selectedFramework = frameworkOptions.find(
+    (framework) => framework.id === form.selectedAgent
+  );
+  const selectedUnavailable =
+    selectedFramework && !isFrameworkAvailable(selectedFramework);
 
   return (
     <div className="customize-session-body-fields">
@@ -153,11 +174,22 @@ function CustomizeSessionBody({
           }}
         >
           {frameworkOptions.map((framework) => (
-            <option key={framework.id} value={framework.id}>
+            <option
+              key={framework.id}
+              value={framework.id}
+              disabled={!isFrameworkAvailable(framework)}
+            >
               {framework.displayName}
+              {!isFrameworkAvailable(framework) ? ' (not installed)' : ''}
             </option>
           ))}
         </select>
+        {selectedUnavailable && (
+          <div className="customize-session-field-note">
+            {selectedFramework.availability?.reason ??
+              `${selectedFramework.displayName} is not installed`}
+          </div>
+        )}
       </div>
       {modeOptions.length > 1 && (
         <div className="customize-session-dialog-field">
@@ -224,6 +256,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [form, setForm] = useState<FormState>(defaultForm());
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const frameworks = useConfigStore((state) => state.frameworks);
 
     useImperativeHandle(ref, () => ({
       async open(
@@ -238,12 +271,17 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setWorkspaceName(workspace.name);
         await useConfigStore.getState().refreshConfig();
         const config = useConfigStore.getState();
-        const selectedAgent =
-          preselectedFramework ?? (config.defaultAgent as AgentType);
+        const selectedAgent = selectLaunchAgent(
+          config.frameworks,
+          preselectedFramework ?? (config.defaultAgent as AgentType)
+        );
         setForm({
           claudeArgsInput: '',
           selectedAgent,
-          sessionMode: defaultSessionModeForAgent(config.frameworks, selectedAgent),
+          sessionMode: defaultSessionModeForAgent(
+            config.frameworks,
+            selectedAgent
+          ),
           yoloMode: config.defaultYolo,
           continueExisting: config.defaultContinue,
         });
@@ -256,6 +294,16 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
 
     async function handleSubmit() {
       if (!workspacePath || creating) return;
+      const selectedFramework = frameworks.find(
+        (framework) => framework.id === form.selectedAgent
+      );
+      if (selectedFramework && !isFrameworkAvailable(selectedFramework)) {
+        setError(
+          selectedFramework.availability?.reason ??
+            `${selectedFramework.displayName} is not installed`
+        );
+        return;
+      }
       setCreating(true);
       setError(null);
       const { session, error: submitError } = await createSessionFromForm(
@@ -292,7 +340,15 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           variant="primary"
           data-track="dialog.customize-session.create"
           onClick={handleSubmit}
-          disabled={!workspacePath || creating}
+          disabled={
+            !workspacePath ||
+            creating ||
+            frameworks.some(
+              (framework) =>
+                framework.id === form.selectedAgent &&
+                !isFrameworkAvailable(framework)
+            )
+          }
         >
           {creating ? 'Creating...' : 'Start Session'}
         </TuiButton>

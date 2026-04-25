@@ -13,6 +13,7 @@ const http = require('http');
 const url = require('url');
 
 const port = parseInt(process.env.API_SERVER_PORT || process.argv[2], 10);
+const apiKey = process.env.API_SERVER_KEY || '';
 if (!port || isNaN(port)) {
   console.error(
     'Usage: API_SERVER_PORT=1234 node hermes-gateway-stub.js (or: node hermes-gateway-stub.js <port>)'
@@ -32,6 +33,15 @@ const server = http.createServer((req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  if (apiKey && parsed.pathname !== '/health') {
+    const auth = req.headers.authorization || '';
+    if (auth !== `Bearer ${apiKey}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid API key' }));
+      return;
+    }
   }
 
   // Health check

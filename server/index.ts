@@ -91,6 +91,10 @@ import {
   getTelemetryForSession,
   getAccountTelemetry,
 } from './telemetry.js';
+import {
+  getFrameworkAvailability,
+  getFrameworkClientInfo,
+} from './frameworks.js';
 import type {
   AgentType,
   AutomationSettings,
@@ -99,7 +103,7 @@ import type {
   TicketContext,
   WorkspaceSettings,
 } from './types.js';
-import { BUILTIN_FRAMEWORKS } from './types.js';
+import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
   buildPtyCapacityResponse,
@@ -502,6 +506,53 @@ function buildAgentArgs(
     : [...baseArgs];
 }
 
+type AgentAvailabilityValidation =
+  | { ok: true }
+  | {
+      ok: false;
+      body: {
+        error: 'agent_unavailable' | 'unknown_agent';
+        message: string;
+        agent: AgentType;
+      };
+    };
+
+function validateAgentFrameworkAvailable(
+  config: Config,
+  resolvedAgent: AgentType
+): AgentAvailabilityValidation {
+  try {
+    const framework = resolveFramework(
+      config.frameworks ? { frameworks: config.frameworks } : {},
+      resolvedAgent
+    );
+    const availability = getFrameworkAvailability(framework);
+    if (availability.installed) return { ok: true };
+    return {
+      ok: false,
+      body: {
+        error: 'agent_unavailable',
+        message:
+          availability.reason ??
+          `${framework.displayName} CLI is not installed on this host.`,
+        agent: resolvedAgent,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      body: {
+        error: 'unknown_agent',
+        message:
+          err instanceof Error
+            ? err.message
+            : `Unknown agent: ${resolvedAgent}`,
+        agent: resolvedAgent,
+      },
+    };
+  }
+}
+
 /**
  * Resolves the effective continue policy for an agent session.
  * For new worktrees, always returns 'never'.
@@ -565,6 +616,38 @@ type AgentSessionParams = {
   /** Port env var names to inject for this worktree (from repo settings) */
   portVariables?: string[] | undefined;
 };
+
+type TerminalSessionParams = {
+  repoName: string;
+  repoPath: string;
+  worktreePath: string | null | undefined;
+  cwd: string;
+  safeCols: number | undefined;
+  safeRows: number | undefined;
+  portVariables?: string[] | undefined;
+};
+
+function createTerminalSessionRecord(
+  params: TerminalSessionParams
+): CreateResult {
+  const shell = process.env.SHELL || '/bin/sh';
+  const displayName = sessions.nextTerminalName();
+  return sessions.create({
+    type: 'terminal',
+    agent: 'claude' as AgentType,
+    repoName: params.repoName,
+    repoPath: params.repoPath,
+    worktreePath: params.worktreePath ?? null,
+    cwd: params.cwd,
+    displayName,
+    branchName: '',
+    command: shell,
+    args: [],
+    ...(params.safeCols != null && { cols: params.safeCols }),
+    ...(params.safeRows != null && { rows: params.safeRows }),
+    portVariables: params.portVariables,
+  });
+}
 
 /** Creates an agent session record and writes worktree metadata if applicable. */
 function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
@@ -1237,13 +1320,7 @@ async function main(): Promise<void> {
 
   // GET /api/frameworks — returns available agent frameworks with capabilities
   app.get('/api/frameworks', requireAuth, (_req, res) => {
-    const frameworks = Object.values(BUILTIN_FRAMEWORKS).map((f) => ({
-      id: f.id,
-      displayName: f.displayName,
-      command: f.command,
-      capabilities: f.capabilities,
-      eventSource: f.eventSource,
-    }));
+    const frameworks = getFrameworkClientInfo(getConfig().frameworks);
     res.json({ frameworks });
   });
 
@@ -2154,24 +2231,15 @@ async function main(): Promise<void> {
 
     if (type === 'terminal') {
       // Terminal session — bare shell
-      const shell = process.env.SHELL || '/bin/sh';
-      const displayName = sessions.nextTerminalName();
       let session: CreateResult;
       try {
-        session = sessions.create({
-          type: 'terminal',
-          agent: 'claude' as AgentType,
+        session = createTerminalSessionRecord({
           repoName: name,
           repoPath,
           worktreePath: worktreePath ?? null,
           cwd,
-          displayName,
-          branchName: '',
-          command: shell,
-          args: [],
-          ...(safeCols != null && { cols: safeCols }),
-          ...(safeRows != null && { rows: safeRows }),
-          // Pass port env var names for per-worktree port injection
+          safeCols,
+          safeRows,
           portVariables,
         });
       } catch (err) {
@@ -2199,6 +2267,14 @@ async function main(): Promise<void> {
       continuePolicy: effectivePolicy,
     });
     const resolvedAgent = resolved.agent;
+    const frameworkAvailability = validateAgentFrameworkAvailable(
+      freshConfig,
+      resolvedAgent
+    );
+    if (!frameworkAvailability.ok) {
+      res.status(400).json(frameworkAvailability.body);
+      return;
+    }
 
     // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
     // Hermes remains web by default for backwards compatibility with the

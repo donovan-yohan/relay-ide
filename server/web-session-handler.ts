@@ -86,7 +86,7 @@ export async function createWebSession(
     adapterType: params.agentType,
     messages: [],
     currentTurnId: null,
-    runtimeOwnership: params.runtimeOwnership ?? 'spawned',
+    runtimeOwnership: params.runtimeOwnership ?? adapter.runtimeOwnership,
     hookToken,
     hooksActive: true,
   };

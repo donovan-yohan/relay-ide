@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
-import getPort from 'get-port';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { BaseProtocolAdapter } from '../protocol-adapter.js';
 import type {
   AdapterConfig,
@@ -16,6 +16,139 @@ const logger = createLogger('hermes-adapter');
 interface SseEvent {
   event?: string;
   data: Record<string, unknown>;
+}
+
+interface HermesGatewaySettings {
+  endpoint: string;
+  apiKey: string | null;
+  source: string;
+}
+
+const DEFAULT_HERMES_ENDPOINT = 'http://127.0.0.1:8642';
+const ENDPOINT_ENV_KEYS = [
+  'HERMES_API_ENDPOINT',
+  'HERMES_API_BASE_URL',
+  'HERMES_API_URL',
+];
+const TOKEN_ENV_KEYS = [
+  'HERMES_API_TOKEN',
+  'HERMES_API_KEY',
+  'HERMES_GATEWAY_API_KEY',
+  'API_SERVER_KEY',
+];
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parseEnvFile(filePath: string): Record<string, string> {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const result: Record<string, string> = {};
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+      if (!match) continue;
+      const key = match[1];
+      if (!key) continue;
+      let value = (match[2] ?? '').trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      result[key] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function candidateHermesHomes(): string[] {
+  const home = os.homedir();
+  const root = path.join(home, '.hermes');
+  const candidates = new Set<string>();
+  const envHome = nonEmpty(process.env['HERMES_HOME']);
+  if (envHome) candidates.add(envHome);
+
+  try {
+    const activeProfile = fs
+      .readFileSync(path.join(root, 'active_profile'), 'utf8')
+      .trim();
+    if (activeProfile) {
+      candidates.add(path.join(root, 'profiles', activeProfile));
+    }
+  } catch {
+    // No active profile marker; fall through to the root.
+  }
+
+  candidates.add(root);
+  return [...candidates];
+}
+
+function readHermesEnv(): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const home of candidateHermesHomes()) {
+    Object.assign(merged, parseEnvFile(path.join(home, '.env')));
+  }
+  return merged;
+}
+
+function firstEnvValue(
+  keys: string[],
+  fileEnv: Record<string, string>
+): string | null {
+  for (const key of keys) {
+    const value = nonEmpty(process.env[key]) ?? nonEmpty(fileEnv[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function endpointFromApiServerEnv(
+  fileEnv: Record<string, string>
+): string | null {
+  const port =
+    nonEmpty(process.env['API_SERVER_PORT']) ??
+    nonEmpty(fileEnv['API_SERVER_PORT']);
+  if (!port) return null;
+  const host =
+    nonEmpty(process.env['API_SERVER_HOST']) ??
+    nonEmpty(fileEnv['API_SERVER_HOST']) ??
+    '127.0.0.1';
+  return `http://${host}:${port}`;
+}
+
+function resolveGatewaySettings(
+  extra: Record<string, unknown> | undefined
+): HermesGatewaySettings {
+  const fileEnv = readHermesEnv();
+  const explicitEndpoint = nonEmpty(extra?.['endpoint']);
+  const envEndpoint =
+    firstEnvValue(ENDPOINT_ENV_KEYS, fileEnv) ??
+    endpointFromApiServerEnv(fileEnv);
+  const endpoint = (
+    explicitEndpoint ??
+    envEndpoint ??
+    DEFAULT_HERMES_ENDPOINT
+  ).replace(/\/+$/, '');
+  const apiKey =
+    nonEmpty(extra?.['apiToken']) ??
+    nonEmpty(extra?.['apiKey']) ??
+    firstEnvValue(TOKEN_ENV_KEYS, fileEnv);
+
+  return {
+    endpoint,
+    apiKey,
+    source: explicitEndpoint
+      ? 'adapter config'
+      : envEndpoint
+        ? 'environment'
+        : 'default',
+  };
 }
 
 function parseToolArguments(value: unknown): Record<string, unknown> {
@@ -36,20 +169,17 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
 /**
  * Hermes protocol adapter.
  *
- * Spawns `hermes gateway run` with its local API server enabled, then drives
- * the agent through Hermes' OpenAI-compatible Responses streaming endpoint.
+ * Attaches to the host Hermes gateway API server and drives the agent through
+ * Hermes' OpenAI-compatible Responses streaming endpoint.
  */
 export class HermesProtocolAdapter extends BaseProtocolAdapter {
   readonly agentType = 'hermes';
-  readonly runtimeOwnership = 'spawned' as const;
+  readonly runtimeOwnership = 'attached' as const;
 
   private _status: AdapterStatus = 'disconnected';
   private _config: AdapterConfig | null = null;
-  private _process: ChildProcess | null = null;
-  private _processExitCode: number | null = null;
-  private _processOutputBuffer = '';
-  private _apiPort = 0;
-  private _apiHost = '127.0.0.1';
+  private _endpoint = DEFAULT_HERMES_ENDPOINT;
+  private _settingsSource = 'default';
   private _messageAbortController: AbortController | null = null;
   private _turnCounter = 0;
   private _currentTurnId: string | null = null;
@@ -65,79 +195,15 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   async connect(config: AdapterConfig): Promise<void> {
     this._config = config;
     this._status = 'connecting';
-    this._processExitCode = null;
-    this._processOutputBuffer = '';
     this._messageAbortController = null;
     this._currentTurnId = null;
     this._lastResponseId = null;
     this._turnCounter = 0;
 
-    this._apiKey =
-      (config.extra?.['apiToken'] as string | undefined) ??
-      crypto.randomBytes(24).toString('hex');
-
-    this._apiPort = await getPort();
-    this._apiHost =
-      (config.extra?.['host'] as string | undefined) ?? '127.0.0.1';
-
-    // Build spawn command — allow commandOverride via extra config for tests
-    const command =
-      (config.extra?.['command'] as string | undefined) ?? 'hermes';
-    const profile =
-      (config.extra?.['profile'] as string | undefined) ?? 'default';
-    const defaultArgs = ['-p', profile, 'gateway', 'run', '--accept-hooks'];
-    const args = (
-      (config.extra?.['args'] as string[] | undefined) ?? defaultArgs
-    ).map((arg) => arg.replace(/\{\{PORT\}\}/g, String(this._apiPort)));
-    const env: Record<string, string> = {
-      API_SERVER_ENABLED: '1',
-      API_SERVER_HOST: this._apiHost,
-      API_SERVER_PORT: String(this._apiPort),
-      API_SERVER_KEY: this._apiKey,
-      HERMES_ACCEPT_HOOKS: '1',
-    };
-
-    this._process = spawn(command, args, {
-      cwd: config.cwd,
-      env: { ...process.env, ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const captureProcessOutput = (chunk: Buffer): void => {
-      this._processOutputBuffer = (
-        this._processOutputBuffer + chunk.toString()
-      ).slice(-2000);
-    };
-    this._process.stdout?.on('data', captureProcessOutput);
-    this._process.stderr?.on('data', captureProcessOutput);
-
-    this._process.on('exit', (code) => {
-      this._processExitCode = code;
-      logger.info(`[hermes] process exited with code ${code}`);
-      if (this._status === 'connecting') {
-        this._status = 'error';
-      } else if (this._status === 'connected') {
-        this._status = 'error';
-        this.fire({
-          type: 'chat:error',
-          kind: 'protocol',
-          message: `Hermes gateway exited with code ${code}`,
-          retryable: true,
-        });
-        this.fire({ type: 'chat:session-status', status: 'disconnected' });
-      }
-    });
-
-    this._process.on('error', (err) => {
-      logger.error('[hermes] process error:', err);
-      this._status = 'error';
-      this.fire({
-        type: 'chat:error',
-        kind: 'protocol',
-        message: err.message,
-        retryable: false,
-      });
-    });
+    const settings = resolveGatewaySettings(config.extra);
+    this._endpoint = settings.endpoint;
+    this._apiKey = settings.apiKey;
+    this._settingsSource = settings.source;
 
     await this.waitForGateway();
 
@@ -155,15 +221,6 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = null;
     this._currentTurnId = null;
     this._lastResponseId = null;
-
-    if (this._process) {
-      try {
-        this._process.kill('SIGTERM');
-      } catch {
-        /* may already be dead */
-      }
-      this._process = null;
-    }
     this._status = 'disconnected';
   }
 
@@ -209,10 +266,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       const url = `${this.baseUrl()}/v1/responses`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(this._apiKey ? { Authorization: `Bearer ${this._apiKey}` } : {}),
-        },
+        headers: this.headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
         signal: this._messageAbortController.signal,
       });
@@ -275,7 +329,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     try {
       await fetch(
         `${this.baseUrl()}/session/${encodeURIComponent(sessionId)}/abort`,
-        { method: 'POST' }
+        { method: 'POST', headers: this.headers() }
       );
     } catch (err) {
       logger.warn('Failed to send Hermes abort request:', err);
@@ -289,7 +343,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     const action = decision === 'deny' ? 'deny' : 'allow';
     const res = await fetch(
       `${this.baseUrl()}/permission/${encodeURIComponent(requestId)}/${action}`,
-      { method: 'POST' }
+      { method: 'POST', headers: this.headers() }
     );
     if (!res.ok) {
       throw new Error(`Hermes approval response failed: ${res.status}`);
@@ -331,41 +385,53 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private baseUrl(): string {
-    return `http://${this._apiHost}:${this._apiPort}`;
+    return this._endpoint;
+  }
+
+  private headers(
+    headers: Record<string, string> = {}
+  ): Record<string, string> {
+    return {
+      ...headers,
+      ...(this._apiKey ? { Authorization: `Bearer ${this._apiKey}` } : {}),
+    };
   }
 
   private async waitForGateway(): Promise<void> {
     const healthUrl = `${this.baseUrl()}/health`;
-    const deadline = Date.now() + 10000; // 10s timeout
+    const deadline = Date.now() + 3000;
+    let lastStatus: number | null = null;
+    let lastError: string | null = null;
 
     while (Date.now() < deadline) {
       try {
         const res = await fetch(healthUrl, {
+          headers: this.headers(),
           signal: AbortSignal.timeout(500),
         });
+        lastStatus = res.status;
         if (res.ok) {
-          logger.info('Hermes API server ready on port', this._apiPort);
+          logger.info('Hermes API server reachable at', this._endpoint);
           return;
         }
-      } catch {
-        // expected while gateway is starting
-      }
-      if (this._processExitCode !== null) {
-        const output = this._processOutputBuffer.trim();
-        throw new Error(
-          `Hermes gateway exited before API server became ready (code ${this._processExitCode})${
-            output ? `: ${output}` : ''
-          }`
-        );
+        if (res.status === 401 || res.status === 403) {
+          break;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
       }
       await new Promise((r) => setTimeout(r, 200));
     }
 
+    if (lastStatus === 401 || lastStatus === 403) {
+      throw new Error(
+        `Hermes gateway at ${this._endpoint} rejected Relay authentication. Set HERMES_API_TOKEN to the gateway API_SERVER_KEY.`
+      );
+    }
+
     throw new Error(
-      `Hermes gateway did not become ready within 10s (tried ${healthUrl})${
-        this._processOutputBuffer.trim()
-          ? `: ${this._processOutputBuffer.trim()}`
-          : ''
+      `Hermes gateway API is not reachable at ${this._endpoint} (${this._settingsSource}). Start the host Hermes gateway with API_SERVER_ENABLED=1, or set HERMES_API_ENDPOINT for relay-ide.${
+        lastError ? ` Last error: ${lastError}` : ''
       }`
     );
   }
