@@ -9,6 +9,13 @@ import type {
   MessageCompleteEvent,
 } from './chat-events.js';
 
+type CompatAgentPatchV2 = AgentPatchV2 & {
+  metadata?: {
+    source?: ChatEventSource;
+    provider?: ChatEventSource;
+  };
+};
+
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
   switch (event.type) {
     case 'chat:turn-started':
@@ -29,14 +36,17 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
 
     case 'chat:text-delta':
       return [
-        {
-          type: 'agent-item-delta-v2',
-          sessionId: event.sessionId,
-          timestamp: event.timestamp,
-          turnId: event.turnId,
-          itemId: event.messageId,
-          delta: { text: event.delta },
-        },
+        withCompatSource(
+          {
+            type: 'agent-item-delta-v2',
+            sessionId: event.sessionId,
+            timestamp: event.timestamp,
+            turnId: event.turnId,
+            itemId: event.messageId,
+            delta: { text: event.delta },
+          },
+          event.source
+        ),
       ];
 
     case 'chat:message-complete':
@@ -200,6 +210,17 @@ function itemUpdateToChatEvents(
 }
 
 function sourceFromPatch(patch: AgentPatchV2): ChatEventSource {
+  const maybeMetadataSource = (patch as CompatAgentPatchV2).metadata?.source;
+  if (isChatEventSource(maybeMetadataSource)) {
+    return maybeMetadataSource;
+  }
+
+  const maybeMetadataProvider = (patch as CompatAgentPatchV2).metadata
+    ?.provider;
+  if (isChatEventSource(maybeMetadataProvider)) {
+    return maybeMetadataProvider;
+  }
+
   const maybeSource = (patch as { source?: unknown }).source;
   if (isChatEventSource(maybeSource)) {
     return maybeSource;
@@ -211,6 +232,16 @@ function sourceFromPatch(patch: AgentPatchV2): ChatEventSource {
   }
 
   return 'mock';
+}
+
+function withCompatSource<T extends AgentPatchV2>(
+  patch: T,
+  source: ChatEventSource
+): T {
+  return {
+    ...patch,
+    metadata: { source },
+  } as T;
 }
 
 function sourceFromItem(item: AgentItemV2): ChatEventSource {

@@ -30,6 +30,7 @@ describe('Agent Chat v1 compatibility bridge', () => {
         turnId: 'turn-1',
         itemId: 'message-1',
         delta: { text: 'hello' },
+        metadata: { source: 'claude' },
       },
     ]);
   });
@@ -86,14 +87,15 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
-  it('maps v2 assistant message deltas back to v1 text deltas for legacy UI', () => {
-    const patch: AgentPatchV2 = {
+  it('maps v2 assistant message deltas back to v1 text deltas with preserved source for legacy UI', () => {
+    const patch: AgentPatchV2 & { metadata: { source: 'opencode' } } = {
       type: 'agent-item-delta-v2',
       sessionId: 'session-1',
       timestamp,
       turnId: 'turn-1',
       itemId: 'message-1',
       delta: { text: 'hello' },
+      metadata: { source: 'opencode' },
     };
 
     expect(mapAgentPatchV2ToChatEvents(patch)).toEqual([
@@ -101,7 +103,7 @@ describe('Agent Chat v1 compatibility bridge', () => {
         type: 'chat:text-delta',
         sessionId: 'session-1',
         timestamp,
-        source: 'mock',
+        source: 'opencode',
         turnId: 'turn-1',
         messageId: 'message-1',
         delta: 'hello',
