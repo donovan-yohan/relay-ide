@@ -322,6 +322,9 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
+        if (!this._currentTurnId) {
+          return;
+        }
         if (this._currentTurnId) {
           this.fire({
             type: 'chat:turn-completed',
@@ -588,6 +591,9 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       case 'session.error':
         this.handleSessionError(event);
         break;
+      case 'tui.toast.show':
+        this.handleToast(event);
+        break;
       case 'message.part.updated':
         this.handleMessagePartUpdated(event);
         break;
@@ -657,15 +663,8 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
           ? (rawStatus as Record<string, unknown>)['message']
           : undefined;
       if (message) {
-        this.fire({
-          type: 'chat:error',
-          kind: String(message).toLowerCase().includes('quota')
-            ? 'rate-limit'
-            : 'protocol',
-          message: String(message),
-          retryable: true,
-          turnId: this._currentTurnId ?? undefined,
-        });
+        this.failCurrentTurn(String(message));
+        return;
       }
       this.fire({
         type: 'chat:session-status',
@@ -779,6 +778,38 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       this._currentTurnId = null;
     }
     this.fire({ type: 'chat:session-status', status: 'error' });
+  }
+
+  private handleToast(event: OpenCodeEvent): void {
+    const props = event.properties ?? {};
+    if (props['variant'] !== 'error') return;
+
+    const title = typeof props['title'] === 'string' ? props['title'] : '';
+    const message =
+      typeof props['message'] === 'string'
+        ? props['message']
+        : 'OpenCode session error';
+    const text = title ? `${title}: ${message}` : message;
+
+    this.failCurrentTurn(text);
+  }
+
+  private failCurrentTurn(message: string): void {
+    const turnId = this._currentTurnId ?? undefined;
+    this.fire({
+      type: 'chat:error',
+      kind: message.toLowerCase().includes('quota') ? 'rate-limit' : 'unknown',
+      message,
+      retryable: true,
+      ...(turnId ? { turnId } : {}),
+    });
+    this.fire({
+      type: 'chat:session-status',
+      status: 'error',
+      error: message,
+    });
+    this._currentTurnId = null;
+    this._messageAbortController?.abort();
   }
 
   private handleMessagePartUpdated(event: OpenCodeEvent): void {

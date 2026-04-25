@@ -2,7 +2,11 @@
 // Remove this module in Task 9 after web-session migration code and tests no
 // longer need legacy ChatEvent replay. New provider adapters must not import it.
 
-import type { AgentItemV2, AgentPatchV2 } from './agent-chat-protocol-v2.js';
+import type {
+  AgentItemV2,
+  AgentPatchV2,
+  AgentSessionLiveStateV2,
+} from './agent-chat-protocol-v2.js';
 import type {
   ChatEvent,
   ChatEventSource,
@@ -18,6 +22,16 @@ type CompatAgentPatchV2 = AgentPatchV2 & {
 
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
   switch (event.type) {
+    case 'chat:session-status':
+      return [
+        {
+          type: 'agent-live-state-updated-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          live: liveStateFromSessionStatus(event),
+        },
+      ];
+
     case 'chat:turn-started':
       return [
         {
@@ -32,6 +46,42 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
             startedAt: event.timestamp,
           },
         },
+      ];
+
+    case 'chat:turn-completed':
+      return [
+        {
+          type: 'agent-turn-completed-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          status: turnStatusFromCompletionReason(event.reason),
+          completedAt: event.timestamp,
+          durationMs: event.durationMs,
+        },
+      ];
+
+    case 'chat:error':
+      return [
+        {
+          type: 'agent-error-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          message: event.message,
+        },
+        ...(event.turnId
+          ? [
+              {
+                type: 'agent-turn-completed-v2' as const,
+                sessionId: event.sessionId,
+                timestamp: event.timestamp,
+                turnId: event.turnId,
+                status: 'failed' as const,
+                completedAt: event.timestamp,
+                error: event.message,
+              },
+            ]
+          : []),
       ];
 
     case 'chat:text-delta':
@@ -107,6 +157,53 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
     default:
       return [];
   }
+}
+
+function liveStateFromSessionStatus(
+  event: Extract<ChatEvent, { type: 'chat:session-status' }>
+): Partial<AgentSessionLiveStateV2> {
+  switch (event.status) {
+    case 'active':
+      return {
+        status: 'working',
+        error: null,
+      };
+    case 'retry':
+      return {
+        status: 'waiting',
+        waitingOn: waitingOnFromSessionStatus(event.waitingOn),
+        error: event.error ?? null,
+      };
+    case 'error':
+      return {
+        status: 'error',
+        error: event.error ?? 'Agent session error',
+      };
+    case 'disconnected':
+    case 'idle':
+      return {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      };
+  }
+}
+
+function waitingOnFromSessionStatus(
+  waitingOn: Extract<ChatEvent, { type: 'chat:session-status' }>['waitingOn']
+): AgentSessionLiveStateV2['waitingOn'] {
+  if (waitingOn === 'user-input') return 'question';
+  return waitingOn ?? 'network';
+}
+
+function turnStatusFromCompletionReason(
+  reason: Extract<ChatEvent, { type: 'chat:turn-completed' }>['reason']
+): 'completed' | 'interrupted' | 'failed' {
+  if (reason === 'interrupted') return 'interrupted';
+  if (reason === 'failed' || reason === 'error') return 'failed';
+  return 'completed';
 }
 
 export function mapAgentPatchV2ToChatEvents(patch: AgentPatchV2): ChatEvent[] {

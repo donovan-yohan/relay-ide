@@ -81,6 +81,19 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      const text = payload.parts
+        .filter((part) => part && part.type === 'text')
+        .map((part) => part.text)
+        .join('');
+      if (text.includes('toast-error')) {
+        emitToastError();
+        return;
+      }
+      if (text.includes('retry-error')) {
+        emitRetryError();
+        return;
+      }
+
       emitTurn();
       setTimeout(() => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -193,6 +206,35 @@ function emitTurn() {
       properties: { sessionID: sessionId, status: { type: 'idle' } },
     });
   }, 100);
+}
+
+function emitToastError() {
+  broadcast({
+    type: 'session.status',
+    properties: { sessionID: sessionId, status: { type: 'busy' } },
+  });
+
+  setTimeout(() => {
+    broadcast({
+      type: 'tui.toast.show',
+      properties: {
+        sessionID: sessionId,
+        variant: 'error',
+        title: 'OpenCode',
+        message: 'stub toast failure',
+      },
+    });
+  }, 25);
+}
+
+function emitRetryError() {
+  broadcast({
+    type: 'session.status',
+    properties: {
+      sessionID: sessionId,
+      status: { type: 'retry', message: 'UnknownError' },
+    },
+  });
 }
 
 server.listen(port, '127.0.0.1', () => {

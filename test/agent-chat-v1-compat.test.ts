@@ -87,6 +87,88 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
+  it('maps v1 turn completion to a terminal v2 turn patch', () => {
+    const event: ChatEvent = {
+      type: 'chat:turn-completed',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'opencode',
+      turnId: 'turn-1',
+      reason: 'interrupted',
+      durationMs: 42,
+      toolCallCount: 0,
+      messageCount: 1,
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-turn-completed-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        status: 'interrupted',
+        completedAt: timestamp,
+        durationMs: 42,
+      },
+    ]);
+  });
+
+  it('maps v1 errors to v2 session and failed-turn patches', () => {
+    const event: ChatEvent = {
+      type: 'chat:error',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'opencode',
+      turnId: 'turn-1',
+      kind: 'unknown',
+      message: 'OpenCode failed',
+      retryable: true,
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-error-v2',
+        sessionId: 'session-1',
+        timestamp,
+        message: 'OpenCode failed',
+      },
+      {
+        type: 'agent-turn-completed-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        status: 'failed',
+        completedAt: timestamp,
+        error: 'OpenCode failed',
+      },
+    ]);
+  });
+
+  it('maps v1 idle status to a v2 idle live state', () => {
+    const event: ChatEvent = {
+      type: 'chat:session-status',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'opencode',
+      status: 'idle',
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-live-state-updated-v2',
+        sessionId: 'session-1',
+        timestamp,
+        live: {
+          status: 'idle',
+          activeTurnId: null,
+          waitingOn: null,
+          activeRequestIds: [],
+          error: null,
+        },
+      },
+    ]);
+  });
+
   it('maps v2 assistant message deltas back to v1 text deltas with preserved source for legacy UI', () => {
     const patch: AgentPatchV2 & { metadata: { source: 'opencode' } } = {
       type: 'agent-item-delta-v2',
