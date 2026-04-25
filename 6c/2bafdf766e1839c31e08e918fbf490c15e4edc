@@ -1,0 +1,25 @@
+server/protocol-adapters/mock-v2-adapter.ts
+  d5f97806ceac6a8f 70
+test/mock-v2-adapter.test.ts
+  d5f97806ceac6a8f 374-380,496-504
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "6c2bafdf766e1839c31e08e918fbf490c15e4edc",
+  "prompts": {
+    "d5f97806ceac6a8f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc575-6f50-77e2-b35f-f27236572155",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 18,
+      "total_deletions": 1,
+      "accepted_lines": 18,
+      "overriden_lines": 0
+    }
+  }
+}
