@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createAdapterV2 } from '../server/protocol-adapters/index.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter-v2.js';
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  type AgentPatchV2,
+} from '../shared/agent-chat-protocol-v2.js';
 
 const config: AdapterConfig = {
   cwd: '/tmp/repo',
@@ -79,8 +83,8 @@ describe('MockProtocolAdapterV2', () => {
 
     expect(patchTypes(patches)).toEqual([
       'agent-live-state-updated-v2',
-      'agent-item-started-v2',
       'agent-turn-started-v2',
+      'agent-item-started-v2',
       'agent-item-started-v2',
       'agent-item-delta-v2',
       'agent-item-updated-v2',
@@ -88,17 +92,17 @@ describe('MockProtocolAdapterV2', () => {
       'agent-live-state-updated-v2',
     ]);
     expect(patches[1]).toMatchObject({
-      type: 'agent-item-started-v2',
-      turnId: 'turn-1',
-      item: { type: 'userMessage', id: 'user-turn-1', text: 'hello' },
-    });
-    expect(patches[2]).toMatchObject({
       type: 'agent-turn-started-v2',
       turn: {
         id: 'turn-1',
         status: 'running',
         inputMessageId: 'user-turn-1',
       },
+    });
+    expect(patches[2]).toMatchObject({
+      type: 'agent-item-started-v2',
+      turnId: 'turn-1',
+      item: { type: 'userMessage', id: 'user-turn-1', text: 'hello' },
     });
     expect(patches[3]).toMatchObject({
       type: 'agent-item-started-v2',
@@ -129,6 +133,40 @@ describe('MockProtocolAdapterV2', () => {
       turnId: 'turn-1',
       status: 'completed',
     });
+  });
+
+  it('emits a happy-path patch stream that reduces to user and assistant items', async () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    await adapter.sendMessage({
+      turnId: 'turn-1',
+      content: 'hello',
+    });
+
+    const reduced = patches.reduce(
+      applyAgentPatchV2,
+      emptyAgentSessionV2({
+        id: 'session-1',
+        provider: 'mock',
+        cwd: '/tmp/repo',
+      })
+    );
+
+    expect(reduced.turns).toHaveLength(1);
+    expect(reduced.turns[0]?.items).toEqual([
+      expect.objectContaining({
+        type: 'userMessage',
+        id: 'user-turn-1',
+        text: 'hello',
+      }),
+      expect.objectContaining({
+        type: 'assistantMessage',
+        id: 'assistant-turn-1',
+        text: 'Mock v2 response complete.',
+      }),
+    ]);
   });
 
   it('queue scenario keeps active turn running and emits queued live state for the second message', async () => {

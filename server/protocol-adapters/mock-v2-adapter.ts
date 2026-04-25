@@ -217,6 +217,12 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     };
     let completionStatus: 'completed' | 'interrupted' | 'failed' = 'completed';
 
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turn,
+    });
     this.emitItemStarted(input.turnId, {
       type: 'userMessage',
       id: `user-${input.turnId}`,
@@ -230,12 +236,6 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
             })),
           }
         : {}),
-    });
-    this.emitPatch({
-      type: 'agent-turn-started-v2',
-      sessionId: this.sessionId,
-      timestamp: startedAt,
-      turn,
     });
 
     try {
