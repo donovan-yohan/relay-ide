@@ -270,3 +270,146 @@ describe('ClaudeProtocolAdapterV2 — thinking blocks', () => {
     });
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — tool_use blocks', () => {
+  function makeToolUse(
+    name: string,
+    input: Record<string, unknown>,
+    id = 'toolu_x'
+  ) {
+    return (
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name, input }] },
+      }) + '\n'
+    );
+  }
+
+  it('Bash → commandExecution item with exec- prefix', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(makeToolUse('Bash', { command: 'ls -la' }, 'toolu_b1'));
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'exec-toolu_b1',
+        command: 'ls -la',
+        output: '',
+        status: 'running',
+      },
+    });
+  });
+
+  it('Edit → fileChange item with file- prefix and paths', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(
+      makeToolUse('Edit', { file_path: 'src/foo.ts' }, 'toolu_e1')
+    );
+
+    const started = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'fileChange'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'file-toolu_e1',
+        paths: [{ path: 'src/foo.ts' }],
+        applyStatus: 'pending',
+      },
+    });
+  });
+
+  it('Write → fileChange', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(
+      makeToolUse(
+        'Write',
+        { file_path: 'src/bar.ts', content: 'x' },
+        'toolu_w1'
+      )
+    );
+
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' && p.item.type === 'fileChange'
+      )
+    ).toBeDefined();
+  });
+
+  it('MultiEdit → fileChange', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(
+      makeToolUse(
+        'MultiEdit',
+        { file_path: 'src/baz.ts', edits: [] },
+        'toolu_m1'
+      )
+    );
+
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' && p.item.type === 'fileChange'
+      )
+    ).toBeDefined();
+  });
+
+  it('Other tool → dynamicToolCall with namespace=claude and tool name', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(
+      makeToolUse('Read', { file_path: 'src/foo.ts' }, 'toolu_r1')
+    );
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'dynamicToolCall'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'tool-toolu_r1',
+        namespace: 'claude',
+        tool: 'Read',
+        arguments: { file_path: 'src/foo.ts' },
+        status: 'running',
+      },
+    });
+  });
+});
