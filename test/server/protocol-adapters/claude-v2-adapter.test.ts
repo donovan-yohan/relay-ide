@@ -954,3 +954,205 @@ describe('ClaudeProtocolAdapterV2 — stream_event partial messages', () => {
     ).toBeUndefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — tool_result blocks', () => {
+  function feed(
+    adapter: ClaudeProtocolAdapterV2,
+    fake: FakeChild,
+    line: string
+  ): void {
+    fake.stdout.write(line + '\n');
+  }
+  function toolUseLine(
+    name: string,
+    id: string,
+    input: Record<string, unknown>
+  ): string {
+    return JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id, name, input }],
+      },
+    });
+  }
+  function toolResultLine(
+    toolUseId: string,
+    content: unknown,
+    isError = false
+  ): string {
+    return JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content,
+            is_error: isError,
+          },
+        ],
+      },
+    });
+  }
+
+  it('Bash tool_result → output delta + commandExecution completed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-X';
+
+    feed(adapter, fake, toolUseLine('Bash', 'tu_b1', { command: 'pwd' }));
+    feed(adapter, fake, toolResultLine('tu_b1', '/tmp/proj'));
+
+    const delta = patches.find(
+      (p) =>
+        p.type === 'agent-item-delta-v2' &&
+        (p as { itemId: string }).itemId === 'exec-tu_b1'
+    );
+    expect(delta).toMatchObject({ delta: { output: '/tmp/proj' } });
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'commandExecution' &&
+        p.item.id === 'exec-tu_b1'
+    );
+    expect(updated).toMatchObject({
+      item: { command: 'pwd', output: '/tmp/proj', status: 'completed' },
+    });
+  });
+
+  it('Edit tool_result is_error → fileChange failed/applyStatus failed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-X';
+
+    feed(
+      adapter,
+      fake,
+      toolUseLine('Edit', 'tu_e1', {
+        file_path: 'src/foo.ts',
+        old_string: 'a',
+        new_string: 'b',
+      })
+    );
+    feed(
+      adapter,
+      fake,
+      toolResultLine('tu_e1', 'String not found in file', true)
+    );
+
+    const updated = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'fileChange'
+    );
+    expect(updated).toMatchObject({
+      item: { id: 'file-tu_e1', applyStatus: 'failed', status: 'failed' },
+    });
+  });
+
+  it('generic tool_result → dynamicToolCall completed with result', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-X';
+
+    feed(adapter, fake, toolUseLine('Read', 'tu_r1', { file_path: 'a.txt' }));
+    feed(adapter, fake, toolResultLine('tu_r1', 'file contents'));
+
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' && p.item.type === 'dynamicToolCall'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        id: 'tool-tu_r1',
+        tool: 'Read',
+        result: 'file contents',
+        status: 'completed',
+      },
+    });
+  });
+
+  it('tool_result content as array of {text} blocks → joined string', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-X';
+
+    feed(adapter, fake, toolUseLine('Bash', 'tu_arr', { command: 'echo hi' }));
+    feed(
+      adapter,
+      fake,
+      toolResultLine('tu_arr', [
+        { type: 'text', text: 'part1' },
+        { type: 'text', text: 'part2' },
+      ])
+    );
+
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' && p.item.type === 'commandExecution'
+    );
+    expect(updated).toMatchObject({ item: { output: 'part1part2' } });
+  });
+
+  it('tool_result with unknown tool_use_id is silently ignored', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-X';
+
+    feed(adapter, fake, toolResultLine('tu_unknown', 'whatever'));
+    expect(
+      patches.find((p) => p.type === 'agent-item-delta-v2')
+    ).toBeUndefined();
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-updated-v2' &&
+          p.item.type !== 'providerExtension'
+      )
+    ).toBeUndefined();
+  });
+
+  it('no-op when _currentTurnId is null', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    feed(adapter, fake, toolResultLine('tu_x', 'data'));
+    expect(
+      patches.find((p) => p.type === 'agent-item-delta-v2')
+    ).toBeUndefined();
+  });
+});

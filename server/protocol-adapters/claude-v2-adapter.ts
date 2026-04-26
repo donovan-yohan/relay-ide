@@ -444,8 +444,118 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
   }
 
-  private handleUserBlock(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.7
+  private handleUserBlock(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const message = obj['message'] as
+      | { content?: Array<Record<string, unknown>> }
+      | undefined;
+    for (const block of message?.content ?? []) {
+      if (block['type'] !== 'tool_result') continue;
+      this.handleToolResult(turnId, block);
+    }
+  }
+
+  private handleToolResult(
+    turnId: string,
+    block: Record<string, unknown>
+  ): void {
+    const toolUseId = String(block['tool_use_id'] ?? '');
+    const entry = this.toolUseRegistry.get(toolUseId);
+    if (entry === undefined) return;
+
+    const content = this.extractToolResultContent(block);
+    const isError = block['is_error'] === true;
+
+    const deltaField =
+      entry.discriminator === 'commandExecution'
+        ? 'output'
+        : entry.discriminator === 'fileChange'
+          ? 'patch'
+          : 'content';
+    this.emitPatch({
+      type: ITEM_DELTA,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      itemId: entry.itemId,
+      delta: { [deltaField]: content } as Record<string, string>,
+    });
+
+    this.emitPatch({
+      type: ITEM_UPDATED,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: this.buildToolUpdatedItem(entry, content, isError),
+    });
+  }
+
+  private extractToolResultContent(block: Record<string, unknown>): string {
+    const content = block['content'];
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((c) => {
+          if (typeof c === 'object' && c !== null && 'text' in c) {
+            return String((c as { text: unknown }).text ?? '');
+          }
+          return '';
+        })
+        .join('');
+    }
+    return '';
+  }
+
+  private buildToolUpdatedItem(
+    entry: {
+      itemId: string;
+      discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+      name: string;
+      input: Record<string, unknown>;
+    },
+    content: string,
+    isError: boolean
+  ): AgentItemV2 {
+    const status: 'completed' | 'failed' = isError ? 'failed' : 'completed';
+    const completedAt = this.now();
+    if (entry.discriminator === 'commandExecution') {
+      return {
+        type: 'commandExecution',
+        id: entry.itemId,
+        command: String(entry.input['command'] ?? ''),
+        output: content,
+        status,
+        completedAt,
+      };
+    }
+    if (entry.discriminator === 'fileChange') {
+      return {
+        type: 'fileChange',
+        id: entry.itemId,
+        paths: [
+          {
+            path: String(
+              entry.input['file_path'] ?? entry.input['filePath'] ?? ''
+            ),
+          },
+        ],
+        ...(content.length > 0 ? { patch: content } : {}),
+        applyStatus: isError ? 'failed' : 'applied',
+        status,
+        completedAt,
+      };
+    }
+    return {
+      type: 'dynamicToolCall',
+      id: entry.itemId,
+      namespace: 'claude',
+      tool: entry.name,
+      arguments: entry.input,
+      result: content,
+      status,
+      completedAt,
+    };
   }
 
   private handleStreamEvent(obj: Record<string, unknown>): void {
