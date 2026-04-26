@@ -1637,3 +1637,458 @@ describe('ClaudeProtocolAdapterV2 — control_request from claude', () => {
     expect(patches.length).toBe(before);
   });
 });
+
+function captureStdin(fake: FakeChild): string[] {
+  const writes: string[] = [];
+  const origWrite = fake.stdin.write.bind(fake.stdin);
+  // typed `as never` to satisfy overload variants
+  fake.stdin.write = ((chunk: unknown) => {
+    writes.push(
+      typeof chunk === 'string'
+        ? chunk
+        : Buffer.from(chunk as Buffer).toString('utf8')
+    );
+    return origWrite(chunk as never);
+  }) as never;
+  return writes;
+}
+
+describe('ClaudeProtocolAdapterV2 — sendMessage', () => {
+  it('throws if not connected', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    await expect(
+      adapter.sendMessage({ turnId: 't', content: 'hi' })
+    ).rejects.toThrow();
+  });
+
+  it('emits turn-started + userMessage + working live state', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'turn-X', content: 'hello' });
+
+    expect(
+      patches.find((p) => p.type === 'agent-turn-started-v2')
+    ).toMatchObject({
+      turn: { id: 'turn-X', status: 'running', inputMessageId: 'user-turn-X' },
+    });
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' && p.item.type === 'userMessage'
+      )
+    ).toMatchObject({
+      turnId: 'turn-X',
+      item: { id: 'user-turn-X', text: 'hello', status: 'completed' },
+    });
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-live-state-updated-v2' &&
+          p.live.status === 'working'
+      )
+    ).toBeDefined();
+  });
+
+  it('writes JSONL user message to claude stdin', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'hello' });
+    const stdinJSON = writes.join('').trim().split('\n').filter(Boolean);
+    expect(stdinJSON.length).toBeGreaterThan(0);
+    const parsed = JSON.parse(stdinJSON[stdinJSON.length - 1] as string);
+    expect(parsed).toMatchObject({
+      type: 'user',
+      message: { role: 'user', content: 'hello' },
+    });
+  });
+
+  it('resets per-turn state (blockIdx, blockIndexToItem, pendingMessageDelta) on new send', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'A', content: 'a' });
+    (adapter as unknown as { blockIdx: number }).blockIdx = 5;
+    (
+      adapter as unknown as { blockIndexToItem: Map<number, unknown> }
+    ).blockIndexToItem.set(99, {
+      itemId: 'x',
+      discriminator: 'assistantMessage',
+    } as never);
+    (
+      adapter as unknown as { pendingMessageDelta: { usage?: unknown } }
+    ).pendingMessageDelta.usage = { foo: 1 };
+    await adapter.sendMessage({ turnId: 'B', content: 'b' });
+    expect((adapter as unknown as { blockIdx: number }).blockIdx).toBe(0);
+    expect(
+      (adapter as unknown as { blockIndexToItem: Map<number, unknown> })
+        .blockIndexToItem.size
+    ).toBe(0);
+    expect(
+      (adapter as unknown as { pendingMessageDelta: { usage?: unknown } })
+        .pendingMessageDelta.usage
+    ).toBeUndefined();
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — interrupt', () => {
+  it('writes control_request{subtype:interrupt} to stdin', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'hi' });
+    writes.length = 0; // ignore prior writes
+    await adapter.interrupt({ turnId: 't' });
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    const parsed = JSON.parse(lines[lines.length - 1] as string);
+    expect(parsed).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'interrupt' },
+    });
+    expect(typeof parsed.request_id).toBe('string');
+  });
+
+  it('does not throw when no active turn', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    await expect(adapter.interrupt({})).resolves.toBeUndefined();
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — respondToApproval', () => {
+  it('writes control_response with mapped decision + emits approval updated', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-A';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'req-1',
+        request: {
+          subtype: 'can_use_tool',
+          tool_use_id: 'tu_x',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        },
+      }) + '\n'
+    );
+
+    writes.length = 0;
+    await adapter.respondToApproval({ requestId: 'req-1', decision: 'allow' });
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    const parsed = JSON.parse(lines[0] as string);
+    expect(parsed).toMatchObject({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: 'req-1',
+        response: { decision: 'allow' },
+      },
+    });
+
+    const updated = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'approval'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        id: 'approval-req-1',
+        decision: 'allow',
+        respondedBy: 'user',
+        status: 'completed',
+      },
+    });
+
+    const live = [...patches]
+      .reverse()
+      .find((p) => p.type === 'agent-live-state-updated-v2');
+    expect(live).toMatchObject({
+      live: { status: 'working', waitingOn: null },
+    });
+  });
+
+  it('maps "allow-always" → "allow_for_session"', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-A';
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'r2',
+        request: {
+          subtype: 'can_use_tool',
+          tool_use_id: 't',
+          tool_name: 'Bash',
+          tool_input: {},
+        },
+      }) + '\n'
+    );
+    writes.length = 0;
+    await adapter.respondToApproval({
+      requestId: 'r2',
+      decision: 'allow-always',
+    });
+    const parsed = JSON.parse(
+      writes.join('').trim().split('\n').filter(Boolean)[0] as string
+    );
+    expect(parsed.response.response).toMatchObject({
+      decision: 'allow_for_session',
+    });
+  });
+
+  it('maps "deny" → "deny"', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-A';
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'r3',
+        request: {
+          subtype: 'can_use_tool',
+          tool_use_id: 't',
+          tool_name: 'Bash',
+          tool_input: {},
+        },
+      }) + '\n'
+    );
+    writes.length = 0;
+    await adapter.respondToApproval({ requestId: 'r3', decision: 'deny' });
+    const parsed = JSON.parse(
+      writes.join('').trim().split('\n').filter(Boolean)[0] as string
+    );
+    expect(parsed.response.response).toMatchObject({ decision: 'deny' });
+  });
+
+  it('silent no-op when requestId not in pendingApprovals', async () => {
+    const fake = makeFakeChild();
+    const writes = captureStdin(fake);
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    writes.length = 0;
+    await adapter.respondToApproval({ requestId: 'nope', decision: 'allow' });
+    expect(writes.join('')).toBe('');
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — respondToInput', () => {
+  it('silent no-op (claude has no structured input flow)', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    await adapter.connect(baseConfig);
+    await expect(
+      adapter.respondToInput({ requestId: 'r', answers: {} })
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — result event', () => {
+  it('success result emits turn-completed with usage', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        duration_ms: 1234,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 10,
+        },
+      }) + '\n'
+    );
+
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(completed).toMatchObject({
+      turnId: 'turn-R',
+      status: 'completed',
+      durationMs: 1234,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 20,
+        cacheWriteTokens: 10,
+      },
+    });
+  });
+
+  it('uses pendingMessageDelta.usage when result has none', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+    (
+      adapter as unknown as {
+        pendingMessageDelta: { usage?: Record<string, number> };
+      }
+    ).pendingMessageDelta.usage = { input_tokens: 7, output_tokens: 3 };
+
+    fake.stdout.write(
+      JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 5 }) +
+        '\n'
+    );
+
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(completed).toMatchObject({
+      usage: { inputTokens: 7, outputTokens: 3 },
+    });
+  });
+
+  it('error subtype emits agent-error-v2 + turn-completed failed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        duration_ms: 2,
+      }) + '\n'
+    );
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toBeDefined();
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toMatchObject({ status: 'failed' });
+  });
+
+  it('clears per-turn state on result', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+    (adapter as unknown as { blockIdx: number }).blockIdx = 3;
+    (
+      adapter as unknown as { blockIndexToItem: Map<number, unknown> }
+    ).blockIndexToItem.set(0, {
+      itemId: 'x',
+      discriminator: 'assistantMessage',
+    } as never);
+
+    fake.stdout.write(
+      JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1 }) +
+        '\n'
+    );
+
+    expect(
+      (adapter as unknown as { _currentTurnId: string | null })._currentTurnId
+    ).toBeNull();
+    expect((adapter as unknown as { blockIdx: number }).blockIdx).toBe(0);
+    expect(
+      (adapter as unknown as { blockIndexToItem: Map<number, unknown> })
+        .blockIndexToItem.size
+    ).toBe(0);
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — process exit/error', () => {
+  it('non-zero exit emits error + turn-completed failed when turn active', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'hi' });
+
+    fake.emit('exit', 1, null);
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toBeDefined();
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toMatchObject({ status: 'failed' });
+  });
+
+  it('zero exit is silent (result event handles success)', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'hi' });
+
+    fake.emit('exit', 0, null);
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toBeUndefined();
+  });
+
+  it('error event emits error + turn-completed failed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'hi' });
+
+    fake.emit('error', new Error('ENOENT'));
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toMatchObject({
+      message: 'ENOENT',
+    });
+  });
+});

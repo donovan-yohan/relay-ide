@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import { spawn as defaultSpawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
 import type {
   AdapterConfig,
@@ -17,7 +18,6 @@ import type {
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { cleanEnv } from '../utils.js';
 
-const NOT_IMPLEMENTED = 'not implemented';
 const ITEM_STARTED = 'agent-item-started-v2' as const;
 const ITEM_UPDATED = 'agent-item-updated-v2' as const;
 const ITEM_DELTA = 'agent-item-delta-v2' as const;
@@ -150,20 +150,125 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     await this.connect(config);
   }
 
-  async sendMessage(_input: AgentSendMessageInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+  private writeStdin(obj: Record<string, unknown>): void {
+    if (this.process?.stdin?.writable !== true) return;
+    this.process.stdin.write(JSON.stringify(obj) + '\n');
+  }
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    if (this._status !== 'connected') {
+      throw new Error('Cannot send message before connect');
+    }
+
+    this._currentTurnId = input.turnId;
+    this.blockIdx = 0;
+    this.blockIndexToItem.clear();
+    this.pendingMessageDelta = {};
+
+    const startedAt = this.now();
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `user-${input.turnId}`,
+        items: [],
+        startedAt,
+      },
+    });
+    this.emitPatch({
+      type: ITEM_STARTED,
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turnId: input.turnId,
+      item: {
+        type: 'userMessage',
+        id: `user-${input.turnId}`,
+        text: input.content,
+        status: 'completed',
+        startedAt,
+        completedAt: startedAt,
+      },
+    });
+    this.emitLiveState({
+      status: 'working',
+      activeTurnId: input.turnId,
+      waitingOn: null,
+      error: null,
+    });
+
+    this.writeStdin({
+      type: 'user',
+      message: { role: 'user', content: input.content },
+    });
   }
 
   async interrupt(_input: AgentInterruptInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+    this.writeStdin({
+      type: 'control_request',
+      request_id: randomUUID(),
+      request: { subtype: 'interrupt' },
+    });
   }
 
-  async respondToApproval(_input: AgentApprovalResponseInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+  async respondToApproval(input: AgentApprovalResponseInputV2): Promise<void> {
+    const entry = this.pendingApprovals.get(input.requestId);
+    if (entry === undefined) return;
+    this.pendingApprovals.delete(input.requestId);
+
+    const decisionMap: Record<
+      AgentApprovalResponseInputV2['decision'],
+      string
+    > = {
+      allow: 'allow',
+      'allow-always': 'allow_for_session',
+      deny: 'deny',
+    };
+
+    this.writeStdin({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: entry.claudeRequestId,
+        response: { decision: decisionMap[input.decision] },
+      },
+    });
+
+    // Emit approval item updated.
+    const turnId = this._currentTurnId ?? '';
+    if (turnId !== '') {
+      this.emitPatch({
+        type: ITEM_UPDATED,
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        turnId,
+        item: {
+          type: 'approval',
+          id: `approval-${input.requestId}`,
+          requestId: input.requestId,
+          kind: 'permission',
+          description: '',
+          target: '',
+          decision: input.decision,
+          respondedBy: 'user',
+          status: 'completed',
+          completedAt: this.now(),
+        },
+      });
+    }
+
+    this.emitLiveState({
+      status: 'working',
+      activeTurnId: this._currentTurnId,
+      waitingOn: null,
+      activeRequestIds: [],
+    });
   }
 
   async respondToInput(_input: AgentInputResponseInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+    // Claude has no structured input flow; intentionally no-op.
   }
 
   private buildSpawnArgs(config: AdapterConfig): string[] {
@@ -854,8 +959,80 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
   }
 
-  private handleResult(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.10
+  private handleResult(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+
+    const subtype = String(obj['subtype'] ?? 'success');
+    const isError = subtype !== 'success' || obj['is_error'] === true;
+    const durationMs =
+      typeof obj['duration_ms'] === 'number' ? obj['duration_ms'] : 0;
+
+    // Prefer result.usage; fall back to cached pendingMessageDelta.usage.
+    const usageRaw =
+      (obj['usage'] as Record<string, unknown> | undefined) ??
+      (this.pendingMessageDelta.usage as unknown as
+        | Record<string, unknown>
+        | undefined);
+    const usage = usageRaw !== undefined ? this.mapUsage(usageRaw) : undefined;
+
+    if (isError) {
+      this.emitPatch({
+        type: 'agent-error-v2',
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        message: typeof obj['error'] === 'string' ? obj['error'] : subtype,
+        turnId,
+      });
+    }
+
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: isError ? 'failed' : 'completed',
+      completedAt: this.now(),
+      durationMs,
+      ...(usage !== undefined ? { usage } : {}),
+      ...(isError ? { error: subtype } : {}),
+    });
+
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.blockIndexToItem.clear();
+    this.pendingMessageDelta = {};
+
+    this.emitLiveState({
+      status: 'idle',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      error: null,
+    });
+  }
+
+  private mapUsage(usage: Record<string, unknown>): {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } {
+    const result: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    } = {};
+    if (typeof usage['input_tokens'] === 'number')
+      result.inputTokens = usage['input_tokens'];
+    if (typeof usage['output_tokens'] === 'number')
+      result.outputTokens = usage['output_tokens'];
+    if (typeof usage['cache_read_input_tokens'] === 'number')
+      result.cacheReadTokens = usage['cache_read_input_tokens'];
+    if (typeof usage['cache_creation_input_tokens'] === 'number')
+      result.cacheWriteTokens = usage['cache_creation_input_tokens'];
+    return result;
   }
 
   private handleHookEvent(obj: Record<string, unknown>): void {
@@ -1117,13 +1294,60 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   private handleProcessExit(
-    _code: number | null,
+    code: number | null,
     _signal: NodeJS.Signals | null
   ): void {
-    // Filled in Task 1.10
+    this.process = null;
+    if (code === 0 || code === null) return;
+    if (this._currentTurnId === null) return;
+    const turnId = this._currentTurnId;
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      message: `claude exited with code ${code}`,
+      turnId,
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: 'failed',
+      completedAt: this.now(),
+      error: `exit code ${code}`,
+    });
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.blockIndexToItem.clear();
+    this.pendingMessageDelta = {};
+    this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
   }
 
-  private handleProcessError(_err: Error): void {
-    // Filled in Task 1.10
+  private handleProcessError(err: Error): void {
+    this.process = null;
+    if (this._currentTurnId === null) return;
+    const turnId = this._currentTurnId;
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      message: err.message,
+      turnId,
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: 'failed',
+      completedAt: this.now(),
+      error: err.message,
+    });
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.blockIndexToItem.clear();
+    this.pendingMessageDelta = {};
+    this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
   }
 }
