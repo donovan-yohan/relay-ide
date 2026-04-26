@@ -2060,7 +2060,7 @@ describe('ClaudeProtocolAdapterV2 — process exit/error', () => {
     ).toMatchObject({ status: 'failed' });
   });
 
-  it('zero exit is silent (result event handles success)', async () => {
+  it('zero exit WITHOUT active turn is silent (result event handles success)', async () => {
     const fake = makeFakeChild();
     const adapter = new ClaudeProtocolAdapterV2({
       spawn: vi.fn(() => fake as unknown as ChildProcess),
@@ -2068,11 +2068,16 @@ describe('ClaudeProtocolAdapterV2 — process exit/error', () => {
     const patches: AgentPatchV2[] = [];
     adapter.onPatch((p) => patches.push(p));
     await adapter.connect(baseConfig);
-    await adapter.sendMessage({ turnId: 't', content: 'hi' });
+    // No active turn — simulate result arriving before exit clears _currentTurnId
+    // by not calling sendMessage at all.
 
     fake.emit('exit', 0, null);
 
+    // No turn active → no error or turn-completed emitted
     expect(patches.find((p) => p.type === 'agent-error-v2')).toBeUndefined();
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toBeUndefined();
   });
 
   it('error event emits error + turn-completed failed', async () => {
@@ -2090,5 +2095,308 @@ describe('ClaudeProtocolAdapterV2 — process exit/error', () => {
     expect(patches.find((p) => p.type === 'agent-error-v2')).toMatchObject({
       message: 'ENOENT',
     });
+  });
+
+  // B1: clean exit (code 0) WITH active turn → emits failed turn-completed + error
+  it('B1: zero exit WITH active turn emits failed turn-completed + error patch', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'turn-b1', content: 'hi' });
+
+    fake.emit('exit', 0, null);
+
+    const errorPatch = patches.find((p) => p.type === 'agent-error-v2');
+    expect(errorPatch).toBeDefined();
+    expect(errorPatch).toMatchObject({
+      message: 'claude exited before result',
+    });
+
+    const completedPatch = patches.find(
+      (p) => p.type === 'agent-turn-completed-v2'
+    );
+    expect(completedPatch).toMatchObject({
+      status: 'failed',
+      turnId: 'turn-b1',
+    });
+
+    // turn state cleared
+    expect(
+      (adapter as unknown as { _currentTurnId: string | null })._currentTurnId
+    ).toBeNull();
+  });
+
+  // B1: null exit code WITH active turn → also treated as premature
+  it('B1: null exit code WITH active turn emits failed turn-completed + error patch', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'turn-b1b', content: 'hi' });
+
+    fake.emit('exit', null, null);
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toMatchObject({
+      message: 'claude exited before result',
+    });
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toMatchObject({ status: 'failed' });
+  });
+
+  // B2: process error BEFORE any sendMessage → status becomes 'error', not 'connected'
+  it('B2: process error before sendMessage sets status=error and emits error live state', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    // No sendMessage — _currentTurnId is null
+
+    fake.emit('error', new Error('ENOENT'));
+
+    expect(adapter.status).toBe('error');
+    const livePatches = patches.filter(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    const errorLive = livePatches.find(
+      (p) => (p as { live?: { status?: string } }).live?.status === 'error'
+    );
+    expect(errorLive).toBeDefined();
+    // No turn-level patches when no turn was active
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toBeUndefined();
+  });
+
+  // B2: non-zero exit before sendMessage → status becomes 'error'
+  it('B2: non-zero exit before sendMessage sets status=error', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    // No sendMessage
+
+    fake.emit('exit', 1, null);
+
+    expect(adapter.status).toBe('error');
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — disconnect cleanup (B3)', () => {
+  it('B3: disconnect clears pendingApprovals, toolUseRegistry, _providerSessionId', async () => {
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => makeFakeChild() as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+
+    // Seed per-session state via internal access
+    (
+      adapter as unknown as { pendingApprovals: Map<string, unknown> }
+    ).pendingApprovals.set('req-1', { claudeRequestId: 'req-1' });
+    (
+      adapter as unknown as {
+        toolUseRegistry: Map<string, unknown>;
+      }
+    ).toolUseRegistry.set('tu-1', {
+      itemId: 'exec-tu-1',
+      discriminator: 'commandExecution',
+      name: 'Bash',
+      input: {},
+    });
+    (adapter as unknown as { _providerSessionId: string })._providerSessionId =
+      'claude-session-xyz';
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-active';
+    (adapter as unknown as { blockIdx: number }).blockIdx = 5;
+    (adapter as unknown as { streamBuffer: string }).streamBuffer = 'partial';
+
+    await adapter.disconnect();
+
+    expect(
+      (adapter as unknown as { pendingApprovals: Map<string, unknown> })
+        .pendingApprovals.size
+    ).toBe(0);
+    expect(
+      (adapter as unknown as { toolUseRegistry: Map<string, unknown> })
+        .toolUseRegistry.size
+    ).toBe(0);
+    expect(
+      (adapter as unknown as { _providerSessionId: string | null })
+        ._providerSessionId
+    ).toBeNull();
+    expect(
+      (adapter as unknown as { _currentTurnId: string | null })._currentTurnId
+    ).toBeNull();
+    expect((adapter as unknown as { blockIdx: number }).blockIdx).toBe(0);
+    expect((adapter as unknown as { streamBuffer: string }).streamBuffer).toBe(
+      ''
+    );
+  });
+
+  it('B3: reconnect after disconnect starts fresh (no stale approvals)', async () => {
+    const fake1 = makeFakeChild();
+    const fake2 = makeFakeChild();
+    let callCount = 0;
+    const spawn = vi.fn(() => {
+      return (callCount++ === 0 ? fake1 : fake2) as unknown as ChildProcess;
+    });
+    const adapter = new ClaudeProtocolAdapterV2({ spawn });
+    await adapter.connect(baseConfig);
+
+    // Seed stale approval
+    (
+      adapter as unknown as { pendingApprovals: Map<string, unknown> }
+    ).pendingApprovals.set('stale-req', { claudeRequestId: 'stale-req' });
+
+    await adapter.reconnect();
+
+    expect(
+      (adapter as unknown as { pendingApprovals: Map<string, unknown> })
+        .pendingApprovals.size
+    ).toBe(0);
+    expect(adapter.status).toBe('connected');
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — PostToolUse output preservation (B6)', () => {
+  it('B6: tool_result output preserved when PostToolUse has no output field', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'turn-b6', content: 'run it' });
+
+    // 1. assistant block: tool_use Bash
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-b6',
+              name: 'Bash',
+              input: { command: 'echo hello' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    // 2. user block: tool_result with rich output
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu-b6',
+              content: 'hello world',
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    // 3. hook event: PostToolUse WITHOUT output field (simulates hook that omits output)
+    fake.stdout.write(
+      JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        hook_event_payload: {
+          tool_name: 'Bash',
+          tool_use_id: 'tu-b6',
+          exit_code: 0,
+          duration_ms: 42,
+          // intentionally no 'output' field
+        },
+      }) + '\n'
+    );
+
+    // Find all item-updated patches for the exec item
+    const execItemId = 'exec-tu-b6';
+    const updatedPatches = patches.filter(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        'item' in p &&
+        (p as { item?: { id?: string } }).item?.id === execItemId
+    );
+
+    // The LAST updated patch must preserve the tool_result output, not overwrite with ''
+    const lastUpdated = updatedPatches[updatedPatches.length - 1];
+    expect(lastUpdated).toBeDefined();
+    expect((lastUpdated as { item?: { output?: string } }).item?.output).toBe(
+      'hello world'
+    );
+  });
+
+  it('B6: dynamicToolCall result omitted when PostToolUse has no output', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 'turn-b6b', content: 'call tool' });
+
+    // 1. assistant: tool_use for a custom tool
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-dyn',
+              name: 'CustomTool',
+              input: { param: 'value' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    // 2. PostToolUse WITHOUT output
+    fake.stdout.write(
+      JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        hook_event_payload: {
+          tool_name: 'CustomTool',
+          tool_use_id: 'tu-dyn',
+          // no output
+        },
+      }) + '\n'
+    );
+
+    const toolItemId = 'tool-tu-dyn';
+    const updatedPatches = patches.filter(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        'item' in p &&
+        (p as { item?: { id?: string } }).item?.id === toolItemId
+    );
+    const lastUpdated = updatedPatches[updatedPatches.length - 1];
+    expect(lastUpdated).toBeDefined();
+    // result field should be absent (not set to '')
+    expect(
+      (lastUpdated as { item?: { result?: unknown } }).item
+    ).not.toHaveProperty('result');
   });
 });

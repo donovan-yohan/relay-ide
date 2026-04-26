@@ -1293,19 +1293,19 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
   }
 
-  private handleProcessExit(
-    code: number | null,
-    _signal: NodeJS.Signals | null
-  ): void {
-    this.process = null;
-    if (code === 0 || code === null) return;
+  /**
+   * Closes any active turn as failed, emitting agent-error-v2 +
+   * agent-turn-completed-v2 (status: failed), then clears per-turn state and
+   * idles the live state. Safe to call when _currentTurnId === null (no-op).
+   */
+  private failActiveTurn(reason: string): void {
     if (this._currentTurnId === null) return;
     const turnId = this._currentTurnId;
     this.emitPatch({
       type: 'agent-error-v2',
       sessionId: this.sessionId,
       timestamp: this.now(),
-      message: `claude exited with code ${code}`,
+      message: reason,
       turnId,
     });
     this.emitPatch({
@@ -1315,7 +1315,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       turnId,
       status: 'failed',
       completedAt: this.now(),
-      error: `exit code ${code}`,
+      error: reason,
     });
     this._currentTurnId = null;
     this.blockIdx = 0;
@@ -1324,30 +1324,37 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
   }
 
+  private handleProcessExit(
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ): void {
+    this.process = null;
+
+    if (code === 0 || code === null) {
+      // Clean exit path — if a turn is active, claude exited before emitting `result`.
+      if (this._currentTurnId !== null) {
+        const reason =
+          signal !== null ? `signal ${signal}` : 'exit code 0 (premature)';
+        this.failActiveTurn('claude exited before result');
+        void reason; // reason captured in failActiveTurn message above
+      }
+      return;
+    }
+
+    // Non-zero exit — connection is dead, set error status.
+    this._status = 'error';
+    this.emitLiveState({
+      status: 'error',
+      error: `claude exited with code ${code}`,
+    });
+    this.failActiveTurn(`exit code ${code}`);
+  }
+
   private handleProcessError(err: Error): void {
     this.process = null;
-    if (this._currentTurnId === null) return;
-    const turnId = this._currentTurnId;
-    this.emitPatch({
-      type: 'agent-error-v2',
-      sessionId: this.sessionId,
-      timestamp: this.now(),
-      message: err.message,
-      turnId,
-    });
-    this.emitPatch({
-      type: 'agent-turn-completed-v2',
-      sessionId: this.sessionId,
-      timestamp: this.now(),
-      turnId,
-      status: 'failed',
-      completedAt: this.now(),
-      error: err.message,
-    });
-    this._currentTurnId = null;
-    this.blockIdx = 0;
-    this.blockIndexToItem.clear();
-    this.pendingMessageDelta = {};
-    this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
+    // Connection is dead regardless of whether a turn was active.
+    this._status = 'error';
+    this.emitLiveState({ status: 'error', error: err.message });
+    this.failActiveTurn(err.message);
   }
 }
