@@ -47,7 +47,6 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private _currentTurnId: string | null = null;
   private blockIdx = 0;
   private streamBuffer = '';
-  private startedItemIds = new Set<string>();
 
   get status(): AdapterStatus {
     return this._status;
