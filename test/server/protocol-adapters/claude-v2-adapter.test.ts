@@ -95,3 +95,52 @@ describe('ClaudeProtocolAdapterV2 — connect lifecycle', () => {
     expect(patches[0]?.sessionId).toBe('custom-id');
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — stream-json buffering', () => {
+  it('ignores partial lines until newline arrives', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-1';
+
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle('{"type":"assistant","mess'); // partial — no patches yet
+    const beforeCount = patches.length;
+    handle('age":{"content":[{"type":"text","text":"hi"}]}}\n');
+    expect(patches.length).toBeGreaterThan(beforeCount);
+  });
+
+  it('drops malformed JSON lines without throwing', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-1';
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    expect(() => handle('not-json\n{"type":"unknown"}\n')).not.toThrow();
+  });
+
+  it('routes unknown stream-json types to providerExtension', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-1';
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle('{"type":"system","subtype":"init"}\n');
+    const ext = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension'
+    );
+    expect(ext).toBeDefined();
+  });
+});
