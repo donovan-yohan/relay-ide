@@ -1187,13 +1187,18 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
     let item: AgentItemV2;
     if (entry.discriminator === 'commandExecution') {
+      // If PostToolUse doesn't carry output, the tool_result handler already
+      // emitted a complete item with the real output. Skip this emission to
+      // avoid clobbering that content. (Phase 1 tradeoff: exitCode/durationMs
+      // are lost in this rare path — Phase 2 can introduce merge semantics.)
+      if (typeof payload['output'] !== 'string') return;
       const exitCodeRaw = payload['exit_code'];
       const durationRaw = payload['duration_ms'];
       item = {
         type: 'commandExecution',
         id: entry.itemId,
         command: String(entry.input['command'] ?? ''),
-        output: String(payload['output'] ?? ''),
+        output: payload['output'],
         ...(typeof exitCodeRaw === 'number' ? { exitCode: exitCodeRaw } : {}),
         ...(typeof durationRaw === 'number' ? { durationMs: durationRaw } : {}),
         status,
@@ -1221,8 +1226,8 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         namespace: 'claude',
         tool: entry.name,
         arguments: entry.input,
-        ...(payload['output'] !== undefined
-          ? { result: String(payload['output']) }
+        ...(typeof payload['output'] === 'string'
+          ? { result: payload['output'] }
           : {}),
         status,
         completedAt,
