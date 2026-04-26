@@ -139,6 +139,15 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       this.process = null;
     }
     this._status = 'disconnected';
+    // Clear all per-session state so reconnect starts fresh.
+    this.pendingApprovals.clear();
+    this.toolUseRegistry.clear();
+    this.blockIndexToItem.clear();
+    this.pendingMessageDelta = {};
+    this._providerSessionId = null;
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.streamBuffer = '';
   }
 
   async reconnect(): Promise<void> {
@@ -969,11 +978,9 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       typeof obj['duration_ms'] === 'number' ? obj['duration_ms'] : 0;
 
     // Prefer result.usage; fall back to cached pendingMessageDelta.usage.
-    const usageRaw =
+    const usageRaw: Record<string, unknown> | undefined =
       (obj['usage'] as Record<string, unknown> | undefined) ??
-      (this.pendingMessageDelta.usage as unknown as
-        | Record<string, unknown>
-        | undefined);
+      this.pendingMessageDelta.usage;
     const usage = usageRaw !== undefined ? this.mapUsage(usageRaw) : undefined;
 
     if (isError) {
