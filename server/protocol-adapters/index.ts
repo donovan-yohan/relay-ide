@@ -2,6 +2,7 @@ import type { ProtocolAdapter } from '../protocol-adapter.js';
 import type { ProtocolAdapterV2 } from '../protocol-adapter-v2.js';
 import { MockProtocolAdapter } from './mock-adapter.js';
 import { MockProtocolAdapterV2 } from './mock-v2-adapter.js';
+import { ClaudeProtocolAdapterV2 } from './claude-v2-adapter.js';
 import { ClaudeProtocolAdapter } from './claude-adapter.js';
 import { CodexProtocolAdapter } from './codex-adapter.js';
 import { OpenCodeProtocolAdapter } from './opencode-adapter.js';
@@ -29,6 +30,7 @@ export function createAdapter(agentType: string): ProtocolAdapter {
 
 export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
   mock: () => new MockProtocolAdapterV2(),
+  claude: () => new ClaudeProtocolAdapterV2(),
 };
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
