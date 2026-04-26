@@ -1156,3 +1156,299 @@ describe('ClaudeProtocolAdapterV2 — tool_result blocks', () => {
     ).toBeUndefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — hook events embedded in stream', () => {
+  function hookLine(
+    eventName: string,
+    payload: Record<string, unknown>
+  ): string {
+    return (
+      JSON.stringify({
+        hook_event_name: eventName,
+        hook_event_payload: payload,
+      }) + '\n'
+    );
+  }
+
+  it('PreToolUse for new tool emits started; for tool already registered → no-op', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    // Case A: tool seen via assistant block FIRST, then PreToolUse hook is dedup'd.
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_dup',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+    const before = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    ).length;
+    fake.stdout.write(
+      hookLine('PreToolUse', {
+        tool_name: 'Bash',
+        tool_use_id: 'tu_dup',
+        tool_input: { command: 'ls' },
+      })
+    );
+    const after = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    ).length;
+    expect(after).toBe(before); // no new started
+
+    // Case B: PreToolUse for tool NOT in registry emits new started.
+    fake.stdout.write(
+      hookLine('PreToolUse', {
+        tool_name: 'Bash',
+        tool_use_id: 'tu_new',
+        tool_input: { command: 'pwd' },
+      })
+    );
+    const cmdItems = patches.filter(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    );
+    expect(cmdItems.find((p) => p.item.id === 'exec-tu_new')).toBeDefined();
+  });
+
+  it('PostToolUse Bash → commandExecution updated with output + exit_code + duration', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_p',
+              name: 'Bash',
+              input: { command: 'date' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    fake.stdout.write(
+      hookLine('PostToolUse', {
+        tool_name: 'Bash',
+        tool_use_id: 'tu_p',
+        output: 'Sat Apr 26 10:00:00',
+        exit_code: 0,
+        duration_ms: 25,
+      })
+    );
+
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'commandExecution' &&
+        p.item.id === 'exec-tu_p'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        command: 'date',
+        output: 'Sat Apr 26 10:00:00',
+        exitCode: 0,
+        durationMs: 25,
+        status: 'completed',
+      },
+    });
+  });
+
+  it('PostToolUse with error → fileChange failed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_ed',
+              name: 'Edit',
+              input: { file_path: 'src/x.ts' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    fake.stdout.write(
+      hookLine('PostToolUse', {
+        tool_name: 'Edit',
+        tool_use_id: 'tu_ed',
+        error: 'String not found',
+      })
+    );
+
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'fileChange' &&
+        p.item.id === 'file-tu_ed'
+    );
+    expect(updated).toMatchObject({
+      item: { applyStatus: 'failed', status: 'failed' },
+    });
+  });
+
+  it('PostToolUse for EnterPlanMode → plan item started with proposed plan', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(
+      hookLine('PostToolUse', {
+        tool_name: 'EnterPlanMode',
+        plan: 'Step 1: do X\nStep 2: do Y',
+      })
+    );
+
+    const planItem = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'plan'
+    );
+    expect(planItem).toMatchObject({
+      item: { text: 'Step 1: do X\nStep 2: do Y', approvalState: 'pending' },
+    });
+  });
+
+  it('Notification permission_prompt → approval item + waiting live state', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(
+      hookLine('Notification', {
+        type: 'permission_prompt',
+        request_id: 'req-abc',
+        description: 'Allow Bash command?',
+        target: 'rm -rf /',
+      })
+    );
+
+    const approval = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
+    );
+    expect(approval).toMatchObject({
+      item: {
+        id: 'approval-req-abc',
+        requestId: 'req-abc',
+        kind: 'permission',
+        target: 'rm -rf /',
+      },
+    });
+    const live = [...patches]
+      .reverse()
+      .find((p) => p.type === 'agent-live-state-updated-v2');
+    expect(live).toMatchObject({
+      live: { status: 'waiting', waitingOn: 'approval' },
+    });
+  });
+
+  it('Stop hook emits idle live state', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(hookLine('Stop', {}));
+
+    const lives = patches.filter(
+      (p) => p.type === 'agent-live-state-updated-v2'
+    );
+    expect(lives[lives.length - 1]).toMatchObject({ live: { status: 'idle' } });
+  });
+
+  it('unknown hook event → providerExtension', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-H';
+
+    fake.stdout.write(hookLine('SubagentStop', { foo: 'bar' }));
+
+    const ext = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension'
+    );
+    expect(ext).toBeDefined();
+  });
+
+  it('hook event no-ops when _currentTurnId is null', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    const before = patches.length;
+    fake.stdout.write(
+      hookLine('PreToolUse', { tool_name: 'Bash', tool_use_id: 'tu_orphan' })
+    );
+    expect(patches.length).toBe(before);
+  });
+});

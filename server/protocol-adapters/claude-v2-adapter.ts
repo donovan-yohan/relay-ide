@@ -806,8 +806,242 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     // Filled in Task 1.10
   }
 
-  private handleHookEvent(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.8
+  private handleHookEvent(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const eventName = obj['hook_event_name'];
+    const payload = (obj['hook_event_payload'] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    switch (eventName) {
+      case 'PreToolUse':
+        this.handlePreToolUse(turnId, payload);
+        break;
+      case 'PostToolUse':
+        this.handlePostToolUse(turnId, payload);
+        break;
+      case 'Notification':
+        this.handleNotification(turnId, payload);
+        break;
+      case 'Stop':
+        this.emitLiveState({
+          status: 'idle',
+          activeTurnId: turnId,
+          waitingOn: null,
+        });
+        break;
+      default:
+        this.emitProviderExtension(obj);
+    }
+  }
+
+  private handlePreToolUse(
+    turnId: string,
+    payload: Record<string, unknown>
+  ): void {
+    const toolUseId = String(
+      payload['tool_use_id'] ?? payload['tool_call_id'] ?? ''
+    );
+    if (toolUseId === '') return;
+    // Dedup: if assistant block already emitted, hook is redundant.
+    if (this.toolUseRegistry.has(toolUseId)) return;
+
+    const toolName = String(payload['tool_name'] ?? 'unknown');
+    const input = (payload['tool_input'] ?? payload['input'] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    let item: AgentItemV2;
+    let discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+    if (toolName === 'Bash') {
+      discriminator = 'commandExecution';
+      item = {
+        type: 'commandExecution',
+        id: `exec-${toolUseId}`,
+        command: String(input['command'] ?? ''),
+        output: '',
+        status: 'running',
+        startedAt: this.now(),
+      };
+    } else if (
+      toolName === 'Edit' ||
+      toolName === 'Write' ||
+      toolName === 'MultiEdit'
+    ) {
+      discriminator = 'fileChange';
+      item = {
+        type: 'fileChange',
+        id: `file-${toolUseId}`,
+        paths: [
+          { path: String(input['file_path'] ?? input['filePath'] ?? '') },
+        ],
+        applyStatus: 'pending',
+        status: 'running',
+        startedAt: this.now(),
+      };
+    } else {
+      discriminator = 'dynamicToolCall';
+      item = {
+        type: 'dynamicToolCall',
+        id: `tool-${toolUseId}`,
+        namespace: 'claude',
+        tool: toolName,
+        arguments: input,
+        status: 'running',
+        startedAt: this.now(),
+      };
+    }
+
+    this.toolUseRegistry.set(toolUseId, {
+      itemId: item.id,
+      discriminator,
+      name: toolName,
+      input,
+    });
+    this.emitPatch({
+      type: ITEM_STARTED,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item,
+    });
+  }
+
+  private handlePostToolUse(
+    turnId: string,
+    payload: Record<string, unknown>
+  ): void {
+    const toolName = String(payload['tool_name'] ?? '');
+
+    // EnterPlanMode → plan item (claude's plan-mode trigger)
+    if (toolName === 'EnterPlanMode') {
+      const planText = String(payload['plan'] ?? '');
+      const planId = `plan-${turnId}-${Date.now()}`;
+      this.emitPatch({
+        type: ITEM_STARTED,
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        turnId,
+        item: {
+          type: 'plan',
+          id: planId,
+          text: planText,
+          approvalState: 'pending',
+          status: 'running',
+          startedAt: this.now(),
+        },
+      });
+      return;
+    }
+
+    const toolUseId = String(
+      payload['tool_use_id'] ?? payload['tool_call_id'] ?? ''
+    );
+    const entry = this.toolUseRegistry.get(toolUseId);
+    if (entry === undefined) return;
+
+    const errorVal = payload['error'];
+    const isError =
+      errorVal !== undefined && errorVal !== null && errorVal !== false;
+    const completedAt = this.now();
+    const status: 'completed' | 'failed' = isError ? 'failed' : 'completed';
+
+    let item: AgentItemV2;
+    if (entry.discriminator === 'commandExecution') {
+      const exitCodeRaw = payload['exit_code'];
+      const durationRaw = payload['duration_ms'];
+      item = {
+        type: 'commandExecution',
+        id: entry.itemId,
+        command: String(entry.input['command'] ?? ''),
+        output: String(payload['output'] ?? ''),
+        ...(typeof exitCodeRaw === 'number' ? { exitCode: exitCodeRaw } : {}),
+        ...(typeof durationRaw === 'number' ? { durationMs: durationRaw } : {}),
+        status,
+        completedAt,
+      };
+    } else if (entry.discriminator === 'fileChange') {
+      item = {
+        type: 'fileChange',
+        id: entry.itemId,
+        paths: [
+          {
+            path: String(
+              entry.input['file_path'] ?? entry.input['filePath'] ?? ''
+            ),
+          },
+        ],
+        applyStatus: isError ? 'failed' : 'applied',
+        status,
+        completedAt,
+      };
+    } else {
+      item = {
+        type: 'dynamicToolCall',
+        id: entry.itemId,
+        namespace: 'claude',
+        tool: entry.name,
+        arguments: entry.input,
+        ...(payload['output'] !== undefined
+          ? { result: String(payload['output']) }
+          : {}),
+        status,
+        completedAt,
+      };
+    }
+
+    this.emitPatch({
+      type: ITEM_UPDATED,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item,
+    });
+  }
+
+  private handleNotification(
+    turnId: string,
+    payload: Record<string, unknown>
+  ): void {
+    const isPermission =
+      payload['type'] === 'permission_prompt' ||
+      payload['permission'] !== undefined;
+    if (!isPermission) {
+      this.emitProviderExtension({
+        hook_event_name: 'Notification',
+        hook_event_payload: payload,
+      });
+      return;
+    }
+    const requestId = String(
+      payload['request_id'] ?? payload['requestId'] ?? `req-${Date.now()}`
+    );
+    const itemId = `approval-${requestId}`;
+    this.emitPatch({
+      type: ITEM_STARTED,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'approval',
+        id: itemId,
+        requestId,
+        kind: 'permission',
+        description: String(payload['description'] ?? ''),
+        target: String(payload['target'] ?? ''),
+        status: 'pending',
+        startedAt: this.now(),
+      },
+    });
+    this.emitLiveState({
+      status: 'waiting',
+      activeTurnId: turnId,
+      waitingOn: 'approval',
+      activeRequestIds: [requestId],
+    });
   }
 
   private emitProviderExtension(obj: Record<string, unknown>): void {
