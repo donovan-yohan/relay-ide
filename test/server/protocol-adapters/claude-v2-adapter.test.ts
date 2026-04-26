@@ -948,3 +948,61 @@ describe('ClaudeProtocolAdapterV2 — tool_result blocks', () => {
     ).toBeUndefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — child exit/error', () => {
+  it('non-zero exit emits error + turn-completed failed', async () => {
+    const fake = makeFakeChild();
+    const spawn = vi.fn(() => fake as unknown as ChildProcess);
+    const adapter = new ClaudeProtocolAdapterV2({ spawn });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'q' });
+
+    fake.emit('exit', 1, null);
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toMatchObject({
+      message: expect.stringContaining('exit'),
+    });
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toMatchObject({
+      status: 'failed',
+    });
+  });
+
+  it('zero exit does NOT emit failure (result event handles success)', async () => {
+    const fake = makeFakeChild();
+    const spawn = vi.fn(() => fake as unknown as ChildProcess);
+    const adapter = new ClaudeProtocolAdapterV2({ spawn });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'q' });
+
+    fake.emit('exit', 0, null);
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toBeUndefined();
+  });
+
+  it('spawn error event emits error + turn-completed failed', async () => {
+    const fake = makeFakeChild();
+    const spawn = vi.fn(() => fake as unknown as ChildProcess);
+    const adapter = new ClaudeProtocolAdapterV2({ spawn });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    await adapter.sendMessage({ turnId: 't', content: 'q' });
+
+    fake.emit('error', new Error('ENOENT'));
+
+    expect(patches.find((p) => p.type === 'agent-error-v2')).toMatchObject({
+      message: 'ENOENT',
+    });
+    expect(
+      patches.find((p) => p.type === 'agent-turn-completed-v2')
+    ).toMatchObject({
+      status: 'failed',
+    });
+  });
+});

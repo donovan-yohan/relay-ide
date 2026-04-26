@@ -166,6 +166,8 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     proc.stdout?.on('data', (chunk: Buffer) => {
       this.handleStreamData(chunk.toString('utf8'));
     });
+    proc.on('exit', (code, signal) => this.handleChildExit(code, signal));
+    proc.on('error', (err) => this.handleChildError(err));
   }
 
   async interrupt(_input: AgentInterruptInputV2): Promise<void> {
@@ -644,6 +646,60 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       status,
       completedAt,
     };
+  }
+
+  private handleChildExit(
+    code: number | null,
+    _signal: NodeJS.Signals | null
+  ): void {
+    this.activeProcess = null;
+    if (code === 0 || code === null) return;
+    if (this._currentTurnId === null) return;
+    const turnId = this._currentTurnId;
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      message: `claude exited with code ${code}`,
+      turnId,
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: 'failed',
+      completedAt: this.now(),
+      error: `exit code ${code}`,
+    });
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
+  }
+
+  private handleChildError(err: Error): void {
+    this.activeProcess = null;
+    if (this._currentTurnId === null) return;
+    const turnId = this._currentTurnId;
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      message: err.message,
+      turnId,
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: 'failed',
+      completedAt: this.now(),
+      error: err.message,
+    });
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.emitLiveState({ status: 'idle', activeTurnId: null, error: null });
   }
 
   private killActiveProcess(): void {
