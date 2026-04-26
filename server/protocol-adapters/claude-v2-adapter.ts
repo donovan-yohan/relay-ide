@@ -58,6 +58,15 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private _currentTurnId: string | null = null;
   private blockIdx = 0;
   private streamBuffer = '';
+  private toolUseRegistry = new Map<
+    string,
+    {
+      itemId: string;
+      discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+      name: string;
+      input: Record<string, unknown>;
+    }
+  >();
   private _providerSessionId: string | null = null;
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
@@ -225,6 +234,8 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       this.handleSystem(obj);
     } else if (type === 'result') {
       this.handleResult(obj);
+    } else if (type === 'user') {
+      this.handleUserBlock(obj);
     } else {
       this.emitProviderExtension(obj);
     }
@@ -380,7 +391,9 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const input = (block['input'] ?? {}) as Record<string, unknown>;
 
     let item: AgentItemV2;
+    let discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
     if (name === 'Bash') {
+      discriminator = 'commandExecution';
       item = {
         type: 'commandExecution',
         id: `exec-${id}`,
@@ -390,6 +403,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         startedAt: this.now(),
       };
     } else if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+      discriminator = 'fileChange';
       item = {
         type: 'fileChange',
         id: `file-${id}`,
@@ -401,6 +415,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         startedAt: this.now(),
       };
     } else {
+      discriminator = 'dynamicToolCall';
       item = {
         type: 'dynamicToolCall',
         id: `tool-${id}`,
@@ -411,6 +426,13 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         startedAt: this.now(),
       };
     }
+
+    this.toolUseRegistry.set(id, {
+      itemId: item.id,
+      discriminator,
+      name,
+      input,
+    });
 
     this.emitPatch({
       type: ITEM_STARTED,
@@ -504,6 +526,124 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     if (typeof usage['cache_creation_input_tokens'] === 'number')
       result.cacheWriteTokens = usage['cache_creation_input_tokens'];
     return result;
+  }
+
+  private handleUserBlock(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const message = obj['message'] as
+      | { content?: Array<Record<string, unknown>> }
+      | undefined;
+    for (const block of message?.content ?? []) {
+      if (block['type'] !== 'tool_result') continue;
+      this.handleToolResult(turnId, block);
+    }
+  }
+
+  private handleToolResult(
+    turnId: string,
+    block: Record<string, unknown>
+  ): void {
+    const toolUseId = String(block['tool_use_id'] ?? '');
+    const entry = this.toolUseRegistry.get(toolUseId);
+    if (entry === undefined) return;
+
+    const content = this.extractToolResultContent(block);
+    const isError = block['is_error'] === true;
+
+    const deltaField =
+      entry.discriminator === 'commandExecution'
+        ? 'output'
+        : entry.discriminator === 'fileChange'
+          ? 'patch'
+          : 'content';
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      itemId: entry.itemId,
+      delta: { [deltaField]: content } as {
+        output?: string;
+        patch?: string;
+        content?: string;
+      },
+    });
+
+    const updatedItem = this.buildToolUpdatedItem(entry, content, isError);
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: updatedItem,
+    });
+  }
+
+  private extractToolResultContent(block: Record<string, unknown>): string {
+    const content = block['content'];
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((c) =>
+          typeof c === 'object' && c !== null && 'text' in c
+            ? String((c as { text: unknown }).text)
+            : ''
+        )
+        .join('');
+    }
+    return '';
+  }
+
+  private buildToolUpdatedItem(
+    entry: {
+      itemId: string;
+      discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+      name: string;
+      input: Record<string, unknown>;
+    },
+    content: string,
+    isError: boolean
+  ): AgentItemV2 {
+    const status: 'completed' | 'failed' = isError ? 'failed' : 'completed';
+    const completedAt = this.now();
+    if (entry.discriminator === 'commandExecution') {
+      return {
+        type: 'commandExecution',
+        id: entry.itemId,
+        command: String(entry.input['command'] ?? ''),
+        output: content,
+        status,
+        completedAt,
+      };
+    }
+    if (entry.discriminator === 'fileChange') {
+      return {
+        type: 'fileChange',
+        id: entry.itemId,
+        paths: [
+          {
+            path: String(
+              entry.input['file_path'] ?? entry.input['filePath'] ?? ''
+            ),
+          },
+        ],
+        ...(content.length > 0 ? { patch: content } : {}),
+        applyStatus: isError ? 'failed' : 'applied',
+        status,
+        completedAt,
+      };
+    }
+    return {
+      type: 'dynamicToolCall',
+      id: entry.itemId,
+      namespace: 'claude',
+      tool: entry.name,
+      arguments: entry.input,
+      result: content,
+      status,
+      completedAt,
+    };
   }
 
   private killActiveProcess(): void {
