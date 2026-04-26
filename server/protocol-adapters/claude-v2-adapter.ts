@@ -9,7 +9,11 @@ import type {
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
-import type { AgentCapabilitySetV2 } from '../../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentCapabilitySetV2,
+  AgentSessionLiveStateV2,
+} from '../../shared/agent-chat-protocol-v2.js';
+import { cleanEnv } from '../utils.js';
 
 const NOT_IMPLEMENTED = 'not implemented';
 
@@ -57,14 +61,58 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     return this._status;
   }
 
-  async connect(_config: AdapterConfig): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+  async connect(config: AdapterConfig): Promise<void> {
+    this.config = config;
+    this._status = 'connecting';
+
+    const args = this.buildSpawnArgs(config);
+    const env = this.buildSpawnEnv();
+    this.process = this.spawnFn('claude', args, {
+      cwd: config.cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    this.process.stdout?.on('data', (chunk: Buffer) =>
+      this.handleStreamData(chunk.toString('utf8'))
+    );
+    this.process.on('exit', (code, signal) =>
+      this.handleProcessExit(code, signal)
+    );
+    this.process.on('error', (err) => this.handleProcessError(err));
+
+    this._status = 'connected';
+    this.emitLiveState({
+      status: 'idle',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      proposedPlanItemId: null,
+      queueLength: 0,
+      fastModeAvailable: false,
+      error: null,
+    });
   }
 
-  protected async onDisconnect(): Promise<void> {}
+  protected async onDisconnect(): Promise<void> {
+    if (this.process !== null) {
+      try {
+        this.process.kill('SIGTERM');
+      } catch {
+        // process may already be dead
+      }
+      this.process = null;
+    }
+    this._status = 'disconnected';
+  }
 
   async reconnect(): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+    if (this.config === null) {
+      throw new Error('Cannot reconnect before initial connect');
+    }
+    const config = this.config;
+    await this.disconnect();
+    await this.connect(config);
   }
 
   async sendMessage(_input: AgentSendMessageInputV2): Promise<void> {
@@ -81,5 +129,64 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
 
   async respondToInput(_input: AgentInputResponseInputV2): Promise<void> {
     throw new Error(NOT_IMPLEMENTED);
+  }
+
+  private buildSpawnArgs(config: AdapterConfig): string[] {
+    const args = [
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--include-hook-events',
+      '--permission-prompt-tool',
+      'stdio',
+      '--no-session-persistence',
+      '--session-id',
+      config.sessionId,
+    ];
+    if (config.model !== undefined) args.push('--model', config.model);
+    if (config.permissionMode !== undefined)
+      args.push('--permission-mode', config.permissionMode);
+    return args;
+  }
+
+  private buildSpawnEnv(): Record<string, string> {
+    const env = cleanEnv();
+    delete env['CLAUDECODE'];
+    return env;
+  }
+
+  private emitLiveState(live: Partial<AgentSessionLiveStateV2>): void {
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      live,
+    });
+  }
+
+  private now(): string {
+    return new Date().toISOString();
+  }
+
+  private get sessionId(): string {
+    return this.config?.sessionId ?? 'claude-v2-session';
+  }
+
+  private handleStreamData(_data: string): void {
+    // Filled in Task 1.3
+  }
+
+  private handleProcessExit(
+    _code: number | null,
+    _signal: NodeJS.Signals | null
+  ): void {
+    // Filled in Task 1.10
+  }
+
+  private handleProcessError(_err: Error): void {
+    // Filled in Task 1.10
   }
 }
