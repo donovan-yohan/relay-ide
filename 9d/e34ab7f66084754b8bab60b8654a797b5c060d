@@ -1,0 +1,25 @@
+test/server/protocol-adapters/claude-v2-adapter.test.ts
+  c00470a1711c9961 2063,2071-2072,2076,2078-2080,2099-2115,2117-2123,2125-2401
+server/protocol-adapters/claude-v2-adapter.ts
+  c00470a1711c9961 1296-1301,1308,1318,1327-1330,1332-1348,1350-1358
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "9de34ab7f66084754b8bab60b8654a797b5c060d",
+  "prompts": {
+    "c00470a1711c9961": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c284404-1fb5-4e2b-9352-292f32428bf0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 346,
+      "total_deletions": 34,
+      "accepted_lines": 346,
+      "overriden_lines": 2
+    }
+  }
+}
