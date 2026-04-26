@@ -8,6 +8,7 @@ import { OpenCodeProtocolAdapter } from './opencode-adapter.js';
 import { OpenCodeAttachedAdapter } from './opencode-attached-adapter.js';
 
 import { HermesProtocolAdapter } from './hermes-adapter.js';
+import { ClaudeProtocolAdapterV2 } from './claude-v2-adapter.js';
 
 export const adapters: Record<string, () => ProtocolAdapter> = {
   mock: () => new MockProtocolAdapter(),
@@ -29,6 +30,7 @@ export function createAdapter(agentType: string): ProtocolAdapter {
 
 export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
   mock: () => new MockProtocolAdapterV2(),
+  claude: () => new ClaudeProtocolAdapterV2(),
 };
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
