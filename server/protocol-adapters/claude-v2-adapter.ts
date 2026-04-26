@@ -8,6 +8,7 @@ import type {
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
+import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import type {
   AgentCapabilitySetV2,
   AgentItemV2,
@@ -16,6 +17,7 @@ import type {
 
 const NOT_IMPLEMENTED = 'not implemented';
 const DEFAULT_SESSION_ID = 'claude-v2-session';
+const ITEM_STARTED = 'agent-item-started-v2' as const;
 
 export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   readonly agentType = 'claude';
@@ -47,6 +49,11 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private _currentTurnId: string | null = null;
   private blockIdx = 0;
   private streamBuffer = '';
+  private _providerSessionId: string | null = null;
+
+  private get providerSessionId(): string | null {
+    return this._providerSessionId;
+  }
 
   get status(): AdapterStatus {
     return this._status;
@@ -121,9 +128,48 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const type = obj['type'];
     if (type === 'assistant') {
       this.handleAssistantBlock(obj);
+    } else if (type === 'system') {
+      this.handleSystem(obj);
     } else {
       this.emitProviderExtension(obj);
     }
+  }
+
+  private handleSystem(obj: Record<string, unknown>): void {
+    if (obj['subtype'] !== 'init') {
+      this.emitProviderExtension(obj);
+      return;
+    }
+    const sessionId = obj['session_id'];
+    if (typeof sessionId === 'string' && sessionId.length > 0) {
+      this._providerSessionId = sessionId;
+    }
+    this.emitSessionSnapshot(obj);
+  }
+
+  private emitSessionSnapshot(initObj: Record<string, unknown>): void {
+    const providerSession: Record<string, string> = {};
+    if (typeof initObj['session_id'] === 'string')
+      providerSession['sessionId'] = String(initObj['session_id']);
+    if (typeof initObj['model'] === 'string')
+      providerSession['model'] = String(initObj['model']);
+    if (typeof initObj['cwd'] === 'string')
+      providerSession['cwd'] = String(initObj['cwd']);
+
+    const session = emptyAgentSessionV2({
+      id: this.sessionId,
+      provider: 'claude',
+      cwd: this.config?.cwd ?? '',
+      capabilities: this.capabilities,
+      providerSession,
+    });
+
+    this.emitPatch({
+      type: 'agent-session-snapshot-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      session,
+    });
   }
 
   private handleAssistantBlock(obj: Record<string, unknown>): void {
@@ -148,7 +194,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const itemId = `msg-${turnId}-${idx}`;
     const text = String(block['text'] ?? '');
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -193,7 +239,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const itemId = `thinking-${turnId}-${idx}`;
     const summary = String(block['thinking'] ?? '');
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -272,7 +318,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     }
 
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -283,7 +329,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private emitProviderExtension(obj: Record<string, unknown>): void {
     if (this._currentTurnId === null) return;
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId: this._currentTurnId,

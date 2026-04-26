@@ -135,7 +135,7 @@ describe('ClaudeProtocolAdapterV2 — stream-json buffering', () => {
     const handle = (
       adapter as unknown as { handleStreamData: (s: string) => void }
     ).handleStreamData.bind(adapter);
-    handle('{"type":"system","subtype":"init"}\n');
+    handle('{"type":"unknown-type"}\n');
     const ext = patches.find(
       (p) =>
         p.type === 'agent-item-started-v2' &&
@@ -411,5 +411,79 @@ describe('ClaudeProtocolAdapterV2 — tool_use blocks', () => {
         status: 'running',
       },
     });
+  });
+});
+
+describe('ClaudeProtocolAdapterV2 — system/init', () => {
+  it('captures session_id from system/init and emits snapshot with providerSession', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'abc-123',
+        model: 'claude-opus-4-7',
+        tools: ['Bash', 'Edit'],
+        cwd: '/proj',
+      }) + '\n'
+    );
+
+    const snapshot = patches.find(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshot).toBeDefined();
+    expect(
+      snapshot && 'session' in snapshot && snapshot.session.providerSession
+    ).toMatchObject({
+      sessionId: 'abc-123',
+    });
+  });
+
+  it('exposes captured provider session id via getter for sendMessage --resume', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    await adapter.connect(baseConfig);
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'xyz-789',
+      }) + '\n'
+    );
+    expect(
+      (adapter as unknown as { providerSessionId: string | null })
+        .providerSessionId
+    ).toBe('xyz-789');
+  });
+
+  it('non-init system events still route to providerExtension', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-1';
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({ type: 'system', subtype: 'something-else' }) + '\n'
+    );
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension'
+      )
+    ).toBeDefined();
   });
 });
