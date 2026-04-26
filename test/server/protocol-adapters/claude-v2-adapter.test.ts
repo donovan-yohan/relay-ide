@@ -726,3 +726,96 @@ describe('ClaudeProtocolAdapterV2 — respondToInput', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — result event', () => {
+  it('success result emits agent-turn-completed-v2 with usage', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        duration_ms: 1234,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 10,
+        },
+      }) + '\n'
+    );
+
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(completed).toMatchObject({
+      turnId: 'turn-R',
+      status: 'completed',
+      durationMs: 1234,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 20,
+        cacheWriteTokens: 10,
+      },
+    });
+  });
+
+  it('non-success result emits failed status + error message', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        duration_ms: 5,
+      }) + '\n'
+    );
+
+    const errPatch = patches.find((p) => p.type === 'agent-error-v2');
+    const completed = patches.find((p) => p.type === 'agent-turn-completed-v2');
+    expect(errPatch).toBeDefined();
+    expect(completed).toMatchObject({ status: 'failed' });
+  });
+
+  it('result clears _currentTurnId and emits idle live state', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-R';
+
+    const handle = (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData.bind(adapter);
+    handle(
+      JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1 }) +
+        '\n'
+    );
+
+    expect(
+      (adapter as unknown as { _currentTurnId: string | null })._currentTurnId
+    ).toBeNull();
+    const lastLive = [...patches]
+      .reverse()
+      .find((p) => p.type === 'agent-live-state-updated-v2');
+    expect(lastLive).toMatchObject({
+      live: { status: 'idle', activeTurnId: null },
+    });
+  });
+});

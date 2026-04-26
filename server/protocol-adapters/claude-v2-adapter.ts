@@ -223,6 +223,8 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       this.handleAssistantBlock(obj);
     } else if (type === 'system') {
       this.handleSystem(obj);
+    } else if (type === 'result') {
+      this.handleResult(obj);
     } else {
       this.emitProviderExtension(obj);
     }
@@ -436,6 +438,72 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         completedAt: this.now(),
       },
     });
+  }
+
+  private handleResult(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+
+    const subtype = String(obj['subtype'] ?? 'success');
+    const isError = subtype !== 'success' || obj['is_error'] === true;
+    const durationMs =
+      typeof obj['duration_ms'] === 'number' ? obj['duration_ms'] : 0;
+    const usage = obj['usage'] as Record<string, unknown> | undefined;
+
+    if (isError) {
+      this.emitPatch({
+        type: 'agent-error-v2',
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        message: typeof obj['error'] === 'string' ? obj['error'] : subtype,
+        turnId,
+      });
+    }
+
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      status: isError ? 'failed' : 'completed',
+      completedAt: this.now(),
+      durationMs,
+      ...(usage !== undefined ? { usage: this.mapUsage(usage) } : {}),
+      ...(isError ? { error: subtype } : {}),
+    });
+
+    this._currentTurnId = null;
+    this.blockIdx = 0;
+    this.emitLiveState({
+      status: 'idle',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      error: null,
+    });
+  }
+
+  private mapUsage(usage: Record<string, unknown>): {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } {
+    const result: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    } = {};
+    if (typeof usage['input_tokens'] === 'number')
+      result.inputTokens = usage['input_tokens'];
+    if (typeof usage['output_tokens'] === 'number')
+      result.outputTokens = usage['output_tokens'];
+    if (typeof usage['cache_read_input_tokens'] === 'number')
+      result.cacheReadTokens = usage['cache_read_input_tokens'];
+    if (typeof usage['cache_creation_input_tokens'] === 'number')
+      result.cacheWriteTokens = usage['cache_creation_input_tokens'];
+    return result;
   }
 
   private killActiveProcess(): void {
