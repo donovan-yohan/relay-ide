@@ -642,3 +642,315 @@ describe('ClaudeProtocolAdapterV2 — assistant content blocks (final state)', (
     expect(patches.length).toBe(before);
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — stream_event partial messages', () => {
+  function streamEvent(event: Record<string, unknown>): string {
+    return JSON.stringify({ type: 'stream_event', event }) + '\n';
+  }
+
+  it('content_block_start text → assistantMessage item-started with msg- prefix using event.index', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      })
+    );
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'msg-turn-S-0',
+        text: '',
+        phase: 'answer',
+        status: 'running',
+      },
+    });
+  });
+
+  it('content_block_delta text_delta → item-delta with text field', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      })
+    );
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hel' },
+      })
+    );
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'lo' },
+      })
+    );
+
+    const deltas = patches.filter((p) => p.type === 'agent-item-delta-v2');
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0]).toMatchObject({
+      itemId: 'msg-turn-S-0',
+      delta: { text: 'hel' },
+    });
+    expect(deltas[1]).toMatchObject({
+      itemId: 'msg-turn-S-0',
+      delta: { text: 'lo' },
+    });
+  });
+
+  it('content_block_start thinking + thinking_delta → reasoning with summary delta', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'thinking', thinking: '' },
+      })
+    );
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'thinking_delta', thinking: 'pondering' },
+      })
+    );
+
+    const started = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'reasoning'
+    );
+    expect(started).toMatchObject({
+      item: { id: 'thinking-turn-S-1', visibility: 'summary' },
+    });
+    const delta = patches.find((p) => p.type === 'agent-item-delta-v2');
+    expect(delta).toMatchObject({
+      itemId: 'thinking-turn-S-1',
+      delta: { summary: 'pondering' },
+    });
+  });
+
+  it('content_block_start tool_use → started + populates toolUseRegistry', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 2,
+        content_block: {
+          type: 'tool_use',
+          id: 'tu_stream',
+          name: 'Bash',
+          input: {},
+        },
+      })
+    );
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    );
+    expect(started).toMatchObject({
+      item: { id: 'exec-tu_stream', status: 'running' },
+    });
+    const registry = (
+      adapter as unknown as { toolUseRegistry: Map<string, { itemId: string }> }
+    ).toolUseRegistry;
+    expect(registry.get('tu_stream')?.itemId).toBe('exec-tu_stream');
+  });
+
+  it('content_block_delta input_json_delta on tool_use → delta with content field', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'tu_x',
+          name: 'Read',
+          input: {},
+        },
+      })
+    );
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"file_path":"' },
+      })
+    );
+
+    const delta = patches.find((p) => p.type === 'agent-item-delta-v2');
+    expect(delta).toMatchObject({
+      itemId: 'tool-tu_x',
+      delta: { content: '{"file_path":"' },
+    });
+  });
+
+  it('content_block_stop emits item-updated marking running item completed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      })
+    );
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hi' },
+      })
+    );
+    fake.stdout.write(streamEvent({ type: 'content_block_stop', index: 0 }));
+
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(updated).toMatchObject({
+      item: { id: 'msg-turn-S-0', status: 'completed' },
+    });
+  });
+
+  it('message_delta caches usage on adapter for later turn-completed', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+
+    fake.stdout.write(
+      streamEvent({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 20,
+        },
+      })
+    );
+
+    const cached = (
+      adapter as unknown as {
+        pendingMessageDelta: {
+          usage?: Record<string, number>;
+          stopReason?: string;
+        };
+      }
+    ).pendingMessageDelta;
+    expect(cached.usage).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 20,
+    });
+    expect(cached.stopReason).toBe('end_turn');
+  });
+
+  it('no-op when _currentTurnId is null', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    const before = patches.length;
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      })
+    );
+    expect(patches.length).toBe(before);
+  });
+
+  it('content_block_delta against unknown index is silently ignored', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-S';
+    fake.stdout.write(
+      streamEvent({
+        type: 'content_block_delta',
+        index: 99,
+        delta: { type: 'text_delta', text: 'orphan' },
+      })
+    );
+    expect(
+      patches.find((p) => p.type === 'agent-item-delta-v2')
+    ).toBeUndefined();
+  });
+});

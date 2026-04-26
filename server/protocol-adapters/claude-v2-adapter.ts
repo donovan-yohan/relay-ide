@@ -18,6 +18,9 @@ import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { cleanEnv } from '../utils.js';
 
 const NOT_IMPLEMENTED = 'not implemented';
+const ITEM_STARTED = 'agent-item-started-v2' as const;
+const ITEM_UPDATED = 'agent-item-updated-v2' as const;
+const ITEM_DELTA = 'agent-item-delta-v2' as const;
 
 type SpawnFn = typeof defaultSpawn;
 
@@ -66,6 +69,22 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       input: Record<string, unknown>;
     }
   >();
+  private blockIndexToItem = new Map<
+    number,
+    {
+      itemId: string;
+      discriminator:
+        | 'assistantMessage'
+        | 'reasoning'
+        | 'commandExecution'
+        | 'fileChange'
+        | 'dynamicToolCall';
+    }
+  >();
+  private pendingMessageDelta: {
+    stopReason?: string;
+    usage?: Record<string, number>;
+  } = {};
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
     super();
@@ -298,7 +317,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const itemId = `msg-${turnId}-${idx}`;
     const text = String(block['text'] ?? '');
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -312,7 +331,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       },
     });
     this.emitPatch({
-      type: 'agent-item-updated-v2',
+      type: ITEM_UPDATED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -335,7 +354,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const itemId = `thinking-${turnId}-${idx}`;
     const summary = String(block['thinking'] ?? '');
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -349,7 +368,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       },
     });
     this.emitPatch({
-      type: 'agent-item-updated-v2',
+      type: ITEM_UPDATED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -417,7 +436,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
 
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
@@ -429,8 +448,244 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     // Filled in Task 1.7
   }
 
-  private handleStreamEvent(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.6
+  private handleStreamEvent(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const event = obj['event'] as Record<string, unknown> | undefined;
+    if (event === undefined) return;
+    switch (event['type']) {
+      case 'message_start':
+        /* envelope only — no patch */ break;
+      case 'content_block_start':
+        this.handleContentBlockStart(turnId, event);
+        break;
+      case 'content_block_delta':
+        this.handleContentBlockDelta(turnId, event);
+        break;
+      case 'content_block_stop':
+        this.handleContentBlockStop(turnId, event);
+        break;
+      case 'message_delta':
+        this.handleMessageDelta(event);
+        break;
+      case 'message_stop':
+        /* turn end is `result` */ break;
+      default:
+        /* unknown — silently ignore */ break;
+    }
+  }
+
+  private handleContentBlockStart(
+    turnId: string,
+    event: Record<string, unknown>
+  ): void {
+    const index = typeof event['index'] === 'number' ? event['index'] : -1;
+    if (index < 0) return;
+    const block = event['content_block'] as Record<string, unknown> | undefined;
+    if (block === undefined) return;
+    const blockType = block['type'];
+
+    if (blockType === 'text') {
+      const itemId = `msg-${turnId}-${index}`;
+      this.blockIndexToItem.set(index, {
+        itemId,
+        discriminator: 'assistantMessage',
+      });
+      this.emitPatch({
+        type: ITEM_STARTED,
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        turnId,
+        item: {
+          type: 'assistantMessage',
+          id: itemId,
+          text: '',
+          phase: 'answer',
+          status: 'running',
+          startedAt: this.now(),
+        },
+      });
+      return;
+    }
+
+    if (blockType === 'thinking') {
+      const itemId = `thinking-${turnId}-${index}`;
+      this.blockIndexToItem.set(index, { itemId, discriminator: 'reasoning' });
+      this.emitPatch({
+        type: ITEM_STARTED,
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        turnId,
+        item: {
+          type: 'reasoning',
+          id: itemId,
+          summary: '',
+          visibility: 'summary',
+          status: 'running',
+          startedAt: this.now(),
+        },
+      });
+      return;
+    }
+
+    if (blockType === 'tool_use') {
+      const id = String(block['id'] ?? `tu-${index}`);
+      const name = String(block['name'] ?? 'unknown');
+      const input = (block['input'] ?? {}) as Record<string, unknown>;
+
+      let item: AgentItemV2;
+      let discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+      if (name === 'Bash') {
+        discriminator = 'commandExecution';
+        item = {
+          type: 'commandExecution',
+          id: `exec-${id}`,
+          command: String(input['command'] ?? ''),
+          output: '',
+          status: 'running',
+          startedAt: this.now(),
+        };
+      } else if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+        discriminator = 'fileChange';
+        item = {
+          type: 'fileChange',
+          id: `file-${id}`,
+          paths: [
+            { path: String(input['file_path'] ?? input['filePath'] ?? '') },
+          ],
+          applyStatus: 'pending',
+          status: 'running',
+          startedAt: this.now(),
+        };
+      } else {
+        discriminator = 'dynamicToolCall';
+        item = {
+          type: 'dynamicToolCall',
+          id: `tool-${id}`,
+          namespace: 'claude',
+          tool: name,
+          arguments: input,
+          status: 'running',
+          startedAt: this.now(),
+        };
+      }
+
+      this.blockIndexToItem.set(index, { itemId: item.id, discriminator });
+      this.toolUseRegistry.set(id, {
+        itemId: item.id,
+        discriminator,
+        name,
+        input,
+      });
+
+      this.emitPatch({
+        type: ITEM_STARTED,
+        sessionId: this.sessionId,
+        timestamp: this.now(),
+        turnId,
+        item,
+      });
+    }
+  }
+
+  private handleContentBlockDelta(
+    turnId: string,
+    event: Record<string, unknown>
+  ): void {
+    const index = typeof event['index'] === 'number' ? event['index'] : -1;
+    const entry = this.blockIndexToItem.get(index);
+    if (entry === undefined) return;
+    const delta = event['delta'] as Record<string, unknown> | undefined;
+    if (delta === undefined) return;
+
+    let deltaPayload:
+      | { text?: string; summary?: string; content?: string }
+      | undefined;
+    if (delta['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+      deltaPayload = { text: delta['text'] };
+    } else if (
+      delta['type'] === 'thinking_delta' &&
+      typeof delta['thinking'] === 'string'
+    ) {
+      deltaPayload = { summary: delta['thinking'] };
+    } else if (
+      delta['type'] === 'input_json_delta' &&
+      typeof delta['partial_json'] === 'string'
+    ) {
+      deltaPayload = { content: delta['partial_json'] };
+    }
+
+    if (deltaPayload === undefined) return;
+
+    this.emitPatch({
+      type: ITEM_DELTA,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      itemId: entry.itemId,
+      delta: deltaPayload,
+    });
+  }
+
+  private handleContentBlockStop(
+    turnId: string,
+    event: Record<string, unknown>
+  ): void {
+    const index = typeof event['index'] === 'number' ? event['index'] : -1;
+    const entry = this.blockIndexToItem.get(index);
+    if (entry === undefined) return;
+
+    let item: AgentItemV2;
+    switch (entry.discriminator) {
+      case 'assistantMessage':
+        item = {
+          type: 'assistantMessage',
+          id: entry.itemId,
+          text: '',
+          phase: 'answer',
+          status: 'completed',
+          completedAt: this.now(),
+        };
+        break;
+      case 'reasoning':
+        item = {
+          type: 'reasoning',
+          id: entry.itemId,
+          summary: '',
+          visibility: 'summary',
+          status: 'completed',
+          completedAt: this.now(),
+        };
+        break;
+      case 'commandExecution':
+      case 'fileChange':
+      case 'dynamicToolCall':
+        // Tool items only complete via tool_result (Task 1.7), not content_block_stop.
+        return;
+    }
+
+    this.emitPatch({
+      type: ITEM_UPDATED,
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item,
+    });
+  }
+
+  private handleMessageDelta(event: Record<string, unknown>): void {
+    const delta = event['delta'] as Record<string, unknown> | undefined;
+    if (delta !== undefined && typeof delta['stop_reason'] === 'string') {
+      this.pendingMessageDelta.stopReason = delta['stop_reason'];
+    }
+    const usage = event['usage'] as Record<string, unknown> | undefined;
+    if (usage !== undefined) {
+      const usageMap: Record<string, number> = {};
+      for (const [k, v] of Object.entries(usage)) {
+        if (typeof v === 'number') usageMap[k] = v;
+      }
+      this.pendingMessageDelta.usage = usageMap;
+    }
   }
 
   private handleControlRequest(_obj: Record<string, unknown>): void {
@@ -449,7 +704,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const turnId = this._currentTurnId;
     if (turnId === null) return;
     this.emitPatch({
-      type: 'agent-item-started-v2',
+      type: ITEM_STARTED,
       sessionId: this.sessionId,
       timestamp: this.now(),
       turnId,
