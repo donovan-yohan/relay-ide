@@ -380,3 +380,265 @@ describe('ClaudeProtocolAdapterV2 — system/init', () => {
     ).toBeDefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — assistant content blocks (final state)', () => {
+  function feed(
+    adapter: ClaudeProtocolAdapterV2,
+    fake: FakeChild,
+    content: Array<Record<string, unknown>>
+  ): void {
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content },
+      }) + '\n'
+    );
+  }
+
+  it('text block emits assistantMessage started + updated with msg- prefix', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    feed(adapter, fake, [{ type: 'text', text: 'hi there' }]);
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(started).toMatchObject({
+      turnId: 'turn-T',
+      item: {
+        id: 'msg-turn-T-0',
+        text: '',
+        phase: 'answer',
+        status: 'running',
+      },
+    });
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        id: 'msg-turn-T-0',
+        text: 'hi there',
+        phase: 'answer',
+        status: 'completed',
+      },
+    });
+  });
+
+  it('thinking block emits reasoning started + updated with thinking- prefix', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    feed(adapter, fake, [{ type: 'thinking', thinking: 'reasoning here' }]);
+
+    const updated = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'reasoning'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        id: 'thinking-turn-T-0',
+        summary: 'reasoning here',
+        visibility: 'summary',
+        status: 'completed',
+      },
+    });
+  });
+
+  it('tool_use Bash → commandExecution started with exec- prefix', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    feed(adapter, fake, [
+      {
+        type: 'tool_use',
+        id: 'tu_b1',
+        name: 'Bash',
+        input: { command: 'ls -la' },
+      },
+    ]);
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'commandExecution'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'exec-tu_b1',
+        command: 'ls -la',
+        output: '',
+        status: 'running',
+      },
+    });
+  });
+
+  it('tool_use Edit/Write/MultiEdit → fileChange started with file- prefix', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    feed(adapter, fake, [
+      {
+        type: 'tool_use',
+        id: 'tu_e1',
+        name: 'Edit',
+        input: { file_path: 'src/foo.ts' },
+      },
+    ]);
+
+    const started = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'fileChange'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'file-tu_e1',
+        paths: [{ path: 'src/foo.ts' }],
+        applyStatus: 'pending',
+      },
+    });
+  });
+
+  it('tool_use other → dynamicToolCall started with tool- prefix', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    feed(adapter, fake, [
+      {
+        type: 'tool_use',
+        id: 'tu_r1',
+        name: 'Read',
+        input: { file_path: 'a.txt' },
+      },
+    ]);
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'dynamicToolCall'
+    );
+    expect(started).toMatchObject({
+      item: {
+        id: 'tool-tu_r1',
+        namespace: 'claude',
+        tool: 'Read',
+        arguments: { file_path: 'a.txt' },
+        status: 'running',
+      },
+    });
+  });
+
+  it('tool_use registers entry in toolUseRegistry for later tool_result lookup', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-T';
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_x',
+              name: 'Bash',
+              input: { command: 'pwd' },
+            },
+          ],
+        },
+      }) + '\n'
+    );
+
+    const registry = (
+      adapter as unknown as {
+        toolUseRegistry: Map<
+          string,
+          { itemId: string; discriminator: string; name: string }
+        >;
+      }
+    ).toolUseRegistry;
+    expect(registry.get('tu_x')).toMatchObject({
+      itemId: 'exec-tu_x',
+      discriminator: 'commandExecution',
+      name: 'Bash',
+    });
+  });
+
+  it('multiple text blocks get incrementing block indices', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-A';
+
+    feed(adapter, fake, [
+      { type: 'text', text: 'first' },
+      { type: 'text', text: 'second' },
+    ]);
+
+    const ids = patches
+      .filter(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'assistantMessage'
+      )
+      .map((p) => (p as { item: { id: string } }).item.id);
+    expect(ids).toEqual(['msg-turn-A-0', 'msg-turn-A-1']);
+  });
+
+  it('no-op when _currentTurnId is null', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    const before = patches.length;
+    feed(adapter, fake, [{ type: 'text', text: 'orphan' }]);
+    expect(patches.length).toBe(before);
+  });
+});

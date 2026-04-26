@@ -11,6 +11,7 @@ import type {
 } from '../protocol-adapter-v2.js';
 import type {
   AgentCapabilitySetV2,
+  AgentItemV2,
   AgentSessionLiveStateV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -56,6 +57,15 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private _currentTurnId: string | null = null;
   private blockIdx = 0;
   private _providerSessionId: string | null = null;
+  private toolUseRegistry = new Map<
+    string,
+    {
+      itemId: string;
+      discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+      name: string;
+      input: Record<string, unknown>;
+    }
+  >();
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
     super();
@@ -266,8 +276,153 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     });
   }
 
-  private handleAssistantBlock(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.5
+  private handleAssistantBlock(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const message = obj['message'] as
+      | { content?: Array<Record<string, unknown>> }
+      | undefined;
+    for (const block of message?.content ?? []) {
+      const t = block['type'];
+      if (t === 'text') this.handleTextBlock(turnId, block);
+      else if (t === 'thinking') this.handleThinkingBlock(turnId, block);
+      else if (t === 'tool_use') this.handleToolUseBlock(turnId, block);
+    }
+  }
+
+  private handleTextBlock(
+    turnId: string,
+    block: Record<string, unknown>
+  ): void {
+    const idx = this.blockIdx++;
+    const itemId = `msg-${turnId}-${idx}`;
+    const text = String(block['text'] ?? '');
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: itemId,
+        text: '',
+        phase: 'answer',
+        status: 'running',
+        startedAt: this.now(),
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: itemId,
+        text,
+        phase: 'answer',
+        status: 'completed',
+        completedAt: this.now(),
+      },
+    });
+  }
+
+  private handleThinkingBlock(
+    turnId: string,
+    block: Record<string, unknown>
+  ): void {
+    const idx = this.blockIdx++;
+    const itemId = `thinking-${turnId}-${idx}`;
+    const summary = String(block['thinking'] ?? '');
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'reasoning',
+        id: itemId,
+        summary: '',
+        visibility: 'summary',
+        status: 'running',
+        startedAt: this.now(),
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'reasoning',
+        id: itemId,
+        summary,
+        visibility: 'summary',
+        status: 'completed',
+        completedAt: this.now(),
+      },
+    });
+  }
+
+  private handleToolUseBlock(
+    turnId: string,
+    block: Record<string, unknown>
+  ): void {
+    const id = String(block['id'] ?? `tu-${this.blockIdx++}`);
+    const name = String(block['name'] ?? 'unknown');
+    const input = (block['input'] ?? {}) as Record<string, unknown>;
+
+    let item: AgentItemV2;
+    let discriminator: 'commandExecution' | 'fileChange' | 'dynamicToolCall';
+    if (name === 'Bash') {
+      discriminator = 'commandExecution';
+      item = {
+        type: 'commandExecution',
+        id: `exec-${id}`,
+        command: String(input['command'] ?? ''),
+        output: '',
+        status: 'running',
+        startedAt: this.now(),
+      };
+    } else if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+      discriminator = 'fileChange';
+      item = {
+        type: 'fileChange',
+        id: `file-${id}`,
+        paths: [
+          { path: String(input['file_path'] ?? input['filePath'] ?? '') },
+        ],
+        applyStatus: 'pending',
+        status: 'running',
+        startedAt: this.now(),
+      };
+    } else {
+      discriminator = 'dynamicToolCall';
+      item = {
+        type: 'dynamicToolCall',
+        id: `tool-${id}`,
+        namespace: 'claude',
+        tool: name,
+        arguments: input,
+        status: 'running',
+        startedAt: this.now(),
+      };
+    }
+
+    this.toolUseRegistry.set(id, {
+      itemId: item.id,
+      discriminator,
+      name,
+      input,
+    });
+
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item,
+    });
   }
 
   private handleUserBlock(_obj: Record<string, unknown>): void {
