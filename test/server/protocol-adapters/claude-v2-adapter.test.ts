@@ -144,3 +144,81 @@ describe('ClaudeProtocolAdapterV2 — stream-json buffering', () => {
     expect(ext).toBeDefined();
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — text blocks', () => {
+  it('emits item-started + item-delta + item-updated for a text block', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-1';
+
+    const line =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'hello world' }] },
+      }) + '\n';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(line);
+
+    const started = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(started).toMatchObject({
+      turnId: 'turn-1',
+      item: {
+        id: 'msg-turn-1-0',
+        text: '',
+        phase: 'answer',
+        status: 'running',
+      },
+    });
+    const delta = patches.find((p) => p.type === 'agent-item-delta-v2');
+    expect(delta).toMatchObject({
+      itemId: 'msg-turn-1-0',
+      delta: { text: 'hello world' },
+    });
+    const updated = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' && p.item.type === 'assistantMessage'
+    );
+    expect(updated).toMatchObject({
+      item: { id: 'msg-turn-1-0', text: 'hello world', status: 'completed' },
+    });
+  });
+
+  it('uses incrementing block index for multiple text blocks in same turn', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-A';
+
+    const line =
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'first' },
+            { type: 'text', text: 'second' },
+          ],
+        },
+      }) + '\n';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(line);
+
+    const ids = patches
+      .filter(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'assistantMessage'
+      )
+      .map((p) => (p as { item: { id: string } }).item.id);
+    expect(ids).toEqual(['msg-turn-A-0', 'msg-turn-A-1']);
+  });
+});
