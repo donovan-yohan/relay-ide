@@ -1,0 +1,25 @@
+server/protocol-adapters/index.ts
+  c00470a1711c9961 5,33
+test/server/protocol-adapters/index.test.ts
+  c00470a1711c9961 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "e4f3bd4037c8fe9f8ac95331e9ae226f72ada370",
+  "prompts": {
+    "c00470a1711c9961": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c284404-1fb5-4e2b-9352-292f32428bf0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 20,
+      "total_deletions": 0,
+      "accepted_lines": 22,
+      "overriden_lines": 0
+    }
+  }
+}
