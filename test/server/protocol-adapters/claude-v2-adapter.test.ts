@@ -196,3 +196,83 @@ describe('ClaudeProtocolAdapterV2 — connect lifecycle', () => {
     await expect(adapter.reconnect()).rejects.toThrow(/cannot reconnect/i);
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — stream-json buffering', () => {
+  it('buffers partial lines until newline', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-buf';
+    const before = patches.length;
+    fake.stdout.write('{"type":"unknown-type-A","subt');
+    expect(patches.length).toBe(before);
+    fake.stdout.write('ype":"x"}\n');
+    expect(patches.length).toBeGreaterThan(before);
+  });
+
+  it('drops malformed JSON lines without throwing', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    expect(() => fake.stdout.write('not-json\n{also bad}\n')).not.toThrow();
+  });
+
+  it('routes unknown stream-json types to providerExtension', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-ext';
+    fake.stdout.write(
+      JSON.stringify({ type: 'attribution-snapshot', stuff: 1 }) + '\n'
+    );
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension'
+      )
+    ).toMatchObject({
+      item: { namespace: 'claude' },
+    });
+  });
+
+  it('routes events with hook_event_name discriminator to hook handler stub (no patch)', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-h';
+    fake.stdout.write(
+      JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        hook_event_payload: {},
+      }) + '\n'
+    );
+    // Hook handler stub does nothing — no patches emitted by THIS task.
+    // (Task 1.8 will fill it in.)
+    const hookExt = patches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        p.item.type === 'providerExtension' &&
+        (p.item.payload as Record<string, unknown>)['hook_event_name'] ===
+          'PreToolUse'
+    );
+    expect(hookExt).toBeUndefined(); // hook events don't fall through to providerExtension
+  });
+});

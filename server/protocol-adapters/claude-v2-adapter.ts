@@ -51,6 +51,9 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
   private process: ChildProcess | null = null;
+  private streamBuffer = '';
+  private _currentTurnId: string | null = null;
+  private blockIdx = 0;
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
     super();
@@ -175,8 +178,99 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     return this.config?.sessionId ?? 'claude-v2-session';
   }
 
-  private handleStreamData(_data: string): void {
-    // Filled in Task 1.3
+  private handleStreamData(data: string): void {
+    this.streamBuffer += data;
+    const lines = this.streamBuffer.split('\n');
+    this.streamBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      this.dispatchStreamJson(obj);
+    }
+  }
+
+  private dispatchStreamJson(obj: Record<string, unknown>): void {
+    const type = obj['type'];
+    if (typeof obj['hook_event_name'] === 'string') {
+      this.handleHookEvent(obj);
+      return;
+    }
+    switch (type) {
+      case 'system':
+        this.handleSystem(obj);
+        break;
+      case 'assistant':
+        this.handleAssistantBlock(obj);
+        break;
+      case 'user':
+        this.handleUserBlock(obj);
+        break;
+      case 'stream_event':
+        this.handleStreamEvent(obj);
+        break;
+      case 'control_request':
+        this.handleControlRequest(obj);
+        break;
+      case 'result':
+        this.handleResult(obj);
+        break;
+      default:
+        this.emitProviderExtension(obj);
+    }
+  }
+
+  private handleSystem(obj: Record<string, unknown>): void {
+    // Filled in Task 1.4
+    this.emitProviderExtension(obj);
+  }
+
+  private handleAssistantBlock(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.5
+  }
+
+  private handleUserBlock(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.7
+  }
+
+  private handleStreamEvent(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.6
+  }
+
+  private handleControlRequest(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.9
+  }
+
+  private handleResult(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.10
+  }
+
+  private handleHookEvent(_obj: Record<string, unknown>): void {
+    // Filled in Task 1.8
+  }
+
+  private emitProviderExtension(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'providerExtension',
+        id: `ext-${Date.now()}-${this.blockIdx++}`,
+        namespace: 'claude',
+        payload: obj,
+        status: 'completed',
+        startedAt: this.now(),
+        completedAt: this.now(),
+      },
+    });
   }
 
   private handleProcessExit(
