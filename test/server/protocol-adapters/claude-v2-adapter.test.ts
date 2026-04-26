@@ -222,3 +222,51 @@ describe('ClaudeProtocolAdapterV2 — text blocks', () => {
     expect(ids).toEqual(['msg-turn-A-0', 'msg-turn-A-1']);
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — thinking blocks', () => {
+  it('emits item-started + item-delta + item-updated for a thinking block', async () => {
+    const adapter = new ClaudeProtocolAdapterV2();
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-2';
+
+    const line =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: 'thinking text' }] },
+      }) + '\n';
+    (
+      adapter as unknown as { handleStreamData: (s: string) => void }
+    ).handleStreamData(line);
+
+    const started = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'reasoning'
+    );
+    expect(started).toMatchObject({
+      turnId: 'turn-2',
+      item: {
+        id: 'thinking-turn-2-0',
+        summary: '',
+        visibility: 'summary',
+        status: 'running',
+      },
+    });
+    const delta = patches.find((p) => p.type === 'agent-item-delta-v2');
+    expect(delta).toMatchObject({
+      itemId: 'thinking-turn-2-0',
+      delta: { summary: 'thinking text' },
+    });
+    const updated = patches.find(
+      (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'reasoning'
+    );
+    expect(updated).toMatchObject({
+      item: {
+        id: 'thinking-turn-2-0',
+        summary: 'thinking text',
+        status: 'completed',
+      },
+    });
+  });
+});

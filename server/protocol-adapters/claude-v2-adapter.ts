@@ -187,10 +187,48 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   private handleThinkingBlock(
-    _turnId: string,
-    _block: Record<string, unknown>
+    turnId: string,
+    block: Record<string, unknown>
   ): void {
-    // Filled in step 1.3.C
+    const idx = this.blockIdx++;
+    const itemId = `thinking-${turnId}-${idx}`;
+    const summary = String(block['thinking'] ?? '');
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'reasoning',
+        id: itemId,
+        summary: '',
+        visibility: 'summary',
+        status: 'running',
+        startedAt: this.now(),
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      itemId,
+      delta: { summary },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'reasoning',
+        id: itemId,
+        summary,
+        visibility: 'summary',
+        status: 'completed',
+        completedAt: this.now(),
+      },
+    });
   }
 
   private handleToolUseBlock(
