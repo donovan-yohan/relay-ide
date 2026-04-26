@@ -1,3 +1,4 @@
+import { spawn as defaultSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
 import type {
@@ -8,6 +9,7 @@ import type {
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
+import { cleanEnv } from '../utils.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import type {
   AgentCapabilitySetV2,
@@ -18,6 +20,12 @@ import type {
 const NOT_IMPLEMENTED = 'not implemented';
 const DEFAULT_SESSION_ID = 'claude-v2-session';
 const ITEM_STARTED = 'agent-item-started-v2' as const;
+
+type SpawnFn = typeof defaultSpawn;
+
+export interface ClaudeProtocolAdapterV2Options {
+  spawn?: SpawnFn;
+}
 
 export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   readonly agentType = 'claude';
@@ -43,6 +51,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     rateLimits: true,
   };
 
+  private readonly spawnFn: SpawnFn;
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
   private activeProcess: ChildProcess | null = null;
@@ -50,6 +59,11 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private blockIdx = 0;
   private streamBuffer = '';
   private _providerSessionId: string | null = null;
+
+  constructor(options: ClaudeProtocolAdapterV2Options = {}) {
+    super();
+    this.spawnFn = options.spawn ?? defaultSpawn;
+  }
 
   private get providerSessionId(): string | null {
     return this._providerSessionId;
@@ -88,12 +102,65 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     await this.connect(config);
   }
 
-  async sendMessage(_input: AgentSendMessageInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    if (this._status !== 'connected') {
+      throw new Error('Cannot send message before connect');
+    }
+
+    this._currentTurnId = input.turnId;
+    this.blockIdx = 0;
+
+    const startedAt = this.now();
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `user-${input.turnId}`,
+        items: [],
+        startedAt,
+      },
+    });
+    this.emitPatch({
+      type: ITEM_STARTED,
+      sessionId: this.sessionId,
+      timestamp: startedAt,
+      turnId: input.turnId,
+      item: {
+        type: 'userMessage',
+        id: `user-${input.turnId}`,
+        text: input.content,
+        status: 'completed',
+        startedAt,
+        completedAt: startedAt,
+      },
+    });
+    this.emitLiveState({
+      status: 'working',
+      activeTurnId: input.turnId,
+      error: null,
+    });
+
+    const args = this.buildSpawnArgs(input.content);
+    const env = this.buildSpawnEnv();
+    const cwd = this.config?.cwd ?? process.cwd();
+
+    const proc = this.spawnFn('claude', args, {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.activeProcess = proc;
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      this.handleStreamData(chunk.toString('utf8'));
+    });
   }
 
   async interrupt(_input: AgentInterruptInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+    this.killActiveProcess();
   }
 
   async respondToApproval(_input: AgentApprovalResponseInputV2): Promise<void> {
@@ -101,7 +168,33 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   async respondToInput(_input: AgentInputResponseInputV2): Promise<void> {
-    throw new Error(NOT_IMPLEMENTED);
+    // Claude has no structured input flow; intentionally no-op.
+  }
+
+  private buildSpawnArgs(prompt: string): string[] {
+    const args = [
+      '--output-format',
+      'stream-json',
+      '--print',
+      '-p',
+      prompt,
+      '--permission-mode',
+      'bypassPermissions',
+    ];
+    if (this._providerSessionId !== null) {
+      args.push('--resume', this._providerSessionId);
+    }
+    if (this.config?.model !== undefined) {
+      args.push('--model', this.config.model);
+    }
+    return args;
+  }
+
+  private buildSpawnEnv(): Record<string, string> {
+    const env = cleanEnv();
+    // Strip CLAUDECODE so a relay-launched claude doesn't refuse to nest under another claude.
+    delete env['CLAUDECODE'];
+    return env;
   }
 
   private now(): string {
