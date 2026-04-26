@@ -13,6 +13,7 @@ import type {
   AgentCapabilitySetV2,
   AgentSessionLiveStateV2,
 } from '../../shared/agent-chat-protocol-v2.js';
+import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 import { cleanEnv } from '../utils.js';
 
 const NOT_IMPLEMENTED = 'not implemented';
@@ -54,6 +55,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private streamBuffer = '';
   private _currentTurnId: string | null = null;
   private blockIdx = 0;
+  private _providerSessionId: string | null = null;
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
     super();
@@ -225,8 +227,43 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   }
 
   private handleSystem(obj: Record<string, unknown>): void {
-    // Filled in Task 1.4
-    this.emitProviderExtension(obj);
+    if (obj['subtype'] !== 'init') {
+      this.emitProviderExtension(obj);
+      return;
+    }
+    const sessionId = obj['session_id'];
+    if (typeof sessionId === 'string' && sessionId.length > 0) {
+      this._providerSessionId = sessionId;
+    }
+    this.emitSessionSnapshot(obj);
+  }
+
+  private emitSessionSnapshot(initObj: Record<string, unknown>): void {
+    const providerSession: Record<string, string> = {};
+    if (typeof initObj['session_id'] === 'string') {
+      providerSession['sessionId'] = initObj['session_id'];
+    }
+    if (typeof initObj['model'] === 'string') {
+      providerSession['model'] = initObj['model'];
+    }
+    if (typeof initObj['cwd'] === 'string') {
+      providerSession['cwd'] = initObj['cwd'];
+    }
+
+    const session = emptyAgentSessionV2({
+      id: this.sessionId,
+      provider: 'claude',
+      cwd: this.config?.cwd ?? '',
+      capabilities: this.capabilities,
+      providerSession,
+    });
+
+    this.emitPatch({
+      type: 'agent-session-snapshot-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      session,
+    });
   }
 
   private handleAssistantBlock(_obj: Record<string, unknown>): void {

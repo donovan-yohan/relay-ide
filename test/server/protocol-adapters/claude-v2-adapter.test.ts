@@ -276,3 +276,107 @@ describe('ClaudeProtocolAdapterV2 — stream-json buffering', () => {
     expect(hookExt).toBeUndefined(); // hook events don't fall through to providerExtension
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — system/init', () => {
+  it('captures session_id, emits snapshot with providerSession', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'claude-abc-123',
+        model: 'claude-opus-4-7',
+        tools: ['Bash', 'Edit'],
+        cwd: '/proj',
+      }) + '\n'
+    );
+
+    const snapshot = patches.find(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
+    expect(snapshot).toBeDefined();
+    expect(
+      snapshot && 'session' in snapshot && snapshot.session.providerSession
+    ).toMatchObject({
+      sessionId: 'claude-abc-123',
+      model: 'claude-opus-4-7',
+      cwd: '/proj',
+    });
+    // session.id stays the relay session id, not claude's
+    expect(snapshot && 'session' in snapshot && snapshot.session.id).toBe(
+      'relay-s1'
+    );
+  });
+
+  it('exposes captured provider session id via private getter for --resume use', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'xyz-789',
+      }) + '\n'
+    );
+    expect(
+      (adapter as unknown as { _providerSessionId: string | null })
+        ._providerSessionId
+    ).toBe('xyz-789');
+  });
+
+  it('drops non-string fields from providerSession (e.g. tools array)', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    fake.stdout.write(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'abc',
+        tools: ['Bash', 'Edit'],
+      }) + '\n'
+    );
+    const snapshot = patches.find(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
+    expect(
+      snapshot && 'session' in snapshot && snapshot.session.providerSession
+    ).not.toHaveProperty('tools');
+  });
+
+  it('non-init system events fall back to providerExtension', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-x';
+    fake.stdout.write(
+      JSON.stringify({ type: 'system', subtype: 'something-else' }) + '\n'
+    );
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension'
+      )
+    ).toBeDefined();
+  });
+});
