@@ -85,6 +85,7 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     stopReason?: string;
     usage?: Record<string, number>;
   } = {};
+  private pendingApprovals = new Map<string, { claudeRequestId: string }>();
 
   constructor(options: ClaudeProtocolAdapterV2Options = {}) {
     super();
@@ -798,8 +799,59 @@ export class ClaudeProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     }
   }
 
-  private handleControlRequest(_obj: Record<string, unknown>): void {
-    // Filled in Task 1.9
+  private handleControlRequest(obj: Record<string, unknown>): void {
+    const turnId = this._currentTurnId;
+    if (turnId === null) return;
+    const requestId = String(obj['request_id'] ?? '');
+    const request = obj['request'] as Record<string, unknown> | undefined;
+    const subtype = request?.['subtype'];
+
+    if (subtype === 'can_use_tool' && requestId !== '') {
+      this.handleCanUseToolRequest(turnId, requestId, request ?? {});
+      return;
+    }
+
+    this.emitProviderExtension(obj);
+  }
+
+  private handleCanUseToolRequest(
+    turnId: string,
+    requestId: string,
+    request: Record<string, unknown>
+  ): void {
+    const toolName = String(request['tool_name'] ?? 'unknown');
+    const toolInput = request['tool_input'];
+    const target = JSON.stringify(toolInput ?? {}).slice(0, 200);
+    const itemId = `approval-${requestId}`;
+
+    this.pendingApprovals.set(requestId, { claudeRequestId: requestId });
+
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      turnId,
+      item: {
+        type: 'approval',
+        id: itemId,
+        requestId,
+        kind: 'permission',
+        description: toolName,
+        target,
+        status: 'pending',
+        startedAt: this.now(),
+        ...(typeof request['tool_use_id'] === 'string'
+          ? { metadata: { toolUseId: request['tool_use_id'] } }
+          : {}),
+      },
+    });
+
+    this.emitLiveState({
+      status: 'waiting',
+      activeTurnId: turnId,
+      waitingOn: 'approval',
+      activeRequestIds: [requestId],
+    });
   }
 
   private handleResult(_obj: Record<string, unknown>): void {

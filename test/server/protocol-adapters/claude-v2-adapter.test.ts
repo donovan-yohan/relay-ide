@@ -1452,3 +1452,188 @@ describe('ClaudeProtocolAdapterV2 — hook events embedded in stream', () => {
     expect(patches.length).toBe(before);
   });
 });
+
+describe('ClaudeProtocolAdapterV2 — control_request from claude', () => {
+  function controlReqLine(
+    requestId: string,
+    request: Record<string, unknown>
+  ): string {
+    return (
+      JSON.stringify({
+        type: 'control_request',
+        request_id: requestId,
+        request,
+      }) + '\n'
+    );
+  }
+
+  it('can_use_tool emits approval item with kind=permission + waiting live state', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-C';
+
+    fake.stdout.write(
+      controlReqLine('req-xyz', {
+        subtype: 'can_use_tool',
+        tool_use_id: 'tu_a1',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+      })
+    );
+
+    const approval = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
+    );
+    expect(approval).toMatchObject({
+      item: {
+        id: 'approval-req-xyz',
+        requestId: 'req-xyz',
+        kind: 'permission',
+        description: 'Bash',
+        status: 'pending',
+      },
+    });
+    const live = [...patches]
+      .reverse()
+      .find((p) => p.type === 'agent-live-state-updated-v2');
+    expect(live).toMatchObject({
+      live: {
+        status: 'waiting',
+        waitingOn: 'approval',
+        activeRequestIds: ['req-xyz'],
+      },
+    });
+  });
+
+  it('approval target is truncated tool_input JSON', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-C';
+
+    const longInput = { command: 'a'.repeat(500) };
+    fake.stdout.write(
+      controlReqLine('req-long', {
+        subtype: 'can_use_tool',
+        tool_use_id: 'tu_l',
+        tool_name: 'Bash',
+        tool_input: longInput,
+      })
+    );
+
+    const approval = patches.find(
+      (p) => p.type === 'agent-item-started-v2' && p.item.type === 'approval'
+    );
+    expect(approval).toMatchObject({ item: { id: 'approval-req-long' } });
+    const target = (approval as { item: { target: string } }).item.target;
+    expect(target.length).toBeLessThanOrEqual(200);
+    expect(target.startsWith('{"command":"aaaa')).toBe(true);
+  });
+
+  it('pendingApprovals map populated for round-trip lookup', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-C';
+
+    fake.stdout.write(
+      controlReqLine('req-track', {
+        subtype: 'can_use_tool',
+        tool_use_id: 'tu_t',
+        tool_name: 'Edit',
+        tool_input: { file_path: 'src/x.ts' },
+      })
+    );
+
+    const map = (
+      adapter as unknown as {
+        pendingApprovals: Map<string, { claudeRequestId: string }>;
+      }
+    ).pendingApprovals;
+    expect(map.get('req-track')).toMatchObject({
+      claudeRequestId: 'req-track',
+    });
+  });
+
+  it('hook_callback subtype falls through to providerExtension', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-C';
+
+    fake.stdout.write(
+      controlReqLine('req-h', {
+        subtype: 'hook_callback',
+        hook_event_name: 'SessionStart',
+      })
+    );
+
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension'
+      )
+    ).toBeDefined();
+  });
+
+  it('unknown subtype → providerExtension', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    (adapter as unknown as { _currentTurnId: string })._currentTurnId =
+      'turn-C';
+
+    fake.stdout.write(controlReqLine('req-u', { subtype: 'unknown_subtype' }));
+    expect(
+      patches.find(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.type === 'providerExtension'
+      )
+    ).toBeDefined();
+  });
+
+  it('control_request no-ops when _currentTurnId is null', async () => {
+    const fake = makeFakeChild();
+    const adapter = new ClaudeProtocolAdapterV2({
+      spawn: vi.fn(() => fake as unknown as ChildProcess),
+    });
+    const patches: AgentPatchV2[] = [];
+    adapter.onPatch((p) => patches.push(p));
+    await adapter.connect(baseConfig);
+    const before = patches.length;
+    fake.stdout.write(
+      controlReqLine('req-orphan', {
+        subtype: 'can_use_tool',
+        tool_use_id: 'x',
+        tool_name: 'Bash',
+        tool_input: {},
+      })
+    );
+    expect(patches.length).toBe(before);
+  });
+});
