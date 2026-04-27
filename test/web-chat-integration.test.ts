@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
-import { createAdapter } from '../server/protocol-adapters/index.js';
+import {
+  createAdapter,
+  createAdapterV2,
+} from '../server/protocol-adapters/index.js';
 import { ClaudeProtocolAdapter } from '../server/protocol-adapters/claude-adapter.js';
 import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.js';
 import { OpenCodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
@@ -447,8 +450,8 @@ describe('createAdapter - registry', () => {
     expect(adapter.agentType).toBe('mock');
   });
 
-  it('returns ClaudeProtocolAdapter for "claude"', () => {
-    const adapter = createAdapter('claude');
+  it('returns ClaudeProtocolAdapter as the v2 adapter for "claude"', () => {
+    const adapter = createAdapterV2('claude');
     expect(adapter).toBeInstanceOf(ClaudeProtocolAdapter);
     expect(adapter.agentType).toBe('claude');
   });

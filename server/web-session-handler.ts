@@ -3,7 +3,7 @@ import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 import { createAdapter, createAdapterV2 } from './protocol-adapters/index.js';
-import type { AdapterConfig } from './protocol-adapter.js';
+import type { AdapterConfig, ProtocolAdapter } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
 import { createLogger } from './logger.js';
@@ -62,8 +62,10 @@ export async function createWebSession(
   onBackendStateChanged: (session: Session) => void
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
-  const adapter = createAdapter(params.agentType);
   const adapterV2 = tryCreateAdapterV2(params.agentType);
+  const adapter = adapterV2
+    ? createV2OnlyLegacyAdapter(params.agentType, adapterV2.runtimeOwnership)
+    : createAdapter(params.agentType);
   const activeRuntime = adapterV2 ?? adapter;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
 
@@ -205,6 +207,36 @@ export async function createWebSession(
   logger.info('web session created', { id, agentType: params.agentType });
 
   return { session };
+}
+
+function createV2OnlyLegacyAdapter(
+  agentType: string,
+  runtimeOwnership: 'spawned' | 'attached'
+): ProtocolAdapter {
+  return {
+    agentType,
+    runtimeOwnership,
+    status: 'connected',
+    async connect() {},
+    async disconnect() {},
+    async reconnect() {},
+    async createSession() {
+      return '';
+    },
+    async resumeSession() {},
+    async forkSession() {
+      return '';
+    },
+    async sendMessage() {
+      throw new Error(`${agentType} web sessions use ProtocolAdapterV2`);
+    },
+    async interrupt() {},
+    async respondToApproval() {},
+    async respondToInput() {},
+    on() {
+      return () => {};
+    },
+  };
 }
 
 function tryCreateAdapterV2(agentType: string): ProtocolAdapterV2 | undefined {
