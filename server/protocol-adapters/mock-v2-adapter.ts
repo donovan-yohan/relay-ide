@@ -64,10 +64,23 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   readonly runtimeOwnership = 'spawned' as const;
   readonly capabilities: AgentCapabilitySetV2 = {
     text: true,
+    reasoning: true,
+    tools: true,
+    commandExecution: true,
+    fileChanges: true,
     approvals: true,
+    questions: true,
+    plans: true,
+    slashCommands: true,
     queue: true,
     interrupt: true,
     cancelQueued: true,
+    resume: true,
+    fork: true,
+    rollback: true,
+    compact: true,
+    telemetry: true,
+    rateLimits: true,
   };
 
   private _status: AdapterStatus = 'disconnected';
@@ -331,6 +344,16 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
       startedAt: nowIso(),
     };
 
+    this.emitItemStarted(turnId, {
+      type: 'reasoning',
+      id: `reasoning-${turnId}`,
+      summary: 'Mock reasoning summary.',
+      visibility: 'summary',
+      status: 'completed',
+      startedAt: nowIso(),
+      completedAt: nowIso(),
+    });
+
     this.emitItemStarted(turnId, assistant);
     await sleep(this.delays.stepMs, signal);
     this.emitPatch({
@@ -353,6 +376,56 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
         status: 'completed',
         completedAt: nowIso(),
       },
+    });
+
+    this.emitItemStarted(turnId, {
+      type: 'commandExecution',
+      id: `command-${turnId}`,
+      command: 'npm test -- test/components/chat-v2-rendering.test.ts',
+      output: 'Mock command output.',
+      exitCode: 0,
+      durationMs: 42,
+      status: 'completed',
+      startedAt: nowIso(),
+      completedAt: nowIso(),
+    });
+
+    this.emitItemStarted(turnId, {
+      type: 'fileChange',
+      id: `file-${turnId}`,
+      paths: [
+        {
+          path: 'frontend/src/components/chat/ChatView.tsx',
+          status: 'edited',
+        },
+      ],
+      patch: '@@ -1 +1 @@\n-old\n+new',
+      applyStatus: 'applied',
+      status: 'completed',
+      startedAt: nowIso(),
+      completedAt: nowIso(),
+    });
+
+    this.emitItemStarted(turnId, {
+      type: 'dynamicToolCall',
+      id: `dynamic-${turnId}`,
+      namespace: 'mock',
+      tool: 'grep',
+      arguments: { pattern: 'chat' },
+      result: { matches: 1 },
+      status: 'completed',
+      startedAt: nowIso(),
+      completedAt: nowIso(),
+    });
+
+    this.emitItemStarted(turnId, {
+      type: 'providerExtension',
+      id: `extension-${turnId}`,
+      namespace: 'mock',
+      payload: { kind: 'mockExtension', message: 'Mock provider extension.' },
+      status: 'completed',
+      startedAt: nowIso(),
+      completedAt: nowIso(),
     });
   }
 

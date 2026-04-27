@@ -90,7 +90,7 @@ describe('MockProtocolAdapterV2', () => {
     ]);
   });
 
-  it('sendMessage emits user, turn, assistant, delta, item completion, and turn completion patches', async () => {
+  it('sendMessage emits representative item patches and completes the turn', async () => {
     const adapter = new MockProtocolAdapterV2(zeroDelays);
     const patches = collectPatches(adapter);
     await adapter.connect(config);
@@ -100,16 +100,16 @@ describe('MockProtocolAdapterV2', () => {
       content: 'hello',
     });
 
-    expect(patchTypes(patches)).toEqual([
-      'agent-live-state-updated-v2',
-      'agent-turn-started-v2',
-      'agent-item-started-v2',
-      'agent-item-started-v2',
-      'agent-item-delta-v2',
-      'agent-item-updated-v2',
-      'agent-turn-completed-v2',
-      'agent-live-state-updated-v2',
-    ]);
+    expect(patchTypes(patches)).toEqual(
+      expect.arrayContaining([
+        'agent-live-state-updated-v2',
+        'agent-turn-started-v2',
+        'agent-item-started-v2',
+        'agent-item-delta-v2',
+        'agent-item-updated-v2',
+        'agent-turn-completed-v2',
+      ])
+    );
     expect(patches[1]).toMatchObject({
       type: 'agent-turn-started-v2',
       turn: {
@@ -123,7 +123,13 @@ describe('MockProtocolAdapterV2', () => {
       turnId: 'turn-1',
       item: { type: 'userMessage', id: 'user-turn-1', text: 'hello' },
     });
-    expect(patches[3]).toMatchObject({
+    expect(
+      patches.find(
+        (patch) =>
+          patch.type === 'agent-item-started-v2' &&
+          patch.item.type === 'assistantMessage'
+      )
+    ).toMatchObject({
       type: 'agent-item-started-v2',
       turnId: 'turn-1',
       item: {
@@ -132,13 +138,17 @@ describe('MockProtocolAdapterV2', () => {
         text: '',
       },
     });
-    expect(patches[4]).toMatchObject({
+    expect(
+      patches.find((patch) => patch.type === 'agent-item-delta-v2')
+    ).toMatchObject({
       type: 'agent-item-delta-v2',
       turnId: 'turn-1',
       itemId: 'assistant-turn-1',
       delta: { text: expect.any(String) },
     });
-    expect(patches[5]).toMatchObject({
+    expect(
+      patches.find((patch) => patch.type === 'agent-item-updated-v2')
+    ).toMatchObject({
       type: 'agent-item-updated-v2',
       turnId: 'turn-1',
       item: {
@@ -147,7 +157,9 @@ describe('MockProtocolAdapterV2', () => {
         status: 'completed',
       },
     });
-    expect(patches[6]).toMatchObject({
+    expect(
+      patches.find((patch) => patch.type === 'agent-turn-completed-v2')
+    ).toMatchObject({
       type: 'agent-turn-completed-v2',
       turnId: 'turn-1',
       status: 'completed',
@@ -174,18 +186,25 @@ describe('MockProtocolAdapterV2', () => {
     );
 
     expect(reduced.turns).toHaveLength(1);
-    expect(reduced.turns[0]?.items).toEqual([
-      expect.objectContaining({
-        type: 'userMessage',
-        id: 'user-turn-1',
-        text: 'hello',
-      }),
-      expect.objectContaining({
-        type: 'assistantMessage',
-        id: 'assistant-turn-1',
-        text: 'Mock v2 response complete.',
-      }),
-    ]);
+    expect(reduced.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'userMessage',
+          id: 'user-turn-1',
+          text: 'hello',
+        }),
+        expect.objectContaining({
+          type: 'assistantMessage',
+          id: 'assistant-turn-1',
+          text: 'Mock v2 response complete.',
+        }),
+        expect.objectContaining({ type: 'reasoning' }),
+        expect.objectContaining({ type: 'commandExecution' }),
+        expect.objectContaining({ type: 'fileChange' }),
+        expect.objectContaining({ type: 'dynamicToolCall' }),
+        expect.objectContaining({ type: 'providerExtension' }),
+      ])
+    );
   });
 
   it('queue scenario keeps active turn running and emits queued live state for the second message', async () => {
@@ -494,13 +513,55 @@ describe('MockProtocolAdapterV2', () => {
     expect(createAdapterV2('mock')).toBeInstanceOf(MockProtocolAdapterV2);
   });
 
-  it('advertises queued cancellation capability', () => {
+  it('advertises the full v2 UI capability superset', () => {
     const adapter = new MockProtocolAdapterV2(zeroDelays);
 
-    expect(adapter.capabilities).toMatchObject({
+    expect(adapter.capabilities).toEqual({
+      text: true,
+      reasoning: true,
+      tools: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      questions: true,
+      plans: true,
+      slashCommands: true,
       queue: true,
       interrupt: true,
       cancelQueued: true,
+      resume: true,
+      fork: true,
+      rollback: true,
+      compact: true,
+      telemetry: true,
+      rateLimits: true,
     });
+  });
+
+  it('happy path emits representative UI primitive items', async () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    await adapter.sendMessage({
+      turnId: 'turn-ui',
+      content: 'exercise ui primitives',
+    });
+
+    const startedItems = patches
+      .filter((patch) => patch.type === 'agent-item-started-v2')
+      .map((patch) => patch.item.type);
+
+    expect(startedItems).toEqual(
+      expect.arrayContaining([
+        'userMessage',
+        'reasoning',
+        'assistantMessage',
+        'commandExecution',
+        'fileChange',
+        'dynamicToolCall',
+        'providerExtension',
+      ])
+    );
   });
 });
