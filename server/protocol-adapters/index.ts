@@ -46,6 +46,36 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       telemetry: true,
       rateLimits: true,
     }),
+  opencode: () =>
+    new LegacyProtocolAdapterV2Bridge(new OpenCodeProtocolAdapter(), {
+      text: true,
+      reasoning: true,
+      tools: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      slashCommands: false,
+      queue: false,
+      interrupt: true,
+      cancelQueued: false,
+      resume: false,
+      telemetry: true,
+    }),
+  'opencode-attached': () =>
+    new LegacyProtocolAdapterV2Bridge(new OpenCodeAttachedAdapter(), {
+      text: true,
+      reasoning: true,
+      tools: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      slashCommands: false,
+      queue: false,
+      interrupt: true,
+      cancelQueued: false,
+      resume: false,
+      telemetry: true,
+    }),
 };
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
