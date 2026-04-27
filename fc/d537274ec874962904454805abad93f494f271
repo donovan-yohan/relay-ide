@@ -1,0 +1,27 @@
+server/protocol-adapters/index.ts
+  60f8868c5e85a88c 7,33-48
+test/server/protocol-adapters/codex-adapter.test.ts
+  60f8868c5e85a88c 1-21
+server/protocol-adapters/legacy-v2-bridge.ts
+  60f8868c5e85a88c 1-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "fcd537274ec874962904454805abad93f494f271",
+  "prompts": {
+    "60f8868c5e85a88c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019dcdba-7821-74fc-8205-41c8f094c486",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 105,
+      "total_deletions": 0,
+      "accepted_lines": 109,
+      "overriden_lines": 0
+    }
+  }
+}
