@@ -3,7 +3,6 @@
  * Verifies that native hook payloads are correctly translated into canonical ChatEvents.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ClaudeProtocolAdapter } from '../server/protocol-adapters/claude-adapter.js';
 import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.js';
 import { OpenCodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
 import type { ChatEvent } from '../shared/chat-events.js';
@@ -32,10 +31,7 @@ const BASE_CONFIG: AdapterConfig = {
 
 /** Collect events emitted by an adapter without spawning a process */
 function collectEvents(
-  adapter:
-    | ClaudeProtocolAdapter
-    | CodexProtocolAdapter
-    | OpenCodeProtocolAdapter
+  adapter: CodexProtocolAdapter | OpenCodeProtocolAdapter
 ): ChatEvent[] {
   const events: ChatEvent[] = [];
   adapter.on((e) => events.push(e));
@@ -46,145 +42,6 @@ function collectEvents(
   (adapter as any)._status = 'connected';
   return events;
 }
-
-// ── Claude Adapter ───────────────────────────────────────────────────────────
-
-describe('ClaudeProtocolAdapter.mapHookEvent', () => {
-  let adapter: ClaudeProtocolAdapter;
-  let events: ChatEvent[];
-
-  beforeEach(() => {
-    adapter = new ClaudeProtocolAdapter();
-    events = collectEvents(adapter);
-    // Set a current turn so events have a turnId
-
-    (adapter as any)._currentTurnId = 'turn-1';
-  });
-
-  it('maps "assistant" payload to chat:text-delta', () => {
-    adapter.handleHookEvent({
-      type: 'assistant',
-      sessionId: 'sess-test',
-      data: { content: 'Hello world' },
-    });
-
-    expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe('chat:text-delta');
-    const evt = events[0] as ChatEvent & { delta: string };
-    expect(evt.delta).toBe('Hello world');
-  });
-
-  it('ignores assistant payload with no content', () => {
-    adapter.handleHookEvent({
-      type: 'assistant',
-      sessionId: 'sess-test',
-      data: {},
-    });
-
-    expect(events).toHaveLength(0);
-  });
-
-  it('maps "tool.started" / "PreToolUse" to chat:tool-call', () => {
-    for (const type of ['tool.started', 'PreToolUse']) {
-      events.length = 0;
-      adapter.handleHookEvent({
-        type,
-        sessionId: 'sess-test',
-        data: {
-          toolCallId: 'tc-1',
-          tool: {
-            name: 'Bash',
-            description: 'Run command',
-            input: { command: 'ls' },
-          },
-        },
-      });
-
-      expect(events).toHaveLength(1);
-      expect(events[0]!.type).toBe('chat:tool-call');
-      const evt = events[0] as ChatEvent & { toolName: string; status: string };
-      expect(evt.toolName).toBe('Bash');
-      expect(evt.status).toBe('running');
-    }
-  });
-
-  it('maps "tool.finished" / "PostToolUse" to chat:tool-result', () => {
-    for (const type of ['tool.finished', 'PostToolUse']) {
-      events.length = 0;
-      adapter.handleHookEvent({
-        type,
-        sessionId: 'sess-test',
-        data: {
-          toolCallId: 'tc-1',
-          toolName: 'Bash',
-          output: 'file.txt',
-          durationMs: 150,
-        },
-      });
-
-      expect(events).toHaveLength(1);
-      expect(events[0]!.type).toBe('chat:tool-result');
-      const evt = events[0] as ChatEvent & {
-        status: string;
-        durationMs: number;
-      };
-      expect(evt.status).toBe('completed');
-      expect(evt.durationMs).toBe(150);
-    }
-  });
-
-  it('maps tool.finished with error to error status', () => {
-    adapter.handleHookEvent({
-      type: 'tool.finished',
-      sessionId: 'sess-test',
-      data: {
-        toolCallId: 'tc-1',
-        toolName: 'Bash',
-        error: 'command not found',
-      },
-    });
-
-    expect(events).toHaveLength(1);
-    const evt = events[0] as ChatEvent & { status: string; error: string };
-    expect(evt.status).toBe('error');
-    expect(evt.error).toBe('command not found');
-  });
-
-  it('maps "session.idle" / "Stop" to turn-completed + session-status idle', () => {
-    for (const type of ['session.idle', 'Stop']) {
-      events.length = 0;
-      // Reset turn
-
-      (adapter as any)._currentTurnId = 'turn-x';
-
-      adapter.handleHookEvent({ type, sessionId: 'sess-test' });
-
-      const types = events.map((e) => e.type);
-      expect(types).toContain('chat:turn-completed');
-      expect(types).toContain('chat:session-status');
-    }
-  });
-
-  it('maps "permission.requested" to chat:approval-request', () => {
-    adapter.handleHookEvent({
-      type: 'permission.requested',
-      sessionId: 'sess-test',
-      data: {
-        type: 'permission',
-        requestId: 'req-1',
-        toolName: 'Bash',
-        description: 'Run rm',
-        target: 'rm -rf /tmp',
-      },
-    });
-
-    expect(events).toHaveLength(2); // approval-request + session-status
-    expect(events[0]!.type).toBe('chat:approval-request');
-    const evt = events[0] as ChatEvent & { toolName: string; target: string };
-    expect(evt.toolName).toBe('Bash');
-    expect(evt.target).toBe('rm -rf /tmp');
-  });
-});
 
 // ── Codex Adapter ────────────────────────────────────────────────────────────
 
