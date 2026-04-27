@@ -1,10 +1,10 @@
-.tool-card {
+.tcard {
   border: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
 
-.tool-card__header {
+.tcard__h {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -19,16 +19,16 @@
   font-size: var(--font-size-sm);
 }
 
-.tool-card__header:hover {
+.tcard__h:hover {
   background: var(--surface-hover);
 }
 
-.tool-card__name {
+.tcard__name {
   color: var(--text);
   white-space: nowrap;
 }
 
-.tool-card__description {
+.tcard__desc {
   color: var(--text-muted);
   flex: 1;
   overflow: hidden;
@@ -36,56 +36,73 @@
   white-space: nowrap;
 }
 
-.tool-card__status {
-  margin-left: auto;
-  white-space: nowrap;
-  font-size: var(--font-size-xs);
-}
-
-.tool-card__status--pending {
+.tcard__dur {
   color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
 }
 
-.tool-card__status--running {
+.tcard__status {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.tcard__status--running {
   color: var(--accent);
 }
 
-.tool-card__status--completed {
+.tcard__status--completed {
   color: var(--status-success);
 }
 
-.tool-card__status--error {
+.tcard__status--error {
   color: var(--status-error);
 }
 
-.tool-card__status--declined {
+.tcard__status--declined,
+.tcard__status--pending {
   color: var(--text-muted);
 }
 
-.tool-card__body {
+.tcard__body {
   border-top: 1px solid var(--border);
   padding: 8px 10px;
   background: var(--bg);
 }
 
-.tool-card__input {
+.tcard__body pre {
   margin: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
   overflow-x: auto;
 }
 
+.tcard__body pre + pre {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.tcard__body pre.out {
+  color: var(--text);
+}
+
+.tcard__body pre.err {
+  color: var(--status-error);
+}
+
 @media (max-width: 767px) {
-  .tool-card__description {
+  .tcard__desc {
     text-overflow: ellipsis;
     white-space: nowrap;
     overflow: hidden;
   }
 
-  .tool-card__body {
+  .tcard__body {
     max-height: 120px;
     overflow: auto;
   }
