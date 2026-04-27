@@ -1,0 +1,23 @@
+docs/provider-guide.md
+  60f8868c5e85a88c 1-22,24-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "2148c648294ea80d0e4f5c2074ec97a9761ab00b",
+  "prompts": {
+    "60f8868c5e85a88c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019dcdba-7821-74fc-8205-41c8f094c486",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 157,
+      "total_deletions": 0,
+      "accepted_lines": 156,
+      "overriden_lines": 1
+    }
+  }
+}
