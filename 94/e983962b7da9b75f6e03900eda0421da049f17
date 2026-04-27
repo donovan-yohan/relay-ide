@@ -1,0 +1,31 @@
+docs/design-system/ui_kits/relay-web/tokens.css
+  60f8868c5e85a88c 1-562
+docs/design-system/assets/relay-logo.svg
+  60f8868c5e85a88c 1-8
+docs/design-system/ui_kits/relay-web/README.md
+  60f8868c5e85a88c 1-29
+docs/design-system/colors_and_type.css
+  60f8868c5e85a88c 1-210
+docs/design-system/ui_kits/relay-web/chat.html
+  60f8868c5e85a88c 1-1230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "94e983962b7da9b75f6e03900eda0421da049f17",
+  "prompts": {
+    "60f8868c5e85a88c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019dcdba-7821-74fc-8205-41c8f094c486",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 2039,
+      "total_deletions": 0,
+      "accepted_lines": 2039,
+      "overriden_lines": 0
+    }
+  }
+}
