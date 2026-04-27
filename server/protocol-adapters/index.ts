@@ -76,6 +76,20 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       resume: false,
       telemetry: true,
     }),
+  hermes: () =>
+    new LegacyProtocolAdapterV2Bridge(new HermesProtocolAdapter(), {
+      text: true,
+      reasoning: true,
+      tools: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      slashCommands: false,
+      queue: false,
+      interrupt: true,
+      cancelQueued: false,
+      resume: false,
+    }),
 };
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
