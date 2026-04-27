@@ -4,6 +4,7 @@ import { MockProtocolAdapter } from './mock-adapter.js';
 import { MockProtocolAdapterV2 } from './mock-v2-adapter.js';
 import { CodexProtocolAdapter } from './codex-adapter.js';
 import { ClaudeProtocolAdapter } from './claude-adapter.js';
+import { LegacyProtocolAdapterV2Bridge } from './legacy-v2-bridge.js';
 import { OpenCodeProtocolAdapter } from './opencode-adapter.js';
 import { OpenCodeAttachedAdapter } from './opencode-attached-adapter.js';
 
@@ -29,6 +30,22 @@ export function createAdapter(agentType: string): ProtocolAdapter {
 export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
   mock: () => new MockProtocolAdapterV2(),
   claude: () => new ClaudeProtocolAdapter(),
+  codex: () =>
+    new LegacyProtocolAdapterV2Bridge(new CodexProtocolAdapter(), {
+      text: true,
+      reasoning: true,
+      tools: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      slashCommands: false,
+      queue: false,
+      interrupt: true,
+      cancelQueued: false,
+      resume: false,
+      telemetry: true,
+      rateLimits: true,
+    }),
 };
 
 export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
