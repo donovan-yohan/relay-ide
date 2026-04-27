@@ -67,17 +67,24 @@ describe('web session v2 state', () => {
     expect(session.currentTurnId).toBeNull();
     expect(session.agentState).toBe('idle');
     expect(session.agentSessionV2.turns).toHaveLength(1);
-    expect(session.agentSessionV2.turns[0]?.items).toEqual([
-      expect.objectContaining({
-        type: 'userMessage',
-        text: 'hello from web',
-      }),
-      expect.objectContaining({
-        type: 'assistantMessage',
-        text: 'Mock v2 response complete.',
-        status: 'completed',
-      }),
-    ]);
+    expect(session.agentSessionV2.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'userMessage',
+          text: 'hello from web',
+        }),
+        expect.objectContaining({
+          type: 'assistantMessage',
+          text: 'Mock v2 response complete.',
+          status: 'completed',
+        }),
+        expect.objectContaining({ type: 'reasoning' }),
+        expect.objectContaining({ type: 'commandExecution' }),
+        expect.objectContaining({ type: 'fileChange' }),
+        expect.objectContaining({ type: 'dynamicToolCall' }),
+        expect.objectContaining({ type: 'providerExtension' }),
+      ])
+    );
     expect(session.agentPatchesV2.map((patch) => patch.type)).toContain(
       'agent-turn-completed-v2'
     );
