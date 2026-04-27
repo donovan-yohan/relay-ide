@@ -353,13 +353,15 @@ describe('createWebSession', () => {
       onBackendStateChanged
     );
 
-    // After connect, agentState should be 'idle' (from chat:session-status idle event)
+    // After connect, agentState should be 'idle' (from v2 live-state idle patch)
     expect(session.agentState).toBe('idle');
 
     // Send a message and check state transitions
-    const sendPromise = session.adapterV2
-      ? session.adapterV2.sendMessage({ turnId: 'turn-1', content: 'hello' })
-      : session.adapter.sendMessage('turn-1', 'hello');
+    expect(session.adapterV2).toBeDefined();
+    const sendPromise = session.adapterV2!.sendMessage({
+      turnId: 'turn-1',
+      content: 'hello',
+    });
 
     // Wait for turn-started to fire
     await vi.waitFor(() => {

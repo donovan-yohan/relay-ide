@@ -277,8 +277,8 @@ export interface WebSession extends BaseSession {
   mode: 'web';
   /** Active protocol adapter for this agent backend */
   adapter: ProtocolAdapter;
-  /** Native v2 protocol adapter when the backend has one. */
-  adapterV2?: ProtocolAdapterV2;
+  /** Native v2 protocol adapter for web-chat sessions. */
+  adapterV2: ProtocolAdapterV2;
   /** Canonical v2 web-chat state. */
   agentSessionV2: AgentSessionV2;
   /** Bounded v2 patch buffer for reconnect catch-up. */
