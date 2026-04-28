@@ -1,0 +1,23 @@
+server/index.ts
+  0314b458d38cb5e2 761-763
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "ab22da2aa544b6b220329a06ace7eb693d10cae4",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 7,
+      "accepted_lines": 300,
+      "overriden_lines": 0
+    }
+  }
+}
