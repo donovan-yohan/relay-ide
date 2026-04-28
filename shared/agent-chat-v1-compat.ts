@@ -3,6 +3,8 @@
 // longer need legacy ChatEvent replay. New provider adapters must not import it.
 
 import type {
+  AgentApprovalDecisionV2,
+  AgentApprovalSupportV2,
   AgentItemV2,
   AgentPatchV2,
   AgentSessionLiveStateV2,
@@ -19,6 +21,21 @@ type CompatAgentPatchV2 = AgentPatchV2 & {
     provider?: ChatEventSource;
   };
 };
+
+/** Legacy OpenCode/Hermes approvals support only once-accept and deny. */
+const LEGACY_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
+  scopes: ['once'],
+  amendmentTypes: [],
+  canCancel: false,
+};
+
+function legacyDecisionToV2(
+  decision: 'allow' | 'allow-always' | 'deny'
+): AgentApprovalDecisionV2 {
+  if (decision === 'deny') return { kind: 'decline' };
+  if (decision === 'allow-always') return { kind: 'accept', scope: 'permanent' };
+  return { kind: 'accept', scope: 'once' };
+}
 
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
   switch (event.type) {
@@ -146,7 +163,8 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
             kind: 'permission',
             description: '',
             target: '',
-            decision: event.decision,
+            supported: LEGACY_APPROVAL_SUPPORT,
+            decision: legacyDecisionToV2(event.decision),
             respondedBy: event.respondedBy,
             status: 'completed',
             metadata: { source: event.source },
@@ -243,6 +261,7 @@ function approvalRequestToItem(
     kind: event.kind,
     description: event.description,
     target: event.target,
+    supported: LEGACY_APPROVAL_SUPPORT,
     status: 'pending',
     metadata: compactMetadata({
       source: event.source,

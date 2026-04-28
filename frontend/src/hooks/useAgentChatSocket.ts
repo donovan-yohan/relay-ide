@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   applyAgentPatchV2,
+  type AgentApprovalDecisionV2,
   type AgentPatchV2,
   type AgentSessionV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
@@ -18,10 +19,7 @@ export interface AgentChatSocketState {
   send: (msg: Record<string, unknown>) => boolean;
   sendMessage: (turnId: string, content: string) => void;
   interrupt: (turnId?: string) => void;
-  approve: (
-    requestId: string,
-    decision: 'allow' | 'allow-always' | 'deny'
-  ) => void;
+  approve: (requestId: string, decision: AgentApprovalDecisionV2) => void;
   answer: (requestId: string, answers: Record<string, string[]>) => void;
 }
 
@@ -80,7 +78,7 @@ export function useAgentChatSocket(
   );
 
   const approve = useCallback(
-    (requestId: string, decision: 'allow' | 'allow-always' | 'deny') => {
+    (requestId: string, decision: AgentApprovalDecisionV2) => {
       send({ type: 'agent-approve-v2', requestId, decision });
     },
     [send]

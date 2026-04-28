@@ -8,6 +8,7 @@ import type {
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
 import type {
+  AgentApprovalDecisionV2,
   AgentCapabilitySetV2,
   AgentItemV2,
   AgentSessionLiveStateV2,
@@ -90,7 +91,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private readonly queue: QueuedMessage[] = [];
   private readonly pendingApprovals = new Map<
     string,
-    (decision: AgentApprovalResponseInputV2['decision']) => void
+    (decision: AgentApprovalDecisionV2) => void
   >();
   private readonly delays: MockProtocolAdapterV2Delays;
   private connectGeneration = 0;
@@ -492,7 +493,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
   private waitForApproval(
     requestId: string,
     signal: AbortSignal
-  ): Promise<AgentApprovalResponseInputV2['decision']> {
+  ): Promise<AgentApprovalDecisionV2> {
     return new Promise((resolve, reject) => {
       this.pendingApprovals.set(requestId, resolve);
       signal.addEventListener(

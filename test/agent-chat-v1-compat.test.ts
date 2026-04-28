@@ -65,6 +65,11 @@ describe('Agent Chat v1 compatibility bridge', () => {
           description: 'Run tests',
           target: 'npm test',
           detail: 'from migration test',
+          supported: {
+            scopes: ['once'],
+            amendmentTypes: [],
+            canCancel: false,
+          },
           status: 'pending',
           metadata: {
             source: 'codex',

@@ -8,8 +8,28 @@ import type {
   AgentInterruptInputV2,
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
-import type { AgentCapabilitySetV2 } from '../../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentApprovalDecisionV2,
+  AgentCapabilitySetV2,
+} from '../../shared/agent-chat-protocol-v2.js';
 import { mapChatEventToAgentPatchV2 } from '../../shared/agent-chat-v1-compat.js';
+
+/**
+ * Translate a V2 decision back to the v1 binary form expected by legacy adapters.
+ * Legacy adapters (opencode, hermes) only support once/permanent accept and deny.
+ * Unsupported decisions (cancel, session/turn scope, amendments) fall back to deny.
+ */
+function v2DecisionToLegacy(
+  decision: AgentApprovalDecisionV2
+): 'allow' | 'allow-always' | 'deny' {
+  if (decision.kind === 'decline' || decision.kind === 'cancel') {
+    return 'deny';
+  }
+  // kind === 'accept'
+  const scope = decision.scope ?? 'once';
+  if (scope === 'permanent') return 'allow-always';
+  return 'allow';
+}
 
 export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
   readonly runtimeOwnership: 'spawned' | 'attached';
@@ -62,7 +82,10 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
   }
 
   async respondToApproval(input: AgentApprovalResponseInputV2): Promise<void> {
-    await this.inner.respondToApproval(input.requestId, input.decision);
+    await this.inner.respondToApproval(
+      input.requestId,
+      v2DecisionToLegacy(input.decision)
+    );
   }
 
   async respondToInput(input: AgentInputResponseInputV2): Promise<void> {

@@ -1,5 +1,6 @@
 import React from 'react';
 import type {
+  AgentApprovalDecisionV2,
   AgentItemV2,
   AgentSessionV2,
   AgentSlashCommandV2,
@@ -20,10 +21,7 @@ interface TurnProps {
   index: number;
   session: AgentSessionV2;
   eventVerbosity?: EventVerbosity;
-  onApprove: (
-    requestId: string,
-    decision: 'allow' | 'allow-always' | 'deny'
-  ) => void;
+  onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void;
   /** Slash command catalog for skill token highlighting in user messages. */
   slashCommands?: AgentSlashCommandV2[];
 }
@@ -70,7 +68,7 @@ function renderUserMessage(text: string, commandIndex: Set<string>): React.React
 function renderItem(
   item: AgentItemV2,
   eventVerbosity: EventVerbosity,
-  onApprove: TurnProps['onApprove'],
+  onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void,
   commandIndex: Set<string>
 ): React.ReactNode {
   if (!shouldRenderItem(item, eventVerbosity)) return null;

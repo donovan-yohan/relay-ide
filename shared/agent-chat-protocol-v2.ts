@@ -189,15 +189,50 @@ export interface AgentDynamicToolCallItemV2 extends AgentItemBaseV2 {
   result?: unknown;
 }
 
+export type AgentApprovalDecisionV2 =
+  | {
+      kind: 'accept';
+      scope?: 'once' | 'session' | 'turn' | 'permanent';
+      amendments?: ApprovalAmendmentV2[];
+    }
+  | { kind: 'decline' }
+  | { kind: 'cancel' };
+
+export type ApprovalAmendmentV2 =
+  | { type: 'execpolicy'; payload: Record<string, unknown> }
+  | { type: 'networkPolicy'; payload: Record<string, unknown> }
+  | { type: 'permissionGrant'; permissions: string[] };
+
+export type AgentApprovalKindV2 =
+  | 'permission'
+  | 'command'
+  | 'patch'
+  | 'permissionsGrant'
+  | 'elicitation';
+
+export type AgentApprovalDetailsV2 =
+  | { kind: 'command'; command: string; cwd: string; commandActions?: unknown[] }
+  | { kind: 'patch'; diff?: string; changes?: { path: string; kind: string; diff?: string }[] }
+  | { kind: 'permissionsGrant'; permissions: string[] }
+  | { kind: 'elicitation'; serverName: string; mode: string; message: string; requestedSchema?: unknown };
+
+export interface AgentApprovalSupportV2 {
+  scopes: ('once' | 'session' | 'turn' | 'permanent')[];
+  amendmentTypes: ('execpolicy' | 'networkPolicy' | 'permissionGrant')[];
+  canCancel: boolean;
+}
+
 export interface AgentApprovalItemV2 extends AgentItemBaseV2 {
   type: 'approval';
   requestId: string;
-  kind: 'command' | 'file' | 'permission' | 'mcp' | (string & {});
+  kind: AgentApprovalKindV2 | (string & {});
   description: string;
   target: string;
   detail?: string;
-  decision?: 'allow' | 'allow-always' | 'deny';
+  decision?: AgentApprovalDecisionV2;
   respondedBy?: 'user' | 'timeout';
+  details?: AgentApprovalDetailsV2;
+  supported?: AgentApprovalSupportV2;
 }
 
 export interface AgentQuestionItemV2 extends AgentItemBaseV2 {
@@ -358,7 +393,7 @@ export type AgentCommandV2 =
       type: 'agent-approve-v2';
       sessionId: string;
       requestId: string;
-      decision: 'allow' | 'allow-always' | 'deny';
+      decision: AgentApprovalDecisionV2;
     }
   | {
       type: 'agent-answer-v2';

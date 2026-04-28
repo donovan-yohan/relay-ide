@@ -1,5 +1,13 @@
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import type { CanUseTool, PermissionMode, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  CanUseTool,
+  PermissionMode,
+  PermissionResult,
+  PermissionUpdate,
+  Query,
+  SDKUserMessage,
+  SlashCommand,
+} from '@anthropic-ai/claude-agent-sdk';
 import { BaseProtocolAdapterV2 } from '../protocol-adapter-v2.js';
 import type {
   AdapterConfig,
@@ -10,9 +18,12 @@ import type {
   AgentSendMessageInputV2,
 } from '../protocol-adapter-v2.js';
 import type {
+  AgentApprovalDecisionV2,
+  AgentApprovalSupportV2,
   AgentCapabilitySetV2,
-  AgentItemV2,
   AgentSessionLiveStateV2,
+  AgentSessionUpdatedPatchV2,
+  AgentSlashCommandV2,
   AgentUsageV2,
 } from '../../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -21,7 +32,7 @@ import { createLogger } from '../logger.js';
 const logger = createLogger('claude-adapter');
 
 type QueryParams = {
-  prompt: string;
+  prompt: string | AsyncIterable<SDKUserMessage>;
   options?: {
     abortController?: AbortController;
     cwd?: string;
@@ -35,18 +46,15 @@ type QueryParams = {
   };
 };
 
-export type ClaudeQuery = AsyncGenerator<unknown, void> & {
-  interrupt?: () => Promise<void>;
-  close?: () => void;
-};
-
-export type ClaudeQueryFunction = (params: QueryParams) => ClaudeQuery;
+export type ClaudeQueryFunction = (params: QueryParams) => Query;
 
 interface QueuedClaudeMessage {
   input: AgentSendMessageInputV2;
   resolve: () => void;
   reject: (err: unknown) => void;
 }
+
+type ClaudeEventVisibility = 'normal' | 'debug' | 'trace';
 
 const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   text: true,
@@ -69,6 +77,93 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   rateLimits: true,
 };
 
+const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] = [
+  {
+    id: 'relay:clear',
+    name: 'clear',
+    description: 'Start a new session with empty context',
+    aliases: ['reset', 'new'],
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'clear',
+  },
+  {
+    id: 'relay:resume',
+    name: 'resume',
+    description: 'Resume a saved Claude session',
+    aliases: ['continue'],
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'resume',
+  },
+  {
+    id: 'relay:model',
+    name: 'model',
+    description: 'Switch model for subsequent Claude responses',
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'relay-control',
+    collisionKey: 'model',
+  },
+];
+
+/** Claude supports only once/permanent accept and deny — no cancel, no amendments. */
+const CLAUDE_APPROVAL_SUPPORT: AgentApprovalSupportV2 = {
+  scopes: ['once', 'permanent'],
+  amendmentTypes: [],
+  canCancel: false,
+};
+
+/**
+ * Translate a normalized V2 approval decision into the Claude SDK permission result.
+ * Throws for decisions that Claude does not support so the UI can gate them using
+ * `supported` and the adapter never receives them in practice.
+ */
+function claudeDecisionFromV2(
+  decision: AgentApprovalDecisionV2,
+  requestId: string,
+  suggestions: PermissionUpdate[] | undefined
+): PermissionResult {
+  if (decision.kind === 'decline') {
+    return {
+      behavior: 'deny',
+      message: 'Denied by user',
+      toolUseID: requestId,
+      decisionClassification: 'user_reject',
+    };
+  }
+
+  if (decision.kind === 'cancel') {
+    throw new Error(
+      'Claude does not support cancel decisions. UI must gate cancel using supported.canCancel.'
+    );
+  }
+
+  // kind === 'accept'
+  const scope = decision.scope ?? 'once';
+
+  if (scope === 'session' || scope === 'turn') {
+    throw new Error(
+      `Claude does not support scope '${scope}'. UI must gate this using supported.scopes.`
+    );
+  }
+
+  if (decision.amendments && decision.amendments.length > 0) {
+    throw new Error(
+      'Claude does not support amendments. UI must gate amendments using supported.amendmentTypes.'
+    );
+  }
+
+  return {
+    behavior: 'allow',
+    toolUseID: requestId,
+    ...(scope === 'permanent' && suggestions ? { updatedPermissions: suggestions } : {}),
+    decisionClassification: scope === 'permanent' ? 'user_permanent' : 'user_temporary',
+  };
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -83,6 +178,88 @@ function stringField(value: unknown, fallback = ''): string {
 
 function objectField(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+function normalizeCommandName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.startsWith('/') ? trimmed.slice(1) : trimmed;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => normalizeCommandName(value)).filter(Boolean))];
+}
+
+function normalizeSlashCommand(cmd: SlashCommand): AgentSlashCommandV2 {
+  const name = normalizeCommandName(cmd.name);
+  const argumentHint = Array.isArray(cmd.argumentHint)
+    ? cmd.argumentHint.filter((part) => typeof part === 'string').join(' ')
+    : cmd.argumentHint;
+
+  return {
+    id: `sdk:${name}`,
+    name,
+    ...(typeof cmd.description === 'string' && cmd.description.length > 0
+      ? { description: cmd.description }
+      : {}),
+    ...(typeof argumentHint === 'string' && argumentHint.length > 0
+      ? { argumentHint }
+      : {}),
+    ...(Array.isArray(cmd.aliases) && cmd.aliases.length > 0
+      ? { aliases: uniqueStrings(cmd.aliases.filter((a): a is string => typeof a === 'string')) }
+      : {}),
+    source: 'sdk',
+    sourceLabel: 'Claude',
+    dispatch: 'agent',
+    collisionKey: name.toLowerCase(),
+  };
+}
+
+function mergeAliases(base: AgentSlashCommandV2, extraAliases?: string[]): AgentSlashCommandV2 {
+  if (!extraAliases || extraAliases.length === 0) return base;
+  const aliases = uniqueStrings([...(base.aliases ?? []), ...extraAliases]).filter(
+    (alias) => alias.toLowerCase() !== base.name.toLowerCase()
+  );
+  return aliases.length > 0 ? { ...base, aliases } : base;
+}
+
+function mergeClaudeCommandCatalog(sdkCommands: AgentSlashCommandV2[]): AgentSlashCommandV2[] {
+  const byName = new Map<string, AgentSlashCommandV2>();
+
+  for (const command of sdkCommands) {
+    const key = normalizeCommandName(command.name).toLowerCase();
+    if (!key || byName.has(key)) continue;
+    const relayOverride = RELAY_CLAUDE_COMMANDS.find((entry) => entry.name === key);
+    byName.set(key, mergeAliases(command, relayOverride?.aliases));
+  }
+
+  for (const relayCommand of RELAY_CLAUDE_COMMANDS) {
+    const key = relayCommand.name.toLowerCase();
+    if (!byName.has(key)) byName.set(key, relayCommand);
+  }
+
+  return [...byName.values()];
+}
+
+function claudeEventVisibility(message: Record<string, unknown>): ClaudeEventVisibility {
+  if (message.type === 'stream_event') return 'trace';
+  if (message.type === 'rate_limit_event') {
+    const info = objectField(message.rate_limit_info);
+    return info.status === 'allowed' ? 'trace' : 'debug';
+  }
+  if (message.type === 'system') {
+    const subtype = stringField(message.subtype);
+    if (subtype === 'hook_started') return 'trace';
+    if (subtype === 'hook_response') {
+      const outcome = stringField(message.outcome);
+      const stdout = stringField(message.stdout);
+      const stderr = stringField(message.stderr);
+      return outcome === 'success' && stdout.length === 0 && stderr.length === 0
+        ? 'trace'
+        : 'debug';
+    }
+    if (subtype.startsWith('hook_')) return 'debug';
+  }
+  return 'debug';
 }
 
 function contentBlocks(message: Record<string, unknown>): Record<string, unknown>[] {
@@ -147,6 +324,49 @@ function permissionMode(value: string | undefined): PermissionMode | undefined {
   return undefined;
 }
 
+class StreamInputController {
+  private queue: SDKUserMessage[] = [];
+  private waiter: ((msg: SDKUserMessage | null) => void) | null = null;
+  private closed = false;
+
+  push(msg: SDKUserMessage): void {
+    if (this.closed) return;
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w(msg);
+    } else {
+      this.queue.push(msg);
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const w = this.waiter;
+    this.waiter = null;
+    w?.(null);
+  }
+
+  iterator(): AsyncGenerator<SDKUserMessage, void, unknown> {
+    const self = this;
+    return (async function* () {
+      while (true) {
+        if (self.queue.length > 0) {
+          yield self.queue.shift() as SDKUserMessage;
+          continue;
+        }
+        if (self.closed) return;
+        const next = await new Promise<SDKUserMessage | null>((resolve) => {
+          self.waiter = resolve;
+        });
+        if (next === null) return;
+        yield next;
+      }
+    })();
+  }
+}
+
 export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   readonly agentType = 'claude';
   readonly runtimeOwnership = 'spawned' as const;
@@ -154,17 +374,23 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   private _status: AdapterStatus = 'disconnected';
   private config: AdapterConfig | null = null;
+  private input: StreamInputController | null = null;
+  private activeQuery: Query | null = null;
+  private consumeTask: Promise<void> | null = null;
+  private sessionAbort: AbortController | null = null;
   private activeTurnId: string | null = null;
   private activeStartedAt: string | null = null;
-  private activeController: AbortController | null = null;
-  private activeQuery: ClaudeQuery | null = null;
+  private completedActiveTurn = false;
   private readonly queue: QueuedClaudeMessage[] = [];
   private readonly pendingApprovals = new Map<
     string,
-    (decision: AgentApprovalResponseInputV2['decision']) => void
+    (decision: AgentApprovalDecisionV2) => void
   >();
-  private completedActiveTurn = false;
   private readonly queryFn: ClaudeQueryFunction;
+  private claudeSessionId: string | null = null;
+  private slashCommandsLoaded = false;
+  private slashCommandsLoadTask: Promise<void> | null = null;
+  private providerExtensionSeq = 0;
 
   constructor(queryFn: ClaudeQueryFunction = sdkQuery as unknown as ClaudeQueryFunction) {
     super();
@@ -177,7 +403,35 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
 
   async connect(config: AdapterConfig): Promise<void> {
     this.config = config;
+    this.input = new StreamInputController();
+    this.sessionAbort = new AbortController();
+    const mode = permissionMode(config.permissionMode);
+    const additionalDirs = isRecord(config.extra)
+      ? config.extra.additionalDirectories
+      : undefined;
+
+    const query = this.queryFn({
+      prompt: this.input.iterator(),
+      options: {
+        abortController: this.sessionAbort,
+        cwd: config.cwd,
+        ...(config.model ? { model: config.model } : {}),
+        ...(mode ? { permissionMode: mode } : {}),
+        ...(Array.isArray(additionalDirs)
+          ? { additionalDirectories: additionalDirs as string[] }
+          : {}),
+        env: {
+          ...process.env,
+          CLAUDE_CODE_ENTRYPOINT: 'sdk-ts',
+        },
+        includePartialMessages: true,
+        includeHookEvents: true,
+        canUseTool: this.handleCanUseTool,
+      },
+    });
+    this.activeQuery = query;
     this._status = 'connected';
+    this.consumeTask = this.consumeMessages();
     this.emitSnapshot();
     this.emitLiveState({
       status: 'idle',
@@ -189,18 +443,33 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       fastModeAvailable: true,
       error: null,
     });
+    void this.refreshSlashCommands();
   }
 
   protected async onDisconnect(): Promise<void> {
-    this.activeController?.abort();
-    this.activeQuery?.close?.();
+    this._status = 'disconnected';
+    this.input?.close();
+    try {
+      this.activeQuery?.close?.();
+    } catch (err) {
+      logger.warn('Claude query close failed:', err);
+    }
+    this.sessionAbort?.abort();
     this.rejectQueued(new Error('Claude adapter disconnected'));
     this.pendingApprovals.clear();
+    if (this.consumeTask) {
+      await this.consumeTask.catch(() => undefined);
+    }
     this.activeTurnId = null;
     this.activeStartedAt = null;
-    this.activeController = null;
+    this.completedActiveTurn = false;
     this.activeQuery = null;
-    this._status = 'disconnected';
+    this.consumeTask = null;
+    this.input = null;
+    this.sessionAbort = null;
+    this.claudeSessionId = null;
+    this.slashCommandsLoaded = false;
+    this.slashCommandsLoadTask = null;
   }
 
   async reconnect(): Promise<void> {
@@ -226,7 +495,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       });
     }
 
-    return this.startTurn(input);
+    this.startTurn(input);
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
@@ -237,9 +506,8 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       await this.activeQuery?.interrupt?.().catch((err: unknown) => {
         logger.warn('Claude interrupt request failed:', err);
       });
-      this.activeController?.abort();
       this.completeActiveTurn('interrupted');
-      return;
+      this.drainQueue();
     }
   }
 
@@ -254,14 +522,15 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     // Claude Agent SDK questions are not mapped in this phase.
   }
 
-  private async startTurn(input: AgentSendMessageInputV2): Promise<void> {
-    if (!this.config) throw new Error('Cannot start Claude turn before connect');
+  private startTurn(input: AgentSendMessageInputV2): void {
+    if (!this.config || !this.input) {
+      throw new Error('Cannot start Claude turn before connect');
+    }
 
     const startedAt = nowIso();
     this.activeTurnId = input.turnId;
     this.activeStartedAt = startedAt;
     this.completedActiveTurn = false;
-    this.activeController = new AbortController();
 
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -297,59 +566,34 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       error: null,
     });
 
+    this.input.push({
+      type: 'user',
+      message: { role: 'user', content: input.content },
+      parent_tool_use_id: null,
+    });
+  }
+
+  private async consumeMessages(): Promise<void> {
+    if (!this.activeQuery) return;
     try {
-      const mode = permissionMode(this.config.permissionMode);
-      const query = this.queryFn({
-        prompt: input.content,
-        options: {
-          abortController: this.activeController,
-          cwd: this.config.cwd,
-          ...(this.config.model ? { model: this.config.model } : {}),
-          ...(mode ? { permissionMode: mode } : {}),
-          ...(Array.isArray(this.config.extra?.additionalDirectories)
-            ? {
-                additionalDirectories: this.config.extra
-                  .additionalDirectories as string[],
-              }
-            : {}),
-          env: {
-            ...process.env,
-            CLAUDE_CODE_ENTRYPOINT: 'sdk-ts',
-          },
-          includePartialMessages: true,
-          includeHookEvents: true,
-          canUseTool: this.handleCanUseTool,
-        },
-      });
-      this.activeQuery = query;
-
-      for await (const message of query) {
-        this.handleSdkMessage(input.turnId, message);
-      }
-
-      if (!this.completedActiveTurn) {
-        this.completeActiveTurn('completed');
+      for await (const message of this.activeQuery) {
+        this.handleSdkMessage(message);
       }
     } catch (err) {
-      if (!this.completedActiveTurn) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.emitPatch({
-          type: 'agent-error-v2',
-          sessionId: this.sessionId,
-          timestamp: nowIso(),
-          turnId: input.turnId,
-          message,
-        });
-        this.completeActiveTurn('failed', undefined, message);
+      if (this._status === 'connected') {
+        logger.warn('Claude stream consume error:', err);
+        if (this.activeTurnId !== null && !this.completedActiveTurn) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.emitPatch({
+            type: 'agent-error-v2',
+            sessionId: this.sessionId,
+            timestamp: nowIso(),
+            turnId: this.activeTurnId,
+            message,
+          });
+          this.completeActiveTurn('failed', undefined, message);
+        }
       }
-    } finally {
-      this.activeController = null;
-      this.activeQuery = null;
-      if (this.activeTurnId === input.turnId) {
-        this.activeTurnId = null;
-        this.activeStartedAt = null;
-      }
-      this.drainQueue();
     }
   }
 
@@ -372,6 +616,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         description: options.title ?? options.displayName ?? `Claude wants to use ${toolName}`,
         target,
         ...(options.description ? { detail: options.description } : {}),
+        supported: CLAUDE_APPROVAL_SUPPORT,
         status: 'pending',
         startedAt,
       },
@@ -384,7 +629,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
     });
 
-    const decision = await new Promise<AgentApprovalResponseInputV2['decision']>(
+    const decision = await new Promise<AgentApprovalDecisionV2>(
       (resolve, reject) => {
         this.pendingApprovals.set(requestId, resolve);
         options.signal.addEventListener(
@@ -411,6 +656,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         description: options.title ?? options.displayName ?? `Claude wants to use ${toolName}`,
         target,
         ...(options.description ? { detail: options.description } : {}),
+        supported: CLAUDE_APPROVAL_SUPPORT,
         decision,
         respondedBy: 'user',
         status: 'completed',
@@ -425,42 +671,41 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
     });
 
-    if (decision === 'deny') {
-      return {
-        behavior: 'deny',
-        message: 'Denied by user',
-        toolUseID: requestId,
-        decisionClassification: 'user_reject',
-      } satisfies PermissionResult;
-    }
-
-    return {
-      behavior: 'allow',
-      toolUseID: requestId,
-      ...(decision === 'allow-always' && options.suggestions
-        ? { updatedPermissions: options.suggestions }
-        : {}),
-      decisionClassification:
-        decision === 'allow-always' ? 'user_permanent' : 'user_temporary',
-    } satisfies PermissionResult;
+    return claudeDecisionFromV2(decision, requestId, options.suggestions);
   };
 
-  private handleSdkMessage(turnId: string, message: unknown): void {
+  private handleSdkMessage(message: unknown): void {
     if (!isRecord(message)) return;
 
     if (message.type === 'system' && message.subtype === 'init') {
-      this.emitSnapshot(stringField(message.session_id));
+      const sessionId = stringField(message.session_id);
+      const update: Partial<
+        Pick<AgentSessionUpdatedPatchV2, 'providerSession'>
+      > = {};
+      if (sessionId && sessionId !== this.claudeSessionId) {
+        this.claudeSessionId = sessionId;
+        update.providerSession = { claudeSessionId: sessionId };
+      }
+      if (Object.keys(update).length > 0) {
+        this.emitSessionUpdate(update);
+      }
+      void this.refreshSlashCommands();
       return;
     }
 
     if (message.type === 'assistant') {
-      this.handleAssistantMessage(turnId, message);
+      if (this.activeTurnId === null) return;
+      this.handleAssistantMessage(this.activeTurnId, message);
       return;
     }
 
     if (message.type === 'result') {
+      if (this.activeTurnId === null) return;
+      const turnId = this.activeTurnId;
       if (message.subtype !== 'success') {
-        const errors = Array.isArray(message.errors) ? message.errors.join('\n') : 'Claude turn failed';
+        const errors = Array.isArray(message.errors)
+          ? message.errors.join('\n')
+          : 'Claude turn failed';
         this.emitPatch({
           type: 'agent-error-v2',
           sessionId: this.sessionId,
@@ -472,10 +717,17 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       } else {
         this.completeActiveTurn('completed', usageFromResult(message));
       }
+      this.drainQueue();
       return;
     }
 
-    this.emitProviderExtension(turnId, message);
+    if (this.activeTurnId !== null) {
+      this.emitProviderExtension(
+        this.activeTurnId,
+        message,
+        claudeEventVisibility(message)
+      );
+    }
   }
 
   private handleAssistantMessage(turnId: string, message: Record<string, unknown>): void {
@@ -542,7 +794,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       } else if (type === 'tool_use') {
         this.emitToolUse(turnId, block);
       } else {
-        this.emitProviderExtension(turnId, block);
+        this.emitProviderExtension(turnId, block, 'debug');
       }
     }
   }
@@ -615,6 +867,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   ): void {
     if (this.completedActiveTurn || this.activeTurnId === null) return;
     this.completedActiveTurn = true;
+    const turnId = this.activeTurnId;
     const completedAt = nowIso();
     const durationMs = this.activeStartedAt
       ? Date.now() - Date.parse(this.activeStartedAt)
@@ -624,13 +877,15 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       type: 'agent-turn-completed-v2',
       sessionId: this.sessionId,
       timestamp: completedAt,
-      turnId: this.activeTurnId,
+      turnId,
       status,
       completedAt,
       ...(durationMs !== undefined ? { durationMs } : {}),
       ...(usage !== undefined ? { usage } : {}),
       ...(error !== undefined ? { error } : {}),
     });
+    this.activeTurnId = null;
+    this.activeStartedAt = null;
     this.emitLiveState({
       status: this.queue.length > 0 ? 'working' : 'idle',
       activeTurnId: null,
@@ -645,7 +900,12 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (this._status !== 'connected' || this.activeTurnId !== null) return;
     const queued = this.queue.shift();
     if (!queued) return;
-    this.startTurn(queued.input).then(queued.resolve, queued.reject);
+    try {
+      this.startTurn(queued.input);
+      queued.resolve();
+    } catch (err) {
+      queued.reject(err);
+    }
   }
 
   private rejectQueued(err: unknown): void {
@@ -654,7 +914,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (queued.length > 0) this.emitLiveState({ queueLength: 0 });
   }
 
-  private emitSnapshot(claudeSessionId?: string): void {
+  private emitSnapshot(): void {
     if (!this.config) return;
     this.emitPatch({
       type: 'agent-session-snapshot-v2',
@@ -665,7 +925,6 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         provider: 'claude',
         cwd: this.config.cwd,
         capabilities: this.capabilities,
-        ...(claudeSessionId ? { providerSession: { claudeSessionId } } : {}),
         config: {
           ...(this.config.model ? { model: this.config.model } : {}),
           ...(this.config.permissionMode
@@ -676,7 +935,84 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     });
   }
 
-  private emitProviderExtension(turnId: string, payload: Record<string, unknown>): void {
+  private emitSessionUpdate(update: {
+    providerSession?: Record<string, string>;
+    capabilities?: AgentCapabilitySetV2;
+    config?: AgentSessionUpdatedPatchV2['config'];
+    slashCommands?: AgentSlashCommandV2[];
+  }): void {
+    this.emitPatch({
+      type: 'agent-session-updated-v2',
+      sessionId: this.sessionId,
+      timestamp: nowIso(),
+      ...(update.providerSession !== undefined
+        ? { providerSession: update.providerSession }
+        : {}),
+      ...(update.capabilities !== undefined
+        ? { capabilities: update.capabilities }
+        : {}),
+      ...(update.config !== undefined ? { config: update.config } : {}),
+      ...(update.slashCommands !== undefined
+        ? { slashCommands: update.slashCommands }
+        : {}),
+    });
+  }
+
+  private async refreshSlashCommands(): Promise<void> {
+    if (this.slashCommandsLoaded) return;
+    if (this.slashCommandsLoadTask) {
+      await this.slashCommandsLoadTask;
+      return;
+    }
+    const query = this.activeQuery;
+    const fetchCommands = query?.supportedCommands;
+    if (typeof fetchCommands !== 'function') return;
+
+    let task: Promise<void> | null = null;
+    task = (async () => {
+      try {
+        let commands: unknown[] | undefined;
+        const fetchInitialization = query?.initializationResult;
+        if (typeof fetchInitialization === 'function') {
+          const initialization = await fetchInitialization.call(query);
+          if (isRecord(initialization) && Array.isArray(initialization.commands)) {
+            commands = initialization.commands;
+          }
+        }
+        if (commands === undefined) {
+          commands = await fetchCommands.call(query);
+        }
+        if (!Array.isArray(commands)) return;
+        if (this._status !== 'connected' || this.activeQuery !== query) return;
+
+        const sdkCommands: AgentSlashCommandV2[] = commands
+          .filter(
+            (cmd): cmd is SlashCommand =>
+              isRecord(cmd) && typeof cmd.name === 'string' && cmd.name.length > 0
+          )
+          .map(normalizeSlashCommand);
+        const normalized = mergeClaudeCommandCatalog(sdkCommands);
+        this.slashCommandsLoaded = true;
+        this.emitSessionUpdate({ slashCommands: normalized });
+      } catch (err) {
+        logger.warn('Claude supportedCommands fetch failed:', err);
+      } finally {
+        if (task !== null && this.slashCommandsLoadTask === task) {
+          this.slashCommandsLoadTask = null;
+        }
+      }
+    })();
+
+    this.slashCommandsLoadTask = task;
+    await task;
+  }
+
+  private emitProviderExtension(
+    turnId: string,
+    payload: Record<string, unknown>,
+    visibility: ClaudeEventVisibility = 'normal'
+  ): void {
+    const seq = ++this.providerExtensionSeq;
     this.emitPatch({
       type: 'agent-item-started-v2',
       sessionId: this.sessionId,
@@ -684,9 +1020,12 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       turnId,
       item: {
         type: 'providerExtension',
-        id: `ext-claude-${turnId}-${Date.now()}`,
+        id: `ext-claude-${turnId}-${seq}`,
         namespace: 'claude',
         payload,
+        ...(visibility === 'normal'
+          ? {}
+          : { metadata: { eventVisibility: visibility } }),
         status: 'completed',
         startedAt: nowIso(),
         completedAt: nowIso(),

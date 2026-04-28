@@ -11,6 +11,7 @@ import { createLogger } from './logger.js';
 import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
+import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 
 const logger = createLogger('ws');
 
@@ -91,16 +92,28 @@ function interruptAgentV2(
   });
 }
 
-function approvalDecision(
+function parseApprovalDecision(
   parsed: Record<string, unknown>
-): 'allow' | 'allow-always' | 'deny' | null {
+): AgentApprovalDecisionV2 | null {
   const decision = parsed['decision'];
-  if (
-    decision === 'allow' ||
-    decision === 'allow-always' ||
-    decision === 'deny'
-  ) {
-    return decision;
+  if (typeof decision !== 'object' || decision === null) return null;
+  const d = decision as Record<string, unknown>;
+  const kind = d['kind'];
+  if (kind === 'decline') return { kind: 'decline' };
+  if (kind === 'cancel') return { kind: 'cancel' };
+  if (kind === 'accept') {
+    const scope = d['scope'];
+    const result: Extract<AgentApprovalDecisionV2, { kind: 'accept' }> = { kind: 'accept' };
+    if (scope === 'once' || scope === 'session' || scope === 'turn' || scope === 'permanent') {
+      result.scope = scope;
+    }
+    const amendments = d['amendments'];
+    if (Array.isArray(amendments)) {
+      result.amendments = amendments as AgentApprovalDecisionV2 extends { amendments?: infer A }
+        ? NonNullable<A>
+        : never;
+    }
+    return result;
   }
   return null;
 }
@@ -110,7 +123,7 @@ function approveAgentV2(
   session: Extract<Session, { mode: 'web' }>,
   parsed: Record<string, unknown>
 ): void {
-  const decision = approvalDecision(parsed);
+  const decision = parseApprovalDecision(parsed);
   if (decision === null) {
     logger.warn('ws: invalid v2 approval decision', {
       decision: parsed['decision'],

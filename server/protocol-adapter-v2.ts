@@ -6,6 +6,7 @@ import type {
 } from './protocol-adapter.js';
 import {
   isAgentPatchV2,
+  type AgentApprovalDecisionV2,
   type AgentCapabilitySetV2,
   type AgentPatchV2,
 } from '../shared/agent-chat-protocol-v2.js';
@@ -27,7 +28,7 @@ export interface AgentInterruptInputV2 {
 
 export interface AgentApprovalResponseInputV2 {
   requestId: string;
-  decision: 'allow' | 'allow-always' | 'deny';
+  decision: AgentApprovalDecisionV2;
 }
 
 export interface AgentInputResponseInputV2 {

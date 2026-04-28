@@ -81,12 +81,75 @@
   color: var(--status-success);
 }
 
-.acard__btn--always {
+.acard__btn--scope {
+  color: var(--text-muted);
+}
+
+.acard__btn--amendment {
   color: var(--text-muted);
 }
 
 .acard__btn--deny {
   color: var(--status-error);
+}
+
+.acard__btn--cancel {
+  color: var(--text-muted);
+}
+
+.acard__code {
+  margin: 0;
+  padding: 4px 10px 6px;
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
+}
+
+.acard__code--diff {
+  color: var(--text-muted);
+}
+
+.acard__details {
+  padding: 2px 0;
+}
+
+.acard__detail-label {
+  padding: 0 10px 2px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.acard__patch-files {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+.acard__patch-file {
+  display: flex;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+}
+
+.acard__patch-kind {
+  color: var(--text-muted);
+}
+
+.acard__patch-path {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.acard__permissions {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+.acard__permission {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  padding: 1px 0;
 }
 
 @media (max-width: 767px) {

@@ -150,6 +150,14 @@ function makeSession(overrides: Partial<AgentSessionV2> = {}): AgentSessionV2 {
             payload: { kind: 'FastModeUnavailable', reason: 'model' },
             status: 'completed',
           },
+          {
+            id: 'ext-trace-1',
+            type: 'providerExtension',
+            namespace: 'claude',
+            payload: { type: 'stream_event', event: { type: 'message_stop' } },
+            metadata: { eventVisibility: 'trace' },
+            status: 'completed',
+          },
         ],
       },
     ],
@@ -234,9 +242,9 @@ describe('chat v2 rendering against chat.html primitives', () => {
     await clickByText('allow always');
     await clickByText('deny');
 
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', 'allow');
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', 'allow-always');
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', 'deny');
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'accept', scope: 'once' });
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'accept', scope: 'permanent' });
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'decline' });
   });
 
   it('hides queued-message cancel buttons when the provider cannot cancel queued messages', async () => {
@@ -248,5 +256,21 @@ describe('chat v2 rendering against chat.html primitives', () => {
 
     expect(container.querySelector('.queue')).toBeTruthy();
     expect(container.querySelector('.queue__cancel')).toBeNull();
+  });
+
+  it('hides trace provider events by default and reveals them with the trace control', async () => {
+    await renderChat();
+
+    expect(container.textContent).not.toContain('message_stop');
+
+    const traceButton = Array.from(container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent === 'trace'
+    );
+    expect(traceButton).toBeTruthy();
+    await act(async () => {
+      traceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('message_stop');
   });
 });
