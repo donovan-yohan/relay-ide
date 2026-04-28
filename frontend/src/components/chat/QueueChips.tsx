@@ -15,8 +15,7 @@ export const QueueChips: React.FC<QueueChipsProps> = ({ session }) => {
   return (
     <div className="queue" aria-label="queued messages">
       <div className="queue__label">
-        <span className="ct">{queueLength} queued</span> · will run after
-        current turn finishes
+        <span className="ct">{queueLength} queued</span> · will run after current turn finishes
       </div>
       {chips.map((position) => (
         <div className="queue__item" key={position}>
@@ -30,8 +29,8 @@ export const QueueChips: React.FC<QueueChipsProps> = ({ session }) => {
                 ×
               </button>
             )}
-            <span className="pos">#{position}</span>
-            <span>queued message</span>
+            <span className="pos">#{position}{position === 1 ? ' · next' : ''}</span>
+            queued message
           </div>
         </div>
       ))}

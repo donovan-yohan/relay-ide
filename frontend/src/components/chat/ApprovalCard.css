@@ -81,6 +81,10 @@
   color: var(--status-success);
 }
 
+.acard__btn--always {
+  color: var(--text-muted);
+}
+
 .acard__btn--scope {
   color: var(--text-muted);
 }

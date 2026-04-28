@@ -137,7 +137,7 @@ export const Turn: React.FC<TurnProps> = ({
 
   return (
     <div className="turn" role="group" aria-label={`turn ${index + 1}`}>
-      <TurnHeader turn={turn} index={index} session={session} />
+      <TurnHeader turn={turn} />
       {turn.items.map((item) => (
         <React.Fragment key={item.id}>
           {renderItem(item, eventVerbosity, onApprove, commandIndex)}

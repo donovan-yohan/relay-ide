@@ -184,7 +184,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
               .map((scope) => (
                 <button
                   key={scope}
-                  className="acard__btn acard__btn--scope"
+                  className={`acard__btn ${scope === 'permanent' ? 'acard__btn--always' : 'acard__btn--scope'}`}
                   type="button"
                   onClick={() => onApprove(view.requestId, { kind: 'accept', scope })}
                   aria-label={SCOPE_LABELS[scope] ?? `allow ${scope}`}
