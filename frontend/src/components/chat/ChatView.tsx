@@ -4,7 +4,7 @@ import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
 import { Composer } from './Composer.js';
 import { LiveBar } from './LiveBar.js';
 import { QueueChips } from './QueueChips.js';
-import { Turn } from './Turn.js';
+import { Turn, type EventVerbosity } from './Turn.js';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -15,6 +15,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     useAgentChatSocket(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [eventVerbosity, setEventVerbosity] =
+    React.useState<EventVerbosity>('normal');
 
   const itemCount = useMemo(
     () =>
@@ -63,6 +65,31 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   return (
     <div className="chat-view" role="main" aria-label="chat">
       <div
+        className="chat-event-controls"
+        role="radiogroup"
+        aria-label="event verbosity"
+      >
+        {(['normal', 'debug', 'trace'] as const).map((level) => (
+          <button
+            key={level}
+            type="button"
+            className={`chat-event-control${eventVerbosity === level ? ' active' : ''}`}
+            role="radio"
+            aria-checked={eventVerbosity === level}
+            onClick={() => setEventVerbosity(level)}
+            title={
+              level === 'normal'
+                ? 'show responses and actionable events'
+                : level === 'debug'
+                  ? 'include provider debug events'
+                  : 'include low-level SDK stream events'
+            }
+          >
+            {level}
+          </button>
+        ))}
+      </div>
+      <div
         ref={containerRef}
         className="tl"
         role="log"
@@ -79,7 +106,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 turn={turn}
                 index={index}
                 session={session}
+                eventVerbosity={eventVerbosity}
                 onApprove={approve}
+                {...(session.slashCommands !== undefined ? { slashCommands: session.slashCommands } : {})}
               />
             ))}
             <LiveBar live={session.live} usage={latestUsage} />
@@ -95,6 +124,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         capabilities={session?.capabilities}
         live={session?.live}
         usage={latestUsage}
+        slashCommands={session?.slashCommands}
       />
     </div>
   );

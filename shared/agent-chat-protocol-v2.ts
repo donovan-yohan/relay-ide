@@ -54,6 +54,22 @@ export interface AgentSessionConfigV2 {
   providerOptions?: Record<string, unknown>;
 }
 
+export interface AgentSlashCommandV2 {
+  id?: string;
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  aliases?: string[];
+  source?: 'sdk' | 'relay' | 'builtin' | 'project' | 'user' | 'skill' | 'plugin' | 'unknown';
+  sourceLabel?: string;
+  namespace?: string;
+  path?: string;
+  dispatch?: 'agent' | 'relay-control';
+  collisionKey?: string;
+  /** Provider-native trigger prefix the wire expects when dispatch is 'agent'. Adapters set this; UI passes it through unchanged. */
+  nativePrefix?: '/' | '$';
+}
+
 export interface AgentSessionV2 {
   id: string;
   provider: AgentProviderV2;
@@ -62,6 +78,7 @@ export interface AgentSessionV2 {
   config: AgentSessionConfigV2;
   live: AgentSessionLiveStateV2;
   turns: AgentTurnV2[];
+  slashCommands?: AgentSlashCommandV2[];
 }
 
 export type AgentTurnStatusV2 =
@@ -257,6 +274,14 @@ export interface AgentSessionSnapshotPatchV2 extends AgentPatchBaseV2 {
   session: AgentSessionV2;
 }
 
+export interface AgentSessionUpdatedPatchV2 extends AgentPatchBaseV2 {
+  type: 'agent-session-updated-v2';
+  providerSession?: Record<string, string>;
+  capabilities?: AgentCapabilitySetV2;
+  config?: Partial<Omit<AgentSessionConfigV2, 'cwd'>>;
+  slashCommands?: AgentSlashCommandV2[];
+}
+
 export interface AgentLiveStateUpdatedPatchV2 extends AgentPatchBaseV2 {
   type: 'agent-live-state-updated-v2';
   live: Partial<AgentSessionLiveStateV2>;
@@ -311,6 +336,7 @@ export interface AgentErrorPatchV2 extends AgentPatchBaseV2 {
 
 export type AgentPatchV2 =
   | AgentSessionSnapshotPatchV2
+  | AgentSessionUpdatedPatchV2
   | AgentLiveStateUpdatedPatchV2
   | AgentTurnStartedPatchV2
   | AgentItemStartedPatchV2
@@ -353,6 +379,7 @@ export type AgentCommandV2 =
 
 const PATCH_TYPES = new Set<string>([
   'agent-session-snapshot-v2',
+  'agent-session-updated-v2',
   'agent-live-state-updated-v2',
   'agent-turn-started-v2',
   'agent-item-started-v2',
@@ -455,6 +482,14 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
   switch (value.type) {
     case 'agent-session-snapshot-v2':
       return isSession(value.session);
+    case 'agent-session-updated-v2':
+      return (
+        (value.providerSession === undefined ||
+          isRecord(value.providerSession)) &&
+        (value.capabilities === undefined || isRecord(value.capabilities)) &&
+        (value.config === undefined || isRecord(value.config)) &&
+        (value.slashCommands === undefined || Array.isArray(value.slashCommands))
+      );
     case 'agent-live-state-updated-v2':
       return isRecord(value.live);
     case 'agent-turn-started-v2':
@@ -489,6 +524,29 @@ export function applyAgentPatchV2(
   switch (patch.type) {
     case 'agent-session-snapshot-v2':
       return patch.session;
+    case 'agent-session-updated-v2':
+      return {
+        ...session,
+        ...(patch.capabilities !== undefined
+          ? {
+              capabilities: { ...session.capabilities, ...patch.capabilities },
+            }
+          : {}),
+        ...(patch.providerSession !== undefined
+          ? {
+              providerSession: {
+                ...(session.providerSession ?? {}),
+                ...patch.providerSession,
+              },
+            }
+          : {}),
+        ...(patch.config !== undefined
+          ? { config: { ...session.config, ...patch.config } }
+          : {}),
+        ...(patch.slashCommands !== undefined
+          ? { slashCommands: patch.slashCommands }
+          : {}),
+      };
     case 'agent-live-state-updated-v2':
       return {
         ...session,

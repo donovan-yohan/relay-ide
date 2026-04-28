@@ -32,10 +32,11 @@
 .slash__row {
   position: relative;
   display: grid;
-  grid-template-columns: 120px 1fr auto;
+  grid-template-columns: minmax(14ch, 24ch) minmax(0, 1fr) auto;
   gap: 8px;
   padding: 6px 10px 6px 18px;
   color: var(--text-muted);
+  min-width: 0;
 }
 
 .slash__row:hover,
@@ -48,12 +49,30 @@
   content: '>';
   position: absolute;
   left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  line-height: 1;
   color: var(--accent);
 }
 
 .slash__cmd {
   color: var(--text);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.slash__cmd-prefix {
+  color: var(--accent);
+}
+
+.slash__match {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .slash__desc {
@@ -62,6 +81,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: var(--font-size-xs);
+  min-width: 0;
 }
 
 .slash__row--active .slash__desc {
@@ -72,6 +92,7 @@
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   opacity: 0.6;
+  white-space: nowrap;
 }
 
 .composer {
@@ -180,6 +201,49 @@
   color: var(--status-error);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
+}
+
+/* Skill token highlight — composer overlay and user message history */
+.token-skill {
+  color: var(--accent);
+}
+
+/* Composer textarea overlay for skill token highlighting */
+.composer__overlay-wrap {
+  position: relative;
+}
+
+.composer__overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 10px 12px;
+  line-height: 1.5;
+  color: transparent;
+  border: none;
+  background: transparent;
+}
+
+.composer__overlay .token-skill {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+/* Composer error state for unknown leading command */
+.composer__send-error {
+  padding: 4px 10px;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  border-top: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
 }
 
 @media (max-width: 767px) {
