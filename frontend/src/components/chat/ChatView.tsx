@@ -171,6 +171,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         usage={latestUsage}
         slashCommands={mergedSlashCommands}
         clientHandlers={clientHandlers}
+        modelName={session?.config.model}
       />
     </div>
   );

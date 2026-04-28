@@ -23,6 +23,12 @@ interface ComposerProps {
   usage?: AgentUsageV2 | undefined;
   slashCommands?: AgentSlashCommandV2[] | undefined;
   clientHandlers?: Record<string, ClientCommandHandler>;
+  modelName?: string | undefined;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '')}k`;
+  return String(n);
 }
 
 /**
@@ -50,6 +56,7 @@ export const Composer: React.FC<ComposerProps> = ({
   usage,
   slashCommands,
   clientHandlers,
+  modelName,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState('');
@@ -231,13 +238,33 @@ export const Composer: React.FC<ComposerProps> = ({
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         submitDraft();
+        return;
+      }
+
+      if (isActive && (e.key === 'Escape' || (e.key === 'c' && e.ctrlKey))) {
+        e.preventDefault();
+        onInterrupt();
       }
     },
-    [paletteVisible, filteredCommands, activeIndex, draft, caret, submitDraft]
+    [paletteVisible, filteredCommands, activeIndex, draft, caret, submitDraft, isActive, onInterrupt]
   );
 
-  const contextLabel =
-    usage?.contextPercent != null ? `${usage.contextPercent}% ctx` : 'ctx';
+  const ctxUsed = usage?.inputTokens ?? 0;
+  const ctxWindow = usage?.contextWindowSize ?? 0;
+  const ctxLabel =
+    ctxWindow > 0 ? `${formatTokens(ctxUsed)} / ${formatTokens(ctxWindow)}` : '—';
+  const placeholderText = isActive
+    ? 'queue a message · ↵ to add to queue · ctrl+c or esc to interrupt'
+    : 'type a message…  /  for commands · shift+enter for newline';
+  const hintContent = isActive ? (
+    <>
+      <kbd>↵</kbd>queue <kbd>ctrl</kbd>+<kbd>c</kbd> or <kbd>esc</kbd> interrupt
+    </>
+  ) : (
+    <>
+      <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>/</kbd>commands
+    </>
+  );
 
   // Build overlay segments for composer highlight
   const overlaySegments = commandIndex
@@ -268,7 +295,7 @@ export const Composer: React.FC<ComposerProps> = ({
           <textarea
             ref={textareaRef}
             className="composer__ta"
-            placeholder="type a message…  /  for commands · shift+enter for newline"
+            placeholder={placeholderText}
             onKeyDown={handleKeyDown}
             onChange={(event) => {
               setDraft(event.currentTarget.value);
@@ -284,37 +311,35 @@ export const Composer: React.FC<ComposerProps> = ({
           />
         </div>
         <div className="composer__bar">
-          <span className="composer__hint">
-            <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>/</kbd>commands
-          </span>
-          <span className="right">
+          <span className="composer__hint">{hintContent}</span>
+          <span className="right ctx-pop-anchor">
+            {modelName && (
+              <span style={{ color: 'var(--text-muted)' }}>{modelName}</span>
+            )}
             <button
               className="cbar-trigger"
               type="button"
               aria-haspopup="true"
               aria-expanded="false"
+              aria-label="context usage"
             >
-              {contextLabel}
+              <span>{ctxLabel}</span>
+              <span className="mini-bar" aria-hidden="true">
+                <span
+                  style={{
+                    width: `${ctxWindow > 0 ? Math.min(100, (ctxUsed / ctxWindow) * 100) : 0}%`,
+                    background: 'var(--accent)',
+                  }}
+                />
+                <span
+                  style={{
+                    width: `${ctxWindow > 0 ? Math.max(0, 100 - Math.min(100, (ctxUsed / ctxWindow) * 100)) : 100}%`,
+                    background: 'var(--surface-hover)',
+                  }}
+                />
+              </span>
+              <span className="caret">▴</span>
             </button>
-            {isActive ? (
-              <button
-                className="composer__btn composer__btn--interrupt"
-                type="button"
-                onClick={onInterrupt}
-                aria-label="interrupt agent"
-              >
-                ■
-              </button>
-            ) : (
-              <button
-                className="composer__btn composer__btn--send"
-                type="button"
-                onClick={submitDraft}
-                aria-label="send message"
-              >
-                send
-              </button>
-            )}
           </span>
         </div>
         {live?.error && <div className="composer__error">{live.error}</div>}

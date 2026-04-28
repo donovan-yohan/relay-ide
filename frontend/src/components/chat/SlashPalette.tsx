@@ -44,6 +44,8 @@ export interface DisplayCommand {
   argumentHint?: string;
   /** Substrings of `command` (excluding prefix char) that match the query. */
   matchSpans?: [number, number][];
+  /** Substrings of `description` that match the query (when match landed in description). */
+  descriptionMatchSpans?: [number, number][];
   /** Source group for grouping in empty-query view. */
   source?: AgentSlashCommandV2['source'];
   /** Human label for the source group. */
@@ -160,12 +162,14 @@ export function useSlashCommands(
 
     // Compute match spans against the canonical command name (excluding prefix char)
     const matchSpans = computeMatchSpans(cmdCore, query);
+    const descriptionMatchSpans = computeMatchSpans(entry.description, query);
 
     const row: DisplayCommand = {
       command: entry.command,
       description: entry.description,
       shortcut: entry.shortcut,
       ...(matchSpans.length > 0 ? { matchSpans } : {}),
+      ...(descriptionMatchSpans.length > 0 ? { descriptionMatchSpans } : {}),
       ...(entry.source !== undefined ? { source: entry.source } : {}),
       ...(entry.sourceLabel !== undefined ? { sourceLabel: entry.sourceLabel } : {}),
       ...(entry.argumentHint !== undefined ? { argumentHint: entry.argumentHint } : {}),
@@ -282,6 +286,26 @@ function renderHighlightedName(
   return <>{parts}</>;
 }
 
+function renderHighlightedText(
+  text: string,
+  spans: [number, number][] | undefined
+): React.ReactNode {
+  if (!spans || spans.length === 0) return text;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const [start, end] of spans) {
+    if (start > cursor) parts.push(text.slice(cursor, start));
+    parts.push(
+      <mark key={`m${start}`} className="slash__match">
+        {text.slice(start, end)}
+      </mark>
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
 const SlashPaletteRow: React.FC<{
   entry: DisplayCommand;
   active: boolean;
@@ -298,7 +322,8 @@ const SlashPaletteRow: React.FC<{
         {renderHighlightedName(entry.command, entry.matchSpans)}
       </span>
       <span className="slash__desc" title={detail}>
-        {detail}
+        {renderHighlightedText(entry.description, entry.descriptionMatchSpans)}
+        {entry.argumentHint ? ` ${entry.argumentHint}` : ''}
       </span>
       <span className="slash__sc">{entry.shortcut}</span>
     </div>
