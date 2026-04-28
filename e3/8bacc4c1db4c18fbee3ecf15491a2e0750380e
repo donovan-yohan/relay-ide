@@ -1,0 +1,25 @@
+server/codex-app-server-client.ts
+  0314b458d38cb5e2 1-356
+test/server/codex-app-server-client.test.ts
+  0314b458d38cb5e2 1-554
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "e38bacc4c1db4c18fbee3ecf15491a2e0750380e",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 43483,
+      "total_deletions": 185,
+      "accepted_lines": 43298,
+      "overriden_lines": 0
+    }
+  }
+}
