@@ -94,6 +94,12 @@ export interface AgentUsageV2 {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Codex: cached input tokens (maps to TokenUsageBreakdown.cachedInputTokens) */
+  cachedInputTokens?: number;
+  /** Codex: reasoning output tokens (maps to TokenUsageBreakdown.reasoningOutputTokens) */
+  reasoningOutputTokens?: number;
+  /** Codex: total tokens (maps to TokenUsageBreakdown.totalTokens) */
+  totalTokens?: number;
   costUsd?: number | null;
   contextPercent?: number;
   contextWindowSize?: number;
@@ -148,7 +154,8 @@ export interface AgentReasoningItemV2 extends AgentItemBaseV2 {
 export interface AgentPlanItemV2 extends AgentItemBaseV2 {
   type: 'plan';
   text: string;
-  steps?: Array<{ id: string; text: string; status?: string }>;
+  /** Codex app-server step list from turn/plan/updated */
+  steps?: Array<{ step: string; status: 'pending' | 'inProgress' | 'completed' }>;
   approvalState?: 'pending' | 'approved' | 'rejected' | 'revising';
 }
 

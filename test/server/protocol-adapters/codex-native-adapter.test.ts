@@ -168,7 +168,7 @@ describe('CodexNativeProtocolAdapter — connect', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-abc' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-abc' } });
     factory.lastClient?.serverResponses.set('skills/list', { skills: [] });
     factory.lastClient?.serverResponses.set('model/list', []);
 
@@ -202,7 +202,7 @@ describe('CodexNativeProtocolAdapter — connect', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-xyz' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-xyz' } });
 
     await adapter.connect(config);
 
@@ -227,11 +227,11 @@ describe('CodexNativeProtocolAdapter — resumeSession', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
 
     // Configure the second client for resume
-    factory.lastClient!.serverResponses.set('thread/resume', { id: 'thread-resume-1' });
+    factory.lastClient!.serverResponses.set('thread/resume', { thread: { id: 'thread-resume-1' } });
     factory.lastClient!.serverResponses.set('skills/list', { skills: [] });
     factory.lastClient!.serverResponses.set('model/list', []);
 
@@ -263,7 +263,7 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -283,7 +283,7 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
 
     await adapter.sendMessage({ turnId: 'turn-2', content: 'test' });
@@ -314,7 +314,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -375,13 +375,16 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     client.feedNotification('item/started', {
       item: { type: 'reasoning', id: 'reason-1' },
     });
+    // Authoritative shape: { threadId, turnId, itemId, delta, summaryIndex }
     client.feedNotification('item/reasoning/summaryTextDelta', {
       itemId: 'reason-1',
       delta: 'thinking...',
+      summaryIndex: 0,
     });
+    // Authoritative shape: { threadId, turnId, itemId, summaryIndex } — no summary text
     client.feedNotification('item/reasoning/summaryPartAdded', {
       itemId: 'reason-1',
-      summary: 'thinking...',
+      summaryIndex: 1,
     });
 
     expect(patches).toEqual(
@@ -394,9 +397,13 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           type: 'agent-item-delta-v2',
           delta: { summary: 'thinking...' },
         }),
+        // summaryPartAdded now emits a providerExtension boundary marker
         expect.objectContaining({
-          type: 'agent-item-updated-v2',
-          item: expect.objectContaining({ type: 'reasoning', summary: 'thinking...' }),
+          type: 'agent-item-started-v2',
+          item: expect.objectContaining({
+            type: 'providerExtension',
+            payload: expect.objectContaining({ kind: 'reasoningSummaryPartAdded', summaryIndex: 1 }),
+          }),
         }),
       ])
     );
@@ -449,22 +456,24 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
   it('fileChange: patch delta then complete', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-file');
 
+    // Authoritative FileUpdateChange shape: kind is tagged union { type: 'add'|'delete'|'update' }
     client.feedNotification('item/started', {
       item: {
         type: 'fileChange',
         id: 'fc-1',
-        changes: [{ path: 'foo.ts', kind: 'modified' }],
+        changes: [{ path: 'foo.ts', kind: { type: 'update' }, diff: '' }],
       },
     });
+    // Authoritative item/fileChange/patchUpdated shape: { changes: FileUpdateChange[] }
     client.feedNotification('item/fileChange/patchUpdated', {
       itemId: 'fc-1',
-      delta: '@@ -1,1 +1,2 @@\n+new line\n',
+      changes: [{ path: 'foo.ts', kind: { type: 'update' }, diff: '@@ -1,1 +1,2 @@\n+new line\n' }],
     });
     client.feedNotification('item/completed', {
       item: {
         type: 'fileChange',
         id: 'fc-1',
-        changes: [{ path: 'foo.ts', kind: 'modified' }],
+        changes: [{ path: 'foo.ts', kind: { type: 'update' }, diff: '@@ -1,1 +1,2 @@\n+new line\n' }],
         applyStatus: 'applied',
       },
     });
@@ -473,7 +482,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'fileChange', paths: [{ path: 'foo.ts', status: 'modified' }] }),
+          item: expect.objectContaining({ type: 'fileChange', paths: [{ path: 'foo.ts', status: 'update' }] }),
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
@@ -541,11 +550,12 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     await adapter.disconnect();
   });
 
-  it('collabToolCall: tool name is prefixed with collab:', async () => {
+  it('collabAgentToolCall: tool name is prefixed with collab:', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-collab');
 
+    // Authoritative type: collabAgentToolCall (not collabToolCall)
     client.feedNotification('item/started', {
-      item: { type: 'collabToolCall', id: 'collab-1', tool: 'summarize', arguments: {} },
+      item: { type: 'collabAgentToolCall', id: 'collab-1', tool: 'summarize', arguments: {} },
     });
 
     expect(patches).toEqual(
@@ -601,9 +611,21 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
   it('turn/completed maps to agent-turn-completed-v2', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-complete');
 
+    // Authoritative: token usage arrives via thread/tokenUsageUpdated, keyed by native turnId
+    client.feedNotification('thread/tokenUsageUpdated', {
+      threadId: 'thread-1',
+      turnId: 'native-turn-1',
+      tokenUsage: {
+        last: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 150 },
+        total: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 150 },
+        modelContextWindow: 128000,
+      },
+    });
+
+    // Authoritative turn/completed shape: { threadId, turn: Turn }
     client.feedNotification('turn/completed', {
-      status: 'completed',
-      usage: { inputTokens: 100, outputTokens: 50 },
+      threadId: 'thread-1',
+      turn: { id: 'native-turn-1', status: 'completed' },
     });
 
     expect(patches).toEqual(
@@ -623,13 +645,70 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
   it('turn/completed with interrupted status', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-int');
 
-    client.feedNotification('turn/completed', { status: 'interrupted' });
+    // Authoritative turn/completed shape: { threadId, turn: Turn }
+    client.feedNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'native-turn-1', status: 'interrupted' },
+    });
 
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-turn-completed-v2',
           status: 'interrupted',
+        }),
+      ])
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('thread/tokenUsageUpdated buffered usage is attached to subsequent turn/completed', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-usage');
+
+    // Feed token usage notification BEFORE turn/completed
+    client.feedNotification('thread/tokenUsageUpdated', {
+      threadId: 'thread-1',
+      turnId: 'native-turn-1',
+      tokenUsage: {
+        last: {
+          inputTokens: 200,
+          outputTokens: 80,
+          cachedInputTokens: 50,
+          reasoningOutputTokens: 10,
+          totalTokens: 290,
+        },
+        total: {
+          inputTokens: 200,
+          outputTokens: 80,
+          cachedInputTokens: 50,
+          reasoningOutputTokens: 10,
+          totalTokens: 290,
+        },
+        modelContextWindow: 64000,
+      },
+    });
+
+    // Now complete the turn — usage should be pulled from buffer
+    client.feedNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'native-turn-1', status: 'completed' },
+    });
+
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'agent-turn-completed-v2',
+          turnId: 'turn-usage',
+          status: 'completed',
+          usage: expect.objectContaining({
+            inputTokens: 200,
+            outputTokens: 80,
+            cachedInputTokens: 50,
+            reasoningOutputTokens: 10,
+            totalTokens: 290,
+            contextWindowSize: 64000,
+          }),
         }),
       ])
     );
@@ -645,7 +724,7 @@ describe('CodexNativeProtocolAdapter — provider extensions', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -720,7 +799,8 @@ describe('CodexNativeProtocolAdapter — provider extensions', () => {
 
   it('model/rerouted emits providerExtension with debug visibility', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-reroute');
-    client.feedNotification('model/rerouted', { from: 'o4', to: 'gpt-4' });
+    // Authoritative shape: { threadId, turnId, fromModel, toModel, reason }
+    client.feedNotification('model/rerouted', { threadId: 'thread-1', turnId: 'native-1', fromModel: 'o4', toModel: 'gpt-4', reason: 'quota' });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -809,7 +889,7 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -1020,6 +1100,67 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
 
     await adapter.disconnect();
   });
+
+  it('command approval: acceptWithExecpolicyAmendment → wrapped object wire shape', async () => {
+    // Authoritative: data variant serializes as wrapped object, not bare string
+    const { adapter, client } = await setupWithTurn('turn-exec-amend');
+
+    client.feedRequest(50, 'item/commandExecution/requestApproval', {
+      command: 'npm install',
+      cwd: '/repo',
+      commandActions: [],
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    await adapter.respondToApproval({
+      requestId: 'cmd-50',
+      decision: {
+        kind: 'accept',
+        scope: 'once',
+        amendments: [{ type: 'execpolicy', payload: { allow: ['npm install'] } }],
+      },
+    });
+
+    await waitFor(() => client.calls.some((c) => c.method === '__respond:50'));
+    const response = client.calls.find((c) => c.method === '__respond:50');
+    // Wire form: { decision: { acceptWithExecpolicyAmendment: { execpolicyAmendment: payload } } }
+    expect(response?.params).toMatchObject({
+      decision: { acceptWithExecpolicyAmendment: { execpolicyAmendment: { allow: ['npm install'] } } },
+    });
+
+    await adapter.disconnect();
+  });
+
+  it('command approval: applyNetworkPolicyAmendment → wrapped object wire shape', async () => {
+    const { adapter, client } = await setupWithTurn('turn-net-amend');
+
+    client.feedRequest(51, 'item/commandExecution/requestApproval', {
+      command: 'curl https://example.com',
+      cwd: '/repo',
+      commandActions: [],
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    await adapter.respondToApproval({
+      requestId: 'cmd-51',
+      decision: {
+        kind: 'accept',
+        scope: 'once',
+        amendments: [{ type: 'networkPolicy', payload: { host: 'example.com', protocol: 'https' } }],
+      },
+    });
+
+    await waitFor(() => client.calls.some((c) => c.method === '__respond:51'));
+    const response = client.calls.find((c) => c.method === '__respond:51');
+    // Wire form: { decision: { applyNetworkPolicyAmendment: { networkPolicyAmendment: payload } } }
+    expect(response?.params).toMatchObject({
+      decision: { applyNetworkPolicyAmendment: { networkPolicyAmendment: { host: 'example.com', protocol: 'https' } } },
+    });
+
+    await adapter.disconnect();
+  });
 });
 
 // ── Question / input request ──────────────────────────────────────────────────
@@ -1029,7 +1170,7 @@ describe('CodexNativeProtocolAdapter — input requests', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId: 'turn-q', content: 'go' });
@@ -1072,7 +1213,7 @@ describe('CodexNativeProtocolAdapter — queue', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1082,8 +1223,8 @@ describe('CodexNativeProtocolAdapter — queue', () => {
     // Second message queued while first turn active
     const second = adapter.sendMessage({ turnId: 'turn-q2', content: 'second' });
 
-    // First turn completes
-    client.feedNotification('turn/completed', { status: 'completed' });
+    // First turn completes (authoritative shape)
+    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'n-1', status: 'completed' } });
     await first;
 
     // Second turn should now be started
@@ -1092,7 +1233,7 @@ describe('CodexNativeProtocolAdapter — queue', () => {
     );
 
     client.feedNotification('turn/started', { turn: { id: 'n-2' } });
-    client.feedNotification('turn/completed', { status: 'completed' });
+    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'n-2', status: 'completed' } });
     await second;
 
     const turnCompletions = patches.filter((p) => p.type === 'agent-turn-completed-v2');
@@ -1111,7 +1252,7 @@ describe('CodexNativeProtocolAdapter — interrupt', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1122,7 +1263,8 @@ describe('CodexNativeProtocolAdapter — interrupt', () => {
 
     expect(client.calls.some((c) => c.method === 'turn/interrupt')).toBe(true);
 
-    client.feedNotification('turn/completed', { status: 'interrupted' });
+    // Authoritative turn/completed shape
+    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'native-int', status: 'interrupted' } });
 
     await waitFor(() => patches.some((p) => p.type === 'agent-turn-completed-v2'));
     expect(patches).toEqual(
@@ -1146,7 +1288,7 @@ describe('CodexNativeProtocolAdapter — slash command catalog', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
 
     await adapter.connect(config);
     const client = factory.lastClient!;
@@ -1180,7 +1322,7 @@ describe('CodexNativeProtocolAdapter — slash command catalog', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
 
     // Pre-configure skills BEFORE connect triggers refresh
     factory.lastClient?.serverResponses.set('skills/list', {
@@ -1224,7 +1366,7 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
   it('/skillName is rewritten to $skillName before forwarding to turn/start', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1242,7 +1384,7 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
   it('$skillName passes through unchanged', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1264,7 +1406,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1285,7 +1427,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
   it('/rollback <n> calls thread/rollback with count', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1304,7 +1446,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1337,7 +1479,7 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { id: 'thread-1' });
+    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
     await adapter.connect(config);
     const client = factory.lastClient!;
 

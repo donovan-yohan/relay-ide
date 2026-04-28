@@ -243,36 +243,55 @@ function mergeCodexCommandCatalog(
 }
 
 /**
- * V2 decision → codex native decision string.
- * Returns null for unmapped combinations (adapter should log and ignore).
+ * V2 decision → codex native CommandExecutionApprovalDecision wire form.
+ *
+ * Unit variants serialize as bare strings: "accept", "acceptForSession",
+ * "decline", "cancel".
+ * Data variants serialize as wrapped objects (externally tagged):
+ *   { acceptWithExecpolicyAmendment: { execpolicyAmendment: payload } }
+ *   { applyNetworkPolicyAmendment: { networkPolicyAmendment: payload } }
+ *
+ * Returns the { decision } wrapper so callers can spread it directly.
+ * Throws for unsupported combinations.
  */
-function codexCommandDecision(
+function codexCommandDecisionResponse(
   decision: AgentApprovalDecisionV2,
-): string | null {
-  if (decision.kind === 'cancel') return 'cancel';
-  if (decision.kind === 'decline') return 'decline';
+): Record<string, unknown> {
+  if (decision.kind === 'cancel') return { decision: 'cancel' };
+  if (decision.kind === 'decline') return { decision: 'decline' };
 
   // kind === 'accept'
   const scope = decision.scope ?? 'once';
-  const amendments = decision.amendments ?? [];
+  const amendments = (decision as { amendments?: Array<{ type: string; payload?: unknown }> }).amendments ?? [];
 
-  // Amendment-based decisions take priority
-  const execAmendment = amendments.find((a) => a.type === 'execpolicy');
-  if (execAmendment) return 'acceptWithExecpolicyAmendment';
+  const execAmend = amendments.find((a) => a.type === 'execpolicy');
+  if (execAmend) {
+    return {
+      decision: { acceptWithExecpolicyAmendment: { execpolicyAmendment: execAmend.payload ?? {} } },
+    };
+  }
 
-  const netAmendment = amendments.find((a) => a.type === 'networkPolicy');
-  if (netAmendment) return 'applyNetworkPolicyAmendment';
+  const netAmend = amendments.find((a) => a.type === 'networkPolicy');
+  if (netAmend) {
+    return {
+      decision: { applyNetworkPolicyAmendment: { networkPolicyAmendment: netAmend.payload ?? {} } },
+    };
+  }
 
-  if (scope === 'session') return 'acceptForSession';
-  return 'accept'; // 'once' or 'permanent' → accept
+  if (scope === 'session') return { decision: 'acceptForSession' };
+  return { decision: 'accept' }; // 'once' or 'permanent' → accept
 }
 
-function codexFileDecision(decision: AgentApprovalDecisionV2): string | null {
-  if (decision.kind === 'cancel') return 'cancel';
-  if (decision.kind === 'decline') return 'decline';
+/**
+ * V2 decision → codex FileChangeApprovalDecision response.
+ * All variants are unit (bare strings): accept, acceptForSession, decline, cancel.
+ */
+function codexFileDecisionResponse(decision: AgentApprovalDecisionV2): Record<string, unknown> {
+  if (decision.kind === 'cancel') return { decision: 'cancel' };
+  if (decision.kind === 'decline') return { decision: 'decline' };
   const scope = decision.scope ?? 'once';
-  if (scope === 'session') return 'acceptForSession';
-  return 'accept';
+  if (scope === 'session') return { decision: 'acceptForSession' };
+  return { decision: 'accept' };
 }
 
 /**
@@ -361,6 +380,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
   private pendingModelOverride: string | null = null;
 
+  // Token usage buffer: keyed by native turnId, from thread/tokenUsageUpdated
+  private readonly tokenUsageBuffer = new Map<string, Record<string, unknown>>();
+
   // Slash commands
   private slashCommandsLoaded = false;
 
@@ -387,14 +409,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     await client.start();
 
-    const threadResult = await client.call<{ id: string }>('thread/start', {
+    const threadResult = await client.call<{ thread: { id: string } }>('thread/start', {
       cwd: config.cwd,
       ...(config.model || this.pendingModelOverride
         ? { model: this.pendingModelOverride ?? config.model }
         : {}),
     });
 
-    this.providerSessionId = threadResult.id;
+    this.providerSessionId = threadResult.thread.id;
     this._status = 'connected';
     this.slashCommandsLoaded = false;
 
@@ -427,11 +449,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     await client.start();
 
     const threadResult = await client.call<{
-      id: string;
-      turns?: unknown[];
-    }>('thread/resume', { threadId });
+      thread: { id: string; turns?: unknown[] };
+    }>('thread/resume', { threadId, excludeTurns: false });
 
-    this.providerSessionId = threadResult.id ?? threadId;
+    this.providerSessionId = threadResult.thread.id ?? threadId;
     this._status = 'connected';
     this.slashCommandsLoaded = false;
 
@@ -515,6 +536,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (this.nativeActiveTurnId !== null && this.client !== null) {
       try {
         await this.client.call('turn/interrupt', {
+          threadId: this.providerSessionId,
           turnId: this.nativeActiveTurnId,
         });
       } catch (err) {
@@ -612,14 +634,16 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     status: 'completed' | 'interrupted' | 'failed',
     usage?: AgentUsageV2,
     error?: string,
+    nativeDurationMs?: number,
   ): void {
     if (this.completedActiveTurn || this.activeTurnId === null) return;
     this.completedActiveTurn = true;
     const turnId = this.activeTurnId;
     const completedAt = nowIso();
-    const durationMs = this.activeStartedAt
+    // Prefer native durationMs if provided, else compute from startedAt
+    const durationMs = nativeDurationMs ?? (this.activeStartedAt
       ? Date.now() - Date.parse(this.activeStartedAt)
-      : undefined;
+      : undefined);
 
     this.emitPatch({
       type: 'agent-turn-completed-v2',
@@ -743,6 +767,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.providerSessionId = null;
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
+    this.tokenUsageBuffer.clear();
     this._status = 'disconnected';
   }
 
@@ -755,6 +780,26 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     switch (method) {
       case 'thread/started':
         this.handleThreadStarted(p);
+        break;
+      case 'thread/statusChanged':
+        this.emitProviderExtension({ kind: 'threadStatusChanged', ...p }, 'debug');
+        break;
+      case 'thread/archived':
+      case 'thread/unarchived':
+      case 'thread/closed':
+        this.emitProviderExtension({ kind: method.replace('/', ':'), ...p }, 'debug');
+        break;
+      case 'thread/nameUpdated':
+        this.emitProviderExtension({ kind: 'threadNameUpdated', ...p }, 'debug');
+        break;
+      case 'thread/goal/updated':
+        this.emitProviderExtension({ kind: 'threadGoalUpdated', ...p }, 'debug');
+        break;
+      case 'thread/goal/cleared':
+        this.emitProviderExtension({ kind: 'threadGoalCleared', ...p }, 'debug');
+        break;
+      case 'thread/tokenUsageUpdated':
+        this.handleTokenUsageUpdated(p);
         break;
       case 'turn/started':
         this.handleTurnStarted(p);
@@ -829,14 +874,26 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private handleThreadStarted(p: Record<string, unknown>): void {
-    const threadId = stringField(p['id'] ?? p['threadId']);
+    // Authoritative shape: { thread: Thread } — read thread.id
+    const thread = isRecord(p['thread']) ? p['thread'] : p;
+    const threadId = stringField(thread['id'] ?? p['threadId']);
     if (threadId && threadId !== this.providerSessionId) {
       this.providerSessionId = threadId;
       this.emitSessionUpdate({ providerSession: { threadId } });
     }
   }
 
+  private handleTokenUsageUpdated(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, tokenUsage: { total, last, modelContextWindow } }
+    const nativeTurnId = stringField(p['turnId']);
+    const tokenUsage = isRecord(p['tokenUsage']) ? p['tokenUsage'] : null;
+    if (nativeTurnId && tokenUsage) {
+      this.tokenUsageBuffer.set(nativeTurnId, tokenUsage);
+    }
+  }
+
   private handleTurnStarted(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turn: Turn } — read turn.id
     const turn = isRecord(p['turn']) ? p['turn'] : p;
     const nativeTurnId = stringField(turn['id'] ?? p['turnId']);
     this.nativeActiveTurnId = nativeTurnId;
@@ -850,8 +907,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private handleTurnCompleted(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turn: Turn }
     const turn = isRecord(p['turn']) ? p['turn'] : p;
     const nativeStatus = stringField(turn['status'] ?? p['status']);
+    const nativeTurnId = stringField(turn['id'] ?? p['turnId']);
+    const nativeDurationMs = typeof turn['durationMs'] === 'number' ? turn['durationMs'] : undefined;
 
     // Map native status → V2 status
     let status: 'completed' | 'interrupted' | 'failed';
@@ -859,22 +919,46 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       status = 'interrupted';
     } else if (nativeStatus === 'failed') {
       status = 'failed';
+    } else if (nativeStatus === 'inProgress') {
+      // Defensive: inProgress should not appear in turn/completed — no-op
+      return;
     } else {
       status = 'completed';
     }
 
-    // Extract usage
-    const usageRaw = isRecord(p['usage']) ? p['usage'] : {};
-    const usage: AgentUsageV2 = {};
-    if (typeof usageRaw['inputTokens'] === 'number') usage.inputTokens = usageRaw['inputTokens'];
-    if (typeof usageRaw['outputTokens'] === 'number') usage.outputTokens = usageRaw['outputTokens'];
-    if (typeof usageRaw['cacheReadTokens'] === 'number') usage.cacheReadTokens = usageRaw['cacheReadTokens'];
-    if (typeof usageRaw['cacheWriteTokens'] === 'number') usage.cacheWriteTokens = usageRaw['cacheWriteTokens'];
-    if (typeof usageRaw['costUsd'] === 'number') usage.costUsd = usageRaw['costUsd'];
+    // Extract error from turn when failed
+    const turnError = isRecord(turn['error']) ? turn['error'] : null;
+    const errorMessage = turnError ? stringField(turnError['message']) : undefined;
+
+    // Retrieve stashed token usage from thread/tokenUsageUpdated buffer
+    // Prefer the buffered data keyed by the native turn id
+    const buffered = nativeTurnId ? this.tokenUsageBuffer.get(nativeTurnId) : null;
+    let usage: AgentUsageV2 | undefined;
+    if (buffered) {
+      // Use the `last` breakdown if available, else `total`
+      const lastBreakdown = isRecord(buffered['last']) ? buffered['last'] : null;
+      const totalBreakdown = isRecord(buffered['total']) ? buffered['total'] : null;
+      const breakdown = lastBreakdown ?? totalBreakdown;
+      if (breakdown) {
+        usage = {};
+        if (typeof breakdown['inputTokens'] === 'number') usage.inputTokens = breakdown['inputTokens'];
+        if (typeof breakdown['outputTokens'] === 'number') usage.outputTokens = breakdown['outputTokens'];
+        if (typeof breakdown['cachedInputTokens'] === 'number') usage.cachedInputTokens = breakdown['cachedInputTokens'];
+        if (typeof breakdown['reasoningOutputTokens'] === 'number') usage.reasoningOutputTokens = breakdown['reasoningOutputTokens'];
+        if (typeof breakdown['totalTokens'] === 'number') usage.totalTokens = breakdown['totalTokens'];
+        const mctx = buffered['modelContextWindow'];
+        if (typeof mctx === 'number') usage.contextWindowSize = mctx;
+        if (Object.keys(usage).length === 0) usage = undefined;
+      }
+      // Evict once consumed
+      if (nativeTurnId) this.tokenUsageBuffer.delete(nativeTurnId);
+    }
 
     this.completeActiveTurn(
       status,
-      Object.keys(usage).length > 0 ? usage : undefined,
+      usage,
+      errorMessage || undefined,
+      nativeDurationMs,
     );
     this.drainQueue();
   }
@@ -889,9 +973,25 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   }
 
   private handleTurnPlanUpdated(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, explanation?, plan: { step, status }[] }
     if (this.activeTurnId === null || !this.config) return;
     const planId = `plan-${this.activeTurnId}`;
-    const text = stringField(p['text'] ?? p['content']);
+    // Build text from explanation + plan steps
+    const explanation = stringField(p['explanation'] ?? p['text'] ?? p['content']);
+    const rawSteps = Array.isArray(p['plan']) ? p['plan'] : [];
+    const steps = rawSteps
+      .filter(isRecord)
+      .map((s) => ({
+        step: stringField(s['step'] ?? s['text']),
+        status: (stringField(s['status'], 'pending') as 'pending' | 'inProgress' | 'completed'),
+      }));
+
+    // Render text: explanation + step list
+    const stepLines = steps.map((s) => {
+      const marker = s.status === 'completed' ? '[x]' : s.status === 'inProgress' ? '[>]' : '[ ]';
+      return `${marker} ${s.step}`;
+    });
+    const text = [explanation, ...stepLines].filter(Boolean).join('\n');
 
     if (!this.itemMap.has(planId)) {
       this.itemMap.set(planId, planId);
@@ -904,6 +1004,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           type: 'plan',
           id: planId,
           text,
+          ...(steps.length > 0 ? { steps } : {}),
           status: 'running',
           startedAt: nowIso(),
         },
@@ -918,6 +1019,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           type: 'plan',
           id: planId,
           text,
+          ...(steps.length > 0 ? { steps } : {}),
           status: 'running',
         },
       });
@@ -1030,10 +1132,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         const changes = Array.isArray(item['changes']) ? item['changes'] : [];
         const paths = changes
           .filter(isRecord)
-          .map((c) => ({
-            path: stringField(c['path']),
-            status: stringField(c['kind'] ?? c['status'], 'edited'),
-          }));
+          .map((c) => {
+            // kind is a tagged union: { type: 'add'|'delete'|'update', movePath? }
+            const kindObj = isRecord(c['kind']) ? c['kind'] : null;
+            const kindType = kindObj ? stringField(kindObj['type']) : stringField(c['kind'] as unknown, 'edited');
+            return {
+              path: stringField(c['path']),
+              status: kindType || 'edited',
+            };
+          });
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1096,7 +1203,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
       }
 
-      case 'collabToolCall': {
+      case 'collabAgentToolCall': {
         const relayId = `collab-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
         const nativeTool = stringField(item['tool']);
@@ -1244,10 +1351,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         const changes = Array.isArray(item['changes']) ? item['changes'] : [];
         const paths = changes
           .filter(isRecord)
-          .map((c) => ({
-            path: stringField(c['path']),
-            status: stringField(c['kind'] ?? c['status'], 'edited'),
-          }));
+          .map((c) => {
+            // kind is a tagged union: { type: 'add'|'delete'|'update', movePath? }
+            const kindObj = isRecord(c['kind']) ? c['kind'] : null;
+            const kindType = kindObj ? stringField(kindObj['type']) : stringField(c['kind'] as unknown, 'edited');
+            return {
+              path: stringField(c['path']),
+              status: kindType || 'edited',
+            };
+          });
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1286,9 +1398,9 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
 
       case 'dynamicToolCall':
-      case 'collabToolCall': {
+      case 'collabAgentToolCall': {
         const tool =
-          itemType === 'collabToolCall'
+          itemType === 'collabAgentToolCall'
             ? `collab:${stringField(item['tool'])}`
             : stringField(item['tool']);
         this.emitPatch({
@@ -1322,17 +1434,19 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    // Authoritative shape: always `delta` field, no text fallback
     this.emitPatch({
       type: 'agent-item-delta-v2',
       sessionId: this.config.sessionId,
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { text: stringField(p['delta'] ?? p['text']) },
+      delta: { text: stringField(p['delta']) },
     });
   }
 
   private handlePlanDelta(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, itemId, delta }
     if (this.activeTurnId === null || !this.config) return;
     const nativeId = stringField(p['itemId']);
     const relayId = this.itemMap.get(nativeId) ?? `plan-${this.activeTurnId}`;
@@ -1343,11 +1457,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { text: stringField(p['delta'] ?? p['text']) },
+      delta: { text: stringField(p['delta']) },
     });
   }
 
   private handleReasoningSummaryDelta(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, itemId, delta, summaryIndex }
     if (this.activeTurnId === null || !this.config) return;
     const nativeId = stringField(p['itemId']);
     const relayId = this.itemMap.get(nativeId);
@@ -1359,30 +1474,24 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { summary: stringField(p['delta'] ?? p['text']) },
+      delta: { summary: stringField(p['delta']) },
     });
   }
 
   private handleReasoningSummaryPartAdded(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, itemId, summaryIndex }
+    // Marks a new summary section boundary — emit update with boundary marker
     if (this.activeTurnId === null || !this.config) return;
     const nativeId = stringField(p['itemId']);
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
-    // Emit an update to mark the partition boundary
-    this.emitPatch({
-      type: 'agent-item-updated-v2',
-      sessionId: this.config.sessionId,
-      timestamp: nowIso(),
-      turnId: this.activeTurnId,
-      item: {
-        type: 'reasoning',
-        id: relayId,
-        summary: stringField(p['summary'] ?? p['text']),
-        visibility: 'summary',
-        status: 'running',
-      },
-    });
+    // Emit a providerExtension boundary marker (no summary text in this notification)
+    this.emitProviderExtension({
+      kind: 'reasoningSummaryPartAdded',
+      itemId: relayId,
+      summaryIndex: typeof p['summaryIndex'] === 'number' ? p['summaryIndex'] : 0,
+    }, 'debug');
   }
 
   private handleReasoningTextDelta(p: Record<string, unknown>): void {
@@ -1392,13 +1501,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    // Authoritative shape: { threadId, turnId, itemId, delta, contentIndex }
     this.emitPatch({
       type: 'agent-item-delta-v2',
       sessionId: this.config.sessionId,
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { detail: stringField(p['delta'] ?? p['text']) },
+      delta: { detail: stringField(p['delta']) },
     });
   }
 
@@ -1408,29 +1518,40 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    // Authoritative shape: { threadId, turnId, itemId, delta }
     this.emitPatch({
       type: 'agent-item-delta-v2',
       sessionId: this.config.sessionId,
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { output: stringField(p['delta'] ?? p['output']) },
+      delta: { output: stringField(p['delta']) },
     });
   }
 
   private handleFileChangePatchUpdated(p: Record<string, unknown>): void {
+    // Authoritative shape: { threadId, turnId, itemId, changes: FileUpdateChange[] }
+    // Each change: { path, kind: { type: 'add'|'delete'|'update', movePath? }, diff }
     if (this.activeTurnId === null || !this.config) return;
     const nativeId = stringField(p['itemId']);
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    // Concatenate all diffs from changes array into a single patch string
+    const changes = Array.isArray(p['changes']) ? p['changes'] : [];
+    const combinedPatch = changes
+      .filter(isRecord)
+      .map((c) => stringField(c['diff']))
+      .filter(Boolean)
+      .join('\n');
+
     this.emitPatch({
       type: 'agent-item-delta-v2',
       sessionId: this.config.sessionId,
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { patch: stringField(p['delta'] ?? p['patch']) },
+      delta: { patch: combinedPatch },
     });
   }
 
@@ -1446,7 +1567,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { content: stringField(p['delta'] ?? p['output']) },
+      // Authoritative shape: { threadId, turnId, itemId, delta }
+      delta: { content: stringField(p['delta']) },
     });
   }
 
@@ -1528,19 +1650,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       this.pendingApprovals.set(requestId, resolve);
     });
 
-    const nativeDecision = codexCommandDecision(decision);
-    if (nativeDecision !== null) {
-      // For amendment-based decisions, include the amendment payload
-      const amendments = (decision as { amendments?: Array<{ type: string; payload?: unknown }> }).amendments ?? [];
-      const execAmend = amendments.find((a) => a.type === 'execpolicy');
-      const netAmend = amendments.find((a) => a.type === 'networkPolicy');
-
-      const response: Record<string, unknown> = { decision: nativeDecision };
-      if (execAmend) response['execpolicy'] = execAmend.payload;
-      if (netAmend) response['networkPolicy'] = netAmend.payload;
-
-      this.client.respondToServerRequest(nativeRequestId, response);
-    }
+    const nativeResponse = codexCommandDecisionResponse(decision);
+    this.client.respondToServerRequest(nativeRequestId, nativeResponse);
 
     this.emitPatch({
       type: 'agent-item-updated-v2',
@@ -1617,10 +1728,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       this.pendingApprovals.set(requestId, resolve);
     });
 
-    const nativeDecision = codexFileDecision(decision);
-    if (nativeDecision !== null) {
-      this.client.respondToServerRequest(nativeRequestId, { decision: nativeDecision });
-    }
+    const nativeResponse = codexFileDecisionResponse(decision);
+    this.client.respondToServerRequest(nativeRequestId, nativeResponse);
 
     this.emitPatch({
       type: 'agent-item-updated-v2',
