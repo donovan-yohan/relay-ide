@@ -1,0 +1,27 @@
+frontend/src/components/chat/Composer.tsx
+  0314b458d38cb5e2 26-31,59,241-246,249,252-267,298,314-318,324,326-341
+frontend/src/components/chat/ChatView.tsx
+  0314b458d38cb5e2 174
+frontend/src/components/chat/SlashPalette.tsx
+  0314b458d38cb5e2 47-48,165,172,289-308,325-326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "7621331a6595c2d0ef4d2cfc6a7e3389fba49505",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 83,
+      "total_deletions": 32,
+      "accepted_lines": 422,
+      "overriden_lines": 0
+    }
+  }
+}
