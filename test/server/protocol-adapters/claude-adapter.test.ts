@@ -454,19 +454,23 @@ describe('ClaudeProtocolAdapter V2', () => {
       .map((patch) => patch.item)
       .filter((item) => item.type === 'providerExtension');
 
-    expect(extensions).toHaveLength(3);
+    // stream_event is now consumed by the streaming pipeline (not emitted as
+    // providerExtension). Only hook_response (debug) and rate_limit_event
+    // (trace) survive as extensions.
+    expect(extensions).toHaveLength(2);
     expect(extensions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          payload: expect.objectContaining({ type: 'stream_event' }),
-          metadata: { eventVisibility: 'trace' },
-        }),
         expect.objectContaining({
           payload: expect.objectContaining({ type: 'rate_limit_event' }),
           metadata: { eventVisibility: 'trace' },
         }),
       ])
     );
+    expect(
+      extensions.some(
+        (ext) => (ext.payload as Record<string, unknown>).type === 'stream_event'
+      )
+    ).toBe(false);
 
     await adapter.disconnect();
   });

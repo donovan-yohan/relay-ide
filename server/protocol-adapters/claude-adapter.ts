@@ -392,6 +392,11 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   private claudeSessionId: string | null = null;
   private slashCommandsLoaded = false;
   private slashCommandsLoadTask: Promise<void> | null = null;
+  private readonly streamedTextItems = new Set<string>();
+  private readonly streamedReasoningItems = new Set<string>();
+  private readonly streamTextBuffers = new Map<string, string>();
+  private readonly streamReasoningBuffers = new Map<string, string>();
+  private streamProviderMessageId: string | null = null;
   private providerExtensionSeq = 0;
 
   constructor(queryFn: ClaudeQueryFunction = sdkQuery as unknown as ClaudeQueryFunction) {
@@ -822,12 +827,157 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
 
+    if (message.type === 'stream_event') {
+      if (this.activeTurnId !== null) {
+        this.handleStreamEvent(this.activeTurnId, message);
+      }
+      return;
+    }
+
     if (this.activeTurnId !== null) {
       this.emitProviderExtension(
         this.activeTurnId,
         message,
         claudeEventVisibility(message)
       );
+    }
+  }
+
+  private handleStreamEvent(turnId: string, message: Record<string, unknown>): void {
+    const event = objectField(message.event);
+    const eventType = stringField(event.type);
+
+    if (eventType === 'message_start') {
+      const innerMessage = objectField(event.message);
+      const id = stringField(innerMessage.id);
+      this.streamProviderMessageId = id || null;
+      return;
+    }
+
+    if (eventType === 'content_block_start') {
+      const index = (typeof event.index === 'number' ? event.index : 0);
+      const block = objectField(event.content_block);
+      const blockType = stringField(block.type);
+      if (blockType === 'text') {
+        const itemId = `msg-${turnId}-${index}`;
+        this.streamedTextItems.add(itemId);
+        this.streamTextBuffers.set(itemId, '');
+        this.emitPatch({
+          type: 'agent-item-started-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          item: {
+            type: 'assistantMessage',
+            id: itemId,
+            text: '',
+            phase: 'answer',
+            status: 'running',
+            startedAt: nowIso(),
+            ...(this.streamProviderMessageId
+              ? { providerMessageId: this.streamProviderMessageId }
+              : {}),
+          },
+        });
+      } else if (blockType === 'thinking') {
+        const itemId = `thinking-${turnId}-${index}`;
+        this.streamedReasoningItems.add(itemId);
+        this.streamReasoningBuffers.set(itemId, '');
+        this.emitPatch({
+          type: 'agent-item-started-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          item: {
+            type: 'reasoning',
+            id: itemId,
+            summary: '',
+            visibility: 'summary',
+            status: 'running',
+            startedAt: nowIso(),
+          },
+        });
+      }
+      return;
+    }
+
+    if (eventType === 'content_block_delta') {
+      const index = (typeof event.index === 'number' ? event.index : 0);
+      const delta = objectField(event.delta);
+      const deltaType = stringField(delta.type);
+      if (deltaType === 'text_delta') {
+        const itemId = `msg-${turnId}-${index}`;
+        if (!this.streamedTextItems.has(itemId)) return;
+        const text = stringField(delta.text);
+        const current = this.streamTextBuffers.get(itemId) ?? '';
+        this.streamTextBuffers.set(itemId, current + text);
+        this.emitPatch({
+          type: 'agent-item-delta-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          itemId,
+          delta: { text },
+        });
+      } else if (deltaType === 'thinking_delta') {
+        const itemId = `thinking-${turnId}-${index}`;
+        if (!this.streamedReasoningItems.has(itemId)) return;
+        const text = stringField(delta.thinking);
+        const current = this.streamReasoningBuffers.get(itemId) ?? '';
+        this.streamReasoningBuffers.set(itemId, current + text);
+        this.emitPatch({
+          type: 'agent-item-delta-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          itemId,
+          delta: { summary: text },
+        });
+      }
+      return;
+    }
+
+    if (eventType === 'content_block_stop') {
+      const index = (typeof event.index === 'number' ? event.index : 0);
+      const textItemId = `msg-${turnId}-${index}`;
+      const reasoningItemId = `thinking-${turnId}-${index}`;
+      if (this.streamedTextItems.has(textItemId)) {
+        const text = this.streamTextBuffers.get(textItemId) ?? '';
+        this.emitPatch({
+          type: 'agent-item-updated-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          item: {
+            type: 'assistantMessage',
+            id: textItemId,
+            text,
+            phase: 'answer',
+            status: 'completed',
+            completedAt: nowIso(),
+            ...(this.streamProviderMessageId
+              ? { providerMessageId: this.streamProviderMessageId }
+              : {}),
+          },
+        });
+      } else if (this.streamedReasoningItems.has(reasoningItemId)) {
+        const text = this.streamReasoningBuffers.get(reasoningItemId) ?? '';
+        this.emitPatch({
+          type: 'agent-item-updated-v2',
+          sessionId: this.sessionId,
+          timestamp: nowIso(),
+          turnId,
+          item: {
+            type: 'reasoning',
+            id: reasoningItemId,
+            summary: text,
+            visibility: 'summary',
+            status: 'completed',
+            completedAt: nowIso(),
+          },
+        });
+      }
+      return;
     }
   }
 
@@ -839,6 +989,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       if (type === 'text') {
         const text = stringField(block.text);
         const id = `msg-${turnId}-${itemIndex}`;
+        if (this.streamedTextItems.has(id)) {
+          // Stream already emitted start/deltas/stop. Final text matches; skip.
+          continue;
+        }
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.sessionId,
@@ -878,6 +1032,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
           },
         });
       } else if (type === 'thinking') {
+        const id = `thinking-${turnId}-${itemIndex}`;
+        if (this.streamedReasoningItems.has(id)) {
+          continue;
+        }
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.sessionId,
@@ -885,7 +1043,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
           turnId,
           item: {
             type: 'reasoning',
-            id: `thinking-${turnId}-${itemIndex}`,
+            id,
             summary: stringField(block.thinking ?? block.text ?? block.summary),
             visibility: 'summary',
             status: 'completed',
@@ -987,6 +1145,11 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     });
     this.activeTurnId = null;
     this.activeStartedAt = null;
+    this.streamedTextItems.clear();
+    this.streamedReasoningItems.clear();
+    this.streamTextBuffers.clear();
+    this.streamReasoningBuffers.clear();
+    this.streamProviderMessageId = null;
     this.emitLiveState({
       status: this.queue.length > 0 ? 'working' : 'idle',
       activeTurnId: null,
