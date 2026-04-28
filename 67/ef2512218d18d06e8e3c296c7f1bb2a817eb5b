@@ -1,0 +1,41 @@
+frontend/src/components/chat/extensions/codex/TurnDiffCard.tsx
+  0314b458d38cb5e2 1-45
+frontend/src/components/chat/extensions/codex/ModelReroutedCard.tsx
+  0314b458d38cb5e2 1-72
+frontend/src/components/chat/extensions/codex/ModelVerificationCard.tsx
+  0314b458d38cb5e2 1-79
+frontend/src/components/chat/extensions/codex/ExitedReviewModeCard.tsx
+  0314b458d38cb5e2 1-31
+frontend/src/components/chat/extensions/codex/codex.css
+  0314b458d38cb5e2 1-81
+frontend/src/components/chat/extensions/codex/index.tsx
+  0314b458d38cb5e2 1-50
+frontend/src/components/chat/extensions/registry.tsx
+  0314b458d38cb5e2 5,56-57
+frontend/src/components/chat/extensions/codex/EnteredReviewModeCard.tsx
+  0314b458d38cb5e2 1-35
+frontend/src/components/chat/extensions/codex/ContextCompactionCard.tsx
+  0314b458d38cb5e2 1-35
+test/components/codex-extension-rendering.test.ts
+  0314b458d38cb5e2 1-184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "67ef2512218d18d06e8e3c296c7f1bb2a817eb5b",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 43056,
+      "total_deletions": 53,
+      "accepted_lines": 43003,
+      "overriden_lines": 0
+    }
+  }
+}
