@@ -264,7 +264,7 @@
   border-top: 1px solid var(--border);
 }
 
-/* tl-error — relay-specific */
+/* tl-error — relay-specific (turn-level fatal error band) */
 .tl-error {
   display: flex;
   gap: 8px;
@@ -274,6 +274,41 @@
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   color: var(--status-error);
+}
+
+/* tl-error-msg — inline error item within the timeline. */
+.tl-error-msg {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 12px;
+  border-left: 2px solid var(--status-error);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--status-error);
+}
+
+.tl-error-msg__lbl {
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.tl-error-msg__body {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.tl-error-msg--client {
+  border-left-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.tl-error-msg--client .tl-error-msg__body {
+  color: var(--text);
 }
 
 /* tl-empty — relay-specific, no session yet */

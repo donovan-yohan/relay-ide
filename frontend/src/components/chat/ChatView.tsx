@@ -28,7 +28,7 @@ interface ChatViewProps {
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
-  const { session, sendMessage, interrupt, approve, resume } =
+  const { session, sendMessage, interrupt, approve, resume, pushClientError } =
     useAgentChatSocket(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -172,6 +172,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         slashCommands={mergedSlashCommands}
         clientHandlers={clientHandlers}
         modelName={session?.config.model}
+        pushClientError={pushClientError}
       />
     </div>
   );

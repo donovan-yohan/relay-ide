@@ -24,6 +24,8 @@ interface ComposerProps {
   slashCommands?: AgentSlashCommandV2[] | undefined;
   clientHandlers?: Record<string, ClientCommandHandler>;
   modelName?: string | undefined;
+  /** Push a client-source error item to the timeline (replaces inline banners). */
+  pushClientError?: (message: string, context?: string) => void;
 }
 
 function formatTokens(n: number): string {
@@ -57,6 +59,7 @@ export const Composer: React.FC<ComposerProps> = ({
   slashCommands,
   clientHandlers,
   modelName,
+  pushClientError,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState('');
@@ -113,13 +116,18 @@ export const Composer: React.FC<ComposerProps> = ({
       if (!token) return true; // empty trigger, let through
 
       if (!commandIndex.has(token.toLowerCase())) {
-        setSendError(`unknown command: ${leadingTrigger.prefix}${token}`);
+        const msg = `unknown command: ${leadingTrigger.prefix}${token}`;
+        if (pushClientError) {
+          pushClientError(msg);
+        } else {
+          setSendError(msg);
+        }
         return false;
       }
 
       return true;
     },
-    [capabilities.slashCommands, commandIndex]
+    [capabilities.slashCommands, commandIndex, pushClientError]
   );
 
   const submitDraft = useCallback(() => {
@@ -146,7 +154,11 @@ export const Composer: React.FC<ComposerProps> = ({
           if (handler) {
             const result = handler(args);
             if (!result.ok) {
-              setSendError(result.error);
+              if (pushClientError) {
+                pushClientError(result.error, matched.name);
+              } else {
+                setSendError(result.error);
+              }
               return;
             }
             setDraft('');
@@ -162,7 +174,7 @@ export const Composer: React.FC<ComposerProps> = ({
     setDraft('');
     setCaret(0);
     setSendError(null);
-  }, [draft, onSend, validateAndSend, clientHandlers, slashCommands]);
+  }, [draft, onSend, validateAndSend, clientHandlers, slashCommands, pushClientError]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -419,8 +431,7 @@ export const Composer: React.FC<ComposerProps> = ({
             )}
           </span>
         </div>
-        {live?.error && <div className="composer__error">{live.error}</div>}
-        {sendError && <div className="composer__send-error">{sendError}</div>}
+        {/* error rendering is normalized into the timeline as errorMessage items */}
       </div>
     </div>
   );

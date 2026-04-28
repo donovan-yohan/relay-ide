@@ -294,6 +294,18 @@ export interface AgentProviderExtensionItemV2 extends AgentItemBaseV2 {
   payload: Record<string, unknown>;
 }
 
+/**
+ * Inline error rendered in the timeline. Source distinguishes between
+ * agent/transport errors (`'agent'`) and frontend client validation
+ * errors (`'client'`, e.g. unknown leading slash command).
+ */
+export interface AgentErrorMessageItemV2 extends AgentItemBaseV2 {
+  type: 'errorMessage';
+  message: string;
+  source: 'agent' | 'client';
+  context?: string;
+}
+
 export type AgentItemV2 =
   | AgentUserMessageItemV2
   | AgentAssistantMessageItemV2
@@ -310,7 +322,8 @@ export type AgentItemV2 =
   | AgentImageViewItemV2
   | AgentImageGenerationItemV2
   | AgentHookPromptItemV2
-  | AgentProviderExtensionItemV2;
+  | AgentProviderExtensionItemV2
+  | AgentErrorMessageItemV2;
 
 interface AgentPatchBaseV2 {
   type: AgentPatchV2['type'];
@@ -636,7 +649,46 @@ export function applyAgentPatchV2(
         patch.turnId,
         (turn) => completeTurn(turn, patch)
       );
-    case 'agent-error-v2':
+    case 'agent-error-v2': {
+      const errorItem: AgentErrorMessageItemV2 = {
+        type: 'errorMessage',
+        id: `error-${patch.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        message: patch.message,
+        source: 'agent',
+        status: 'completed',
+        startedAt: patch.timestamp,
+        completedAt: patch.timestamp,
+      };
+
+      const targetTurnId = patch.turnId ?? session.live.activeTurnId;
+      let nextTurns = session.turns;
+      if (targetTurnId) {
+        nextTurns = updateTurn(session, targetTurnId, (turn) => ({
+          ...turn,
+          items: [...turn.items, errorItem],
+        })).turns;
+      } else {
+        const lastTurn = session.turns[session.turns.length - 1];
+        if (lastTurn) {
+          nextTurns = upsertById(session.turns, {
+            ...lastTurn,
+            items: [...lastTurn.items, errorItem],
+          });
+        } else {
+          nextTurns = [
+            ...session.turns,
+            {
+              id: `synthetic-${patch.timestamp}`,
+              status: 'failed',
+              startedAt: patch.timestamp,
+              completedAt: patch.timestamp,
+              items: [errorItem],
+              inputMessageId: '',
+            },
+          ];
+        }
+      }
+
       return {
         ...session,
         live: {
@@ -644,7 +696,9 @@ export function applyAgentPatchV2(
           status: 'error',
           error: patch.message,
         },
+        turns: nextTurns,
       };
+    }
   }
 }
 

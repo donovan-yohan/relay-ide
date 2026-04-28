@@ -109,6 +109,20 @@ function renderItem(
       return <pre className="tl-text">{item.prompt}</pre>;
     case 'hookPrompt':
       return <pre className="tl-text">{item.prompt}</pre>;
+    case 'errorMessage':
+      return (
+        <div
+          className={`tl-error-msg tl-error-msg--${item.source}`}
+          role="alert"
+        >
+          <span className="tl-error-msg__lbl">
+            {item.source === 'client' ? 'client error' : 'agent error'}
+          </span>
+          <span className="tl-error-msg__body">
+            {item.context ? `${item.context}: ${item.message}` : item.message}
+          </span>
+        </div>
+      );
   }
 }
 
