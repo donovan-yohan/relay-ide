@@ -509,7 +509,7 @@ describe('MockProtocolAdapterV2', () => {
     });
   });
 
-  it('registers a v2 mock adapter factory without changing v1 createAdapter', () => {
+  it('registers a v2 mock adapter factory', () => {
     expect(createAdapterV2('mock')).toBeInstanceOf(MockProtocolAdapterV2);
   });
 

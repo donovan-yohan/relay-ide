@@ -4,7 +4,6 @@ import {
   createWebSession,
   reconnectWebSession,
 } from '../server/web-session-handler.js';
-import { createAdapter } from '../server/protocol-adapters/index.js';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { Session, WebSession } from '../server/types.js';
@@ -105,28 +104,6 @@ describe('pushToBuffer', () => {
       (session.messages[session.messages.length - 1] as ApprovalRequestEvent)
         .requestId
     ).toBe('req-overflow');
-  });
-});
-
-// ── createAdapter ─────────────────────────────────────────────────────────────
-
-describe('createAdapter', () => {
-  it('returns a MockProtocolAdapter for agent type "mock"', () => {
-    const adapter = createAdapter('mock');
-    expect(adapter).toBeInstanceOf(MockProtocolAdapter);
-    expect(adapter.agentType).toBe('mock');
-  });
-
-  it('throws for unknown agent types', () => {
-    expect(() => createAdapter('unknown-agent')).toThrow(
-      'No protocol adapter registered for agent type: unknown-agent'
-    );
-  });
-
-  it('throws for empty string agent type', () => {
-    expect(() => createAdapter('')).toThrow(
-      'No protocol adapter registered for agent type: '
-    );
   });
 });
 

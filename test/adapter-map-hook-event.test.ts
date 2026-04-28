@@ -1,9 +1,10 @@
 /**
- * Tests for mapHookEvent() in all 3 real protocol adapters.
+ * Tests for mapHookEvent() in hook-based protocol adapters.
  * Verifies that native hook payloads are correctly translated into canonical ChatEvents.
+ * Note: codex-adapter (hook-based) was deleted in the codex-native PR; codex now uses
+ * the native V2 adapter (test/server/protocol-adapters/codex-native-adapter.test.ts).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CodexProtocolAdapter } from '../server/protocol-adapters/codex-adapter.js';
 import { OpenCodeProtocolAdapter } from '../server/protocol-adapters/opencode-adapter.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
@@ -30,88 +31,14 @@ const BASE_CONFIG: AdapterConfig = {
 };
 
 /** Collect events emitted by an adapter without spawning a process */
-function collectEvents(
-  adapter: CodexProtocolAdapter | OpenCodeProtocolAdapter
-): ChatEvent[] {
+function collectEvents(adapter: OpenCodeProtocolAdapter): ChatEvent[] {
   const events: ChatEvent[] = [];
   adapter.on((e) => events.push(e));
   // Set internal config so fire() has a sessionId
-
   (adapter as any)._config = BASE_CONFIG;
-
   (adapter as any)._status = 'connected';
   return events;
 }
-
-// ── Codex Adapter ────────────────────────────────────────────────────────────
-
-describe('CodexProtocolAdapter.mapHookEvent', () => {
-  let adapter: CodexProtocolAdapter;
-  let events: ChatEvent[];
-
-  beforeEach(() => {
-    adapter = new CodexProtocolAdapter();
-    events = collectEvents(adapter);
-
-    (adapter as any)._currentTurnId = 'turn-1';
-  });
-
-  it('maps "tool.started" to chat:tool-call', () => {
-    adapter.handleHookEvent({
-      type: 'tool.started',
-      sessionId: 'sess-test',
-      data: {
-        toolCallId: 'tc-1',
-        tool: {
-          name: 'Edit',
-          description: 'Edit file',
-          input: { path: 'foo.ts' },
-        },
-      },
-    });
-
-    expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe('chat:tool-call');
-    const evt = events[0] as ChatEvent & { toolName: string };
-    expect(evt.toolName).toBe('Edit');
-  });
-
-  it('maps "tool.finished" to chat:tool-result', () => {
-    adapter.handleHookEvent({
-      type: 'tool.finished',
-      sessionId: 'sess-test',
-      data: {
-        toolCallId: 'tc-1',
-        toolName: 'Edit',
-        output: 'done',
-        durationMs: 200,
-      },
-    });
-
-    expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe('chat:tool-result');
-  });
-
-  it('maps "session.ended" to turn-completed + session-status idle', () => {
-    adapter.handleHookEvent({ type: 'session.ended', sessionId: 'sess-test' });
-
-    const types = events.map((e) => e.type);
-    expect(types).toContain('chat:turn-completed');
-    expect(types).toContain('chat:session-status');
-  });
-
-  it('maps "prompt.submitted" to session-status active', () => {
-    adapter.handleHookEvent({
-      type: 'prompt.submitted',
-      sessionId: 'sess-test',
-    });
-
-    expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe('chat:session-status');
-    const evt = events[0] as ChatEvent & { status: string };
-    expect(evt.status).toBe('active');
-  });
-});
 
 // ── OpenCode Adapter ─────────────────────────────────────────────────────────
 
@@ -288,13 +215,31 @@ describe('OpenCodeProtocolAdapter.mapHookEvent', () => {
   });
 });
 
-import { createAdapter } from '../server/protocol-adapters/index.js';
+import { createAdapterV2 } from '../server/protocol-adapters/index.js';
 import { OpenCodeAttachedAdapter } from '../server/protocol-adapters/opencode-attached-adapter.js';
+import { CodexNativeProtocolAdapter } from '../server/protocol-adapters/codex-native-adapter.js';
 
 describe('Adapter registry', () => {
-  it('createAdapter returns OpenCodeAttachedAdapter for opencode-attached', () => {
-    const adapter = createAdapter('opencode-attached');
-    expect(adapter).toBeInstanceOf(OpenCodeAttachedAdapter);
+  it('createAdapterV2 returns CodexNativeProtocolAdapter for "codex"', () => {
+    const adapter = createAdapterV2('codex');
+    expect(adapter).toBeInstanceOf(CodexNativeProtocolAdapter);
+    expect(adapter.agentType).toBe('codex');
+    expect(adapter.capabilities).toMatchObject({
+      text: true,
+      commandExecution: true,
+      fileChanges: true,
+      approvals: true,
+      interrupt: true,
+      slashCommands: true,
+      queue: true,
+      resume: true,
+      telemetry: true,
+      rateLimits: true,
+    });
+  });
+
+  it('createAdapterV2 returns LegacyProtocolAdapterV2Bridge for "opencode-attached"', () => {
+    const adapter = createAdapterV2('opencode-attached');
     expect(adapter.agentType).toBe('opencode');
     expect(adapter.runtimeOwnership).toBe('attached');
   });
