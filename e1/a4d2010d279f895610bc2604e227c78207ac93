@@ -1,0 +1,31 @@
+test/mock-v2-adapter.test.ts
+  0314b458d38cb5e2 538
+shared/agent-chat-protocol-v2.ts
+  0314b458d38cb5e2 28-34
+server/protocol-adapters/claude-adapter.ts
+  0314b458d38cb5e2 80
+server/protocol-adapters/codex-native-adapter.ts
+  0314b458d38cb5e2 51
+server/protocol-adapters/mock-v2-adapter.ts
+  0314b458d38cb5e2 86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "e1a4d2010d279f895610bc2604e227c78207ac93",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 0,
+      "accepted_lines": 308,
+      "overriden_lines": 0
+    }
+  }
+}
