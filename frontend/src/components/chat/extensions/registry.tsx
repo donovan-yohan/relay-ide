@@ -2,6 +2,7 @@ import React from 'react';
 import type { AgentProviderExtensionItemV2 } from '../../../../../shared/agent-chat-protocol-v2.js';
 import { EnterPlanModeCard } from './claude/EnterPlanModeCard.js';
 import { FastModeUnavailableCard } from './claude/FastModeUnavailableCard.js';
+import { registerCodexRenderers } from './codex/index.js';
 
 type ExtensionRenderer = (
   item: AgentProviderExtensionItemV2
@@ -52,3 +53,5 @@ registerProviderExtensionRenderer('claude', (item) => {
   }
   return renderFallback(item);
 });
+
+registerCodexRenderers();
