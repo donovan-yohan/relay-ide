@@ -1,0 +1,35 @@
+test/web-chat-integration.test.ts
+  0314b458d38cb5e2 1
+server/protocol-adapters/codex-native-adapter.ts
+  0314b458d38cb5e2 1-2212
+test/server/protocol-adapters/codex-adapter.test.ts
+  0314b458d38cb5e2 1-4,7,10,13,17-18,22-26,28-31
+test/mock-v2-adapter.test.ts
+  0314b458d38cb5e2 512
+test/server/protocol-adapters/codex-native-adapter.test.ts
+  0314b458d38cb5e2 1-1357
+server/protocol-adapters/index.ts
+  0314b458d38cb5e2 8,13,64
+test/adapter-map-hook-event.test.ts
+  0314b458d38cb5e2 2,4-5,34,218,220,223-242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "3fbc1e079a719f0305ca36f72a75155fd011cb5e",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3636,
+      "total_deletions": 362,
+      "accepted_lines": 3663,
+      "overriden_lines": 0
+    }
+  }
+}
