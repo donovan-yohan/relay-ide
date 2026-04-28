@@ -27,6 +27,38 @@
   font-size: var(--font-size-sm);
 }
 
+.tl-resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle, var(--bg));
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.tl-resume-hint {
+  flex: 1;
+  color: var(--text-muted);
+}
+
+.tl-resume-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.tl-resume-btn:hover {
+  background: var(--bg-hover, var(--border));
+}
+
 .turn {
   display: flex;
   flex-direction: column;

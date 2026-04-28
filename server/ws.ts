@@ -55,6 +55,9 @@ function handleAgentCommandV2(
     case 'agent-answer-v2':
       answerAgentV2(ws, session, parsed);
       break;
+    case 'agent-resume-v2':
+      resumeAgentV2(ws, session, parsed);
+      break;
   }
 }
 
@@ -159,6 +162,54 @@ function answerAgentV2(
       logger.error('v2 respondToInput error:', err);
       sendAgentErrorV2(ws, session.id, 'v2 input delivery failed', err);
     });
+}
+
+function resumeAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const providerSessionId =
+    typeof parsed['providerSessionId'] === 'string'
+      ? parsed['providerSessionId']
+      : undefined;
+
+  if (!session.adapterV2.capabilities.resume) {
+    sendAgentErrorV2(
+      ws,
+      session.id,
+      'agent-resume-v2 rejected',
+      new Error(`${session.adapterType} does not support resume`)
+    );
+    return;
+  }
+
+  // Resolve the provider session ID: prefer the one sent by the client
+  // (which may come from the UI's persisted state), fall back to the
+  // server-side providerSession stored on the session.
+  const storedProviderSession = session.agentSessionV2.providerSession;
+  const resolvedId =
+    providerSessionId ??
+    (session.adapterType === 'claude'
+      ? storedProviderSession?.['claudeSessionId']
+      : session.adapterType === 'codex'
+        ? storedProviderSession?.['threadId']
+        : undefined);
+
+  if (!resolvedId) {
+    sendAgentErrorV2(
+      ws,
+      session.id,
+      'agent-resume-v2 rejected',
+      new Error('No provider session ID available for resume')
+    );
+    return;
+  }
+
+  session.adapterV2.resumeSession(resolvedId).catch((err: unknown) => {
+    logger.error('v2 resumeSession error:', err);
+    sendAgentErrorV2(ws, session.id, 'v2 resume failed', err);
+  });
 }
 
 function handleWebSessionMessage(

@@ -21,6 +21,13 @@ export interface AgentChatSocketState {
   interrupt: (turnId?: string) => void;
   approve: (requestId: string, decision: AgentApprovalDecisionV2) => void;
   answer: (requestId: string, answers: Record<string, string[]>) => void;
+  /**
+   * Request the server to resume a prior provider session.
+   * Only valid when `session.capabilities.resume === true` and a
+   * `providerSession` id is available. Optionally pass an explicit
+   * `providerSessionId`; if omitted the server uses its stored value.
+   */
+  resume: (providerSessionId?: string) => void;
 }
 
 export function useAgentChatSocket(
@@ -87,6 +94,16 @@ export function useAgentChatSocket(
   const answer = useCallback(
     (requestId: string, answers: Record<string, string[]>) => {
       send({ type: 'agent-answer-v2', requestId, answers });
+    },
+    [send]
+  );
+
+  const resume = useCallback(
+    (providerSessionId?: string) => {
+      send({
+        type: 'agent-resume-v2',
+        ...(providerSessionId !== undefined ? { providerSessionId } : {}),
+      });
     },
     [send]
   );
@@ -254,6 +271,7 @@ export function useAgentChatSocket(
     interrupt,
     approve,
     answer,
+    resume,
   };
 }
 

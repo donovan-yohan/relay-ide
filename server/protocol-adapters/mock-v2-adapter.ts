@@ -14,6 +14,7 @@ import type {
   AgentSessionLiveStateV2,
   AgentTurnV2,
 } from '../../shared/agent-chat-protocol-v2.js';
+import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 
 export interface MockProtocolAdapterV2Delays {
   connectMs: number;
@@ -148,6 +149,37 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     const config = this.config;
     await this.disconnect();
     await this.connect(config);
+  }
+
+  async resumeSession(sessionId: string): Promise<void> {
+    if (this.config === null) {
+      throw new Error('Cannot resumeSession before initial connect');
+    }
+
+    // Emit a snapshot reflecting the resumed provider session.
+    this.emitPatch({
+      type: 'agent-session-snapshot-v2',
+      sessionId: this.sessionId,
+      timestamp: nowIso(),
+      session: emptyAgentSessionV2({
+        id: this.sessionId,
+        provider: 'mock',
+        cwd: this.config.cwd,
+        capabilities: this.capabilities,
+        providerSession: { mockSessionId: sessionId },
+      }),
+    });
+
+    this.emitLiveState({
+      status: 'idle',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      proposedPlanItemId: null,
+      queueLength: 0,
+      fastModeAvailable: false,
+      error: null,
+    });
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {

@@ -43,6 +43,8 @@ type QueryParams = {
     includePartialMessages?: boolean;
     includeHookEvents?: boolean;
     canUseTool?: CanUseTool;
+    /** SDK session ID to resume. Mutually exclusive with fresh connects. */
+    resume?: string;
   };
 };
 
@@ -477,6 +479,105 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     const config = this.config;
     await this.disconnect();
     await this.connect(config);
+  }
+
+  async resumeSession(sessionId: string): Promise<void> {
+    if (!this.config) throw new Error('Cannot resumeSession before connect');
+    const config = this.config;
+
+    // Tear down existing session state without clearing the stored claudeSessionId
+    // so that emitSnapshot below can include it in providerSession.
+    this._status = 'disconnected';
+    this.input?.close();
+    try {
+      this.activeQuery?.close?.();
+    } catch (err) {
+      logger.warn('Claude query close failed during resumeSession:', err);
+    }
+    this.sessionAbort?.abort();
+    this.rejectQueued(new Error('Claude adapter resuming'));
+    this.pendingApprovals.clear();
+    if (this.consumeTask) {
+      await this.consumeTask.catch(() => undefined);
+    }
+    this.activeTurnId = null;
+    this.activeStartedAt = null;
+    this.completedActiveTurn = false;
+    this.activeQuery = null;
+    this.consumeTask = null;
+    this.sessionAbort = null;
+    this.slashCommandsLoaded = false;
+    this.slashCommandsLoadTask = null;
+
+    // Store the provider session id so the snapshot carries it.
+    this.claudeSessionId = sessionId;
+
+    // Re-open the stream with the resume option so the SDK reattaches.
+    this.input = new StreamInputController();
+    this.sessionAbort = new AbortController();
+    const mode = permissionMode(config.permissionMode);
+    const additionalDirs = isRecord(config.extra)
+      ? config.extra.additionalDirectories
+      : undefined;
+
+    const query = this.queryFn({
+      prompt: this.input.iterator(),
+      options: {
+        abortController: this.sessionAbort,
+        cwd: config.cwd,
+        ...(config.model ? { model: config.model } : {}),
+        ...(mode ? { permissionMode: mode } : {}),
+        ...(Array.isArray(additionalDirs)
+          ? { additionalDirectories: additionalDirs as string[] }
+          : {}),
+        env: {
+          ...process.env,
+          CLAUDE_CODE_ENTRYPOINT: 'sdk-ts',
+        },
+        includePartialMessages: true,
+        includeHookEvents: true,
+        canUseTool: this.handleCanUseTool,
+        resume: sessionId,
+      },
+    });
+    this.activeQuery = query;
+    this._status = 'connected';
+    this.consumeTask = this.consumeMessages();
+
+    // Emit a snapshot reflecting the resumed session. The SDK does not replay
+    // history automatically for Claude — the UI's locally-persisted timeline
+    // already carries the conversation. An empty timeline snapshot with the
+    // known providerSession is sufficient to signal resume readiness.
+    this.emitPatch({
+      type: 'agent-session-snapshot-v2',
+      sessionId: config.sessionId,
+      timestamp: nowIso(),
+      session: emptyAgentSessionV2({
+        id: config.sessionId,
+        provider: 'claude',
+        cwd: config.cwd,
+        capabilities: { ...this.capabilities, resume: true },
+        providerSession: { claudeSessionId: sessionId },
+        config: {
+          ...(config.model ? { model: config.model } : {}),
+          ...(config.permissionMode
+            ? { permissionMode: config.permissionMode }
+            : {}),
+        },
+      }),
+    });
+
+    this.emitLiveState({
+      status: 'idle',
+      activeTurnId: null,
+      waitingOn: null,
+      activeRequestIds: [],
+      proposedPlanItemId: null,
+      queueLength: 0,
+      fastModeAvailable: true,
+      error: null,
+    });
+    void this.refreshSlashCommands();
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {

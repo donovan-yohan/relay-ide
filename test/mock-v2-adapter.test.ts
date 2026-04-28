@@ -564,4 +564,35 @@ describe('MockProtocolAdapterV2', () => {
       ])
     );
   });
+
+  it('resumeSession emits a snapshot with providerSession and idle live-state', async () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+    const patches = collectPatches(adapter);
+    await adapter.connect(config);
+
+    await adapter.resumeSession('mock-session-abc');
+
+    const snapshot = patches.find((p) => p.type === 'agent-session-snapshot-v2');
+    expect(snapshot).toMatchObject({
+      type: 'agent-session-snapshot-v2',
+      session: expect.objectContaining({
+        providerSession: { mockSessionId: 'mock-session-abc' },
+        capabilities: expect.objectContaining({ resume: true }),
+      }),
+    });
+
+    expect(
+      patches.some(
+        (p) =>
+          p.type === 'agent-live-state-updated-v2' && p.live.status === 'idle'
+      )
+    ).toBe(true);
+  });
+
+  it('resumeSession throws before connect', async () => {
+    const adapter = new MockProtocolAdapterV2(zeroDelays);
+    await expect(adapter.resumeSession('any-id')).rejects.toThrow(
+      'Cannot resumeSession before initial connect'
+    );
+  });
 });

@@ -31,6 +31,7 @@ import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import {
   createWebSession,
+  reconnectWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
 import { getWorkingTreeDiff } from './git.js';
@@ -948,6 +949,11 @@ async function restoreWebSession(s: SerializedWebSession): Promise<void> {
   if (s.agentPatchesV2 && s.agentPatchesV2.length > 0) {
     session.agentPatchesV2 = s.agentPatchesV2.slice(-1000);
   }
+
+  // If the adapter supports resume and we have a stored provider session ID,
+  // reconnect via resumeSession so the provider reattaches to the prior conversation.
+  // This replaces the fresh connect done by createWebSession above.
+  await reconnectWebSession(session);
 }
 
 function syncDisplayNameCounters(): void {

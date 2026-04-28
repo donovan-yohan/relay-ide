@@ -842,6 +842,93 @@ describe('ClaudeProtocolAdapter V2', () => {
     expect(controller.interruptCalls).toBe(1);
     await adapter.disconnect();
   });
+
+  it('resumeSession passes resume option to the SDK query and emits snapshot with providerSession', async () => {
+    const queryFn = makeScriptedQuery();
+    const capturedOptions: Array<Parameters<ClaudeQueryFunction>[0]['options']> =
+      [];
+    const trackingFn: ClaudeQueryFunction = (params) => {
+      capturedOptions.push(params.options);
+      return queryFn()(params);
+    };
+    const adapter = new ClaudeProtocolAdapter(trackingFn);
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    // First connect captures options[0]
+
+    await adapter.resumeSession('claude-resume-id-1');
+    // resumeSession captures options[1]
+
+    expect(capturedOptions).toHaveLength(2);
+    expect(capturedOptions[1]?.resume).toBe('claude-resume-id-1');
+
+    const snapshotAfterResume = patches.find(
+      (patch, idx) =>
+        patch.type === 'agent-session-snapshot-v2' &&
+        idx > patches.findIndex((p) => p.type === 'agent-session-snapshot-v2')
+    );
+    expect(snapshotAfterResume).toMatchObject({
+      type: 'agent-session-snapshot-v2',
+      session: expect.objectContaining({
+        providerSession: { claudeSessionId: 'claude-resume-id-1' },
+        capabilities: expect.objectContaining({ resume: true }),
+      }),
+    });
+
+    await adapter.disconnect();
+  });
+
+  it('resumeSession emits an idle live-state patch after the snapshot', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const firstSnapshotIdx = patches.findIndex(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
+
+    await adapter.resumeSession('resume-id-idle-check');
+
+    const afterResumePatch = patches.slice(firstSnapshotIdx + 1);
+    const resumeSnapshot = afterResumePatch.find(
+      (p) => p.type === 'agent-session-snapshot-v2'
+    );
+    expect(resumeSnapshot).toBeDefined();
+
+    const idlePatch = afterResumePatch.find(
+      (p) =>
+        p.type === 'agent-live-state-updated-v2' &&
+        p.live.status === 'idle'
+    );
+    expect(idlePatch).toBeDefined();
+
+    await adapter.disconnect();
+  });
+
+  it('resumeSession sets claudeSessionId without waiting for an init message', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    await adapter.resumeSession('pre-stored-session');
+
+    // Snapshot must carry providerSession immediately — no init message needed
+    const resumeSnapshot = patches
+      .slice(
+        patches.findIndex((p) => p.type === 'agent-session-snapshot-v2') + 1
+      )
+      .find((p) => p.type === 'agent-session-snapshot-v2');
+    expect(resumeSnapshot).toMatchObject({
+      session: expect.objectContaining({
+        providerSession: { claudeSessionId: 'pre-stored-session' },
+      }),
+    });
+
+    await adapter.disconnect();
+  });
 });
 // Suppress unused vitest helper warning when no top-level mocks are needed.
 void vi;

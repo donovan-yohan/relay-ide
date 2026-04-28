@@ -41,7 +41,21 @@ export type AgentPatchHandlerV2 = (patch: AgentPatchV2) => void;
 export interface ProtocolAdapterV2 {
   connect(config: AdapterConfig): Promise<void>;
   disconnect(): Promise<void>;
+  /**
+   * Transport-level reconnect with no state change. Tears down and re-establishes
+   * the underlying connection using the same session configuration as before.
+   * Use when the transport drops and you want to continue the same session state.
+   */
   reconnect(): Promise<void>;
+  /**
+   * Provider-level reattach to a prior session identified by `sessionId`.
+   * The adapter loads or replays conversation history for that session so the
+   * UI can continue where it left off. Distinct from `reconnect()`: this
+   * carries explicit provider-session identity and may replay server state.
+   * Providers that do not support resume must emit `capabilities.resume = false`
+   * and throw with a clear error if this method is called.
+   */
+  resumeSession(sessionId: string): Promise<void>;
   sendMessage(input: AgentSendMessageInputV2): Promise<void>;
   interrupt(input: AgentInterruptInputV2): Promise<void>;
   respondToApproval(input: AgentApprovalResponseInputV2): Promise<void>;
@@ -69,6 +83,7 @@ export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {
   protected abstract onDisconnect(): Promise<void>;
 
   abstract reconnect(): Promise<void>;
+  abstract resumeSession(sessionId: string): Promise<void>;
   abstract sendMessage(input: AgentSendMessageInputV2): Promise<void>;
   abstract interrupt(input: AgentInterruptInputV2): Promise<void>;
   abstract respondToApproval(

@@ -69,6 +69,12 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
     await this.inner.reconnect();
   }
 
+  async resumeSession(_sessionId: string): Promise<void> {
+    throw new Error(
+      `${this.agentType} does not support resume (capabilities.resume is false).`
+    );
+  }
+
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     await this.inner.sendMessage(
       input.turnId,

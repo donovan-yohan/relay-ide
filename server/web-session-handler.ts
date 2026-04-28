@@ -153,6 +153,61 @@ export async function createWebSession(
   return { session };
 }
 
+/**
+ * Extract the provider-specific session ID from a stored providerSession map.
+ *
+ * Each provider stores its resumable ID under a known key:
+ *   claude → claudeSessionId
+ *   codex  → threadId  (PR 5)
+ *
+ * Returns undefined if no recognized key is present.
+ */
+function extractProviderSessionId(
+  agentType: string,
+  providerSession: Record<string, string> | undefined
+): string | undefined {
+  if (!providerSession) return undefined;
+  if (agentType === 'claude') return providerSession['claudeSessionId'];
+  if (agentType === 'codex') return providerSession['threadId'];
+  return undefined;
+}
+
+/**
+ * Reconnect an existing web session after a transport drop.
+ *
+ * If the session's adapter supports resume (`capabilities.resume === true`)
+ * and a prior provider-session ID is stored, calls `adapter.resumeSession(id)`
+ * to reattach to the previous conversation. Otherwise falls back to `reconnect()`
+ * which performs a clean transport-level reconnect with no history.
+ */
+export async function reconnectWebSession(session: WebSession): Promise<void> {
+  const adapterV2 = session.adapterV2;
+  const capabilities = adapterV2.capabilities;
+  const providerSession = session.agentSessionV2.providerSession;
+
+  const providerSessionId = extractProviderSessionId(
+    session.adapterType,
+    providerSession
+  );
+
+  if (capabilities.resume && providerSessionId) {
+    logger.info('resuming web session via provider session id', {
+      id: session.id,
+      agentType: session.adapterType,
+      providerSessionId,
+    });
+    await adapterV2.resumeSession(providerSessionId);
+  } else {
+    logger.info('reconnecting web session (no resume capability or no stored id)', {
+      id: session.id,
+      agentType: session.adapterType,
+      hasResume: capabilities.resume,
+      hasProviderId: Boolean(providerSessionId),
+    });
+    await adapterV2.reconnect();
+  }
+}
+
 function createV2OnlyLegacyAdapter(
   agentType: string,
   runtimeOwnership: 'spawned' | 'attached'

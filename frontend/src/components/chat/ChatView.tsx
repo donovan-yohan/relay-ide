@@ -11,7 +11,7 @@ interface ChatViewProps {
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
-  const { session, sendMessage, interrupt, approve } =
+  const { session, sendMessage, interrupt, approve, resume } =
     useAgentChatSocket(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -62,6 +62,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     interrupt(session?.live.activeTurnId ?? undefined);
   }, [interrupt, session]);
 
+  const canResume = useMemo(
+    () =>
+      session?.capabilities.resume === true &&
+      session.providerSession !== undefined &&
+      Object.keys(session.providerSession).length > 0 &&
+      session.live.status === 'idle',
+    [session]
+  );
+
+  const handleResume = useCallback(() => {
+    resume();
+  }, [resume]);
+
   return (
     <div className="chat-view" role="main" aria-label="chat">
       <div
@@ -96,6 +109,18 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         aria-live="polite"
         aria-label="message timeline"
       >
+        {canResume && (
+          <div className="tl-resume-banner">
+            <span className="tl-resume-hint">session paused — resume where you left off</span>
+            <button
+              type="button"
+              className="tl-resume-btn"
+              onClick={handleResume}
+            >
+              resume session
+            </button>
+          </div>
+        )}
         {!session || session.turns.length === 0 ? (
           <div className="tl-empty">no messages yet</div>
         ) : (
