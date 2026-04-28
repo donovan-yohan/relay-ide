@@ -48,6 +48,7 @@ const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {
   compact: true,
   telemetry: true,
   rateLimits: true,
+  streaming: true,
 };
 
 // ── Relay-owned bake-ins ───────────────────────────────────────────────────

@@ -535,6 +535,7 @@ describe('MockProtocolAdapterV2', () => {
       compact: true,
       telemetry: true,
       rateLimits: true,
+      streaming: true,
     });
   });
 

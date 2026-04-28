@@ -77,6 +77,7 @@ const CLAUDE_CAPABILITIES: AgentCapabilitySetV2 = {
   compact: true,
   telemetry: true,
   rateLimits: true,
+  streaming: true,
 };
 
 const RELAY_CLAUDE_COMMANDS: AgentSlashCommandV2[] = [

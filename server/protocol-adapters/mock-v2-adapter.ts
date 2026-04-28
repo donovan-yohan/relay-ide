@@ -83,6 +83,7 @@ export class MockProtocolAdapterV2 extends BaseProtocolAdapterV2 {
     compact: true,
     telemetry: true,
     rateLimits: true,
+    streaming: true,
   };
 
   private _status: AdapterStatus = 'disconnected';

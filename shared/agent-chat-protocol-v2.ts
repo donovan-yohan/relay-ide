@@ -25,6 +25,13 @@ export interface AgentCapabilitySetV2 {
   compact?: boolean;
   telemetry?: boolean;
   rateLimits?: boolean;
+  /**
+   * Adapter emits live `agent-item-delta-v2` patches token-by-token while
+   * the model generates. False (or omitted) means items appear with full
+   * content on completion (single `started` + `updated`). UI handles both
+   * paths transparently — flag is informational.
+   */
+  streaming?: boolean;
 }
 
 export type AgentLiveStatusV2 =
