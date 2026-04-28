@@ -758,13 +758,9 @@ function sendSessionCreateError(
 
 function sessionCreateFailureMessage(err: unknown): string {
   if (!(err instanceof Error)) return 'Failed to create session.';
-  if (
-    err.message.startsWith('Hermes ') ||
-    err.message.startsWith('OpenCode ')
-  ) {
-    return err.message;
-  }
-  return 'Failed to create session.';
+  // Surface the underlying message so failures (codex spawn, app-server
+  // handshake, thread/start, etc.) reach the UI instead of a generic banner.
+  return err.message ? `Failed to create session: ${err.message}` : 'Failed to create session.';
 }
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
