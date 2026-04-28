@@ -11,8 +11,11 @@ type ExtensionRenderer = (
 const registry = new Map<string, ExtensionRenderer>();
 
 function payloadKind(item: AgentProviderExtensionItemV2): string {
-  const kind = item.payload.kind;
-  return typeof kind === 'string' ? kind : 'unknown';
+  const { kind, subtype, type } = item.payload;
+  if (typeof kind === 'string' && kind.length > 0) return kind;
+  if (typeof subtype === 'string' && subtype.length > 0) return subtype;
+  if (typeof type === 'string' && type.length > 0) return type;
+  return 'unknown';
 }
 
 export function registerProviderExtensionRenderer(
@@ -30,16 +33,15 @@ export function renderProviderExtension(
 
 function renderFallback(item: AgentProviderExtensionItemV2): React.ReactNode {
   return (
-    <div
+    <details
       className="provider-extension"
-      role="article"
       aria-label={`${item.namespace} extension`}
     >
-      <div className="provider-extension__h">
+      <summary className="provider-extension__h">
         {item.namespace}.{payloadKind(item)}
-      </div>
+      </summary>
       <pre>{JSON.stringify(item.payload, null, 2)}</pre>
-    </div>
+    </details>
   );
 }
 
