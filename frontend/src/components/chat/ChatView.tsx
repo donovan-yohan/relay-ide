@@ -1,10 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
-import { Composer } from './Composer.js';
+import { Composer, type ClientCommandHandler } from './Composer.js';
 import { LiveBar } from './LiveBar.js';
 import { QueueChips } from './QueueChips.js';
 import { Turn, type EventVerbosity } from './Turn.js';
+import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
+
+const VERBOSITY_LEVELS: readonly EventVerbosity[] = ['normal', 'debug', 'trace'];
+
+const RELAY_CLIENT_COMMANDS: AgentSlashCommandV2[] = [
+  {
+    id: 'relay:relay-verbosity',
+    name: 'relay-verbosity',
+    description: 'set event verbosity (normal | debug | trace)',
+    argumentHint: '<level>',
+    aliases: ['verbosity'],
+    source: 'relay',
+    sourceLabel: 'Relay',
+    dispatch: 'client',
+    collisionKey: 'relay-verbosity',
+  },
+];
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -75,33 +92,36 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     resume();
   }, [resume]);
 
+  const clientHandlers = useMemo<Record<string, ClientCommandHandler>>(
+    () => ({
+      'relay-verbosity': (args: string) => {
+        const level = args.trim().toLowerCase();
+        if (!VERBOSITY_LEVELS.includes(level as EventVerbosity)) {
+          return {
+            ok: false,
+            error: `verbosity must be one of: ${VERBOSITY_LEVELS.join(', ')}`,
+          };
+        }
+        setEventVerbosity(level as EventVerbosity);
+        return { ok: true };
+      },
+    }),
+    []
+  );
+
+  const mergedSlashCommands = useMemo<AgentSlashCommandV2[]>(() => {
+    const base = session?.slashCommands ?? [];
+    const known = new Set(
+      base.map((c) => (c.collisionKey ?? c.name).toLowerCase())
+    );
+    const additions = RELAY_CLIENT_COMMANDS.filter(
+      (c) => !known.has((c.collisionKey ?? c.name).toLowerCase())
+    );
+    return [...base, ...additions];
+  }, [session?.slashCommands]);
+
   return (
     <div className="chat-view" role="main" aria-label="chat">
-      <div
-        className="chat-event-controls"
-        role="radiogroup"
-        aria-label="event verbosity"
-      >
-        {(['normal', 'debug', 'trace'] as const).map((level) => (
-          <button
-            key={level}
-            type="button"
-            className={`chat-event-control${eventVerbosity === level ? ' active' : ''}`}
-            role="radio"
-            aria-checked={eventVerbosity === level}
-            onClick={() => setEventVerbosity(level)}
-            title={
-              level === 'normal'
-                ? 'show responses and actionable events'
-                : level === 'debug'
-                  ? 'include provider debug events'
-                  : 'include low-level SDK stream events'
-            }
-          >
-            {level}
-          </button>
-        ))}
-      </div>
       <div
         ref={containerRef}
         className="tl"
@@ -133,7 +153,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 session={session}
                 eventVerbosity={eventVerbosity}
                 onApprove={approve}
-                {...(session.slashCommands !== undefined ? { slashCommands: session.slashCommands } : {})}
+                slashCommands={mergedSlashCommands}
               />
             ))}
             <LiveBar live={session.live} usage={latestUsage} />
@@ -149,7 +169,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         capabilities={session?.capabilities}
         live={session?.live}
         usage={latestUsage}
-        slashCommands={session?.slashCommands}
+        slashCommands={mergedSlashCommands}
+        clientHandlers={clientHandlers}
       />
     </div>
   );

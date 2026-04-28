@@ -258,19 +258,31 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect(container.querySelector('.queue__cancel')).toBeNull();
   });
 
-  it('hides trace provider events by default and reveals them with the trace control', async () => {
+  it('hides trace provider events by default and reveals them via /relay-verbosity trace', async () => {
     await renderChat();
 
     expect(container.textContent).not.toContain('message_stop');
 
-    const traceButton = Array.from(container.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent === 'trace'
-    );
-    expect(traceButton).toBeTruthy();
+    const textarea = container.querySelector<HTMLTextAreaElement>('.composer__ta');
+    expect(textarea).toBeTruthy();
     await act(async () => {
-      traceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value'
+      )?.set;
+      setter?.call(textarea, '/relay-verbosity trace');
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      textarea?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      );
     });
 
     expect(container.textContent).toContain('message_stop');
+    expect(mocks.sendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('/relay-verbosity')
+    );
   });
 });

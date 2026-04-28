@@ -10,6 +10,10 @@ import { SlashPalette, useSlashCommands } from './SlashPalette.js';
 import { detectSlashTrigger } from './slashTrigger.js';
 import { renderInlineSkillTokens } from './skillTokens.js';
 
+export type ClientCommandHandler = (
+  args: string
+) => { ok: true } | { ok: false; error: string };
+
 interface ComposerProps {
   onSend: (content: string) => void;
   onInterrupt: () => void;
@@ -18,6 +22,7 @@ interface ComposerProps {
   live?: AgentSessionLiveStateV2 | undefined;
   usage?: AgentUsageV2 | undefined;
   slashCommands?: AgentSlashCommandV2[] | undefined;
+  clientHandlers?: Record<string, ClientCommandHandler>;
 }
 
 /**
@@ -44,6 +49,7 @@ export const Composer: React.FC<ComposerProps> = ({
   live,
   usage,
   slashCommands,
+  clientHandlers,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState('');
@@ -113,11 +119,43 @@ export const Composer: React.FC<ComposerProps> = ({
     const content = draft.trim();
     if (!content) return;
     if (!validateAndSend(content)) return;
+
+    // Intercept client-dispatch commands (handled in frontend, never sent to adapter).
+    if (clientHandlers && slashCommands) {
+      const leadingMatch = /^[/$](\S+)(?:\s+([\s\S]*))?$/.exec(content);
+      if (leadingMatch) {
+        const name = (leadingMatch[1] ?? '').toLowerCase();
+        const args = leadingMatch[2] ?? '';
+        const matched = slashCommands.find(
+          (cmd) =>
+            cmd.dispatch === 'client' &&
+            (cmd.name.replace(/^[/$]/, '').toLowerCase() === name ||
+              (cmd.aliases ?? []).some(
+                (a) => a.replace(/^[/$]/, '').toLowerCase() === name
+              ))
+        );
+        if (matched) {
+          const handler = clientHandlers[matched.name.replace(/^[/$]/, '').toLowerCase()];
+          if (handler) {
+            const result = handler(args);
+            if (!result.ok) {
+              setSendError(result.error);
+              return;
+            }
+            setDraft('');
+            setCaret(0);
+            setSendError(null);
+            return;
+          }
+        }
+      }
+    }
+
     onSend(content);
     setDraft('');
     setCaret(0);
     setSendError(null);
-  }, [draft, onSend, validateAndSend]);
+  }, [draft, onSend, validateAndSend, clientHandlers, slashCommands]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

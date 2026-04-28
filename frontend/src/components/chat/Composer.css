@@ -104,6 +104,8 @@
 
 .composer__ta {
   flex: 1;
+  width: 100%;
+  box-sizing: border-box;
   background: var(--bg);
   color: var(--text);
   border: none;
@@ -211,14 +213,15 @@
 /* Composer textarea overlay for skill token highlighting */
 .composer__overlay-wrap {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
 .composer__overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   pointer-events: none;
   overflow: hidden;
   white-space: pre-wrap;
@@ -230,6 +233,8 @@
   color: transparent;
   border: none;
   background: transparent;
+  border-bottom: 1px solid transparent;
+  box-sizing: border-box;
 }
 
 .composer__overlay .token-skill {

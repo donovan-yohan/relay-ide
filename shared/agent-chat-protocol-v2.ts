@@ -64,7 +64,7 @@ export interface AgentSlashCommandV2 {
   sourceLabel?: string;
   namespace?: string;
   path?: string;
-  dispatch?: 'agent' | 'relay-control';
+  dispatch?: 'agent' | 'relay-control' | 'client';
   collisionKey?: string;
   /** Provider-native trigger prefix the wire expects when dispatch is 'agent'. Adapters set this; UI passes it through unchanged. */
   nativePrefix?: '/' | '$';
