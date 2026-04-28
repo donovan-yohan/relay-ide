@@ -1,0 +1,53 @@
+port-assignments.json
+  651a7899306dcd39 9,16,23,30,37,44,51,58,65,72,79,86,93,100,107,114,121,128,135
+  31725874810c7636 1-8,10-15,17-22,24-29,31-36,38-43,45-50,52-57,59-64,66-71,73-78,80-85,87-92,94-99,101-106,108-113,115-120,122-127,129-134,136-138
+frontend/src/components/chat/Composer.tsx
+  0314b458d38cb5e2 13-16,25,52,122-153,158
+shared/agent-chat-protocol-v2.ts
+  0314b458d38cb5e2 67
+frontend/src/components/chat/Composer.css
+  0314b458d38cb5e2 107-108,216-219,224,236-237
+test/components/chat-v2-rendering.test.ts
+  0314b458d38cb5e2 261,266-267,269-279,283-286
+docs/plans/2026-04-26-v1-to-v2-port.md
+  c00470a1711c9961 1-1935
+docs/plans/2026-04-28-codex-web-ui-v2-design.md
+  0314b458d38cb5e2 1-441
+frontend/src/components/chat/ChatView.tsx
+  0314b458d38cb5e2 4,8-24,95-122,156,172-173
+tmp-claude-supported-commands.json
+  651a7899306dcd39 1-826
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "1f59b0fa8f4ea8c110a33ee0a32079471a49b084",
+  "prompts": {
+    "0314b458d38cb5e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be226f99-98d3-4c9c-ad38-91dc27656871",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 418,
+      "total_deletions": 45,
+      "accepted_lines": 899,
+      "overriden_lines": 0
+    },
+    "651a7899306dcd39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dd110-7752-7a21-894c-10742ba93d9f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 846,
+      "overriden_lines": 0
+    }
+  }
+}
