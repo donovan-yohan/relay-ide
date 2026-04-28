@@ -249,10 +249,40 @@ export const Composer: React.FC<ComposerProps> = ({
     [paletteVisible, filteredCommands, activeIndex, draft, caret, submitDraft, isActive, onInterrupt]
   );
 
-  const ctxUsed = usage?.inputTokens ?? 0;
+  const ctxInput = usage?.inputTokens ?? 0;
+  const ctxCached = usage?.cachedInputTokens ?? usage?.cacheReadTokens ?? 0;
+  const ctxInputUncached = Math.max(0, ctxInput - ctxCached);
+  const ctxOutput = usage?.outputTokens ?? 0;
+  const ctxReasoning = usage?.reasoningOutputTokens ?? 0;
+  const ctxUsed = ctxInputUncached + ctxCached + ctxOutput + ctxReasoning;
   const ctxWindow = usage?.contextWindowSize ?? 0;
+  const ctxFree = Math.max(0, ctxWindow - ctxUsed);
   const ctxLabel =
     ctxWindow > 0 ? `${formatTokens(ctxUsed)} / ${formatTokens(ctxWindow)}` : '—';
+  const segments = ctxWindow > 0
+    ? [
+        { name: 'input', tokens: ctxInputUncached, color: 'var(--accent)' },
+        { name: 'cached', tokens: ctxCached, color: 'var(--status-info)' },
+        { name: 'output', tokens: ctxOutput, color: 'var(--status-success)' },
+        { name: 'reasoning', tokens: ctxReasoning, color: 'var(--status-warning)' },
+      ]
+    : [];
+  const segmentPct = (n: number): number =>
+    ctxWindow > 0 ? Math.min(100, (n / ctxWindow) * 100) : 0;
+  const usedPct = segmentPct(ctxUsed);
+  const [ctxPopOpen, setCtxPopOpen] = useState(false);
+  const ctxAnchorRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!ctxPopOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!ctxAnchorRef.current?.contains(e.target as Node)) {
+        setCtxPopOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [ctxPopOpen]);
   const placeholderText = isActive
     ? 'queue a message · ↵ to add to queue · ctrl+c or esc to interrupt'
     : 'type a message…  /  for commands · shift+enter for newline';
@@ -312,7 +342,7 @@ export const Composer: React.FC<ComposerProps> = ({
         </div>
         <div className="composer__bar">
           <span className="composer__hint">{hintContent}</span>
-          <span className="right ctx-pop-anchor">
+          <span className="right ctx-pop-anchor" ref={ctxAnchorRef}>
             {modelName && (
               <span style={{ color: 'var(--text-muted)' }}>{modelName}</span>
             )}
@@ -320,26 +350,73 @@ export const Composer: React.FC<ComposerProps> = ({
               className="cbar-trigger"
               type="button"
               aria-haspopup="true"
-              aria-expanded="false"
+              aria-expanded={ctxPopOpen}
               aria-label="context usage"
+              onClick={() => setCtxPopOpen((open) => !open)}
             >
               <span>{ctxLabel}</span>
               <span className="mini-bar" aria-hidden="true">
+                {segments.map((s) => (
+                  <span
+                    key={s.name}
+                    style={{
+                      width: `${segmentPct(s.tokens)}%`,
+                      background: s.color,
+                    }}
+                  />
+                ))}
                 <span
                   style={{
-                    width: `${ctxWindow > 0 ? Math.min(100, (ctxUsed / ctxWindow) * 100) : 0}%`,
-                    background: 'var(--accent)',
-                  }}
-                />
-                <span
-                  style={{
-                    width: `${ctxWindow > 0 ? Math.max(0, 100 - Math.min(100, (ctxUsed / ctxWindow) * 100)) : 100}%`,
+                    width: `${100 - usedPct}%`,
                     background: 'var(--surface-hover)',
                   }}
                 />
               </span>
               <span className="caret">▴</span>
             </button>
+            {ctxPopOpen && ctxWindow > 0 && (
+              <div className="ctx-pop" role="dialog" aria-label="context breakdown">
+                <div className="ctx-pop__head">
+                  <span>context</span>
+                  <span>
+                    <span className="ct">{formatTokens(ctxUsed)}</span> /{' '}
+                    {formatTokens(ctxWindow)} tokens
+                  </span>
+                </div>
+                <div className="ctx-pop__bar" aria-hidden="true">
+                  {segments.map((s) => (
+                    <span
+                      key={s.name}
+                      style={{
+                        width: `${segmentPct(s.tokens)}%`,
+                        background: s.color,
+                      }}
+                    />
+                  ))}
+                  <span
+                    style={{
+                      width: `${100 - usedPct}%`,
+                      background: 'var(--surface-hover)',
+                    }}
+                  />
+                </div>
+                <div className="ctx-pop__legend">
+                  {segments.map((s) => (
+                    <span key={s.name}>
+                      <span className="swatch" style={{ background: s.color }} />
+                      {s.name}
+                      <span className="v">{formatTokens(s.tokens)}</span>
+                    </span>
+                  ))}
+                </div>
+                <div className="ctx-pop__foot">
+                  <span>buffer free</span>
+                  <span style={{ color: 'var(--text)' }}>
+                    {formatTokens(ctxFree)} tokens
+                  </span>
+                </div>
+              </div>
+            )}
           </span>
         </div>
         {live?.error && <div className="composer__error">{live.error}</div>}

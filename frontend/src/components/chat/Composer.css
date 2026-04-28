@@ -161,39 +161,119 @@
   margin-right: 4px;
 }
 
-.composer__btn,
+/* ctx popover trigger in composer bar (matches chat.html) */
 .cbar-trigger {
   background: transparent;
-  border: 1px solid currentColor;
+  border: 0;
+  padding: 0;
   cursor: pointer;
+  color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  padding: 4px 10px;
+  font-size: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cbar-trigger:hover {
+  color: var(--text);
+}
+
+.cbar-trigger .mini-bar {
+  display: inline-flex;
+  width: 64px;
+  height: 4px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.cbar-trigger .mini-bar > span {
+  height: 100%;
+}
+
+.cbar-trigger .caret {
+  font-size: 0.6rem;
+  opacity: 0.6;
+}
+
+/* popover anchored to bottom-right of composer */
+.ctx-pop-anchor {
+  position: relative;
+}
+
+.ctx-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 30;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.ctx-pop__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.7rem;
+  color: var(--text-muted);
   text-transform: lowercase;
-  transition:
-    border-style 0.1s,
-    filter 0.1s,
-    background 0.1s;
+  letter-spacing: 0.04em;
 }
 
-.composer__btn:hover:not(:disabled),
-.cbar-trigger:hover:not(:disabled) {
-  border-width: 3px;
-  border-style: double;
-  padding: 2px 8px;
-  filter: brightness(1.3);
-  background: color-mix(in srgb, currentColor 6%, transparent);
-}
-
-.composer__btn--send {
+.ctx-pop__head .ct {
   color: var(--accent);
 }
 
-.composer__btn--interrupt {
-  color: var(--status-error);
+.ctx-pop__bar {
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
 }
 
-.cbar-trigger {
+.ctx-pop__bar > span {
+  height: 100%;
+}
+
+.ctx-pop__legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.ctx-pop__legend > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ctx-pop__legend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+}
+
+.ctx-pop__legend .v {
+  margin-left: auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-pop__foot {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
   color: var(--text-muted);
 }
 
