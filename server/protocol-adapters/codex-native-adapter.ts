@@ -412,6 +412,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     const threadResult = await client.call<{ thread: { id: string } }>('thread/start', {
       cwd: config.cwd,
+      experimentalRawEvents: false,
+      persistExtendedHistory: false,
       ...(config.model || this.pendingModelOverride
         ? { model: this.pendingModelOverride ?? config.model }
         : {}),

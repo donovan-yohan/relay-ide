@@ -100,7 +100,9 @@ export class CodexAppServerClient extends EventEmitter {
     super();
     this.options = {
       command: 'codex',
-      args: ['app-server'],
+      // Conductor passes --listen stdio:// explicitly. Newer codex
+      // versions default to TCP, so stdio must be opted in.
+      args: ['app-server', '--listen', 'stdio://'],
       ...options,
     };
   }

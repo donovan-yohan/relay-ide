@@ -14,7 +14,10 @@ const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', 
 export const LiveBar: React.FC<LiveBarProps> = ({ live, usage }) => {
   const [frame, setFrame] = useState(0);
 
-  const isVisible = live.status !== 'idle' || live.queueLength > 0 || Boolean(live.error);
+  const isVisible =
+    live.status === 'working' ||
+    live.status === 'waiting' ||
+    live.queueLength > 0;
 
   useEffect(() => {
     if (!isVisible) return;
