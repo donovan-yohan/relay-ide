@@ -148,6 +148,37 @@ describe('relay-state-db', () => {
     expect(loadAllWebSessions()).toHaveLength(0);
   });
 
+  it('archived status survives subsequent upserts', () => {
+    const session = fakeWebSession();
+    upsertWebSessionNow(session);
+    markWebSessionStatus(session.id, 'archived');
+
+    // Simulate a late patch arriving after archive — must not revive.
+    upsertWebSessionNow({ ...session, displayName: 'Late' } as WebSession);
+
+    expect(loadAllWebSessions()).toHaveLength(0);
+  });
+
+  it('throttle bound: scheduled writes fire even under continuous bursts', async () => {
+    const session = fakeWebSession();
+
+    // Hammer the scheduler — pure debounce would never fire under this load.
+    for (let i = 0; i < 5; i++) {
+      scheduleWebSessionUpsert({
+        ...session,
+        displayName: `iter-${i}`,
+      } as WebSession);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Within ~MAX_WAIT_MS (1000ms) the first burst should have flushed.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const rows = loadAllWebSessions();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.displayName).toMatch(/^iter-/);
+  });
+
   it('persists empty providerSession as null vendor_session_id', () => {
     const session = fakeWebSession();
     session.agentSessionV2 = emptyAgentSessionV2({

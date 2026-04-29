@@ -102,7 +102,9 @@ export function initRelayStateDb(configDir: string): void {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
 
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`
+  );
   const row = db.prepare('SELECT version FROM schema_version').get() as
     | { version: number }
     | undefined;
@@ -117,7 +119,9 @@ export function initRelayStateDb(configDir: string): void {
         if (hadRow || currentVersion > 0) {
           db!.prepare('UPDATE schema_version SET version = ?').run(ver);
         } else {
-          db!.prepare('INSERT INTO schema_version (version) VALUES (?)').run(ver);
+          db!
+            .prepare('INSERT INTO schema_version (version) VALUES (?)')
+            .run(ver);
         }
       })();
       currentVersion = ver;
@@ -141,6 +145,7 @@ export function initRelayStateDb(configDir: string): void {
 
 export function closeRelayStateDb(): void {
   flushAllPendingWrites();
+  archivedIds.clear();
   if (db) {
     db.close();
     db = null;
@@ -151,16 +156,34 @@ export function closeRelayStateDb(): void {
   }
 }
 
-// ── Debounced write scheduler ─────────────────────────────────────────────
-
-const DEBOUNCE_MS = 1000;
-const pendingTimers = new Map<string, NodeJS.Timeout>();
-const pendingPayloads = new Map<string, () => void>();
+// ── Throttled write scheduler ─────────────────────────────────────────────
 
 /**
- * Schedule a debounced upsert. Multiple calls within {@link DEBOUNCE_MS} for
- * the same session id collapse into a single write that captures the latest
- * snapshot. Used during high-frequency streaming patches.
+ * Idle-debounce window: collapse a quiet-period burst into one write.
+ */
+const DEBOUNCE_MS = 1000;
+/**
+ * Hard cap on how long a session may go without being persisted while patches
+ * are still flowing. Pure debounce never fires under continuous streaming;
+ * this guarantees a snapshot lands on disk at least every {@link MAX_WAIT_MS}.
+ */
+const MAX_WAIT_MS = 1000;
+
+const pendingTimers = new Map<string, NodeJS.Timeout>();
+const pendingPayloads = new Map<string, () => void>();
+const firstScheduledAt = new Map<string, number>();
+/**
+ * Session ids whose row was explicitly archived. Subsequent upserts must not
+ * overwrite the archived status with a status derived from `live.status`,
+ * which would silently revive the session on the next patch.
+ */
+const archivedIds = new Set<string>();
+
+/**
+ * Schedule a debounce-with-maxWait upsert. The timer resets on each call
+ * (debounce) but is capped so the write always fires within {@link MAX_WAIT_MS}
+ * of the first scheduled call in a burst — protects against streams that
+ * never go quiet.
  */
 export function scheduleWebSessionUpsert(session: WebSession): void {
   if (!db || !upsertWebStmt) return;
@@ -168,15 +191,24 @@ export function scheduleWebSessionUpsert(session: WebSession): void {
   const id = session.id;
   pendingPayloads.set(id, () => writeUpsert(session));
 
+  const now = Date.now();
+  const firstAt = firstScheduledAt.get(id) ?? now;
+  if (!firstScheduledAt.has(id)) firstScheduledAt.set(id, now);
+
   const existing = pendingTimers.get(id);
   if (existing) clearTimeout(existing);
 
+  const elapsed = now - firstAt;
+  const remainingCap = Math.max(0, MAX_WAIT_MS - elapsed);
+  const delay = Math.min(DEBOUNCE_MS, remainingCap);
+
   const timer = setTimeout(() => {
     pendingTimers.delete(id);
+    firstScheduledAt.delete(id);
     const fn = pendingPayloads.get(id);
     pendingPayloads.delete(id);
     if (fn) fn();
-  }, DEBOUNCE_MS);
+  }, delay);
   pendingTimers.set(id, timer);
 }
 
@@ -192,6 +224,7 @@ export function upsertWebSessionNow(session: WebSession): void {
     clearTimeout(timer);
     pendingTimers.delete(session.id);
     pendingPayloads.delete(session.id);
+    firstScheduledAt.delete(session.id);
   }
   writeUpsert(session);
 }
@@ -210,6 +243,7 @@ export function flushAllPendingWrites(): void {
   }
   pendingTimers.clear();
   pendingPayloads.clear();
+  firstScheduledAt.clear();
 }
 
 function writeUpsert(session: WebSession): void {
@@ -261,7 +295,9 @@ export function deleteWebSession(id: string): void {
     clearTimeout(timer);
     pendingTimers.delete(id);
     pendingPayloads.delete(id);
+    firstScheduledAt.delete(id);
   }
+  archivedIds.delete(id);
   try {
     deleteWebStmt.run(id);
   } catch (err) {
@@ -274,6 +310,18 @@ export function markWebSessionStatus(
   status: 'active' | 'disconnected' | 'archived'
 ): void {
   if (!db || !markStatusStmt) return;
+  if (status === 'archived') {
+    archivedIds.add(id);
+    const timer = pendingTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      pendingTimers.delete(id);
+      pendingPayloads.delete(id);
+      firstScheduledAt.delete(id);
+    }
+  } else {
+    archivedIds.delete(id);
+  }
   try {
     markStatusStmt.run(status, Date.now(), id);
   } catch (err) {
@@ -304,7 +352,9 @@ export function loadAllWebSessions(): LoadedWebSessionRow[] {
   const out: LoadedWebSessionRow[] = [];
   for (const row of rows) {
     try {
-      const agentSession = JSON.parse(row.agent_session_v2_json) as AgentSessionV2;
+      const agentSession = JSON.parse(
+        row.agent_session_v2_json
+      ) as AgentSessionV2;
       const meta = JSON.parse(row.meta_json) as WebSessionMeta;
       out.push({
         id: row.id,
@@ -343,6 +393,7 @@ function pickVendorSessionId(session: AgentSessionV2): string | null {
 function deriveStatus(
   session: WebSession
 ): 'active' | 'disconnected' | 'archived' {
+  if (archivedIds.has(session.id)) return 'archived';
   const live = session.agentSessionV2.live.status;
   if (live === 'disconnected') return 'disconnected';
   return 'active';

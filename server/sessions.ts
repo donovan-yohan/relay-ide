@@ -917,38 +917,77 @@ async function restoreWebSessionFromDb(
 function surfaceResumeFailure(session: WebSession, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   const timestamp = new Date().toISOString();
-  const errorPatch: import('../shared/agent-chat-protocol-v2.js').AgentItemStartedPatchV2 = {
-    type: 'agent-item-started-v2',
-    sessionId: session.id,
-    timestamp,
-    turnId: session.agentSessionV2.live.activeTurnId ?? 'resume-failed',
-    item: {
-      type: 'errorMessage',
-      id: `error-resume-${timestamp}`,
-      message: `Resume failed: ${session.adapterType} session expired or rotated. Start a new session to continue. (${message})`,
-      source: 'client',
-      context: 'resume',
-      status: 'completed',
-      startedAt: timestamp,
-      completedAt: timestamp,
-    },
-  };
+
+  // applyAgentPatchV2 only updates existing turns. After restore the active
+  // turn is normally null, so we must aim the error at an existing turn (the
+  // last one we have on the timeline) or synthesize a turn first when the
+  // session has no turns yet. This mirrors the agent-error-v2 fallback.
+  const targetTurnId = resolveResumeFailureTurnId(session, timestamp);
+
+  const errorPatch: import('../shared/agent-chat-protocol-v2.js').AgentItemStartedPatchV2 =
+    {
+      type: 'agent-item-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turnId: targetTurnId,
+      item: {
+        type: 'errorMessage',
+        id: `error-resume-${timestamp}`,
+        message: `Resume failed: ${session.adapterType} session expired or rotated. Start a new session to continue. (${message})`,
+        source: 'client',
+        context: 'resume',
+        status: 'completed',
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    };
   applyWebSessionPatchV2(session, errorPatch);
 
-  const liveStatePatch: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2 = {
-    type: 'agent-live-state-updated-v2',
-    sessionId: session.id,
-    timestamp,
-    live: {
-      status: 'disconnected',
-      activeTurnId: null,
-      waitingOn: null,
-      activeRequestIds: [],
-      error: 'resume failed',
-    },
-  };
+  const liveStatePatch: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2 =
+    {
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp,
+      live: {
+        status: 'disconnected',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: 'resume failed',
+      },
+    };
   applyWebSessionPatchV2(session, liveStatePatch);
   upsertWebSessionNow(session);
+}
+
+function resolveResumeFailureTurnId(
+  session: WebSession,
+  timestamp: string
+): string {
+  const live = session.agentSessionV2.live.activeTurnId;
+  if (typeof live === 'string' && live.length > 0) return live;
+
+  const turns = session.agentSessionV2.turns;
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn) return lastTurn.id;
+
+  const syntheticTurnId = `resume-failed-${timestamp}`;
+  const turnPatch: import('../shared/agent-chat-protocol-v2.js').AgentTurnStartedPatchV2 =
+    {
+      type: 'agent-turn-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turn: {
+        id: syntheticTurnId,
+        status: 'failed',
+        inputMessageId: '',
+        items: [],
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    };
+  applyWebSessionPatchV2(session, turnPatch);
+  return syntheticTurnId;
 }
 
 function syncDisplayNameCounters(): void {
