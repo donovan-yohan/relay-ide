@@ -11,6 +11,7 @@ import type { AdapterConfig } from '../server/protocol-adapter.js';
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
+    trace: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),

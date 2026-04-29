@@ -18,6 +18,7 @@ import {
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
+    trace: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),

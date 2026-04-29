@@ -175,6 +175,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '[unserializable]';
+  }
+}
+
 function stringField(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
@@ -784,6 +792,8 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   private handleSdkMessage(message: unknown): void {
     if (!isRecord(message)) return;
 
+    logger.trace('sdk message %s', safeJson(message));
+
     if (message.type === 'system' && message.subtype === 'init') {
       const sessionId = stringField(message.session_id);
       const update: Partial<
@@ -847,6 +857,8 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   private handleStreamEvent(turnId: string, message: Record<string, unknown>): void {
     const event = objectField(message.event);
     const eventType = stringField(event.type);
+
+    logger.trace('stream_event %s %s', eventType, safeJson(event));
 
     if (eventType === 'message_start') {
       const innerMessage = objectField(event.message);

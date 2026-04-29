@@ -2,14 +2,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { format } from 'node:util';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
 export interface Logger {
+  trace(message: string, ...args: unknown[]): void;
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
 }
+
+const LEVEL_RANK: Record<LogLevel, number> = {
+  trace: 0,
+  debug: 1,
+  info: 2,
+  warn: 3,
+  error: 4,
+};
+
+function resolveMinLevel(): LogLevel {
+  const raw = process.env.RELAY_LOG_LEVEL?.toLowerCase();
+  if (raw === 'trace' || raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error') {
+    return raw;
+  }
+  return 'debug';
+}
+
+const MIN_LEVEL_RANK = LEVEL_RANK[resolveMinLevel()];
 
 // ── File logging state ──────────────────────────────────────────────────────
 
@@ -74,8 +93,14 @@ export function createLogger(namespace: string): Logger {
   const prefix = `[${namespace}]`;
 
   const log = (level: LogLevel, message: string, ...args: unknown[]): void => {
-    // eslint-disable-next-line no-console
-    console[level](`${prefix} ${message}`, ...args);
+    if (LEVEL_RANK[level] < MIN_LEVEL_RANK) return;
+
+    // trace is file-only to avoid stdout spam from raw payload dumps.
+    if (level !== 'trace') {
+      const consoleMethod = level === 'debug' ? 'debug' : level;
+      // eslint-disable-next-line no-console
+      console[consoleMethod](`${prefix} ${message}`, ...args);
+    }
 
     const timestamp = new Date().toISOString();
     const formatted = args.length > 0 ? format(message, ...args) : message;
@@ -85,6 +110,8 @@ export function createLogger(namespace: string): Logger {
   };
 
   return {
+    trace: (message: string, ...args: unknown[]) =>
+      log('trace', message, ...args),
     debug: (message: string, ...args: unknown[]) =>
       log('debug', message, ...args),
     info: (message: string, ...args: unknown[]) =>
