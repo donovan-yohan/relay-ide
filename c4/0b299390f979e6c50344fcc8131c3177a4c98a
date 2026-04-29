@@ -1,0 +1,84 @@
+frontend/src/components/chat/ChatView.tsx
+  a0f2af8fc66c55f1 86
+frontend/src/components/chat/Turn.tsx
+  12c5b9dcdcc61a4d 166
+.husky/pre-commit
+  5b787848c2e82ce0 5-8
+frontend/src/components/chat/TurnFooter.tsx
+  12c5b9dcdcc61a4d 1-5,9,12-13,23,30,37,41-76,80,83,87-88
+frontend/src/components/chat/ChatView.css
+  12c5b9dcdcc61a4d 24,27-32,52,56
+test/components/chat-v2-rendering.test.ts
+  12c5b9dcdcc61a4d 208
+server/protocol-adapters/codex-native-adapter.ts
+  d149e8b34095b29e 203-216,406-412,812-813,1349-1361,1370-1371,1378,1530-1535,1542,1569-1574,1582
+  a0f2af8fc66c55f1 775-783
+  5b787848c2e82ce0 191-198,823-824,1653-1654
+test/server/protocol-adapters/codex-native-adapter.test.ts
+  5b787848c2e82ce0 15
+  d149e8b34095b29e 415-481
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "c40b299390f979e6c50344fcc8131c3177a4c98a",
+  "prompts": {
+    "12c5b9dcdcc61a4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78a2b4d3-24e6-44b0-a922-ffbe365f6e03",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 62,
+      "overriden_lines": 0
+    },
+    "5b787848c2e82ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c3ad3eb-db8f-41e2-bfd2-5857ade6feef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 46,
+      "accepted_lines": 66,
+      "overriden_lines": 0
+    },
+    "a0f2af8fc66c55f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "645a68a5-da83-461c-95cb-bfd83b6ba060",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    },
+    "d149e8b34095b29e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29f0674f-6911-4c29-a766-180aa7e5255e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 120,
+      "overriden_lines": 0
+    }
+  },
+  "humans": {
+    "h_16c74f3cee9e86": {
+      "author": "Donovan Yohan"
+    }
+  }
+}
