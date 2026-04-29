@@ -2,3 +2,7 @@
 
 npx lint-staged
 npm run check
+
+# chalkbag hook
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+chalkbag internal hook-run "$repo_root" >/dev/null || true

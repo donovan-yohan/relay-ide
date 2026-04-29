@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
 import { Composer, type ClientCommandHandler } from './Composer.js';
-import { LiveBar } from './LiveBar.js';
 import { QueueChips } from './QueueChips.js';
 import { Turn, type EventVerbosity } from './Turn.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
@@ -84,7 +83,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       session?.capabilities.resume === true &&
       session.providerSession !== undefined &&
       Object.keys(session.providerSession).length > 0 &&
-      session.live.status === 'idle',
+      session.live.status === 'disconnected',
     [session]
   );
 
@@ -156,7 +155,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 slashCommands={mergedSlashCommands}
               />
             ))}
-            <LiveBar live={session.live} usage={latestUsage} />
             <QueueChips session={session} />
           </>
         )}

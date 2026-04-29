@@ -12,6 +12,7 @@ import type { AgentPatchV2 } from '../../../shared/agent-chat-protocol-v2.js';
 
 vi.mock('../../../server/logger.js', () => ({
   createLogger: () => ({
+    trace: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
@@ -407,6 +408,73 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
       ])
     );
+
+    await adapter.disconnect();
+  });
+
+  it('reasoning: item/completed with structured summary array preserves text', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-r2');
+
+    client.feedNotification('item/started', {
+      item: { type: 'reasoning', id: 'reason-2' },
+    });
+    client.feedNotification('item/reasoning/summaryTextDelta', {
+      itemId: 'reason-2',
+      delta: 'partial summary text',
+      summaryIndex: 0,
+    });
+    // Authoritative codex ReasoningItem shape: summary is Vec<{type, text}>
+    client.feedNotification('item/completed', {
+      item: {
+        type: 'reasoning',
+        id: 'reason-2',
+        summary: [
+          { type: 'summary_text', text: 'final summary part one' },
+          { type: 'summary_text', text: 'final summary part two' },
+        ],
+      },
+    });
+
+    const completed = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'reasoning' &&
+        p.item.status === 'completed',
+    );
+    expect(completed).toBeDefined();
+    if (completed && completed.type === 'agent-item-updated-v2' && completed.item.type === 'reasoning') {
+      expect(completed.item.summary).toBe('final summary part one\n\nfinal summary part two');
+    }
+
+    await adapter.disconnect();
+  });
+
+  it('reasoning: item/completed without summary falls back to streamed buffer', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-r3');
+
+    client.feedNotification('item/started', {
+      item: { type: 'reasoning', id: 'reason-3' },
+    });
+    client.feedNotification('item/reasoning/summaryTextDelta', {
+      itemId: 'reason-3',
+      delta: 'streamed-only text',
+      summaryIndex: 0,
+    });
+    // Completion payload missing summary entirely — buffer must be used.
+    client.feedNotification('item/completed', {
+      item: { type: 'reasoning', id: 'reason-3' },
+    });
+
+    const completed = patches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'reasoning' &&
+        p.item.status === 'completed',
+    );
+    expect(completed).toBeDefined();
+    if (completed && completed.type === 'agent-item-updated-v2' && completed.item.type === 'reasoning') {
+      expect(completed.item.summary).toBe('streamed-only text');
+    }
 
     await adapter.disconnect();
   });

@@ -163,7 +163,7 @@ export const Turn: React.FC<TurnProps> = ({
           <span>{turn.error}</span>
         </div>
       )}
-      <TurnFooter turn={turn} />
+      <TurnFooter turn={turn} live={session.live} />
     </div>
   );
 };

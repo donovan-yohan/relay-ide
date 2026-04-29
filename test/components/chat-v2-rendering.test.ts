@@ -205,7 +205,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
       '.tcard__body',
       '.fc-row',
       '.acard',
-      '.live-bar',
+      '.turn-footer--running',
       '.queue',
       '.slash',
       '.composer',

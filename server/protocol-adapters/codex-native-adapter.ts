@@ -188,8 +188,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '[unserializable]';
+  }
+}
+
 function stringField(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+/**
+ * Flatten codex's reasoning array shapes into a single string. Both
+ * `summary: Vec<ReasoningItemReasoningSummary>` and
+ * `content: Vec<ReasoningItemContent>` use `{ type, text }` entries.
+ */
+function flattenReasoningTextEntries(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .filter(isRecord)
+    .map((entry) => stringField(entry['text']))
+    .filter((text) => text.length > 0)
+    .join('\n\n');
 }
 
 function objectField(value: unknown): Record<string, unknown> {
@@ -380,6 +402,13 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
   private pendingModelOverride: string | null = null;
+
+  // Reasoning streaming buffers, keyed by relayItemId. Used to preserve the
+  // accumulated text when item/completed arrives with an empty or
+  // structured-but-unflattened payload (codex's ReasoningItem ships
+  // `summary: Vec<{type, text}>` and optional `content: Vec<{type, text}>`).
+  private readonly reasoningSummaryBuffers = new Map<string, string>();
+  private readonly reasoningDetailBuffers = new Map<string, string>();
 
   // Token usage buffer: keyed by native turnId, from thread/tokenUsageUpdated
   private readonly tokenUsageBuffer = new Map<string, Record<string, unknown>>();
@@ -743,6 +772,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         if (turnId !== null && !this.completedActiveTurn) {
           this.completeActiveTurn('interrupted');
         }
+        this._status = 'disconnected';
+        this.client = null;
+        this.emitLiveState({
+          status: 'disconnected',
+          activeTurnId: null,
+          waitingOn: null,
+          activeRequestIds: [],
+          queueLength: 0,
+        });
       }
     });
   }
@@ -771,6 +809,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
     this.tokenUsageBuffer.clear();
+    this.reasoningSummaryBuffers.clear();
+    this.reasoningDetailBuffers.clear();
     this._status = 'disconnected';
   }
 
@@ -779,6 +819,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private handleNotification(notification: CodexNotification): void {
     const { method, params } = notification;
     const p = isRecord(params) ? params : {};
+
+    logger.trace('notification %s %s', method, safeJson(params));
 
     switch (method) {
       case 'thread/started':
@@ -1304,7 +1346,19 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         });
         break;
 
-      case 'reasoning':
+      case 'reasoning': {
+        // Codex ships ReasoningItem with `summary: Vec<ReasoningItemReasoningSummary>`
+        // and optional `content: Vec<ReasoningItemContent>`. Each entry has a
+        // `text` field. Flatten to plain strings; fall back to streamed buffers
+        // when the completion payload omits them.
+        const summaryFromPayload = flattenReasoningTextEntries(item['summary']);
+        const detailFromPayload = flattenReasoningTextEntries(item['content']);
+        const summary =
+          summaryFromPayload || this.reasoningSummaryBuffers.get(relayId) || '';
+        const detail =
+          detailFromPayload || this.reasoningDetailBuffers.get(relayId) || '';
+        this.reasoningSummaryBuffers.delete(relayId);
+        this.reasoningDetailBuffers.delete(relayId);
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1313,13 +1367,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           item: {
             type: 'reasoning',
             id: relayId,
-            summary: stringField(item['summary']),
+            summary,
+            ...(detail ? { detail } : {}),
             visibility: 'summary',
             status: 'completed',
             completedAt,
           },
         });
         break;
+      }
 
       case 'commandExecution': {
         const durationMs = typeof item['durationMs'] === 'number' ? item['durationMs'] : undefined;
@@ -1471,13 +1527,19 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    const fragment = stringField(p['delta']);
+    this.reasoningSummaryBuffers.set(
+      relayId,
+      (this.reasoningSummaryBuffers.get(relayId) ?? '') + fragment,
+    );
+
     this.emitPatch({
       type: 'agent-item-delta-v2',
       sessionId: this.config.sessionId,
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { summary: stringField(p['delta']) },
+      delta: { summary: fragment },
     });
   }
 
@@ -1504,6 +1566,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const relayId = this.itemMap.get(nativeId);
     if (!relayId) return;
 
+    const fragment = stringField(p['delta']);
+    this.reasoningDetailBuffers.set(
+      relayId,
+      (this.reasoningDetailBuffers.get(relayId) ?? '') + fragment,
+    );
+
     // Authoritative shape: { threadId, turnId, itemId, delta, contentIndex }
     this.emitPatch({
       type: 'agent-item-delta-v2',
@@ -1511,7 +1579,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { detail: stringField(p['delta']) },
+      delta: { detail: fragment },
     });
   }
 
@@ -1581,6 +1649,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (!this.config || !this.client) return;
     const turnId = this.activeTurnId ?? 'turn-unknown';
     const p = isRecord(request.params) ? request.params : {};
+
+    logger.trace('request %s %s', request.method, safeJson(request.params));
 
     switch (request.method) {
       case 'item/commandExecution/requestApproval':

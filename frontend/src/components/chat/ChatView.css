@@ -21,15 +21,18 @@
 .tl::-webkit-scrollbar { width: 4px; }
 .tl::-webkit-scrollbar-thumb { background: var(--border); }
 
-/* turn — matches chat.html line 131 */
+/* turn — vertical stack of header, items, footer. Inter-turn separator on header. */
 .turn { display: flex; flex-direction: column; gap: 6px; }
 
-/* turn-header — matches chat.html lines 132-142 */
+.turn + .turn .turn-header {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+
 .turn-header {
   font-size: 0.7rem;
   color: var(--text-muted);
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
   letter-spacing: 0.04em;
   text-transform: lowercase;
   display: flex;
@@ -37,26 +40,23 @@
   gap: 10px;
 }
 
-/* turn-footer — matches chat.html lines 144-157 */
 .turn-footer {
   font-size: 0.7rem;
   color: var(--text-muted);
-  padding-top: 6px;
-  margin-top: 4px;
-  border-top: 1px solid var(--border);
   letter-spacing: 0.04em;
   text-transform: lowercase;
   display: flex;
   align-items: baseline;
   gap: 10px;
   opacity: 0.6;
+  margin-top: 2px;
 }
 
 .turn-footer .meta { margin-left: auto; }
+.turn-footer .stage { color: var(--text); }
 .turn-footer--running { color: var(--accent); opacity: 1; }
 .turn-footer--running .glyph { color: var(--accent); width: 0.7em; display: inline-block; }
 
-/* .lbl and .meta inside turn-header / turn-footer — chat.html lines 143, 157, 160 */
 .turn-header .meta { margin-left: auto; opacity: 0.6; }
 .turn-header .lbl, .turn-footer .lbl { color: var(--text-muted); }
 
@@ -188,22 +188,6 @@
 .fc-row__add { color: var(--status-success); }
 .fc-row__del { color: var(--status-error); }
 .fc-row__kind { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; min-width: 56px; text-align: right; }
-
-/* live-bar — matches chat.html lines 592-601 */
-.live-bar {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.live-bar .glyph { color: var(--accent); width: 0.7em; }
-.live-bar .stage { color: var(--text); }
-.live-bar .pct { margin-left: auto; }
 
 /* reasoning block — relay-specific, not in chat.html */
 .reasoning {
