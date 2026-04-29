@@ -1,0 +1,23 @@
+server/sessions.ts
+  fb0c3390d5c653a0 902-928,1082-1084,1086-1089,1091
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "9fbca4b919c98e7c93a6906a74ad411775b4bf32",
+  "prompts": {
+    "fb0c3390d5c653a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e1f4551-3410-487c-9ae8-e41f2ba987f2",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 55,
+      "total_deletions": 42,
+      "accepted_lines": 507,
+      "overriden_lines": 0
+    }
+  }
+}
