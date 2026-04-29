@@ -1,0 +1,23 @@
+shared/agent-chat-protocol-v2.ts
+  fb0c3390d5c653a0 682,766-778
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "4b1f51ca1d3233b113fb1ca17f782dc67ef1a287",
+  "prompts": {
+    "fb0c3390d5c653a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e1f4551-3410-487c-9ae8-e41f2ba987f2",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 486,
+      "total_deletions": 1,
+      "accepted_lines": 486,
+      "overriden_lines": 0
+    }
+  }
+}
