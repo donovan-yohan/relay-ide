@@ -305,6 +305,64 @@ describe('Agent Chat Protocol v2', () => {
     });
   });
 
+  it('rejects agent-session-updated-v2 payloads that try to mutate cwd', () => {
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        config: { cwd: '/etc/passwd' },
+      })
+    ).toBe(false);
+
+    // model-only updates remain valid.
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        config: { model: 'sonnet' },
+      })
+    ).toBe(true);
+  });
+
+  it('rejects malformed slash command optional string fields', () => {
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        slashCommands: [{ name: 'foo', collisionKey: 42 }],
+      })
+    ).toBe(false);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        slashCommands: [{ name: 'foo', sourceLabel: ['nope'] }],
+      })
+    ).toBe(false);
+
+    expect(
+      isAgentPatchV2({
+        type: 'agent-session-updated-v2',
+        sessionId: 's1',
+        timestamp,
+        slashCommands: [
+          {
+            name: 'foo',
+            collisionKey: 'project:foo',
+            sourceLabel: 'project',
+            namespace: 'project',
+            path: '.claude/commands/foo.md',
+          },
+        ],
+      })
+    ).toBe(true);
+  });
+
   it('creates transcript items from legacy-compatible deltas and updates', () => {
     const withTurn = applyAgentPatchV2(makeSession(), {
       type: 'agent-turn-started-v2',

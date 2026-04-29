@@ -931,6 +931,437 @@ describe('ClaudeProtocolAdapter V2', () => {
     await adapter.disconnect();
   });
 
+  it('completes commandExecution items with stdout/stderr and interactive flag', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-bash',
+      content: 'run it',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-bash',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-bash-1',
+            name: 'Bash',
+            input: { command: 'echo hi' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-bash-1',
+            content: 'hi',
+          },
+        ],
+      },
+      tool_use_result: {
+        stdout: 'hi\n',
+        stderr: '',
+        interrupted: true,
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'commandExecution')
+      throw new Error('expected commandExecution');
+    expect(update.item.command).toBe('echo hi');
+    expect(update.item.output).toBe('hi\n');
+    expect(update.item.status).toBe('completed');
+    expect(update.item.interactive).toBe(true);
+
+    await adapter.disconnect();
+  });
+
+  it('falls back to stderr then result text when stdout is empty', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-bash-fail',
+      content: 'run failing',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-bash-fail',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-bash-fail',
+            name: 'Bash',
+            input: { command: 'false' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-bash-fail',
+            is_error: true,
+            content: 'command failed',
+          },
+        ],
+      },
+      tool_use_result: {
+        stdout: '',
+        stderr: 'boom\n',
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'commandExecution')
+      throw new Error('expected commandExecution');
+    expect(update.item.output).toBe('boom\n');
+    expect(update.item.status).toBe('failed');
+
+    await adapter.disconnect();
+  });
+
+  it('completes dynamicToolCall items with raw result and extracted text', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-grep',
+      content: 'search',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-grep',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-grep-1',
+            name: 'Grep',
+            input: { pattern: 'TODO' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-grep-1',
+            content: [
+              { type: 'text', text: 'src/foo.ts:12: // TODO' },
+              { type: 'text', text: 'src/bar.ts:7: // TODO' },
+            ],
+          },
+        ],
+      },
+      tool_use_result: { matches: 2 },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'dynamicToolCall'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'dynamicToolCall')
+      throw new Error('expected dynamicToolCall');
+    expect(update.item.tool).toBe('Grep');
+    expect(update.item.status).toBe('completed');
+    expect(update.item.result).toEqual({ matches: 2 });
+    expect(update.item.content).toContain('src/foo.ts:12');
+    expect(update.item.content).toContain('src/bar.ts:7');
+
+    await adapter.disconnect();
+  });
+
+  it('marks dynamicToolCall failed when tool_result is_error is true', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-grep-fail',
+      content: 'search broken',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-grep-fail',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-grep-fail',
+            name: 'Grep',
+            input: { pattern: '???' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-grep-fail',
+            is_error: true,
+            content: 'invalid pattern',
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'dynamicToolCall'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'dynamicToolCall')
+      throw new Error('expected dynamicToolCall');
+    expect(update.item.status).toBe('failed');
+    expect(update.item.content).toBe('invalid pattern');
+
+    await adapter.disconnect();
+  });
+
+  it('clears tracked tool uses on disconnect so resumed sessions emit no stale completions', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    void adapter.sendMessage({
+      turnId: 'turn-teardown',
+      content: 'edit then drop',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-teardown',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-teardown-1',
+            name: 'Edit',
+            input: {
+              file_path: '/repo/dropped.md',
+              old_string: 'a',
+              new_string: 'b',
+            },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    await waitFor(() =>
+      patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.id === 'file-tool-teardown-1'
+      )
+    );
+
+    // Disconnect before tool_result arrives — drops the in-flight tool_use.
+    await adapter.disconnect();
+
+    const beforeReconnectCount = patches.length;
+
+    // Reconnect and emit a stale tool_result for the dropped tool_use_id.
+    await adapter.connect(config);
+    const controller2 = queryFn.current!;
+    controller2.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-2',
+    });
+    controller2.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-teardown-1',
+            content: 'late result',
+          },
+        ],
+      },
+      tool_use_result: { filePath: '/repo/dropped.md' },
+      session_id: 'claude-session-2',
+    });
+
+    // Give the adapter a tick to process; assert no fileChange completion was
+    // emitted for the dropped tool_use after reconnect.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const newPatches = patches.slice(beforeReconnectCount);
+    const stale = newPatches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'fileChange' &&
+        p.item.id === 'file-tool-teardown-1'
+    );
+    expect(stale).toBeUndefined();
+
+    await adapter.disconnect();
+  });
+
   it('bridges SDK canUseTool approval through respondToApproval', async () => {
     const queryFn = makeScriptedQuery();
     let capturedCanUseTool:

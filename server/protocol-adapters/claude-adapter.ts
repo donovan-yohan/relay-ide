@@ -566,6 +566,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.sessionAbort?.abort();
     this.rejectQueued(new Error('Claude adapter disconnected'));
     this.pendingApprovals.clear();
+    this.activeToolUses.clear();
     if (this.consumeTask) {
       await this.consumeTask.catch(() => undefined);
     }
@@ -604,6 +605,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.sessionAbort?.abort();
     this.rejectQueued(new Error('Claude adapter resuming'));
     this.pendingApprovals.clear();
+    this.activeToolUses.clear();
     if (this.consumeTask) {
       await this.consumeTask.catch(() => undefined);
     }
