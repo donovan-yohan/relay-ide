@@ -899,6 +899,33 @@ async function restoreWebSessionFromDb(
     session.needsBranchRename = true;
   }
 
+  // Restore top-level metadata from the row so sessions.list() ordering,
+  // duration calculations, and backend-state display reflect the persisted
+  // session rather than the freshly-created blank wrapper.
+  session.createdAt = new Date(row.createdAt).toISOString();
+  session.lastActivity = new Date(row.lastActivity).toISOString();
+  session.status = row.status === 'archived' ? 'disconnected' : row.status;
+
+  // Derive runtime state from the persisted live snapshot, mirroring the
+  // mapping in web-session-handler's adapter listener.
+  const live = session.agentSessionV2.live;
+  session.currentTurnId = live.activeTurnId;
+  if (live.status === 'working') {
+    session.agentState = 'processing';
+    session.idle = false;
+  } else if (live.status === 'waiting') {
+    session.agentState =
+      live.waitingOn === 'approval' ? 'permission-prompt' : 'waiting-for-input';
+    session.idle = false;
+  } else if (live.status === 'error') {
+    session.agentState = 'error';
+    session.idle = true;
+  } else {
+    session.agentState = 'idle';
+    session.idle = true;
+  }
+  fireBackendStateIfChanged(session);
+
   // Persist immediately so the freshly-restored row reflects current state
   // (vendor may not assign a new id, but live status flips).
   upsertWebSessionNow(session);
@@ -1052,10 +1079,16 @@ async function restoreFromDisk(
     } catch {
       /* ignore */
     }
+    // Recursively wipe scrollback dir. When pending was stale (or unreadable)
+    // per-session scrollback files weren't cleaned up by the restore loop;
+    // remove them here so stale buffers don't accumulate across restarts.
     try {
-      fs.rmdirSync(path.join(configDir, 'scrollback'));
+      fs.rmSync(path.join(configDir, 'scrollback'), {
+        recursive: true,
+        force: true,
+      });
     } catch {
-      /* ignore — may not be empty */
+      /* ignore */
     }
   }
 
