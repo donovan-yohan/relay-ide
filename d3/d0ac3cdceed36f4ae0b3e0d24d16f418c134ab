@@ -1,0 +1,27 @@
+test/server/relay-state-db.test.ts
+  5b787848c2e82ce0 1-150,182-195
+server/relay-state-db.ts
+  5b787848c2e82ce0 1-104,108-121,125-147,149-158,160,164,172-173,181-182,187-193,198-200,205-206,208-210,212-226,228-245,247-297,299,301-312,325-354,358-395,397-408
+server/sessions.ts
+  5b787848c2e82ce0 37-42,83,464-467,630-633,638,867-869,871-878,881-885,895-899,901-913,915,917-919,944-945,959-960,1009,1011-1023,1025-1028,1030,1032-1040,1042-1047,1051,1055-1059,1062-1065,1067,1071
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "d3d0ac3cdceed36f4ae0b3e0d24d16f418c134ab",
+  "prompts": {
+    "5b787848c2e82ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c3ad3eb-db8f-41e2-bfd2-5857ade6feef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 157,
+      "total_deletions": 36,
+      "accepted_lines": 157,
+      "overriden_lines": 0
+    }
+  }
+}
