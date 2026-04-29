@@ -1,0 +1,27 @@
+shared/agent-chat-protocol-v2.ts
+  fb0c3390d5c653a0 576,578,580,583,867-876,956-960,964-1046,1068-1130
+server/protocol-adapters/legacy-v2-bridge.ts
+  fb0c3390d5c653a0 63,70-73,90-97
+frontend/src/components/chat/Composer.tsx
+  fb0c3390d5c653a0 1-7,113-116,296-320,356-359
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "0bc317fda055f4d86bf845bec5d3a086005744b8",
+  "prompts": {
+    "fb0c3390d5c653a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e1f4551-3410-487c-9ae8-e41f2ba987f2",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 739,
+      "total_deletions": 59,
+      "accepted_lines": 710,
+      "overriden_lines": 0
+    }
+  }
+}
