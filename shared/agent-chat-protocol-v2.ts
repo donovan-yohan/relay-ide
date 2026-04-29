@@ -679,7 +679,7 @@ export function applyAgentPatchV2(
     case 'agent-error-v2': {
       const errorItem: AgentErrorMessageItemV2 = {
         type: 'errorMessage',
-        id: `error-${patch.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        id: `error-${patch.timestamp}-${shortHash(`${patch.sessionId}|${patch.turnId ?? ''}|${patch.message}`)}`,
         message: patch.message,
         source: 'agent',
         status: 'completed',
@@ -761,6 +761,19 @@ function updateTurn(
       turn.id === turnId ? update(turn) : turn
     ),
   };
+}
+
+/**
+ * Deterministic short hash (FNV-1a 32-bit) used for synthetic item ids so the
+ * reducer is replay-safe: applying the same patch always produces the same id.
+ */
+function shortHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
