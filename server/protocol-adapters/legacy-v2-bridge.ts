@@ -60,15 +60,17 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
     return this.inner.status;
   }
 
-  async connect(config: AdapterConfig): Promise<void> {
+  private subscribePatches(): void {
     this.unlisten?.();
-    this.unlisten = null;
-
     this.unlisten = this.inner.on((event) => {
       for (const patch of mapChatEventToAgentPatchV2(event)) {
         this.emitPatch(patch);
       }
     });
+  }
+
+  async connect(config: AdapterConfig): Promise<void> {
+    this.subscribePatches();
     try {
       await this.inner.connect(config);
     } catch (error) {
@@ -85,7 +87,14 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
   }
 
   async reconnect(): Promise<void> {
-    await this.inner.reconnect();
+    this.subscribePatches();
+    try {
+      await this.inner.reconnect();
+    } catch (error) {
+      this.unlisten?.();
+      this.unlisten = null;
+      throw error;
+    }
   }
 
   async resumeSession(_sessionId: string): Promise<void> {

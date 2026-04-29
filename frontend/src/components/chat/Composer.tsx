@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import './Composer.css';
 import type {
   AgentCapabilitySetV2,
@@ -104,7 +110,10 @@ export const Composer: React.FC<ComposerProps> = ({
     if (el) setCaret(el.selectionStart ?? 0);
   }, []);
 
-  const commandIndex = slashCommands ? buildCommandIndex(slashCommands) : null;
+  const commandIndex = useMemo(
+    () => (slashCommands ? buildCommandIndex(slashCommands) : null),
+    [slashCommands]
+  );
 
   /** Submit-time validation per §4.4 */
   const validateAndSend = useCallback(
@@ -284,21 +293,31 @@ export const Composer: React.FC<ComposerProps> = ({
     ctxWindow > 0
       ? `${formatTokens(ctxUsed)} / ${formatTokens(ctxWindow)}`
       : '—';
-  const segments =
-    ctxWindow > 0
-      ? [
-          { name: 'input', tokens: ctxInputUncached, color: 'var(--accent)' },
-          { name: 'cached', tokens: ctxCached, color: 'var(--status-info)' },
-          { name: 'output', tokens: ctxOutput, color: 'var(--status-success)' },
-          {
-            name: 'reasoning',
-            tokens: ctxReasoning,
-            color: 'var(--status-warning)',
-          },
-        ]
-      : [];
-  const segmentPct = (n: number): number =>
-    ctxWindow > 0 ? Math.min(100, (n / ctxWindow) * 100) : 0;
+  const segments = useMemo(
+    () =>
+      ctxWindow > 0
+        ? [
+            { name: 'input', tokens: ctxInputUncached, color: 'var(--accent)' },
+            { name: 'cached', tokens: ctxCached, color: 'var(--status-info)' },
+            {
+              name: 'output',
+              tokens: ctxOutput,
+              color: 'var(--status-success)',
+            },
+            {
+              name: 'reasoning',
+              tokens: ctxReasoning,
+              color: 'var(--status-warning)',
+            },
+          ]
+        : [],
+    [ctxWindow, ctxInputUncached, ctxCached, ctxOutput, ctxReasoning]
+  );
+  const segmentPct = useCallback(
+    (n: number): number =>
+      ctxWindow > 0 ? Math.min(100, (n / ctxWindow) * 100) : 0,
+    [ctxWindow]
+  );
   const usedPct = segmentPct(ctxUsed);
   const [ctxPopOpen, setCtxPopOpen] = useState(false);
   const ctxAnchorRef = useRef<HTMLSpanElement>(null);
@@ -334,9 +353,10 @@ export const Composer: React.FC<ComposerProps> = ({
   );
 
   // Build overlay segments for composer highlight
-  const overlaySegments = commandIndex
-    ? renderInlineSkillTokens(draft, commandIndex)
-    : null;
+  const overlaySegments = useMemo(
+    () => (commandIndex ? renderInlineSkillTokens(draft, commandIndex) : null),
+    [commandIndex, draft]
+  );
 
   return (
     <div className="slash-anchor">
