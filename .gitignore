@@ -60,3 +60,6 @@ playwright-report/
 /.agents/.state.json
 /.agents/.state.lock
 /.agents-tmp/
+
+# Design system working files (local previews, screenshots, uploads)
+/docs/design-system/
