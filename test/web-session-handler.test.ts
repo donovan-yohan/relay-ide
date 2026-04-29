@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   pushToBuffer,
   createWebSession,
+  reconnectWebSession,
 } from '../server/web-session-handler.js';
-import { createAdapter } from '../server/protocol-adapters/index.js';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
-import type { Session } from '../server/types.js';
+import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
+import type { Session, WebSession } from '../server/types.js';
 import type { ChatEvent, ApprovalRequestEvent } from '../shared/chat-events.js';
+import type { AgentCapabilitySetV2, AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   makeWebSession,
   makeBaseEvent,
@@ -15,6 +18,7 @@ import {
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
+    trace: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
@@ -101,28 +105,6 @@ describe('pushToBuffer', () => {
       (session.messages[session.messages.length - 1] as ApprovalRequestEvent)
         .requestId
     ).toBe('req-overflow');
-  });
-});
-
-// ── createAdapter ─────────────────────────────────────────────────────────────
-
-describe('createAdapter', () => {
-  it('returns a MockProtocolAdapter for agent type "mock"', () => {
-    const adapter = createAdapter('mock');
-    expect(adapter).toBeInstanceOf(MockProtocolAdapter);
-    expect(adapter.agentType).toBe('mock');
-  });
-
-  it('throws for unknown agent types', () => {
-    expect(() => createAdapter('unknown-agent')).toThrow(
-      'No protocol adapter registered for agent type: unknown-agent'
-    );
-  });
-
-  it('throws for empty string agent type', () => {
-    expect(() => createAdapter('')).toThrow(
-      'No protocol adapter registered for agent type: '
-    );
   });
 });
 
@@ -353,11 +335,15 @@ describe('createWebSession', () => {
       onBackendStateChanged
     );
 
-    // After connect, agentState should be 'idle' (from chat:session-status idle event)
+    // After connect, agentState should be 'idle' (from v2 live-state idle patch)
     expect(session.agentState).toBe('idle');
 
     // Send a message and check state transitions
-    const sendPromise = session.adapter.sendMessage('turn-1', 'hello');
+    expect(session.adapterV2).toBeDefined();
+    const sendPromise = session.adapterV2!.sendMessage({
+      turnId: 'turn-1',
+      content: 'hello',
+    });
 
     // Wait for turn-started to fire
     await vi.waitFor(() => {
@@ -369,5 +355,108 @@ describe('createWebSession', () => {
     expect(session.agentState).toBe('idle');
     expect(session.idle).toBe(true);
     expect(session.currentTurnId).toBeNull();
+  });
+});
+
+// ── reconnectWebSession ───────────────────────────────────────────────────────
+
+/**
+ * Build a minimal WebSession with a controllable MockProtocolAdapterV2.
+ * The session's agentSessionV2 can be pre-populated with a providerSession.
+ */
+function makeWebSessionWithV2Adapter(
+  capabilitiesOverride: Partial<AgentCapabilitySetV2> = {},
+  providerSession?: Record<string, string>
+): {
+  session: WebSession;
+  adapter: MockProtocolAdapterV2;
+  resumeSessionSpy: ReturnType<typeof vi.fn>;
+  reconnectSpy: ReturnType<typeof vi.fn>;
+} {
+  const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+  const resumeSessionSpy = vi.fn().mockResolvedValue(undefined);
+  const reconnectSpy = vi.fn().mockResolvedValue(undefined);
+  (adapter as unknown as Record<string, unknown>)['resumeSession'] =
+    resumeSessionSpy;
+  (adapter as unknown as Record<string, unknown>)['reconnect'] = reconnectSpy;
+
+  // Override capabilities if needed
+  const overriddenCapabilities: AgentCapabilitySetV2 = {
+    ...adapter.capabilities,
+    ...capabilitiesOverride,
+  };
+  (adapter as unknown as Record<string, unknown>)['capabilities'] =
+    overriddenCapabilities;
+
+  const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+    id: 'sess-reconnect',
+    provider: 'mock',
+    cwd: '/repo',
+    capabilities: overriddenCapabilities,
+    ...(providerSession !== undefined ? { providerSession } : {}),
+  });
+
+  const session = makeWebSession({
+    id: 'sess-reconnect',
+    adapterType: 'mock',
+    adapterV2: adapter,
+    agentSessionV2,
+  });
+
+  return { session, adapter, resumeSessionSpy, reconnectSpy };
+}
+
+describe('reconnectWebSession', () => {
+  it('calls resumeSession when capabilities.resume is true and claudeSessionId is stored', async () => {
+    const { session, resumeSessionSpy, reconnectSpy } =
+      makeWebSessionWithV2Adapter(
+        { resume: true },
+        { claudeSessionId: 'stored-claude-session-1' }
+      );
+    session.adapterType = 'claude';
+
+    await reconnectWebSession(session);
+
+    expect(resumeSessionSpy).toHaveBeenCalledWith('stored-claude-session-1');
+    expect(resumeSessionSpy).toHaveBeenCalledTimes(1);
+    expect(reconnectSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to reconnect() when capabilities.resume is false', async () => {
+    const { session, resumeSessionSpy, reconnectSpy } =
+      makeWebSessionWithV2Adapter(
+        { resume: false },
+        { claudeSessionId: 'stored-session' }
+      );
+    session.adapterType = 'claude';
+
+    await reconnectWebSession(session);
+
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSessionSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to reconnect() when no stored provider session id', async () => {
+    const { session, resumeSessionSpy, reconnectSpy } =
+      makeWebSessionWithV2Adapter({ resume: true });
+    session.adapterType = 'claude';
+
+    await reconnectWebSession(session);
+
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSessionSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to reconnect() when adapterType has no known providerSession key', async () => {
+    const { session, resumeSessionSpy, reconnectSpy } =
+      makeWebSessionWithV2Adapter(
+        { resume: true },
+        { someOtherId: 'value' }
+      );
+    // 'mock' is not in the known key lookup table
+    await reconnectWebSession(session);
+
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSessionSpy).not.toHaveBeenCalled();
   });
 });

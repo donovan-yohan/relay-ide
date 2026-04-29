@@ -38,6 +38,14 @@ interface TextPart {
   text?: string;
 }
 
+interface OpenCodePromptResponse {
+  info?: {
+    id?: string;
+    role?: string;
+  };
+  parts?: TextPart[];
+}
+
 function textPartId(part: TextPart): string {
   return String(part.id ?? `${part.messageID ?? 'message'}:text`);
 }
@@ -261,10 +269,28 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       }
     }
 
+    this.fire({ type: 'chat:session-status', status: 'active' });
+    this.fire({
+      type: 'chat:turn-started',
+      turnId,
+      turnIndex: this._turnCounter++,
+    });
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: `user-${turnId}`,
+      role: 'user',
+      content,
+    });
+
     try {
-      const url = `${this._endpoint}/session/${encodeURIComponent(
-        this._openCodeSessionId
-      )}/prompt_async`;
+      const url = new URL(
+        `/session/${encodeURIComponent(this._openCodeSessionId)}/message`,
+        this._endpoint
+      );
+      if (this._config?.cwd) {
+        url.searchParams.set('directory', this._config.cwd);
+      }
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,22 +305,26 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
         );
       }
 
-      this.fire({ type: 'chat:session-status', status: 'active' });
+      const response = (await res
+        .json()
+        .catch(() => null)) as OpenCodePromptResponse | null;
+      this.emitAssistantMessageFromPromptResponse(turnId, response);
       this.fire({
-        type: 'chat:turn-started',
+        type: 'chat:turn-completed',
         turnId,
-        turnIndex: this._turnCounter++,
+        reason: 'completed',
+        durationMs: 0,
+        toolCallCount: 0,
+        messageCount: 1,
       });
-      this.fire({
-        type: 'chat:message-complete',
-        turnId,
-        messageId: `user-${turnId}`,
-        role: 'user',
-        content,
-      });
+      this._currentTurnId = null;
+      this.fire({ type: 'chat:session-status', status: 'idle' });
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
+        if (!this._currentTurnId) {
+          return;
+        }
         if (this._currentTurnId) {
           this.fire({
             type: 'chat:turn-completed',
@@ -561,6 +591,9 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       case 'session.error':
         this.handleSessionError(event);
         break;
+      case 'tui.toast.show':
+        this.handleToast(event);
+        break;
       case 'message.part.updated':
         this.handleMessagePartUpdated(event);
         break;
@@ -630,15 +663,8 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
           ? (rawStatus as Record<string, unknown>)['message']
           : undefined;
       if (message) {
-        this.fire({
-          type: 'chat:error',
-          kind: String(message).toLowerCase().includes('quota')
-            ? 'rate-limit'
-            : 'protocol',
-          message: String(message),
-          retryable: true,
-          turnId: this._currentTurnId ?? undefined,
-        });
+        this.failCurrentTurn(String(message));
+        return;
       }
       this.fire({
         type: 'chat:session-status',
@@ -686,6 +712,32 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
     }
   }
 
+  private emitAssistantMessageFromPromptResponse(
+    turnId: string,
+    response: OpenCodePromptResponse | null
+  ): void {
+    if (!response || !Array.isArray(response.parts)) {
+      return;
+    }
+
+    const text = response.parts
+      .filter((part) => part.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('');
+
+    if (!text) {
+      return;
+    }
+
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: response.info?.id ?? `assistant-${turnId}`,
+      role: 'assistant',
+      content: text,
+    });
+  }
+
   private trackUserMessageId(messageId: string): void {
     if (this._userMessageIds.has(messageId)) {
       this._userMessageIds.delete(messageId);
@@ -726,6 +778,38 @@ export class OpenCodeProtocolAdapter extends BaseProtocolAdapter {
       this._currentTurnId = null;
     }
     this.fire({ type: 'chat:session-status', status: 'error' });
+  }
+
+  private handleToast(event: OpenCodeEvent): void {
+    const props = event.properties ?? {};
+    if (props['variant'] !== 'error') return;
+
+    const title = typeof props['title'] === 'string' ? props['title'] : '';
+    const message =
+      typeof props['message'] === 'string'
+        ? props['message']
+        : 'OpenCode session error';
+    const text = title ? `${title}: ${message}` : message;
+
+    this.failCurrentTurn(text);
+  }
+
+  private failCurrentTurn(message: string): void {
+    const turnId = this._currentTurnId ?? undefined;
+    this.fire({
+      type: 'chat:error',
+      kind: message.toLowerCase().includes('quota') ? 'rate-limit' : 'unknown',
+      message,
+      retryable: true,
+      ...(turnId ? { turnId } : {}),
+    });
+    this.fire({
+      type: 'chat:session-status',
+      status: 'error',
+      error: message,
+    });
+    this._currentTurnId = null;
+    this._messageAbortController?.abort();
   }
 
   private handleMessagePartUpdated(event: OpenCodeEvent): void {

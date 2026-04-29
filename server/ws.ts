@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { RawData } from 'ws';
 import http from 'node:http';
 import type { IPty } from 'node-pty';
 import * as sessions from './sessions.js';
@@ -9,6 +10,8 @@ import { trackEvent } from './analytics.js';
 import { createLogger } from './logger.js';
 import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
+import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
+import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 
 const logger = createLogger('ws');
 
@@ -16,20 +19,230 @@ function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
 }
 
-function sendChatError(ws: WebSocket, context: string, err: unknown): void {
+function sendAgentErrorV2(
+  ws: WebSocket,
+  sessionId: string,
+  context: string,
+  err: unknown
+): void {
   if (ws.readyState !== ws.OPEN) return;
   const message = err instanceof Error ? err.message : String(err);
   ws.send(
     JSON.stringify({
-      type: 'chat:error',
-      kind: 'protocol',
-      message: `${context}: ${message}`,
-      retryable: false,
-      sessionId: '',
+      type: 'agent-error-v2',
+      sessionId,
       timestamp: new Date().toISOString(),
-      source: 'claude',
+      message: `${context}: ${message}`,
     })
   );
+}
+
+function handleAgentCommandV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  switch (parsed['type']) {
+    case 'agent-send-message-v2':
+      sendAgentMessageV2(ws, session, parsed);
+      break;
+    case 'agent-interrupt-v2':
+      interruptAgentV2(ws, session, parsed);
+      break;
+    case 'agent-approve-v2':
+      approveAgentV2(ws, session, parsed);
+      break;
+    case 'agent-answer-v2':
+      answerAgentV2(ws, session, parsed);
+      break;
+    case 'agent-resume-v2':
+      resumeAgentV2(ws, session, parsed);
+      break;
+  }
+}
+
+function sendAgentMessageV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const input = {
+    turnId: String(parsed['turnId'] ?? ''),
+    content: String(parsed['content'] ?? ''),
+    ...(parsed['attachments'] !== undefined
+      ? { attachments: parsed['attachments'] as Attachment[] }
+      : {}),
+    ...(typeof parsed['clientMessageId'] === 'string'
+      ? { clientMessageId: parsed['clientMessageId'] }
+      : {}),
+  };
+  session.adapterV2.sendMessage(input).catch((err: unknown) => {
+    logger.error('v2 sendMessage error:', err);
+    sendAgentErrorV2(ws, session.id, 'v2 sendMessage failed', err);
+  });
+}
+
+function interruptAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const input =
+    typeof parsed['turnId'] === 'string' ? { turnId: parsed['turnId'] } : {};
+  session.adapterV2.interrupt(input).catch((err: unknown) => {
+    logger.error('v2 interrupt error:', err);
+    sendAgentErrorV2(ws, session.id, 'v2 interrupt failed', err);
+  });
+}
+
+function parseApprovalDecision(
+  parsed: Record<string, unknown>
+): AgentApprovalDecisionV2 | null {
+  const decision = parsed['decision'];
+  if (typeof decision !== 'object' || decision === null) return null;
+  const d = decision as Record<string, unknown>;
+  const kind = d['kind'];
+  if (kind === 'decline') return { kind: 'decline' };
+  if (kind === 'cancel') return { kind: 'cancel' };
+  if (kind === 'accept') {
+    const scope = d['scope'];
+    const result: Extract<AgentApprovalDecisionV2, { kind: 'accept' }> = { kind: 'accept' };
+    if (scope === 'once' || scope === 'session' || scope === 'turn' || scope === 'permanent') {
+      result.scope = scope;
+    }
+    const amendments = d['amendments'];
+    if (Array.isArray(amendments)) {
+      result.amendments = amendments as AgentApprovalDecisionV2 extends { amendments?: infer A }
+        ? NonNullable<A>
+        : never;
+    }
+    return result;
+  }
+  return null;
+}
+
+function approveAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const decision = parseApprovalDecision(parsed);
+  if (decision === null) {
+    logger.warn('ws: invalid v2 approval decision', {
+      decision: parsed['decision'],
+    });
+    return;
+  }
+
+  session.adapterV2
+    .respondToApproval({
+      requestId: String(parsed['requestId'] ?? ''),
+      decision,
+    })
+    .catch((err: unknown) => {
+      logger.error('v2 respondToApproval error:', err);
+      sendAgentErrorV2(ws, session.id, 'v2 approval delivery failed', err);
+    });
+}
+
+function answerAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const answers =
+    (parsed['answers'] as Record<string, string[]> | undefined) ?? {};
+
+  session.adapterV2
+    .respondToInput({
+      requestId: String(parsed['requestId'] ?? ''),
+      answers,
+    })
+    .catch((err: unknown) => {
+      logger.error('v2 respondToInput error:', err);
+      sendAgentErrorV2(ws, session.id, 'v2 input delivery failed', err);
+    });
+}
+
+function resumeAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  parsed: Record<string, unknown>
+): void {
+  const providerSessionId =
+    typeof parsed['providerSessionId'] === 'string'
+      ? parsed['providerSessionId']
+      : undefined;
+
+  if (!session.adapterV2.capabilities.resume) {
+    sendAgentErrorV2(
+      ws,
+      session.id,
+      'agent-resume-v2 rejected',
+      new Error(`${session.adapterType} does not support resume`)
+    );
+    return;
+  }
+
+  // Resolve the provider session ID: prefer the one sent by the client
+  // (which may come from the UI's persisted state), fall back to the
+  // server-side providerSession stored on the session.
+  const storedProviderSession = session.agentSessionV2.providerSession;
+  const resolvedId =
+    providerSessionId ??
+    (session.adapterType === 'claude'
+      ? storedProviderSession?.['claudeSessionId']
+      : session.adapterType === 'codex'
+        ? storedProviderSession?.['threadId']
+        : undefined);
+
+  if (!resolvedId) {
+    sendAgentErrorV2(
+      ws,
+      session.id,
+      'agent-resume-v2 rejected',
+      new Error('No provider session ID available for resume')
+    );
+    return;
+  }
+
+  session.adapterV2.resumeSession(resolvedId).catch((err: unknown) => {
+    logger.error('v2 resumeSession error:', err);
+    sendAgentErrorV2(ws, session.id, 'v2 resume failed', err);
+  });
+}
+
+function handleWebSessionMessage(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>,
+  msg: RawData
+): void {
+  const body = msg.toString();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    logger.warn('ws: invalid JSON for web session', {
+      sessionId: session.id,
+      preview: body.slice(0, 200),
+    });
+    return;
+  }
+
+  if (parsed['type'] === 'ping') {
+    replyPing(ws);
+    return;
+  }
+
+  if (typeof parsed['type'] === 'string' && parsed['type'].endsWith('-v2')) {
+    handleAgentCommandV2(ws, session, parsed);
+    return;
+  }
+
+  logger.warn('ws: ignoring legacy web command for v2-only web session', {
+    sessionId: session.id,
+    type: parsed['type'],
+  });
 }
 
 function parseCookies(
@@ -234,86 +447,21 @@ function setupWebSocket(
       ws.on('error', cleanup);
     } else {
       // Web session — JSON relay
-      // Register the live listener BEFORE replaying the snapshot so no events
-      // are lost in the window between replay completion and listener registration.
-      const snapshot = [...session.messages];
-      const unlisten = session.adapter.on((event) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      const patchReplayStart = session.agentPatchesV2.length;
+      const snapshotPatch = createAgentSessionSnapshotPatch(session);
+      const unlistenV2 = session.adapterV2.onPatch((patch) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
       });
-      for (const event of snapshot) {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(snapshotPatch));
+      for (const patch of session.agentPatchesV2.slice(patchReplayStart)) {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
       }
 
-      ws.on('message', (msg) => {
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(msg.toString()) as Record<string, unknown>;
-        } catch {
-          logger.warn('web session: malformed JSON from client', {
-            sessionId: session.id,
-            preview: msg.toString().slice(0, 200),
-          });
-          return;
-        }
-        switch (parsed['type']) {
-          case 'ping':
-            replyPing(ws);
-            break;
-          case 'send-message':
-            session.adapter
-              .sendMessage(
-                String(parsed['turnId'] ?? ''),
-                String(parsed['content'] ?? ''),
-                parsed['attachments'] as Attachment[] | undefined
-              )
-              .catch((err: unknown) => {
-                logger.error('sendMessage error:', err);
-                sendChatError(ws, 'sendMessage failed', err);
-              });
-            break;
-          case 'interrupt':
-            session.adapter
-              .interrupt(String(parsed['turnId'] ?? ''))
-              .catch((err: unknown) => {
-                logger.error('interrupt error:', err);
-                sendChatError(ws, 'interrupt failed', err);
-              });
-            break;
-          case 'approve': {
-            const decision = parsed['decision'];
-            if (
-              decision !== 'allow' &&
-              decision !== 'allow-always' &&
-              decision !== 'deny'
-            ) {
-              logger.warn('ws: invalid approval decision', { decision });
-              break;
-            }
-            session.adapter
-              .respondToApproval(String(parsed['requestId'] ?? ''), decision)
-              .catch((err: unknown) => {
-                logger.error('respondToApproval error:', err);
-                sendChatError(ws, 'approval delivery failed', err);
-              });
-            break;
-          }
-          case 'input-response':
-            session.adapter
-              .respondToInput(
-                String(parsed['requestId'] ?? ''),
-                (parsed['answers'] as Record<string, string[]> | undefined) ??
-                  {}
-              )
-              .catch((err: unknown) => {
-                logger.error('respondToInput error:', err);
-                sendChatError(ws, 'input delivery failed', err);
-              });
-            break;
-        }
-      });
+      ws.on('message', (msg) => handleWebSessionMessage(ws, session, msg));
 
       const cleanup = () => {
-        unlisten();
+        unlistenV2();
         sessionMap.delete(ws);
       };
       ws.on('close', cleanup);

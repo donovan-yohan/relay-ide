@@ -1118,10 +1118,11 @@ describe('session persistence', () => {
     // Serialize all
     serializeAll(configDir);
 
-    // Kill originals
-    sessions.kill(agentSession.id);
-    sessions.kill(terminal.id);
-    expect(sessions.list().length).toBe(0);
+    // Detach (preserves tmux sessions for restore reattach) rather than kill,
+    // which would tear down tmux and leave nothing for restore to adopt.
+    // Restore re-creates the in-memory entry under the same id, replacing it.
+    sessions.detachForRestart(agentSession.id);
+    sessions.detachForRestart(terminal.id);
 
     // Also inject a tmux-style session into the pending file to test tmuxSessionName round-trip.
     // Use customCommand so restore spawns that instead of claude --continue (which would exit instantly).

@@ -1,7 +1,12 @@
 import type { IPty } from 'node-pty';
 import type { OutputParser } from './output-parsers/index.js';
 import type { ProtocolAdapter } from './protocol-adapter.js';
+import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type { ChatEvent } from '../shared/chat-events.js';
+import type {
+  AgentPatchV2,
+  AgentSessionV2,
+} from '../shared/agent-chat-protocol-v2.js';
 
 export type AgentState =
   | 'initializing'
@@ -272,6 +277,14 @@ export interface WebSession extends BaseSession {
   mode: 'web';
   /** Active protocol adapter for this agent backend */
   adapter: ProtocolAdapter;
+  /** Native v2 protocol adapter for web-chat sessions. */
+  adapterV2: ProtocolAdapterV2;
+  /** Canonical v2 web-chat state. */
+  agentSessionV2: AgentSessionV2;
+  /** Bounded v2 patch buffer for reconnect catch-up. */
+  agentPatchesV2: AgentPatchV2[];
+  /** Current web-chat protocol version. */
+  protocolVersion: 2;
   /**
    * Agent type identifier (matches AgentFramework.id, e.g. 'codex' | 'opencode' | 'claude').
    * Mirrors adapter.agentType — kept as a plain field so session summaries and logs

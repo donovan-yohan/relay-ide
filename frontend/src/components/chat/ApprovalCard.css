@@ -1,10 +1,10 @@
-.approval-card {
+.acard {
   border: 1px solid var(--status-warning);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
 
-.approval-card__header {
+.acard__h {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -12,12 +12,12 @@
   border-bottom: 1px solid var(--status-warning);
 }
 
-.approval-card__tool {
+.acard__tool {
   color: var(--text);
   font-weight: 500;
 }
 
-.approval-card__description {
+.acard__desc {
   color: var(--text-muted);
   flex: 1;
   overflow: hidden;
@@ -25,32 +25,32 @@
   white-space: nowrap;
 }
 
-.approval-card__target {
+.acard__target {
   padding: 6px 10px;
   color: var(--text);
   word-break: break-all;
 }
 
-.approval-card__detail {
+.acard__detail {
   padding: 0 10px 6px;
   color: var(--text-muted);
   font-size: var(--font-size-xs);
   word-break: break-all;
 }
 
-.approval-card__actions {
+.acard__actions {
   display: flex;
   gap: 8px;
   padding: 8px 10px;
   border-top: 1px solid var(--border);
 }
 
-.approval-card__responded {
+.acard__responded {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
 }
 
-.approval-card__btn {
+.acard__btn {
   background: transparent;
   border: 1px solid currentColor;
   cursor: pointer;
@@ -64,7 +64,7 @@
     background 0.1s;
 }
 
-.approval-card__btn:hover:not(:disabled) {
+.acard__btn:hover:not(:disabled) {
   border-width: 3px;
   border-style: double;
   padding: 2px 8px;
@@ -72,25 +72,92 @@
   background: color-mix(in srgb, currentColor 6%, transparent);
 }
 
-.approval-card__btn:disabled {
+.acard__btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.approval-card__btn--allow {
+.acard__btn--allow {
   color: var(--status-success);
 }
 
-.approval-card__btn--allow-always {
+.acard__btn--always {
   color: var(--text-muted);
 }
 
-.approval-card__btn--deny {
+.acard__btn--scope {
+  color: var(--text-muted);
+}
+
+.acard__btn--amendment {
+  color: var(--text-muted);
+}
+
+.acard__btn--deny {
   color: var(--status-error);
 }
 
+.acard__btn--cancel {
+  color: var(--text-muted);
+}
+
+.acard__code {
+  margin: 0;
+  padding: 4px 10px 6px;
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
+}
+
+.acard__code--diff {
+  color: var(--text-muted);
+}
+
+.acard__details {
+  padding: 2px 0;
+}
+
+.acard__detail-label {
+  padding: 0 10px 2px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.acard__patch-files {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+.acard__patch-file {
+  display: flex;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+}
+
+.acard__patch-kind {
+  color: var(--text-muted);
+}
+
+.acard__patch-path {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.acard__permissions {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+.acard__permission {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  padding: 1px 0;
+}
+
 @media (max-width: 767px) {
-  .approval-card__actions {
+  .acard__actions {
     flex-direction: column;
   }
 }

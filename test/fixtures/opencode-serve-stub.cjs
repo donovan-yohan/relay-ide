@@ -59,7 +59,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (
-    parsed.pathname === `/session/${sessionId}/prompt_async` &&
+    parsed.pathname === `/session/${sessionId}/message` &&
     req.method === 'POST'
   ) {
     drain(req, (body) => {
@@ -81,9 +81,41 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      res.writeHead(204);
-      res.end();
+      const text = payload.parts
+        .filter((part) => part && part.type === 'text')
+        .map((part) => part.text)
+        .join('');
+      if (text.includes('toast-error')) {
+        emitToastError();
+        return;
+      }
+      if (text.includes('retry-error')) {
+        emitRetryError();
+        return;
+      }
+
       emitTurn();
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            info: {
+              id: 'msg_1',
+              role: 'assistant',
+              sessionID: sessionId,
+            },
+            parts: [
+              {
+                id: 'part_1',
+                sessionID: sessionId,
+                messageID: 'msg_1',
+                type: 'text',
+                text: 'hello from opencode',
+              },
+            ],
+          })
+        );
+      }, 125);
     });
     return;
   }
@@ -174,6 +206,35 @@ function emitTurn() {
       properties: { sessionID: sessionId, status: { type: 'idle' } },
     });
   }, 100);
+}
+
+function emitToastError() {
+  broadcast({
+    type: 'session.status',
+    properties: { sessionID: sessionId, status: { type: 'busy' } },
+  });
+
+  setTimeout(() => {
+    broadcast({
+      type: 'tui.toast.show',
+      properties: {
+        sessionID: sessionId,
+        variant: 'error',
+        title: 'OpenCode',
+        message: 'stub toast failure',
+      },
+    });
+  }, 25);
+}
+
+function emitRetryError() {
+  broadcast({
+    type: 'session.status',
+    properties: {
+      sessionID: sessionId,
+      status: { type: 'retry', message: 'UnknownError' },
+    },
+  });
 }
 
 server.listen(port, '127.0.0.1', () => {

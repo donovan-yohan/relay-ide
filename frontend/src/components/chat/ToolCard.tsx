@@ -1,77 +1,169 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import './ToolCard.css';
+import type {
+  AgentCommandExecutionItemV2,
+  AgentDynamicToolCallItemV2,
+  AgentMcpToolCallItemV2,
+} from '../../../../shared/agent-chat-protocol-v2.js';
 import type {
   ToolCallEvent,
   ToolCallStatus,
   ToolResultEvent,
 } from '../../../../shared/chat-events.js';
 
+type ToolItemV2 =
+  | AgentCommandExecutionItemV2
+  | AgentDynamicToolCallItemV2
+  | AgentMcpToolCallItemV2;
+
 interface ToolCardProps {
-  event: ToolCallEvent;
+  item?: ToolItemV2;
+  event?: ToolCallEvent;
   result?: ToolResultEvent | undefined;
 }
 
-const EXPANDED_BY_DEFAULT = new Set(['bash', 'edit', 'multiedit', 'write']);
+const EXPANDED_BY_DEFAULT = new Set([
+  'bash',
+  'edit',
+  'multiedit',
+  'write',
+  'command',
+]);
 
-function statusClass(status: ToolCallStatus): string {
+function statusClass(status: string | undefined): string {
   switch (status) {
-    case 'pending':
-      return 'tool-card__status--pending';
     case 'running':
-      return 'tool-card__status--running';
+      return 'tcard__status--running';
     case 'completed':
-      return 'tool-card__status--completed';
+      return 'tcard__status--completed';
+    case 'failed':
     case 'error':
-      return 'tool-card__status--error';
+      return 'tcard__status--error';
+    case 'cancelled':
     case 'declined':
-      return 'tool-card__status--declined';
+      return 'tcard__status--declined';
+    case 'pending':
+    default:
+      return 'tcard__status--pending';
   }
 }
 
-export const ToolCard: React.FC<ToolCardProps> = ({ event, result }) => {
-  const defaultExpanded = EXPANDED_BY_DEFAULT.has(event.toolName.toLowerCase());
-  const [expanded, setExpanded] = useState(defaultExpanded);
+function legacyStatus(status: ToolCallStatus): string {
+  return status;
+}
 
-  const hasInput = Object.keys(event.input).length > 0;
-  const durationLabel =
-    result?.durationMs != null ? `${result.durationMs}ms` : null;
+function stringify(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function getToolView(
+  item: ToolItemV2 | undefined,
+  event: ToolCallEvent | undefined,
+  result: ToolResultEvent | undefined
+): {
+  name: string;
+  description: string;
+  status: string;
+  durationLabel: string | null;
+  input: string;
+  output: string;
+  error: string;
+} {
+  if (item?.type === 'commandExecution') {
+    return {
+      name: 'command',
+      description: item.command,
+      status: item.status ?? 'pending',
+      durationLabel: item.durationMs != null ? `${item.durationMs}ms` : null,
+      input: item.cwd ? `cwd: ${item.cwd}\n${item.command}` : item.command,
+      output: item.output,
+      error: item.error ?? '',
+    };
+  }
+
+  if (item?.type === 'dynamicToolCall') {
+    return {
+      name: item.tool,
+      description: item.namespace,
+      status: item.status ?? 'pending',
+      durationLabel: null,
+      input: stringify(item.arguments),
+      output: item.content || stringify(item.result),
+      error: item.error ?? '',
+    };
+  }
+
+  if (item?.type === 'mcpToolCall') {
+    return {
+      name: item.tool,
+      description: item.server,
+      status: item.status ?? 'pending',
+      durationLabel: null,
+      input: stringify(item.arguments),
+      output: item.progress || stringify(item.result),
+      error: item.error ?? '',
+    };
+  }
+
+  if (event) {
+    return {
+      name: event.toolName.toLowerCase(),
+      description: event.description ?? '',
+      status: legacyStatus(event.status),
+      durationLabel:
+        result?.durationMs != null ? `${result.durationMs}ms` : null,
+      input: Object.keys(event.input).length > 0 ? stringify(event.input) : '',
+      output: result?.output ?? '',
+      error: result?.error ?? '',
+    };
+  }
+
+  return {
+    name: 'tool',
+    description: '',
+    status: 'pending',
+    durationLabel: null,
+    input: '',
+    output: '',
+    error: '',
+  };
+}
+
+export const ToolCard: React.FC<ToolCardProps> = ({ item, event, result }) => {
+  const view = useMemo(
+    () => getToolView(item, event, result),
+    [event, item, result]
+  );
+  const defaultExpanded = EXPANDED_BY_DEFAULT.has(view.name.toLowerCase());
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasBody = Boolean(view.input || view.output || view.error);
 
   return (
-    <div
-      className="tool-card"
-      role="article"
-      aria-label={event.toolName.toLowerCase()}
-    >
+    <div className="tcard" role="article" aria-label={view.name.toLowerCase()}>
       <button
-        className="tool-card__header"
-        onClick={() => setExpanded((v) => !v)}
+        className="tcard__h"
+        onClick={() => setExpanded((value) => !value)}
         type="button"
         aria-expanded={expanded}
       >
-        <span className="tool-card__name">{event.toolName.toLowerCase()}</span>
-        {event.description && (
-          <span className="tool-card__description">{event.description}</span>
+        <span className="tcard__name">{view.name.toLowerCase()}</span>
+        {view.description && (
+          <span className="tcard__desc">{view.description}</span>
         )}
-        {durationLabel && (
-          <span className="tool-card__duration">{durationLabel}</span>
+        {view.durationLabel && (
+          <span className="tcard__dur">{view.durationLabel}</span>
         )}
-        <span className={`tool-card__status ${statusClass(event.status)}`}>
-          {event.status}
+        <span className={`tcard__status ${statusClass(view.status)}`}>
+          {view.status}
         </span>
       </button>
-      {expanded && (
-        <div className="tool-card__body">
-          {hasInput && (
-            <pre className="tool-card__input">
-              {JSON.stringify(event.input, null, 2)}
-            </pre>
-          )}
-          {result?.output && (
-            <pre className="tool-card__output">{result.output}</pre>
-          )}
-          {result?.error && (
-            <pre className="tool-card__error">{result.error}</pre>
-          )}
+      {expanded && hasBody && (
+        <div className="tcard__body">
+          {view.input && <pre>{view.input}</pre>}
+          {view.output && <pre className="out">{view.output}</pre>}
+          {view.error && <pre className="err">{view.error}</pre>}
         </div>
       )}
     </div>
