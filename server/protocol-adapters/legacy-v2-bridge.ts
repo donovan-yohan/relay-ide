@@ -17,7 +17,10 @@ import { mapChatEventToAgentPatchV2 } from '../../shared/agent-chat-v1-compat.js
 /**
  * Translate a V2 decision back to the v1 binary form expected by legacy adapters.
  * Legacy adapters (opencode, hermes) only support once/permanent accept and deny.
- * Unsupported decisions (cancel, session/turn scope, amendments) fall back to deny.
+ * Unsupported decisions fall back to deny so we never grant a wider scope than
+ * the user asked for: session/turn scopes don't exist in the legacy contract,
+ * and amendment payloads (execpolicy/networkPolicy/permissionGrant) cannot be
+ * faithfully relayed through a binary allow.
  */
 function v2DecisionToLegacy(
   decision: AgentApprovalDecisionV2
@@ -25,10 +28,17 @@ function v2DecisionToLegacy(
   if (decision.kind === 'decline' || decision.kind === 'cancel') {
     return 'deny';
   }
-  // kind === 'accept'
+
+  // kind === 'accept' — refuse to widen scope or drop amendment constraints.
+  if ((decision.amendments?.length ?? 0) > 0) {
+    return 'deny';
+  }
+
   const scope = decision.scope ?? 'once';
   if (scope === 'permanent') return 'allow-always';
-  return 'allow';
+  if (scope === 'once') return 'allow';
+  // session / turn / unknown scopes have no legacy equivalent.
+  return 'deny';
 }
 
 export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
