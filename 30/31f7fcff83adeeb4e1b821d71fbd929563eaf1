@@ -1,0 +1,25 @@
+.husky/pre-commit
+  5b787848c2e82ce0 2,7-13
+server/protocol-adapters/legacy-v2-bridge.ts
+  5b787848c2e82ce0 20-23,31-36,39-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "3031f7fcff83adeeb4e1b821d71fbd929563eaf1",
+  "prompts": {
+    "5b787848c2e82ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c3ad3eb-db8f-41e2-bfd2-5857ade6feef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 21,
+      "total_deletions": 6,
+      "accepted_lines": 6667,
+      "overriden_lines": 0
+    }
+  }
+}
