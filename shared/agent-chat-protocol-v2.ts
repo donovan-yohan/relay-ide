@@ -688,8 +688,10 @@ export function applyAgentPatchV2(
       };
 
       const targetTurnId = patch.turnId ?? session.live.activeTurnId;
+      const targetTurnExists =
+        !!targetTurnId && session.turns.some((t) => t.id === targetTurnId);
       let nextTurns: AgentTurnV2[];
-      if (targetTurnId) {
+      if (targetTurnId && targetTurnExists) {
         nextTurns = updateTurn(session, targetTurnId, (turn) => ({
           ...turn,
           items: [...turn.items, errorItem],
@@ -872,6 +874,41 @@ function isTurn(value: unknown): value is AgentTurnV2 {
   );
 }
 
+type ItemValidator = (value: Record<string, unknown>) => boolean;
+
+const ITEM_VALIDATORS: Record<string, ItemValidator> = {
+  userMessage: (v) => typeof v.text === 'string',
+  assistantMessage: (v) => typeof v.text === 'string',
+  reasoning: (v) => typeof v.summary === 'string',
+  plan: (v) => typeof v.text === 'string',
+  commandExecution: (v) =>
+    typeof v.command === 'string' && typeof v.output === 'string',
+  fileChange: (v) =>
+    Array.isArray(v.paths) &&
+    v.paths.every((p) => isRecord(p) && typeof p.path === 'string'),
+  mcpToolCall: (v) =>
+    typeof v.server === 'string' && typeof v.tool === 'string',
+  dynamicToolCall: (v) =>
+    typeof v.namespace === 'string' && typeof v.tool === 'string',
+  approval: (v) =>
+    typeof v.requestId === 'string' &&
+    typeof v.kind === 'string' &&
+    typeof v.description === 'string' &&
+    typeof v.target === 'string',
+  question: (v) =>
+    typeof v.requestId === 'string' && typeof v.question === 'string',
+  compaction: (v) => typeof v.summary === 'string',
+  webSearch: (v) => typeof v.query === 'string',
+  imageView: (v) => typeof v.source === 'string',
+  imageGeneration: (v) => typeof v.prompt === 'string',
+  hookPrompt: (v) => typeof v.prompt === 'string',
+  providerExtension: (v) =>
+    typeof v.namespace === 'string' && isRecord(v.payload),
+  errorMessage: (v) =>
+    typeof v.message === 'string' &&
+    (v.source === 'agent' || v.source === 'client'),
+};
+
 function isItem(value: unknown): value is AgentItemV2 {
   if (
     !isRecord(value) ||
@@ -880,59 +917,8 @@ function isItem(value: unknown): value is AgentItemV2 {
   ) {
     return false;
   }
-
-  switch (value.type) {
-    case 'userMessage':
-    case 'assistantMessage':
-      return typeof value.text === 'string';
-    case 'reasoning':
-      return typeof value.summary === 'string';
-    case 'plan':
-      return typeof value.text === 'string';
-    case 'commandExecution':
-      return (
-        typeof value.command === 'string' && typeof value.output === 'string'
-      );
-    case 'fileChange':
-      return (
-        Array.isArray(value.paths) &&
-        value.paths.every(
-          (path) => isRecord(path) && typeof path.path === 'string'
-        )
-      );
-    case 'mcpToolCall':
-      return typeof value.server === 'string' && typeof value.tool === 'string';
-    case 'dynamicToolCall':
-      return (
-        typeof value.namespace === 'string' && typeof value.tool === 'string'
-      );
-    case 'approval':
-      return (
-        typeof value.requestId === 'string' &&
-        typeof value.kind === 'string' &&
-        typeof value.description === 'string' &&
-        typeof value.target === 'string'
-      );
-    case 'question':
-      return (
-        typeof value.requestId === 'string' &&
-        typeof value.question === 'string'
-      );
-    case 'compaction':
-      return typeof value.summary === 'string';
-    case 'webSearch':
-      return typeof value.query === 'string';
-    case 'imageView':
-      return typeof value.source === 'string';
-    case 'imageGeneration':
-      return typeof value.prompt === 'string';
-    case 'hookPrompt':
-      return typeof value.prompt === 'string';
-    case 'providerExtension':
-      return typeof value.namespace === 'string' && isRecord(value.payload);
-  }
-
-  return false;
+  const validator = ITEM_VALIDATORS[value.type];
+  return validator ? validator(value) : false;
 }
 
 function isSession(value: unknown): value is AgentSessionV2 {

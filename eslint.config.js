@@ -48,6 +48,7 @@ export default [
     plugins: { 'react-hooks': reactHooks },
     rules: {
       'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
       // JSX trees commonly nest beyond 4 levels — keep the rule but lift cap.
       'max-depth': ['error', 6],
     },

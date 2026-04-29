@@ -61,12 +61,21 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
   }
 
   async connect(config: AdapterConfig): Promise<void> {
+    this.unlisten?.();
+    this.unlisten = null;
+
     this.unlisten = this.inner.on((event) => {
       for (const patch of mapChatEventToAgentPatchV2(event)) {
         this.emitPatch(patch);
       }
     });
-    await this.inner.connect(config);
+    try {
+      await this.inner.connect(config);
+    } catch (error) {
+      this.unlisten?.();
+      this.unlisten = null;
+      throw error;
+    }
   }
 
   protected async onDisconnect(): Promise<void> {

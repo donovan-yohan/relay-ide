@@ -66,7 +66,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const [draft, setDraft] = useState('');
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [, setSendError] = useState<string | null>(null);
 
   const filteredCommands = useSlashCommands(
     capabilities,
@@ -96,7 +96,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   // Clear send error when user types
   useEffect(() => {
-    if (sendError) setSendError(null);
+    setSendError(null);
   }, [draft]);
 
   const updateCaret = useCallback(() => {
@@ -172,6 +172,13 @@ export const Composer: React.FC<ComposerProps> = ({
             setSendError(null);
             return;
           }
+          const missingMsg = `handler not implemented for ${matched.name}`;
+          if (pushClientError) {
+            pushClientError(missingMsg, matched.name);
+          } else {
+            setSendError(missingMsg);
+          }
+          return;
         }
       }
     }
@@ -189,6 +196,30 @@ export const Composer: React.FC<ComposerProps> = ({
     pushClientError,
   ]);
 
+  const applySelectedCommand = useCallback(() => {
+    const cmd = filteredCommands[activeIndex];
+    const trigger = detectSlashTrigger(draft, caret);
+    if (!cmd || !trigger) return;
+    const typedPrefix = trigger.prefix;
+    const cmdName = cmd.command.replace(/^[/$]/, '');
+    const replacement = `${typedPrefix}${cmdName}`;
+    const newDraft =
+      draft.slice(0, trigger.span[0]) +
+      replacement +
+      draft.slice(trigger.span[1]);
+    const newCaret = trigger.span[0] + replacement.length;
+    setDraft(newDraft);
+    setCaret(newCaret);
+    setActiveIndex(0);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.selectionStart = newCaret;
+        el.selectionEnd = newCaret;
+      }
+    });
+  }, [filteredCommands, activeIndex, draft, caret]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (paletteVisible) {
@@ -204,56 +235,12 @@ export const Composer: React.FC<ComposerProps> = ({
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          const cmd = filteredCommands[activeIndex];
-          const trigger = detectSlashTrigger(draft, caret);
-          if (cmd && trigger) {
-            // Replace span with typed prefix + canonical command name (no trailing space)
-            const typedPrefix = trigger.prefix;
-            const cmdName = cmd.command.replace(/^[/$]/, '');
-            const replacement = `${typedPrefix}${cmdName}`;
-            const newDraft =
-              draft.slice(0, trigger.span[0]) +
-              replacement +
-              draft.slice(trigger.span[1]);
-            const newCaret = trigger.span[0] + replacement.length;
-            setDraft(newDraft);
-            setCaret(newCaret);
-            setActiveIndex(0);
-            // Restore textarea caret after state update
-            requestAnimationFrame(() => {
-              const el = textareaRef.current;
-              if (el) {
-                el.selectionStart = newCaret;
-                el.selectionEnd = newCaret;
-              }
-            });
-          }
+          applySelectedCommand();
           return;
         }
         if (e.key === 'Tab') {
           e.preventDefault();
-          const cmd = filteredCommands[activeIndex];
-          const trigger = detectSlashTrigger(draft, caret);
-          if (cmd && trigger) {
-            const typedPrefix = trigger.prefix;
-            const cmdName = cmd.command.replace(/^[/$]/, '');
-            const replacement = `${typedPrefix}${cmdName}`;
-            const newDraft =
-              draft.slice(0, trigger.span[0]) +
-              replacement +
-              draft.slice(trigger.span[1]);
-            const newCaret = trigger.span[0] + replacement.length;
-            setDraft(newDraft);
-            setCaret(newCaret);
-            setActiveIndex(0);
-            requestAnimationFrame(() => {
-              const el = textareaRef.current;
-              if (el) {
-                el.selectionStart = newCaret;
-                el.selectionEnd = newCaret;
-              }
-            });
-          }
+          applySelectedCommand();
           return;
         }
         if (e.key === 'Escape') {
@@ -278,9 +265,7 @@ export const Composer: React.FC<ComposerProps> = ({
     [
       paletteVisible,
       filteredCommands,
-      activeIndex,
-      draft,
-      caret,
+      applySelectedCommand,
       submitDraft,
       isActive,
       onInterrupt,
@@ -325,8 +310,15 @@ export const Composer: React.FC<ComposerProps> = ({
         setCtxPopOpen(false);
       }
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCtxPopOpen(false);
+    };
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [ctxPopOpen]);
   const placeholderText = isActive
     ? 'queue a message · ↵ to add to queue · ctrl+c or esc to interrupt'
