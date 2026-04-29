@@ -34,6 +34,12 @@ import {
   reconnectWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
+import {
+  loadAllWebSessions,
+  deleteWebSession,
+  upsertWebSessionNow,
+} from './relay-state-db.js';
+import { applyWebSessionPatchV2 } from './web-session-v2-state.js';
 import { getWorkingTreeDiff } from './git.js';
 import { getPrForBranch, isStalePr } from './gh.js';
 import {
@@ -73,38 +79,10 @@ interface SerializedPtySession {
   additionalDirs?: string[];
 }
 
-interface SerializedWebSession {
-  id: string;
-  type: SessionType;
-  agent: AgentType;
-  repoPath: string;
-  worktreePath: string | null;
-  cwd: string;
-  repoName: string;
-  branchName: string;
-  displayName: string;
-  createdAt: string;
-  lastActivity: string;
-  customCommand: string | null;
-  runtimeOwnership: 'spawned' | 'attached';
-  hookToken: string;
-  adapterType: string;
-  needsBranchRename?: boolean;
-  workspaceId?: string;
-  additionalDirs?: string[];
-  /** Messages buffer persisted for replay (up to 1000 events) */
-  messages?: import('../shared/chat-events.js').ChatEvent[];
-  /** Canonical v2 state persisted for web-chat reconnect/restore */
-  agentSessionV2?: import('../shared/agent-chat-protocol-v2.js').AgentSessionV2;
-  /** Recent v2 patches persisted for reconnect catch-up */
-  agentPatchesV2?: import('../shared/agent-chat-protocol-v2.js').AgentPatchV2[];
-}
-
 interface PendingSessionsFile {
-  version: number; // now 5
+  version: number; // now 6 — web sessions moved to relay-state.db
   timestamp: string;
   sessions: SerializedPtySession[];
-  webSessions?: SerializedWebSession[];
 }
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -483,6 +461,10 @@ function kill(id: string): void {
     cleanupCodexHooksAdapter(id);
   }
 
+  if (session.mode === 'web') {
+    deleteWebSession(id);
+  }
+
   sessions.delete(id);
 }
 
@@ -635,58 +617,27 @@ function serializePtySession(
   };
 }
 
-function serializeWebSession(session: WebSession): SerializedWebSession {
-  return {
-    id: session.id,
-    type: session.type,
-    agent: session.agent,
-    repoPath: session.repoPath,
-    worktreePath: session.worktreePath,
-    cwd: session.cwd,
-    repoName: session.repoName,
-    branchName: session.branchName,
-    displayName: session.displayName,
-    createdAt: session.createdAt,
-    lastActivity: session.lastActivity,
-    customCommand: session.customCommand,
-    runtimeOwnership: session.runtimeOwnership,
-    hookToken: session.hookToken,
-    adapterType: session.adapterType,
-    ...(session.needsBranchRename ? { needsBranchRename: true as const } : {}),
-    ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
-    ...(session.additionalDirs?.length
-      ? { additionalDirs: session.additionalDirs }
-      : {}),
-    ...(session.messages.length
-      ? { messages: session.messages.slice(-1000) }
-      : {}),
-    agentSessionV2: session.agentSessionV2,
-    ...(session.agentPatchesV2.length
-      ? { agentPatchesV2: session.agentPatchesV2.slice(-1000) }
-      : {}),
-  };
-}
-
 function serializeAll(configDir: string): void {
   const scrollbackDirPath = path.join(configDir, 'scrollback');
   fs.mkdirSync(scrollbackDirPath, { recursive: true });
 
   const serializedPty: SerializedPtySession[] = [];
-  const serializedWeb: SerializedWebSession[] = [];
 
   for (const session of sessions.values()) {
     if (session.mode === 'pty') {
       serializedPty.push(serializePtySession(session, scrollbackDirPath));
     } else {
-      serializedWeb.push(serializeWebSession(session));
+      // Web sessions persisted to relay-state.db on patch (debounced) +
+      // structural events. Final shutdown snapshot for any not-yet-flushed
+      // mutations is handled by upsertWebSessionNow before serializeAll.
+      upsertWebSessionNow(session);
     }
   }
 
   const pending: PendingSessionsFile = {
-    version: 5,
+    version: 6,
     timestamp: new Date().toISOString(),
     sessions: serializedPty,
-    webSessions: serializedWeb,
   };
 
   fs.writeFileSync(
@@ -913,47 +864,184 @@ function restoreSession(
   create(createParams);
 }
 
-async function restoreWebSession(s: SerializedWebSession): Promise<void> {
+async function restoreWebSessionFromDb(
+  row: import('./relay-state-db.js').LoadedWebSessionRow
+): Promise<void> {
+  // Restore persisted adapter runtime settings so the reconnected session
+  // matches what was originally running rather than reverting to defaults.
+  const persistedConfig = row.agentSessionV2.config;
   const createParams: CreateWebParams = {
-    id: s.id,
-    agentType: s.adapterType,
-    cwd: s.cwd,
-    repoPath: s.repoPath,
-    repoName: s.repoName,
-    worktreePath: s.worktreePath,
-    branchName: s.branchName,
-    displayName: s.displayName,
+    id: row.id,
+    agentType: row.meta.adapterType,
+    cwd: row.cwd,
+    repoPath: row.repoPath ?? row.cwd,
+    repoName: row.meta.repoName,
+    worktreePath: row.worktreePath,
+    branchName: row.branchName ?? '',
+    displayName: row.displayName ?? '',
     port: defaultPort ?? 3456,
     configDir: defaultConfigDir ?? '',
-    runtimeOwnership: s.runtimeOwnership,
-    hookToken: s.hookToken,
-    ...(s.workspaceId !== undefined ? { workspaceId: s.workspaceId } : {}),
-    ...(s.additionalDirs !== undefined
-      ? { additionalDirs: s.additionalDirs }
+    runtimeOwnership: row.meta.runtimeOwnership,
+    hookToken: row.meta.hookToken,
+    ...(row.workspaceId !== null ? { workspaceId: row.workspaceId } : {}),
+    ...(row.meta.additionalDirs !== undefined
+      ? { additionalDirs: row.meta.additionalDirs }
+      : {}),
+    ...(persistedConfig.model !== undefined
+      ? { model: persistedConfig.model }
+      : {}),
+    ...(persistedConfig.permissionMode !== undefined
+      ? { permissionMode: persistedConfig.permissionMode }
+      : {}),
+    ...(persistedConfig.providerOptions !== undefined
+      ? { extra: persistedConfig.providerOptions }
       : {}),
   };
 
+  // skipInitialPersist=true: createWebSession would otherwise overwrite the
+  // persisted DB row with a freshly-initialized blank transcript before we
+  // copy back agentSessionV2 below — a process death in that window would
+  // lose the session.
   const { session } = await createWebSession(
     createParams,
     sessions,
-    fireBackendStateIfChanged
+    fireBackendStateIfChanged,
+    { skipInitialPersist: true }
   );
 
-  // Restore persisted message buffer so reconnecting clients see transcript
-  if (s.messages && s.messages.length > 0) {
-    session.messages = s.messages.slice(-1000);
-  }
-  if (s.agentSessionV2) {
-    session.agentSessionV2 = s.agentSessionV2;
-  }
-  if (s.agentPatchesV2 && s.agentPatchesV2.length > 0) {
-    session.agentPatchesV2 = s.agentPatchesV2.slice(-1000);
+  // Replace the freshly-created blank transcript with the persisted one.
+  session.agentSessionV2 = row.agentSessionV2;
+  session.customCommand = row.meta.customCommand;
+  if (row.meta.needsBranchRename) {
+    session.needsBranchRename = true;
   }
 
-  // If the adapter supports resume and we have a stored provider session ID,
-  // reconnect via resumeSession so the provider reattaches to the prior conversation.
-  // This replaces the fresh connect done by createWebSession above.
-  await reconnectWebSession(session);
+  // Restore top-level metadata from the row so sessions.list() ordering,
+  // duration calculations, and backend-state display reflect the persisted
+  // session rather than the freshly-created blank wrapper.
+  session.createdAt = new Date(row.createdAt).toISOString();
+  session.lastActivity = new Date(row.lastActivity).toISOString();
+  session.status = row.status === 'archived' ? 'disconnected' : row.status;
+
+  // Derive runtime state from the persisted live snapshot, mirroring the
+  // mapping in web-session-handler's adapter listener.
+  const live = session.agentSessionV2.live;
+  session.currentTurnId = live.activeTurnId;
+  if (live.status === 'working') {
+    session.agentState = 'processing';
+    session.idle = false;
+  } else if (live.status === 'waiting') {
+    session.agentState =
+      live.waitingOn === 'approval' ? 'permission-prompt' : 'waiting-for-input';
+    session.idle = false;
+  } else if (live.status === 'error') {
+    session.agentState = 'error';
+    session.idle = true;
+  } else {
+    session.agentState = 'idle';
+    session.idle = true;
+  }
+  fireBackendStateIfChanged(session);
+
+  // Persist immediately so the freshly-restored row reflects current state
+  // (vendor may not assign a new id, but live status flips).
+  upsertWebSessionNow(session);
+
+  // If the adapter supports resume and we have a stored vendor session ID,
+  // reconnect via resumeSession so the provider continues the conversation.
+  // On failure, surface a single client-source errorMessage into the timeline
+  // and leave session disconnected — user must start a fresh session.
+  try {
+    await reconnectWebSession(session);
+  } catch (err) {
+    surfaceResumeFailure(session, err);
+  }
+}
+
+function surfaceResumeFailure(session: WebSession, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const timestamp = new Date().toISOString();
+
+  // applyAgentPatchV2 only updates existing turns. After restore the active
+  // turn is normally null, so we must aim the error at an existing turn (the
+  // last one we have on the timeline) or synthesize a turn first when the
+  // session has no turns yet. This mirrors the agent-error-v2 fallback.
+  const targetTurnId = resolveResumeFailureTurnId(session, timestamp);
+
+  const errorPatch: import('../shared/agent-chat-protocol-v2.js').AgentItemStartedPatchV2 =
+    {
+      type: 'agent-item-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turnId: targetTurnId,
+      item: {
+        type: 'errorMessage',
+        id: `error-resume-${timestamp}`,
+        message: `Resume failed: ${session.adapterType} session expired or rotated. Start a new session to continue. (${message})`,
+        source: 'client',
+        context: 'resume',
+        status: 'completed',
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    };
+  applyWebSessionPatchV2(session, errorPatch);
+
+  const liveStatePatch: import('../shared/agent-chat-protocol-v2.js').AgentLiveStateUpdatedPatchV2 =
+    {
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp,
+      live: {
+        status: 'disconnected',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: 'resume failed',
+      },
+    };
+  applyWebSessionPatchV2(session, liveStatePatch);
+
+  // Keep top-level session state in sync so sessions.list() and backend-state
+  // listeners see the disconnected state immediately rather than the stale
+  // pre-failure values until the next reload.
+  session.status = 'disconnected';
+  session.agentState = 'error';
+  session.idle = true;
+  session.currentTurnId = null;
+  fireBackendStateIfChanged(session);
+
+  upsertWebSessionNow(session);
+}
+
+function resolveResumeFailureTurnId(
+  session: WebSession,
+  timestamp: string
+): string {
+  const live = session.agentSessionV2.live.activeTurnId;
+  if (typeof live === 'string' && live.length > 0) return live;
+
+  const turns = session.agentSessionV2.turns;
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn) return lastTurn.id;
+
+  const syntheticTurnId = `resume-failed-${timestamp}`;
+  const turnPatch: import('../shared/agent-chat-protocol-v2.js').AgentTurnStartedPatchV2 =
+    {
+      type: 'agent-turn-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turn: {
+        id: syntheticTurnId,
+        status: 'failed',
+        inputMessageId: '',
+        items: [],
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    };
+  applyWebSessionPatchV2(session, turnPatch);
+  return syntheticTurnId;
 }
 
 function syncDisplayNameCounters(): void {
@@ -972,71 +1060,78 @@ async function restoreFromDisk(
   workspaces?: string[],
   frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<number> {
-  const pendingPath = path.join(configDir, 'pending-sessions.json');
-  if (!fs.existsSync(pendingPath)) return 0;
-
-  const pending = readPendingSessionsFile(pendingPath);
-  if (!pending) return 0;
-
-  // Ignore stale files (>5 minutes old)
-  if (Date.now() - new Date(pending.timestamp).getTime() > STALE_THRESHOLD_MS) {
-    fs.unlinkSync(pendingPath);
-    return 0;
-  }
-
-  if (pending.version <= 2) {
-    migrateV2ToV3(pending.sessions, workspaces ?? []);
-  }
-
-  if (pending.version <= 3) {
-    migrateV3ToV4(pending.sessions);
-  }
-
-  const scrollbackDirPath = path.join(configDir, 'scrollback');
   let restored = 0;
 
-  for (const s of pending.sessions) {
-    const scrollbackPath = path.join(scrollbackDirPath, s.id + '.buf');
-    const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
+  const pendingPath = path.join(configDir, 'pending-sessions.json');
+  if (fs.existsSync(pendingPath)) {
+    const pending = readPendingSessionsFile(pendingPath);
+    if (
+      pending &&
+      Date.now() - new Date(pending.timestamp).getTime() <= STALE_THRESHOLD_MS
+    ) {
+      if (pending.version <= 2) {
+        migrateV2ToV3(pending.sessions, workspaces ?? []);
+      }
+      if (pending.version <= 3) {
+        migrateV3ToV4(pending.sessions);
+      }
 
-    const spawn = await resolveSessionSpawnParams(s, frameworks);
+      const scrollbackDirPath = path.join(configDir, 'scrollback');
+      for (const s of pending.sessions) {
+        const scrollbackPath = path.join(scrollbackDirPath, s.id + '.buf');
+        const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
 
-    try {
-      restoreSession(s, spawn, initialScrollback);
-      restored++;
-    } catch (err) {
-      logger.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
+        const spawn = await resolveSessionSpawnParams(s, frameworks);
+
+        try {
+          restoreSession(s, spawn, initialScrollback);
+          restored++;
+        } catch (err) {
+          logger.error(
+            `Failed to restore session ${s.id} (${s.displayName})`,
+            err
+          );
+        }
+
+        try {
+          fs.unlinkSync(scrollbackPath);
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     try {
-      fs.unlinkSync(scrollbackPath);
+      fs.unlinkSync(pendingPath);
+    } catch {
+      /* ignore */
+    }
+    // Recursively wipe scrollback dir. When pending was stale (or unreadable)
+    // per-session scrollback files weren't cleaned up by the restore loop;
+    // remove them here so stale buffers don't accumulate across restarts.
+    try {
+      fs.rmSync(path.join(configDir, 'scrollback'), {
+        recursive: true,
+        force: true,
+      });
     } catch {
       /* ignore */
     }
   }
 
-  // Restore web sessions (v5+)
-  for (const s of pending.webSessions ?? []) {
+  // Web sessions live in relay-state.db. No staleness wipe — DB rows persist
+  // until user archives or closes the session.
+  const dbRows = loadAllWebSessions();
+  for (const row of dbRows) {
     try {
-      await restoreWebSession(s);
+      await restoreWebSessionFromDb(row);
       restored++;
     } catch (err) {
       logger.error(
-        `Failed to restore web session ${s.id} (${s.displayName})`,
+        `Failed to restore web session ${row.id} (${row.displayName ?? '<unnamed>'})`,
         err
       );
     }
-  }
-
-  try {
-    fs.unlinkSync(pendingPath);
-  } catch {
-    /* ignore */
-  }
-  try {
-    fs.rmdirSync(path.join(configDir, 'scrollback'));
-  } catch {
-    /* ignore — may not be empty */
   }
 
   syncDisplayNameCounters();

@@ -10,6 +10,7 @@ import {
   applyWebSessionPatchV2,
   createInitialAgentSessionV2,
 } from './web-session-v2-state.js';
+import { upsertWebSessionNow } from './relay-state-db.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -57,7 +58,8 @@ export function pushToBuffer(session: WebSession, event: ChatEvent): void {
 export async function createWebSession(
   params: CreateWebParams,
   sessionsMap: Map<string, Session>,
-  onBackendStateChanged: (session: Session) => void
+  onBackendStateChanged: (session: Session) => void,
+  options: { skipInitialPersist?: boolean } = {}
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapterV2 = createAdapterV2(params.agentType);
@@ -150,6 +152,13 @@ export async function createWebSession(
 
   logger.info('web session created', { id, agentType: params.agentType });
 
+  // Restore path passes skipInitialPersist=true so the freshly-created blank
+  // transcript doesn't overwrite the persisted row before sessions.ts copies
+  // back agentSessionV2.
+  if (!options.skipInitialPersist) {
+    upsertWebSessionNow(session);
+  }
+
   return { session };
 }
 
@@ -198,12 +207,15 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
     });
     await adapterV2.resumeSession(providerSessionId);
   } else {
-    logger.info('reconnecting web session (no resume capability or no stored id)', {
-      id: session.id,
-      agentType: session.adapterType,
-      hasResume: capabilities.resume,
-      hasProviderId: Boolean(providerSessionId),
-    });
+    logger.info(
+      'reconnecting web session (no resume capability or no stored id)',
+      {
+        id: session.id,
+        agentType: session.adapterType,
+        hasResume: capabilities.resume,
+        hasProviderId: Boolean(providerSessionId),
+      }
+    );
     await adapterV2.reconnect();
   }
 }
