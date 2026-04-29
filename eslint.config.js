@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import sonarjs from 'eslint-plugin-sonarjs';
 import tseslint from 'typescript-eslint';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 /** @type {import('eslint').Linter.Config[]} */
@@ -43,6 +44,26 @@ export default [
     },
   },
   {
+    files: ['frontend/**/*.{ts,tsx}'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      // JSX trees commonly nest beyond 4 levels — keep the rule but lift cap.
+      'max-depth': ['error', 6],
+    },
+  },
+  {
+    // Protocol adapters dispatch on broad provider event taxonomies; their
+    // notification handlers are inherently switch-heavy. Cap thresholds higher
+    // than the project default rather than splitting them artificially.
+    files: ['server/protocol-adapters/**/*.ts'],
+    rules: {
+      complexity: ['error', 40],
+      'sonarjs/cognitive-complexity': ['error', 40],
+      'sonarjs/max-switch-cases': 'off',
+    },
+  },
+  {
     files: ['test/**/*.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
@@ -58,6 +79,9 @@ export default [
       '.belayer/**',
       '.git/**',
       '.worktrees/**',
+      '.agents/**',
+      'docs/**',
+      'relay-ide-tmp/**',
       '*.config.js',
       'test/fixtures/**',
     ],

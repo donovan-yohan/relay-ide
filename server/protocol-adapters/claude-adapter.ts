@@ -162,8 +162,11 @@ function claudeDecisionFromV2(
   return {
     behavior: 'allow',
     toolUseID: requestId,
-    ...(scope === 'permanent' && suggestions ? { updatedPermissions: suggestions } : {}),
-    decisionClassification: scope === 'permanent' ? 'user_permanent' : 'user_temporary',
+    ...(scope === 'permanent' && suggestions
+      ? { updatedPermissions: suggestions }
+      : {}),
+    decisionClassification:
+      scope === 'permanent' ? 'user_permanent' : 'user_temporary',
   };
 }
 
@@ -197,7 +200,11 @@ function normalizeCommandName(name: string): string {
 }
 
 function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => normalizeCommandName(value)).filter(Boolean))];
+  return [
+    ...new Set(
+      values.map((value) => normalizeCommandName(value)).filter(Boolean)
+    ),
+  ];
 }
 
 function normalizeSlashCommand(cmd: SlashCommand): AgentSlashCommandV2 {
@@ -216,7 +223,11 @@ function normalizeSlashCommand(cmd: SlashCommand): AgentSlashCommandV2 {
       ? { argumentHint }
       : {}),
     ...(Array.isArray(cmd.aliases) && cmd.aliases.length > 0
-      ? { aliases: uniqueStrings(cmd.aliases.filter((a): a is string => typeof a === 'string')) }
+      ? {
+          aliases: uniqueStrings(
+            cmd.aliases.filter((a): a is string => typeof a === 'string')
+          ),
+        }
       : {}),
     source: 'sdk',
     sourceLabel: 'Claude',
@@ -225,21 +236,29 @@ function normalizeSlashCommand(cmd: SlashCommand): AgentSlashCommandV2 {
   };
 }
 
-function mergeAliases(base: AgentSlashCommandV2, extraAliases?: string[]): AgentSlashCommandV2 {
+function mergeAliases(
+  base: AgentSlashCommandV2,
+  extraAliases?: string[]
+): AgentSlashCommandV2 {
   if (!extraAliases || extraAliases.length === 0) return base;
-  const aliases = uniqueStrings([...(base.aliases ?? []), ...extraAliases]).filter(
-    (alias) => alias.toLowerCase() !== base.name.toLowerCase()
-  );
+  const aliases = uniqueStrings([
+    ...(base.aliases ?? []),
+    ...extraAliases,
+  ]).filter((alias) => alias.toLowerCase() !== base.name.toLowerCase());
   return aliases.length > 0 ? { ...base, aliases } : base;
 }
 
-function mergeClaudeCommandCatalog(sdkCommands: AgentSlashCommandV2[]): AgentSlashCommandV2[] {
+function mergeClaudeCommandCatalog(
+  sdkCommands: AgentSlashCommandV2[]
+): AgentSlashCommandV2[] {
   const byName = new Map<string, AgentSlashCommandV2>();
 
   for (const command of sdkCommands) {
     const key = normalizeCommandName(command.name).toLowerCase();
     if (!key || byName.has(key)) continue;
-    const relayOverride = RELAY_CLAUDE_COMMANDS.find((entry) => entry.name === key);
+    const relayOverride = RELAY_CLAUDE_COMMANDS.find(
+      (entry) => entry.name === key
+    );
     byName.set(key, mergeAliases(command, relayOverride?.aliases));
   }
 
@@ -251,7 +270,9 @@ function mergeClaudeCommandCatalog(sdkCommands: AgentSlashCommandV2[]): AgentSla
   return [...byName.values()];
 }
 
-function claudeEventVisibility(message: Record<string, unknown>): ClaudeEventVisibility {
+function claudeEventVisibility(
+  message: Record<string, unknown>
+): ClaudeEventVisibility {
   if (message.type === 'stream_event') return 'trace';
   if (message.type === 'rate_limit_event') {
     const info = objectField(message.rate_limit_info);
@@ -273,7 +294,9 @@ function claudeEventVisibility(message: Record<string, unknown>): ClaudeEventVis
   return 'debug';
 }
 
-function contentBlocks(message: Record<string, unknown>): Record<string, unknown>[] {
+function contentBlocks(
+  message: Record<string, unknown>
+): Record<string, unknown>[] {
   const nativeMessage = objectField(message.message);
   const content = nativeMessage.content;
   if (!Array.isArray(content)) return [];
@@ -301,15 +324,22 @@ function usageFromResult(message: Record<string, unknown>): AgentUsageV2 {
   };
 }
 
-function targetFromToolInput(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === 'Bash') return stringField(input.command, JSON.stringify(input));
+function targetFromToolInput(
+  toolName: string,
+  input: Record<string, unknown>
+): string {
+  if (toolName === 'Bash')
+    return stringField(input.command, JSON.stringify(input));
   return stringField(input.file_path ?? input.path, JSON.stringify(input));
 }
 
-function filePathsFromToolInput(input: Record<string, unknown>): Array<{ path: string; status?: string }> {
+function filePathsFromToolInput(
+  input: Record<string, unknown>
+): Array<{ path: string; status?: string }> {
   const paths: Array<{ path: string; status?: string }> = [];
   const filePath = input.file_path ?? input.path;
-  if (typeof filePath === 'string') paths.push({ path: filePath, status: 'edited' });
+  if (typeof filePath === 'string')
+    paths.push({ path: filePath, status: 'edited' });
   const edits = input.edits;
   if (Array.isArray(edits)) {
     for (const edit of edits) {
@@ -360,6 +390,7 @@ class StreamInputController {
   }
 
   iterator(): AsyncGenerator<SDKUserMessage, void, unknown> {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- async generator function expression cannot bind class `this`
     const self = this;
     return (async function* () {
       while (true) {
@@ -408,7 +439,9 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   private streamProviderMessageId: string | null = null;
   private providerExtensionSeq = 0;
 
-  constructor(queryFn: ClaudeQueryFunction = sdkQuery as unknown as ClaudeQueryFunction) {
+  constructor(
+    queryFn: ClaudeQueryFunction = sdkQuery as unknown as ClaudeQueryFunction
+  ) {
     super();
     this.queryFn = queryFn;
   }
@@ -712,7 +745,11 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
 
-  private readonly handleCanUseTool: CanUseTool = async (toolName, input, options) => {
+  private readonly handleCanUseTool: CanUseTool = async (
+    toolName,
+    input,
+    options
+  ) => {
     const turnId = this.activeTurnId ?? 'turn-unknown';
     const requestId = options.toolUseID;
     const target = targetFromToolInput(toolName, input);
@@ -728,7 +765,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         id: `approval-${requestId}`,
         requestId,
         kind: 'permission',
-        description: options.title ?? options.displayName ?? `Claude wants to use ${toolName}`,
+        description:
+          options.title ??
+          options.displayName ??
+          `Claude wants to use ${toolName}`,
         target,
         ...(options.description ? { detail: options.description } : {}),
         supported: CLAUDE_APPROVAL_SUPPORT,
@@ -768,7 +808,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         id: `approval-${requestId}`,
         requestId,
         kind: 'permission',
-        description: options.title ?? options.displayName ?? `Claude wants to use ${toolName}`,
+        description:
+          options.title ??
+          options.displayName ??
+          `Claude wants to use ${toolName}`,
         target,
         ...(options.description ? { detail: options.description } : {}),
         supported: CLAUDE_APPROVAL_SUPPORT,
@@ -854,7 +897,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
 
-  private handleStreamEvent(turnId: string, message: Record<string, unknown>): void {
+  private handleStreamEvent(
+    turnId: string,
+    message: Record<string, unknown>
+  ): void {
     const event = objectField(message.event);
     const eventType = stringField(event.type);
 
@@ -868,7 +914,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
 
     if (eventType === 'content_block_start') {
-      const index = (typeof event.index === 'number' ? event.index : 0);
+      const index = typeof event.index === 'number' ? event.index : 0;
       const block = objectField(event.content_block);
       const blockType = stringField(block.type);
       if (blockType === 'text') {
@@ -915,7 +961,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
 
     if (eventType === 'content_block_delta') {
-      const index = (typeof event.index === 'number' ? event.index : 0);
+      const index = typeof event.index === 'number' ? event.index : 0;
       const delta = objectField(event.delta);
       const deltaType = stringField(delta.type);
       if (deltaType === 'text_delta') {
@@ -951,7 +997,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
 
     if (eventType === 'content_block_stop') {
-      const index = (typeof event.index === 'number' ? event.index : 0);
+      const index = typeof event.index === 'number' ? event.index : 0;
       const textItemId = `msg-${turnId}-${index}`;
       const reasoningItemId = `thinking-${turnId}-${index}`;
       if (this.streamedTextItems.has(textItemId)) {
@@ -994,7 +1040,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
 
-  private handleAssistantMessage(turnId: string, message: Record<string, unknown>): void {
+  private handleAssistantMessage(
+    turnId: string,
+    message: Record<string, unknown>
+  ): void {
     let blockIndex = 0;
     for (const block of contentBlocks(message)) {
       const type = block.type;
@@ -1252,7 +1301,10 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         const fetchInitialization = query?.initializationResult;
         if (typeof fetchInitialization === 'function') {
           const initialization = await fetchInitialization.call(query);
-          if (isRecord(initialization) && Array.isArray(initialization.commands)) {
+          if (
+            isRecord(initialization) &&
+            Array.isArray(initialization.commands)
+          ) {
             commands = initialization.commands;
           }
         }
@@ -1265,7 +1317,9 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
         const sdkCommands: AgentSlashCommandV2[] = commands
           .filter(
             (cmd): cmd is SlashCommand =>
-              isRecord(cmd) && typeof cmd.name === 'string' && cmd.name.length > 0
+              isRecord(cmd) &&
+              typeof cmd.name === 'string' &&
+              cmd.name.length > 0
           )
           .map(normalizeSlashCommand);
         const normalized = mergeClaudeCommandCatalog(sdkCommands);

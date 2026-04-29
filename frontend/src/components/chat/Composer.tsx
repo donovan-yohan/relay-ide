@@ -29,7 +29,8 @@ interface ComposerProps {
 }
 
 function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '')}k`;
+  if (n >= 1000)
+    return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '')}k`;
   return String(n);
 }
 
@@ -54,7 +55,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onInterrupt,
   isActive,
   capabilities = {},
-  live,
+  live: _live,
   usage,
   slashCommands,
   clientHandlers,
@@ -67,7 +68,12 @@ export const Composer: React.FC<ComposerProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
 
-  const filteredCommands = useSlashCommands(capabilities, draft, caret, slashCommands);
+  const filteredCommands = useSlashCommands(
+    capabilities,
+    draft,
+    caret,
+    slashCommands
+  );
   const paletteVisible = filteredCommands.length > 0;
 
   const resize = useCallback(() => {
@@ -91,7 +97,6 @@ export const Composer: React.FC<ComposerProps> = ({
   // Clear send error when user types
   useEffect(() => {
     if (sendError) setSendError(null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
   const updateCaret = useCallback(() => {
@@ -150,7 +155,8 @@ export const Composer: React.FC<ComposerProps> = ({
               ))
         );
         if (matched) {
-          const handler = clientHandlers[matched.name.replace(/^[/$]/, '').toLowerCase()];
+          const handler =
+            clientHandlers[matched.name.replace(/^[/$]/, '').toLowerCase()];
           if (handler) {
             const result = handler(args);
             if (!result.ok) {
@@ -174,7 +180,14 @@ export const Composer: React.FC<ComposerProps> = ({
     setDraft('');
     setCaret(0);
     setSendError(null);
-  }, [draft, onSend, validateAndSend, clientHandlers, slashCommands, pushClientError]);
+  }, [
+    draft,
+    onSend,
+    validateAndSend,
+    clientHandlers,
+    slashCommands,
+    pushClientError,
+  ]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -199,7 +212,9 @@ export const Composer: React.FC<ComposerProps> = ({
             const cmdName = cmd.command.replace(/^[/$]/, '');
             const replacement = `${typedPrefix}${cmdName}`;
             const newDraft =
-              draft.slice(0, trigger.span[0]) + replacement + draft.slice(trigger.span[1]);
+              draft.slice(0, trigger.span[0]) +
+              replacement +
+              draft.slice(trigger.span[1]);
             const newCaret = trigger.span[0] + replacement.length;
             setDraft(newDraft);
             setCaret(newCaret);
@@ -224,7 +239,9 @@ export const Composer: React.FC<ComposerProps> = ({
             const cmdName = cmd.command.replace(/^[/$]/, '');
             const replacement = `${typedPrefix}${cmdName}`;
             const newDraft =
-              draft.slice(0, trigger.span[0]) + replacement + draft.slice(trigger.span[1]);
+              draft.slice(0, trigger.span[0]) +
+              replacement +
+              draft.slice(trigger.span[1]);
             const newCaret = trigger.span[0] + replacement.length;
             setDraft(newDraft);
             setCaret(newCaret);
@@ -258,7 +275,16 @@ export const Composer: React.FC<ComposerProps> = ({
         onInterrupt();
       }
     },
-    [paletteVisible, filteredCommands, activeIndex, draft, caret, submitDraft, isActive, onInterrupt]
+    [
+      paletteVisible,
+      filteredCommands,
+      activeIndex,
+      draft,
+      caret,
+      submitDraft,
+      isActive,
+      onInterrupt,
+    ]
   );
 
   const ctxInput = usage?.inputTokens ?? 0;
@@ -270,15 +296,22 @@ export const Composer: React.FC<ComposerProps> = ({
   const ctxWindow = usage?.contextWindowSize ?? 0;
   const ctxFree = Math.max(0, ctxWindow - ctxUsed);
   const ctxLabel =
-    ctxWindow > 0 ? `${formatTokens(ctxUsed)} / ${formatTokens(ctxWindow)}` : '—';
-  const segments = ctxWindow > 0
-    ? [
-        { name: 'input', tokens: ctxInputUncached, color: 'var(--accent)' },
-        { name: 'cached', tokens: ctxCached, color: 'var(--status-info)' },
-        { name: 'output', tokens: ctxOutput, color: 'var(--status-success)' },
-        { name: 'reasoning', tokens: ctxReasoning, color: 'var(--status-warning)' },
-      ]
-    : [];
+    ctxWindow > 0
+      ? `${formatTokens(ctxUsed)} / ${formatTokens(ctxWindow)}`
+      : '—';
+  const segments =
+    ctxWindow > 0
+      ? [
+          { name: 'input', tokens: ctxInputUncached, color: 'var(--accent)' },
+          { name: 'cached', tokens: ctxCached, color: 'var(--status-info)' },
+          { name: 'output', tokens: ctxOutput, color: 'var(--status-success)' },
+          {
+            name: 'reasoning',
+            tokens: ctxReasoning,
+            color: 'var(--status-warning)',
+          },
+        ]
+      : [];
   const segmentPct = (n: number): number =>
     ctxWindow > 0 ? Math.min(100, (n / ctxWindow) * 100) : 0;
   const usedPct = segmentPct(ctxUsed);
@@ -387,7 +420,11 @@ export const Composer: React.FC<ComposerProps> = ({
               <span className="caret">▴</span>
             </button>
             {ctxPopOpen && ctxWindow > 0 && (
-              <div className="ctx-pop" role="dialog" aria-label="context breakdown">
+              <div
+                className="ctx-pop"
+                role="dialog"
+                aria-label="context breakdown"
+              >
                 <div className="ctx-pop__head">
                   <span>context</span>
                   <span>
@@ -415,7 +452,10 @@ export const Composer: React.FC<ComposerProps> = ({
                 <div className="ctx-pop__legend">
                   {segments.map((s) => (
                     <span key={s.name}>
-                      <span className="swatch" style={{ background: s.color }} />
+                      <span
+                        className="swatch"
+                        style={{ background: s.color }}
+                      />
                       {s.name}
                       <span className="v">{formatTokens(s.tokens)}</span>
                     </span>

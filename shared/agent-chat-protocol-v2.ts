@@ -67,7 +67,15 @@ export interface AgentSlashCommandV2 {
   description?: string;
   argumentHint?: string;
   aliases?: string[];
-  source?: 'sdk' | 'relay' | 'builtin' | 'project' | 'user' | 'skill' | 'plugin' | 'unknown';
+  source?:
+    | 'sdk'
+    | 'relay'
+    | 'builtin'
+    | 'project'
+    | 'user'
+    | 'skill'
+    | 'plugin'
+    | 'unknown';
   sourceLabel?: string;
   namespace?: string;
   path?: string;
@@ -162,7 +170,10 @@ export interface AgentPlanItemV2 extends AgentItemBaseV2 {
   type: 'plan';
   text: string;
   /** Codex app-server step list from turn/plan/updated */
-  steps?: Array<{ step: string; status: 'pending' | 'inProgress' | 'completed' }>;
+  steps?: Array<{
+    step: string;
+    status: 'pending' | 'inProgress' | 'completed';
+  }>;
   approvalState?: 'pending' | 'approved' | 'rejected' | 'revising';
 }
 
@@ -225,10 +236,25 @@ export type AgentApprovalKindV2 =
   | 'elicitation';
 
 export type AgentApprovalDetailsV2 =
-  | { kind: 'command'; command: string; cwd: string; commandActions?: unknown[] }
-  | { kind: 'patch'; diff?: string; changes?: { path: string; kind: string; diff?: string }[] }
+  | {
+      kind: 'command';
+      command: string;
+      cwd: string;
+      commandActions?: unknown[];
+    }
+  | {
+      kind: 'patch';
+      diff?: string;
+      changes?: { path: string; kind: string; diff?: string }[];
+    }
   | { kind: 'permissionsGrant'; permissions: string[] }
-  | { kind: 'elicitation'; serverName: string; mode: string; message: string; requestedSchema?: unknown };
+  | {
+      kind: 'elicitation';
+      serverName: string;
+      mode: string;
+      message: string;
+      requestedSchema?: unknown;
+    };
 
 export interface AgentApprovalSupportV2 {
   scopes: ('once' | 'session' | 'turn' | 'permanent')[];
@@ -550,7 +576,8 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
           isRecord(value.providerSession)) &&
         (value.capabilities === undefined || isRecord(value.capabilities)) &&
         (value.config === undefined || isRecord(value.config)) &&
-        (value.slashCommands === undefined || Array.isArray(value.slashCommands))
+        (value.slashCommands === undefined ||
+          Array.isArray(value.slashCommands))
       );
     case 'agent-live-state-updated-v2':
       return isRecord(value.live);
@@ -661,7 +688,7 @@ export function applyAgentPatchV2(
       };
 
       const targetTurnId = patch.turnId ?? session.live.activeTurnId;
-      let nextTurns = session.turns;
+      let nextTurns: AgentTurnV2[];
       if (targetTurnId) {
         nextTurns = updateTurn(session, targetTurnId, (turn) => ({
           ...turn,

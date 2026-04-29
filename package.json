@@ -14,7 +14,8 @@
   ],
   "scripts": {
     "clean": "rm -rf dist/",
-    "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json",
+    "lint": "eslint .",
+    "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json && npm run lint",
     "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js dist/scripts/agent-browser-cli.js && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
@@ -100,6 +101,7 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^10.1.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.4.0",
     "happy-dom": "^20.8.9",
     "husky": "^9.1.7",

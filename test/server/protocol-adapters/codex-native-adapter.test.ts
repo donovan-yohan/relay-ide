@@ -51,8 +51,15 @@ class StubCodexClient extends EventEmitter {
     this.calls.push({ method: `__respond:${String(id)}`, params: result });
   }
 
-  respondToServerRequestError(id: number | string, code: number, message: string): void {
-    this.calls.push({ method: `__error:${String(id)}`, params: { code, message } });
+  respondToServerRequestError(
+    id: number | string,
+    code: number,
+    message: string
+  ): void {
+    this.calls.push({
+      method: `__error:${String(id)}`,
+      params: { code, message },
+    });
   }
 
   async stop(_signal?: string): Promise<void> {
@@ -121,7 +128,10 @@ function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = () => {
-      if (predicate()) { resolve(); return; }
+      if (predicate()) {
+        resolve();
+        return;
+      }
       if (Date.now() - started > timeoutMs) {
         reject(new Error('timed out waiting for codex adapter condition'));
         return;
@@ -169,7 +179,9 @@ describe('CodexNativeProtocolAdapter — connect', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-abc' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-abc' },
+    });
     factory.lastClient?.serverResponses.set('skills/list', { skills: [] });
     factory.lastClient?.serverResponses.set('model/list', []);
 
@@ -203,7 +215,9 @@ describe('CodexNativeProtocolAdapter — connect', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-xyz' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-xyz' },
+    });
 
     await adapter.connect(config);
 
@@ -228,11 +242,15 @@ describe('CodexNativeProtocolAdapter — resumeSession', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
 
     // Configure the second client for resume
-    factory.lastClient!.serverResponses.set('thread/resume', { thread: { id: 'thread-resume-1' } });
+    factory.lastClient!.serverResponses.set('thread/resume', {
+      thread: { id: 'thread-resume-1' },
+    });
     factory.lastClient!.serverResponses.set('skills/list', { skills: [] });
     factory.lastClient!.serverResponses.set('model/list', []);
 
@@ -244,7 +262,9 @@ describe('CodexNativeProtocolAdapter — resumeSession', () => {
     expect(resumeCall?.params).toMatchObject({ threadId: 'thread-resume-1' });
 
     const resumeSnapshot = patches
-      .slice(patches.findIndex((p) => p.type === 'agent-session-snapshot-v2') + 1)
+      .slice(
+        patches.findIndex((p) => p.type === 'agent-session-snapshot-v2') + 1
+      )
       .find((p) => p.type === 'agent-session-snapshot-v2');
     expect(resumeSnapshot).toMatchObject({
       session: expect.objectContaining({
@@ -264,7 +284,9 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -284,7 +306,9 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
 
     await adapter.sendMessage({ turnId: 'turn-2', content: 'test' });
@@ -315,7 +339,9 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -348,7 +374,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         expect.objectContaining({
           type: 'agent-item-started-v2',
           turnId: 'turn-msg',
-          item: expect.objectContaining({ type: 'assistantMessage', id: relayId }),
+          item: expect.objectContaining({
+            type: 'assistantMessage',
+            id: relayId,
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
@@ -362,7 +391,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
-          item: expect.objectContaining({ type: 'assistantMessage', text: 'hello world' }),
+          item: expect.objectContaining({
+            type: 'assistantMessage',
+            text: 'hello world',
+          }),
         }),
       ])
     );
@@ -392,7 +424,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'reasoning', visibility: 'summary' }),
+          item: expect.objectContaining({
+            type: 'reasoning',
+            visibility: 'summary',
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
@@ -403,7 +438,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           type: 'agent-item-started-v2',
           item: expect.objectContaining({
             type: 'providerExtension',
-            payload: expect.objectContaining({ kind: 'reasoningSummaryPartAdded', summaryIndex: 1 }),
+            payload: expect.objectContaining({
+              kind: 'reasoningSummaryPartAdded',
+              summaryIndex: 1,
+            }),
           }),
         }),
       ])
@@ -439,11 +477,17 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       (p) =>
         p.type === 'agent-item-updated-v2' &&
         p.item.type === 'reasoning' &&
-        p.item.status === 'completed',
+        p.item.status === 'completed'
     );
     expect(completed).toBeDefined();
-    if (completed && completed.type === 'agent-item-updated-v2' && completed.item.type === 'reasoning') {
-      expect(completed.item.summary).toBe('final summary part one\n\nfinal summary part two');
+    if (
+      completed &&
+      completed.type === 'agent-item-updated-v2' &&
+      completed.item.type === 'reasoning'
+    ) {
+      expect(completed.item.summary).toBe(
+        'final summary part one\n\nfinal summary part two'
+      );
     }
 
     await adapter.disconnect();
@@ -469,10 +513,14 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       (p) =>
         p.type === 'agent-item-updated-v2' &&
         p.item.type === 'reasoning' &&
-        p.item.status === 'completed',
+        p.item.status === 'completed'
     );
     expect(completed).toBeDefined();
-    if (completed && completed.type === 'agent-item-updated-v2' && completed.item.type === 'reasoning') {
+    if (
+      completed &&
+      completed.type === 'agent-item-updated-v2' &&
+      completed.item.type === 'reasoning'
+    ) {
       expect(completed.item.summary).toBe('streamed-only text');
     }
 
@@ -483,7 +531,12 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     const { adapter, client, patches } = await setupAndSend('turn-cmd');
 
     client.feedNotification('item/started', {
-      item: { type: 'commandExecution', id: 'exec-1', command: 'npm test', cwd: '/tmp' },
+      item: {
+        type: 'commandExecution',
+        id: 'exec-1',
+        command: 'npm test',
+        cwd: '/tmp',
+      },
     });
     client.feedNotification('item/commandExecution/outputDelta', {
       itemId: 'exec-1',
@@ -505,7 +558,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'commandExecution', command: 'npm test' }),
+          item: expect.objectContaining({
+            type: 'commandExecution',
+            command: 'npm test',
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
@@ -535,13 +591,25 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     // Authoritative item/fileChange/patchUpdated shape: { changes: FileUpdateChange[] }
     client.feedNotification('item/fileChange/patchUpdated', {
       itemId: 'fc-1',
-      changes: [{ path: 'foo.ts', kind: { type: 'update' }, diff: '@@ -1,1 +1,2 @@\n+new line\n' }],
+      changes: [
+        {
+          path: 'foo.ts',
+          kind: { type: 'update' },
+          diff: '@@ -1,1 +1,2 @@\n+new line\n',
+        },
+      ],
     });
     client.feedNotification('item/completed', {
       item: {
         type: 'fileChange',
         id: 'fc-1',
-        changes: [{ path: 'foo.ts', kind: { type: 'update' }, diff: '@@ -1,1 +1,2 @@\n+new line\n' }],
+        changes: [
+          {
+            path: 'foo.ts',
+            kind: { type: 'update' },
+            diff: '@@ -1,1 +1,2 @@\n+new line\n',
+          },
+        ],
         applyStatus: 'applied',
       },
     });
@@ -550,7 +618,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'fileChange', paths: [{ path: 'foo.ts', status: 'update' }] }),
+          item: expect.objectContaining({
+            type: 'fileChange',
+            paths: [{ path: 'foo.ts', status: 'update' }],
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
@@ -570,17 +641,33 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     const { adapter, client, patches } = await setupAndSend('turn-mcp');
 
     client.feedNotification('item/started', {
-      item: { type: 'mcpToolCall', id: 'mcp-1', server: 'github', tool: 'search', arguments: {} },
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp-1',
+        server: 'github',
+        tool: 'search',
+        arguments: {},
+      },
     });
     client.feedNotification('item/completed', {
-      item: { type: 'mcpToolCall', id: 'mcp-1', server: 'github', tool: 'search', result: [] },
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp-1',
+        server: 'github',
+        tool: 'search',
+        result: [],
+      },
     });
 
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'mcpToolCall', server: 'github', tool: 'search' }),
+          item: expect.objectContaining({
+            type: 'mcpToolCall',
+            server: 'github',
+            tool: 'search',
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
@@ -596,21 +683,38 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     const { adapter, client, patches } = await setupAndSend('turn-dyn');
 
     client.feedNotification('item/started', {
-      item: { type: 'dynamicToolCall', id: 'dyn-1', tool: 'myTool', arguments: {} },
+      item: {
+        type: 'dynamicToolCall',
+        id: 'dyn-1',
+        tool: 'myTool',
+        arguments: {},
+      },
     });
     client.feedNotification('item/completed', {
-      item: { type: 'dynamicToolCall', id: 'dyn-1', tool: 'myTool', result: 'done' },
+      item: {
+        type: 'dynamicToolCall',
+        id: 'dyn-1',
+        tool: 'myTool',
+        result: 'done',
+      },
     });
 
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'dynamicToolCall', namespace: 'codex', tool: 'myTool' }),
+          item: expect.objectContaining({
+            type: 'dynamicToolCall',
+            namespace: 'codex',
+            tool: 'myTool',
+          }),
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
-          item: expect.objectContaining({ type: 'dynamicToolCall', result: 'done' }),
+          item: expect.objectContaining({
+            type: 'dynamicToolCall',
+            result: 'done',
+          }),
         }),
       ])
     );
@@ -623,14 +727,22 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
 
     // Authoritative type: collabAgentToolCall (not collabToolCall)
     client.feedNotification('item/started', {
-      item: { type: 'collabAgentToolCall', id: 'collab-1', tool: 'summarize', arguments: {} },
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'collab-1',
+        tool: 'summarize',
+        arguments: {},
+      },
     });
 
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'dynamicToolCall', tool: 'collab:summarize' }),
+          item: expect.objectContaining({
+            type: 'dynamicToolCall',
+            tool: 'collab:summarize',
+          }),
         }),
       ])
     );
@@ -649,7 +761,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'webSearch', query: 'codex api' }),
+          item: expect.objectContaining({
+            type: 'webSearch',
+            query: 'codex api',
+          }),
         }),
       ])
     );
@@ -668,7 +783,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'agent-item-started-v2',
-          item: expect.objectContaining({ type: 'imageView', source: '/tmp/image.png' }),
+          item: expect.objectContaining({
+            type: 'imageView',
+            source: '/tmp/image.png',
+          }),
         }),
       ])
     );
@@ -684,8 +802,20 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       threadId: 'thread-1',
       turnId: 'native-turn-1',
       tokenUsage: {
-        last: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 150 },
-        total: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 150 },
+        last: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
+        total: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
         modelContextWindow: 128000,
       },
     });
@@ -702,7 +832,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           type: 'agent-turn-completed-v2',
           turnId: 'turn-complete',
           status: 'completed',
-          usage: expect.objectContaining({ inputTokens: 100, outputTokens: 50 }),
+          usage: expect.objectContaining({
+            inputTokens: 100,
+            outputTokens: 50,
+          }),
         }),
       ])
     );
@@ -792,7 +925,9 @@ describe('CodexNativeProtocolAdapter — provider extensions', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -836,7 +971,10 @@ describe('CodexNativeProtocolAdapter — provider extensions', () => {
 
   it('contextCompaction emits providerExtension', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-ctx');
-    client.feedNotification('contextCompaction', { tokensBefore: 1000, tokensAfter: 200 });
+    client.feedNotification('contextCompaction', {
+      tokensBefore: 1000,
+      tokensAfter: 200,
+    });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -868,7 +1006,13 @@ describe('CodexNativeProtocolAdapter — provider extensions', () => {
   it('model/rerouted emits providerExtension with debug visibility', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-reroute');
     // Authoritative shape: { threadId, turnId, fromModel, toModel, reason }
-    client.feedNotification('model/rerouted', { threadId: 'thread-1', turnId: 'native-1', fromModel: 'o4', toModel: 'gpt-4', reason: 'quota' });
+    client.feedNotification('model/rerouted', {
+      threadId: 'thread-1',
+      turnId: 'native-1',
+      fromModel: 'o4',
+      toModel: 'gpt-4',
+      reason: 'quota',
+    });
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -957,7 +1101,9 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId, content: 'go' });
@@ -966,7 +1112,8 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
   }
 
   it('command approval: accept once → native accept', async () => {
-    const { adapter, client, patches } = await setupWithTurn('turn-cmd-approve');
+    const { adapter, client, patches } =
+      await setupWithTurn('turn-cmd-approve');
 
     // Server requests command approval
     client.feedRequest(10, 'item/commandExecution/requestApproval', {
@@ -979,8 +1126,8 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
       patches.some(
         (p) =>
           p.type === 'agent-live-state-updated-v2' &&
-          p.live.waitingOn === 'approval',
-      ),
+          p.live.waitingOn === 'approval'
+      )
     );
 
     // Respond with accept/once
@@ -994,8 +1141,8 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
         (p) =>
           p.type === 'agent-live-state-updated-v2' &&
           p.live.waitingOn === null &&
-          p.live.status === 'working',
-      ),
+          p.live.status === 'working'
+      )
     );
 
     // Verify native response was sent
@@ -1037,9 +1184,9 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
       cwd: '/repo',
     });
 
-    await waitFor(() =>
-      client.calls.some((c) => c.method === '__respond:11') === false &&
-      true // just wait for the approval to be registered
+    await waitFor(
+      () =>
+        client.calls.some((c) => c.method === '__respond:11') === false && true // just wait for the approval to be registered
     );
 
     // Brief wait to allow approval registration
@@ -1186,7 +1333,9 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
       decision: {
         kind: 'accept',
         scope: 'once',
-        amendments: [{ type: 'execpolicy', payload: { allow: ['npm install'] } }],
+        amendments: [
+          { type: 'execpolicy', payload: { allow: ['npm install'] } },
+        ],
       },
     });
 
@@ -1194,7 +1343,11 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
     const response = client.calls.find((c) => c.method === '__respond:50');
     // Wire form: { decision: { acceptWithExecpolicyAmendment: { execpolicyAmendment: payload } } }
     expect(response?.params).toMatchObject({
-      decision: { acceptWithExecpolicyAmendment: { execpolicyAmendment: { allow: ['npm install'] } } },
+      decision: {
+        acceptWithExecpolicyAmendment: {
+          execpolicyAmendment: { allow: ['npm install'] },
+        },
+      },
     });
 
     await adapter.disconnect();
@@ -1216,7 +1369,12 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
       decision: {
         kind: 'accept',
         scope: 'once',
-        amendments: [{ type: 'networkPolicy', payload: { host: 'example.com', protocol: 'https' } }],
+        amendments: [
+          {
+            type: 'networkPolicy',
+            payload: { host: 'example.com', protocol: 'https' },
+          },
+        ],
       },
     });
 
@@ -1224,7 +1382,11 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
     const response = client.calls.find((c) => c.method === '__respond:51');
     // Wire form: { decision: { applyNetworkPolicyAmendment: { networkPolicyAmendment: payload } } }
     expect(response?.params).toMatchObject({
-      decision: { applyNetworkPolicyAmendment: { networkPolicyAmendment: { host: 'example.com', protocol: 'https' } } },
+      decision: {
+        applyNetworkPolicyAmendment: {
+          networkPolicyAmendment: { host: 'example.com', protocol: 'https' },
+        },
+      },
     });
 
     await adapter.disconnect();
@@ -1238,7 +1400,9 @@ describe('CodexNativeProtocolAdapter — input requests', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
     await adapter.sendMessage({ turnId: 'turn-q', content: 'go' });
@@ -1249,11 +1413,19 @@ describe('CodexNativeProtocolAdapter — input requests', () => {
     });
 
     await waitFor(() =>
-      patches.some((p) => p.type === 'agent-item-started-v2' && 'item' in p && p.item.type === 'question'),
+      patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          'item' in p &&
+          p.item.type === 'question'
+      )
     );
 
     const questionPatch = patches.find(
-      (p) => p.type === 'agent-item-started-v2' && 'item' in p && p.item.type === 'question',
+      (p) =>
+        p.type === 'agent-item-started-v2' &&
+        'item' in p &&
+        p.item.type === 'question'
     );
     expect(questionPatch).toBeDefined();
 
@@ -1281,7 +1453,9 @@ describe('CodexNativeProtocolAdapter — queue', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1289,22 +1463,33 @@ describe('CodexNativeProtocolAdapter — queue', () => {
     client.feedNotification('turn/started', { turn: { id: 'n-1' } });
 
     // Second message queued while first turn active
-    const second = adapter.sendMessage({ turnId: 'turn-q2', content: 'second' });
+    const second = adapter.sendMessage({
+      turnId: 'turn-q2',
+      content: 'second',
+    });
 
     // First turn completes (authoritative shape)
-    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'n-1', status: 'completed' } });
+    client.feedNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'n-1', status: 'completed' },
+    });
     await first;
 
     // Second turn should now be started
-    await waitFor(() =>
-      client.calls.filter((c) => c.method === 'turn/start').length === 2,
+    await waitFor(
+      () => client.calls.filter((c) => c.method === 'turn/start').length === 2
     );
 
     client.feedNotification('turn/started', { turn: { id: 'n-2' } });
-    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'n-2', status: 'completed' } });
+    client.feedNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'n-2', status: 'completed' },
+    });
     await second;
 
-    const turnCompletions = patches.filter((p) => p.type === 'agent-turn-completed-v2');
+    const turnCompletions = patches.filter(
+      (p) => p.type === 'agent-turn-completed-v2'
+    );
     expect(turnCompletions).toHaveLength(2);
     expect(turnCompletions[0]).toMatchObject({ turnId: 'turn-q1' });
     expect(turnCompletions[1]).toMatchObject({ turnId: 'turn-q2' });
@@ -1320,7 +1505,9 @@ describe('CodexNativeProtocolAdapter — interrupt', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1332,9 +1519,14 @@ describe('CodexNativeProtocolAdapter — interrupt', () => {
     expect(client.calls.some((c) => c.method === 'turn/interrupt')).toBe(true);
 
     // Authoritative turn/completed shape
-    client.feedNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'native-int', status: 'interrupted' } });
+    client.feedNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'native-int', status: 'interrupted' },
+    });
 
-    await waitFor(() => patches.some((p) => p.type === 'agent-turn-completed-v2'));
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
     expect(patches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1356,24 +1548,30 @@ describe('CodexNativeProtocolAdapter — slash command catalog', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
 
     await adapter.connect(config);
     const client = factory.lastClient!;
     client.serverResponses.set('skills/list', {
       skills: [
-        { name: 'deploy', description: 'Deploy the app', argumentHint: '<env>' },
+        {
+          name: 'deploy',
+          description: 'Deploy the app',
+          argumentHint: '<env>',
+        },
       ],
     });
     client.serverResponses.set('model/list', []);
 
     // Manually trigger skills refresh by calling skills/list
-    await waitFor(() =>
-      patches.some(
-        (p) =>
-          p.type === 'agent-session-updated-v2' && 'slashCommands' in p,
-      ),
-      1000,
+    await waitFor(
+      () =>
+        patches.some(
+          (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p
+        ),
+      1000
     ).catch(() => {
       // If not yet, it may load in the background — check client calls
     });
@@ -1390,7 +1588,9 @@ describe('CodexNativeProtocolAdapter — slash command catalog', () => {
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
 
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
 
     // Pre-configure skills BEFORE connect triggers refresh
     factory.lastClient?.serverResponses.set('skills/list', {
@@ -1403,17 +1603,23 @@ describe('CodexNativeProtocolAdapter — slash command catalog', () => {
     // Wait for slash commands to load
     await waitFor(() =>
       patches.some(
-        (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p,
-      ),
+        (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p
+      )
     ).catch(() => {});
 
     const slashPatch = patches.find(
-      (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p,
+      (p) => p.type === 'agent-session-updated-v2' && 'slashCommands' in p
     );
 
-    if (slashPatch && slashPatch.type === 'agent-session-updated-v2' && slashPatch.slashCommands) {
+    if (
+      slashPatch &&
+      slashPatch.type === 'agent-session-updated-v2' &&
+      slashPatch.slashCommands
+    ) {
       const skill = slashPatch.slashCommands.find((c) => c.name === 'mySkill');
-      const relayControl = slashPatch.slashCommands.find((c) => c.collisionKey === 'clear');
+      const relayControl = slashPatch.slashCommands.find(
+        (c) => c.collisionKey === 'clear'
+      );
 
       if (skill) {
         expect(skill.nativePrefix).toBe('$');
@@ -1434,12 +1640,17 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
   it('/skillName is rewritten to $skillName before forwarding to turn/start', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
     // Send a non-relay-control slash command (should be rewritten to $)
-    await adapter.sendMessage({ turnId: 'turn-prefix', content: '/deploy staging' });
+    await adapter.sendMessage({
+      turnId: 'turn-prefix',
+      content: '/deploy staging',
+    });
 
     const turnStart = client.calls.find((c) => c.method === 'turn/start');
     expect(turnStart?.params).toMatchObject({
@@ -1452,11 +1663,16 @@ describe('CodexNativeProtocolAdapter — prefix rewrite', () => {
   it('$skillName passes through unchanged', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
-    await adapter.sendMessage({ turnId: 'turn-dollar', content: '$deploy staging' });
+    await adapter.sendMessage({
+      turnId: 'turn-dollar',
+      content: '$deploy staging',
+    });
 
     const turnStart = client.calls.find((c) => c.method === 'turn/start');
     expect(turnStart?.params).toMatchObject({
@@ -1473,8 +1689,10 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
   it('/compact calls thread/compact/start and emits controlAction extension', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    collectPatches(adapter);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1483,11 +1701,18 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     client.feedNotification('turn/started', { turn: { id: 'n-1' } });
 
     // Send compact control
-    await adapter.sendMessage({ turnId: 'turn-compact-2', content: '/compact' });
+    await adapter.sendMessage({
+      turnId: 'turn-compact-2',
+      content: '/compact',
+    });
 
-    await waitFor(() => client.calls.some((c) => c.method === 'thread/compact/start'));
+    await waitFor(() =>
+      client.calls.some((c) => c.method === 'thread/compact/start')
+    );
 
-    expect(client.calls.some((c) => c.method === 'thread/compact/start')).toBe(true);
+    expect(client.calls.some((c) => c.method === 'thread/compact/start')).toBe(
+      true
+    );
 
     await adapter.disconnect();
   });
@@ -1495,7 +1720,9 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
   it('/rollback <n> calls thread/rollback with count', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
@@ -1503,7 +1730,9 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     client.feedNotification('turn/started', { turn: { id: 'n-1' } });
     await adapter.sendMessage({ turnId: 'turn-rb-2', content: '/rollback 3' });
 
-    await waitFor(() => client.calls.some((c) => c.method === 'thread/rollback'));
+    await waitFor(() =>
+      client.calls.some((c) => c.method === 'thread/rollback')
+    );
     const rollback = client.calls.find((c) => c.method === 'thread/rollback');
     expect(rollback?.params).toMatchObject({ count: 3 });
 
@@ -1514,21 +1743,26 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 
     await adapter.sendMessage({ turnId: 'turn-model', content: 'go' });
     client.feedNotification('turn/started', { turn: { id: 'n-1' } });
-    await adapter.sendMessage({ turnId: 'turn-model-2', content: '/model gpt-4' });
+    await adapter.sendMessage({
+      turnId: 'turn-model-2',
+      content: '/model gpt-4',
+    });
 
     await waitFor(() =>
       patches.some(
         (p) =>
           p.type === 'agent-session-updated-v2' &&
           'config' in p &&
-          p.config?.model === 'gpt-4',
-      ),
+          p.config?.model === 'gpt-4'
+      )
     );
 
     expect(patches).toEqual(
@@ -1547,7 +1781,9 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);
     const patches = collectPatches(adapter);
-    factory.lastClient?.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-1' },
+    });
     await adapter.connect(config);
     const client = factory.lastClient!;
 

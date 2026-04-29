@@ -217,7 +217,6 @@ describe('OpenCodeProtocolAdapter.mapHookEvent', () => {
 });
 
 import { createAdapterV2 } from '../server/protocol-adapters/index.js';
-import { OpenCodeAttachedAdapter } from '../server/protocol-adapters/opencode-attached-adapter.js';
 import { CodexNativeProtocolAdapter } from '../server/protocol-adapters/codex-native-adapter.js';
 
 describe('Adapter registry', () => {
