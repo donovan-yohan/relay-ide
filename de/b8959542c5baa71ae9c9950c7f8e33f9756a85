@@ -1,0 +1,23 @@
+test/sessions.test.ts
+  5b787848c2e82ce0 1121-1125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "deb8959542c5baa71ae9c9950c7f8e33f9756a85",
+  "prompts": {
+    "5b787848c2e82ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c3ad3eb-db8f-41e2-bfd2-5857ade6feef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 12,
+      "accepted_lines": 6441,
+      "overriden_lines": 0
+    }
+  }
+}
