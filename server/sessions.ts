@@ -867,6 +867,9 @@ function restoreSession(
 async function restoreWebSessionFromDb(
   row: import('./relay-state-db.js').LoadedWebSessionRow
 ): Promise<void> {
+  // Restore persisted adapter runtime settings so the reconnected session
+  // matches what was originally running rather than reverting to defaults.
+  const persistedConfig = row.agentSessionV2.config;
   const createParams: CreateWebParams = {
     id: row.id,
     agentType: row.meta.adapterType,
@@ -884,12 +887,26 @@ async function restoreWebSessionFromDb(
     ...(row.meta.additionalDirs !== undefined
       ? { additionalDirs: row.meta.additionalDirs }
       : {}),
+    ...(persistedConfig.model !== undefined
+      ? { model: persistedConfig.model }
+      : {}),
+    ...(persistedConfig.permissionMode !== undefined
+      ? { permissionMode: persistedConfig.permissionMode }
+      : {}),
+    ...(persistedConfig.providerOptions !== undefined
+      ? { extra: persistedConfig.providerOptions }
+      : {}),
   };
 
+  // skipInitialPersist=true: createWebSession would otherwise overwrite the
+  // persisted DB row with a freshly-initialized blank transcript before we
+  // copy back agentSessionV2 below — a process death in that window would
+  // lose the session.
   const { session } = await createWebSession(
     createParams,
     sessions,
-    fireBackendStateIfChanged
+    fireBackendStateIfChanged,
+    { skipInitialPersist: true }
   );
 
   // Replace the freshly-created blank transcript with the persisted one.
@@ -984,6 +1001,16 @@ function surfaceResumeFailure(session: WebSession, err: unknown): void {
       },
     };
   applyWebSessionPatchV2(session, liveStatePatch);
+
+  // Keep top-level session state in sync so sessions.list() and backend-state
+  // listeners see the disconnected state immediately rather than the stale
+  // pre-failure values until the next reload.
+  session.status = 'disconnected';
+  session.agentState = 'error';
+  session.idle = true;
+  session.currentTurnId = null;
+  fireBackendStateIfChanged(session);
+
   upsertWebSessionNow(session);
 }
 

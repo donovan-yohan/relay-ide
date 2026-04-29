@@ -12,26 +12,26 @@ PTY sessions stay on the JSON path for now. The sqlite store is web-only.
 
 ## Premises
 
-| Premise | Assessment |
-|---|---|
-| Relay should own the full transcript, not vendor history | Valid. Vendor `resume` continues model context but does not replay items; relay-injected items (errors, slash echoes, approval transcript) only exist on the relay side. |
-| Vendor session id is enough to resume model context | Valid for Claude SDK (`resume: claudeSessionId`) and Codex app-server (`thread/start` with `threadId`). OpenCode and Hermes already expose vendor session ids through `providerSession`. |
-| SQLite is the right substrate | Valid. `better-sqlite3` is already a dependency for `analytics.db`. Same WAL pattern, schema_version table, prepared statements. |
-| One DB file or two | Two: `analytics.db` is metrics, `relay-state.db` is canonical state. Different lifecycle, different backup posture, different access patterns. Avoid coupling. |
-| Per-patch row vs single blob | Single blob. `agent_session_v2_json` is the reduced-state canonical form; `applyAgentPatchV2` already produces it. Patches are wire-format, not storage-format. |
-| Resume failure UX | Show a `errorMessage` source=`client` in the timeline and leave session disconnected. No silent drop. No automatic new-session creation in this slice. |
+| Premise                                                  | Assessment                                                                                                                                                                               |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Relay should own the full transcript, not vendor history | Valid. Vendor `resume` continues model context but does not replay items; relay-injected items (errors, slash echoes, approval transcript) only exist on the relay side.                 |
+| Vendor session id is enough to resume model context      | Valid for Claude SDK (`resume: claudeSessionId`) and Codex app-server (`thread/start` with `threadId`). OpenCode and Hermes already expose vendor session ids through `providerSession`. |
+| SQLite is the right substrate                            | Valid. `better-sqlite3` is already a dependency for `analytics.db`. Same WAL pattern, schema_version table, prepared statements.                                                         |
+| One DB file or two                                       | Two: `analytics.db` is metrics, `relay-state.db` is canonical state. Different lifecycle, different backup posture, different access patterns. Avoid coupling.                           |
+| Per-patch row vs single blob                             | Single blob. `agent_session_v2_json` is the reduced-state canonical form; `applyAgentPatchV2` already produces it. Patches are wire-format, not storage-format.                          |
+| Resume failure UX                                        | Show a `errorMessage` source=`client` in the timeline and leave session disconnected. No silent drop. No automatic new-session creation in this slice.                                   |
 
 ## What Already Exists
 
-| Sub-problem | Current code |
-|---|---|
-| Web session in-memory state | `server/sessions.ts` — `WebSession.agentSessionV2`, `agentPatchesV2` populated via `applyWebSessionPatchV2` (`server/web-session-v2-state.ts`). |
-| Persistence write path | `server/sessions.ts:638 serializeWebSession`, `:670 serializeAll` writes to `pending-sessions.json`. Only fires on `SIGTERM` / `SIGINT` / update-restart. |
-| Persistence read path | `server/sessions.ts:970 restoreFromDisk` → `:916 restoreWebSession`. Stale-file wipe at 5min (`STALE_THRESHOLD_MS`). File unlinked after restore. |
-| SQLite infra | `server/analytics.ts` — `Database` open with `journal_mode=WAL`, `MIGRATIONS` array keyed by `schema_version` table, prepared statements module-scoped. |
-| Vendor resume capability | `AgentSessionV2.providerSession: Record<string, string>` carries vendor ids. `AgentCapabilitySetV2.resume?: boolean`. `useAgentChatSocket.resume()` and `agent-resume-v2` command already wire end-to-end. Claude adapter implements `connect({ resume })`. Codex native adapter handles `thread/start` with `threadId`. |
-| Resume UI | `frontend/src/components/chat/ChatView.tsx:81` `canResume` flag and `tl-resume-banner`. |
-| Error timeline | `errorMessage` item type with `source: 'agent' | 'client'`, rendered in `frontend/src/components/chat/Turn.tsx:112`. |
+| Sub-problem                 | Current code                                                                                                                                                                                                                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Web session in-memory state | `server/sessions.ts` — `WebSession.agentSessionV2`, `agentPatchesV2` populated via `applyWebSessionPatchV2` (`server/web-session-v2-state.ts`).                                                                                                                                                                          |
+| Persistence write path      | `server/sessions.ts:638 serializeWebSession`, `:670 serializeAll` writes to `pending-sessions.json`. Only fires on `SIGTERM` / `SIGINT` / update-restart.                                                                                                                                                                |
+| Persistence read path       | `server/sessions.ts:970 restoreFromDisk` → `:916 restoreWebSession`. Stale-file wipe at 5min (`STALE_THRESHOLD_MS`). File unlinked after restore.                                                                                                                                                                        |
+| SQLite infra                | `server/analytics.ts` — `Database` open with `journal_mode=WAL`, `MIGRATIONS` array keyed by `schema_version` table, prepared statements module-scoped.                                                                                                                                                                  |
+| Vendor resume capability    | `AgentSessionV2.providerSession: Record<string, string>` carries vendor ids. `AgentCapabilitySetV2.resume?: boolean`. `useAgentChatSocket.resume()` and `agent-resume-v2` command already wire end-to-end. Claude adapter implements `connect({ resume })`. Codex native adapter handles `thread/start` with `threadId`. |
+| Resume UI                   | `frontend/src/components/chat/ChatView.tsx:81` `canResume` flag and `tl-resume-banner`.                                                                                                                                                                                                                                  |
+| Error timeline              | `errorMessage` item type with `source: 'agent' \| 'client'`, rendered in `frontend/src/components/chat/Turn.tsx:112`.                                                                                                                                                                                                    |
 
 ## What Will Change
 
@@ -91,8 +91,13 @@ Replace one-shot `serializeAll` for web sessions with two triggers:
 
 1. If `capabilities.resume === true` and `providerSession` non-empty → call `adapter.resume(providerSession[vendorKey])`.
 2. If resume rejects (any error from adapter), emit a synthetic `errorMessage` patch into the session timeline:
-   ```
-   { type: 'errorMessage', source: 'client', message: 'Resume failed: <vendor> session expired or rotated. Start a new session to continue.', context: 'resume' }
+   ```json
+   {
+     "type": "errorMessage",
+     "source": "client",
+     "message": "Resume failed: <vendor> session expired or rotated. Start a new session to continue.",
+     "context": "resume"
+   }
    ```
    Set `status: 'disconnected'` on the live state. Do not retry. Do not auto-create a fresh vendor session.
 3. UI consumes this via the existing `errorMessage` renderer; no new UI needed.
@@ -119,7 +124,7 @@ Test: vitest unit test `test/server/relay-state-db.test.ts` covers schema migrat
 
 1. Modify `restoreFromDisk` in `server/sessions.ts` to call `loadAllWebSessions()` after PTY restore.
 2. Remove web session serialization from `serializeWebSession` / `serializeAll` write path; keep PTY-only.
-3. One-time migration: on `initRelayStateDb`, if `pending-sessions.json` exists and contains `webSessions`, import them into the DB and rewrite the file with PTY sessions only. Log the migration.
+3. **DEFERRED** — JSON→SQLite import. Shipped behavior abandons legacy web entries from `pending-sessions.json` on first run rather than migrating them. Re-evaluate if user friction warrants implementing.
 4. Remove `STALE_THRESHOLD_MS` check from web restoration. PTY check stays.
 
 Test: integration test that writes a fake `pending-sessions.json` with mixed PTY + web sessions, runs init, verifies DB has web sessions and JSON file has only PTY.
@@ -148,13 +153,13 @@ Test: integration test that writes a fake `pending-sessions.json` with mixed PTY
 
 ## Risks
 
-| Risk | Mitigation |
-|---|---|
-| Write amplification from streaming deltas | 1s debounce per session id collapses ~hundreds of patches per turn into one write. |
-| DB corruption on hard kill | WAL mode + `synchronous = NORMAL` pragma. Acceptable durability tradeoff vs throughput. |
-| Vendor session id stale on long restart | Already a known caveat. Resume-failure path surfaces clearly to user, no silent breakage. |
-| Schema evolution | `schema_version` + `MIGRATIONS` array (same pattern as `analytics.ts`). Forward-only. |
-| Concurrent writes from multiple sessions | `better-sqlite3` is sync + serializes writes. WAL allows concurrent readers. No locking issue. |
+| Risk                                      | Mitigation                                                                                     |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Write amplification from streaming deltas | 1s debounce per session id collapses ~hundreds of patches per turn into one write.             |
+| DB corruption on hard kill                | WAL mode + `synchronous = NORMAL` pragma. Acceptable durability tradeoff vs throughput.        |
+| Vendor session id stale on long restart   | Already a known caveat. Resume-failure path surfaces clearly to user, no silent breakage.      |
+| Schema evolution                          | `schema_version` + `MIGRATIONS` array (same pattern as `analytics.ts`). Forward-only.          |
+| Concurrent writes from multiple sessions  | `better-sqlite3` is sync + serializes writes. WAL allows concurrent readers. No locking issue. |
 
 ## Open questions
 

@@ -58,7 +58,8 @@ export function pushToBuffer(session: WebSession, event: ChatEvent): void {
 export async function createWebSession(
   params: CreateWebParams,
   sessionsMap: Map<string, Session>,
-  onBackendStateChanged: (session: Session) => void
+  onBackendStateChanged: (session: Session) => void,
+  options: { skipInitialPersist?: boolean } = {}
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapterV2 = createAdapterV2(params.agentType);
@@ -151,7 +152,12 @@ export async function createWebSession(
 
   logger.info('web session created', { id, agentType: params.agentType });
 
-  upsertWebSessionNow(session);
+  // Restore path passes skipInitialPersist=true so the freshly-created blank
+  // transcript doesn't overwrite the persisted row before sessions.ts copies
+  // back agentSessionV2.
+  if (!options.skipInitialPersist) {
+    upsertWebSessionNow(session);
+  }
 
   return { session };
 }
