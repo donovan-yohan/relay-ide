@@ -573,14 +573,14 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
     case 'agent-session-updated-v2':
       return (
         (value.providerSession === undefined ||
-          isRecord(value.providerSession)) &&
+          isProviderSession(value.providerSession)) &&
         (value.capabilities === undefined || isRecord(value.capabilities)) &&
-        (value.config === undefined || isRecord(value.config)) &&
+        (value.config === undefined || isPartialSessionConfig(value.config)) &&
         (value.slashCommands === undefined ||
-          Array.isArray(value.slashCommands))
+          isSlashCommandArray(value.slashCommands))
       );
     case 'agent-live-state-updated-v2':
-      return isRecord(value.live);
+      return isPartialLiveState(value.live);
     case 'agent-turn-started-v2':
       return isTurn(value.turn);
     case 'agent-item-started-v2':
@@ -864,7 +864,16 @@ function appendStringField<K extends keyof AgentItemDeltaPatchV2['delta']>(
   const fragment = delta[key];
   const current = (item as unknown as Record<string, unknown>)[key];
 
-  if (typeof fragment !== 'string' || typeof current !== 'string') {
+  if (typeof fragment !== 'string') {
+    return item;
+  }
+  if (current === undefined) {
+    return {
+      ...item,
+      [key]: fragment,
+    } as AgentItemV2;
+  }
+  if (typeof current !== 'string') {
     return item;
   }
 
@@ -944,8 +953,95 @@ function isSession(value: unknown): value is AgentSessionV2 {
     typeof value.config.cwd === 'string' &&
     isLiveState(value.live) &&
     Array.isArray(value.turns) &&
-    value.turns.every(isTurn)
+    value.turns.every(isTurn) &&
+    (value.providerSession === undefined ||
+      isProviderSession(value.providerSession)) &&
+    (value.slashCommands === undefined ||
+      isSlashCommandArray(value.slashCommands))
   );
+}
+
+function isProviderSession(value: unknown): value is Record<string, string> {
+  if (!isRecord(value)) return false;
+  for (const v of Object.values(value)) {
+    if (typeof v !== 'string') return false;
+  }
+  return true;
+}
+
+function isPartialSessionConfig(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.cwd !== undefined && typeof value.cwd !== 'string') return false;
+  if (value.model !== undefined && typeof value.model !== 'string')
+    return false;
+  if (value.effort !== undefined && typeof value.effort !== 'string')
+    return false;
+  if (
+    value.permissionMode !== undefined &&
+    typeof value.permissionMode !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.additionalDirectories !== undefined &&
+    !(
+      Array.isArray(value.additionalDirectories) &&
+      value.additionalDirectories.every((d) => typeof d === 'string')
+    )
+  ) {
+    return false;
+  }
+  if (value.providerOptions !== undefined && !isRecord(value.providerOptions)) {
+    return false;
+  }
+  return true;
+}
+
+function isSlashCommandArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every(isSlashCommand);
+}
+
+function isSlashCommand(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.name !== 'string') return false;
+  if (value.id !== undefined && typeof value.id !== 'string') return false;
+  if (value.description !== undefined && typeof value.description !== 'string')
+    return false;
+  if (
+    value.argumentHint !== undefined &&
+    typeof value.argumentHint !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.aliases !== undefined &&
+    !(
+      Array.isArray(value.aliases) &&
+      value.aliases.every((a) => typeof a === 'string')
+    )
+  ) {
+    return false;
+  }
+  if (value.source !== undefined && typeof value.source !== 'string') {
+    return false;
+  }
+  if (
+    value.dispatch !== undefined &&
+    !(
+      value.dispatch === 'agent' ||
+      value.dispatch === 'relay-control' ||
+      value.dispatch === 'client'
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.nativePrefix !== undefined &&
+    !(value.nativePrefix === '/' || value.nativePrefix === '$')
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isLiveState(value: unknown): value is AgentSessionLiveStateV2 {
@@ -967,6 +1063,69 @@ function isLiveState(value: unknown): value is AgentSessionLiveStateV2 {
     typeof value.fastModeAvailable === 'boolean' &&
     (value.error === null || typeof value.error === 'string')
   );
+}
+
+function isPartialLiveState(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    value.status !== undefined &&
+    !(typeof value.status === 'string' && LIVE_STATUSES.has(value.status))
+  ) {
+    return false;
+  }
+  if (
+    value.activeTurnId !== undefined &&
+    value.activeTurnId !== null &&
+    typeof value.activeTurnId !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.waitingOn !== undefined &&
+    value.waitingOn !== null &&
+    !(
+      typeof value.waitingOn === 'string' &&
+      WAITING_ON_VALUES.has(value.waitingOn)
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.activeRequestIds !== undefined &&
+    !(
+      Array.isArray(value.activeRequestIds) &&
+      value.activeRequestIds.every((r) => typeof r === 'string')
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.proposedPlanItemId !== undefined &&
+    value.proposedPlanItemId !== null &&
+    typeof value.proposedPlanItemId !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.queueLength !== undefined &&
+    typeof value.queueLength !== 'number'
+  ) {
+    return false;
+  }
+  if (
+    value.fastModeAvailable !== undefined &&
+    typeof value.fastModeAvailable !== 'boolean'
+  ) {
+    return false;
+  }
+  if (
+    value.error !== undefined &&
+    value.error !== null &&
+    typeof value.error !== 'string'
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isDelta(value: unknown): value is AgentItemDeltaPatchV2['delta'] {
