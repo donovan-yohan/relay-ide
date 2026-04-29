@@ -10,7 +10,7 @@ import {
   applyWebSessionPatchV2,
   createInitialAgentSessionV2,
 } from './web-session-v2-state.js';
-import { upsertWebSessionNow, deleteWebSession } from './relay-state-db.js';
+import { upsertWebSessionNow } from './relay-state-db.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -201,12 +201,15 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
     });
     await adapterV2.resumeSession(providerSessionId);
   } else {
-    logger.info('reconnecting web session (no resume capability or no stored id)', {
-      id: session.id,
-      agentType: session.adapterType,
-      hasResume: capabilities.resume,
-      hasProviderId: Boolean(providerSessionId),
-    });
+    logger.info(
+      'reconnecting web session (no resume capability or no stored id)',
+      {
+        id: session.id,
+        agentType: session.adapterType,
+        hasResume: capabilities.resume,
+        hasProviderId: Boolean(providerSessionId),
+      }
+    );
     await adapterV2.reconnect();
   }
 }
