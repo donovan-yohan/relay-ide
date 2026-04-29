@@ -1,0 +1,29 @@
+server/protocol-adapters/claude-adapter.ts
+  46409245fc1573ef 569,608
+shared/agent-chat-protocol-v2.ts
+  46409245fc1573ef 974-976,1030-1040
+test/server/protocol-adapters/claude-adapter.test.ts
+  46409245fc1573ef 934-1364
+test/agent-chat-protocol-v2.test.ts
+  46409245fc1573ef 308-365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "8eaa0f072911c58ed334eb7035a5cf47b05e0481",
+  "prompts": {
+    "46409245fc1573ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba0983d-7a20-473a-b19c-da251f1c057e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 505,
+      "total_deletions": 1,
+      "accepted_lines": 527,
+      "overriden_lines": 0
+    }
+  }
+}
