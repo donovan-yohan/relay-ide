@@ -1,0 +1,36 @@
+server/protocol-adapters/claude-adapter.ts
+  5b787848c2e82ce0 178-185,795-796,861-862
+test/web-session-handler.test.ts
+  5b787848c2e82ce0 21
+test/adapter-map-hook-event.test.ts
+  5b787848c2e82ce0 14
+test/web-chat-integration.test.ts
+  5b787848c2e82ce0 17
+server/logger.ts
+  5b787848c2e82ce0 5,8,15-32,96-103,113-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "6c31728c7c3109ff48bdf4f68bd49121a0dbe92a",
+  "prompts": {
+    "5b787848c2e82ce0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c3ad3eb-db8f-41e2-bfd2-5857ade6feef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 82,
+      "overriden_lines": 0
+    }
+  },
+  "humans": {
+    "h_16c74f3cee9e86": {
+      "author": "Donovan Yohan"
+    }
+  }
+}
