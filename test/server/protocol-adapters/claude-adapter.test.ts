@@ -146,7 +146,8 @@ function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
 describe('ClaudeProtocolAdapter V2', () => {
   it('advertises the claude v2 capability set', () => {
     const adapter = new ClaudeProtocolAdapter((() => {
-      const gen: AsyncGenerator<unknown, void, unknown> = (async function* () {})();
+      const gen: AsyncGenerator<unknown, void, unknown> =
+        (async function* () {})();
       return gen as unknown as ReturnType<ClaudeQueryFunction>;
     }) as ClaudeQueryFunction);
 
@@ -199,13 +200,15 @@ describe('ClaudeProtocolAdapter V2', () => {
     await waitFor(() =>
       patches.some(
         (patch) =>
-          patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+          patch.type === 'agent-session-updated-v2' &&
+          patch.slashCommands !== undefined
       )
     );
 
     const slashPatch = patches.find(
       (patch) =>
-        patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+        patch.type === 'agent-session-updated-v2' &&
+        patch.slashCommands !== undefined
     );
     expect(slashPatch?.type).toBe('agent-session-updated-v2');
     expect(controller.initializationResultCalls).toBe(1);
@@ -224,11 +227,18 @@ describe('ClaudeProtocolAdapter V2', () => {
           aliases: ['rev'],
           source: 'sdk',
         }),
-        expect.objectContaining({ name: 'resume', aliases: ['continue'], source: 'relay' }),
+        expect.objectContaining({
+          name: 'resume',
+          aliases: ['continue'],
+          source: 'relay',
+        }),
       ])
     );
 
-    const sendPromise = adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-1',
+      content: 'hello',
+    });
 
     await waitFor(() => controller.inputs.length > 0);
     expect(controller.inputs[0]).toMatchObject({
@@ -259,7 +269,9 @@ describe('ClaudeProtocolAdapter V2', () => {
     });
 
     await sendPromise;
-    await waitFor(() => patches.some((patch) => patch.type === 'agent-turn-completed-v2'));
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
 
     expect(patches).toEqual(
       expect.arrayContaining([
@@ -301,7 +313,11 @@ describe('ClaudeProtocolAdapter V2', () => {
     const patches = collectPatches(adapter);
     const controller = queryFn.current!;
     controller.supportedCommandsResult = [
-      { name: 'ticket', description: 'create a GitHub issue', argumentHint: '<title>' },
+      {
+        name: 'ticket',
+        description: 'create a GitHub issue',
+        argumentHint: '<title>',
+      },
       { name: 'scope', description: 'scope an issue', argumentHint: '' },
     ];
 
@@ -310,7 +326,8 @@ describe('ClaudeProtocolAdapter V2', () => {
     await waitFor(() =>
       patches.some(
         (patch) =>
-          patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+          patch.type === 'agent-session-updated-v2' &&
+          patch.slashCommands !== undefined
       )
     );
 
@@ -318,7 +335,8 @@ describe('ClaudeProtocolAdapter V2', () => {
     expect(controller.supportedCommandsCalls).toBe(0);
     const slashPatch = patches.find(
       (patch) =>
-        patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+        patch.type === 'agent-session-updated-v2' &&
+        patch.slashCommands !== undefined
     );
     expect(slashPatch?.type).toBe('agent-session-updated-v2');
     expect(slashPatch?.slashCommands).toEqual(
@@ -329,8 +347,16 @@ describe('ClaudeProtocolAdapter V2', () => {
           argumentHint: '<title>',
           source: 'sdk',
         }),
-        expect.objectContaining({ name: 'scope', description: 'scope an issue', source: 'sdk' }),
-        expect.objectContaining({ name: 'resume', aliases: ['continue'], source: 'relay' }),
+        expect.objectContaining({
+          name: 'scope',
+          description: 'scope an issue',
+          source: 'sdk',
+        }),
+        expect.objectContaining({
+          name: 'resume',
+          aliases: ['continue'],
+          source: 'relay',
+        }),
       ])
     );
 
@@ -362,7 +388,8 @@ describe('ClaudeProtocolAdapter V2', () => {
     await waitFor(() =>
       patches.some(
         (patch) =>
-          patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+          patch.type === 'agent-session-updated-v2' &&
+          patch.slashCommands !== undefined
       )
     );
 
@@ -370,7 +397,8 @@ describe('ClaudeProtocolAdapter V2', () => {
     expect(controller.supportedCommandsCalls).toBe(0);
     const slashPatch = patches.find(
       (patch) =>
-        patch.type === 'agent-session-updated-v2' && patch.slashCommands !== undefined
+        patch.type === 'agent-session-updated-v2' &&
+        patch.slashCommands !== undefined
     );
     expect(slashPatch?.type).toBe('agent-session-updated-v2');
     expect(slashPatch?.slashCommands).toEqual(
@@ -448,7 +476,9 @@ describe('ClaudeProtocolAdapter V2', () => {
       session_id: 'claude-session-1',
     });
 
-    await waitFor(() => patches.some((patch) => patch.type === 'agent-turn-completed-v2'));
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
     const extensions = patches
       .filter((patch) => patch.type === 'agent-item-started-v2')
       .map((patch) => patch.item)
@@ -468,7 +498,8 @@ describe('ClaudeProtocolAdapter V2', () => {
     );
     expect(
       extensions.some(
-        (ext) => (ext.payload as Record<string, unknown>).type === 'stream_event'
+        (ext) =>
+          (ext.payload as Record<string, unknown>).type === 'stream_event'
       )
     ).toBe(false);
 
@@ -521,13 +552,17 @@ describe('ClaudeProtocolAdapter V2', () => {
     await second;
     await waitFor(
       () =>
-        patches.filter((patch) => patch.type === 'agent-turn-completed-v2').length === 2
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+          .length === 2
     );
 
     const completedTurns = patches.filter(
       (patch) => patch.type === 'agent-turn-completed-v2'
     );
-    expect(completedTurns.map((patch) => patch.turnId)).toEqual(['turn-1', 'turn-2']);
+    expect(completedTurns.map((patch) => patch.turnId)).toEqual([
+      'turn-1',
+      'turn-2',
+    ]);
 
     await adapter.disconnect();
   });
@@ -545,7 +580,10 @@ describe('ClaudeProtocolAdapter V2', () => {
       session_id: 'claude-session-1',
     });
 
-    const sendPromise = adapter.sendMessage({ turnId: 'turn-tools', content: 'tools' });
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-tools',
+      content: 'tools',
+    });
     await waitFor(() => controller.inputs.length === 1);
 
     controller.emit({
@@ -554,9 +592,24 @@ describe('ClaudeProtocolAdapter V2', () => {
         id: 'msg-native-tools',
         content: [
           { type: 'thinking', thinking: 'inspect files' },
-          { type: 'tool_use', id: 'tool-bash', name: 'Bash', input: { command: 'npm test' } },
-          { type: 'tool_use', id: 'tool-edit', name: 'Edit', input: { file_path: 'src/a.ts' } },
-          { type: 'tool_use', id: 'tool-grep', name: 'Grep', input: { pattern: 'x' } },
+          {
+            type: 'tool_use',
+            id: 'tool-bash',
+            name: 'Bash',
+            input: { command: 'npm test' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tool-edit',
+            name: 'Edit',
+            input: { file_path: 'src/a.ts' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tool-grep',
+            name: 'Grep',
+            input: { pattern: 'x' },
+          },
         ],
       },
       session_id: 'claude-session-1',
@@ -571,15 +624,740 @@ describe('ClaudeProtocolAdapter V2', () => {
     });
 
     await sendPromise;
-    await waitFor(() => patches.some((patch) => patch.type === 'agent-turn-completed-v2'));
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
 
     const itemTypes = patches
       .filter((patch) => patch.type === 'agent-item-started-v2')
       .map((patch) => patch.item.type);
 
     expect(itemTypes).toEqual(
-      expect.arrayContaining(['reasoning', 'commandExecution', 'fileChange', 'dynamicToolCall'])
+      expect.arrayContaining([
+        'reasoning',
+        'commandExecution',
+        'fileChange',
+        'dynamicToolCall',
+      ])
     );
+
+    await adapter.disconnect();
+  });
+
+  it('completes file change items with patch from tool_use_result', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-edit',
+      content: 'edit it',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-edit',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-edit-1',
+            name: 'Edit',
+            input: {
+              file_path: '/repo/test.md',
+              old_string: 'foo',
+              new_string: 'bar',
+            },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-edit-1',
+            content: 'Edited.',
+          },
+        ],
+      },
+      tool_use_result: {
+        filePath: '/repo/test.md',
+        oldString: 'foo',
+        newString: 'bar',
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-foo', '+bar'],
+          },
+        ],
+        gitDiff: {
+          filename: 'test.md',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          changes: 2,
+          patch: '@@ -1,1 +1,1 @@\n-foo\n+bar',
+        },
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const updates = patches.filter(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(updates).toHaveLength(1);
+    const update = updates[0];
+    expect(update.item).toMatchObject({
+      id: 'file-tool-edit-1',
+      applyStatus: 'applied',
+      status: 'completed',
+    });
+    if (update.item.type !== 'fileChange')
+      throw new Error('expected fileChange');
+    expect(update.item.patch).toContain('-foo');
+    expect(update.item.patch).toContain('+bar');
+
+    await adapter.disconnect();
+  });
+
+  it('falls back to structuredPatch when gitDiff.patch is missing', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-write',
+      content: 'write it',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-write',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-write-1',
+            name: 'Write',
+            input: { file_path: '/repo/new.md', content: 'hello\nworld\n' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-write-1',
+            content: 'File created.',
+          },
+        ],
+      },
+      tool_use_result: {
+        filePath: '/repo/new.md',
+        structuredPatch: [
+          {
+            oldStart: 0,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 2,
+            lines: ['+hello', '+world'],
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'fileChange')
+      throw new Error('expected fileChange');
+    expect(update.item.patch).toContain('@@ -0,0 +1,2 @@');
+    expect(update.item.patch).toContain('+hello');
+    expect(update.item.patch).toContain('+world');
+    expect(update.item.applyStatus).toBe('applied');
+
+    await adapter.disconnect();
+  });
+
+  it('marks file change failed when tool_result is_error is true', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-fail',
+      content: 'edit broken',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-fail',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-edit-fail',
+            name: 'Edit',
+            input: { file_path: '/repo/missing.md' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-edit-fail',
+            is_error: true,
+            content: 'File does not exist.',
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'fileChange')
+      throw new Error('expected fileChange');
+    expect(update.item.applyStatus).toBe('failed');
+    expect(update.item.status).toBe('failed');
+
+    await adapter.disconnect();
+  });
+
+  it('completes commandExecution items with stdout/stderr and interactive flag', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-bash',
+      content: 'run it',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-bash',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-bash-1',
+            name: 'Bash',
+            input: { command: 'echo hi' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-bash-1',
+            content: 'hi',
+          },
+        ],
+      },
+      tool_use_result: {
+        stdout: 'hi\n',
+        stderr: '',
+        interrupted: true,
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'commandExecution')
+      throw new Error('expected commandExecution');
+    expect(update.item.command).toBe('echo hi');
+    expect(update.item.output).toBe('hi\n');
+    expect(update.item.status).toBe('completed');
+    expect(update.item.interactive).toBe(true);
+
+    await adapter.disconnect();
+  });
+
+  it('falls back to stderr then result text when stdout is empty', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-bash-fail',
+      content: 'run failing',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-bash-fail',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-bash-fail',
+            name: 'Bash',
+            input: { command: 'false' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-bash-fail',
+            is_error: true,
+            content: 'command failed',
+          },
+        ],
+      },
+      tool_use_result: {
+        stdout: '',
+        stderr: 'boom\n',
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'commandExecution')
+      throw new Error('expected commandExecution');
+    expect(update.item.output).toBe('boom\n');
+    expect(update.item.status).toBe('failed');
+
+    await adapter.disconnect();
+  });
+
+  it('completes dynamicToolCall items with raw result and extracted text', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-grep',
+      content: 'search',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-grep',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-grep-1',
+            name: 'Grep',
+            input: { pattern: 'TODO' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-grep-1',
+            content: [
+              { type: 'text', text: 'src/foo.ts:12: // TODO' },
+              { type: 'text', text: 'src/bar.ts:7: // TODO' },
+            ],
+          },
+        ],
+      },
+      tool_use_result: { matches: 2 },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'dynamicToolCall'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'dynamicToolCall')
+      throw new Error('expected dynamicToolCall');
+    expect(update.item.tool).toBe('Grep');
+    expect(update.item.status).toBe('completed');
+    expect(update.item.result).toEqual({ matches: 2 });
+    expect(update.item.content).toContain('src/foo.ts:12');
+    expect(update.item.content).toContain('src/bar.ts:7');
+
+    await adapter.disconnect();
+  });
+
+  it('marks dynamicToolCall failed when tool_result is_error is true', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    const sendPromise = adapter.sendMessage({
+      turnId: 'turn-grep-fail',
+      content: 'search broken',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-grep-fail',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-grep-fail',
+            name: 'Grep',
+            input: { pattern: '???' },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-grep-fail',
+            is_error: true,
+            content: 'invalid pattern',
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+      session_id: 'claude-session-1',
+    });
+
+    await sendPromise;
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const update = patches.find(
+      (
+        patch
+      ): patch is Extract<AgentPatchV2, { type: 'agent-item-updated-v2' }> =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'dynamicToolCall'
+    );
+    expect(update).toBeDefined();
+    if (!update || update.item.type !== 'dynamicToolCall')
+      throw new Error('expected dynamicToolCall');
+    expect(update.item.status).toBe('failed');
+    expect(update.item.content).toBe('invalid pattern');
+
+    await adapter.disconnect();
+  });
+
+  it('clears tracked tool uses on disconnect so resumed sessions emit no stale completions', async () => {
+    const queryFn = makeScriptedQuery();
+    const adapter = new ClaudeProtocolAdapter(queryFn());
+    const patches = collectPatches(adapter);
+
+    await adapter.connect(config);
+    const controller = queryFn.current!;
+    controller.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-1',
+    });
+
+    void adapter.sendMessage({
+      turnId: 'turn-teardown',
+      content: 'edit then drop',
+    });
+    await waitFor(() => controller.inputs.length === 1);
+
+    controller.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-teardown',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-teardown-1',
+            name: 'Edit',
+            input: {
+              file_path: '/repo/dropped.md',
+              old_string: 'a',
+              new_string: 'b',
+            },
+          },
+        ],
+      },
+      session_id: 'claude-session-1',
+    });
+
+    await waitFor(() =>
+      patches.some(
+        (p) =>
+          p.type === 'agent-item-started-v2' &&
+          p.item.id === 'file-tool-teardown-1'
+      )
+    );
+
+    // Disconnect before tool_result arrives — drops the in-flight tool_use.
+    await adapter.disconnect();
+
+    const beforeReconnectCount = patches.length;
+
+    // Reconnect and emit a stale tool_result for the dropped tool_use_id.
+    await adapter.connect(config);
+    const controller2 = queryFn.current!;
+    controller2.emit({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-2',
+    });
+    controller2.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-teardown-1',
+            content: 'late result',
+          },
+        ],
+      },
+      tool_use_result: { filePath: '/repo/dropped.md' },
+      session_id: 'claude-session-2',
+    });
+
+    // Give the adapter a tick to process; assert no fileChange completion was
+    // emitted for the dropped tool_use after reconnect.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const newPatches = patches.slice(beforeReconnectCount);
+    const stale = newPatches.find(
+      (p) =>
+        p.type === 'agent-item-updated-v2' &&
+        p.item.type === 'fileChange' &&
+        p.item.id === 'file-tool-teardown-1'
+    );
+    expect(stale).toBeUndefined();
 
     await adapter.disconnect();
   });
@@ -642,7 +1420,9 @@ describe('ClaudeProtocolAdapter V2', () => {
       usage: {},
       session_id: 'claude-session-1',
     });
-    await waitFor(() => patches.some((patch) => patch.type === 'agent-turn-completed-v2'));
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
 
     expect(patches).toEqual(
       expect.arrayContaining([
@@ -692,14 +1472,29 @@ describe('ClaudeProtocolAdapter V2', () => {
     const decisionPromise = capturedCanUseTool?.(
       'Bash',
       { command: 'ls' },
-      { signal: new AbortController().signal, toolUseID: 'req-once', title: 'run ls' }
+      {
+        signal: new AbortController().signal,
+        toolUseID: 'req-once',
+        title: 'run ls',
+      }
     );
-    await adapter.respondToApproval({ requestId: 'req-once', decision: { kind: 'accept', scope: 'once' } });
+    await adapter.respondToApproval({
+      requestId: 'req-once',
+      decision: { kind: 'accept', scope: 'once' },
+    });
     const result = await decisionPromise;
     expect(result?.behavior).toBe('allow');
-    expect((result as { decisionClassification?: string }).decisionClassification).toBe('user_temporary');
+    expect(
+      (result as { decisionClassification?: string }).decisionClassification
+    ).toBe('user_temporary');
 
-    controller.emit({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: {} });
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+    });
     await adapter.disconnect();
   });
 
@@ -723,14 +1518,29 @@ describe('ClaudeProtocolAdapter V2', () => {
     const decisionPromise = capturedCanUseTool?.(
       'Bash',
       { command: 'ls' },
-      { signal: new AbortController().signal, toolUseID: 'req-perm', title: 'run ls' }
+      {
+        signal: new AbortController().signal,
+        toolUseID: 'req-perm',
+        title: 'run ls',
+      }
     );
-    await adapter.respondToApproval({ requestId: 'req-perm', decision: { kind: 'accept', scope: 'permanent' } });
+    await adapter.respondToApproval({
+      requestId: 'req-perm',
+      decision: { kind: 'accept', scope: 'permanent' },
+    });
     const result = await decisionPromise;
     expect(result?.behavior).toBe('allow');
-    expect((result as { decisionClassification?: string }).decisionClassification).toBe('user_permanent');
+    expect(
+      (result as { decisionClassification?: string }).decisionClassification
+    ).toBe('user_permanent');
 
-    controller.emit({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: {} });
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+    });
     await adapter.disconnect();
   });
 
@@ -754,13 +1564,26 @@ describe('ClaudeProtocolAdapter V2', () => {
     const decisionPromise = capturedCanUseTool?.(
       'Bash',
       { command: 'ls' },
-      { signal: new AbortController().signal, toolUseID: 'req-deny', title: 'run ls' }
+      {
+        signal: new AbortController().signal,
+        toolUseID: 'req-deny',
+        title: 'run ls',
+      }
     );
-    await adapter.respondToApproval({ requestId: 'req-deny', decision: { kind: 'decline' } });
+    await adapter.respondToApproval({
+      requestId: 'req-deny',
+      decision: { kind: 'decline' },
+    });
     const result = await decisionPromise;
     expect(result?.behavior).toBe('deny');
 
-    controller.emit({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: {} });
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+    });
     await adapter.disconnect();
   });
 
@@ -784,12 +1607,25 @@ describe('ClaudeProtocolAdapter V2', () => {
     const decisionPromise = capturedCanUseTool?.(
       'Bash',
       { command: 'ls' },
-      { signal: new AbortController().signal, toolUseID: 'req-cancel', title: 'run ls' }
+      {
+        signal: new AbortController().signal,
+        toolUseID: 'req-cancel',
+        title: 'run ls',
+      }
     );
-    await adapter.respondToApproval({ requestId: 'req-cancel', decision: { kind: 'cancel' } });
+    await adapter.respondToApproval({
+      requestId: 'req-cancel',
+      decision: { kind: 'cancel' },
+    });
     await expect(decisionPromise).rejects.toThrow(/cancel/i);
 
-    controller.emit({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: {} });
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+    });
     await adapter.disconnect();
   });
 
@@ -813,7 +1649,11 @@ describe('ClaudeProtocolAdapter V2', () => {
     const decisionPromise = capturedCanUseTool?.(
       'Bash',
       { command: 'ls' },
-      { signal: new AbortController().signal, toolUseID: 'req-scope', title: 'run ls' }
+      {
+        signal: new AbortController().signal,
+        toolUseID: 'req-scope',
+        title: 'run ls',
+      }
     );
     await adapter.respondToApproval({
       requestId: 'req-scope',
@@ -821,7 +1661,13 @@ describe('ClaudeProtocolAdapter V2', () => {
     });
     await expect(decisionPromise).rejects.toThrow(/session/i);
 
-    controller.emit({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0, usage: {} });
+    controller.emit({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: {},
+    });
     await adapter.disconnect();
   });
 
@@ -849,8 +1695,9 @@ describe('ClaudeProtocolAdapter V2', () => {
 
   it('resumeSession passes resume option to the SDK query and emits snapshot with providerSession', async () => {
     const queryFn = makeScriptedQuery();
-    const capturedOptions: Array<Parameters<ClaudeQueryFunction>[0]['options']> =
-      [];
+    const capturedOptions: Array<
+      Parameters<ClaudeQueryFunction>[0]['options']
+    > = [];
     const trackingFn: ClaudeQueryFunction = (params) => {
       capturedOptions.push(params.options);
       return queryFn()(params);
@@ -903,8 +1750,7 @@ describe('ClaudeProtocolAdapter V2', () => {
 
     const idlePatch = afterResumePatch.find(
       (p) =>
-        p.type === 'agent-live-state-updated-v2' &&
-        p.live.status === 'idle'
+        p.type === 'agent-live-state-updated-v2' && p.live.status === 'idle'
     );
     expect(idlePatch).toBeDefined();
 

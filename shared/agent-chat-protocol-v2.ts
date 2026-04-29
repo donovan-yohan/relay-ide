@@ -971,7 +971,9 @@ function isProviderSession(value: unknown): value is Record<string, string> {
 
 function isPartialSessionConfig(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.cwd !== undefined && typeof value.cwd !== 'string') return false;
+  // agent-session-updated-v2.config must not mutate cwd at runtime; reject any
+  // payload that tries to set it (even to undefined explicitly).
+  if (Object.hasOwn(value, 'cwd')) return false;
   if (value.model !== undefined && typeof value.model !== 'string')
     return false;
   if (value.effort !== undefined && typeof value.effort !== 'string')
@@ -1023,6 +1025,17 @@ function isSlashCommand(value: unknown): boolean {
     return false;
   }
   if (value.source !== undefined && typeof value.source !== 'string') {
+    return false;
+  }
+  if (value.sourceLabel !== undefined && typeof value.sourceLabel !== 'string')
+    return false;
+  if (value.namespace !== undefined && typeof value.namespace !== 'string')
+    return false;
+  if (value.path !== undefined && typeof value.path !== 'string') return false;
+  if (
+    value.collisionKey !== undefined &&
+    typeof value.collisionKey !== 'string'
+  ) {
     return false;
   }
   if (

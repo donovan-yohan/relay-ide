@@ -351,6 +351,56 @@ function filePathsFromToolInput(
   return paths.length > 0 ? paths : [{ path: 'unknown', status: 'pending' }];
 }
 
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (stringField(block.type) === 'text') {
+      const text = stringField(block.text);
+      if (text) parts.push(text);
+    }
+  }
+  return parts.join('\n');
+}
+
+function patchFromFileResult(result: Record<string, unknown>): string {
+  const gitDiff = objectField(result.gitDiff);
+  const gitPatch = stringField(gitDiff.patch);
+  if (gitPatch) return gitPatch;
+
+  const hunks = result.structuredPatch;
+  if (!Array.isArray(hunks)) return '';
+  const out: string[] = [];
+  for (const hunk of hunks) {
+    if (!isRecord(hunk)) continue;
+    const oldStart = Number(hunk.oldStart) || 0;
+    const oldLines = Number(hunk.oldLines) || 0;
+    const newStart = Number(hunk.newStart) || 0;
+    const newLines = Number(hunk.newLines) || 0;
+    out.push(`@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`);
+    const lines = hunk.lines;
+    if (Array.isArray(lines)) {
+      for (const line of lines) {
+        if (typeof line === 'string') out.push(line);
+      }
+    }
+  }
+  return out.join('\n');
+}
+
+function pathsFromFileResult(
+  result: Record<string, unknown>,
+  fallback: Array<{ path: string; status?: string }>
+): Array<{ path: string; status?: string }> {
+  const filePath = stringField(result.filePath);
+  if (!filePath) return fallback;
+  const gitDiff = objectField(result.gitDiff);
+  const status = stringField(gitDiff.status);
+  return [{ path: filePath, ...(status ? { status } : { status: 'edited' }) }];
+}
+
 function permissionMode(value: string | undefined): PermissionMode | undefined {
   if (
     value === 'default' ||
@@ -438,6 +488,16 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   private readonly streamReasoningBuffers = new Map<string, string>();
   private streamProviderMessageId: string | null = null;
   private providerExtensionSeq = 0;
+  private readonly activeToolUses = new Map<
+    string,
+    {
+      kind: 'file' | 'exec' | 'dynamic';
+      toolName: string;
+      input: Record<string, unknown>;
+      command?: string;
+      paths?: Array<{ path: string; status?: string }>;
+    }
+  >();
 
   constructor(
     queryFn: ClaudeQueryFunction = sdkQuery as unknown as ClaudeQueryFunction
@@ -506,6 +566,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.sessionAbort?.abort();
     this.rejectQueued(new Error('Claude adapter disconnected'));
     this.pendingApprovals.clear();
+    this.activeToolUses.clear();
     if (this.consumeTask) {
       await this.consumeTask.catch(() => undefined);
     }
@@ -544,6 +605,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.sessionAbort?.abort();
     this.rejectQueued(new Error('Claude adapter resuming'));
     this.pendingApprovals.clear();
+    this.activeToolUses.clear();
     if (this.consumeTask) {
       await this.consumeTask.catch(() => undefined);
     }
@@ -859,6 +921,12 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
 
+    if (message.type === 'user') {
+      if (this.activeTurnId === null) return;
+      this.handleUserToolResults(this.activeTurnId, message);
+      return;
+    }
+
     if (message.type === 'result') {
       if (this.activeTurnId === null) return;
       const turnId = this.activeTurnId;
@@ -1120,12 +1188,112 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
   }
 
+  private handleUserToolResults(
+    turnId: string,
+    message: Record<string, unknown>
+  ): void {
+    const toolUseResult = message.tool_use_result;
+    for (const block of contentBlocks(message)) {
+      if (stringField(block.type) !== 'tool_result') continue;
+      const toolUseId = stringField(block.tool_use_id);
+      if (!toolUseId) continue;
+      const tracked = this.activeToolUses.get(toolUseId);
+      if (!tracked) {
+        this.emitProviderExtension(turnId, block, 'debug');
+        continue;
+      }
+      this.activeToolUses.delete(toolUseId);
+      const isError = block.is_error === true;
+      const completedAt = nowIso();
+      const resultText = toolResultText(block.content);
+
+      if (tracked.kind === 'file') {
+        const result = isRecord(toolUseResult) ? toolUseResult : {};
+        const patch = patchFromFileResult(result);
+        const paths = pathsFromFileResult(result, tracked.paths ?? []);
+        const applyStatus = isError ? 'failed' : 'applied';
+        const status = isError ? 'failed' : 'completed';
+        this.emitPatch({
+          type: 'agent-item-updated-v2',
+          sessionId: this.sessionId,
+          timestamp: completedAt,
+          turnId,
+          item: {
+            type: 'fileChange',
+            id: `file-${toolUseId}`,
+            providerItemId: toolUseId,
+            paths,
+            ...(patch ? { patch } : {}),
+            applyStatus,
+            status,
+            completedAt,
+          },
+        });
+        continue;
+      }
+
+      if (tracked.kind === 'exec') {
+        const result = isRecord(toolUseResult) ? toolUseResult : {};
+        const stdout = stringField(result.stdout);
+        const stderr = stringField(result.stderr);
+        const output = stdout || stderr || resultText;
+        const status = isError ? 'failed' : 'completed';
+        this.emitPatch({
+          type: 'agent-item-updated-v2',
+          sessionId: this.sessionId,
+          timestamp: completedAt,
+          turnId,
+          item: {
+            type: 'commandExecution',
+            id: `exec-${toolUseId}`,
+            providerItemId: toolUseId,
+            command: tracked.command ?? '',
+            output,
+            ...(typeof result.interrupted === 'boolean'
+              ? { interactive: result.interrupted }
+              : {}),
+            status,
+            completedAt,
+          },
+        });
+        continue;
+      }
+
+      const status = isError ? 'failed' : 'completed';
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.sessionId,
+        timestamp: completedAt,
+        turnId,
+        item: {
+          type: 'dynamicToolCall',
+          id: `tool-${toolUseId}`,
+          providerItemId: toolUseId,
+          namespace: 'claude',
+          tool: tracked.toolName,
+          arguments: tracked.input,
+          ...(toolUseResult !== undefined ? { result: toolUseResult } : {}),
+          ...(resultText ? { content: resultText } : {}),
+          status,
+          completedAt,
+        },
+      });
+    }
+  }
+
   private emitToolUse(turnId: string, block: Record<string, unknown>): void {
     const toolUseId = stringField(block.id, `unknown-${Date.now()}`);
     const name = stringField(block.name, 'unknown');
     const input = objectField(block.input);
 
     if (name === 'Bash') {
+      const command = stringField(input.command, JSON.stringify(input));
+      this.activeToolUses.set(toolUseId, {
+        kind: 'exec',
+        toolName: name,
+        input,
+        command,
+      });
       this.emitPatch({
         type: 'agent-item-started-v2',
         sessionId: this.sessionId,
@@ -1135,7 +1303,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
           type: 'commandExecution',
           id: `exec-${toolUseId}`,
           providerItemId: toolUseId,
-          command: stringField(input.command, JSON.stringify(input)),
+          command,
           output: '',
           status: 'running',
           startedAt: nowIso(),
@@ -1145,6 +1313,13 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     }
 
     if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+      const paths = filePathsFromToolInput(input);
+      this.activeToolUses.set(toolUseId, {
+        kind: 'file',
+        toolName: name,
+        input,
+        paths,
+      });
       this.emitPatch({
         type: 'agent-item-started-v2',
         sessionId: this.sessionId,
@@ -1154,7 +1329,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
           type: 'fileChange',
           id: `file-${toolUseId}`,
           providerItemId: toolUseId,
-          paths: filePathsFromToolInput(input),
+          paths,
           applyStatus: 'pending',
           status: 'pending',
           startedAt: nowIso(),
@@ -1163,6 +1338,11 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
       return;
     }
 
+    this.activeToolUses.set(toolUseId, {
+      kind: 'dynamic',
+      toolName: name,
+      input,
+    });
     this.emitPatch({
       type: 'agent-item-started-v2',
       sessionId: this.sessionId,
@@ -1212,6 +1392,7 @@ export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.streamTextBuffers.clear();
     this.streamReasoningBuffers.clear();
     this.streamProviderMessageId = null;
+    this.activeToolUses.clear();
     this.emitLiveState({
       status: this.queue.length > 0 ? 'working' : 'idle',
       activeTurnId: null,
