@@ -7,6 +7,7 @@ import {
 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentCapabilitySetV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { WebSession } from './types.js';
+import { scheduleWebSessionUpsert } from './relay-state-db.js';
 
 const AGENT_PATCH_BUFFER_MAX = 1000;
 
@@ -54,6 +55,7 @@ export function applyWebSessionPatchV2(
 ): void {
   session.agentSessionV2 = applyAgentPatchV2(session.agentSessionV2, patch);
   pushAgentPatchToBuffer(session, patch);
+  scheduleWebSessionUpsert(session);
 }
 
 export function pushAgentPatchToBuffer(

@@ -61,6 +61,11 @@ import {
   recordRateLimitSnapshot,
 } from './analytics.js';
 import {
+  initRelayStateDb,
+  closeRelayStateDb,
+  flushAllPendingWrites as flushRelayStateWrites,
+} from './relay-state-db.js';
+import {
   createWorkspaceRouter,
   clearPrCache,
   clearFilesListCache,
@@ -954,6 +959,15 @@ async function main(): Promise<void> {
     getConfig,
     reconcilePortsForAllRepos
   );
+
+  try {
+    initRelayStateDb(configDir);
+  } catch (err) {
+    logger.warn(
+      'Relay state DB disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
 
   try {
     initAnalytics(configDir);
@@ -2540,6 +2554,8 @@ async function main(): Promise<void> {
         stopEventBatching();
         stopTelemetry();
         serializeAll(configDir);
+        flushRelayStateWrites();
+        closeRelayStateDb();
         broadcastEvent('server-restarting');
       }
       res.json({ ok: true, restarting });
@@ -2611,6 +2627,8 @@ async function main(): Promise<void> {
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir);
+    flushRelayStateWrites();
+    closeRelayStateDb();
     for (const s of sessions.list()) {
       try {
         sessions.detachForRestart(s.id);

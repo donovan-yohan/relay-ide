@@ -10,6 +10,7 @@ import {
   applyWebSessionPatchV2,
   createInitialAgentSessionV2,
 } from './web-session-v2-state.js';
+import { upsertWebSessionNow, deleteWebSession } from './relay-state-db.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -149,6 +150,8 @@ export async function createWebSession(
   }
 
   logger.info('web session created', { id, agentType: params.agentType });
+
+  upsertWebSessionNow(session);
 
   return { session };
 }
