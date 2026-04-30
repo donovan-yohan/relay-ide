@@ -1,0 +1,25 @@
+frontend/src/components/WorkspaceContentLayer.tsx
+  5b75b2f3acd811a6 1,59,62-70
+frontend/src/components/WorkspaceContentLayer.css
+  5b75b2f3acd811a6 8-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "499354d791e27c146ef164e1f5a44a156319f80d",
+  "prompts": {
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 729,
+      "total_deletions": 60,
+      "accepted_lines": 1512,
+      "overriden_lines": 0
+    }
+  }
+}
