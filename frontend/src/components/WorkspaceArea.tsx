@@ -207,51 +207,42 @@ export function WorkspaceArea({
     resetLayout(initialTabs);
   }, [resetLayout, sessions, openFileTabs]);
 
-  // Workspace tab close → store sync (file tabs → ui.closeFileTab; session
-  // tabs only need to remove from layout — sessionsStore manages session
-  // lifecycle separately and external close events sync IN here).
+  // Single reconciler: keeps layout aligned with ui.openFileTabs + sessions[].
+  // Reads stores via getState() so a mutation earlier in the same effect
+  // (closeFileTab on layout-driven removal) is visible to the rest of the
+  // body. Removes in the layout that are NOT in ui+sessions are propagated
+  // back to ui (workspace × button case); items in ui+sessions missing from
+  // layout get added to the active pane. No long-lived suppression set —
+  // the per-cycle `removedThisCycle` set is rebuilt from prev vs current.
   const prevLayoutTabIdsRef = useRef<Set<string>>(new Set());
-  const recentlyRemovedIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const currentIds = new Set<string>();
-    for (const pane of listPanes(layout)) {
-      for (const t of pane.tabs) currentIds.add(workspaceTabId(t));
-    }
-    const prev = prevLayoutTabIdsRef.current;
-    const removed: string[] = [];
-    for (const id of prev) {
-      if (!currentIds.has(id)) removed.push(id);
-    }
-    prevLayoutTabIdsRef.current = currentIds;
-
-    for (const id of removed) {
-      recentlyRemovedIdsRef.current.add(id);
-      if (id.startsWith('file::')) {
-        const ftKey = id.slice('file::'.length);
-        const uiTab = useUiStore
-          .getState()
-          .openFileTabs.find(
-            (t) => fileTabKey(t.filePath, t.tabType) === ftKey
-          );
-        if (uiTab) {
-          useUiStore.getState().closeFileTab(uiTab.filePath, uiTab.tabType);
-        }
-      }
-      // Session removals are intentional no-ops on the sessionsStore side —
-      // sessions only end via explicit close (sidebar / × on session tab
-      // routes through the host caller's onCloseSession handler).
-    }
-  }, [layout]);
-
-  // Sync ui.openFileTabs + sessions[] → workspace tabs (add new, remove gone).
   useEffect(() => {
     if (!initializedRef.current) return;
+
     const wsIds = new Set<string>();
     for (const pane of listPanes(layout)) {
       for (const t of pane.tabs) wsIds.add(workspaceTabId(t));
     }
+    const prev = prevLayoutTabIdsRef.current;
+    const removedFromLayout = new Set<string>();
+    for (const id of prev) {
+      if (!wsIds.has(id)) removedFromLayout.add(id);
+    }
+    prevLayoutTabIdsRef.current = wsIds;
 
-    const fileUiIds = new Set(openFileTabs.map(uiTabId));
+    // Propagate layout-side removals (workspace × button) to ui store.
+    for (const id of removedFromLayout) {
+      if (!id.startsWith('file::')) continue;
+      const ftKey = id.slice('file::'.length);
+      const uiState = useUiStore.getState();
+      const uiTab = uiState.openFileTabs.find(
+        (t) => fileTabKey(t.filePath, t.tabType) === ftKey
+      );
+      if (uiTab) uiState.closeFileTab(uiTab.filePath, uiTab.tabType);
+    }
+
+    // Re-read after potential ui mutation above.
+    const currentOpenFileTabs = useUiStore.getState().openFileTabs;
+    const fileUiIds = new Set(currentOpenFileTabs.map(uiTabId));
     const sessionUiIds = new Set(sessions.map(sessionTabId));
     const liveUiIds = new Set([...fileUiIds, ...sessionUiIds]);
 
@@ -259,27 +250,25 @@ export function WorkspaceArea({
       activePaneId ??
       (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
 
-    // Add new file tabs.
-    for (const t of openFileTabs) {
+    // Add ui items missing from layout — but skip anything we just removed
+    // this cycle (otherwise a workspace × close immediately re-adds).
+    for (const t of currentOpenFileTabs) {
       const id = uiTabId(t);
       if (wsIds.has(id)) continue;
-      if (recentlyRemovedIdsRef.current.has(id)) continue;
+      if (removedFromLayout.has(id)) continue;
       if (targetPane) addTab(targetPane, uiTabToWorkspaceTab(t));
     }
-    // Add new session tabs.
     for (const s of sessions) {
       const id = sessionTabId(s);
       if (wsIds.has(id)) continue;
-      if (recentlyRemovedIdsRef.current.has(id)) continue;
+      if (removedFromLayout.has(id)) continue;
       if (targetPane) addTab(targetPane, sessionToWorkspaceTab(s));
     }
-    // Remove tabs whose source is gone.
+
+    // Close layout items that ui no longer has (e.g., FileViewerPane × button
+    // closed only the ui-side tab).
     for (const id of wsIds) {
       if (!liveUiIds.has(id)) closeTab(id);
-    }
-    // Drop suppression once stores caught up.
-    for (const id of Array.from(recentlyRemovedIdsRef.current)) {
-      if (!liveUiIds.has(id)) recentlyRemovedIdsRef.current.delete(id);
     }
   }, [openFileTabs, sessions, layout, activePaneId, addTab, closeTab]);
 
