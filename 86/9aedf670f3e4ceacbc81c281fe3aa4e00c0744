@@ -1,0 +1,29 @@
+frontend/src/components/FileViewerPane.tsx
+  5b75b2f3acd811a6 1,6,108,110,119,125,127,137-144,205,219-230
+frontend/src/components/WorkspaceArea.tsx
+  5b75b2f3acd811a6 14,79-83,96-97
+frontend/src/components/FileTabContent.tsx
+  5b75b2f3acd811a6 1
+frontend/src/hooks/useFileDiff.ts
+  5b75b2f3acd811a6 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "869aedf670f3e4ceacbc81c281fe3aa4e00c0744",
+  "prompts": {
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 104,
+      "total_deletions": 128,
+      "accepted_lines": 887,
+      "overriden_lines": 2
+    }
+  }
+}
