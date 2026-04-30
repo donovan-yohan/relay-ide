@@ -28,30 +28,35 @@ const BLOCKLISTED_RENDERER_SUBSTRINGS = [
   'microsoft basic',
 ];
 
+let cachedBlocklist: boolean | undefined;
+
 /** Detect software-rendered or Microsoft Basic GPU drivers via WEBGL_debug_renderer_info. */
 export function isGpuBlocklisted(): boolean {
+  if (cachedBlocklist !== undefined) return cachedBlocklist;
   if (typeof document === 'undefined') return false;
   try {
     const canvas = document.createElement('canvas');
     const gl =
       (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ??
       (canvas.getContext('webgl') as WebGLRenderingContext | null);
-    if (!gl) return false;
+    if (!gl) return (cachedBlocklist = false);
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
-    if (!debug) return false;
+    if (!debug) return (cachedBlocklist = false);
     const renderer = gl.getParameter(
       (debug as { UNMASKED_RENDERER_WEBGL: number }).UNMASKED_RENDERER_WEBGL
     );
-    if (typeof renderer !== 'string') return false;
+    if (typeof renderer !== 'string') return (cachedBlocklist = false);
     const r = renderer.toLowerCase();
-    return BLOCKLISTED_RENDERER_SUBSTRINGS.some((s) => r.includes(s));
+    return (cachedBlocklist = BLOCKLISTED_RENDERER_SUBSTRINGS.some((s) =>
+      r.includes(s)
+    ));
   } catch {
-    return false;
+    return (cachedBlocklist = false);
   }
 }
 
 export function detectRendererContext(
-  nav: Pick<Navigator, never> & { gpu?: unknown },
+  nav: Navigator,
   isMobile: boolean
 ): RendererPickContext {
   return {

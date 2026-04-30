@@ -786,30 +786,31 @@ function useTerminalSetup(
     let gpuAddon: WebgpuAddon | WebglAddon | undefined;
 
     if (renderer === 'webgpu') {
+      let a: WebgpuAddon | undefined;
       try {
-        const a = new WebgpuAddon();
+        a = new WebgpuAddon();
         t.loadAddon(a);
         t.open(container);
         gpuAddon = a;
       } catch (e) {
         // eslint-disable-next-line no-console -- intentional: surface renderer fallback in devtools
         console.warn('WebGPU renderer unavailable, falling back to WebGL:', e);
-        gpuAddon?.dispose();
+        a?.dispose();
         gpuAddon = undefined;
-        renderer =
-          renderCtx.hasWebgl2 && !renderCtx.isGpuBlocklisted ? 'webgl' : 'dom';
+        renderer = pickTerminalRenderer({ ...renderCtx, hasGpu: false });
       }
     }
     if (renderer === 'webgl' && !gpuAddon) {
+      let a: WebglAddon | undefined;
       try {
-        const a = new WebglAddon();
+        a = new WebglAddon();
         t.loadAddon(a);
         if (!t.element) t.open(container);
         gpuAddon = a;
       } catch (e) {
         // eslint-disable-next-line no-console -- intentional: surface renderer fallback in devtools
         console.warn('WebGL renderer unavailable, falling back to DOM:', e);
-        gpuAddon?.dispose();
+        a?.dispose();
         gpuAddon = undefined;
         renderer = 'dom';
       }
