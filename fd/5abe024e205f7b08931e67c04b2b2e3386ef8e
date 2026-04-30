@@ -1,0 +1,88 @@
+frontend/src/components/FileViewerPane.tsx
+  1a0f305109b2aba9 1-2,6-11,19-20,26-35,41-50,56,83-88,90-92,98-104,114,124-129,131,134-136,144-146,154-156,164-173,179-184,189-190,192,194-195,197,201-229,243-248,253-255,257-260,265-272,274-278,284-303,305-309
+frontend/src/components/FileTabContent.css
+  1a0f305109b2aba9 1-108
+frontend/src/components/FileTabContent.tsx
+  1a0f305109b2aba9 1-74,76-84,86-114,116-207,209,211-284,286-323,326-343,345-346,349-371
+frontend/src/components/WorkspaceContentLayer.css
+  1a0f305109b2aba9 1-18
+frontend/src/App.tsx
+  1a0f305109b2aba9 74,378,634-644
+frontend/src/lib/stores/ui.ts
+  1a0f305109b2aba9 13,132-134,136-148,334-335,422,436-441
+frontend/src/lib/workspace-summary.ts
+  1a0f305109b2aba9 1-71,73-79,81-102,104-125,127-140,142-171,173-177
+frontend/src/components/WorkspaceDropOverlay.tsx
+  1a0f305109b2aba9 1-3,5-75
+package.json
+  1a0f305109b2aba9 76
+frontend/src/components/WorkspaceTabBar.css
+  1a0f305109b2aba9 1-197
+frontend/src/components/WorkspaceLayoutDemo.tsx
+  1a0f305109b2aba9 1-2,4-66,68-71,73-107,109,111-152,154-214
+test/workspace-layout-store.test.ts
+  1a0f305109b2aba9 1-156
+test/workspace-summary.test.ts
+  1a0f305109b2aba9 1-7,9-12,14-108,110-114,116-119,121-124,126-132,134-172
+frontend/src/components/WorkspaceLayout.tsx
+  1a0f305109b2aba9 1-5,7-31,33-43,45-166,168-173,175-207,209-211,213-219,222-225,227-259
+test/workspace-layout.test.ts
+  1a0f305109b2aba9 1-30,32-82,84-194,196-197,199-209,211-213,215-410,412-421
+frontend/src/components/WorkspaceFilesArea.tsx
+  1a0f305109b2aba9 1-9,11-58,60-75,77-193,195-232,234-252,254-264
+frontend/src/components/WorkspacePane.tsx
+  1a0f305109b2aba9 1-122,124-166
+frontend/src/components/WorkspaceTabBar.tsx
+  1a0f305109b2aba9 1-141,143-177
+frontend/src/main.tsx
+  1a0f305109b2aba9 4,7-9,12,14
+frontend/src/components/WorkspaceDropOverlay.css
+  1a0f305109b2aba9 1-53
+frontend/src/components/WorkspaceLayoutDemo.css
+  1a0f305109b2aba9 1-129
+frontend/src/components/WorkspacePane.css
+  1a0f305109b2aba9 1-159
+frontend/src/lib/workspace-layout.ts
+  1a0f305109b2aba9 1-65,67-82,84-97,99-114,116-124,126-136,138-147,149-167,169-191,193-227,229-251,253-254,256-277,279-314,316-341,343-345
+frontend/src/components/WorkspaceLayout.css
+  1a0f305109b2aba9 1-63
+frontend/src/components/WorkspaceContentLayer.tsx
+  1a0f305109b2aba9 1-61,63-103,105-111
+frontend/src/lib/stores/workspace-layout-store.ts
+  1a0f305109b2aba9 1-31,33-37,39-42,44-51,53-61,63-108,110-124,126-168,170-176,178-201,203-210,212-217
+frontend/src/components/WorkspaceFilesArea.css
+  1a0f305109b2aba9 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "fd5abe024e205f7b08931e67c04b2b2e3386ef8e",
+  "prompts": {
+    "1a0f305109b2aba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0808dcfd-0207-4fcf-8470-0caac1dc2477",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4049,
+      "total_deletions": 357,
+      "accepted_lines": 3970,
+      "overriden_lines": 90
+    },
+    "46409245fc1573ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aba0983d-7a20-473a-b19c-da251f1c057e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4315,
+      "total_deletions": 0,
+      "accepted_lines": 4315,
+      "overriden_lines": 0
+    }
+  }
+}
