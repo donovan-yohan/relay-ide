@@ -1,0 +1,129 @@
+.ws-demo {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #0a0a0a);
+  color: var(--text, #e6e6e6);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  z-index: 50;
+}
+
+.ws-demo__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, #1a1a1a);
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-elev, #0d0d0d);
+}
+
+.ws-demo__brand {
+  color: var(--text, #e6e6e6);
+  font-weight: 600;
+}
+
+.ws-demo__sep {
+  opacity: 0.5;
+}
+
+.ws-demo__hint {
+  font-size: 0.65rem;
+}
+
+.ws-demo__spacer {
+  flex: 1;
+}
+
+.ws-demo__stat {
+  padding: 2px 8px;
+  border: 1px solid var(--border, #2a2a2a);
+}
+
+.ws-demo__btn {
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a2a);
+  color: var(--text-muted, #888);
+  font-family: inherit;
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.ws-demo__btn:hover {
+  color: var(--text, #e6e6e6);
+  border-color: var(--accent, #d97757);
+}
+
+.ws-demo__main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.ws-demo-mock {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg, #0a0a0a);
+}
+
+.ws-demo-mock__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 0.65rem;
+  color: var(--text-muted, #888);
+  border-bottom: 1px solid var(--border, #1a1a1a);
+  text-transform: lowercase;
+}
+
+.ws-demo-mock__label {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  font-size: 0.6rem;
+}
+
+.ws-demo-mock__title {
+  color: var(--text, #e6e6e6);
+}
+
+.ws-demo-mock__meta {
+  margin-left: auto;
+  color: var(--text-muted, #666);
+}
+
+.ws-demo-mock__pill {
+  padding: 1px 6px;
+  border: 1px solid var(--status-warning, #f59e0b);
+  color: var(--status-warning, #f59e0b);
+  font-size: 0.6rem;
+}
+
+.ws-demo-mock__body {
+  flex: 1;
+  padding: 14px 18px;
+  overflow: auto;
+  font-size: 0.75rem;
+  color: var(--text, #c8c8c8);
+}
+
+.ws-demo-mock__body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.ws-demo-mock--file .ws-demo-mock__body {
+  color: var(--text, #c8c8c8);
+}

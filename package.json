@@ -73,6 +73,7 @@
     "node-pty": "^1.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-resizable-panels": "^2.1.9",
     "shiki": "^4.0.2",
     "smee-client": "^5.0.0",
     "web-push": "^3.6.7",
