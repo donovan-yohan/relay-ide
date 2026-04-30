@@ -71,7 +71,7 @@ import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
 import FileViewerPane from './components/FileViewerPane.js';
-import WorkspaceFilesArea from './components/WorkspaceFilesArea.js';
+import WorkspaceArea from './components/WorkspaceArea.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
   utilityRailRenderedWidth,
@@ -573,7 +573,7 @@ function TerminalAreaContent({
             onArchive={onArchive}
           />
           <SplitPaneLayout
-            fileViewerOpen={fileViewerOpen}
+            fileViewerOpen={workspaceLayoutEnabled ? false : fileViewerOpen}
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}
             fileViewerRatio={fileViewerRatio}
@@ -589,54 +589,80 @@ function TerminalAreaContent({
               MAX_UTILITY_RAIL_WIDTH + UTILITY_ICON_RAIL_WIDTH
             }
             terminal={
-              <>
-                <SessionTabBar
-                  sessions={workspaceSessions}
-                  activeSessionId={activeSessionId}
-                  onSelectSession={onSelectSession}
-                  onCloseSession={onCloseSession}
-                  onNewAgent={() => onQuickAgent()}
-                  onNewTerminal={() => onQuickTerminal()}
-                  onCustomize={() => onCustomize()}
-                  hidden={keyboardOpen}
-                />
-
-                <SessionContent
-                  mode={activeSessionMode}
-                  sessionId={activeSessionId}
-                  terminalRef={terminalRef}
-                  onImageUpload={onImageUpload}
-                  useTmux={activeSessionUseTmux}
-                  onCopyModeChange={handleCopyModeChange}
-                  onFilePathClick={handleTerminalFilePathClick}
-                />
-
-                {activeSessionId && (
-                  <SessionStatusBar
-                    sessionId={activeSessionId}
-                    currentActivity={activeSession?.currentActivity ?? null}
-                    framework={activeSession?.agent}
+              workspaceLayoutEnabled ? (
+                <>
+                  <WorkspaceArea
+                    workspacePath={activeWorkspaceCwd}
+                    sessions={workspaceSessions}
+                    onInjectReference={handleInjectReference}
+                    onImageUpload={onImageUpload}
+                    onCopyModeChange={handleCopyModeChange}
+                    onFilePathClick={handleTerminalFilePathClick}
                   />
-                )}
 
-                <Toolbar
-                  onSendKey={handleSendKey}
-                  onFlushComposedText={handleFlushComposedText}
-                  onClearInput={handleClearInput}
-                  onUploadImage={handleUploadImage}
-                  onRefocusMobileInput={handleRefocusMobileInput}
-                  inCopyMode={copyModeActive}
-                  onExitCopyMode={handleExitCopyMode}
-                />
-              </>
+                  {activeSessionId && (
+                    <SessionStatusBar
+                      sessionId={activeSessionId}
+                      currentActivity={activeSession?.currentActivity ?? null}
+                      framework={activeSession?.agent}
+                    />
+                  )}
+
+                  <Toolbar
+                    onSendKey={handleSendKey}
+                    onFlushComposedText={handleFlushComposedText}
+                    onClearInput={handleClearInput}
+                    onUploadImage={handleUploadImage}
+                    onRefocusMobileInput={handleRefocusMobileInput}
+                    inCopyMode={copyModeActive}
+                    onExitCopyMode={handleExitCopyMode}
+                  />
+                </>
+              ) : (
+                <>
+                  <SessionTabBar
+                    sessions={workspaceSessions}
+                    activeSessionId={activeSessionId}
+                    onSelectSession={onSelectSession}
+                    onCloseSession={onCloseSession}
+                    onNewAgent={() => onQuickAgent()}
+                    onNewTerminal={() => onQuickTerminal()}
+                    onCustomize={() => onCustomize()}
+                    hidden={keyboardOpen}
+                  />
+
+                  <SessionContent
+                    mode={activeSessionMode}
+                    sessionId={activeSessionId}
+                    terminalRef={terminalRef}
+                    onImageUpload={onImageUpload}
+                    useTmux={activeSessionUseTmux}
+                    onCopyModeChange={handleCopyModeChange}
+                    onFilePathClick={handleTerminalFilePathClick}
+                  />
+
+                  {activeSessionId && (
+                    <SessionStatusBar
+                      sessionId={activeSessionId}
+                      currentActivity={activeSession?.currentActivity ?? null}
+                      framework={activeSession?.agent}
+                    />
+                  )}
+
+                  <Toolbar
+                    onSendKey={handleSendKey}
+                    onFlushComposedText={handleFlushComposedText}
+                    onClearInput={handleClearInput}
+                    onUploadImage={handleUploadImage}
+                    onRefocusMobileInput={handleRefocusMobileInput}
+                    inCopyMode={copyModeActive}
+                    onExitCopyMode={handleExitCopyMode}
+                  />
+                </>
+              )
             }
             fileViewer={
-              workspaceLayoutEnabled ? (
-                <WorkspaceFilesArea
-                  workspacePath={activeWorkspaceCwd}
-                  onInjectReference={handleInjectReference}
-                />
-              ) : (
+              workspaceLayoutEnabled ? null : (
                 <FileViewerPane
                   workspacePath={activeWorkspaceCwd}
                   onInjectReference={handleInjectReference}

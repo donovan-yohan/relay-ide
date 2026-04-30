@@ -10,6 +10,7 @@ import {
 } from '../lib/workspace-layout.js';
 import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js';
 import type { SummaryContext } from '../lib/workspace-summary.js';
+import type { SessionSummary } from '../lib/types.js';
 import {
   buildCacheKey,
   FileTabContent,
@@ -18,7 +19,9 @@ import {
 } from './FileTabContent.js';
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
-import './WorkspaceFilesArea.css';
+import { Terminal } from './Terminal.js';
+import { ChatView } from './chat/ChatView.js';
+import './WorkspaceArea.css';
 
 function uiTabToWorkspaceTab(tab: OpenFileTab): WorkspaceTab {
   return {
@@ -32,6 +35,20 @@ function uiTabToWorkspaceTab(tab: OpenFileTab): WorkspaceTab {
 function uiTabId(tab: OpenFileTab): string {
   return `file::${fileTabKey(tab.filePath, tab.tabType)}`;
 }
+
+function sessionToWorkspaceTab(session: SessionSummary): WorkspaceTab {
+  return {
+    kind: 'session',
+    sessionId: session.id,
+    sessionType: session.type,
+  };
+}
+
+function sessionTabId(session: SessionSummary): string {
+  return `session::${session.id}`;
+}
+
+// ── File tab content bridge ──────────────────────────────────────────────────
 
 interface FileTabContentBridgeProps {
   tab: Extract<WorkspaceTab, { kind: 'file' }>;
@@ -116,22 +133,69 @@ function FileTabContentBridge({
   );
 }
 
-export interface WorkspaceFilesAreaProps {
+// ── Session tab content mount ────────────────────────────────────────────────
+
+interface SessionContentMountProps {
+  session: SessionSummary;
+  onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
+  onCopyModeChange: (active: boolean) => void;
+  onFilePathClick: (path: string) => void;
+}
+
+function SessionContentMount({
+  session,
+  onImageUpload,
+  onCopyModeChange,
+  onFilePathClick,
+}: SessionContentMountProps) {
+  if (session.mode === 'web') {
+    return (
+      <div className="ws-session-mount ws-session-mount--web">
+        <ChatView sessionId={session.id} />
+      </div>
+    );
+  }
+  return (
+    <div className="ws-session-mount ws-session-mount--pty">
+      <Terminal
+        sessionId={session.id}
+        useTmux={session.useTmux !== false}
+        onImageUpload={onImageUpload}
+        onCopyModeChange={onCopyModeChange}
+        onFilePathClick={onFilePathClick}
+      />
+    </div>
+  );
+}
+
+// ── Main WorkspaceArea component ─────────────────────────────────────────────
+
+export interface WorkspaceAreaProps {
   workspacePath: string;
+  sessions: SessionSummary[];
   onInjectReference?: (reference: string) => void;
+  onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
+  onCopyModeChange: (active: boolean) => void;
+  onFilePathClick: (path: string) => void;
   renderDiff?: FileTabContentProps['renderDiff'];
   renderCode?: FileTabContentProps['renderCode'];
 }
 
-export function WorkspaceFilesArea({
+export function WorkspaceArea({
   workspacePath,
+  sessions,
   onInjectReference,
+  onImageUpload,
+  onCopyModeChange,
+  onFilePathClick,
   renderDiff,
   renderCode,
-}: WorkspaceFilesAreaProps) {
+}: WorkspaceAreaProps) {
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
   const setUiState = useUiStore.setState;
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
 
   const layout = useWorkspaceLayoutStore((s) => s.layout);
   const activePaneId = useWorkspaceLayoutStore((s) => s.activePaneId);
@@ -140,18 +204,21 @@ export function WorkspaceFilesArea({
   const selectTab = useWorkspaceLayoutStore((s) => s.selectTab);
   const resetLayout = useWorkspaceLayoutStore((s) => s.resetLayout);
 
-  // Initialize layout from current openFileTabs on first mount.
+  // Initialize layout from current sessions + openFileTabs on first mount.
   const initializedRef = useRef(false);
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
-    resetLayout(openFileTabs.map(uiTabToWorkspaceTab));
-  }, [resetLayout, openFileTabs]);
+    const initialTabs: WorkspaceTab[] = [
+      ...sessions.map(sessionToWorkspaceTab),
+      ...openFileTabs.map(uiTabToWorkspaceTab),
+    ];
+    resetLayout(initialTabs);
+  }, [resetLayout, sessions, openFileTabs]);
 
-  // Workspace tab close → ui.closeFileTab (detect tabs removed from layout).
-  // Runs BEFORE the ui → workspace sync effect below so the recently-removed
-  // id set is populated before that effect would otherwise re-add the tab in
-  // the same commit (stale openFileTabs closure).
+  // Workspace tab close → store sync (file tabs → ui.closeFileTab; session
+  // tabs only need to remove from layout — sessionsStore manages session
+  // lifecycle separately and external close events sync IN here).
   const prevLayoutTabIdsRef = useRef<Set<string>>(new Set());
   const recentlyRemovedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -167,48 +234,63 @@ export function WorkspaceFilesArea({
     prevLayoutTabIdsRef.current = currentIds;
 
     for (const id of removed) {
-      if (!id.startsWith('file::')) continue;
       recentlyRemovedIdsRef.current.add(id);
-      const ftKey = id.slice('file::'.length);
-      const uiTab = useUiStore
-        .getState()
-        .openFileTabs.find((t) => fileTabKey(t.filePath, t.tabType) === ftKey);
-      if (uiTab) {
-        useUiStore.getState().closeFileTab(uiTab.filePath, uiTab.tabType);
+      if (id.startsWith('file::')) {
+        const ftKey = id.slice('file::'.length);
+        const uiTab = useUiStore
+          .getState()
+          .openFileTabs.find(
+            (t) => fileTabKey(t.filePath, t.tabType) === ftKey
+          );
+        if (uiTab) {
+          useUiStore.getState().closeFileTab(uiTab.filePath, uiTab.tabType);
+        }
       }
+      // Session removals are intentional no-ops on the sessionsStore side —
+      // sessions only end via explicit close (sidebar / × on session tab
+      // routes through the host caller's onCloseSession handler).
     }
   }, [layout]);
 
-  // Sync ui.openFileTabs → workspace tabs (add/remove).
+  // Sync ui.openFileTabs + sessions[] → workspace tabs (add new, remove gone).
   useEffect(() => {
     if (!initializedRef.current) return;
     const wsIds = new Set<string>();
     for (const pane of listPanes(layout)) {
       for (const t of pane.tabs) wsIds.add(workspaceTabId(t));
     }
-    const uiIds = new Set(openFileTabs.map(uiTabId));
 
+    const fileUiIds = new Set(openFileTabs.map(uiTabId));
+    const sessionUiIds = new Set(sessions.map(sessionTabId));
+    const liveUiIds = new Set([...fileUiIds, ...sessionUiIds]);
+
+    const targetPane =
+      activePaneId ??
+      (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
+
+    // Add new file tabs.
     for (const t of openFileTabs) {
       const id = uiTabId(t);
       if (wsIds.has(id)) continue;
-      // Suppress re-add for ids we just removed from layout — the ui store
-      // close has been dispatched but openFileTabs in this closure is stale.
       if (recentlyRemovedIdsRef.current.has(id)) continue;
-      const targetPane =
-        activePaneId ??
-        (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
       if (targetPane) addTab(targetPane, uiTabToWorkspaceTab(t));
     }
+    // Add new session tabs.
+    for (const s of sessions) {
+      const id = sessionTabId(s);
+      if (wsIds.has(id)) continue;
+      if (recentlyRemovedIdsRef.current.has(id)) continue;
+      if (targetPane) addTab(targetPane, sessionToWorkspaceTab(s));
+    }
+    // Remove tabs whose source is gone.
     for (const id of wsIds) {
-      if (!uiIds.has(id)) closeTab(id);
+      if (!liveUiIds.has(id)) closeTab(id);
     }
-
-    // Once the ui store has caught up (the id is gone from openFileTabs),
-    // drop the suppression so future re-adds of the same path are allowed.
+    // Drop suppression once stores caught up.
     for (const id of Array.from(recentlyRemovedIdsRef.current)) {
-      if (!uiIds.has(id)) recentlyRemovedIdsRef.current.delete(id);
+      if (!liveUiIds.has(id)) recentlyRemovedIdsRef.current.delete(id);
     }
-  }, [openFileTabs, layout, activePaneId, addTab, closeTab]);
+  }, [openFileTabs, sessions, layout, activePaneId, addTab, closeTab]);
 
   // Sync ui.activeFileTabKey → workspace selection.
   useEffect(() => {
@@ -224,53 +306,102 @@ export function WorkspaceFilesArea({
     }
   }, [activeFileTabKey, layout, selectTab]);
 
-  // Workspace pane active tab change → ui.activeFileTabKey.
+  // Sync sessionsStore.activeSessionId → workspace selection.
   useEffect(() => {
-    let activeFileTabId: string | null = null;
+    if (!activeSessionId) return;
+    const targetId = `session::${activeSessionId}`;
+    for (const pane of listPanes(layout)) {
+      if (pane.tabs.some((t) => workspaceTabId(t) === targetId)) {
+        if (pane.activeTabId !== targetId) {
+          selectTab(pane.id, targetId);
+        }
+        return;
+      }
+    }
+  }, [activeSessionId, layout, selectTab]);
+
+  // Workspace pane active tab → store sync (file or session).
+  useEffect(() => {
+    let activeTabId: string | null = null;
     for (const pane of listPanes(layout)) {
       if (pane.id === activePaneId && pane.activeTabId) {
-        activeFileTabId = pane.activeTabId;
+        activeTabId = pane.activeTabId;
         break;
       }
     }
-    if (!activeFileTabId || !activeFileTabId.startsWith('file::')) return;
-    const ftKey = activeFileTabId.slice('file::'.length);
-    if (useUiStore.getState().activeFileTabKey !== ftKey) {
-      setUiState({ activeFileTabKey: ftKey });
+    if (!activeTabId) return;
+    if (activeTabId.startsWith('file::')) {
+      const ftKey = activeTabId.slice('file::'.length);
+      if (useUiStore.getState().activeFileTabKey !== ftKey) {
+        setUiState({ activeFileTabKey: ftKey });
+      }
+    } else if (activeTabId.startsWith('session::')) {
+      const id = activeTabId.slice('session::'.length);
+      if (useSessionsStore.getState().activeSessionId !== id) {
+        setActiveSessionId(id);
+      }
     }
-  }, [layout, activePaneId, setUiState]);
+  }, [layout, activePaneId, setUiState, setActiveSessionId]);
 
   const summaryContext = useMemo<SummaryContext>(() => {
     const changed = new Set(
       openFileTabs.filter((t) => t.isChanged).map((t) => t.filePath)
     );
+    const findSession = (id: string) => sessions.find((s) => s.id === id);
     return {
       isFileChanged: (path) => changed.has(path),
+      findSession,
     };
-  }, [openFileTabs]);
+  }, [openFileTabs, sessions]);
 
   const renderTab = useCallback(
     (tab: WorkspaceTab) => {
-      if (tab.kind !== 'file') return null;
+      if (tab.kind === 'file') {
+        return (
+          <FileTabContentBridge
+            tab={tab}
+            workspacePath={workspacePath}
+            onInjectReference={onInjectReference}
+            renderDiff={renderDiff}
+            renderCode={renderCode}
+          />
+        );
+      }
+      const session = sessions.find((s) => s.id === tab.sessionId);
+      if (!session) {
+        return (
+          <div className="ws-session-mount ws-session-mount--missing">
+            session {tab.sessionId} no longer exists
+          </div>
+        );
+      }
       return (
-        <FileTabContentBridge
-          tab={tab}
-          workspacePath={workspacePath}
-          onInjectReference={onInjectReference}
-          renderDiff={renderDiff}
-          renderCode={renderCode}
+        <SessionContentMount
+          session={session}
+          onImageUpload={onImageUpload}
+          onCopyModeChange={onCopyModeChange}
+          onFilePathClick={onFilePathClick}
         />
       );
     },
-    [workspacePath, onInjectReference, renderDiff, renderCode]
+    [
+      workspacePath,
+      onInjectReference,
+      renderDiff,
+      renderCode,
+      sessions,
+      onImageUpload,
+      onCopyModeChange,
+      onFilePathClick,
+    ]
   );
 
   return (
-    <div className="ws-files-area">
+    <div className="ws-area">
       <WorkspaceLayout summaryContext={summaryContext} />
       <WorkspaceContentLayer renderTab={renderTab} />
     </div>
   );
 }
 
-export default WorkspaceFilesArea;
+export default WorkspaceArea;

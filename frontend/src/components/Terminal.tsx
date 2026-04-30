@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useCallback,
   useImperativeHandle,
+  useMemo,
   forwardRef,
 } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
@@ -24,6 +25,7 @@ import {
   pickTerminalRenderer,
   type TerminalRenderer,
 } from '../lib/terminal-renderer.js';
+import { setTerminalHandle } from '../lib/terminal-refs.js';
 import './Terminal.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1114,8 +1116,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       handleDrop,
     } = useTerminalInteractions(termRef, applyZoom, handleImageUpload);
 
-    useImperativeHandle(
-      ref,
+    const handle = useMemo<TerminalHandle>(
       () => ({
         getTerm: () => termRef.current,
         focusTerm: () => termRef.current?.focus(),
@@ -1125,6 +1126,13 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       }),
       [termRef, fit, exitCopyMode, handleImageUpload]
     );
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    useEffect(() => {
+      if (!sessionId) return undefined;
+      setTerminalHandle(sessionId, handle);
+      return () => setTerminalHandle(sessionId, null);
+    }, [sessionId, handle]);
 
     useEffect(() => {
       if (
