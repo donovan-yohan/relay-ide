@@ -10,6 +10,7 @@ import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebgpuAddon } from '@xterm/addon-webgpu';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
@@ -17,11 +18,12 @@ import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { clampFontSize, zoomPercentage } from '../lib/terminal-zoom.js';
 import {
-  clampFontSize,
-  zoomPercentage,
-  shouldUseWebGpuRenderer,
-} from '../lib/terminal-zoom.js';
+  detectRendererContext,
+  pickTerminalRenderer,
+  type TerminalRenderer,
+} from '../lib/terminal-renderer.js';
 import './Terminal.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -777,30 +779,54 @@ function useTerminalSetup(
     t.loadAddon(fa);
     t.loadAddon(new WebLinksAddon());
     registerFileLinkProvider(t, onFilePathClick);
-    // Try WebGPU renderer first, fall back to default DOM renderer
-    let webgpuAddon: WebgpuAddon | undefined;
-    if (shouldUseWebGpuRenderer('gpu' in navigator, isMobileDevice)) {
+
+    // Pick renderer: WebGPU → WebGL → DOM
+    const renderCtx = detectRendererContext(navigator, isMobileDevice);
+    let renderer: TerminalRenderer = pickTerminalRenderer(renderCtx);
+    let gpuAddon: WebgpuAddon | WebglAddon | undefined;
+
+    if (renderer === 'webgpu') {
+      let a: WebgpuAddon | undefined;
       try {
-        webgpuAddon = new WebgpuAddon();
-        t.loadAddon(webgpuAddon);
+        a = new WebgpuAddon();
+        t.loadAddon(a);
         t.open(container);
+        gpuAddon = a;
       } catch (e) {
-        // eslint-disable-next-line no-console -- intentional: surface WebGPU fallback in devtools
-        console.warn('WebGPU renderer unavailable, using DOM renderer:', e);
-        webgpuAddon?.dispose();
-        webgpuAddon = undefined;
+        // eslint-disable-next-line no-console -- intentional: surface renderer fallback in devtools
+        console.warn('WebGPU renderer unavailable, falling back to WebGL:', e);
+        a?.dispose();
+        gpuAddon = undefined;
+        renderer = pickTerminalRenderer({ ...renderCtx, hasGpu: false });
+      }
+    }
+    if (renderer === 'webgl' && !gpuAddon) {
+      let a: WebglAddon | undefined;
+      try {
+        a = new WebglAddon();
+        t.loadAddon(a);
+        if (!t.element) t.open(container);
+        gpuAddon = a;
+      } catch (e) {
+        // eslint-disable-next-line no-console -- intentional: surface renderer fallback in devtools
+        console.warn('WebGL renderer unavailable, falling back to DOM:', e);
+        a?.dispose();
+        gpuAddon = undefined;
+        renderer = 'dom';
       }
     }
     if (!t.element) {
       t.open(container);
     }
-    if (webgpuAddon) {
-      webgpuAddon.onContextLoss(() => {
+    if (gpuAddon) {
+      gpuAddon.onContextLoss(() => {
         // eslint-disable-next-line no-console -- intentional: surface GPU context loss in devtools
-        console.warn('WebGPU context lost, falling back to DOM renderer');
-        webgpuAddon?.dispose();
+        console.warn(`${renderer} context lost, falling back to DOM renderer`);
+        gpuAddon?.dispose();
       });
     }
+    // eslint-disable-next-line no-console -- intentional: log selected renderer once at terminal mount
+    console.info(`xterm renderer: ${renderer}`);
     registerEscapeSequenceSanitizers(t);
     if (isMobileDevice) applyMobilePatches(container, t);
     fa.fit();
