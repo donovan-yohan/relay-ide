@@ -42,51 +42,29 @@ export function WorkspaceContentLayer({
     setBufferEl(bufferRef.current);
   }, []);
 
+  const warmedRef = useRef<Set<WorkspaceTabId>>(new Set());
+
   const placements = useMemo<TabPlacement[]>(() => {
     const out: TabPlacement[] = [];
+    const live = new Set<WorkspaceTabId>();
+    const warmed = warmedRef.current;
     for (const pane of listPanes(layout)) {
       for (const tab of pane.tabs) {
         const tabId = workspaceTabId(tab);
-        out.push({
-          tab,
-          tabId,
-          paneId: pane.id,
-          isActive: pane.activeTabId === tabId,
-        });
+        const isActive = pane.activeTabId === tabId;
+        live.add(tabId);
+        if (isActive) warmed.add(tabId);
+        out.push({ tab, tabId, paneId: pane.id, isActive });
       }
+    }
+    for (const id of warmed) {
+      if (!live.has(id)) warmed.delete(id);
     }
     return out;
   }, [layout]);
 
-  const [warmed, setWarmed] = useState<ReadonlySet<WorkspaceTabId>>(
-    () => new Set()
-  );
-
-  useEffect(() => {
-    setWarmed((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const { tabId, isActive } of placements) {
-        if (isActive && !next.has(tabId)) {
-          next.add(tabId);
-          changed = true;
-        }
-      }
-      const liveIds = new Set(placements.map((p) => p.tabId));
-      for (const id of next) {
-        if (!liveIds.has(id)) {
-          next.delete(id);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [placements]);
-
-  const shouldMount = (placement: TabPlacement): boolean => {
-    if (placement.tab.kind === 'session') return true;
-    return warmed.has(placement.tabId);
-  };
+  const shouldMount = (placement: TabPlacement): boolean =>
+    placement.tab.kind === 'session' || warmedRef.current.has(placement.tabId);
 
   return (
     <>
