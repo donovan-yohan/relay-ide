@@ -272,11 +272,15 @@ export function WorkspaceArea({
     }
   }, [openFileTabs, sessions, layout, activePaneId, addTab, closeTab]);
 
-  // Sync ui.activeFileTabKey → workspace selection.
+  // Sync ui.activeFileTabKey → workspace selection. Triggered ONLY when
+  // activeFileTabKey changes — not on layout changes — otherwise this effect
+  // and the activeSessionId effect fight to select different tabs in the
+  // same pane after openFileTab (Maximum update depth crash).
   useEffect(() => {
     if (!activeFileTabKey) return;
     const targetId = `file::${activeFileTabKey}`;
-    for (const pane of listPanes(layout)) {
+    const currentLayout = useWorkspaceLayoutStore.getState().layout;
+    for (const pane of listPanes(currentLayout)) {
       if (pane.tabs.some((t) => workspaceTabId(t) === targetId)) {
         if (pane.activeTabId !== targetId) {
           selectTab(pane.id, targetId);
@@ -284,13 +288,15 @@ export function WorkspaceArea({
         return;
       }
     }
-  }, [activeFileTabKey, layout, selectTab]);
+  }, [activeFileTabKey, selectTab]);
 
-  // Sync sessionsStore.activeSessionId → workspace selection.
+  // Sync sessionsStore.activeSessionId → workspace selection. Same shape as
+  // activeFileTabKey effect — fires only when its own dep changes.
   useEffect(() => {
     if (!activeSessionId) return;
     const targetId = `session::${activeSessionId}`;
-    for (const pane of listPanes(layout)) {
+    const currentLayout = useWorkspaceLayoutStore.getState().layout;
+    for (const pane of listPanes(currentLayout)) {
       if (pane.tabs.some((t) => workspaceTabId(t) === targetId)) {
         if (pane.activeTabId !== targetId) {
           selectTab(pane.id, targetId);
@@ -298,7 +304,7 @@ export function WorkspaceArea({
         return;
       }
     }
-  }, [activeSessionId, layout, selectTab]);
+  }, [activeSessionId, selectTab]);
 
   // Workspace pane active tab → store sync (file or session).
   useEffect(() => {
