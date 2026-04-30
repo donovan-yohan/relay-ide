@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { SessionSummary } from '../lib/types.js';
 import { workspaceTabId, type WorkspaceTab } from '../lib/workspace-layout.js';
 import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js';
@@ -138,6 +138,7 @@ export function WorkspaceLayoutDemo() {
   const resetLayout = useWorkspaceLayoutStore((s) => s.resetLayout);
   const addTab = useWorkspaceLayoutStore((s) => s.addTab);
   const layout = useWorkspaceLayoutStore((s) => s.layout);
+  const mockTabCounterRef = useRef(0);
 
   useEffect(() => {
     resetLayout(MOCK_TABS);
@@ -163,7 +164,8 @@ export function WorkspaceLayoutDemo() {
   };
 
   const onAddTabRequest = (paneId: string) => {
-    const counter = (Math.random() * 1000) | 0;
+    mockTabCounterRef.current += 1;
+    const counter = mockTabCounterRef.current;
     const tab: WorkspaceTab = {
       kind: 'file',
       filePath: `mock/scratch-${counter}.ts`,

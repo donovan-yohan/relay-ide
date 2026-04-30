@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
 import type { OpenFileTab } from '../lib/stores/ui.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
 import {
   listPanes,
@@ -53,6 +54,9 @@ function FileTabContentBridge({
   const fileWordWrap = useUiStore((s) => s.fileWordWrap);
   const closeFileTab = useUiStore((s) => s.closeFileTab);
   const openFileTabs = useUiStore((s) => s.openFileTabs);
+  const sendToTargetSessionId = useUiStore((s) => s.sendToTargetSessionId);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const hasActiveSession = (sendToTargetSessionId ?? activeSessionId) !== null;
 
   const base = useMemo(
     () => diffSourceToBase(fileDiffSource, fileDiffDefaultBranch) ?? null,
@@ -101,7 +105,7 @@ function FileTabContentBridge({
       error={error}
       diffViewMode={fileDiffViewMode}
       wordWrap={fileWordWrap}
-      hasActiveSession={false}
+      hasActiveSession={hasActiveSession}
       onInjectReference={onInjectReference}
       onRetry={handleRetry}
       onCloseTab={handleCloseTab}
@@ -144,36 +148,12 @@ export function WorkspaceFilesArea({
     resetLayout(openFileTabs.map(uiTabToWorkspaceTab));
   }, [resetLayout, openFileTabs]);
 
-  // Sync ui.openFileTabs → workspace tabs (add/remove).
-  useEffect(() => {
-    if (!initializedRef.current) return;
-    const wsIds = new Set<string>();
-    const wsPaneById = new Map<string, string>();
-    for (const pane of listPanes(layout)) {
-      for (const t of pane.tabs) {
-        const id = workspaceTabId(t);
-        wsIds.add(id);
-        wsPaneById.set(id, pane.id);
-      }
-    }
-    const uiIds = new Set(openFileTabs.map(uiTabId));
-
-    for (const t of openFileTabs) {
-      const id = uiTabId(t);
-      if (!wsIds.has(id)) {
-        const targetPane =
-          activePaneId ??
-          (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
-        if (targetPane) addTab(targetPane, uiTabToWorkspaceTab(t));
-      }
-    }
-    for (const id of wsIds) {
-      if (!uiIds.has(id)) closeTab(id);
-    }
-  }, [openFileTabs, layout, activePaneId, addTab, closeTab]);
-
   // Workspace tab close → ui.closeFileTab (detect tabs removed from layout).
+  // Runs BEFORE the ui → workspace sync effect below so the recently-removed
+  // id set is populated before that effect would otherwise re-add the tab in
+  // the same commit (stale openFileTabs closure).
   const prevLayoutTabIdsRef = useRef<Set<string>>(new Set());
+  const recentlyRemovedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const currentIds = new Set<string>();
     for (const pane of listPanes(layout)) {
@@ -188,6 +168,7 @@ export function WorkspaceFilesArea({
 
     for (const id of removed) {
       if (!id.startsWith('file::')) continue;
+      recentlyRemovedIdsRef.current.add(id);
       const ftKey = id.slice('file::'.length);
       const uiTab = useUiStore
         .getState()
@@ -197,6 +178,37 @@ export function WorkspaceFilesArea({
       }
     }
   }, [layout]);
+
+  // Sync ui.openFileTabs → workspace tabs (add/remove).
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    const wsIds = new Set<string>();
+    for (const pane of listPanes(layout)) {
+      for (const t of pane.tabs) wsIds.add(workspaceTabId(t));
+    }
+    const uiIds = new Set(openFileTabs.map(uiTabId));
+
+    for (const t of openFileTabs) {
+      const id = uiTabId(t);
+      if (wsIds.has(id)) continue;
+      // Suppress re-add for ids we just removed from layout — the ui store
+      // close has been dispatched but openFileTabs in this closure is stale.
+      if (recentlyRemovedIdsRef.current.has(id)) continue;
+      const targetPane =
+        activePaneId ??
+        (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
+      if (targetPane) addTab(targetPane, uiTabToWorkspaceTab(t));
+    }
+    for (const id of wsIds) {
+      if (!uiIds.has(id)) closeTab(id);
+    }
+
+    // Once the ui store has caught up (the id is gone from openFileTabs),
+    // drop the suppression so future re-adds of the same path are allowed.
+    for (const id of Array.from(recentlyRemovedIdsRef.current)) {
+      if (!uiIds.has(id)) recentlyRemovedIdsRef.current.delete(id);
+    }
+  }, [openFileTabs, layout, activePaneId, addTab, closeTab]);
 
   // Sync ui.activeFileTabKey → workspace selection.
   useEffect(() => {

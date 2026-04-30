@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  _resetPaneCounter,
+  _resetIdCounters,
   createDefaultWorkspaceLayout,
   workspaceTabId,
   type WorkspaceLayoutNode,
@@ -23,12 +23,13 @@ const fileTab = (path: string): WorkspaceTab => ({
 });
 
 beforeEach(() => {
-  _resetPaneCounter();
+  _resetIdCounters();
   const tabs: WorkspaceTab[] = [];
   const layout = createDefaultWorkspaceLayout(tabs);
   useWorkspaceLayoutStore.setState({
     layout,
     activePaneId: layout.id,
+    splitSizes: {},
   });
 });
 

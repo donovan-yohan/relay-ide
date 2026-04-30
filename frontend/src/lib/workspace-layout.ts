@@ -51,7 +51,8 @@ export function freshSplitId(prefix = 'split'): string {
   return `${prefix}-${_splitCounter}`;
 }
 
-export function _resetPaneCounter(): void {
+// Resets both the pane and split id counters. Test-only.
+export function _resetIdCounters(): void {
   _paneCounter = 0;
   _splitCounter = 0;
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  _resetPaneCounter,
+  _resetIdCounters,
   addTabToPane,
   closeLayoutTab,
   createDefaultWorkspaceLayout,
@@ -38,7 +38,7 @@ const fileTab = (
 const tid = (t: WorkspaceTab) => workspaceTabId(t);
 
 beforeEach(() => {
-  _resetPaneCounter();
+  _resetIdCounters();
 });
 
 describe('workspaceTabId', () => {

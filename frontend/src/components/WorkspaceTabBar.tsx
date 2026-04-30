@@ -105,6 +105,13 @@ function WorkspaceTabItem({
         className="ws-tab__close"
         aria-label={`close ${summary.primary}`}
         onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+            e.preventDefault();
+            onClose();
+          }
+        }}
         onClick={(e) => {
           e.stopPropagation();
           onClose();

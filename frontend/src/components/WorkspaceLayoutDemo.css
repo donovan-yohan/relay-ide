@@ -1,29 +1,36 @@
+/*
+ * Demo-only styling for the standalone `?workspaceDemo=1` route.
+ * All values come from DESIGN.md tokens (see App.css :root) — no ad-hoc
+ * colors / fonts / spacing. The demo follows the same TUI aesthetic as the
+ * production UI.
+ */
+
 .ws-demo {
   position: fixed;
   inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg, #0a0a0a);
-  color: var(--text, #e6e6e6);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
   z-index: 50;
 }
 
 .ws-demo__bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border, #1a1a1a);
-  font-size: 0.7rem;
-  color: var(--text-muted, #888);
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
   text-transform: lowercase;
   letter-spacing: 0.04em;
-  background: var(--bg-elev, #0d0d0d);
+  background: var(--surface);
 }
 
 .ws-demo__brand {
-  color: var(--text, #e6e6e6);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -32,7 +39,7 @@
 }
 
 .ws-demo__hint {
-  font-size: 0.65rem;
+  font-size: var(--font-size-xs);
 }
 
 .ws-demo__spacer {
@@ -40,25 +47,26 @@
 }
 
 .ws-demo__stat {
-  padding: 2px 8px;
-  border: 1px solid var(--border, #2a2a2a);
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
 }
 
 .ws-demo__btn {
-  padding: 3px 10px;
+  padding: var(--space-2xs) var(--space-sm);
   background: transparent;
-  border: 1px solid var(--border, #2a2a2a);
-  color: var(--text-muted, #888);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   font-family: inherit;
-  font-size: 0.7rem;
+  font-size: var(--font-size-xs);
   text-transform: lowercase;
   cursor: pointer;
   text-decoration: none;
 }
 
 .ws-demo__btn:hover {
-  color: var(--text, #e6e6e6);
-  border-color: var(--accent, #d97757);
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .ws-demo__main {
@@ -73,57 +81,53 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  background: var(--bg, #0a0a0a);
+  background: var(--bg);
 }
 
 .ws-demo-mock__head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  font-size: 0.65rem;
-  color: var(--text-muted, #888);
-  border-bottom: 1px solid var(--border, #1a1a1a);
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
   text-transform: lowercase;
 }
 
 .ws-demo-mock__label {
   display: inline-block;
-  padding: 1px 6px;
-  border: 1px solid var(--border, #2a2a2a);
-  font-size: 0.6rem;
+  padding: 1px var(--space-xs);
+  border: 1px solid var(--border);
+  font-size: var(--font-size-xs);
 }
 
 .ws-demo-mock__title {
-  color: var(--text, #e6e6e6);
+  color: var(--text);
 }
 
 .ws-demo-mock__meta {
   margin-left: auto;
-  color: var(--text-muted, #666);
+  color: var(--text-muted);
 }
 
 .ws-demo-mock__pill {
-  padding: 1px 6px;
-  border: 1px solid var(--status-warning, #f59e0b);
-  color: var(--status-warning, #f59e0b);
-  font-size: 0.6rem;
+  padding: 1px var(--space-xs);
+  border: 1px solid var(--status-warning);
+  color: var(--status-warning);
+  font-size: var(--font-size-xs);
 }
 
 .ws-demo-mock__body {
   flex: 1;
-  padding: 14px 18px;
+  padding: var(--space-md) var(--space-lg);
   overflow: auto;
-  font-size: 0.75rem;
-  color: var(--text, #c8c8c8);
+  font-size: var(--font-size-sm);
+  color: var(--text);
 }
 
 .ws-demo-mock__body pre {
   margin: 0;
   white-space: pre-wrap;
   line-height: 1.5;
-}
-
-.ws-demo-mock--file .ws-demo-mock__body {
-  color: var(--text, #c8c8c8);
 }

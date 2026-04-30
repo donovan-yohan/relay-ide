@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchFileDiff } from '../lib/api.js';
 import { parseLineReference } from '../lib/file-tree-utils.js';
 import type { FileTabType } from '../lib/stores/ui.js';
@@ -51,11 +51,18 @@ export function useFileDiffCache(workspacePath: string): DiffCache {
   const [diffCache, setDiffCache] = useState<Map<string, string>>(new Map());
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [errorPaths, setErrorPaths] = useState<Map<string, string>>(new Map());
+  // Tracks keys with an in-flight or already-cached fetch. A ref avoids the
+  // stale-closure dance of depending on `diffCache`/`loadingPaths` and stops
+  // duplicate fetches even when several `fetchDiff` calls land in the same
+  // microtask before state updates flush.
+  const inFlightRef = useRef<Set<string>>(new Set());
+  const cachedRef = useRef<Set<string>>(new Set());
 
   const fetchDiff = useCallback(
     (filePath: string, base: string | null) => {
       const key = buildCacheKey(filePath, base);
-      if (diffCache.has(key) || loadingPaths.has(key)) return;
+      if (cachedRef.current.has(key) || inFlightRef.current.has(key)) return;
+      inFlightRef.current.add(key);
       setLoadingPaths((prev) => new Set([...prev, key]));
       fetchFileDiff(workspacePath, filePath, base ?? undefined)
         .then(
@@ -65,6 +72,7 @@ export function useFileDiffCache(workspacePath: string): DiffCache {
                 (prev) => new Map([...prev, [key, result.error as string]])
               );
             } else {
+              cachedRef.current.add(key);
               setDiffCache((prev) => new Map([...prev, [key, result.diff]]));
             }
           },
@@ -75,6 +83,7 @@ export function useFileDiffCache(workspacePath: string): DiffCache {
           }
         )
         .finally(() => {
+          inFlightRef.current.delete(key);
           setLoadingPaths((prev) => {
             const next = new Set(prev);
             next.delete(key);
@@ -82,10 +91,11 @@ export function useFileDiffCache(workspacePath: string): DiffCache {
           });
         });
     },
-    [workspacePath, diffCache, loadingPaths]
+    [workspacePath]
   );
 
   const clearEntry = useCallback((key: string) => {
+    cachedRef.current.delete(key);
     setDiffCache((prev) => {
       const m = new Map(prev);
       m.delete(key);
