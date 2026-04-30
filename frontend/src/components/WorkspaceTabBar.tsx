@@ -1,0 +1,184 @@
+import React from 'react';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
+import {
+  workspaceTabId,
+  type WorkspacePane,
+  type WorkspaceTab,
+  type WorkspaceTabId,
+} from '../lib/workspace-layout.js';
+import {
+  summaryForTab,
+  type SummaryContext,
+  type WorkspaceTabSummary,
+} from '../lib/workspace-summary.js';
+import './WorkspaceTabBar.css';
+
+const ICON_GLYPH: Record<WorkspaceTabSummary['icon'], string> = {
+  'session-claude': '✱',
+  'session-codex': '◆',
+  'session-opencode': '○',
+  'session-hermes': '△',
+  'session-agent': '✱',
+  'session-terminal': '›_',
+  'file-tsx': '⟨⟩',
+  'file-ts': 'TS',
+  'file-jsx': '⟨⟩',
+  'file-js': 'JS',
+  'file-py': 'PY',
+  'file-rs': 'RS',
+  'file-go': 'GO',
+  'file-css': '#',
+  'file-html': '<>',
+  'file-md': 'MD',
+  'file-json': '{}',
+  'file-generic': '·',
+  'file-diff': '±',
+  'file-html-preview': '⌬',
+};
+
+interface WorkspaceTabItemProps {
+  tab: WorkspaceTab;
+  paneId: string;
+  isActive: boolean;
+  summary: WorkspaceTabSummary;
+  onSelect: () => void;
+  onClose: () => void;
+}
+
+function WorkspaceTabItem({
+  tab,
+  paneId,
+  isActive,
+  summary,
+  onSelect,
+  onClose,
+}: WorkspaceTabItemProps) {
+  const tabId = workspaceTabId(tab);
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: tabId,
+    data: { type: 'tab', tabId, sourcePaneId: paneId },
+  });
+
+  const className = [
+    'ws-tab',
+    isActive ? 'ws-tab--active' : '',
+    isDragging ? 'ws-tab--dragging' : '',
+    `ws-tab--${tab.kind}`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={className}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      title={summary.primary}
+      {...attributes}
+      {...listeners}
+      role="tab"
+      tabIndex={0}
+      aria-selected={isActive}
+    >
+      <span
+        className={`ws-tab__icon ws-tab__icon--${summary.icon}`}
+        aria-hidden
+      >
+        {ICON_GLYPH[summary.icon]}
+      </span>
+      <span className="ws-tab__name">{summary.primary}</span>
+      {summary.meta && <span className="ws-tab__meta">{summary.meta}</span>}
+      {summary.dot && (
+        <span
+          className={`ws-tab__dot ws-tab__dot--${summary.dot}`}
+          aria-hidden
+        />
+      )}
+      <button
+        type="button"
+        className="ws-tab__close"
+        aria-label={`close ${summary.primary}`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+export interface WorkspaceTabBarProps {
+  pane: WorkspacePane;
+  summaryContext: SummaryContext;
+  onSelectTab: (tabId: WorkspaceTabId) => void;
+  onCloseTab: (tabId: WorkspaceTabId) => void;
+  onAddTabRequest?: () => void;
+}
+
+export function WorkspaceTabBar({
+  pane,
+  summaryContext,
+  onSelectTab,
+  onCloseTab,
+  onAddTabRequest,
+}: WorkspaceTabBarProps) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `tabbar:${pane.id}`,
+    data: { type: 'tabbar', paneId: pane.id },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={['ws-tabs', isOver ? 'ws-tabs--drop-target' : '']
+        .filter(Boolean)
+        .join(' ')}
+      role="tablist"
+    >
+      {pane.tabs.map((tab) => {
+        const tabId = workspaceTabId(tab);
+        const summary = summaryForTab(tab, summaryContext);
+        return (
+          <WorkspaceTabItem
+            key={tabId}
+            tab={tab}
+            paneId={pane.id}
+            isActive={pane.activeTabId === tabId}
+            summary={summary}
+            onSelect={() => onSelectTab(tabId)}
+            onClose={() => onCloseTab(tabId)}
+          />
+        );
+      })}
+      {onAddTabRequest && (
+        <button
+          type="button"
+          className="ws-tabs__add"
+          aria-label="add tab"
+          onClick={onAddTabRequest}
+        >
+          +
+        </button>
+      )}
+      <span className="ws-tabs__spacer" aria-hidden />
+    </div>
+  );
+}
+
+export default WorkspaceTabBar;

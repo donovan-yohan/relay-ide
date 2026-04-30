@@ -1,0 +1,177 @@
+import type { AgentState, SessionSummary } from './types.js';
+import type { WorkspaceTab } from './workspace-layout.js';
+
+export type SummaryIcon =
+  | 'session-claude'
+  | 'session-codex'
+  | 'session-opencode'
+  | 'session-hermes'
+  | 'session-agent'
+  | 'session-terminal'
+  | 'file-tsx'
+  | 'file-ts'
+  | 'file-jsx'
+  | 'file-js'
+  | 'file-py'
+  | 'file-rs'
+  | 'file-go'
+  | 'file-css'
+  | 'file-html'
+  | 'file-md'
+  | 'file-json'
+  | 'file-generic'
+  | 'file-diff'
+  | 'file-html-preview';
+
+export type SummaryDot = 'live' | 'attention' | 'idle' | 'error' | null;
+
+export interface SummaryPill {
+  kind: 'dirty' | 'info' | 'warn' | 'success';
+  label: string;
+}
+
+export interface WorkspaceTabSummary {
+  icon: SummaryIcon;
+  primary: string;
+  meta?: string;
+  pills: SummaryPill[];
+  dot: SummaryDot;
+  breadcrumb?: {
+    segments: string[];
+    repoLabel?: string;
+    repoColor?: string;
+  };
+}
+
+export interface SummaryContext {
+  findSession?: (id: string) => SessionSummary | undefined;
+  isFileChanged?: (filePath: string) => boolean;
+  fileLineCount?: (filePath: string) => number | undefined;
+  repoLabel?: string;
+  repoColor?: string;
+}
+
+const FILE_ICON_MAP: Record<string, SummaryIcon> = {
+  tsx: 'file-tsx',
+  ts: 'file-ts',
+  jsx: 'file-jsx',
+  js: 'file-js',
+  py: 'file-py',
+  rs: 'file-rs',
+  go: 'file-go',
+  css: 'file-css',
+  scss: 'file-css',
+  html: 'file-html',
+  md: 'file-md',
+  markdown: 'file-md',
+  json: 'file-json',
+};
+
+export function summaryForTab(
+  tab: WorkspaceTab,
+  ctx: SummaryContext = {}
+): WorkspaceTabSummary {
+  if (tab.kind === 'session') return summaryForSessionTab(tab, ctx);
+  return summaryForFileTab(tab, ctx);
+}
+
+function summaryForSessionTab(
+  tab: Extract<WorkspaceTab, { kind: 'session' }>,
+  ctx: SummaryContext
+): WorkspaceTabSummary {
+  const session = ctx.findSession?.(tab.sessionId);
+  const isTerminal = tab.sessionType === 'terminal';
+  const agent = session?.agent ?? '';
+  const icon = sessionIconFor(tab.sessionType, agent);
+  const primary =
+    session?.displayName ||
+    session?.branchName ||
+    (isTerminal ? 'terminal' : 'session');
+  const dot = sessionDot(session?.agentState, session?.idle);
+  const meta = sessionMeta(session, isTerminal);
+  return {
+    icon,
+    primary,
+    pills: [],
+    dot,
+    ...(meta !== undefined ? { meta } : {}),
+  };
+}
+
+function sessionIconFor(
+  type: 'agent' | 'terminal',
+  agent: string
+): SummaryIcon {
+  if (type === 'terminal') return 'session-terminal';
+  const a = agent.toLowerCase();
+  if (a.includes('claude')) return 'session-claude';
+  if (a.includes('codex')) return 'session-codex';
+  if (a.includes('opencode')) return 'session-opencode';
+  if (a.includes('hermes')) return 'session-hermes';
+  return 'session-agent';
+}
+
+function sessionDot(state?: AgentState, idle?: boolean): SummaryDot {
+  if (state === 'error') return 'error';
+  if (state === 'permission-prompt' || state === 'waiting-for-input') {
+    return 'attention';
+  }
+  if (state === 'processing') return 'live';
+  if (idle) return 'idle';
+  return null;
+}
+
+function sessionMeta(
+  session: SessionSummary | undefined,
+  isTerminal: boolean
+): string | undefined {
+  if (!session) return undefined;
+  const parts: string[] = [];
+  if (session.agent) parts.push(session.agent);
+  if (isTerminal && session.cwd) {
+    const last = session.cwd.split('/').filter(Boolean).pop();
+    if (last) parts.push(last);
+  }
+  if (session.agentState) parts.push(session.agentState);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function summaryForFileTab(
+  tab: Extract<WorkspaceTab, { kind: 'file' }>,
+  ctx: SummaryContext
+): WorkspaceTabSummary {
+  const segments = tab.filePath.split('/').filter(Boolean);
+  const fileName = segments[segments.length - 1] ?? tab.filePath;
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+  const icon = fileIconFor(ext, tab.tabType);
+  const isChanged = ctx.isFileChanged?.(tab.filePath) ?? false;
+  const lines = ctx.fileLineCount?.(tab.filePath);
+
+  const pills: SummaryPill[] = [];
+  if (isChanged) pills.push({ kind: 'dirty', label: 'unsaved' });
+  if (tab.tabType === 'diff') pills.push({ kind: 'info', label: 'diff' });
+  if (tab.tabType === 'html') pills.push({ kind: 'info', label: 'preview' });
+  const langLabel = `${ext || 'file'}${lines !== undefined ? ` · ${lines} lines` : ''}`;
+  pills.push({ kind: 'info', label: langLabel });
+
+  return {
+    icon,
+    primary: fileName,
+    pills,
+    dot: null,
+    breadcrumb: {
+      segments,
+      ...(ctx.repoLabel !== undefined ? { repoLabel: ctx.repoLabel } : {}),
+      ...(ctx.repoColor !== undefined ? { repoColor: ctx.repoColor } : {}),
+    },
+  };
+}
+
+function fileIconFor(
+  ext: string,
+  tabType: 'code' | 'diff' | 'html'
+): SummaryIcon {
+  if (tabType === 'diff') return 'file-diff';
+  if (tabType === 'html') return 'file-html-preview';
+  return FILE_ICON_MAP[ext] ?? 'file-generic';
+}

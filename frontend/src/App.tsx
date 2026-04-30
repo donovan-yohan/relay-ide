@@ -71,6 +71,7 @@ import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
 import FileViewerPane from './components/FileViewerPane.js';
+import WorkspaceFilesArea from './components/WorkspaceFilesArea.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
   utilityRailRenderedWidth,
@@ -374,6 +375,7 @@ function TerminalAreaContent({
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
+  const workspaceLayoutEnabled = useUiStore((s) => s.workspaceLayoutEnabled);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -629,10 +631,17 @@ function TerminalAreaContent({
               </>
             }
             fileViewer={
-              <FileViewerPane
-                workspacePath={activeWorkspaceCwd}
-                onInjectReference={handleInjectReference}
-              />
+              workspaceLayoutEnabled ? (
+                <WorkspaceFilesArea
+                  workspacePath={activeWorkspaceCwd}
+                  onInjectReference={handleInjectReference}
+                />
+              ) : (
+                <FileViewerPane
+                  workspacePath={activeWorkspaceCwd}
+                  onInjectReference={handleInjectReference}
+                />
+              )
             }
             rightSidebar={
               <WorkspaceUtilityRail

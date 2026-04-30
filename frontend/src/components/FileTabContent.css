@@ -1,0 +1,108 @@
+.file-tab-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg, #0a0a0a);
+}
+
+.file-tab-content__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.file-tab-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #1a1a1a);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tab-summary__crumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tab-summary__repo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--bg, #0a0a0a);
+  background: var(--accent, #d97757);
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.file-tab-summary__seg {
+  flex-shrink: 0;
+}
+
+.file-tab-summary__seg--name {
+  color: var(--text, #e6e6e6);
+}
+
+.file-tab-summary__sep {
+  color: var(--border, #2a2a2a);
+  flex-shrink: 0;
+}
+
+.file-tab-summary__pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.file-tab-summary__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  font-size: 0.65rem;
+  color: var(--text-muted, #888);
+  background: transparent;
+}
+
+.file-tab-summary__pill--dirty {
+  color: var(--status-warning, #f59e0b);
+  border-color: currentColor;
+}
+
+.file-tab-summary__pill-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.file-tab-summary__pill--success {
+  color: var(--status-success, #34d399);
+  border-color: currentColor;
+}
+
+.file-tab-summary__pill--warn {
+  color: var(--status-warning, #f59e0b);
+  border-color: currentColor;
+}
