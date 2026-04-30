@@ -1,5 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchFileDiff } from '../lib/api.js';
+import React, { useCallback, useEffect, useState } from 'react';
 import { parseLineReference } from '../lib/file-tree-utils.js';
 import type { FileTabType } from '../lib/stores/ui.js';
 import type { WorkspaceTabSummary } from '../lib/workspace-summary.js';
@@ -33,82 +32,6 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 export function languageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   return LANGUAGE_BY_EXT[ext] ?? 'text';
-}
-
-export function buildCacheKey(filePath: string, base: string | null): string {
-  return `${filePath}::${base ?? 'working'}`;
-}
-
-interface DiffCache {
-  diffCache: Map<string, string>;
-  loadingPaths: Set<string>;
-  errorPaths: Map<string, string>;
-  fetchDiff: (filePath: string, base: string | null) => void;
-  clearEntry: (key: string) => void;
-}
-
-export function useFileDiffCache(workspacePath: string): DiffCache {
-  const [diffCache, setDiffCache] = useState<Map<string, string>>(new Map());
-  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
-  const [errorPaths, setErrorPaths] = useState<Map<string, string>>(new Map());
-  // Tracks keys with an in-flight or already-cached fetch. A ref avoids the
-  // stale-closure dance of depending on `diffCache`/`loadingPaths` and stops
-  // duplicate fetches even when several `fetchDiff` calls land in the same
-  // microtask before state updates flush.
-  const inFlightRef = useRef<Set<string>>(new Set());
-  const cachedRef = useRef<Set<string>>(new Set());
-
-  const fetchDiff = useCallback(
-    (filePath: string, base: string | null) => {
-      const key = buildCacheKey(filePath, base);
-      if (cachedRef.current.has(key) || inFlightRef.current.has(key)) return;
-      inFlightRef.current.add(key);
-      setLoadingPaths((prev) => new Set([...prev, key]));
-      fetchFileDiff(workspacePath, filePath, base ?? undefined)
-        .then(
-          (result) => {
-            if (result.error) {
-              setErrorPaths(
-                (prev) => new Map([...prev, [key, result.error as string]])
-              );
-            } else {
-              cachedRef.current.add(key);
-              setDiffCache((prev) => new Map([...prev, [key, result.diff]]));
-            }
-          },
-          (err: unknown) => {
-            const msg =
-              err instanceof Error ? err.message : 'failed to load diff';
-            setErrorPaths((prev) => new Map([...prev, [key, msg]]));
-          }
-        )
-        .finally(() => {
-          inFlightRef.current.delete(key);
-          setLoadingPaths((prev) => {
-            const next = new Set(prev);
-            next.delete(key);
-            return next;
-          });
-        });
-    },
-    [workspacePath]
-  );
-
-  const clearEntry = useCallback((key: string) => {
-    cachedRef.current.delete(key);
-    setDiffCache((prev) => {
-      const m = new Map(prev);
-      m.delete(key);
-      return m;
-    });
-    setErrorPaths((prev) => {
-      const m = new Map(prev);
-      m.delete(key);
-      return m;
-    });
-  }, []);
-
-  return { diffCache, loadingPaths, errorPaths, fetchDiff, clearEntry };
 }
 
 interface HtmlTabViewProps {

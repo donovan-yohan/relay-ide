@@ -11,12 +11,8 @@ import {
 import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js';
 import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
-import {
-  buildCacheKey,
-  FileTabContent,
-  useFileDiffCache,
-  type FileTabContentProps,
-} from './FileTabContent.js';
+import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
+import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
@@ -80,17 +76,11 @@ function FileTabContentBridge({
     [fileDiffSource, fileDiffDefaultBranch]
   );
 
-  const { diffCache, loadingPaths, errorPaths, fetchDiff, clearEntry } =
-    useFileDiffCache(workspacePath);
-  const cacheKey = buildCacheKey(tab.filePath, base);
-  const diff = diffCache.get(cacheKey) ?? '';
-  const loading = loadingPaths.has(cacheKey);
-  const error = errorPaths.get(cacheKey) ?? null;
-
-  useEffect(() => {
-    if (tab.tabType === 'html') return;
-    fetchDiff(tab.filePath, base);
-  }, [tab.filePath, tab.tabType, base, fetchDiff]);
+  const { diff, loading, error } = useFileDiff(
+    { workspacePath, filePath: tab.filePath, base },
+    { enabled: tab.tabType !== 'html' }
+  );
+  const invalidateFileDiff = useInvalidateFileDiff();
 
   const uiMatch = openFileTabs.find(
     (t) =>
@@ -103,8 +93,8 @@ function FileTabContentBridge({
   const refreshVersion = uiMatch?.refreshVersion;
 
   const handleRetry = useCallback(() => {
-    clearEntry(cacheKey);
-  }, [clearEntry, cacheKey]);
+    invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
+  }, [invalidateFileDiff, workspacePath, tab.filePath, base]);
 
   const handleCloseTab = useCallback(() => {
     closeFileTab(tab.filePath, tab.tabType);

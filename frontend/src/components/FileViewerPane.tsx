@@ -1,14 +1,10 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
 import type { OpenFileTab } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
-import {
-  buildCacheKey,
-  FileTabContent,
-  useFileDiffCache,
-  type FileTabContentProps,
-} from './FileTabContent.js';
+import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
+import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import './FileViewerPane.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -109,9 +105,9 @@ function TabItem({ tab, isActive, onTabClick, onCloseTab }: TabItemProps) {
 // ── useFileViewerHandlers hook ────────────────────────────────────────────────
 
 function useFileViewerHandlers(
+  workspacePath: string,
   activeTab: OpenFileTab | undefined,
-  base: string | null,
-  clearEntry: (key: string) => void
+  base: string | null
 ) {
   const closeFileTab = useUiStore((s) => s.closeFileTab);
   const closeAllFileTabs = useUiStore((s) => s.closeAllFileTabs);
@@ -120,14 +116,15 @@ function useFileViewerHandlers(
   const setFileWordWrap = useUiStore((s) => s.setFileWordWrap);
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const fileWordWrap = useUiStore((s) => s.fileWordWrap);
+  const invalidateFileDiff = useInvalidateFileDiff();
 
   const handleCloseTab = useCallback(
     (tab: OpenFileTab, e: React.MouseEvent) => {
       e.stopPropagation();
       closeFileTab(tab.filePath, tab.tabType);
-      clearEntry(buildCacheKey(tab.filePath, base));
+      invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
     },
-    [closeFileTab, clearEntry, base]
+    [closeFileTab, invalidateFileDiff, workspacePath, base]
   );
 
   const handleTabClick = useCallback((tab: OpenFileTab) => {
@@ -137,8 +134,14 @@ function useFileViewerHandlers(
   }, []);
 
   const handleRetry = useCallback(() => {
-    if (activeTab) clearEntry(buildCacheKey(activeTab.filePath, base));
-  }, [activeTab, base, clearEntry]);
+    if (activeTab) {
+      invalidateFileDiff({
+        workspacePath,
+        filePath: activeTab.filePath,
+        base,
+      });
+    }
+  }, [activeTab, base, invalidateFileDiff, workspacePath]);
 
   const handleRefresh = useCallback(() => {
     if (activeTab?.tabType === 'html' && activeTab.filePath) {
@@ -198,10 +201,8 @@ export function FileViewerPane({
     [openFileTabs, activeFileTabKey]
   );
 
-  const { diffCache, loadingPaths, errorPaths, fetchDiff, clearEntry } =
-    useFileDiffCache(workspacePath);
   const { hasActiveSession, activeSessionName } = useActiveSession();
-  const handlers = useFileViewerHandlers(activeTab, base, clearEntry);
+  const handlers = useFileViewerHandlers(workspacePath, activeTab, base);
   const {
     handleCloseTab,
     handleTabClick,
@@ -215,23 +216,18 @@ export function FileViewerPane({
     fileWordWrap,
   } = handlers;
 
-  const activeCacheKey = activeTab
-    ? buildCacheKey(activeTab.filePath, base)
-    : null;
-  const activeDiff = activeCacheKey
-    ? (diffCache.get(activeCacheKey) ?? '')
-    : '';
-  const activeLoading = activeCacheKey
-    ? loadingPaths.has(activeCacheKey)
-    : false;
-  const activeError = activeCacheKey
-    ? (errorPaths.get(activeCacheKey) ?? null)
-    : null;
-
-  useEffect(() => {
-    if (!activeTab || activeTab.tabType === 'html') return;
-    fetchDiff(activeTab.filePath, base);
-  }, [activeTab?.filePath, activeTab?.tabType, base, fetchDiff]);
+  const {
+    diff: activeDiff,
+    loading: activeLoading,
+    error: activeError,
+  } = useFileDiff(
+    {
+      workspacePath,
+      filePath: activeTab?.filePath ?? '',
+      base,
+    },
+    { enabled: Boolean(activeTab) && activeTab?.tabType !== 'html' }
+  );
 
   return (
     <div className="file-viewer">
