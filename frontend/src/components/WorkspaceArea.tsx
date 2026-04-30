@@ -80,16 +80,17 @@ function FileTabContentBridge({
     [fileDiffSource, fileDiffDefaultBranch]
   );
 
-  const cache = useFileDiffCache(workspacePath);
+  const { diffCache, loadingPaths, errorPaths, fetchDiff, clearEntry } =
+    useFileDiffCache(workspacePath);
   const cacheKey = buildCacheKey(tab.filePath, base);
-  const diff = cache.diffCache.get(cacheKey) ?? '';
-  const loading = cache.loadingPaths.has(cacheKey);
-  const error = cache.errorPaths.get(cacheKey) ?? null;
+  const diff = diffCache.get(cacheKey) ?? '';
+  const loading = loadingPaths.has(cacheKey);
+  const error = errorPaths.get(cacheKey) ?? null;
 
   useEffect(() => {
     if (tab.tabType === 'html') return;
-    cache.fetchDiff(tab.filePath, base);
-  }, [tab.filePath, tab.tabType, base, cache]);
+    fetchDiff(tab.filePath, base);
+  }, [tab.filePath, tab.tabType, base, fetchDiff]);
 
   const uiMatch = openFileTabs.find(
     (t) =>
@@ -102,8 +103,8 @@ function FileTabContentBridge({
   const refreshVersion = uiMatch?.refreshVersion;
 
   const handleRetry = useCallback(() => {
-    cache.clearEntry(cacheKey);
-  }, [cache, cacheKey]);
+    clearEntry(cacheKey);
+  }, [clearEntry, cacheKey]);
 
   const handleCloseTab = useCallback(() => {
     closeFileTab(tab.filePath, tab.tabType);
