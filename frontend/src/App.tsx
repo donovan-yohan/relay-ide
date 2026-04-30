@@ -76,7 +76,7 @@ import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
   utilityRailRenderedWidth,
 } from './components/WorkspaceUtilityRail.js';
-import type { FileTreeSidebarHandle } from './components/FileTreeSidebar.js';
+import type { FileTreeHandle } from './components/FileTree/index.js';
 
 import './App.css';
 
@@ -326,9 +326,8 @@ function SessionContent({
 
 interface TerminalAreaContentProps {
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  changedFilesData: string[];
   terminalRef: React.RefObject<TerminalHandle | null>;
-  fileTreeSidebarRef: React.RefObject<FileTreeSidebarHandle | null>;
+  fileTreeSidebarRef: React.RefObject<FileTreeHandle | null>;
   onAddWorkspace: () => void;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onQuickAgent: () => Promise<void>;
@@ -346,7 +345,6 @@ interface TerminalAreaContentProps {
 
 function TerminalAreaContent({
   setSpotlightOpen,
-  changedFilesData,
   terminalRef,
   fileTreeSidebarRef,
   onAddWorkspace,
@@ -447,12 +445,6 @@ function TerminalAreaContent({
     };
     input.click();
   }, [terminalRef]);
-  const handleFileSelect = useCallback(
-    (filePath: string, isChanged: boolean) => {
-      openFileTab(filePath, isChanged);
-    },
-    [openFileTab]
-  );
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
       const currentActiveSessionId =
@@ -674,8 +666,6 @@ function TerminalAreaContent({
                 fileTreeSidebarRef={fileTreeSidebarRef}
                 workspacePath={activeWorkspaceCwd}
                 railState={utilityRailState}
-                changedFilesData={changedFilesData}
-                onFileSelect={handleFileSelect}
                 activeSession={activeSession}
                 workspaceSessions={workspaceSessions}
               />
@@ -728,7 +718,7 @@ export default function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
-  const [changedFilesData, setChangedFilesData] = useState<string[]>([]);
+  const setLastChangedFiles = useUiStore((s) => s.setLastChangedFiles);
   const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
   const activeModal = useUiStore((s) => s.activeModal);
   const setActiveModal = useUiStore((s) => s.setActiveModal);
@@ -742,7 +732,7 @@ export default function App() {
   const workspaceSettingsDialogRef =
     useRef<WorkspaceSettingsDialogHandle>(null);
   const mainAppRef = useRef<HTMLDivElement>(null);
-  const fileTreeSidebarRef = useRef<FileTreeSidebarHandle>(null);
+  const fileTreeSidebarRef = useRef<FileTreeHandle>(null);
   const changedFilesThrottleTimer = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -995,7 +985,7 @@ export default function App() {
     authAuthenticated,
     queryClient,
     throttledChangedFilesRefresh,
-    setChangedFilesData,
+    setChangedFilesData: setLastChangedFiles,
   });
 
   // ── Action registry (extracted hook) ────────────────────────────────────────
@@ -1069,7 +1059,6 @@ export default function App() {
 
         <TerminalAreaContent
           setSpotlightOpen={setSpotlightOpen}
-          changedFilesData={changedFilesData}
           terminalRef={terminalRef}
           fileTreeSidebarRef={fileTreeSidebarRef}
           onAddWorkspace={handleAddWorkspace}

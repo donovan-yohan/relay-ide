@@ -6,7 +6,7 @@ import {
   type WorkspaceUtilityRailState,
   UTILITY_ICON_RAIL_WIDTH,
 } from '../lib/stores/ui.js';
-import type { FileTreeSidebarHandle } from './FileTreeSidebar.js';
+import type { FileTreeHandle } from './FileTree/index.js';
 import UtilityRailFilesPanel from './UtilityRailFilesPanel.js';
 import UtilityRailReviewPanel from './UtilityRailReviewPanel.js';
 import UtilityRailLogsPanel from './UtilityRailLogsPanel.js';
@@ -70,11 +70,9 @@ const TAB_META: Array<{
 export interface WorkspaceUtilityRailProps {
   workspacePath: string;
   railState: WorkspaceUtilityRailState;
-  changedFilesData: string[];
-  onFileSelect: (filePath: string, isChanged: boolean) => void;
   activeSession?: SessionSummary | undefined;
   workspaceSessions: SessionSummary[];
-  fileTreeSidebarRef?: React.RefObject<FileTreeSidebarHandle | null>;
+  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null>;
 }
 
 export function utilityRailRenderedWidth(
@@ -87,8 +85,6 @@ export function utilityRailRenderedWidth(
 export function WorkspaceUtilityRail({
   workspacePath,
   railState,
-  changedFilesData,
-  onFileSelect,
   activeSession,
   workspaceSessions,
   fileTreeSidebarRef,
@@ -164,8 +160,6 @@ export function WorkspaceUtilityRail({
           >
             <UtilityRailFilesPanel
               workspacePath={workspacePath}
-              changedFilesData={changedFilesData}
-              onFileSelect={onFileSelect}
               {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
             />
           </div>
