@@ -13,7 +13,12 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebgpuAddon } from '@xterm/addon-webgpu';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
-import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
+import {
+  connectPtySocket,
+  disconnectPtySocket,
+  sendPtyData,
+  sendPtyResize,
+} from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
 import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
@@ -903,34 +908,34 @@ function useTerminalSetup(
   // React to sessionId changes
   useEffect(() => {
     const term = termRef.current;
-    if (sessionId && term && !companionMode) {
-      // Full reset (RIS) — synchronously resets parser state, all terminal
-      // modes (mouse tracking, bracketed paste, alternate screen), and clears
-      // the screen. This replaces the previous term.write(escapeSequences)
-      // approach which relied on an async callback. If the parser was stuck
-      // waiting for a string terminator from an unterminated escape sequence
-      // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
-      // would never fire, connectPtySocket would never be called, and every
-      // subsequent session would render blank.
-      term.reset();
-      fitAddonRef.current?.fit();
-      term.refresh(0, term.rows - 1);
-      connectPtySocket(
-        sessionId,
-        term,
-        () => {
-          if (termRef.current)
-            sendPtyResize(
-              sessionId,
-              termRef.current.cols,
-              termRef.current.rows
-            );
-        },
-        () => {
-          /* session ended */
-        }
-      );
-    }
+    if (!sessionId || !term || companionMode) return undefined;
+
+    // Full reset (RIS) — synchronously resets parser state, all terminal
+    // modes (mouse tracking, bracketed paste, alternate screen), and clears
+    // the screen. This replaces the previous term.write(escapeSequences)
+    // approach which relied on an async callback. If the parser was stuck
+    // waiting for a string terminator from an unterminated escape sequence
+    // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
+    // would never fire, connectPtySocket would never be called, and every
+    // subsequent session would render blank.
+    term.reset();
+    fitAddonRef.current?.fit();
+    term.refresh(0, term.rows - 1);
+    connectPtySocket(
+      sessionId,
+      term,
+      () => {
+        if (termRef.current)
+          sendPtyResize(sessionId, termRef.current.cols, termRef.current.rows);
+      },
+      () => {
+        /* session ended */
+      }
+    );
+
+    return () => {
+      disconnectPtySocket(sessionId);
+    };
   }, [sessionId, companionMode]);
 
   return { termRef, fitAddonRef, fit };

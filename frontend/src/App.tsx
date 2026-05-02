@@ -41,6 +41,7 @@ import Sidebar from './components/Sidebar.js';
 import Terminal from './components/Terminal.js';
 import { ChatView } from './components/chat/ChatView.js';
 import type { TerminalHandle } from './components/Terminal.js';
+import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import SessionTabBar from './components/SessionTabBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
@@ -429,22 +430,29 @@ function TerminalAreaContent({
   const handleCopyModeChange = useCallback((active: boolean) => {
     setCopyModeActive(active);
   }, []);
+  const getToolbarTerminalHandle = useCallback(() => {
+    const activeHandle = getActiveTerminalHandle();
+    return workspaceLayoutEnabled
+      ? (activeHandle ?? terminalRef.current)
+      : (terminalRef.current ?? activeHandle);
+  }, [terminalRef, workspaceLayoutEnabled]);
+
   const handleExitCopyMode = useCallback(() => {
-    terminalRef.current?.exitCopyMode();
-  }, [terminalRef]);
+    getToolbarTerminalHandle()?.exitCopyMode();
+  }, [getToolbarTerminalHandle]);
   const handleRefocusMobileInput = useCallback(() => {
-    terminalRef.current?.focusTerm();
-  }, [terminalRef]);
+    getToolbarTerminalHandle()?.focusTerm();
+  }, [getToolbarTerminalHandle]);
   const handleUploadImage = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) terminalRef.current?.handleImageUpload(file, file.type);
+      if (file) getToolbarTerminalHandle()?.handleImageUpload(file, file.type);
     };
     input.click();
-  }, [terminalRef]);
+  }, [getToolbarTerminalHandle]);
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
       const currentActiveSessionId =
@@ -590,6 +598,7 @@ function TerminalAreaContent({
                     onImageUpload={onImageUpload}
                     onCopyModeChange={handleCopyModeChange}
                     onFilePathClick={handleTerminalFilePathClick}
+                    onCloseSession={onCloseSession}
                   />
 
                   {activeSessionId && (

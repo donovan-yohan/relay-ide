@@ -399,6 +399,9 @@ function openPtySocket(conn: PtyConnection): void {
   };
 
   socket.onclose = (event) => {
+    const wasPending = conn.pendingWs === socket;
+    const wasActive = conn.ws === socket;
+
     clearPtyPing(conn);
     if (conn.rafHandle !== null) {
       cancelAnimationFrame(conn.rafHandle);
@@ -408,18 +411,17 @@ function openPtySocket(conn: PtyConnection): void {
       clearTimeout(conn.bgTimer);
       conn.bgTimer = null;
     }
-    if (conn.pendingWs === socket) conn.pendingWs = null;
-    if (conn.pendingWs !== socket && conn.ws !== socket) return;
+    if (wasPending) conn.pendingWs = null;
+    if (wasActive) conn.ws = null;
+    if (!wasPending && !wasActive) return;
 
     if (event.code === 1000) {
       conn.term.write('\r\n[Session ended]\r\n');
-      conn.ws = null;
       useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
       ptyConnections.delete(conn.sessionId);
       conn.onSessionEnd();
       return;
     }
-    conn.ws = null;
     useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
     if (conn.reconnectAttempt === 0) {
       conn.term.write('\r\n[Reconnecting...]\r\n');

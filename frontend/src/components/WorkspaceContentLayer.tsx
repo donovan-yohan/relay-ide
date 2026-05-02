@@ -1,4 +1,4 @@
-import React, { Activity, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   listPanes,
@@ -52,22 +52,44 @@ export function WorkspaceContentLayer({
     return out;
   }, [layout]);
 
+  const [mountedTabIds, setMountedTabIds] = useState<Set<WorkspaceTabId>>(
+    () => new Set()
+  );
+
+  useEffect(() => {
+    setMountedTabIds((prev) => {
+      const liveIds = new Set(placements.map((p) => p.tabId));
+      const next = new Set<WorkspaceTabId>();
+      let changed = false;
+
+      for (const id of prev) {
+        if (liveIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      for (const placement of placements) {
+        if (!placement.isActive) continue;
+        if (!next.has(placement.tabId)) changed = true;
+        next.add(placement.tabId);
+      }
+
+      return changed ? next : prev;
+    });
+  }, [placements]);
+
   return (
     <>
       {placements.map((placement) => {
         const { tab, tabId, paneId, isActive } = placement;
         const target = paneEls.get(paneId);
-        if (!target) return null;
+        if (!target || (!isActive && !mountedTabIds.has(tabId))) return null;
         return createPortal(
-          <Activity mode={isActive ? 'visible' : 'hidden'}>
-            <div
-              className="ws-tab-content-host"
-              data-ws-tab={tabId}
-              data-ws-active={isActive ? 'true' : 'false'}
-            >
-              {renderTab(tab)}
-            </div>
-          </Activity>,
+          <div
+            className="ws-tab-content-host"
+            data-ws-tab={tabId}
+            data-ws-active={isActive ? 'true' : 'false'}
+          >
+            {renderTab(tab)}
+          </div>,
           target,
           tabId
         );

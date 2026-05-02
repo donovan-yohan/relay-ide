@@ -39,6 +39,7 @@ function FileTreeRowImpl({
       data-state={stateAttr}
       onClick={() => onClick(node)}
       role="treeitem"
+      aria-level={depth + 1}
       aria-selected={selected}
       aria-expanded={node.isDirectory ? node.expanded : undefined}
       title={node.path || node.name}

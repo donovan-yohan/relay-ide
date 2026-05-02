@@ -44,6 +44,25 @@ function sessionTabId(session: SessionSummary): string {
   return `session::${session.id}`;
 }
 
+function propagateLayoutSideRemoval(
+  id: string,
+  onCloseSession: (sessionId: string) => void
+): void {
+  if (id.startsWith('file::')) {
+    const ftKey = id.slice('file::'.length);
+    const uiState = useUiStore.getState();
+    const uiTab = uiState.openFileTabs.find(
+      (t) => fileTabKey(t.filePath, t.tabType) === ftKey
+    );
+    if (uiTab) uiState.closeFileTab(uiTab.filePath, uiTab.tabType);
+    return;
+  }
+
+  if (id.startsWith('session::')) {
+    onCloseSession(id.slice('session::'.length));
+  }
+}
+
 // ── File tab content bridge ──────────────────────────────────────────────────
 
 interface FileTabContentBridgeProps {
@@ -168,6 +187,7 @@ export interface WorkspaceAreaProps {
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onCopyModeChange: (active: boolean) => void;
   onFilePathClick: (path: string) => void;
+  onCloseSession: (sessionId: string) => void;
   renderDiff?: FileTabContentProps['renderDiff'];
   renderCode?: FileTabContentProps['renderCode'];
 }
@@ -179,6 +199,7 @@ export function WorkspaceArea({
   onImageUpload,
   onCopyModeChange,
   onFilePathClick,
+  onCloseSession,
   renderDiff,
   renderCode,
 }: WorkspaceAreaProps) {
@@ -229,15 +250,9 @@ export function WorkspaceArea({
     }
     prevLayoutTabIdsRef.current = wsIds;
 
-    // Propagate layout-side removals (workspace × button) to ui store.
+    // Propagate layout-side removals (workspace × button) to the owning store.
     for (const id of removedFromLayout) {
-      if (!id.startsWith('file::')) continue;
-      const ftKey = id.slice('file::'.length);
-      const uiState = useUiStore.getState();
-      const uiTab = uiState.openFileTabs.find(
-        (t) => fileTabKey(t.filePath, t.tabType) === ftKey
-      );
-      if (uiTab) uiState.closeFileTab(uiTab.filePath, uiTab.tabType);
+      propagateLayoutSideRemoval(id, onCloseSession);
     }
 
     // Re-read after potential ui mutation above.
@@ -270,7 +285,15 @@ export function WorkspaceArea({
     for (const id of wsIds) {
       if (!liveUiIds.has(id)) closeTab(id);
     }
-  }, [openFileTabs, sessions, layout, activePaneId, addTab, closeTab]);
+  }, [
+    openFileTabs,
+    sessions,
+    layout,
+    activePaneId,
+    addTab,
+    closeTab,
+    onCloseSession,
+  ]);
 
   // Sync ui.activeFileTabKey → workspace selection. Triggered ONLY when
   // activeFileTabKey changes — not on layout changes — otherwise this effect

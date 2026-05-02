@@ -150,8 +150,10 @@ function useFileViewerHandlers(
   }, [activeTab, refreshHtmlTab]);
 
   const handleCloseActiveTab = useCallback(() => {
-    if (activeTab) closeFileTab(activeTab.filePath, activeTab.tabType);
-  }, [activeTab, closeFileTab]);
+    if (!activeTab) return;
+    closeFileTab(activeTab.filePath, activeTab.tabType);
+    invalidateFileDiff({ workspacePath, filePath: activeTab.filePath, base });
+  }, [activeTab, base, closeFileTab, invalidateFileDiff, workspacePath]);
 
   const handleToggleDiffViewMode = useCallback(() => {
     setFileDiffViewMode(

@@ -130,6 +130,19 @@ function loadDiffViewMode(): DiffViewMode {
 }
 
 function loadWorkspaceLayoutEnabled(): boolean {
+  if (typeof window !== 'undefined') {
+    const param = new URLSearchParams(window.location.search).get(
+      'workspaceLayout'
+    );
+    if (param === '1') {
+      lsSave(WORKSPACE_LAYOUT_KEY, 'true');
+      return true;
+    }
+    if (param === '0') {
+      lsRemove(WORKSPACE_LAYOUT_KEY);
+      return false;
+    }
+  }
   return ls(WORKSPACE_LAYOUT_KEY) === 'true';
 }
 
