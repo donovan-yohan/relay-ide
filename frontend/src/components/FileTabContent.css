@@ -21,7 +21,6 @@
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 0.7rem;
   color: var(--text-muted, #888);
-  text-transform: lowercase;
   letter-spacing: 0.02em;
   flex: 0 0 auto;
   white-space: nowrap;

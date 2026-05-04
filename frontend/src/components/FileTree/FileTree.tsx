@@ -134,7 +134,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
       try {
         const data = await browseFsDirectory(workspacePath, {
           includeFiles: true,
-          showHidden: false,
+          showHidden: true,
         });
         setAllFilesTree(data.entries);
       } catch (err) {
@@ -276,7 +276,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         try {
           const data = await browseFsDirectory(entryPath, {
             includeFiles: true,
-            showHidden: false,
+            showHidden: true,
           });
           setAllFilesChildren(
             (prev) => new Map([...prev, [entryPath, data.entries]])
