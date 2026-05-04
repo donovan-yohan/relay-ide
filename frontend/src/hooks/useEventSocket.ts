@@ -12,7 +12,7 @@ export interface UseEventSocketParams {
   authAuthenticated: boolean;
   queryClient: QueryClient;
   throttledChangedFilesRefresh: () => void;
-  setChangedFilesData: React.Dispatch<React.SetStateAction<string[]>>;
+  setChangedFilesData: (files: string[]) => void;
 }
 
 export function useEventSocket({

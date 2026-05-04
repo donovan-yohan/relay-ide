@@ -1,31 +1,17 @@
 import React from 'react';
-import {
-  FileTreeSidebar,
-  type FileTreeSidebarHandle,
-} from './FileTreeSidebar.js';
+import { FileTree, type FileTreeHandle } from './FileTree/index.js';
 import './WorkspaceUtilityRail.css';
 
 export interface UtilityRailFilesPanelProps {
   workspacePath: string;
-  changedFilesData: string[];
-  onFileSelect: (filePath: string, isChanged: boolean) => void;
-  fileTreeSidebarRef?: React.RefObject<FileTreeSidebarHandle | null>;
+  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null>;
 }
 
 export function UtilityRailFilesPanel({
   workspacePath,
-  changedFilesData,
-  onFileSelect,
   fileTreeSidebarRef,
 }: UtilityRailFilesPanelProps) {
-  return (
-    <FileTreeSidebar
-      ref={fileTreeSidebarRef}
-      workspacePath={workspacePath}
-      changedFilesData={changedFilesData}
-      onFileSelect={onFileSelect}
-    />
-  );
+  return <FileTree ref={fileTreeSidebarRef} workspacePath={workspacePath} />;
 }
 
 export default UtilityRailFilesPanel;

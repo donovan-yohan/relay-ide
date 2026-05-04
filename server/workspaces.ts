@@ -1593,6 +1593,119 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
+  // GET /workspaces/file-content — read raw file content under a workspace
+  router.get('/file-content', async (req: Request, res: Response) => {
+    if (
+      typeof req.query.path !== 'string' ||
+      typeof req.query.file !== 'string'
+    ) {
+      res
+        .status(400)
+        .json({ content: '', error: 'path and file parameters required' });
+      return;
+    }
+    const filePath = req.query.file;
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({ content: '', error: ERR_PATH_NOT_IN_WORKSPACES });
+      return;
+    }
+
+    const expandedFile = expandTilde(filePath);
+    if (
+      expandedFile.includes('..') ||
+      (path.isAbsolute(filePath) && !filePath.startsWith('~'))
+    ) {
+      res.status(400).json({ content: '', error: 'invalid file path' });
+      return;
+    }
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+
+    try {
+      const repoRoot = await fs.promises.realpath(resolvedRepo);
+      const absFile = path.resolve(repoRoot, expandedFile);
+      if (absFile !== repoRoot && !absFile.startsWith(repoRoot + path.sep)) {
+        res.status(400).json({ content: '', error: 'file path escapes repo' });
+        return;
+      }
+
+      // Reject symlinks outright — readFile/stat would otherwise follow them
+      // out of the workspace.
+      const linkStat = await fs.promises.lstat(absFile);
+      if (linkStat.isSymbolicLink()) {
+        res.status(400).json({ content: '', error: 'invalid file path' });
+        return;
+      }
+      if (!linkStat.isFile()) {
+        res.status(400).json({ content: '', error: 'not a regular file' });
+        return;
+      }
+      const stat = linkStat;
+      const sizeBytes = stat.size;
+      const mtimeMs = stat.mtimeMs;
+
+      if (sizeBytes > MAX_BYTES) {
+        res.json({
+          content: '',
+          truncated: true,
+          binary: false,
+          sizeBytes,
+          mtimeMs,
+        });
+        return;
+      }
+
+      const buf = await fs.promises.readFile(absFile);
+      const probeLen = Math.min(buf.length, 8 * 1024);
+      let binary = false;
+      for (let i = 0; i < probeLen; i++) {
+        if (buf[i] === 0) {
+          binary = true;
+          break;
+        }
+      }
+
+      if (binary) {
+        res.json({
+          content: '',
+          binary: true,
+          truncated: false,
+          sizeBytes,
+          mtimeMs,
+        });
+        return;
+      }
+
+      const content = buf.toString('utf-8');
+      res.json({
+        content,
+        binary: false,
+        truncated: false,
+        sizeBytes,
+        mtimeMs,
+      });
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        res.status(404).json({ content: '', error: 'file not found' });
+        return;
+      }
+      if (code === 'EACCES') {
+        res.status(403).json({ content: '', error: 'permission denied' });
+        return;
+      }
+      logger.warn(
+        '/file-content failed for',
+        resolvedRepo,
+        filePath,
+        err instanceof Error ? err.message : String(err)
+      );
+      res.status(500).json({ content: '', error: 'failed to read file' });
+    }
+  });
+
   // GET /workspaces/default-branch — detect the default branch for a repo
   router.get('/default-branch', async (req: Request, res: Response) => {
     if (typeof req.query.path !== 'string') {

@@ -41,6 +41,7 @@ import Sidebar from './components/Sidebar.js';
 import Terminal from './components/Terminal.js';
 import { ChatView } from './components/chat/ChatView.js';
 import type { TerminalHandle } from './components/Terminal.js';
+import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import SessionTabBar from './components/SessionTabBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
@@ -71,12 +72,12 @@ import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
 import FileViewerPane from './components/FileViewerPane.js';
-import WorkspaceFilesArea from './components/WorkspaceFilesArea.js';
+import WorkspaceArea from './components/WorkspaceArea.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
   utilityRailRenderedWidth,
 } from './components/WorkspaceUtilityRail.js';
-import type { FileTreeSidebarHandle } from './components/FileTreeSidebar.js';
+import type { FileTreeHandle } from './components/FileTree/index.js';
 
 import './App.css';
 
@@ -326,9 +327,8 @@ function SessionContent({
 
 interface TerminalAreaContentProps {
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  changedFilesData: string[];
   terminalRef: React.RefObject<TerminalHandle | null>;
-  fileTreeSidebarRef: React.RefObject<FileTreeSidebarHandle | null>;
+  fileTreeSidebarRef: React.RefObject<FileTreeHandle | null>;
   onAddWorkspace: () => void;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onQuickAgent: () => Promise<void>;
@@ -346,7 +346,6 @@ interface TerminalAreaContentProps {
 
 function TerminalAreaContent({
   setSpotlightOpen,
-  changedFilesData,
   terminalRef,
   fileTreeSidebarRef,
   onAddWorkspace,
@@ -431,28 +430,29 @@ function TerminalAreaContent({
   const handleCopyModeChange = useCallback((active: boolean) => {
     setCopyModeActive(active);
   }, []);
+  const getToolbarTerminalHandle = useCallback(() => {
+    const activeHandle = getActiveTerminalHandle();
+    return workspaceLayoutEnabled
+      ? (activeHandle ?? terminalRef.current)
+      : (terminalRef.current ?? activeHandle);
+  }, [terminalRef, workspaceLayoutEnabled]);
+
   const handleExitCopyMode = useCallback(() => {
-    terminalRef.current?.exitCopyMode();
-  }, [terminalRef]);
+    getToolbarTerminalHandle()?.exitCopyMode();
+  }, [getToolbarTerminalHandle]);
   const handleRefocusMobileInput = useCallback(() => {
-    terminalRef.current?.focusTerm();
-  }, [terminalRef]);
+    getToolbarTerminalHandle()?.focusTerm();
+  }, [getToolbarTerminalHandle]);
   const handleUploadImage = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) terminalRef.current?.handleImageUpload(file, file.type);
+      if (file) getToolbarTerminalHandle()?.handleImageUpload(file, file.type);
     };
     input.click();
-  }, [terminalRef]);
-  const handleFileSelect = useCallback(
-    (filePath: string, isChanged: boolean) => {
-      openFileTab(filePath, isChanged);
-    },
-    [openFileTab]
-  );
+  }, [getToolbarTerminalHandle]);
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
       const currentActiveSessionId =
@@ -573,7 +573,7 @@ function TerminalAreaContent({
             onArchive={onArchive}
           />
           <SplitPaneLayout
-            fileViewerOpen={fileViewerOpen}
+            fileViewerOpen={workspaceLayoutEnabled ? false : fileViewerOpen}
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}
             fileViewerRatio={fileViewerRatio}
@@ -589,54 +589,81 @@ function TerminalAreaContent({
               MAX_UTILITY_RAIL_WIDTH + UTILITY_ICON_RAIL_WIDTH
             }
             terminal={
-              <>
-                <SessionTabBar
-                  sessions={workspaceSessions}
-                  activeSessionId={activeSessionId}
-                  onSelectSession={onSelectSession}
-                  onCloseSession={onCloseSession}
-                  onNewAgent={() => onQuickAgent()}
-                  onNewTerminal={() => onQuickTerminal()}
-                  onCustomize={() => onCustomize()}
-                  hidden={keyboardOpen}
-                />
-
-                <SessionContent
-                  mode={activeSessionMode}
-                  sessionId={activeSessionId}
-                  terminalRef={terminalRef}
-                  onImageUpload={onImageUpload}
-                  useTmux={activeSessionUseTmux}
-                  onCopyModeChange={handleCopyModeChange}
-                  onFilePathClick={handleTerminalFilePathClick}
-                />
-
-                {activeSessionId && (
-                  <SessionStatusBar
-                    sessionId={activeSessionId}
-                    currentActivity={activeSession?.currentActivity ?? null}
-                    framework={activeSession?.agent}
+              workspaceLayoutEnabled ? (
+                <>
+                  <WorkspaceArea
+                    workspacePath={activeWorkspaceCwd}
+                    sessions={workspaceSessions}
+                    onInjectReference={handleInjectReference}
+                    onImageUpload={onImageUpload}
+                    onCopyModeChange={handleCopyModeChange}
+                    onFilePathClick={handleTerminalFilePathClick}
+                    onCloseSession={onCloseSession}
                   />
-                )}
 
-                <Toolbar
-                  onSendKey={handleSendKey}
-                  onFlushComposedText={handleFlushComposedText}
-                  onClearInput={handleClearInput}
-                  onUploadImage={handleUploadImage}
-                  onRefocusMobileInput={handleRefocusMobileInput}
-                  inCopyMode={copyModeActive}
-                  onExitCopyMode={handleExitCopyMode}
-                />
-              </>
+                  {activeSessionId && (
+                    <SessionStatusBar
+                      sessionId={activeSessionId}
+                      currentActivity={activeSession?.currentActivity ?? null}
+                      framework={activeSession?.agent}
+                    />
+                  )}
+
+                  <Toolbar
+                    onSendKey={handleSendKey}
+                    onFlushComposedText={handleFlushComposedText}
+                    onClearInput={handleClearInput}
+                    onUploadImage={handleUploadImage}
+                    onRefocusMobileInput={handleRefocusMobileInput}
+                    inCopyMode={copyModeActive}
+                    onExitCopyMode={handleExitCopyMode}
+                  />
+                </>
+              ) : (
+                <>
+                  <SessionTabBar
+                    sessions={workspaceSessions}
+                    activeSessionId={activeSessionId}
+                    onSelectSession={onSelectSession}
+                    onCloseSession={onCloseSession}
+                    onNewAgent={() => onQuickAgent()}
+                    onNewTerminal={() => onQuickTerminal()}
+                    onCustomize={() => onCustomize()}
+                    hidden={keyboardOpen}
+                  />
+
+                  <SessionContent
+                    mode={activeSessionMode}
+                    sessionId={activeSessionId}
+                    terminalRef={terminalRef}
+                    onImageUpload={onImageUpload}
+                    useTmux={activeSessionUseTmux}
+                    onCopyModeChange={handleCopyModeChange}
+                    onFilePathClick={handleTerminalFilePathClick}
+                  />
+
+                  {activeSessionId && (
+                    <SessionStatusBar
+                      sessionId={activeSessionId}
+                      currentActivity={activeSession?.currentActivity ?? null}
+                      framework={activeSession?.agent}
+                    />
+                  )}
+
+                  <Toolbar
+                    onSendKey={handleSendKey}
+                    onFlushComposedText={handleFlushComposedText}
+                    onClearInput={handleClearInput}
+                    onUploadImage={handleUploadImage}
+                    onRefocusMobileInput={handleRefocusMobileInput}
+                    inCopyMode={copyModeActive}
+                    onExitCopyMode={handleExitCopyMode}
+                  />
+                </>
+              )
             }
             fileViewer={
-              workspaceLayoutEnabled ? (
-                <WorkspaceFilesArea
-                  workspacePath={activeWorkspaceCwd}
-                  onInjectReference={handleInjectReference}
-                />
-              ) : (
+              workspaceLayoutEnabled ? null : (
                 <FileViewerPane
                   workspacePath={activeWorkspaceCwd}
                   onInjectReference={handleInjectReference}
@@ -648,8 +675,6 @@ function TerminalAreaContent({
                 fileTreeSidebarRef={fileTreeSidebarRef}
                 workspacePath={activeWorkspaceCwd}
                 railState={utilityRailState}
-                changedFilesData={changedFilesData}
-                onFileSelect={handleFileSelect}
                 activeSession={activeSession}
                 workspaceSessions={workspaceSessions}
               />
@@ -702,7 +727,7 @@ export default function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
-  const [changedFilesData, setChangedFilesData] = useState<string[]>([]);
+  const setLastChangedFiles = useUiStore((s) => s.setLastChangedFiles);
   const setAnalyticsView = useUiStore((s) => s.setAnalyticsView);
   const activeModal = useUiStore((s) => s.activeModal);
   const setActiveModal = useUiStore((s) => s.setActiveModal);
@@ -716,7 +741,7 @@ export default function App() {
   const workspaceSettingsDialogRef =
     useRef<WorkspaceSettingsDialogHandle>(null);
   const mainAppRef = useRef<HTMLDivElement>(null);
-  const fileTreeSidebarRef = useRef<FileTreeSidebarHandle>(null);
+  const fileTreeSidebarRef = useRef<FileTreeHandle>(null);
   const changedFilesThrottleTimer = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -969,7 +994,7 @@ export default function App() {
     authAuthenticated,
     queryClient,
     throttledChangedFilesRefresh,
-    setChangedFilesData,
+    setChangedFilesData: setLastChangedFiles,
   });
 
   // ── Action registry (extracted hook) ────────────────────────────────────────
@@ -1043,7 +1068,6 @@ export default function App() {
 
         <TerminalAreaContent
           setSpotlightOpen={setSpotlightOpen}
-          changedFilesData={changedFilesData}
           terminalRef={terminalRef}
           fileTreeSidebarRef={fileTreeSidebarRef}
           onAddWorkspace={handleAddWorkspace}

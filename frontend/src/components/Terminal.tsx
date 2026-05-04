@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useCallback,
   useImperativeHandle,
+  useMemo,
   forwardRef,
 } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
@@ -12,7 +13,12 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebgpuAddon } from '@xterm/addon-webgpu';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
-import { connectPtySocket, sendPtyData, sendPtyResize } from '../lib/ws.js';
+import {
+  connectPtySocket,
+  disconnectPtySocket,
+  sendPtyData,
+  sendPtyResize,
+} from '../lib/ws.js';
 import { isMobileDevice } from '../lib/utils.js';
 import { uploadImage } from '../lib/api.js';
 import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
@@ -24,6 +30,7 @@ import {
   pickTerminalRenderer,
   type TerminalRenderer,
 } from '../lib/terminal-renderer.js';
+import { setTerminalHandle } from '../lib/terminal-refs.js';
 import './Terminal.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -181,7 +188,8 @@ function handleAlternateBufferScroll(
   touch: Touch,
   s: TouchScrollState,
   term: XTerminal,
-  lineHeight: number
+  lineHeight: number,
+  sendData: (data: string) => void
 ) {
   const incrementalDelta = s.contentLastTouchY - touch.clientY;
   s.contentLastTouchY = touch.clientY;
@@ -194,7 +202,7 @@ function handleAlternateBufferScroll(
   const row = Math.max(1, Math.round(term.rows / 2));
   const seq = `\x1b[<${button};${col};${row}M`;
   const count = Math.min(Math.abs(rawLines), 5);
-  for (let i = 0; i < count; i++) sendPtyData(seq);
+  for (let i = 0; i < count; i++) sendData(seq);
   void e;
 }
 
@@ -245,6 +253,7 @@ function useTouchScroll(
   scrollbarRef: React.RefObject<HTMLDivElement | null>,
   thumbTop: number,
   useTmux: boolean,
+  sendData: (data: string) => void,
   onCopyModeChange?: (active: boolean) => void
 ) {
   const [selectionMode, setSelectionMode] = useState(false);
@@ -279,11 +288,11 @@ function useTouchScroll(
     if (useTmux) {
       setInCopyMode(true);
       onCopyModeChange?.(true);
-      sendPtyData('\x02[');
+      sendData('\x02[');
       return;
     }
     doEnterSelectionMode(containerRef.current, setSelectionMode);
-  }, [containerRef, useTmux, onCopyModeChange]);
+  }, [containerRef, useTmux, onCopyModeChange, sendData]);
 
   const exitCopyMode = useCallback(() => {
     if (inCopyMode) {
@@ -365,7 +374,8 @@ function useTouchScroll(
     containerRef,
     scrollbarRef,
     stateRef,
-    selectionMode
+    selectionMode,
+    sendData
   );
 
   return {
@@ -385,7 +395,8 @@ function useTouchScrollListeners(
   containerRef: React.RefObject<HTMLDivElement | null>,
   scrollbarRef: React.RefObject<HTMLDivElement | null>,
   stateRef: React.RefObject<TouchScrollState>,
-  selectionMode: boolean
+  selectionMode: boolean,
+  sendData: (data: string) => void
 ) {
   useEffect(() => {
     if (!isMobileDevice) return undefined;
@@ -419,7 +430,7 @@ function useTouchScrollListeners(
       e.preventDefault();
       const lineHeight = container.clientHeight / term.rows;
       if (term.buffer.active.type === 'alternate') {
-        handleAlternateBufferScroll(e, touch, s, term, lineHeight);
+        handleAlternateBufferScroll(e, touch, s, term, lineHeight, sendData);
       } else {
         const lineDelta = deltaY / lineHeight;
         const maxScroll = term.buffer.active.baseY;
@@ -453,7 +464,7 @@ function useTouchScrollListeners(
       document.removeEventListener('touchend', handleTouchEnd);
       document.removeEventListener('touchcancel', handleTouchEnd);
     };
-  }, [termRef, containerRef, scrollbarRef, stateRef, selectionMode]);
+  }, [termRef, containerRef, scrollbarRef, stateRef, selectionMode, sendData]);
 }
 
 // ── useScrollbarClick hook ────────────────────────────────────────────────────
@@ -462,7 +473,8 @@ function useScrollbarClick(
   termRef: React.RefObject<XTerminal | null>,
   scrollbarRef: React.RefObject<HTMLDivElement | null>,
   thumbRef: React.RefObject<HTMLDivElement | null>,
-  thumbTop: number
+  thumbTop: number,
+  sendData: (data: string) => void
 ) {
   const scrollToY = useCallback(
     (clientY: number) => {
@@ -511,10 +523,10 @@ function useScrollbarClick(
           const button = dir === 'down' ? 65 : 64;
           const seq = `\x1b[<${button};${col};${row}M`;
           const count = Math.max(1, Math.round(term.rows / 2));
-          for (let i = 0; i < count; i++) sendPtyData(seq);
+          for (let i = 0; i < count; i++) sendData(seq);
         } else if (dir === 'bottom') {
           const seq = `\x1b[<65;${col};${row}M`;
-          for (let i = 0; i < term.rows; i++) sendPtyData(seq);
+          for (let i = 0; i < term.rows; i++) sendData(seq);
         }
       } else {
         if (dir === 'up') term.scrollPages(-1);
@@ -522,7 +534,7 @@ function useScrollbarClick(
         else if (dir === 'bottom') term.scrollToBottom();
       }
     },
-    [termRef]
+    [termRef, sendData]
   );
 
   return { onScrollbarClick, onScrollFabMouseDown };
@@ -692,7 +704,10 @@ function applyMobilePatches(container: HTMLDivElement, t: XTerminal) {
 
 // Extracted: register escape sequence sanitizers to prevent parser stalls
 // from non-standard sequences sent by OpenCode / OpenTUI.
-function registerEscapeSequenceSanitizers(t: XTerminal): void {
+function registerEscapeSequenceSanitizers(
+  t: XTerminal,
+  sendData: (data: string) => void
+): void {
   // Kitty keyboard protocol queries — OpenTUI sends these to detect keyboard
   // enhancement support. xterm.js <6.1 doesn't handle them, which can leave
   // the parser in a stuck state. Swallow silently.
@@ -716,7 +731,7 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
   t.parser.registerCsiHandler({ intermediates: '$', final: 'p' }, (params) => {
     const mode = params[0];
     if (typeof mode !== 'number') return true;
-    sendPtyData(`\x1b[${mode};0$y`);
+    sendData(`\x1b[${mode};0$y`);
     return true;
   });
   t.parser.registerCsiHandler(
@@ -724,7 +739,7 @@ function registerEscapeSequenceSanitizers(t: XTerminal): void {
     (params) => {
       const mode = params[0];
       if (typeof mode !== 'number') return true;
-      sendPtyData(`\x1b[?${mode};0$y`);
+      sendData(`\x1b[?${mode};0$y`);
       return true;
     }
   );
@@ -745,6 +760,17 @@ function useTerminalSetup(
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalFontSize = useUiStore((s) => s.terminalFontSize);
 
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  const sendData = useCallback((data: string) => {
+    const id = sessionIdRef.current;
+    if (id) sendPtyData(id, data);
+  }, []);
+  const sendResize = useCallback((cols: number, rows: number) => {
+    const id = sessionIdRef.current;
+    if (id) sendPtyResize(id, cols, rows);
+  }, []);
+
   const fit = useCallback(() => {
     const term = termRef.current;
     const fa = fitAddonRef.current;
@@ -755,9 +781,9 @@ function useTerminalSetup(
     fa.fit();
     if (wasAtBottom) term.scrollToBottom();
     else term.scrollToLine(savedViewportY);
-    sendPtyResize(term.cols, term.rows);
+    sendResize(term.cols, term.rows);
     updateScrollbar();
-  }, [updateScrollbar]);
+  }, [updateScrollbar, sendResize]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -827,10 +853,10 @@ function useTerminalSetup(
     }
     // eslint-disable-next-line no-console -- intentional: log selected renderer once at terminal mount
     console.info(`xterm renderer: ${renderer}`);
-    registerEscapeSequenceSanitizers(t);
+    registerEscapeSequenceSanitizers(t, sendData);
     if (isMobileDevice) applyMobilePatches(container, t);
     fa.fit();
-    t.onData((data) => sendPtyData(data));
+    t.onData((data) => sendData(data));
     attachClipboardKeyHandler(t, isMac);
     t.parser.registerOscHandler(52, (data) => {
       const semicolonIdx = data.indexOf(';');
@@ -862,7 +888,7 @@ function useTerminalSetup(
           fa.fit();
           if (wasAtBottom) t.scrollToBottom();
           else t.scrollToLine(savedViewportY);
-          sendPtyResize(t.cols, t.rows);
+          sendResize(t.cols, t.rows);
           updateScrollbar();
         },
         isMobileDevice ? 150 : 0
@@ -882,30 +908,34 @@ function useTerminalSetup(
   // React to sessionId changes
   useEffect(() => {
     const term = termRef.current;
-    if (sessionId && term && !companionMode) {
-      // Full reset (RIS) — synchronously resets parser state, all terminal
-      // modes (mouse tracking, bracketed paste, alternate screen), and clears
-      // the screen. This replaces the previous term.write(escapeSequences)
-      // approach which relied on an async callback. If the parser was stuck
-      // waiting for a string terminator from an unterminated escape sequence
-      // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
-      // would never fire, connectPtySocket would never be called, and every
-      // subsequent session would render blank.
-      term.reset();
-      fitAddonRef.current?.fit();
-      term.refresh(0, term.rows - 1);
-      connectPtySocket(
-        sessionId,
-        term,
-        () => {
-          if (termRef.current)
-            sendPtyResize(termRef.current.cols, termRef.current.rows);
-        },
-        () => {
-          /* session ended */
-        }
-      );
-    }
+    if (!sessionId || !term || companionMode) return undefined;
+
+    // Full reset (RIS) — synchronously resets parser state, all terminal
+    // modes (mouse tracking, bracketed paste, alternate screen), and clears
+    // the screen. This replaces the previous term.write(escapeSequences)
+    // approach which relied on an async callback. If the parser was stuck
+    // waiting for a string terminator from an unterminated escape sequence
+    // (e.g. DCS/OSC from OpenCode's Bubble Tea TUI), the write callback
+    // would never fire, connectPtySocket would never be called, and every
+    // subsequent session would render blank.
+    term.reset();
+    fitAddonRef.current?.fit();
+    term.refresh(0, term.rows - 1);
+    connectPtySocket(
+      sessionId,
+      term,
+      () => {
+        if (termRef.current)
+          sendPtyResize(sessionId, termRef.current.cols, termRef.current.rows);
+      },
+      () => {
+        /* session ended */
+      }
+    );
+
+    return () => {
+      disconnectPtySocket(sessionId);
+    };
   }, [sessionId, companionMode]);
 
   return { termRef, fitAddonRef, fit };
@@ -1032,6 +1062,13 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const scrollbarRef = useRef<HTMLDivElement>(null);
     const thumbRef = useRef<HTMLDivElement>(null);
 
+    const sessionIdRef = useRef(sessionId);
+    sessionIdRef.current = sessionId;
+    const sendData = useCallback((data: string) => {
+      const id = sessionIdRef.current;
+      if (id) sendPtyData(id, data);
+    }, []);
+
     const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
     const activeAgent = useSessionsStore(
       (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
@@ -1066,13 +1103,15 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       scrollbarRef,
       sbState.thumbTop,
       useTmux,
+      sendData,
       onCopyModeChange
     );
     const { onScrollbarClick, onScrollFabMouseDown } = useScrollbarClick(
       termRef,
       scrollbarRef,
       thumbRef,
-      sbState.thumbTop
+      sbState.thumbTop,
+      sendData
     );
     const {
       dragOver,
@@ -1082,8 +1121,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       handleDrop,
     } = useTerminalInteractions(termRef, applyZoom, handleImageUpload);
 
-    useImperativeHandle(
-      ref,
+    const handle = useMemo<TerminalHandle>(
       () => ({
         getTerm: () => termRef.current,
         focusTerm: () => termRef.current?.focus(),
@@ -1093,6 +1131,13 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       }),
       [termRef, fit, exitCopyMode, handleImageUpload]
     );
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    useEffect(() => {
+      if (!sessionId) return undefined;
+      setTerminalHandle(sessionId, handle);
+      return () => setTerminalHandle(sessionId, null);
+    }, [sessionId, handle]);
 
     useEffect(() => {
       if (

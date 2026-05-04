@@ -7,6 +7,7 @@ import type {
 } from './types.js';
 import { createLogger } from './logger.js';
 import { useSessionsStore } from './stores/sessions.js';
+import { useUiStore } from './stores/ui.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -79,42 +80,34 @@ export type EventMessage =
 type EventCallback = (msg: EventMessage) => void;
 type EventOpenCallback = () => void;
 
-let eventWs: WebSocket | null = null;
-let ptyWs: WebSocket | null = null;
-let pendingPtySocket: WebSocket | null = null;
 const MAX_RECONNECT_ATTEMPTS = 30;
+const PING_INTERVAL = 30_000;
+const PONG_TIMEOUT = 5_000;
+const PING_MSG = '{"type":"ping"}';
+const PONG_MSG = '{"type":"pong"}';
 
-let ptyReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let ptyReconnectAttempt = 0;
+// Flow control constants (string length / UTF-16 code units, ≈ bytes for mostly-ASCII)
+const HIGH_WATER_MARK = 512 * 1024;
+const LOW_WATER_MARK = 128 * 1024;
+const MAX_QUEUE_SIZE = 2 * 1024 * 1024;
+const BG_FLUSH_INTERVAL = 250;
 
-// Ping/pong state for zombie WebSocket detection
-let ptyPingTimer: ReturnType<typeof setInterval> | null = null;
-let ptyPongPending = false;
-let ptyPongTimeout: ReturnType<typeof setTimeout> | null = null;
+// ── Event socket (singleton; not per-session) ────────────────────────────────
+
+let eventWs: WebSocket | null = null;
 let eventPingTimer: ReturnType<typeof setInterval> | null = null;
 let eventPongPending = false;
 let eventPongTimeout: ReturnType<typeof setTimeout> | null = null;
 
-// Track last-known connection params for visibilitychange reconnection
-let lastPtySessionId: string | null = null;
-let lastPtyTerm: Terminal | null = null;
-let lastPtyOnResize: (() => void) | null = null;
-let lastPtyOnSessionEnd: (() => void) | null = null;
 let lastEventOnMessage: EventCallback | null = null;
 let lastEventOnOpen: EventOpenCallback | null = null;
 let lastOnAuthRequired: (() => void) | null = null;
-
-const PING_INTERVAL = 30_000; // 30s heartbeat
-const PONG_TIMEOUT = 5_000; // 5s to respond
-const PING_MSG = '{"type":"ping"}';
-const PONG_MSG = '{"type":"pong"}';
 
 export function connectEventSocket(
   onMessage: EventCallback,
   onOpen?: EventOpenCallback,
   onAuthRequired?: () => void
 ): void {
-  // Null onclose before close to prevent old socket from scheduling a reconnect
   if (eventWs) {
     eventWs.onclose = null;
     eventWs.close();
@@ -135,9 +128,7 @@ export function connectEventSocket(
 
   eventWs.onmessage = (event) => {
     const str = event.data as string;
-    // Any message clears pong pending state
     if (eventPongPending) clearEventPongTimeout();
-    // Handle pong responses silently
     if (str === PONG_MSG) return;
     try {
       onMessage(JSON.parse(str));
@@ -162,295 +153,13 @@ async function reconnectWithAuthCheck(): Promise<void> {
       return;
     }
   } catch {
-    // Server unreachable — keep trying to reconnect
+    /* keep trying */
   }
   if (lastEventOnMessage) {
     connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
   }
 }
 
-export function connectPtySocket(
-  sessionId: string,
-  term: Terminal,
-  onResize: () => void,
-  onSessionEnd: () => void
-): void {
-  if (ptyReconnectTimer) {
-    clearTimeout(ptyReconnectTimer);
-    ptyReconnectTimer = null;
-  }
-  ptyReconnectAttempt = 0;
-  clearPtyPing();
-
-  // Store connection params for visibilitychange reconnection
-  lastPtySessionId = sessionId;
-  lastPtyTerm = term;
-  lastPtyOnResize = onResize;
-  lastPtyOnSessionEnd = onSessionEnd;
-
-  // Close any socket still in CONNECTING state from a previous call
-  if (pendingPtySocket) {
-    pendingPtySocket.onopen = null;
-    pendingPtySocket.onmessage = null;
-    pendingPtySocket.onclose = null;
-    pendingPtySocket.onerror = null;
-    pendingPtySocket.close();
-    pendingPtySocket = null;
-  }
-
-  if (ptyWs) {
-    ptyWs.onclose = null;
-    ptyWs.close();
-    ptyWs = null;
-  }
-
-  const url = wsProtocol + '//' + location.host + '/ws/' + sessionId;
-  const socket = new WebSocket(url);
-  pendingPtySocket = socket;
-
-  socket.onopen = () => {
-    pendingPtySocket = null;
-    ptyWs = socket;
-    ptyReconnectAttempt = 0;
-    onResize();
-    startPtyPing();
-    useSessionsStore.getState().clearPtyReconnect(sessionId);
-  };
-
-  // Flow control constants (thresholds measured in string length / UTF-16 code units,
-  // which is close enough to bytes for mostly-ASCII terminal output)
-  const HIGH_WATER_MARK = 512 * 1024; // ~500KB — pause feeding xterm
-  const LOW_WATER_MARK = 128 * 1024; //  ~128KB — resume feeding xterm
-  const MAX_QUEUE_SIZE = 2 * 1024 * 1024; // ~2MB — cap queued data to prevent OOM
-  const BG_FLUSH_INTERVAL = 250; // ms — fallback flush interval when tab is hidden
-
-  // Per-connection write buffer state (scoped here; abandoned on next connectPtySocket call)
-  let writeQueue: string[] = [];
-  let queueSize = 0; // total string length queued but not yet handed to term.write
-  let pendingSize = 0; // string length handed to term.write but not yet processed
-  let paused = false;
-  let rafHandle: number | null = null;
-  let bgTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function flushWriteQueue(): void {
-    rafHandle = null;
-    bgTimer = null;
-    if (writeQueue.length === 0) return;
-
-    // Coalesce all queued chunks into a single term.write call per frame
-    const combined = writeQueue.join('');
-    const combinedLen = combined.length;
-    writeQueue = [];
-    queueSize = 0;
-
-    pendingSize += combinedLen;
-    term.write(combined, () => {
-      pendingSize -= combinedLen;
-      // Resume if we were paused and the buffer has drained below the low-water mark
-      if (paused && pendingSize < LOW_WATER_MARK) {
-        paused = false;
-        logger.info(
-          'flow-control: LOW water mark reached, resuming (pending=%d, queued=%d)',
-          pendingSize,
-          writeQueue.length
-        );
-        scheduleFlush();
-      }
-    });
-
-    // Check pressure after handing off the coalesced write
-    if (pendingSize >= HIGH_WATER_MARK) {
-      paused = true;
-      logger.warn(
-        'flow-control: HIGH water mark hit, pausing (pending=%d)',
-        pendingSize
-      );
-    }
-  }
-
-  function scheduleFlush(): void {
-    if (rafHandle !== null || bgTimer !== null) return;
-    // RAF is throttled/paused in background tabs — use setTimeout fallback
-    if (document.hidden) {
-      bgTimer = setTimeout(flushWriteQueue, BG_FLUSH_INTERVAL);
-    } else {
-      rafHandle = requestAnimationFrame(flushWriteQueue);
-    }
-  }
-
-  socket.onmessage = (event) => {
-    const str = event.data as string;
-    // Any message from server clears pong pending state
-    if (ptyPongPending) clearPtyPongTimeout();
-    // Handle pong responses silently
-    if (str === PONG_MSG) return;
-
-    // Cap queue size to prevent unbounded memory growth
-    if (queueSize + str.length > MAX_QUEUE_SIZE) {
-      if (!paused) {
-        logger.warn(
-          'flow-control: queue cap reached (%d), dropping data',
-          queueSize
-        );
-      }
-      return;
-    }
-
-    writeQueue.push(str);
-    queueSize += str.length;
-    if (paused) {
-      logger.debug(
-        'flow-control: queued %d chars while paused (pending=%d, queue=%d)',
-        str.length,
-        pendingSize,
-        writeQueue.length
-      );
-    }
-    if (!paused) scheduleFlush();
-  };
-
-  socket.onclose = (event) => {
-    clearPtyPing();
-    // Cancel any pending flush for this socket
-    if (rafHandle !== null) {
-      cancelAnimationFrame(rafHandle);
-      rafHandle = null;
-    }
-    if (bgTimer !== null) {
-      clearTimeout(bgTimer);
-      bgTimer = null;
-    }
-    // Clear pending ref if this socket closed before onopen
-    if (pendingPtySocket === socket) pendingPtySocket = null;
-    // If this socket was superseded, ignore its close event
-    if (pendingPtySocket !== socket && ptyWs !== socket) return;
-    if (event.code === 1000) {
-      term.write('\r\n[Session ended]\r\n');
-      ptyWs = null;
-      useSessionsStore.getState().clearPtyReconnect(sessionId);
-      onSessionEnd();
-      return;
-    }
-    ptyWs = null;
-    useSessionsStore.getState().beginPtyReconnect(sessionId);
-    if (ptyReconnectAttempt === 0) term.write('\r\n[Reconnecting...]\r\n');
-    scheduleReconnect(sessionId, term, onResize, onSessionEnd);
-  };
-
-  socket.onerror = () => {};
-}
-
-function scheduleReconnect(
-  sessionId: string,
-  term: Terminal,
-  onResize: () => void,
-  onSessionEnd: () => void
-): void {
-  if (ptyReconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-    term.write(
-      '\r\n[Gave up reconnecting after ' +
-        MAX_RECONNECT_ATTEMPTS +
-        ' attempts]\r\n'
-    );
-    useSessionsStore.getState().clearPtyReconnect(sessionId);
-    return;
-  }
-  const delay = Math.min(1000 * 2 ** ptyReconnectAttempt, 10000);
-  ptyReconnectAttempt++;
-
-  ptyReconnectTimer = setTimeout(async () => {
-    ptyReconnectTimer = null;
-    try {
-      const authRes = await fetch('/auth/check');
-      if (authRes.status === 401) {
-        useSessionsStore.getState().clearPtyReconnect(sessionId);
-        lastOnAuthRequired?.();
-        return;
-      }
-      const res = await fetch('/sessions');
-      const sessionList = (await res.json()) as Array<{ id: string }>;
-      if (!sessionList.some((s) => s.id === sessionId)) {
-        term.write('\r\n[Session ended]\r\n');
-        useSessionsStore.getState().clearPtyReconnect(sessionId);
-        onSessionEnd();
-        return;
-      }
-      term.clear();
-      connectPtySocket(sessionId, term, onResize, onSessionEnd);
-    } catch {
-      scheduleReconnect(sessionId, term, onResize, onSessionEnd);
-    }
-  }, delay);
-}
-
-// ── Ping/pong heartbeat ──────────────────────────────────────────────────────
-
-// Send a ping to the PTY socket and schedule a reconnect if no pong arrives.
-function sendPtyPing(): void {
-  if (!ptyWs || ptyWs.readyState !== WebSocket.OPEN) return;
-  ptyPongPending = true;
-  try {
-    ptyWs.send(PING_MSG);
-  } catch {
-    forceReconnectPty();
-    return;
-  }
-  if (ptyPongTimeout) {
-    clearTimeout(ptyPongTimeout);
-    ptyPongTimeout = null;
-  }
-  ptyPongTimeout = setTimeout(() => {
-    ptyPongPending = false;
-    forceReconnectPty();
-  }, PONG_TIMEOUT);
-}
-
-function startPtyPing(): void {
-  ptyPingTimer = setInterval(sendPtyPing, PING_INTERVAL);
-}
-
-function clearPtyPing(): void {
-  if (ptyPingTimer) {
-    clearInterval(ptyPingTimer);
-    ptyPingTimer = null;
-  }
-  clearPtyPongTimeout();
-}
-
-function clearPtyPongTimeout(): void {
-  ptyPongPending = false;
-  if (ptyPongTimeout) {
-    clearTimeout(ptyPongTimeout);
-    ptyPongTimeout = null;
-  }
-}
-
-function forceReconnectPty(): void {
-  clearPtyPing();
-  if (ptyWs) {
-    ptyWs.onclose = null;
-    ptyWs.close();
-    ptyWs = null;
-  }
-  if (
-    lastPtySessionId &&
-    lastPtyTerm &&
-    lastPtyOnResize &&
-    lastPtyOnSessionEnd
-  ) {
-    useSessionsStore.getState().beginPtyReconnect(lastPtySessionId);
-    if (ptyReconnectAttempt === 0)
-      lastPtyTerm.write('\r\n[Reconnecting...]\r\n');
-    scheduleReconnect(
-      lastPtySessionId,
-      lastPtyTerm,
-      lastPtyOnResize,
-      lastPtyOnSessionEnd
-    );
-  }
-}
-
-// Send a ping to the event socket and schedule a reconnect if no pong arrives.
 function sendEventPing(): void {
   if (!eventWs || eventWs.readyState !== WebSocket.OPEN) return;
   eventPongPending = true;
@@ -460,10 +169,7 @@ function sendEventPing(): void {
     forceReconnectEvent();
     return;
   }
-  if (eventPongTimeout) {
-    clearTimeout(eventPongTimeout);
-    eventPongTimeout = null;
-  }
+  if (eventPongTimeout) clearTimeout(eventPongTimeout);
   eventPongTimeout = setTimeout(() => {
     eventPongPending = false;
     forceReconnectEvent();
@@ -500,19 +206,355 @@ function clearEventPongTimeout(): void {
   }
 }
 
+// ── Per-session PTY connection registry ──────────────────────────────────────
+
+interface PtyConnection {
+  sessionId: string;
+  ws: WebSocket | null;
+  pendingWs: WebSocket | null;
+  term: Terminal;
+  onResize: () => void;
+  onSessionEnd: () => void;
+
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectAttempt: number;
+
+  pingTimer: ReturnType<typeof setInterval> | null;
+  pongPending: boolean;
+  pongTimeout: ReturnType<typeof setTimeout> | null;
+
+  writeQueue: string[];
+  queueSize: number;
+  pendingSize: number;
+  paused: boolean;
+  rafHandle: number | null;
+  bgTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const ptyConnections = new Map<string, PtyConnection>();
+
+function getActiveSessionId(): string | null {
+  const sendTo = useUiStore.getState().sendToTargetSessionId;
+  if (sendTo) return sendTo;
+  return useSessionsStore.getState().activeSessionId;
+}
+
+function getActiveConnection(): PtyConnection | null {
+  const id = getActiveSessionId();
+  if (!id) return null;
+  return ptyConnections.get(id) ?? null;
+}
+
+function disposePtyConnectionResources(conn: PtyConnection): void {
+  clearPtyPing(conn);
+  if (conn.reconnectTimer) {
+    clearTimeout(conn.reconnectTimer);
+    conn.reconnectTimer = null;
+  }
+  if (conn.rafHandle !== null) {
+    cancelAnimationFrame(conn.rafHandle);
+    conn.rafHandle = null;
+  }
+  if (conn.bgTimer !== null) {
+    clearTimeout(conn.bgTimer);
+    conn.bgTimer = null;
+  }
+}
+
+function flushWriteQueue(conn: PtyConnection): void {
+  conn.rafHandle = null;
+  conn.bgTimer = null;
+  if (conn.writeQueue.length === 0) return;
+
+  const combined = conn.writeQueue.join('');
+  const combinedLen = combined.length;
+  conn.writeQueue = [];
+  conn.queueSize = 0;
+
+  conn.pendingSize += combinedLen;
+  conn.term.write(combined, () => {
+    conn.pendingSize -= combinedLen;
+    if (conn.paused && conn.pendingSize < LOW_WATER_MARK) {
+      conn.paused = false;
+      logger.info(
+        'flow-control: LOW water mark reached, resuming (session=%s, pending=%d, queued=%d)',
+        conn.sessionId,
+        conn.pendingSize,
+        conn.writeQueue.length
+      );
+      scheduleFlush(conn);
+    }
+  });
+
+  if (conn.pendingSize >= HIGH_WATER_MARK) {
+    conn.paused = true;
+    logger.warn(
+      'flow-control: HIGH water mark hit, pausing (session=%s, pending=%d)',
+      conn.sessionId,
+      conn.pendingSize
+    );
+  }
+}
+
+function scheduleFlush(conn: PtyConnection): void {
+  if (conn.rafHandle !== null || conn.bgTimer !== null) return;
+  if (document.hidden) {
+    conn.bgTimer = setTimeout(() => flushWriteQueue(conn), BG_FLUSH_INTERVAL);
+  } else {
+    conn.rafHandle = requestAnimationFrame(() => flushWriteQueue(conn));
+  }
+}
+
+export function connectPtySocket(
+  sessionId: string,
+  term: Terminal,
+  onResize: () => void,
+  onSessionEnd: () => void
+): void {
+  // Tear down any existing connection for this session.
+  const existing = ptyConnections.get(sessionId);
+  if (existing) {
+    disposePtyConnectionResources(existing);
+    if (existing.pendingWs) {
+      existing.pendingWs.onopen = null;
+      existing.pendingWs.onmessage = null;
+      existing.pendingWs.onclose = null;
+      existing.pendingWs.onerror = null;
+      existing.pendingWs.close();
+      existing.pendingWs = null;
+    }
+    if (existing.ws) {
+      existing.ws.onclose = null;
+      existing.ws.close();
+      existing.ws = null;
+    }
+  }
+
+  const conn: PtyConnection = {
+    sessionId,
+    ws: null,
+    pendingWs: null,
+    term,
+    onResize,
+    onSessionEnd,
+    reconnectTimer: null,
+    reconnectAttempt: 0,
+    pingTimer: null,
+    pongPending: false,
+    pongTimeout: null,
+    writeQueue: [],
+    queueSize: 0,
+    pendingSize: 0,
+    paused: false,
+    rafHandle: null,
+    bgTimer: null,
+  };
+  ptyConnections.set(sessionId, conn);
+
+  openPtySocket(conn);
+}
+
+function openPtySocket(conn: PtyConnection): void {
+  const url = wsProtocol + '//' + location.host + '/ws/' + conn.sessionId;
+  const socket = new WebSocket(url);
+  conn.pendingWs = socket;
+
+  socket.onopen = () => {
+    conn.pendingWs = null;
+    conn.ws = socket;
+    conn.reconnectAttempt = 0;
+    conn.onResize();
+    startPtyPing(conn);
+    useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
+  };
+
+  socket.onmessage = (event) => {
+    const str = event.data as string;
+    if (conn.pongPending) clearPtyPongTimeout(conn);
+    if (str === PONG_MSG) return;
+
+    if (conn.queueSize + str.length > MAX_QUEUE_SIZE) {
+      if (!conn.paused) {
+        logger.warn(
+          'flow-control: queue cap reached (session=%s, queue=%d), dropping data',
+          conn.sessionId,
+          conn.queueSize
+        );
+      }
+      return;
+    }
+
+    conn.writeQueue.push(str);
+    conn.queueSize += str.length;
+    if (conn.paused) {
+      logger.debug(
+        'flow-control: queued %d chars while paused (session=%s, pending=%d, queue=%d)',
+        str.length,
+        conn.sessionId,
+        conn.pendingSize,
+        conn.writeQueue.length
+      );
+    }
+    if (!conn.paused) scheduleFlush(conn);
+  };
+
+  socket.onclose = (event) => {
+    const wasPending = conn.pendingWs === socket;
+    const wasActive = conn.ws === socket;
+
+    clearPtyPing(conn);
+    if (conn.rafHandle !== null) {
+      cancelAnimationFrame(conn.rafHandle);
+      conn.rafHandle = null;
+    }
+    if (conn.bgTimer !== null) {
+      clearTimeout(conn.bgTimer);
+      conn.bgTimer = null;
+    }
+    if (wasPending) conn.pendingWs = null;
+    if (wasActive) conn.ws = null;
+    if (!wasPending && !wasActive) return;
+
+    if (event.code === 1000) {
+      conn.term.write('\r\n[Session ended]\r\n');
+      useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
+      ptyConnections.delete(conn.sessionId);
+      conn.onSessionEnd();
+      return;
+    }
+    useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
+    if (conn.reconnectAttempt === 0) {
+      conn.term.write('\r\n[Reconnecting...]\r\n');
+    }
+    scheduleReconnect(conn);
+  };
+
+  socket.onerror = () => {};
+}
+
+function scheduleReconnect(conn: PtyConnection): void {
+  if (conn.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+    conn.term.write(
+      '\r\n[Gave up reconnecting after ' +
+        MAX_RECONNECT_ATTEMPTS +
+        ' attempts]\r\n'
+    );
+    useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
+    return;
+  }
+  const delay = Math.min(1000 * 2 ** conn.reconnectAttempt, 10000);
+  conn.reconnectAttempt++;
+
+  conn.reconnectTimer = setTimeout(async () => {
+    conn.reconnectTimer = null;
+    try {
+      const authRes = await fetch('/auth/check');
+      if (authRes.status === 401) {
+        useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
+        lastOnAuthRequired?.();
+        return;
+      }
+      const res = await fetch('/sessions');
+      const sessionList = (await res.json()) as Array<{ id: string }>;
+      if (!sessionList.some((s) => s.id === conn.sessionId)) {
+        conn.term.write('\r\n[Session ended]\r\n');
+        useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
+        ptyConnections.delete(conn.sessionId);
+        conn.onSessionEnd();
+        return;
+      }
+      conn.term.clear();
+      openPtySocket(conn);
+    } catch {
+      scheduleReconnect(conn);
+    }
+  }, delay);
+}
+
+function sendPtyPing(conn: PtyConnection): void {
+  if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
+  conn.pongPending = true;
+  try {
+    conn.ws.send(PING_MSG);
+  } catch {
+    forceReconnectPty(conn);
+    return;
+  }
+  if (conn.pongTimeout) {
+    clearTimeout(conn.pongTimeout);
+    conn.pongTimeout = null;
+  }
+  conn.pongTimeout = setTimeout(() => {
+    conn.pongPending = false;
+    forceReconnectPty(conn);
+  }, PONG_TIMEOUT);
+}
+
+function startPtyPing(conn: PtyConnection): void {
+  conn.pingTimer = setInterval(() => sendPtyPing(conn), PING_INTERVAL);
+}
+
+function clearPtyPing(conn: PtyConnection): void {
+  if (conn.pingTimer) {
+    clearInterval(conn.pingTimer);
+    conn.pingTimer = null;
+  }
+  clearPtyPongTimeout(conn);
+}
+
+function clearPtyPongTimeout(conn: PtyConnection): void {
+  conn.pongPending = false;
+  if (conn.pongTimeout) {
+    clearTimeout(conn.pongTimeout);
+    conn.pongTimeout = null;
+  }
+}
+
+function forceReconnectPty(conn: PtyConnection): void {
+  clearPtyPing(conn);
+  if (conn.ws) {
+    conn.ws.onclose = null;
+    conn.ws.close();
+    conn.ws = null;
+  }
+  useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
+  if (conn.reconnectAttempt === 0) {
+    conn.term.write('\r\n[Reconnecting...]\r\n');
+  }
+  scheduleReconnect(conn);
+}
+
+export function disconnectPtySocket(sessionId: string): void {
+  const conn = ptyConnections.get(sessionId);
+  if (!conn) return;
+  disposePtyConnectionResources(conn);
+  if (conn.pendingWs) {
+    conn.pendingWs.onclose = null;
+    conn.pendingWs.close();
+    conn.pendingWs = null;
+  }
+  if (conn.ws) {
+    conn.ws.onclose = null;
+    conn.ws.close();
+    conn.ws = null;
+  }
+  ptyConnections.delete(sessionId);
+  useSessionsStore.getState().clearPtyReconnect(sessionId);
+}
+
 // ── Visibility change — proactive reconnection on mobile wake ────────────────
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
 
-  // PTY socket: if dead, force reconnect; if alive, probe with a ping
-  if (ptyWs && ptyWs.readyState !== WebSocket.OPEN) {
-    forceReconnectPty();
-  } else if (ptyWs) {
-    sendPtyPing();
+  for (const conn of ptyConnections.values()) {
+    if (conn.ws && conn.ws.readyState !== WebSocket.OPEN) {
+      forceReconnectPty(conn);
+    } else if (conn.ws) {
+      sendPtyPing(conn);
+    }
   }
 
-  // Event socket: if dead, force reconnect; if alive, probe with a ping
   if (eventWs && eventWs.readyState !== WebSocket.OPEN) {
     forceReconnectEvent();
   } else if (eventWs) {
@@ -522,16 +564,71 @@ document.addEventListener('visibilitychange', () => {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-export function sendPtyData(data: string): void {
-  if (ptyWs && ptyWs.readyState === WebSocket.OPEN) ptyWs.send(data);
-}
-
-export function sendPtyResize(cols: number, rows: number): void {
-  if (ptyWs && ptyWs.readyState === WebSocket.OPEN) {
-    ptyWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+export function sendPtyData(sessionId: string, data: string): void;
+export function sendPtyData(data: string): void;
+export function sendPtyData(arg1: string, arg2?: string): void {
+  let conn: PtyConnection | null;
+  let data: string;
+  if (arg2 !== undefined) {
+    conn = ptyConnections.get(arg1) ?? null;
+    data = arg2;
+  } else {
+    conn = getActiveConnection();
+    data = arg1;
+  }
+  if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
+    conn.ws.send(data);
   }
 }
 
-export function isPtyConnected(): boolean {
-  return ptyWs !== null && ptyWs.readyState === WebSocket.OPEN;
+export function sendPtyResize(
+  sessionId: string,
+  cols: number,
+  rows: number
+): void;
+export function sendPtyResize(cols: number, rows: number): void;
+export function sendPtyResize(
+  arg1: string | number,
+  arg2: number,
+  arg3?: number
+): void {
+  let conn: PtyConnection | null;
+  let cols: number;
+  let rows: number;
+  if (typeof arg1 === 'string' && arg3 !== undefined) {
+    conn = ptyConnections.get(arg1) ?? null;
+    cols = arg2;
+    rows = arg3;
+  } else if (typeof arg1 === 'number') {
+    conn = getActiveConnection();
+    cols = arg1;
+    rows = arg2;
+  } else {
+    return;
+  }
+  if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
+    conn.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+  }
+}
+
+export function isPtyConnected(sessionId?: string): boolean {
+  const conn = sessionId
+    ? (ptyConnections.get(sessionId) ?? null)
+    : getActiveConnection();
+  return !!conn?.ws && conn.ws.readyState === WebSocket.OPEN;
+}
+
+// ── Test-only helpers ────────────────────────────────────────────────────────
+
+/** @internal — exposed for tests to inspect/reset the connection registry. */
+export function _ptyConnectionsForTesting(): Map<string, PtyConnection> {
+  return ptyConnections;
+}
+
+/** @internal — exposed for tests to clear all connections without socket teardown. */
+export function _clearPtyConnectionsForTesting(): void {
+  for (const conn of ptyConnections.values()) {
+    disposePtyConnectionResources(conn);
+  }
+  ptyConnections.clear();
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   listPanes,
@@ -35,12 +35,6 @@ export function WorkspaceContentLayer({
 }: WorkspaceContentLayerProps): React.ReactElement {
   const layout = useWorkspaceLayoutStore((s) => s.layout);
   const paneEls = usePaneBodyEls();
-  const bufferRef = useRef<HTMLDivElement | null>(null);
-  const [bufferEl, setBufferEl] = useState<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setBufferEl(bufferRef.current);
-  }, []);
 
   const placements = useMemo<TabPlacement[]>(() => {
     const out: TabPlacement[] = [];
@@ -58,46 +52,42 @@ export function WorkspaceContentLayer({
     return out;
   }, [layout]);
 
-  const [warmed, setWarmed] = useState<ReadonlySet<WorkspaceTabId>>(
+  const [mountedTabIds, setMountedTabIds] = useState<Set<WorkspaceTabId>>(
     () => new Set()
   );
 
   useEffect(() => {
-    setWarmed((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const { tabId, isActive } of placements) {
-        if (isActive && !next.has(tabId)) {
-          next.add(tabId);
-          changed = true;
-        }
-      }
+    setMountedTabIds((prev) => {
       const liveIds = new Set(placements.map((p) => p.tabId));
-      for (const id of next) {
-        if (!liveIds.has(id)) {
-          next.delete(id);
-          changed = true;
-        }
+      const next = new Set<WorkspaceTabId>();
+      let changed = false;
+
+      for (const id of prev) {
+        if (liveIds.has(id)) next.add(id);
+        else changed = true;
       }
+      for (const placement of placements) {
+        if (!placement.isActive) continue;
+        if (!next.has(placement.tabId)) changed = true;
+        next.add(placement.tabId);
+      }
+
       return changed ? next : prev;
     });
   }, [placements]);
 
-  const shouldMount = (placement: TabPlacement): boolean => {
-    if (placement.tab.kind === 'session') return true;
-    return warmed.has(placement.tabId);
-  };
-
   return (
     <>
-      <div ref={bufferRef} className="ws-content-buffer" aria-hidden />
       {placements.map((placement) => {
-        if (!shouldMount(placement)) return null;
         const { tab, tabId, paneId, isActive } = placement;
-        const target = isActive ? (paneEls.get(paneId) ?? bufferEl) : bufferEl;
-        if (!target) return null;
+        const target = paneEls.get(paneId);
+        if (!target || (!isActive && !mountedTabIds.has(tabId))) return null;
         return createPortal(
-          <div className="ws-tab-content-host" data-ws-tab={tabId}>
+          <div
+            className="ws-tab-content-host"
+            data-ws-tab={tabId}
+            data-ws-active={isActive ? 'true' : 'false'}
+          >
             {renderTab(tab)}
           </div>,
           target,

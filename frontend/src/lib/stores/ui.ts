@@ -34,7 +34,7 @@ export const UTILITY_ICON_RAIL_WIDTH = 48;
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 export type FileTabType = 'diff' | 'code' | 'html';
 export type DiffViewMode = 'unified' | 'side-by-side';
-export type UtilityRailTab = 'files' | 'review' | 'logs' | 'stats';
+export type UtilityRailTab = 'files' | 'changes' | 'review' | 'logs' | 'stats';
 export type UtilitySurfacePlacement =
   | { kind: 'rail' }
   | { kind: 'anchored-pane'; paneId: string };
@@ -172,6 +172,7 @@ function loadCollapsedWorkspaces(): Set<string> {
 
 const UTILITY_RAIL_TABS: UtilityRailTab[] = [
   'files',
+  'changes',
   'review',
   'logs',
   'stats',

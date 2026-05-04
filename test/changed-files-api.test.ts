@@ -171,6 +171,81 @@ describe('GET /workspaces/file-diff', () => {
   });
 });
 
+describe('GET /workspaces/file-content', () => {
+  test('returns file contents and metadata for an existing file', async () => {
+    const sample = path.join(repoDir, 'sample.txt');
+    fs.writeFileSync(sample, 'hello world\n', 'utf-8');
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=sample.txt`
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.content).toBe('hello world\n');
+    expect(data.binary).toBe(false);
+    expect(data.truncated).toBe(false);
+    expect(typeof data.sizeBytes).toBe('number');
+    expect(typeof data.mtimeMs).toBe('number');
+  });
+
+  test('returns 400 without file parameter', async () => {
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}`
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects absolute paths', async () => {
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=/etc/passwd`
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects .. traversal', async () => {
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=../../etc/passwd`
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 404 for missing file', async () => {
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=does-not-exist.txt`
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test('rejects symlinks pointing outside the repo', async () => {
+    const target = path.join(tmpDir, 'outside.txt');
+    fs.writeFileSync(target, 'leak\n', 'utf-8');
+    const link = path.join(repoDir, 'leak-link.txt');
+    fs.symlinkSync(target, link);
+    try {
+      const res = await fetch(
+        `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=leak-link.txt`
+      );
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as any;
+      expect(data.content).toBe('');
+    } finally {
+      fs.unlinkSync(link);
+      fs.unlinkSync(target);
+    }
+  });
+
+  test('flags binary files', async () => {
+    const bin = path.join(repoDir, 'blob.bin');
+    fs.writeFileSync(bin, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x00]));
+    const res = await fetch(
+      `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=blob.bin`
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.binary).toBe(true);
+    expect(data.content).toBe('');
+  });
+});
+
 describe('GET /workspaces/default-branch', () => {
   test('returns default branch for a workspace', async () => {
     const res = await fetch(

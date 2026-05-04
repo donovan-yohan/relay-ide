@@ -1035,6 +1035,30 @@ export async function launchWorkspaceSession(
   >(res);
 }
 
+export interface FilesListResponse {
+  files: string[];
+  truncated: boolean;
+  total: number;
+  error?: string;
+}
+
+/** Swallows HTTP errors and returns empty list with an `error` field. */
+export async function fetchFilesList(
+  repoPath: string
+): Promise<FilesListResponse> {
+  const params = new URLSearchParams({ path: repoPath });
+  const res = await fetch('/workspaces/files-list?' + params.toString());
+  if (!res.ok) {
+    return {
+      files: [],
+      truncated: false,
+      total: 0,
+      error: `HTTP ${res.status}`,
+    };
+  }
+  return jsonEither<FilesListResponse>(res);
+}
+
 /** Swallows HTTP errors and returns an empty ChangedFilesResponse with an `error` field. */
 export async function fetchChangedFiles(
   repoPath: string,
@@ -1066,6 +1090,19 @@ export async function fetchFileDiff(
     return { diff: '', error: `HTTP ${res.status}` };
   }
   return jsonEither<FileDiffResponse>(res);
+}
+
+/** Swallows HTTP errors and returns `{ content: '', error }` on failure. */
+export async function fetchFileContent(
+  repoPath: string,
+  filePath: string
+): Promise<import('./types.js').FileContentResponse> {
+  const params = new URLSearchParams({ path: repoPath, file: filePath });
+  const res = await fetch('/workspaces/file-content?' + params.toString());
+  if (!res.ok) {
+    return { content: '', error: `HTTP ${res.status}` };
+  }
+  return jsonEither<import('./types.js').FileContentResponse>(res);
 }
 
 /** Swallows HTTP errors and returns `'main'` on failure or when the branch is empty. */
