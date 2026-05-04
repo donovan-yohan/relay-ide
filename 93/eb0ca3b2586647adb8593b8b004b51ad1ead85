@@ -1,0 +1,52 @@
+frontend/src/components/WorkspaceTabBar.css
+  353f78f08f5b8d6f 123
+frontend/src/components/FilePicker.tsx
+  353f78f08f5b8d6f 528-533,535-540,542-543
+frontend/src/components/FileTree/FileTree.tsx
+  4951277d11c76aa1 137,279
+frontend/src/components/WorkspaceUtilityRail.css
+  4951277d11c76aa1 31
+.husky/post-checkout
+  353f78f08f5b8d6f 1-5
+AGENTS.md
+  353f78f08f5b8d6f 59
+.chalk/subagents/example-subagent.md
+  353f78f08f5b8d6f 1-11
+.husky/post-merge
+  353f78f08f5b8d6f 1-5
+.chalk/skills/example-skill/SKILL.md
+  353f78f08f5b8d6f 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "93eb0ca3b2586647adb8593b8b004b51ad1ead85",
+  "prompts": {
+    "353f78f08f5b8d6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7931026a-6418-4389-a138-cc41aac3a17e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 37,
+      "total_deletions": 3,
+      "accepted_lines": 37,
+      "overriden_lines": 0
+    },
+    "4951277d11c76aa1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a0dff24-e07e-4153-bb18-8b9d535304e4",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 5,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
