@@ -115,7 +115,7 @@ Source materials when writing it: the claude adapter, its tests, the renderer re
 
 ### Next: provider-add SKILL
 
-Mechanical wrapper around `provider-guide.md`. Inputs: provider name + transport type. Outputs: skeleton adapter file, skeleton mapping table, registry hook, test scaffolding. Lives at `.agents/skills/add-provider/SKILL.md` (per repo skill convention).
+Mechanical wrapper around `provider-guide.md`. Inputs: provider name + transport type. Outputs: skeleton adapter file, skeleton mapping table, registry hook, test scaffolding. Lives at `.chalk/skills/add-provider/SKILL.md` (per repo skill convention).
 
 ### Provider port order
 

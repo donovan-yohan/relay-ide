@@ -246,7 +246,7 @@ Delete on final landing:
 Create:
 
 - `docs/provider-guide.md`
-- `.agents/skills/add-provider/SKILL.md`
+- `.chalk/skills/add-provider/SKILL.md`
 - `docs/plans/2026-04-27-codex-v2-port.md`
 - `docs/plans/2026-04-27-opencode-v2-port.md`
 - `docs/plans/2026-04-27-hermes-v2-port.md`
@@ -663,7 +663,7 @@ Provider adapter replacements:
 
 **Files:**
 
-- Create: `.agents/skills/add-provider/SKILL.md`
+- Create: `.chalk/skills/add-provider/SKILL.md`
 
 - [ ] Skill inputs: provider name, transport type, native event source, capability set.
 - [ ] Skill outputs: adapter skeleton, mapping table skeleton, renderer registry hook, test fixture checklist, stacked PR checklist.
@@ -812,7 +812,7 @@ This roadmap is complete when:
 - Claude web sessions work end-to-end on `AgentPatchV2`.
 - The chat UI matches `chat.html` primitives and follows `DESIGN.md`.
 - V1 web-chat adapters, compatibility bridge, old hook, and old components are deleted.
-- `docs/provider-guide.md` and `.agents/skills/add-provider/SKILL.md` exist and are based on dogfood findings.
+- `docs/provider-guide.md` and `.chalk/skills/add-provider/SKILL.md` exist and are based on dogfood findings.
 - Codex, OpenCode, and Hermes web sessions are all restored as V2 adapters.
 - `npm test`, `npm run check`, and `npm run build` pass on the final stack tip.
 - All stack PRs are merged in order into `nightly`.

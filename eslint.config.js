@@ -81,6 +81,7 @@ export default [
       '.git/**',
       '.worktrees/**',
       '.agents/**',
+      '.chalk/**',
       'docs/**',
       'relay-ide-tmp/**',
       '*.config.js',

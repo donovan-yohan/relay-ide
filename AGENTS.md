@@ -3,7 +3,7 @@
 Relay Agentic Development Environment — remote web interface for Claude Code CLI sessions from any device. TypeScript + ESM backend (Express + node-pty + WebSocket) → `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) → `dist/frontend/`.
 
 > This file is the map, not the manual. Keep under 120 lines. Push detail into `docs/*.md`.
-> `CLAUDE.md` is a symlink to this file — edit `AGENTS.md` and Claude will see it. Do not hand-edit generated `.claude/`, `.codex/`, `opencode.json` — they come from `.agents/` via [chalkbag](https://github.com/donovan-yohan/chalk-bag).
+> `CLAUDE.md` is a symlink to this file — edit `AGENTS.md` and Claude will see it. Do not hand-edit generated `.claude/`, `.codex/`, `opencode.json` — they come from `.chalk/` via [chalkbag](https://github.com/donovan-yohan/chalk-bag).
 
 ## Quick Reference
 
@@ -18,18 +18,18 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 
 ## Documentation Map
 
-| Category      | Path                       | When to look here                                                      |
-| ------------- | -------------------------- | ---------------------------------------------------------------------- |
-| Architecture  | `docs/ARCHITECTURE.md`     | Module boundaries, data flow, API routes, ADR rules                    |
-| Visual Design | `DESIGN.md`                | TUI aesthetic, colors, buttons, icons, border-radius rules             |
-| Design        | `docs/DESIGN.md`           | Backend patterns, auth flow, PTY management, session types             |
-| Frontend      | `docs/FRONTEND.md`         | React 19 components, state management (Zustand + TanStack Query)       |
-| Quality       | `docs/QUALITY.md`          | Test runner, test files, isolation patterns                            |
-| Review        | `docs/REVIEW_GUIDANCE.md`  | Review agent config, question bank, escape log                         |
-| Deployment    | `docs/references/deployment.md` | Publishing + branching (nightly/master + tags)                    |
-| Learnings     | `docs/LEARNINGS.md`        | Persistent cross-session learnings                                     |
-| Project skills | `.agents/skills/<name>/SKILL.md` | Repo-local skills (see §Skills)                                  |
-| Work tracking | GitHub Issues              | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                |
+| Category       | Path                            | When to look here                                                |
+| -------------- | ------------------------------- | ---------------------------------------------------------------- |
+| Architecture   | `docs/ARCHITECTURE.md`          | Module boundaries, data flow, API routes, ADR rules              |
+| Visual Design  | `DESIGN.md`                     | TUI aesthetic, colors, buttons, icons, border-radius rules       |
+| Design         | `docs/DESIGN.md`                | Backend patterns, auth flow, PTY management, session types       |
+| Frontend       | `docs/FRONTEND.md`              | React 19 components, state management (Zustand + TanStack Query) |
+| Quality        | `docs/QUALITY.md`               | Test runner, test files, isolation patterns                      |
+| Review         | `docs/REVIEW_GUIDANCE.md`       | Review agent config, question bank, escape log                   |
+| Deployment     | `docs/references/deployment.md` | Publishing + branching (nightly/master + tags)                   |
+| Learnings      | `docs/LEARNINGS.md`             | Persistent cross-session learnings                               |
+| Project skills | `.chalk/skills/<name>/SKILL.md` | Repo-local skills (see §Skills)                                  |
+| Work tracking  | GitHub Issues                   | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`          |
 
 ## Design System
 
@@ -37,10 +37,10 @@ Read `DESIGN.md` before any visual or UI decision. Font, color, spacing, border-
 
 ## Skills
 
-Repo-local skills live under `.agents/skills/`. Projected to `.claude/skills/` (gitignored) on `chalkbag build`.
+Repo-local skills live under `.chalk/skills/`. Projected to `.claude/skills/` (gitignored) on `chalkbag build`.
 
-- `/scope` → `.agents/skills/scope/SKILL.md` — issue scoping and brainstorming guardrails
-- `/ticket` → `.agents/skills/ticket/SKILL.md` — GitHub Issue creation + sub-issue / blocker graphql
+- `/scope` → `.chalk/skills/scope/SKILL.md` — issue scoping and brainstorming guardrails
+- `/ticket` → `.chalk/skills/ticket/SKILL.md` — GitHub Issue creation + sub-issue / blocker graphql
 
 See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined → todo → in-progress).
 
@@ -74,7 +74,7 @@ GitHub Issues on `donovan-yohan/relay-ide`. Every issue needs:
 - Project (when applicable): `project:sidebar-nav`, `project:code-file-tools`, `project:verification-testing`, `project:command-center`, `project:agent-platform`, `project:true-workspaces`
 - `epic` label on parents
 
-`/ticket` handles creation + sub-issue / blocker mutations. Reference in `.agents/skills/ticket/SKILL.md`.
+`/ticket` handles creation + sub-issue / blocker mutations. Reference in `.chalk/skills/ticket/SKILL.md`.
 
 ## gstack
 

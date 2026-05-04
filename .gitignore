@@ -62,6 +62,7 @@ playwright-report/
 /.belayer/worktrees/
 
 # chalkbag — generated artifacts
+/.agents/
 /.claude/
 /.codex/
 /opencode.json
@@ -70,9 +71,9 @@ playwright-report/
 !/CLAUDE.md
 
 # chalkbag — state
-/.agents/.state.json
-/.agents/.state.lock
-/.agents-tmp/
+/.chalk/.state.json
+/.chalk/.state.lock
+/.chalk-tmp/
 
 # Design system working files (local previews, screenshots, uploads)
 /docs/design-system/
