@@ -1,0 +1,45 @@
+frontend/src/components/WorkspaceArea.tsx
+  1a0f305109b2aba9 13,18-20,35-48,127-164,166,168-170,175,177,179-181,184,188-189,198,203-208,255-261,270-272,274-275,278,284,302-303,305-311,313-316,319,323-333,335,341,344,346,350-368,370-374,378-386,391,398,82
+  5b75b2f3acd811a6 14,79-81,83,96-97
+frontend/src/components/FileTabContent.tsx
+  1a0f305109b2aba9 2-34,37-47,49-140,142,144-217,219-256,259-276,278-279,282-304
+  5b75b2f3acd811a6 1
+frontend/src/components/FileViewerPane.tsx
+  1a0f305109b2aba9 2,15-16,22-31,37-46,52,79-84,86-88,94-100,121-124,126,128,131-133,147-149,157-159,167-176,182-187,192-193,195,197-198,200,204,206-218,239-244,249-251,253-256,261-268,270-274,280-299,301-305,143
+  5b75b2f3acd811a6 1,6,108,110,119,125,127,137-142,144,205,219-230
+frontend/src/hooks/useFileDiff.ts
+  5b75b2f3acd811a6 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "bc55b620edad3d0aede05a3fb2b75324ae67b36a",
+  "prompts": {
+    "1a0f305109b2aba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0808dcfd-0207-4fcf-8470-0caac1dc2477",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 5749,
+      "total_deletions": 96,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 104,
+      "total_deletions": 128,
+      "accepted_lines": 96,
+      "overriden_lines": 0
+    }
+  }
+}

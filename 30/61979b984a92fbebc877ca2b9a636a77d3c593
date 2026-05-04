@@ -1,0 +1,40 @@
+frontend/src/components/WorkspaceContentLayer.css
+  1a0f305109b2aba9 1-6,11
+  5b75b2f3acd811a6 8-10
+frontend/src/components/WorkspaceContentLayer.tsx
+  1a0f305109b2aba9 2-37,39-43,50-53,55-58,60-61,71,73-79
+  5b75b2f3acd811a6 44-49,59,62-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "3061979b984a92fbebc877ca2b9a636a77d3c593",
+  "prompts": {
+    "1a0f305109b2aba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0808dcfd-0207-4fcf-8470-0caac1dc2477",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 5749,
+      "total_deletions": 96,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 729,
+      "total_deletions": 60,
+      "accepted_lines": 14,
+      "overriden_lines": 0
+    }
+  }
+}

@@ -1,0 +1,43 @@
+package.json
+  1a0f305109b2aba9 77
+  5b75b2f3acd811a6 64
+frontend/src/hooks/useEventSocket.ts
+  5b75b2f3acd811a6 15
+frontend/src/components/FileTree/FileTree.tsx
+  5b75b2f3acd811a6 1-22,24,26-27,30,35-42,44-48,50-52,54-62,64-67,69-78,80-82,84-96,100-105,107-111,113-121,123-126,128-134,137-138,140,142-154,156-157,159-166,168-184,186-213,215-216,218-226,228-232,234,236,238-252,254-257,259,264-312,320
+frontend/src/components/FileTree/file-tree.css
+  5b75b2f3acd811a6 1-5,8,10-12,15,17-45,48-59,61-85,87-99,101-103,105-107,110,112-114,116-120,123-126,129-132,134-137,139-144,146-147,149-150,152-153,155-156,158-166,169-174,176-177,179-184,186-191,193-213,216-219,222-223,226,228-230,232-233,236-258,260-261,263-264,266-269,271-273,276-277,279-280,282-283,285-292,295-334,337-375,378-394
+frontend/src/components/FileTree/icons.ts
+  5b75b2f3acd811a6 1-63
+frontend/src/App.tsx
+  1a0f305109b2aba9 376,634,658-662
+  5b75b2f3acd811a6 79,330,721,735,988
+frontend/src/components/FileTree/index.ts
+  5b75b2f3acd811a6 1-2
+frontend/src/components/UtilityRailFilesPanel.tsx
+  5b75b2f3acd811a6 2,7,14
+frontend/src/components/WorkspaceUtilityRail.tsx
+  5b75b2f3acd811a6 9,75
+frontend/src/components/FileTree/FileTreeRow.tsx
+  5b75b2f3acd811a6 1-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "627c2b3ac6a200e558aa3adf8322f077c2538343",
+  "prompts": {
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 908,
+      "total_deletions": 656,
+      "accepted_lines": 766,
+      "overriden_lines": 0
+    }
+  }
+}

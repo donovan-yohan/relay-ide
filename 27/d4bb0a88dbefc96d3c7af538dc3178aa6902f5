@@ -1,0 +1,104 @@
+frontend/src/components/WorkspacePane.tsx
+  1a0f305109b2aba9 1-122,124-166
+frontend/src/lib/stores/ui.ts
+  1a0f305109b2aba9 13,132,146-148,334-335,422,436-441
+frontend/src/components/WorkspaceDropOverlay.css
+  1a0f305109b2aba9 1-53
+frontend/src/App.tsx
+  1a0f305109b2aba9 378,619,640-644
+frontend/src/components/WorkspaceContentLayer.tsx
+  1a0f305109b2aba9 2-37,40,45-49,56-59,90-92,94,96,98-99,103,105-111
+  5b75b2f3acd811a6 50-55
+frontend/src/components/WorkspaceLayoutDemo.css
+  41c3ff55b5416114 1-7,13-15,22-26,29,33,42,50-51,55,57-58,60,67-69,84,90-94,100-102,106,111,115-118,123,125-126
+  1a0f305109b2aba9 8-12,16-21,27-28,30-32,34-41,43-49,52-54,56,59,61-66,70-83,85-89,95-99,103-105,107-110,112-114,119-122,124,127-133
+frontend/src/lib/stores/workspace-layout-store.ts
+  1a0f305109b2aba9 1-31,33-37,39-42,44-51,53-61,63-108,110-124,126-168,170-176,178-201,203-210,212-217
+test/workspace-layout.test.ts
+  1a0f305109b2aba9 1-2,4-30,32-40,42-82,84-194,196-197,199-209,211-213,215-410,412-421
+  41c3ff55b5416114 3,41
+frontend/src/components/FileTabContent.tsx
+  1a0f305109b2aba9 3-35,112-124,126-217,219,221-294,296-333,336-353,355-356,359-381
+frontend/src/components/WorkspaceLayout.css
+  1a0f305109b2aba9 1-63
+frontend/src/components/WorkspaceTabBar.tsx
+  1a0f305109b2aba9 1-107,115-148,150-184
+  41c3ff55b5416114 108-114
+test/workspace-summary.test.ts
+  1a0f305109b2aba9 1-7,9-12,14-108,110-114,116-119,121-124,126-132,134-172
+frontend/src/components/FileTabContent.css
+  1a0f305109b2aba9 1-108
+frontend/src/lib/workspace-summary.ts
+  1a0f305109b2aba9 1-71,73-79,81-102,104-125,127-140,142-171,173-177
+test/workspace-layout-store.test.ts
+  1a0f305109b2aba9 1-2,4-25,27-31,33-157
+  41c3ff55b5416114 3,26,32
+frontend/src/components/WorkspaceLayout.tsx
+  1a0f305109b2aba9 1-5,7-31,33-43,45-166,168-173,175-207,209-211,213-219,222-225,227-259
+frontend/src/components/FileViewerPane.tsx
+  1a0f305109b2aba9 2,19-20,26-35,41-50,56,83-88,90-92,98-104,124-127,129,131,134-136,144-146,154-156,164-173,179-184,189-190,192,194-195,197,203,205-217,243-248,253-255,257-260,265-272,274-278,284-303,305-309
+frontend/src/lib/workspace-layout.ts
+  1a0f305109b2aba9 1-53,56-66,68-83,85-98,100-115,117-125,127-137,139-148,150-168,170-192,194-228,230-252,254-255,257-278,280-315,317-342,344-346
+  41c3ff55b5416114 54-55
+frontend/src/components/WorkspaceLayoutDemo.tsx
+  41c3ff55b5416114 1,141,167-168
+  1a0f305109b2aba9 2,4-66,68-71,73-107,109,111-140,142-153,155-166,169-216
+frontend/src/components/WorkspaceContentLayer.css
+  1a0f305109b2aba9 12-17
+frontend/src/main.tsx
+  1a0f305109b2aba9 4,7-9,12,14
+package.json
+  1a0f305109b2aba9 75
+frontend/src/components/WorkspacePane.css
+  1a0f305109b2aba9 1-159
+frontend/src/components/WorkspaceDropOverlay.tsx
+  1a0f305109b2aba9 1-3,5-75
+frontend/src/components/WorkspaceTabBar.css
+  1a0f305109b2aba9 1-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "27d4bb0a88dbefc96d3c7af538dc3178aa6902f5",
+  "prompts": {
+    "1a0f305109b2aba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0808dcfd-0207-4fcf-8470-0caac1dc2477",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 4036,
+      "total_deletions": 2380,
+      "accepted_lines": 3504,
+      "overriden_lines": 0
+    },
+    "41c3ff55b5416114": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f3466e9-07c7-4347-9de2-7fd9bf62f97a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 276,
+      "total_deletions": 0,
+      "accepted_lines": 63,
+      "overriden_lines": 0
+    },
+    "5b75b2f3acd811a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c2b9681-6a21-4b1a-a9a6-33bd9b952498",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 3487,
+      "total_deletions": 45,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}
