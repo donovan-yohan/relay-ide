@@ -55,21 +55,21 @@
 
 /* git status name colors — vscode-style decoration. active state keeps status color (no override) */
 .sidebar-file[data-state='modified'] .name {
-  color: var(--status-warning);
+  color: var(--status-warning, #fbbf24);
 }
 .sidebar-file[data-state='added'] .name {
-  color: var(--status-success);
+  color: var(--status-success, #4ade80);
 }
 .sidebar-file[data-state='untracked'] .name {
-  color: var(--status-info);
+  color: var(--status-info, #60a5fa);
 }
 .sidebar-file[data-state='renamed'] .name {
-  color: var(--status-merged, var(--status-info));
+  color: var(--status-merged, var(--status-info, #60a5fa));
 }
 .sidebar-file[data-state='deleted'] .name {
-  color: var(--status-error);
+  color: var(--status-error, #f87171);
   text-decoration: line-through;
-  text-decoration-color: var(--status-error);
+  text-decoration-color: var(--status-error, #f87171);
 }
 
 .diff-sidebar .dir {

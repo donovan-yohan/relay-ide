@@ -1621,20 +1621,28 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    const absFile = path.resolve(resolvedRepo, expandedFile);
-    if (!absFile.startsWith(path.resolve(resolvedRepo) + path.sep)) {
-      res.status(400).json({ content: '', error: 'file path escapes repo' });
-      return;
-    }
-
     const MAX_BYTES = 2 * 1024 * 1024;
 
     try {
-      const stat = await fs.promises.stat(absFile);
-      if (!stat.isFile()) {
+      const repoRoot = await fs.promises.realpath(resolvedRepo);
+      const absFile = path.resolve(repoRoot, expandedFile);
+      if (absFile !== repoRoot && !absFile.startsWith(repoRoot + path.sep)) {
+        res.status(400).json({ content: '', error: 'file path escapes repo' });
+        return;
+      }
+
+      // Reject symlinks outright — readFile/stat would otherwise follow them
+      // out of the workspace.
+      const linkStat = await fs.promises.lstat(absFile);
+      if (linkStat.isSymbolicLink()) {
+        res.status(400).json({ content: '', error: 'invalid file path' });
+        return;
+      }
+      if (!linkStat.isFile()) {
         res.status(400).json({ content: '', error: 'not a regular file' });
         return;
       }
+      const stat = linkStat;
       const sizeBytes = stat.size;
       const mtimeMs = stat.mtimeMs;
 

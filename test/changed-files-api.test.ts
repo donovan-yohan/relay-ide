@@ -215,6 +215,24 @@ describe('GET /workspaces/file-content', () => {
     expect(res.status).toBe(404);
   });
 
+  test('rejects symlinks pointing outside the repo', async () => {
+    const target = path.join(tmpDir, 'outside.txt');
+    fs.writeFileSync(target, 'leak\n', 'utf-8');
+    const link = path.join(repoDir, 'leak-link.txt');
+    fs.symlinkSync(target, link);
+    try {
+      const res = await fetch(
+        `${baseUrl}/workspaces/file-content?path=${encodeURIComponent(repoDir)}&file=leak-link.txt`
+      );
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as any;
+      expect(data.content).toBe('');
+    } finally {
+      fs.unlinkSync(link);
+      fs.unlinkSync(target);
+    }
+  });
+
   test('flags binary files', async () => {
     const bin = path.join(repoDir, 'blob.bin');
     fs.writeFileSync(bin, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x00]));

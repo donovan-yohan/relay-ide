@@ -114,11 +114,10 @@ export function UtilityRailGitChangesPanel({
   const groups = useMemo(() => {
     const working = workingQuery.data?.files ?? [];
     const staged = stagedQuery.data?.files ?? [];
-    const stagedSet = new Set(staged.map((f) => f.path));
+    // Partially-staged files (present in both staged and working) appear in
+    // both sections — matches VS Code SCM. Untracked split out separately.
     const untracked = working.filter((f) => f.status === 'untracked');
-    const changes = working.filter(
-      (f) => f.status !== 'untracked' && !stagedSet.has(f.path)
-    );
+    const changes = working.filter((f) => f.status !== 'untracked');
     return { staged, changes, untracked };
   }, [workingQuery.data?.files, stagedQuery.data?.files]);
 
@@ -137,7 +136,11 @@ export function UtilityRailGitChangesPanel({
 
   const isLoading = workingQuery.isPending && !workingQuery.data;
   const errorMsg =
-    workingQuery.error instanceof Error ? workingQuery.error.message : null;
+    workingQuery.error instanceof Error
+      ? workingQuery.error.message
+      : stagedQuery.error instanceof Error
+        ? stagedQuery.error.message
+        : null;
   const totalCount =
     groups.staged.length + groups.changes.length + groups.untracked.length;
 

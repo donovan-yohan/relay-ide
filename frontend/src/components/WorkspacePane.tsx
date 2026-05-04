@@ -11,11 +11,14 @@ import {
 } from '../lib/stores/workspace-layout-store.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { killSession } from '../lib/api.js';
+import { createLogger } from '../lib/logger.js';
 import {
   summaryForTab,
   type SummaryContext,
   type WorkspaceTabSummary,
 } from '../lib/workspace-summary.js';
+
+const logger = createLogger('workspace-pane');
 import { WorkspaceTabBar } from './WorkspaceTabBar.js';
 import { WorkspaceDropOverlay } from './WorkspaceDropOverlay.js';
 import './WorkspacePane.css';
@@ -129,12 +132,15 @@ function WorkspacePaneImpl({
     : null;
 
   const handleSelect = (tabId: WorkspaceTabId) => selectTab(pane.id, tabId);
-  const handleClose = (tabId: WorkspaceTabId) => {
+  const handleClose = async (tabId: WorkspaceTabId) => {
     if (tabId.startsWith('session::')) {
       const sessionId = tabId.slice('session::'.length);
-      killSession(sessionId).finally(() => {
-        useSessionsStore.getState().refreshAll();
-      });
+      try {
+        await killSession(sessionId);
+      } catch (err) {
+        logger.error('Failed to kill session', sessionId, err);
+      }
+      await useSessionsStore.getState().refreshAll();
     }
     closeTab(tabId);
   };
