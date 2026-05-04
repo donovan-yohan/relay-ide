@@ -10,6 +10,19 @@ config.dev.json
 analytics.db
 analytics.db-shm
 analytics.db-wal
+relay-state.db
+relay-state.db-shm
+relay-state.db-wal
+
+# Runtime port allocator state
+port-assignments.json
+
+# macOS
+**/.DS_Store
+
+# Local scratch
+test.md
+tmp-*.json
 
 # Husky runtime shims
 .husky/_/

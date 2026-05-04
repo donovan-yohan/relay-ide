@@ -385,6 +385,15 @@ export interface FileDiffResponse {
   error?: string;
 }
 
+export interface FileContentResponse {
+  content: string;
+  binary?: boolean;
+  truncated?: boolean;
+  sizeBytes?: number;
+  mtimeMs?: number;
+  error?: string;
+}
+
 export type DiffSource = 'working' | 'staged' | 'branch';
 
 // ── Session Analytics ──

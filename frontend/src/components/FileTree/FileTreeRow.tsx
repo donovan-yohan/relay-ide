@@ -26,7 +26,7 @@ function FileTreeRowImpl({
     : fileIconForName(node.name);
   const gitLetter = node.status ? GIT_LETTER[node.status] : '';
   const gitCls = node.status ? GIT_CLASS[node.status] : '';
-  const stateAttr = node.status === 'deleted' ? 'deleted' : undefined;
+  const stateAttr = !node.isDirectory && node.status ? node.status : undefined;
 
   return (
     <button

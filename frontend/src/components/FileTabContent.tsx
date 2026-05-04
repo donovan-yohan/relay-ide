@@ -158,6 +158,9 @@ export interface FileTabContentProps {
   refreshVersion?: number | undefined;
 
   diff: string;
+  content?: string;
+  binary?: boolean;
+  truncated?: boolean;
   loading: boolean;
   error: string | null;
   diffViewMode: 'unified' | 'side-by-side';
@@ -189,9 +192,11 @@ export function FileTabContent({
   fileName,
   tabType,
   token,
-  isChanged,
   refreshVersion,
   diff,
+  content,
+  binary,
+  truncated,
   loading,
   error,
   diffViewMode,
@@ -205,6 +210,8 @@ export function FileTabContent({
   summary,
   showSummary = true,
 }: FileTabContentProps) {
+  const viewMode: 'html' | 'diff' | 'code' =
+    tabType === 'html' ? 'html' : tabType === 'diff' ? 'diff' : 'code';
   const handleDiffClick = useCallback(
     (e: React.MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -241,7 +248,7 @@ export function FileTabContent({
         </div>
       );
     }
-    if (tabType === 'html' && token) {
+    if (viewMode === 'html' && token) {
       return (
         <HtmlTabView
           filePath={filePath}
@@ -251,7 +258,10 @@ export function FileTabContent({
         />
       );
     }
-    if (isChanged && diff) {
+    if (viewMode === 'diff') {
+      if (!diff) {
+        return <div className="empty-viewer">no changes</div>;
+      }
       return (
         <div className="diff-wrapper" onClick={handleDiffClick}>
           {renderDiff ? (
@@ -267,28 +277,28 @@ export function FileTabContent({
         </div>
       );
     }
-    if (!isChanged) {
+    if (binary) {
+      return <div className="empty-viewer">binary file — cannot display</div>;
+    }
+    if (truncated) {
       return (
-        <div
-          className={['raw-file', wordWrap ? 'word-wrap' : '']
-            .filter(Boolean)
-            .join(' ')}
-        >
-          {renderCode ? (
-            renderCode({
-              code: diff || '(empty file)',
-              language: languageFromPath(filePath),
-            })
-          ) : (
-            <CodeBlock
-              code={diff || '(empty file)'}
-              language={languageFromPath(filePath)}
-            />
-          )}
-        </div>
+        <div className="empty-viewer">file too large to display inline</div>
       );
     }
-    return <div className="empty-viewer">no diff available</div>;
+    const code = content ?? '';
+    return (
+      <div
+        className={['raw-file', wordWrap ? 'word-wrap' : '']
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {renderCode ? (
+          renderCode({ code, language: languageFromPath(filePath) })
+        ) : (
+          <CodeBlock code={code} language={languageFromPath(filePath)} />
+        )}
+      </div>
+    );
   })();
 
   return (

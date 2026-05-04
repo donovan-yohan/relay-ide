@@ -13,6 +13,7 @@ import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
 import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
+import { useFileContent } from '../hooks/useFileContent.js';
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
@@ -95,10 +96,33 @@ function FileTabContentBridge({
     [fileDiffSource, fileDiffDefaultBranch]
   );
 
-  const { diff, loading, error } = useFileDiff(
+  const isDiffMode = tab.tabType === 'diff';
+  const isCodeMode = tab.tabType !== 'html' && tab.tabType !== 'diff';
+
+  const {
+    diff,
+    loading: diffLoading,
+    error: diffError,
+  } = useFileDiff(
     { workspacePath, filePath: tab.filePath, base },
-    { enabled: tab.tabType !== 'html' }
+    { enabled: isDiffMode }
   );
+  const {
+    content,
+    binary,
+    truncated,
+    loading: contentLoading,
+    error: contentError,
+  } = useFileContent(
+    { workspacePath, filePath: tab.filePath },
+    { enabled: isCodeMode }
+  );
+  const loading = isDiffMode
+    ? diffLoading
+    : isCodeMode
+      ? contentLoading
+      : false;
+  const error = isDiffMode ? diffError : isCodeMode ? contentError : null;
   const invalidateFileDiff = useInvalidateFileDiff();
 
   const uiMatch = openFileTabs.find(
@@ -128,6 +152,9 @@ function FileTabContentBridge({
       isChanged={isChanged}
       refreshVersion={refreshVersion}
       diff={diff}
+      content={content}
+      binary={binary}
+      truncated={truncated}
       loading={loading}
       error={error}
       diffViewMode={fileDiffViewMode}

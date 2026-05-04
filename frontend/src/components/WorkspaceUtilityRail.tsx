@@ -8,6 +8,7 @@ import {
 } from '../lib/stores/ui.js';
 import type { FileTreeHandle } from './FileTree/index.js';
 import UtilityRailFilesPanel from './UtilityRailFilesPanel.js';
+import UtilityRailGitChangesPanel from './UtilityRailGitChangesPanel.js';
 import UtilityRailReviewPanel from './UtilityRailReviewPanel.js';
 import UtilityRailLogsPanel from './UtilityRailLogsPanel.js';
 import UtilityRailStatsPanel from './UtilityRailStatsPanel.js';
@@ -27,6 +28,19 @@ const TAB_META: Array<{
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M5 3h10l4 4v14H5z" />
         <path d="M15 3v5h5" />
+      </svg>
+    ),
+  },
+  {
+    id: 'changes',
+    label: 'git changes',
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="6" cy="6" r="2.5" />
+        <circle cx="6" cy="18" r="2.5" />
+        <circle cx="18" cy="12" r="2.5" />
+        <path d="M6 8.5v7" />
+        <path d="M6 6h6a4 4 0 0 1 4 4v.5" />
       </svg>
     ),
   },
@@ -94,7 +108,6 @@ export function WorkspaceUtilityRail({
   );
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const selectedTab = railState.selectedRailTab;
-  const selectedMeta = TAB_META.find((tab) => tab.id === selectedTab);
 
   const handleTabClick = useCallback(
     (tab: UtilityRailTab) => {
@@ -144,11 +157,6 @@ export function WorkspaceUtilityRail({
         .join(' ')}
     >
       <div className="utility-selected-pane">
-        <div className="utility-pane-header">
-          <span className="utility-pane-title">
-            {selectedMeta?.label ?? selectedTab ?? ''}
-          </span>
-        </div>
         <div className="utility-pane-body">
           <div
             id="utility-rail-panel-files"
@@ -162,6 +170,16 @@ export function WorkspaceUtilityRail({
               workspacePath={workspacePath}
               {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
             />
+          </div>
+          <div
+            id="utility-rail-panel-changes"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-changes"
+            tabIndex={selectedTab === 'changes' ? 0 : -1}
+            hidden={selectedTab !== 'changes'}
+          >
+            <UtilityRailGitChangesPanel workspacePath={workspacePath} />
           </div>
           <div
             id="utility-rail-panel-review"

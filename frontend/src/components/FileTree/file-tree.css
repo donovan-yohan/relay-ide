@@ -261,18 +261,31 @@
   text-overflow: ellipsis;
   line-height: 1;
 }
-.fb-node[data-state='ignored'] .fb-node__name {
-  color: var(--text-muted);
-  opacity: 0.55;
+/* git status name colors — vscode-style decoration. selected state wins via :not(.selected) */
+.fb-node[data-state='modified']:not(.selected) .fb-node__name {
+  color: var(--status-warning);
 }
-.fb-node[data-state='conflict'] .fb-node__name {
+.fb-node[data-state='added']:not(.selected) .fb-node__name {
+  color: var(--status-success);
+}
+.fb-node[data-state='untracked']:not(.selected) .fb-node__name {
+  color: var(--status-info);
+}
+.fb-node[data-state='renamed']:not(.selected) .fb-node__name {
+  color: var(--status-merged, var(--status-info));
+}
+.fb-node[data-state='deleted']:not(.selected) .fb-node__name {
+  color: var(--status-error);
+  text-decoration: line-through;
+  text-decoration-color: var(--status-error);
+}
+.fb-node[data-state='conflict']:not(.selected) .fb-node__name {
   color: var(--status-error);
   font-weight: 600;
 }
-.fb-node[data-state='deleted'] .fb-node__name {
+.fb-node[data-state='ignored']:not(.selected) .fb-node__name {
   color: var(--text-muted);
-  text-decoration: line-through;
-  text-decoration-color: var(--status-error);
+  opacity: 0.55;
 }
 .fb-node[data-state='renamed'] .fb-node__name em {
   font-style: normal;
@@ -289,6 +302,7 @@
   text-transform: uppercase;
 }
 .fb-node__name .stats {
+  display: inline;
   font-size: 0.58rem;
   margin-left: 8px;
   color: var(--text-muted);

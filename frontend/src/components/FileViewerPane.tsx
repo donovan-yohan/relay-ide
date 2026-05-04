@@ -5,6 +5,7 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
 import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
+import { useFileContent } from '../hooks/useFileContent.js';
 import './FileViewerPane.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -218,18 +219,44 @@ export function FileViewerPane({
     fileWordWrap,
   } = handlers;
 
+  const isDiffActive = activeTab?.tabType === 'diff';
+  const isCodeActive =
+    Boolean(activeTab) &&
+    activeTab?.tabType !== 'html' &&
+    activeTab?.tabType !== 'diff';
+
   const {
     diff: activeDiff,
-    loading: activeLoading,
-    error: activeError,
+    loading: diffLoading,
+    error: diffError,
   } = useFileDiff(
     {
       workspacePath,
       filePath: activeTab?.filePath ?? '',
       base,
     },
-    { enabled: Boolean(activeTab) && activeTab?.tabType !== 'html' }
+    { enabled: isDiffActive }
   );
+  const {
+    content: activeContent,
+    binary: activeBinary,
+    truncated: activeTruncated,
+    loading: contentLoading,
+    error: contentError,
+  } = useFileContent(
+    { workspacePath, filePath: activeTab?.filePath ?? '' },
+    { enabled: isCodeActive }
+  );
+  const activeLoading = isDiffActive
+    ? diffLoading
+    : isCodeActive
+      ? contentLoading
+      : false;
+  const activeError = isDiffActive
+    ? diffError
+    : isCodeActive
+      ? contentError
+      : null;
 
   return (
     <div className="file-viewer">
@@ -288,6 +315,9 @@ export function FileViewerPane({
           isChanged={activeTab.isChanged}
           refreshVersion={activeTab.refreshVersion}
           diff={activeDiff}
+          content={activeContent}
+          binary={activeBinary}
+          truncated={activeTruncated}
           loading={activeLoading}
           error={activeError}
           diffViewMode={fileDiffViewMode}

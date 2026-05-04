@@ -9,6 +9,8 @@ import {
   registerPaneBodyEl,
   useWorkspaceLayoutStore,
 } from '../lib/stores/workspace-layout-store.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
+import { killSession } from '../lib/api.js';
 import {
   summaryForTab,
   type SummaryContext,
@@ -127,7 +129,15 @@ function WorkspacePaneImpl({
     : null;
 
   const handleSelect = (tabId: WorkspaceTabId) => selectTab(pane.id, tabId);
-  const handleClose = (tabId: WorkspaceTabId) => closeTab(tabId);
+  const handleClose = (tabId: WorkspaceTabId) => {
+    if (tabId.startsWith('session::')) {
+      const sessionId = tabId.slice('session::'.length);
+      killSession(sessionId).finally(() => {
+        useSessionsStore.getState().refreshAll();
+      });
+    }
+    closeTab(tabId);
+  };
 
   return (
     <div
