@@ -893,11 +893,29 @@ function isTimeoutError(error: unknown): boolean {
   );
 }
 
+function hasInvalidBaseRefChar(ref: string): boolean {
+  for (const char of ref) {
+    const code = char.charCodeAt(0);
+    if (code <= 32 || code === 127 || '~^:?*[\\'.includes(char)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isSafeBaseRef(ref: string | undefined): ref is string {
   if (typeof ref !== 'string') return false;
   if (ref.trim() !== ref || ref.length === 0) return false;
   if (ref.includes('\0')) return false;
   if (ref.startsWith('-')) return false;
+  if (ref === '@') return false;
+  if (ref.includes('..') || ref.includes('@{') || ref.includes('//')) return false;
+  if (ref.startsWith('/') || ref.endsWith('/')) return false;
+  if (ref.endsWith('.') || ref.endsWith('.lock')) return false;
+  if (hasInvalidBaseRefChar(ref)) return false;
+  if (ref.split('/').some((part) => part.length === 0 || part.startsWith('.') || part.endsWith('.lock'))) {
+    return false;
+  }
   return true;
 }
 

@@ -88,6 +88,33 @@ describe('GET /workspaces/divergence', () => {
     expect(body).toMatchObject({ state: 'invalid_base', error: 'invalid base ref' });
   });
 
+  it('rejects symlink escapes from configured workspaces', async () => {
+    const externalRepo = path.join(tmpDir, 'external-repo');
+    fs.mkdirSync(externalRepo, { recursive: true });
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: externalRepo, timeout: 10_000 });
+    await execFileAsync('git', ['config', 'user.name', 'Relay Test'], { cwd: externalRepo, timeout: 10_000 });
+    await execFileAsync('git', ['config', 'user.email', 'relay@example.test'], {
+      cwd: externalRepo,
+      timeout: 10_000,
+    });
+    fs.writeFileSync(path.join(externalRepo, 'outside.txt'), 'outside\n', 'utf8');
+    await execFileAsync('git', ['add', '-A'], { cwd: externalRepo, timeout: 10_000 });
+    await execFileAsync('git', ['commit', '-m', 'outside commit'], {
+      cwd: externalRepo,
+      timeout: 10_000,
+    });
+
+    const linkPath = path.join(repoPath, 'linked-external');
+    fs.symlinkSync(externalRepo, linkPath, 'dir');
+
+    const res = await fetch(endpoint(linkPath, 'main'));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      state: 'not_git',
+      error: 'path not in configured workspaces',
+    });
+  });
+
   it('returns a display-ready divergence summary for configured repo subpaths', async () => {
     await git(['checkout', '-b', 'feature']);
     write('src/feature.ts', 'export const feature = true;\n');

@@ -170,7 +170,17 @@ describe('getBranchDivergence', () => {
   });
 
   it('rejects unsafe base refs before running revision ranges', async () => {
-    for (const badRef of ['', '   ', '--upload-pack=/tmp/nope', 'main\0evil']) {
+    for (const badRef of [
+      '',
+      '   ',
+      '--upload-pack=/tmp/nope',
+      'main\0evil',
+      'HEAD~1',
+      'HEAD^',
+      'main..feature',
+      ':/initial',
+      'feature@{upstream}',
+    ]) {
       const summary = await getBranchDivergence(repoPath, { base: badRef });
       expect(summary.state).toBe('invalid_base');
       expect(summary.error).toBe('invalid base ref');

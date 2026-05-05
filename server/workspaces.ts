@@ -1417,13 +1417,35 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
+  function realpathOrNull(candidate: string): string | null {
+    try {
+      return fs.realpathSync.native(path.resolve(candidate));
+    } catch {
+      return null;
+    }
+  }
+
+  function isPathInside(child: string, parent: string): boolean {
+    const relative = path.relative(parent, child);
+    return (
+      relative === '' ||
+      (relative !== '' &&
+        !relative.startsWith('..') &&
+        !path.isAbsolute(relative))
+    );
+  }
+
   function validateWorkspaceAccess(repoPath: string): string | null {
     const resolved = path.resolve(repoPath);
+    const realResolved = realpathOrNull(resolved);
+    if (!realResolved) return null;
+
     const allowed = getConfig().repos ?? [];
-    return allowed.some(
-      (p) => resolved === p || resolved.startsWith(p + path.sep)
-    )
-      ? resolved
+    return allowed.some((p) => {
+      const allowedReal = realpathOrNull(p);
+      return allowedReal ? isPathInside(realResolved, allowedReal) : false;
+    })
+      ? realResolved
       : null;
   }
 
