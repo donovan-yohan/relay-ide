@@ -1,0 +1,27 @@
+frontend/src/components/FilePicker.tsx
+  353f78f08f5b8d6f 530-531,535-536
+.husky/post-merge
+  353f78f08f5b8d6f 1-8
+.husky/post-checkout
+  353f78f08f5b8d6f 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "e460586a2f528f06be44f505d0011fe770c28c19",
+  "prompts": {
+    "353f78f08f5b8d6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7931026a-6418-4389-a138-cc41aac3a17e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan",
+      "messages": [],
+      "total_additions": 670,
+      "total_deletions": 26,
+      "accepted_lines": 662,
+      "overriden_lines": 0
+    }
+  }
+}
