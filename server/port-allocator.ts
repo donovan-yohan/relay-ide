@@ -2,7 +2,9 @@
  * Port Allocator for Worktree Environments
  *
  * Provides durable port allocation with OS-level verification.
- * Ports are persisted to port-assignments.json in the config directory.
+ * Ports are persisted to port-assignments.json under the user config
+ * directory, scoped by config/workspace identity so local dev state never
+ * lands in the repo root.
  *
  * Port ranges:
  * - Primary: 10000-10999 (1000 ports)
@@ -14,6 +16,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import * as crypto from 'node:crypto';
+import * as os from 'node:os';
 import getPort from 'get-port';
 
 const DEFAULT_PORT_VARIABLES = ['PORT'];
@@ -81,6 +85,54 @@ export interface PortAllocatorOptions {
 
 type PortAllocatorLogger = NonNullable<PortAllocatorOptions['logger']>;
 
+interface LoadedAssignments {
+  assignments: PortAssignmentsFile;
+  source: 'none' | 'current' | 'legacy';
+}
+
+function userConfigDir(): string {
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim();
+  const baseDir = xdgConfigHome || path.join(os.homedir(), '.config');
+  return path.join(baseDir, 'relay-ide');
+}
+
+function safeStateSlug(configPath: string): string {
+  const configDir = path.dirname(path.resolve(configPath));
+  const slug = path
+    .basename(configDir)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return slug || 'workspace';
+}
+
+function stateKeyForConfig(configPath: string): string {
+  const configDir = path.dirname(path.resolve(configPath));
+  const hash = crypto
+    .createHash('sha256')
+    .update(configDir)
+    .digest('hex')
+    .slice(0, 16);
+  return `${safeStateSlug(configPath)}-${hash}`;
+}
+
+export function resolvePortAssignmentsPath(configPath: string): string {
+  return path.join(
+    userConfigDir(),
+    'workspaces',
+    stateKeyForConfig(configPath),
+    'port-assignments.json'
+  );
+}
+
+export function resolveLegacyPortAssignmentsPath(configPath: string): string {
+  return path.join(
+    path.dirname(path.resolve(configPath)),
+    'port-assignments.json'
+  );
+}
+
 function logWarn(
   logger: PortAllocatorLogger | undefined,
   message: string,
@@ -123,6 +175,7 @@ export function normalizePortVariables(
  */
 export class PortAllocator {
   private readonly assignmentsPath: string;
+  private readonly legacyAssignmentsPath: string;
   private readonly logger:
     | { debug: (msg: string, ...args: unknown[]) => void }
     | undefined;
@@ -130,12 +183,20 @@ export class PortAllocator {
   private initialized = false;
 
   constructor(options: PortAllocatorOptions) {
-    this.assignmentsPath = path.join(
-      path.dirname(options.configPath),
-      'port-assignments.json'
+    this.assignmentsPath = resolvePortAssignmentsPath(options.configPath);
+    this.legacyAssignmentsPath = resolveLegacyPortAssignmentsPath(
+      options.configPath
     );
     this.logger = options.logger;
-    this.assignments = this.loadAssignments();
+    const loaded = this.loadAssignments();
+    this.assignments = loaded.assignments;
+    if (loaded.source === 'legacy') {
+      this.saveAssignments();
+      this.logger?.debug(
+        'Migrated legacy port assignments into user config state:',
+        this.assignmentsPath
+      );
+    }
   }
 
   /**
@@ -269,13 +330,27 @@ export class PortAllocator {
 
   // ── Private Methods ─────────────────────────────────────────────────────
 
-  private loadAssignments(): PortAssignmentsFile {
+  private loadAssignments(): LoadedAssignments {
     if (!fs.existsSync(this.assignmentsPath)) {
-      return { version: 1, assignments: [] };
+      if (
+        this.legacyAssignmentsPath !== this.assignmentsPath &&
+        fs.existsSync(this.legacyAssignmentsPath)
+      ) {
+        const legacy = this.readAssignmentsFile(this.legacyAssignmentsPath);
+        if (legacy) return { assignments: legacy, source: 'legacy' };
+      }
+      return { assignments: { version: 1, assignments: [] }, source: 'none' };
     }
 
+    const current = this.readAssignmentsFile(this.assignmentsPath);
+    if (current) return { assignments: current, source: 'current' };
+
+    return { assignments: { version: 1, assignments: [] }, source: 'none' };
+  }
+
+  private readAssignmentsFile(filePath: string): PortAssignmentsFile | null {
     try {
-      const raw = fs.readFileSync(this.assignmentsPath, 'utf8');
+      const raw = fs.readFileSync(filePath, 'utf8');
       const data = JSON.parse(raw) as PortAssignmentsFile;
       if (data.version === 1 && Array.isArray(data.assignments)) {
         return data;
@@ -283,12 +358,12 @@ export class PortAllocator {
       logWarn(
         this.logger,
         'Invalid port assignments file version or shape, starting fresh:',
-        this.assignmentsPath
+        filePath
       );
     } catch (err) {
-      const backupPath = `${this.assignmentsPath}.corrupt-${Date.now()}`;
+      const backupPath = `${filePath}.corrupt-${Date.now()}`;
       try {
-        fs.copyFileSync(this.assignmentsPath, backupPath);
+        fs.copyFileSync(filePath, backupPath);
       } catch {
         // Best-effort backup only.
       }
@@ -299,7 +374,7 @@ export class PortAllocator {
         backupPath ? `backup=${backupPath}` : ''
       );
     }
-    return { version: 1, assignments: [] };
+    return null;
   }
 
   private saveAssignments(): void {

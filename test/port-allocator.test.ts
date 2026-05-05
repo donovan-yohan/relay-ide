@@ -1,4 +1,12 @@
-import { test, beforeAll, afterAll, afterEach, expect, describe } from 'vitest';
+import {
+  test,
+  beforeAll,
+  beforeEach,
+  afterAll,
+  afterEach,
+  expect,
+  describe,
+} from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,12 +29,19 @@ import {
   PORT_RANGE_END,
   OVERFLOW_RANGE_START,
   OVERFLOW_RANGE_END,
+  resolvePortAssignmentsPath,
+  resolveLegacyPortAssignmentsPath,
 } from '../server/port-allocator.js';
 
 let tmpDir!: string;
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-port-alloc-test-'));
+});
+
+beforeEach(() => {
+  process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'xdg-config');
 });
 
 afterEach(() => {
@@ -39,6 +54,11 @@ afterEach(() => {
     }
   }
   resetDefaultAllocator();
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  }
 });
 
 afterAll(() => {
@@ -76,8 +96,11 @@ describe('PortAllocator', () => {
 
     await allocator.allocatePortsForWorktree('repo-1', 'wt-1', ['PORT']);
 
-    const assignmentsPath = path.join(tmpDir, 'port-assignments.json');
+    const assignmentsPath = resolvePortAssignmentsPath(configPath);
     expect(fs.existsSync(assignmentsPath)).toBe(true);
+    expect(fs.existsSync(resolveLegacyPortAssignmentsPath(configPath))).toBe(
+      false
+    );
 
     const raw = fs.readFileSync(assignmentsPath, 'utf8');
     const data = JSON.parse(raw);
@@ -88,12 +111,59 @@ describe('PortAllocator', () => {
     expect(data.assignments[0].variableName).toBe('PORT');
   });
 
+  test('keys assignment paths by config/workspace identity under user config', () => {
+    const repoAConfigPath = path.join(tmpDir, 'repo-a', 'config.json');
+    const repoBConfigPath = path.join(tmpDir, 'repo-b', 'config.json');
+
+    const repoAPath = resolvePortAssignmentsPath(repoAConfigPath);
+    const repoBPath = resolvePortAssignmentsPath(repoBConfigPath);
+
+    expect(repoAPath).not.toBe(repoBPath);
+    expect(repoAPath).toContain(
+      path.join(tmpDir, 'xdg-config', 'relay-ide', 'workspaces')
+    );
+    expect(path.basename(repoAPath)).toBe('port-assignments.json');
+  });
+
+  test('migrates legacy repo-root assignments into user config state', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+    const legacyAssignmentsPath = resolveLegacyPortAssignmentsPath(configPath);
+    const assignmentsPath = resolvePortAssignmentsPath(configPath);
+    const existingAssignments = {
+      version: 1,
+      assignments: [
+        {
+          repoId: 'repo-legacy',
+          worktreeId: 'wt-legacy',
+          variableName: 'PORT',
+          port: 10060,
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    };
+    fs.writeFileSync(
+      legacyAssignmentsPath,
+      JSON.stringify(existingAssignments),
+      'utf8'
+    );
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+
+    expect(fs.existsSync(assignmentsPath)).toBe(true);
+    expect(fs.existsSync(legacyAssignmentsPath)).toBe(true);
+    expect(allocator.getPortsForWorktree('repo-legacy', 'wt-legacy')).toEqual({
+      PORT: 10060,
+    });
+  });
+
   test('loads existing assignments on construction', async () => {
     const configPath = path.join(tmpDir, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
 
     // Pre-create assignments file
-    const assignmentsPath = path.join(tmpDir, 'port-assignments.json');
+    const assignmentsPath = resolvePortAssignmentsPath(configPath);
     const existingAssignments = {
       version: 1,
       assignments: [
@@ -106,6 +176,7 @@ describe('PortAllocator', () => {
         },
       ],
     };
+    fs.mkdirSync(path.dirname(assignmentsPath), { recursive: true });
     fs.writeFileSync(
       assignmentsPath,
       JSON.stringify(existingAssignments),
@@ -260,7 +331,7 @@ describe('PortAllocator port verification', () => {
     fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
 
     // Pre-create assignments with a port in primary range
-    const assignmentsPath = path.join(tmpDir, 'port-assignments.json');
+    const assignmentsPath = resolvePortAssignmentsPath(configPath);
     const existingAssignments = {
       version: 1,
       assignments: [
@@ -273,6 +344,7 @@ describe('PortAllocator port verification', () => {
         },
       ],
     };
+    fs.mkdirSync(path.dirname(assignmentsPath), { recursive: true });
     fs.writeFileSync(
       assignmentsPath,
       JSON.stringify(existingAssignments),
