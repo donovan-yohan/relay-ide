@@ -34,7 +34,13 @@ export const UTILITY_ICON_RAIL_WIDTH = 48;
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 export type FileTabType = 'diff' | 'code' | 'html';
 export type DiffViewMode = 'unified' | 'side-by-side';
-export type UtilityRailTab = 'files' | 'changes' | 'review' | 'logs' | 'stats';
+export type UtilityRailTab =
+  | 'files'
+  | 'changes'
+  | 'branch'
+  | 'review'
+  | 'logs'
+  | 'stats';
 export type UtilitySurfacePlacement =
   | { kind: 'rail' }
   | { kind: 'anchored-pane'; paneId: string };
@@ -47,10 +53,12 @@ export interface WorkspaceUtilityRailState {
   placements?: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>>;
   reviewFilePath?: string;
   filesMode?: 'changes' | 'all-files';
+  branchBase?: string;
 }
 
 export interface OpenUtilityRailTabOptions {
   preserveSelectedTab?: boolean;
+  branchBase?: string | null;
 }
 
 export const DEFAULT_UTILITY_RAIL_STATE: WorkspaceUtilityRailState = {
@@ -173,6 +181,7 @@ function loadCollapsedWorkspaces(): Set<string> {
 const UTILITY_RAIL_TABS: UtilityRailTab[] = [
   'files',
   'changes',
+  'branch',
   'review',
   'logs',
   'stats',
@@ -253,6 +262,9 @@ function normalizeUtilityRailState(
     next.reviewFilePath = value.reviewFilePath;
   if (value.filesMode === 'changes' || value.filesMode === 'all-files') {
     next.filesMode = value.filesMode;
+  }
+  if (typeof value.branchBase === 'string' && value.branchBase.trim()) {
+    next.branchBase = value.branchBase;
   }
 
   return next;
@@ -346,6 +358,7 @@ export interface UiState {
     tab: UtilityRailTab,
     options?: OpenUtilityRailTabOptions
   ) => void;
+  setUtilityBranchBase: (workspacePath: string, base: string | null) => void;
   setUtilityRailVisible: (workspacePath: string, visible: boolean) => void;
   toggleUtilityRailVisible: (workspacePath: string) => void;
   setUtilityRailWidth: (workspacePath: string, width: number) => void;
@@ -515,6 +528,26 @@ export const useUiStore = create<UiState>()((set, get) => ({
       (state) => {
         state.visible = true;
         if (!options?.preserveSelectedTab) state.selectedRailTab = tab;
+        if (options?.branchBase !== undefined) {
+          if (options.branchBase?.trim()) state.branchBase = options.branchBase;
+          else delete state.branchBase;
+        }
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: next,
+      },
+    });
+  },
+  setUtilityBranchBase: (workspacePath, base) => {
+    const next = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        if (base?.trim()) state.branchBase = base;
+        else delete state.branchBase;
       }
     );
     set({

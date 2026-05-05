@@ -32,6 +32,7 @@ export function UtilityRailReviewPanel({
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const setFileDiffSource = useUiStore((s) => s.setFileDiffSource);
   const setFileDiffViewMode = useUiStore((s) => s.setFileDiffViewMode);
+  const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -138,6 +139,13 @@ export function UtilityRailReviewPanel({
     );
   }, [fileDiffViewMode, setFileDiffViewMode]);
 
+  const branchBase = fileDiffSource === 'branch' ? base : null;
+  const openBranchPanel = useCallback(() => {
+    openUtilityRailTab(workspacePath, 'branch', {
+      branchBase,
+    });
+  }, [branchBase, openUtilityRailTab, workspacePath]);
+
   return (
     <div className="utility-review-panel">
       <div className="utility-panel-toolbar">
@@ -146,6 +154,13 @@ export function UtilityRailReviewPanel({
           onchange={setFileDiffSource}
           defaultBranch={defaultBranch}
         />
+        <button
+          className="utility-panel-btn"
+          onClick={openBranchPanel}
+          type="button"
+        >
+          [branch]
+        </button>
         <button
           className="utility-panel-btn"
           onClick={handleModeToggle}

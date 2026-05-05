@@ -385,6 +385,92 @@ export interface FileDiffResponse {
   error?: string;
 }
 
+export type BranchDivergenceState =
+  | 'ok'
+  | 'not_git'
+  | 'invalid_base'
+  | 'missing_base'
+  | 'detached'
+  | 'unborn'
+  | 'no_merge_base'
+  | 'timeout';
+
+export type BranchBaseCandidateSource =
+  | 'remoteDefault'
+  | 'default'
+  | 'upstream'
+  | 'local'
+  | 'remote';
+
+export interface BranchBaseRef {
+  ref: string;
+  sha: string | null;
+}
+
+export interface BranchBaseCandidate extends BranchBaseRef {
+  label: string;
+  source: BranchBaseCandidateSource;
+}
+
+export interface BranchLineDelta {
+  additions: number;
+  deletions: number;
+  fileCount: number;
+}
+
+export type DirtyFileStatus =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked'
+  | 'conflicted';
+
+export interface DirtyFileSummary {
+  path: string;
+  oldPath?: string;
+  status: DirtyFileStatus;
+  staged: boolean;
+  unstaged: boolean;
+}
+
+export interface DirtySummary {
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  conflictedCount: number;
+  files: DirtyFileSummary[];
+  truncated: boolean;
+}
+
+export interface BranchDivergenceCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+export interface BranchDivergenceSummary {
+  repoPath: string;
+  currentBranch: string | null;
+  headSha: string | null;
+  selectedBase: BranchBaseRef | null;
+  baseCandidates: BranchBaseCandidate[];
+  aheadCount: number;
+  behindCount: number;
+  lineDelta: BranchLineDelta;
+  dirty: DirtySummary;
+  commits: {
+    ahead: BranchDivergenceCommit[];
+    behind: BranchDivergenceCommit[];
+  };
+  state: BranchDivergenceState;
+  error?: string;
+  warnings: string[];
+  generatedAt: string;
+}
+
 export interface FileContentResponse {
   content: string;
   binary?: boolean;

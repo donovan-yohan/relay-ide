@@ -443,6 +443,32 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
 
       // ── Diff view ────────────────────────────────────────────────────────────
       {
+        id: 'workspace.open-branch-divergence' as const,
+        label: 'open branch pane',
+        description: 'open the branch divergence utility pane',
+        category: 'workspace' as const,
+        shortcut: { key: 'mod+b' },
+        when: (ctx: ActionContext) => ctx.view === 'session',
+        handler: () => {
+          const currentActiveSessionId =
+            useSessionsStore.getState().activeSessionId;
+          const currentActiveSession = currentActiveSessionId
+            ? useSessionsStore
+                .getState()
+                .sessions.find((s) => s.id === currentActiveSessionId)
+            : undefined;
+          const ws =
+            currentActiveSession?.worktreePath ??
+            currentActiveSession?.repoPath ??
+            '';
+          if (ws) {
+            const ui = useUiStore.getState();
+            ui.openUtilityRailTab(ws, 'branch');
+            useUiStore.setState({ fullPageDiff: null });
+          }
+        },
+      },
+      {
         id: 'workspace.open-diff-view' as const,
         label: 'open review pane',
         description: 'open the review utility pane for changed files',
