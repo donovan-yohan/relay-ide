@@ -242,6 +242,33 @@ describe('UtilityRailBranchPanel', () => {
     expect(container.textContent).toContain('missing-base-qa');
   });
 
+  it('renders backend git errors with the explicit error and warning text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const response = {
+          ...baseSummary,
+          state: 'git_error',
+          error: 'git merge-base failed: corrupt object',
+          warnings: ['branch state may be incomplete'],
+        } as BranchDivergenceSummary;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(response),
+          json: async () => response,
+        };
+      })
+    );
+
+    await act(async () => renderPanel(root, queryClient));
+    await waitForText(container, 'git merge-base failed: corrupt object');
+
+    expect(container.textContent).toContain('git error');
+    expect(container.textContent).toContain('git merge-base failed: corrupt object');
+    expect(container.textContent).toContain('branch state may be incomplete');
+  });
+
   it('describes clean, dirty-only, missing-base, and detached states clearly', async () => {
     const states: Array<Partial<BranchDivergenceSummary>> = [
       {

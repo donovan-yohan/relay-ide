@@ -50,6 +50,7 @@ function stateLabel(data: BranchDivergenceSummary): string {
       unborn: 'unborn branch',
       no_merge_base: 'no merge base',
       timeout: 'timeout',
+      git_error: 'git error',
     };
     return labels[data.state];
   }
