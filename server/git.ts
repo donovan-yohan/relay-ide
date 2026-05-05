@@ -809,7 +809,6 @@ async function getFileDiff(
   return stdout;
 }
 
-
 const DIVERGENCE_TIMEOUT_MS = 10_000;
 const DIVERGENCE_COMMITS_LIMIT = 20;
 const DIVERGENCE_DIRTY_FILES_LIMIT = 50;
@@ -909,11 +908,19 @@ function isSafeBaseRef(ref: string | undefined): ref is string {
   if (ref.includes('\0')) return false;
   if (ref.startsWith('-')) return false;
   if (ref === '@') return false;
-  if (ref.includes('..') || ref.includes('@{') || ref.includes('//')) return false;
+  if (ref.includes('..') || ref.includes('@{') || ref.includes('//'))
+    return false;
   if (ref.startsWith('/') || ref.endsWith('/')) return false;
   if (ref.endsWith('.') || ref.endsWith('.lock')) return false;
   if (hasInvalidBaseRefChar(ref)) return false;
-  if (ref.split('/').some((part) => part.length === 0 || part.startsWith('.') || part.endsWith('.lock'))) {
+  if (
+    ref
+      .split('/')
+      .some(
+        (part) =>
+          part.length === 0 || part.startsWith('.') || part.endsWith('.lock')
+      )
+  ) {
     return false;
   }
   return true;
@@ -939,8 +946,10 @@ async function tryResolveCommitRef(
 ): Promise<string | null> {
   try {
     return await resolveCommitRef(repoPath, ref, exec);
-  } catch {
-    return null;
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    if (isGitRefNotFoundError(err)) return null;
+    throw err;
   }
 }
 
@@ -971,7 +980,8 @@ async function getBaseCandidates(
       { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
     );
     remoteDefaultRef = stdout.trim() || null;
-  } catch {
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
     // Optional candidate only.
   }
 
@@ -1001,7 +1011,8 @@ async function getBaseCandidates(
         await tryResolveCommitRef(repoPath, upstream, exec)
       );
     }
-  } catch {
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
     // Branch may not have upstream.
   }
 
@@ -1022,7 +1033,11 @@ async function getBaseCandidates(
     );
   }
 
-  const localDefaultSha = await tryResolveCommitRef(repoPath, defaultBranch, exec);
+  const localDefaultSha = await tryResolveCommitRef(
+    repoPath,
+    defaultBranch,
+    exec
+  );
   if (localDefaultSha) {
     addBaseCandidate(
       candidates,
@@ -1079,17 +1094,25 @@ async function getSymbolicCurrentBranch(
   exec: ExecFileAsyncLike
 ): Promise<string | null> {
   try {
-    const { stdout } = await exec('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
-      cwd: repoPath,
-      timeout: DIVERGENCE_TIMEOUT_MS,
-    });
+    const { stdout } = await exec(
+      'git',
+      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      {
+        cwd: repoPath,
+        timeout: DIVERGENCE_TIMEOUT_MS,
+      }
+    );
     return stdout.trim() || null;
-  } catch {
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
     return null;
   }
 }
 
-function parseRevListCounts(stdout: string): { behindCount: number; aheadCount: number } {
+function parseRevListCounts(stdout: string): {
+  behindCount: number;
+  aheadCount: number;
+} {
   const [behindRaw, aheadRaw] = stdout.trim().split(/\s+/);
   const behindCount = parseInt(behindRaw ?? '0', 10);
   const aheadCount = parseInt(aheadRaw ?? '0', 10);
@@ -1365,13 +1388,10 @@ async function getBranchDivergence(
         error: 'git command timed out',
       });
     }
-    logger.warn(
-      '[git] branch divergence failed for',
-      repoPath,
-      errorText(err)
-    );
-    return emptyDivergenceSummary(repoPath, 'not_git', {
+    logger.warn('[git] branch divergence failed for', repoPath, errorText(err));
+    return emptyDivergenceSummary(repoPath, 'git_error', {
       error: errorText(err) || 'Failed to compute branch divergence',
+      warnings: ['git divergence failed inside repository'],
     });
   }
 }
@@ -1390,7 +1410,8 @@ async function getDefaultBranch(
     const ref = stdout.trim();
     const prefix = 'refs/remotes/origin/';
     if (ref.startsWith(prefix)) return ref.slice(prefix.length);
-  } catch {
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
     // Not set — fall through to heuristic
   }
 
@@ -1402,7 +1423,8 @@ async function getDefaultBranch(
         timeout: 5000,
       });
       return candidate;
-    } catch {
+    } catch (err) {
+      if (isTimeoutError(err)) throw err;
       // Not found — try next
     }
   }

@@ -752,7 +752,6 @@ export interface FileDiffResponse {
   error?: string;
 }
 
-
 export type BranchDivergenceState =
   | 'ok'
   | 'not_git'
@@ -761,7 +760,8 @@ export type BranchDivergenceState =
   | 'detached'
   | 'unborn'
   | 'no_merge_base'
-  | 'timeout';
+  | 'timeout'
+  | 'git_error';
 
 export type BranchBaseCandidateSource =
   | 'remoteDefault'
