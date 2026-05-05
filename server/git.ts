@@ -3,9 +3,17 @@ import { promisify } from 'node:util';
 
 import type {
   ActivityEntry,
+  BranchBaseCandidate,
+  BranchBaseCandidateSource,
+  BranchDivergenceCommit,
+  BranchDivergenceState,
+  BranchDivergenceSummary,
+  BranchLineDelta,
   BranchInfo,
   BranchLifecycleState,
   ChangedFile,
+  DirtyFileStatus,
+  DirtySummary,
   FileChangeStatus,
   PrInfo,
 } from './types.js';
@@ -801,6 +809,609 @@ async function getFileDiff(
   return stdout;
 }
 
+const DIVERGENCE_TIMEOUT_MS = 10_000;
+const DIVERGENCE_COMMITS_LIMIT = 20;
+const DIVERGENCE_DIRTY_FILES_LIMIT = 50;
+const ZERO_LINE_DELTA: BranchLineDelta = {
+  additions: 0,
+  deletions: 0,
+  fileCount: 0,
+};
+
+const CLEAN_DIRTY_SUMMARY: DirtySummary = {
+  stagedCount: 0,
+  unstagedCount: 0,
+  untrackedCount: 0,
+  conflictedCount: 0,
+  files: [],
+  truncated: false,
+};
+
+const UNMERGED_STATUS_CODES = new Set([
+  'DD',
+  'AU',
+  'UD',
+  'UA',
+  'DU',
+  'AA',
+  'UU',
+]);
+
+function emptyDivergenceSummary(
+  repoPath: string,
+  state: BranchDivergenceState,
+  details: {
+    error?: string;
+    warnings?: string[];
+    currentBranch?: string | null;
+    headSha?: string | null;
+    selectedBase?: { ref: string; sha: string | null } | null;
+    baseCandidates?: BranchBaseCandidate[];
+    dirty?: DirtySummary;
+  } = {}
+): BranchDivergenceSummary {
+  return {
+    repoPath,
+    currentBranch: details.currentBranch ?? null,
+    headSha: details.headSha ?? null,
+    selectedBase: details.selectedBase ?? null,
+    baseCandidates: details.baseCandidates ?? [],
+    aheadCount: 0,
+    behindCount: 0,
+    lineDelta: { ...ZERO_LINE_DELTA },
+    dirty: details.dirty ?? { ...CLEAN_DIRTY_SUMMARY, files: [] },
+    commits: { ahead: [], behind: [] },
+    state,
+    ...(details.error ? { error: details.error } : {}),
+    warnings: details.warnings ?? [],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function errorText(error: unknown): string {
+  if (!error || typeof error !== 'object') return UNKNOWN_ERROR;
+  const err = error as { stderr?: string; stdout?: string; message?: string };
+  return (err.stderr ?? err.stdout ?? err.message ?? UNKNOWN_ERROR).trim();
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as {
+    code?: string | number;
+    signal?: string;
+    killed?: boolean;
+    message?: string;
+  };
+  const message = err.message ?? '';
+  return (
+    err.code === 'ETIMEDOUT' ||
+    err.signal === 'SIGTERM' ||
+    err.killed === true ||
+    message.includes('timed out') ||
+    message.includes('timeout')
+  );
+}
+
+function isNotGitRepositoryError(error: unknown): boolean {
+  const text = errorText(error).toLowerCase();
+  return (
+    text.includes('not a git repository') ||
+    text.includes('not a gitdir')
+  );
+}
+
+function isNoMergeBaseError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: string | number };
+  return err.code === 1 && errorText(error) === '';
+}
+
+function hasInvalidBaseRefChar(ref: string): boolean {
+  for (const char of ref) {
+    const code = char.charCodeAt(0);
+    if (code <= 32 || code === 127 || '~^:?*[\\'.includes(char)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSafeBaseRef(ref: string | undefined): ref is string {
+  if (typeof ref !== 'string') return false;
+  if (ref.trim() !== ref || ref.length === 0) return false;
+  if (ref.includes('\0')) return false;
+  if (ref.startsWith('-')) return false;
+  if (ref === '@') return false;
+  if (ref.includes('..') || ref.includes('@{') || ref.includes('//'))
+    return false;
+  if (ref.startsWith('/') || ref.endsWith('/')) return false;
+  if (ref.endsWith('.') || ref.endsWith('.lock')) return false;
+  if (hasInvalidBaseRefChar(ref)) return false;
+  if (
+    ref
+      .split('/')
+      .some(
+        (part) =>
+          part.length === 0 || part.startsWith('.') || part.endsWith('.lock')
+      )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function resolveCommitRef(
+  repoPath: string,
+  ref: string,
+  exec: ExecFileAsyncLike
+): Promise<string | null> {
+  const { stdout } = await exec(
+    'git',
+    ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`],
+    { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+  );
+  return stdout.trim() || null;
+}
+
+async function tryResolveCommitRef(
+  repoPath: string,
+  ref: string,
+  exec: ExecFileAsyncLike
+): Promise<string | null> {
+  try {
+    return await resolveCommitRef(repoPath, ref, exec);
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    if (isGitRefNotFoundError(err)) return null;
+    throw err;
+  }
+}
+
+function addBaseCandidate(
+  candidates: BranchBaseCandidate[],
+  seen: Set<string>,
+  ref: string,
+  source: BranchBaseCandidateSource,
+  sha: string | null
+): void {
+  if (!ref || seen.has(ref)) return;
+  seen.add(ref);
+  candidates.push({ ref, label: ref, source, sha });
+}
+
+async function getBaseCandidates(
+  repoPath: string,
+  exec: ExecFileAsyncLike
+): Promise<BranchBaseCandidate[]> {
+  const candidates: BranchBaseCandidate[] = [];
+  const seen = new Set<string>();
+
+  let remoteDefaultRef: string | null = null;
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+      { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+    );
+    remoteDefaultRef = stdout.trim() || null;
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    // Optional candidate only.
+  }
+
+  if (remoteDefaultRef) {
+    addBaseCandidate(
+      candidates,
+      seen,
+      remoteDefaultRef,
+      'remoteDefault',
+      await tryResolveCommitRef(repoPath, remoteDefaultRef, exec)
+    );
+  }
+
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+      { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+    );
+    const upstream = stdout.trim();
+    if (upstream) {
+      addBaseCandidate(
+        candidates,
+        seen,
+        upstream,
+        'upstream',
+        await tryResolveCommitRef(repoPath, upstream, exec)
+      );
+    }
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    // Branch may not have upstream.
+  }
+
+  const defaultBranch = await getDefaultBranch(repoPath, exec);
+  const remoteDefaultBranch = `origin/${defaultBranch}`;
+  const remoteDefaultSha = await tryResolveCommitRef(
+    repoPath,
+    remoteDefaultBranch,
+    exec
+  );
+  if (remoteDefaultSha) {
+    addBaseCandidate(
+      candidates,
+      seen,
+      remoteDefaultBranch,
+      remoteDefaultRef ? 'remote' : 'remoteDefault',
+      remoteDefaultSha
+    );
+  }
+
+  const localDefaultSha = await tryResolveCommitRef(
+    repoPath,
+    defaultBranch,
+    exec
+  );
+  if (localDefaultSha) {
+    addBaseCandidate(
+      candidates,
+      seen,
+      defaultBranch,
+      'default',
+      localDefaultSha
+    );
+  }
+
+  for (const local of ['nightly', 'main', 'master']) {
+    const sha = await tryResolveCommitRef(repoPath, local, exec);
+    if (sha) addBaseCandidate(candidates, seen, local, 'local', sha);
+  }
+
+  for (const remote of ['origin/nightly', 'origin/main', 'origin/master']) {
+    const sha = await tryResolveCommitRef(repoPath, remote, exec);
+    if (sha) addBaseCandidate(candidates, seen, remote, 'remote', sha);
+  }
+
+  return candidates;
+}
+
+async function getRepoRootOrNull(
+  repoPath: string,
+  exec: ExecFileAsyncLike
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['rev-parse', '--show-toplevel'], {
+      cwd: repoPath,
+      timeout: DIVERGENCE_TIMEOUT_MS,
+    });
+    return stdout.trim() || repoPath;
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    if (isNotGitRepositoryError(err)) return null;
+    throw err;
+  }
+}
+
+async function getHeadSha(
+  repoPath: string,
+  exec: ExecFileAsyncLike
+): Promise<string | null> {
+  const { stdout } = await exec(
+    'git',
+    ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'],
+    { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+  );
+  return stdout.trim() || null;
+}
+
+async function getSymbolicCurrentBranch(
+  repoPath: string,
+  exec: ExecFileAsyncLike
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      {
+        cwd: repoPath,
+        timeout: DIVERGENCE_TIMEOUT_MS,
+      }
+    );
+    return stdout.trim() || null;
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    return null;
+  }
+}
+
+function parseRevListCounts(stdout: string): {
+  behindCount: number;
+  aheadCount: number;
+} {
+  const [behindRaw, aheadRaw] = stdout.trim().split(/\s+/);
+  const behindCount = parseInt(behindRaw ?? '0', 10);
+  const aheadCount = parseInt(aheadRaw ?? '0', 10);
+  return {
+    behindCount: Number.isFinite(behindCount) ? behindCount : 0,
+    aheadCount: Number.isFinite(aheadCount) ? aheadCount : 0,
+  };
+}
+
+async function getAheadBehindCounts(
+  repoPath: string,
+  base: string,
+  exec: ExecFileAsyncLike
+): Promise<{ behindCount: number; aheadCount: number }> {
+  const { stdout } = await exec(
+    'git',
+    ['rev-list', '--left-right', '--count', `${base}...HEAD`],
+    { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+  );
+  return parseRevListCounts(stdout);
+}
+
+async function hasMergeBase(
+  repoPath: string,
+  base: string,
+  exec: ExecFileAsyncLike
+): Promise<boolean> {
+  try {
+    await exec('git', ['merge-base', '--', base, 'HEAD'], {
+      cwd: repoPath,
+      timeout: DIVERGENCE_TIMEOUT_MS,
+    });
+    return true;
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    if (isNoMergeBaseError(err)) return false;
+    throw err;
+  }
+}
+
+async function getLineDelta(
+  repoPath: string,
+  base: string,
+  exec: ExecFileAsyncLike
+): Promise<BranchLineDelta> {
+  const { stdout } = await exec(
+    'git',
+    ['diff', '--numstat', FIND_RENAMES, `${base}...HEAD`],
+    { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+  );
+
+  const delta: BranchLineDelta = { ...ZERO_LINE_DELTA };
+  for (const line of stdout.split('\n').filter(Boolean)) {
+    const [add, del] = line.split(TAB);
+    delta.fileCount += 1;
+    delta.additions += add === '-' ? 0 : parseInt(add ?? '0', 10) || 0;
+    delta.deletions += del === '-' ? 0 : parseInt(del ?? '0', 10) || 0;
+  }
+  return delta;
+}
+
+function dirtyStatusForCode(code: string): DirtyFileStatus {
+  const x = code[0] ?? ' ';
+  const y = code[1] ?? ' ';
+  if (code === '??') return 'untracked';
+  if (UNMERGED_STATUS_CODES.has(code)) return 'conflicted';
+  if (x === 'R' || y === 'R') return 'renamed';
+  if (x === 'D' || y === 'D') return 'deleted';
+  if (x === 'A' || y === 'A') return 'added';
+  return 'modified';
+}
+
+function parseDirtySummary(stdout: string): DirtySummary {
+  const parts = stdout.split('\0').filter(Boolean);
+  const dirty: DirtySummary = { ...CLEAN_DIRTY_SUMMARY, files: [] };
+
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]!;
+    const code = entry.slice(0, 2);
+    const x = code[0] ?? ' ';
+    const y = code[1] ?? ' ';
+    const isUntracked = code === '??';
+    const isConflicted = UNMERGED_STATUS_CODES.has(code);
+    const isRename = x === 'R' || y === 'R';
+    const staged = !isUntracked && !isConflicted && x !== ' ';
+    const unstaged = !isUntracked && !isConflicted && y !== ' ';
+    const filePath = entry.slice(3);
+    let oldPath: string | undefined;
+
+    if (isRename) {
+      oldPath = parts[++i] ?? undefined;
+    }
+
+    if (isUntracked) dirty.untrackedCount += 1;
+    if (isConflicted) dirty.conflictedCount += 1;
+    if (staged) dirty.stagedCount += 1;
+    if (unstaged) dirty.unstagedCount += 1;
+
+    if (dirty.files.length < DIVERGENCE_DIRTY_FILES_LIMIT) {
+      dirty.files.push({
+        path: filePath,
+        ...(oldPath ? { oldPath } : {}),
+        status: dirtyStatusForCode(code),
+        staged,
+        unstaged,
+      });
+    } else {
+      dirty.truncated = true;
+    }
+  }
+
+  return dirty;
+}
+
+async function getDirtySummary(
+  repoPath: string,
+  exec: ExecFileAsyncLike
+): Promise<DirtySummary> {
+  const { stdout } = await exec('git', ['status', '--porcelain=v1', '-z'], {
+    cwd: repoPath,
+    timeout: DIVERGENCE_TIMEOUT_MS,
+  });
+  return parseDirtySummary(stdout);
+}
+
+function parseDivergenceCommits(stdout: string): BranchDivergenceCommit[] {
+  return stdout
+    .split('\x1e')
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [hash = '', shortHash = '', subject = '', author = '', date = ''] =
+        record.split('\x1f');
+      return { hash, shortHash, subject, author, date };
+    })
+    .filter((commit) => commit.hash && commit.shortHash);
+}
+
+async function getDivergenceCommits(
+  repoPath: string,
+  range: string,
+  exec: ExecFileAsyncLike,
+  limit = DIVERGENCE_COMMITS_LIMIT
+): Promise<BranchDivergenceCommit[]> {
+  const { stdout } = await exec(
+    'git',
+    [
+      'log',
+      `--max-count=${limit}`,
+      '--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1e',
+      range,
+    ],
+    { cwd: repoPath, timeout: DIVERGENCE_TIMEOUT_MS }
+  );
+  return parseDivergenceCommits(stdout);
+}
+
+async function buildBranchDivergence(
+  repoPath: string,
+  base: string | undefined,
+  exec: ExecFileAsyncLike
+): Promise<BranchDivergenceSummary> {
+  if (base !== undefined && !isSafeBaseRef(base)) {
+    return emptyDivergenceSummary(repoPath, 'invalid_base', {
+      error: 'invalid base ref',
+    });
+  }
+
+  const root = await getRepoRootOrNull(repoPath, exec);
+  if (!root) {
+    return emptyDivergenceSummary(repoPath, 'not_git', {
+      error: 'not a git repository',
+    });
+  }
+
+  const baseCandidates = await getBaseCandidates(root, exec);
+  const selectedBaseRef = base ?? baseCandidates[0]?.ref;
+  const currentBranch = await getSymbolicCurrentBranch(root, exec);
+
+  let headSha: string | null;
+  try {
+    headSha = await getHeadSha(root, exec);
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    return emptyDivergenceSummary(root, 'unborn', {
+      error: 'HEAD does not point to a commit',
+      currentBranch,
+      baseCandidates,
+    });
+  }
+
+  const dirty = await getDirtySummary(root, exec);
+
+  if (!selectedBaseRef) {
+    return emptyDivergenceSummary(root, 'missing_base', {
+      error: 'base ref not found',
+      currentBranch,
+      headSha,
+      baseCandidates,
+      dirty,
+    });
+  }
+
+  let selectedBaseSha: string | null;
+  try {
+    selectedBaseSha = await resolveCommitRef(root, selectedBaseRef, exec);
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
+    return emptyDivergenceSummary(root, 'missing_base', {
+      error: `base ref not found: ${selectedBaseRef}`,
+      currentBranch,
+      headSha,
+      baseCandidates,
+      selectedBase: { ref: selectedBaseRef, sha: null },
+      dirty,
+    });
+  }
+
+  if (!(await hasMergeBase(root, selectedBaseRef, exec))) {
+    return emptyDivergenceSummary(root, 'no_merge_base', {
+      error: `no merge base with ${selectedBaseRef}`,
+      currentBranch,
+      headSha,
+      baseCandidates,
+      selectedBase: { ref: selectedBaseRef, sha: selectedBaseSha },
+      dirty,
+    });
+  }
+
+  const { aheadCount, behindCount } = await getAheadBehindCounts(
+    root,
+    selectedBaseRef,
+    exec
+  );
+  const lineDelta = await getLineDelta(root, selectedBaseRef, exec);
+  const [ahead, behind] = await Promise.all([
+    getDivergenceCommits(root, `${selectedBaseRef}..HEAD`, exec),
+    getDivergenceCommits(root, `HEAD..${selectedBaseRef}`, exec),
+  ]);
+  const warnings = currentBranch ? [] : ['HEAD is detached'];
+  const state: BranchDivergenceState = currentBranch ? 'ok' : 'detached';
+
+  return {
+    repoPath: root,
+    currentBranch,
+    headSha,
+    selectedBase: { ref: selectedBaseRef, sha: selectedBaseSha },
+    baseCandidates,
+    aheadCount,
+    behindCount,
+    lineDelta,
+    dirty,
+    commits: { ahead, behind },
+    state,
+    warnings,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+async function getBranchDivergence(
+  repoPath: string,
+  options: {
+    base?: string;
+    exec?: ExecFileAsyncLike;
+  } = {}
+): Promise<BranchDivergenceSummary> {
+  const run: ExecFileAsyncLike =
+    options.exec || (execFileAsync as ExecFileAsyncLike);
+  try {
+    return await buildBranchDivergence(repoPath, options.base, run);
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      return emptyDivergenceSummary(repoPath, 'timeout', {
+        error: 'git command timed out',
+      });
+    }
+    logger.warn('[git] branch divergence failed for', repoPath, errorText(err));
+    return emptyDivergenceSummary(repoPath, 'git_error', {
+      error: errorText(err) || 'Failed to compute branch divergence',
+      warnings: ['git divergence failed inside repository'],
+    });
+  }
+}
+
 async function getDefaultBranch(
   repoPath: string,
   exec: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike
@@ -815,7 +1426,8 @@ async function getDefaultBranch(
     const ref = stdout.trim();
     const prefix = 'refs/remotes/origin/';
     if (ref.startsWith(prefix)) return ref.slice(prefix.length);
-  } catch {
+  } catch (err) {
+    if (isTimeoutError(err)) throw err;
     // Not set — fall through to heuristic
   }
 
@@ -827,7 +1439,8 @@ async function getDefaultBranch(
         timeout: 5000,
       });
       return candidate;
-    } catch {
+    } catch (err) {
+      if (isTimeoutError(err)) throw err;
       // Not found — try next
     }
   }
@@ -961,6 +1574,7 @@ export {
   pushBranch,
   getChangedFiles,
   getFileDiff,
+  getBranchDivergence,
   getDefaultBranch,
   ensureBranchLocal,
   isPrMerged,

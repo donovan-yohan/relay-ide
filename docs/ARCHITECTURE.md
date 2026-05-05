@@ -197,6 +197,7 @@ This makes workspace, tab, and pane customization (#263) viable without losing p
 | `POST`   | `/webhooks/manage/repos/remove` | Remove a repo from the webhook-managed set (body: `{path}`)                                                                           |
 | `POST`   | `/webhooks/manage/backfill`     | Auto-provision webhooks for all repos that don't have one                                                                             |
 | `GET`    | `/workspaces/changed-files`     | List changed files in a repo (`?path=X&base=ref`)                                                                                     |
+| `GET`    | `/workspaces/divergence`        | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                  |
 | `GET`    | `/workspaces/file-diff`         | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                        |
 
 ## WebSocket Channels

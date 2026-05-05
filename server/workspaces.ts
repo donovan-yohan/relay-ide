@@ -35,6 +35,7 @@ import {
   pushBranch,
   getChangedFiles,
   getFileDiff,
+  getBranchDivergence,
   getDefaultBranch,
   ensureBranchLocal,
 } from './git.js';
@@ -1416,15 +1417,106 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
+  function realpathOrNull(candidate: string): string | null {
+    try {
+      return fs.realpathSync.native(path.resolve(candidate));
+    } catch {
+      return null;
+    }
+  }
+
+  function isPathInside(child: string, parent: string): boolean {
+    const relative = path.relative(parent, child);
+    return (
+      relative === '' ||
+      (relative !== '' &&
+        !relative.startsWith('..') &&
+        !path.isAbsolute(relative))
+    );
+  }
+
   function validateWorkspaceAccess(repoPath: string): string | null {
     const resolved = path.resolve(repoPath);
+    const realResolved = realpathOrNull(resolved);
+    if (!realResolved) return null;
+
     const allowed = getConfig().repos ?? [];
-    return allowed.some(
-      (p) => resolved === p || resolved.startsWith(p + path.sep)
-    )
-      ? resolved
+    return allowed.some((p) => {
+      const allowedReal = realpathOrNull(p);
+      return allowedReal ? isPathInside(realResolved, allowedReal) : false;
+    })
+      ? realResolved
       : null;
   }
+
+
+  // GET /workspaces/divergence — display-ready branch divergence summary
+  router.get('/divergence', async (req: Request, res: Response) => {
+    if (typeof req.query.path !== 'string') {
+      res.status(400).json({
+        repoPath: '',
+        currentBranch: null,
+        headSha: null,
+        selectedBase: null,
+        baseCandidates: [],
+        aheadCount: 0,
+        behindCount: 0,
+        lineDelta: { additions: 0, deletions: 0, fileCount: 0 },
+        dirty: {
+          stagedCount: 0,
+          unstagedCount: 0,
+          untrackedCount: 0,
+          conflictedCount: 0,
+          files: [],
+          truncated: false,
+        },
+        commits: { ahead: [], behind: [] },
+        state: 'not_git',
+        error: 'path parameter required',
+        warnings: [],
+        generatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({
+        repoPath: path.resolve(req.query.path),
+        currentBranch: null,
+        headSha: null,
+        selectedBase: null,
+        baseCandidates: [],
+        aheadCount: 0,
+        behindCount: 0,
+        lineDelta: { additions: 0, deletions: 0, fileCount: 0 },
+        dirty: {
+          stagedCount: 0,
+          unstagedCount: 0,
+          untrackedCount: 0,
+          conflictedCount: 0,
+          files: [],
+          truncated: false,
+        },
+        commits: { ahead: [], behind: [] },
+        state: 'not_git',
+        error: ERR_PATH_NOT_IN_WORKSPACES,
+        warnings: [],
+        generatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const base =
+      typeof req.query.base === 'string' ? req.query.base : undefined;
+    const options = base === undefined ? { exec } : { base, exec };
+    const summary = await getBranchDivergence(resolvedRepo, options);
+    if (summary.state === 'invalid_base') {
+      res.status(400).json(summary);
+      return;
+    }
+    res.json(summary);
+  });
 
   // GET /workspaces/changed-files — list changed files in a repo
   router.get('/changed-files', async (req: Request, res: Response) => {
