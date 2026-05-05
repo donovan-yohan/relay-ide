@@ -101,6 +101,78 @@ export function groupDisplayName(
   return branch || cwdName || sessions[0]?.repoName || 'unknown';
 }
 
+type FleetStatusTone = 'active' | 'attention' | 'idle' | 'inactive' | 'error';
+
+export interface SidebarFleetStatus {
+  label: string;
+  tone: FleetStatusTone;
+  title: string;
+}
+
+const STATUS_LABELS: Record<DisplayState, Omit<SidebarFleetStatus, 'title'>> = {
+  initializing: { label: 'starting', tone: 'active' },
+  running: { label: 'running', tone: 'active' },
+  'unseen-idle': { label: 'done unread', tone: 'attention' },
+  'seen-idle': { label: 'idle', tone: 'idle' },
+  permission: { label: 'approval needed', tone: 'attention' },
+  'needs-answer': { label: 'answer needed', tone: 'attention' },
+  error: { label: 'error', tone: 'error' },
+  inactive: { label: 'inactive', tone: 'inactive' },
+};
+
+function compactStatusText(
+  value: string,
+  maxLength = 42,
+  preserveCase = false
+): string {
+  const normalizedValue = value.replace(/\s+/g, ' ').trim();
+  const normalized = preserveCase
+    ? normalizedValue
+    : normalizedValue.toLowerCase();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function formatCurrentActivity(session: SessionSummary): string | null {
+  const activity = session.currentActivity;
+  if (!activity?.tool) return null;
+
+  const tool = compactStatusText(activity.tool, 18, true);
+  const detail = activity.detail
+    ? compactStatusText(activity.detail, 32, true)
+    : '';
+  return detail ? `${tool}: ${detail}` : tool;
+}
+
+function findStatusActivity(sessions: SessionSummary[]): string | null {
+  const sessionWithActivity = sessions.find(
+    (session) => session.currentActivity
+  );
+  return sessionWithActivity
+    ? formatCurrentActivity(sessionWithActivity)
+    : null;
+}
+
+export function deriveSessionFleetStatus(
+  displayState: DisplayState,
+  sessions: SessionSummary[]
+): SidebarFleetStatus {
+  const base = STATUS_LABELS[displayState];
+  const activity = findStatusActivity(sessions);
+  const shouldShowActivity =
+    activity &&
+    (displayState === 'running' ||
+      displayState === 'initializing' ||
+      displayState === 'seen-idle' ||
+      displayState === 'unseen-idle');
+  const label = shouldShowActivity ? `${base.label} · ${activity}` : base.label;
+  return {
+    ...base,
+    label,
+    title: `fleet status: ${label}`,
+  };
+}
+
 interface PrStatusBadgeProps {
   pr: PullRequest;
 }
@@ -186,10 +258,13 @@ function SessionGroupRow({
   onViewHistory,
   repoPath,
 }: SessionGroupRowProps) {
+  const fleetStatus = deriveSessionFleetStatus(dotState, groupSessions);
+
   return (
     <li
       className={[
         'session-row',
+        `state-${dotState}`,
         isSelected && 'selected',
         attention && 'attention',
       ]
@@ -217,6 +292,12 @@ function SessionGroupRow({
         {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
       </div>
       <div className="session-row-secondary">
+        <span
+          className={`fleet-status tone-${fleetStatus.tone}`}
+          title={fleetStatus.title}
+        >
+          {fleetStatus.label}
+        </span>
         <span className="secondary-time">
           {formatRelativeTimeCompact(rep.lastActivity)}
         </span>
@@ -312,7 +393,12 @@ function InactiveRepoRow({
   const displayLabel = repoCurrentBranch || 'default';
   return (
     <li
-      className={['session-row', 'inactive', isLoading && 'loading']
+      className={[
+        'session-row',
+        'inactive',
+        isLoading ? 'state-initializing' : 'state-inactive',
+        isLoading && 'loading',
+      ]
         .filter(Boolean)
         .join(' ')}
       data-track="sidebar.repo.click"
@@ -327,6 +413,12 @@ function InactiveRepoRow({
         </span>
       </div>
       <div className="session-row-secondary">
+        <span
+          className={`fleet-status tone-${isLoading ? 'active' : 'inactive'}`}
+          title={`fleet status: ${isLoading ? 'starting' : 'inactive'}`}
+        >
+          {isLoading ? 'starting' : 'inactive'}
+        </span>
         {lastActivity ? (
           <span className="secondary-time">
             {formatRelativeTimeCompact(lastActivity)}
@@ -558,7 +650,12 @@ export function RepoItem({
             return (
               <li
                 key={wt.path}
-                className={['session-row', 'inactive', isLoading && 'loading']
+                className={[
+                  'session-row',
+                  'inactive',
+                  isLoading ? 'state-initializing' : 'state-inactive',
+                  isLoading && 'loading',
+                ]
                   .filter(Boolean)
                   .join(' ')}
                 data-track="sidebar.worktree.click"
@@ -579,6 +676,12 @@ export function RepoItem({
                   </span>
                 </div>
                 <div className="session-row-secondary">
+                  <span
+                    className={`fleet-status tone-${isLoading ? 'active' : 'inactive'}`}
+                    title={`fleet status: ${isLoading ? 'resuming' : 'inactive'}`}
+                  >
+                    {isLoading ? 'resuming' : 'inactive'}
+                  </span>
                   {wt.lastActivity ? (
                     <span className="secondary-time">
                       {formatRelativeTimeCompact(wt.lastActivity)}
