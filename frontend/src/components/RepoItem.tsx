@@ -120,8 +120,15 @@ const STATUS_LABELS: Record<DisplayState, Omit<SidebarFleetStatus, 'title'>> = {
   inactive: { label: 'inactive', tone: 'inactive' },
 };
 
-function compactStatusText(value: string, maxLength = 42): string {
-  const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+function compactStatusText(
+  value: string,
+  maxLength = 42,
+  preserveCase = false
+): string {
+  const normalizedValue = value.replace(/\s+/g, ' ').trim();
+  const normalized = preserveCase
+    ? normalizedValue
+    : normalizedValue.toLowerCase();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
@@ -130,14 +137,20 @@ function formatCurrentActivity(session: SessionSummary): string | null {
   const activity = session.currentActivity;
   if (!activity?.tool) return null;
 
-  const tool = compactStatusText(activity.tool, 18);
-  const detail = activity.detail ? compactStatusText(activity.detail, 32) : '';
+  const tool = compactStatusText(activity.tool, 18, true);
+  const detail = activity.detail
+    ? compactStatusText(activity.detail, 32, true)
+    : '';
   return detail ? `${tool}: ${detail}` : tool;
 }
 
 function findStatusActivity(sessions: SessionSummary[]): string | null {
-  const sessionWithActivity = sessions.find((session) => session.currentActivity);
-  return sessionWithActivity ? formatCurrentActivity(sessionWithActivity) : null;
+  const sessionWithActivity = sessions.find(
+    (session) => session.currentActivity
+  );
+  return sessionWithActivity
+    ? formatCurrentActivity(sessionWithActivity)
+    : null;
 }
 
 export function deriveSessionFleetStatus(
