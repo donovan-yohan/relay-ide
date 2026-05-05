@@ -78,8 +78,8 @@
     position: fixed;
     top: 0;
     right: 0;
-    width: 85vw !important;
-    min-width: 85vw !important;
+    width: 100vw !important;
+    min-width: 100vw !important;
     height: 100vh;
     height: 100dvh;
     z-index: 200;
@@ -97,10 +97,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--surface);
-    border: none;
+    background: transparent;
+    border: 0;
     border-bottom: 1px solid var(--border);
     color: var(--text);
+    font-family: var(--font-mono, monospace);
     font-size: var(--font-size-lg);
     padding: 8px 12px;
     min-height: 44px;
@@ -109,7 +110,7 @@
   }
 
   .mobile-sidebar-close-btn:active {
-    background: var(--border);
+    background: var(--surface-hover, #141414);
   }
 
   .resize-handle {

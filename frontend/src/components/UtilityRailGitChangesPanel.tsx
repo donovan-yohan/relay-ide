@@ -80,6 +80,7 @@ export function UtilityRailGitChangesPanel({
 }: UtilityRailGitChangesPanelProps) {
   const queryClient = useQueryClient();
   const openFileTab = useUiStore((s) => s.openFileTab);
+  const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
 
   const workingQuery = useQuery<ChangedFilesResponse>({
@@ -110,6 +111,10 @@ export function UtilityRailGitChangesPanel({
     queryClient.invalidateQueries({ queryKey: workingKey(workspacePath) });
     queryClient.invalidateQueries({ queryKey: stagedKey(workspacePath) });
   }, [queryClient, workspacePath]);
+
+  const openBranchPanel = useCallback(() => {
+    openUtilityRailTab(workspacePath, 'branch');
+  }, [openUtilityRailTab, workspacePath]);
 
   const groups = useMemo(() => {
     const working = workingQuery.data?.files ?? [];
@@ -149,6 +154,14 @@ export function UtilityRailGitChangesPanel({
       <div className="gc__hd">
         <span className="title">git changes</span>
         <span className="meta">{totalCount} files</span>
+        <button
+          type="button"
+          className="btn"
+          onClick={openBranchPanel}
+          title="branch divergence"
+        >
+          branch
+        </button>
         <button
           type="button"
           className="btn"

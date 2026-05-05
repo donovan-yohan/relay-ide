@@ -156,13 +156,13 @@ describe('ui Zustand store', () => {
 
     it('openUtilityRailTab makes the rail visible and selects the requested tab', () => {
       useUiStore.getState().setUtilityRailVisible('/repo/a', false);
-      useUiStore.getState().openUtilityRailTab('/repo/a', 'files');
+      useUiStore.getState().openUtilityRailTab('/repo/a', 'branch');
 
       expect(
         useUiStore.getState().getUtilityRailState('/repo/a')
       ).toMatchObject({
         visible: true,
-        selectedRailTab: 'files',
+        selectedRailTab: 'branch',
       });
     });
 
@@ -178,6 +178,34 @@ describe('ui Zustand store', () => {
         visible: true,
         selectedRailTab: 'logs',
       });
+    });
+
+    it('stores the selected branch base when opening the branch rail', () => {
+      useUiStore.getState().openUtilityRailTab('/repo/a', 'branch', {
+        branchBase: 'origin/nightly',
+      });
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
+        visible: true,
+        selectedRailTab: 'branch',
+        branchBase: 'origin/nightly',
+      });
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        '"branchBase":"origin/nightly"'
+      );
+    });
+
+    it('setUtilityBranchBase updates a workspace branch comparison base', () => {
+      useUiStore.getState().setUtilityBranchBase('/repo/a', 'origin/main');
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a').branchBase
+      ).toBe('origin/main');
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        '"branchBase":"origin/main"'
+      );
     });
 
     it('clamps utility rail widths', () => {

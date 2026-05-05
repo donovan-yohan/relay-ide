@@ -10,6 +10,19 @@ const xtermDir = path.dirname(
   fileURLToPath(import.meta.resolve('@xterm/xterm/package.json'))
 );
 const addonWebgpu = path.resolve(xtermDir, 'addons', 'addon-webgpu');
+const includeE2eFixtures = process.env.RELAY_IDE_E2E_FIXTURES === '1';
+
+const buildInputs: Record<string, string> = {
+  main: resolve(import.meta.dirname, 'index.html'),
+  'test-terminal': resolve(import.meta.dirname, 'test-terminal.html'),
+};
+
+if (includeE2eFixtures) {
+  buildInputs['test-utility-rail-branch-panel'] = resolve(
+    import.meta.dirname,
+    'test-utility-rail-branch-panel.html'
+  );
+}
 
 export default defineConfig({
   root: import.meta.dirname,
@@ -24,10 +37,7 @@ export default defineConfig({
     outDir: '../dist/frontend',
     emptyOutDir: true,
     rollupOptions: {
-      input: {
-        main: resolve(import.meta.dirname, 'index.html'),
-        'test-terminal': resolve(import.meta.dirname, 'test-terminal.html'),
-      },
+      input: buildInputs,
     },
   },
 });

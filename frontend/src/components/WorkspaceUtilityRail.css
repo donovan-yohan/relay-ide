@@ -192,3 +192,26 @@
   color: var(--text, #e0e0e0);
   font-size: var(--font-size-xs, 0.75rem);
 }
+
+@media (max-width: 767px) {
+  .workspace-utility-rail {
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .workspace-utility-rail:not(.workspace-utility-rail--icons-only)
+    .utility-icon-rail {
+    display: none;
+  }
+
+  .workspace-utility-rail:not(.workspace-utility-rail--icons-only)
+    .utility-selected-pane {
+    border-right: 0;
+  }
+
+  .workspace-utility-rail--icons-only {
+    grid-template-columns: var(--utility-icon-rail-width, 48px);
+    justify-content: end;
+  }
+}

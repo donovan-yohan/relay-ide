@@ -9,6 +9,7 @@ import {
 import type { FileTreeHandle } from './FileTree/index.js';
 import UtilityRailFilesPanel from './UtilityRailFilesPanel.js';
 import UtilityRailGitChangesPanel from './UtilityRailGitChangesPanel.js';
+import UtilityRailBranchPanel from './UtilityRailBranchPanel.js';
 import UtilityRailReviewPanel from './UtilityRailReviewPanel.js';
 import UtilityRailLogsPanel from './UtilityRailLogsPanel.js';
 import UtilityRailStatsPanel from './UtilityRailStatsPanel.js';
@@ -41,6 +42,19 @@ const TAB_META: Array<{
         <circle cx="18" cy="12" r="2.5" />
         <path d="M6 8.5v7" />
         <path d="M6 6h6a4 4 0 0 1 4 4v.5" />
+      </svg>
+    ),
+  },
+  {
+    id: 'branch',
+    label: 'git branch',
+    actionId: 'workspace.open-branch-divergence',
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="7" cy="6" r="2.5" />
+        <circle cx="17" cy="18" r="2.5" />
+        <path d="M7 8.5v9.5" />
+        <path d="M7 12h4a6 6 0 0 1 6 6" />
       </svg>
     ),
   },
@@ -180,6 +194,16 @@ export function WorkspaceUtilityRail({
             hidden={selectedTab !== 'changes'}
           >
             <UtilityRailGitChangesPanel workspacePath={workspacePath} />
+          </div>
+          <div
+            id="utility-rail-panel-branch"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-branch"
+            tabIndex={selectedTab === 'branch' ? 0 : -1}
+            hidden={selectedTab !== 'branch'}
+          >
+            <UtilityRailBranchPanel workspacePath={workspacePath} />
           </div>
           <div
             id="utility-rail-panel-review"

@@ -28,6 +28,7 @@ import type {
   AnalyticsToolBreakdown,
   AnalyticsRateLimitHistory,
   FrameworkInfo,
+  BranchDivergenceSummary,
 } from './types.js';
 
 export class ConflictError extends Error {
@@ -1075,6 +1076,73 @@ export async function fetchChangedFiles(
     };
   }
   return jsonEither<ChangedFilesResponse>(res);
+}
+
+function isBranchDivergenceSummary(
+  value: unknown
+): value is BranchDivergenceSummary {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<BranchDivergenceSummary>;
+  return (
+    typeof candidate.repoPath === 'string' &&
+    typeof candidate.aheadCount === 'number' &&
+    typeof candidate.behindCount === 'number' &&
+    Boolean(candidate.lineDelta) &&
+    Boolean(candidate.dirty) &&
+    Boolean(candidate.commits) &&
+    typeof candidate.state === 'string' &&
+    Array.isArray(candidate.baseCandidates) &&
+    Array.isArray(candidate.warnings) &&
+    typeof candidate.generatedAt === 'string'
+  );
+}
+
+function emptyDivergenceSummary(
+  repoPath: string,
+  error: string
+): BranchDivergenceSummary {
+  return {
+    repoPath,
+    currentBranch: null,
+    headSha: null,
+    selectedBase: null,
+    baseCandidates: [],
+    aheadCount: 0,
+    behindCount: 0,
+    lineDelta: { additions: 0, deletions: 0, fileCount: 0 },
+    dirty: {
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+      conflictedCount: 0,
+      files: [],
+      truncated: false,
+    },
+    commits: { ahead: [], behind: [] },
+    state: 'missing_base',
+    error,
+    warnings: [],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+export async function fetchDivergence(
+  repoPath: string,
+  base?: string
+): Promise<BranchDivergenceSummary> {
+  const params = new URLSearchParams({ path: repoPath });
+  if (base) params.set('base', base);
+  const res = await fetch('/workspaces/divergence?' + params.toString());
+  if (!res.ok) {
+    try {
+      const parsed = await jsonEither<unknown>(res);
+      if (isBranchDivergenceSummary(parsed)) return parsed;
+    } catch {
+      // Fall through to the generic transport fallback below.
+    }
+    return emptyDivergenceSummary(repoPath, `HTTP ${res.status}`);
+  }
+  return jsonEither<BranchDivergenceSummary>(res);
 }
 
 /** Swallows HTTP errors and returns `{ diff: '', error }` on failure. */

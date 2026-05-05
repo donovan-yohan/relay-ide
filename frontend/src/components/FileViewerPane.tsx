@@ -192,10 +192,15 @@ export function FileViewerPane({
   const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
   const fileDiffSource = useUiStore((s) => s.fileDiffSource);
   const fileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+  const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const base = useMemo(
     () => diffSourceToBase(fileDiffSource, fileDiffDefaultBranch) ?? null,
     [fileDiffSource, fileDiffDefaultBranch]
   );
+  const branchBase = fileDiffSource === 'branch' ? base : null;
+  const handleOpenBranchPanel = useCallback(() => {
+    openUtilityRailTab(workspacePath, 'branch', { branchBase });
+  }, [branchBase, openUtilityRailTab, workspacePath]);
   const activeTab = useMemo(
     () =>
       openFileTabs.find(
@@ -284,6 +289,11 @@ export function FileViewerPane({
               onClick={handleToggleDiffViewMode}
             >
               {fileDiffViewMode === 'unified' ? '[split]' : '[unified]'}
+            </button>
+          )}
+          {activeTab?.isChanged && (
+            <button className="diff-mode-btn" onClick={handleOpenBranchPanel}>
+              [branch]
             </button>
           )}
           {activeTab?.tabType === 'html' && (
