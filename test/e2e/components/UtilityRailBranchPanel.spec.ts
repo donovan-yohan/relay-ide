@@ -31,4 +31,24 @@ test.describe('UtilityRailBranchPanel React component', () => {
     );
     await expect(page.locator('.branch-metrics')).toContainText('3');
   });
+
+  test('keeps narrow viewport controls touch sized', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.branch-panel')).toBeVisible();
+
+    for (const selector of [
+      '#branch-base-select',
+      '.branch-topbar .branch-button',
+      '[data-testid="branch-open-changes"]',
+      '[data-testid="branch-open-review"]',
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
+
+    const metricColumns = await page.locator('.branch-metric').evaluateAll((els) =>
+      new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size
+    );
+    expect(metricColumns).toBe(2);
+  });
 });

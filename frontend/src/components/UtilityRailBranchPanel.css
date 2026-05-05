@@ -263,12 +263,47 @@
     display: grid;
   }
 
+  .branch-topbar,
+  .branch-base-row,
+  .branch-dirty,
+  .branch-state-detail,
+  .branch-warnings,
+  .branch-empty {
+    padding: 12px;
+  }
+
+  .branch-section__header {
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  .branch-select,
+  .branch-button,
+  .branch-link {
+    min-height: 44px;
+  }
+
+  .branch-button,
+  .branch-link {
+    padding: 0 10px;
+  }
+
+  .branch-link-row {
+    gap: 8px;
+  }
+
   .branch-base-row {
     grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .branch-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .branch-metric {
+    min-height: 56px;
+    padding: 10px 12px;
   }
 
   .branch-metric:nth-child(3n) {
@@ -277,5 +312,9 @@
 
   .branch-metric:nth-child(2n) {
     border-right: 0;
+  }
+
+  .branch-commit {
+    padding: 12px;
   }
 }

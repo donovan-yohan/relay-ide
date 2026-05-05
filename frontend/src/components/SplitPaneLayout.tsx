@@ -207,11 +207,11 @@ export function SplitPaneLayout({
           >
             <button
               className="mobile-sidebar-close-btn"
-              aria-label="Close file sidebar"
+              aria-label="close file sidebar"
               onClick={onToggleRightSidebar}
               type="button"
             >
-              ✕
+              x
             </button>
             {rightSidebar}
           </div>
