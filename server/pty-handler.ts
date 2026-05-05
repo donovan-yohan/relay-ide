@@ -607,6 +607,7 @@ function setupEnvAndHooks(
         'TMPDIR',
         'TEMP',
         'TMP',
+        'TMUX_TMPDIR',
         'LANG',
         'LC_ALL',
         'USER',

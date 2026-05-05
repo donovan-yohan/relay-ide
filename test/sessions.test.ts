@@ -1,4 +1,4 @@
-import { describe, it, afterEach, expect } from 'vitest';
+import { describe, it, afterAll, afterEach, beforeAll, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,23 @@ import type { PtySession } from '../server/types.js';
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
 const execFileAsync = promisify(execFile);
+const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
+let tmuxTmpdir: string;
+
+beforeAll(() => {
+  tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-tmux-'));
+  process.env.TMUX_TMPDIR = tmuxTmpdir;
+});
+
+afterAll(async () => {
+  await execFileAsync('tmux', ['kill-server']).catch(() => {});
+  if (originalTmuxTmpdir === undefined) {
+    delete process.env.TMUX_TMPDIR;
+  } else {
+    process.env.TMUX_TMPDIR = originalTmuxTmpdir;
+  }
+  fs.rmSync(tmuxTmpdir, { recursive: true, force: true });
+});
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

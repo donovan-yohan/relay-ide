@@ -1,11 +1,24 @@
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  it,
+  expect,
+} from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as sessions from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
 
 const createdIds: string[] = [];
+const execFileAsync = promisify(execFile);
+const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
+let tmuxTmpdir: string;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -14,7 +27,7 @@ function delay(ms: number): Promise<void> {
 async function waitForScrollbackContains(
   sessionId: string,
   needle: string,
-  timeoutMs = 4000
+  timeoutMs = 8000
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -31,6 +44,21 @@ async function waitForScrollbackContains(
 describe('PTY multi-agent hook/plugin wiring', () => {
   const originalHome = process.env.HOME;
   let testHome: string;
+
+  beforeAll(() => {
+    tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-tmux-'));
+    process.env.TMUX_TMPDIR = tmuxTmpdir;
+  });
+
+  afterAll(async () => {
+    await execFileAsync('tmux', ['kill-server']).catch(() => {});
+    if (originalTmuxTmpdir === undefined) {
+      delete process.env.TMUX_TMPDIR;
+    } else {
+      process.env.TMUX_TMPDIR = originalTmuxTmpdir;
+    }
+    fs.rmSync(tmuxTmpdir, { recursive: true, force: true });
+  });
 
   beforeEach(() => {
     testHome = fs.mkdtempSync(
