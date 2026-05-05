@@ -149,6 +149,60 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     expect(session.dataQuality).toBe('parser');
   });
 
+  it('uses parser startup signal for hook-backed tmux sessions before hooks fire', async () => {
+    const agentStub = path.join(testHome, 'claude-stub.sh');
+    fs.writeFileSync(
+      agentStub,
+      `#!/bin/sh
+while [ "$1" = "--settings" ]; do
+  shift 2
+done
+printf 'How can I help you today?\\n>\\n'
+sleep 10
+`,
+      'utf-8'
+    );
+    fs.chmodSync(agentStub, 0o755);
+
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      agent: 'claude',
+      args: [],
+      port: 4568,
+      hookToken: 'claude-hook-token',
+      configDir: '/tmp',
+      frameworks: {
+        claude: {
+          command: agentStub,
+          eventSource: 'hooks',
+          parserType: 'claude',
+          capabilities: {
+            supportsHooks: true,
+            supportsContinue: true,
+            supportsYolo: true,
+            supportsTelemetry: true,
+            supportsAttachedRuntime: true,
+            supportsWebSessions: true,
+          },
+        },
+      },
+    });
+    createdIds.push(result.id);
+
+    await waitForScrollbackContains(result.id, 'How can I help');
+    await delay(100);
+
+    const session = sessions.get(result.id) as PtySession;
+    expect(session.hooksActive).toBe(true);
+    expect(session.dataQuality).toBe('hooks');
+    expect(session.agentState, session.scrollback.join('')).toBe(
+      'waiting-for-input'
+    );
+  });
+
   it('injects framework.yoloEnv for opencode in yolo mode', async () => {
     const result = sessions.create({
       repoName: 'test-repo',

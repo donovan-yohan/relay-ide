@@ -823,6 +823,18 @@ function isParserOverrideAllowed(
   return false;
 }
 
+function shouldAcceptStartupParserState(
+  session: PtySession,
+  newState: AgentState,
+  lastHook: number | undefined
+): boolean {
+  return (
+    !lastHook &&
+    session.agentState === 'initializing' &&
+    newState !== 'initializing'
+  );
+}
+
 function handleParserStateUpdate(
   session: PtySession,
   newState: AgentState,
@@ -830,7 +842,18 @@ function handleParserStateUpdate(
   fireBackendStateIfChanged: ((session: PtySession) => void) | undefined
 ): void {
   if (session.hooksActive) {
-    if (!isParserOverrideAllowed(session, session._lastHookTime)) return;
+    const lastHook = session._lastHookTime;
+    const allowStartupParserState = shouldAcceptStartupParserState(
+      session,
+      newState,
+      lastHook
+    );
+    if (
+      !allowStartupParserState &&
+      !isParserOverrideAllowed(session, lastHook)
+    ) {
+      return;
+    }
   }
   session.agentState = newState;
   for (const cb of stateChangeCallbacks) cb(session.id, newState);
