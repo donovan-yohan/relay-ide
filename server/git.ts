@@ -1250,7 +1250,7 @@ async function buildBranchDivergence(
   const selectedBaseRef = base ?? baseCandidates[0]?.ref;
   const currentBranch = await getSymbolicCurrentBranch(root, exec);
 
-  let headSha: string | null = null;
+  let headSha: string | null;
   try {
     headSha = await getHeadSha(root, exec);
   } catch (err) {
