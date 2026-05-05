@@ -24,6 +24,7 @@ export interface UtilityRailReviewPanelProps {
   workspacePath: string;
   reviewState?: WorkspaceReviewState | undefined;
   onRequestClose?: (() => void) | undefined;
+  active?: boolean | undefined;
 }
 
 interface ChangedFilesResponse {
@@ -50,7 +51,11 @@ function isTypingTarget(target: EventTarget | null): boolean {
     tag === 'TEXTAREA' ||
     tag === 'SELECT' ||
     target.isContentEditable ||
-    Boolean(target.closest('[role="textbox"], [data-terminal-root], .xterm'))
+    Boolean(
+      target.closest(
+        '[role="textbox"], [data-terminal-root], .xterm, .palette, .palette-overlay'
+      )
+    )
   );
 }
 
@@ -64,6 +69,7 @@ export function UtilityRailReviewPanel({
   workspacePath,
   reviewState,
   onRequestClose,
+  active = true,
 }: UtilityRailReviewPanelProps) {
   const queryClient = useQueryClient();
   const storeReviewState = useUiStore(
@@ -72,7 +78,6 @@ export function UtilityRailReviewPanel({
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const setFileDiffViewMode = useUiStore((s) => s.setFileDiffViewMode);
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
-  const openReviewWorkspace = useUiStore((s) => s.openReviewWorkspace);
   const setReviewActiveFile = useUiStore((s) => s.setReviewActiveFile);
   const setReviewDiffSource = useUiStore((s) => s.setReviewDiffSource);
   const setReviewDefaultBranch = useUiStore((s) => s.setReviewDefaultBranch);
@@ -80,6 +85,7 @@ export function UtilityRailReviewPanel({
     (s) => s.setReviewCurrentHunkIndex
   );
   const sidebarRef = useRef<DiffFileSidebarHandle>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const diffScrollerRef = useRef<HTMLDivElement | null>(null);
 
   const review = reviewState ??
@@ -95,11 +101,6 @@ export function UtilityRailReviewPanel({
     [review.diffSource, review.defaultBranch]
   );
 
-  useEffect(() => {
-    if (!workspacePath) return;
-    openReviewWorkspace(workspacePath, { preserveSelectedTab: true });
-  }, [openReviewWorkspace, workspacePath]);
-
   const defaultBranchQuery = useQuery<string>({
     queryKey: defaultBranchQueryKey(workspacePath),
     queryFn: () => fetchDefaultBranch(workspacePath),
@@ -111,7 +112,10 @@ export function UtilityRailReviewPanel({
   useEffect(() => {
     const branch = defaultBranchQuery.data;
     if (!workspacePath || !branch) return;
-    if (review.defaultBranch === 'main' || review.defaultBranch === '') {
+    if (
+      (review.defaultBranch === 'main' || review.defaultBranch === '') &&
+      branch !== review.defaultBranch
+    ) {
       setReviewDefaultBranch(workspacePath, branch);
     }
   }, [defaultBranchQuery.data, review.defaultBranch, setReviewDefaultBranch, workspacePath]);
@@ -214,12 +218,8 @@ export function UtilityRailReviewPanel({
     [review.currentHunkIndex, setReviewCurrentHunkIndex, workspacePath]
   );
 
-  useEffect(() => {
-    setReviewCurrentHunkIndex(workspacePath, -1);
-  }, [activeFilePath, base, setReviewCurrentHunkIndex, workspacePath]);
-
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
+    (event: KeyboardEvent | React.KeyboardEvent<HTMLDivElement>) => {
       if (isTypingTarget(event.target)) return;
       if (event.key === 'j' || event.key === 'ArrowDown') {
         event.preventDefault();
@@ -245,6 +245,15 @@ export function UtilityRailReviewPanel({
     [onRequestClose, scrollToHunk, workspacePath]
   );
 
+  useEffect(() => {
+    if (!active) return;
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      handleKeyDown(event);
+    };
+    document.addEventListener('keydown', onDocumentKeyDown);
+    return () => document.removeEventListener('keydown', onDocumentKeyDown);
+  }, [active, handleKeyDown]);
+
   const filesError =
     filesQuery.error instanceof Error ? filesQuery.error.message : null;
   const emptyLabel =
@@ -256,9 +265,9 @@ export function UtilityRailReviewPanel({
 
   return (
     <div
+      ref={panelRef}
       className="utility-review-panel"
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
+      tabIndex={-1}
       aria-label="review workspace"
     >
       <div className="utility-panel-toolbar">

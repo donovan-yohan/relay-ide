@@ -54,6 +54,7 @@ export interface OpenReviewWorkspaceOptions {
   filePath?: string;
   base?: string;
   preserveSelectedTab?: boolean;
+  preserveFullPageDiff?: boolean;
 }
 export type UtilitySurfacePlacement =
   | { kind: 'rail' }
@@ -734,11 +735,16 @@ export const useUiStore = create<UiState>()((set, get) => ({
         if (!options?.preserveSelectedTab) state.selectedRailTab = 'review';
         const current = normalizeReviewState(state.review, state.reviewFilePath);
         const derived = deriveReviewStateFromBase(options?.base, current);
+        const activeFilePath = options?.filePath ?? current.activeFilePath;
+        const shouldResetHunkIndex =
+          activeFilePath !== current.activeFilePath ||
+          derived.diffSource !== current.diffSource ||
+          derived.defaultBranch !== current.defaultBranch;
         state.review = {
           ...current,
           ...derived,
-          activeFilePath: options?.filePath ?? current.activeFilePath,
-          currentHunkIndex: -1,
+          activeFilePath,
+          currentHunkIndex: shouldResetHunkIndex ? -1 : current.currentHunkIndex,
         };
         if (state.review.activeFilePath) {
           state.reviewFilePath = state.review.activeFilePath;
@@ -748,7 +754,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
       }
     );
     set({
-      fullPageDiff: null,
+      ...(options?.preserveFullPageDiff ? {} : { fullPageDiff: null }),
       utilityRailByWorkspace: {
         ...get().utilityRailByWorkspace,
         [workspacePath]: nextState,

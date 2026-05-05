@@ -73,19 +73,24 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   return originalFetch(input, init);
 };
 
-useUiStore.getState().openReviewWorkspace(workspacePath, { filePath: 'src/a.ts' });
+useUiStore.setState({
+  fullPageDiff: { workspacePath, file: 'src/a.ts' },
+});
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 function Harness() {
-  const [visible, setVisible] = React.useState(true);
-  return visible ? (
+  const fullPageDiff = useUiStore((state) => state.fullPageDiff);
+  return fullPageDiff ? (
     <QueryClientProvider client={queryClient}>
-      <FullPageDiff
-        workspacePath={workspacePath}
-        initialFile="src/a.ts"
-        onClose={() => setVisible(false)}
-      />
+      <div className="full-page-diff-overlay">
+        <FullPageDiff
+          workspacePath={fullPageDiff.workspacePath}
+          {...(fullPageDiff.file !== undefined ? { initialFile: fullPageDiff.file } : {})}
+          {...(fullPageDiff.base !== undefined ? { initialBase: fullPageDiff.base } : {})}
+          onClose={() => useUiStore.setState({ fullPageDiff: null })}
+        />
+      </div>
     </QueryClientProvider>
   ) : (
     <div className="utility-empty">closed</div>

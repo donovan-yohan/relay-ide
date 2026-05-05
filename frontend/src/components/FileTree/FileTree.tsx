@@ -103,14 +103,17 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
     });
 
     useEffect(() => {
-      if (defaultBranchQuery.data) {
-        setFileDiffDefaultBranch(defaultBranchQuery.data);
-        if (!reviewDefaultBranch || reviewDefaultBranch === 'main') {
-          setReviewDefaultBranch(workspacePath, defaultBranchQuery.data);
-        }
+      const branch = defaultBranchQuery.data;
+      if (!branch) return;
+      if (branch !== globalFileDiffDefaultBranch) {
+        setFileDiffDefaultBranch(branch);
+      }
+      if ((!reviewDefaultBranch || reviewDefaultBranch === 'main') && branch !== reviewDefaultBranch) {
+        setReviewDefaultBranch(workspacePath, branch);
       }
     }, [
       defaultBranchQuery.data,
+      globalFileDiffDefaultBranch,
       reviewDefaultBranch,
       setFileDiffDefaultBranch,
       setReviewDefaultBranch,

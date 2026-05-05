@@ -89,13 +89,16 @@ describe('UtilityRailReviewPanel', () => {
     queryClient.clear();
   });
 
-  it('selects changed files in place and persists review selection per workspace', async () => {
+  async function renderPanel(props: Record<string, unknown> = {}) {
     await act(async () => {
       root.render(
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(UtilityRailReviewPanel, { workspacePath: '/repo/a' })
+          React.createElement(UtilityRailReviewPanel, {
+            workspacePath: '/repo/a',
+            ...props,
+          })
         )
       );
     });
@@ -104,6 +107,10 @@ describe('UtilityRailReviewPanel', () => {
       await flush();
       await flush();
     });
+  }
+
+  it('selects changed files in place and persists review selection per workspace', async () => {
+    await renderPanel();
 
     const button = Array.from(container.querySelectorAll('.sidebar-file')).find((el) =>
       el.textContent?.includes('b.ts')
@@ -122,5 +129,57 @@ describe('UtilityRailReviewPanel', () => {
     });
     expect(useUiStore.getState().openFileTabs).toEqual([]);
     expect(container.querySelector('.mock-diff-viewer')?.getAttribute('data-file')).toBe('src/b.ts');
+  });
+
+  it('handles review shortcuts immediately after opening without manually focusing the panel', async () => {
+    const onRequestClose = vi.fn();
+    await renderPanel({ onRequestClose });
+
+    expect(document.activeElement).not.toBe(container.querySelector('.utility-review-panel'));
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+      activeFilePath: 'src/b.ts',
+    });
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores review shortcuts while the review surface is inactive', async () => {
+    await renderPanel({ active: false });
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+      activeFilePath: 'src/a.ts',
+    });
+  });
+
+  it('ignores review shortcuts that originate from typing targets', async () => {
+    await renderPanel();
+    const input = document.createElement('input');
+    container.appendChild(input);
+    input.focus();
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+      activeFilePath: 'src/a.ts',
+    });
   });
 });

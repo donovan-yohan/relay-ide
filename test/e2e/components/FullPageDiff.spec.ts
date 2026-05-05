@@ -41,8 +41,13 @@ test.describe('FullPageDiff review workspace compatibility entry', () => {
     await expect(page.locator('.diff-viewer')).toContainText('context cached');
   });
 
-  test('preserves keyboard review navigation inside the panel', async ({ page }) => {
-    await page.locator('.utility-review-panel').focus();
+  test('keeps the real store-guarded compatibility overlay mounted after seeding review state', async ({ page }) => {
+    await expect(page.locator('.full-page-diff')).toBeVisible();
+    await page.waitForTimeout(0);
+    await expect(page.locator('.full-page-diff')).toBeVisible();
+  });
+
+  test('preserves keyboard review navigation immediately after opening', async ({ page }) => {
     await page.keyboard.press('j');
 
     await expect(page.getByRole('option', { name: /b\.ts/ })).toHaveAttribute(

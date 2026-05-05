@@ -25,6 +25,7 @@ export function FullPageDiff({
     useUiStore.getState().openReviewWorkspace(workspacePath, {
       ...(initialFile ? { filePath: initialFile } : {}),
       ...(initialBase !== undefined ? { base: initialBase } : {}),
+      preserveFullPageDiff: true,
     });
   }, [initialBase, initialFile, workspacePath]);
 

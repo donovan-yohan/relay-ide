@@ -322,6 +322,45 @@ describe('ui Zustand store', () => {
         },
       });
     });
+
+    it('openReviewWorkspace can seed review state without clearing the full-page overlay guard', () => {
+      useUiStore.setState({
+        fullPageDiff: { workspacePath: '/repo/a', file: 'src/changed.ts' },
+      });
+
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/changed.ts',
+        preserveFullPageDiff: true,
+      });
+
+      expect(useUiStore.getState().fullPageDiff).toEqual({
+        workspacePath: '/repo/a',
+        file: 'src/changed.ts',
+      });
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        selectedRailTab: 'review',
+        review: { activeFilePath: 'src/changed.ts' },
+      });
+    });
+
+    it('openReviewWorkspace preserves hunk navigation when only revealing the current review panel', () => {
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/changed.ts',
+        base: 'develop',
+      });
+      useUiStore.getState().setReviewCurrentHunkIndex('/repo/a', 3);
+
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        preserveSelectedTab: true,
+      });
+
+      expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+        activeFilePath: 'src/changed.ts',
+        diffSource: 'branch',
+        defaultBranch: 'develop',
+        currentHunkIndex: 3,
+      });
+    });
   });
 
   describe('active workspace', () => {
