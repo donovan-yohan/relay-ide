@@ -332,6 +332,30 @@ describe('getBranchDivergence', () => {
     expect(summary.error).toContain('index.lock');
   });
 
+  it('returns git_error instead of no_merge_base when merge-base has an internal git failure', async () => {
+    const summary = await getBranchDivergence(repoPath, {
+      base: 'main',
+      exec: createDivergenceExecMock({
+        internalErrorOn: (args) => args.join(' ') === 'merge-base -- main HEAD',
+      }),
+    });
+
+    expect(summary.state).toBe('git_error');
+    expect(summary.error).toContain('index.lock');
+  });
+
+  it('returns git_error instead of not_git when repo root detection has an internal git failure', async () => {
+    const summary = await getBranchDivergence(repoPath, {
+      base: 'main',
+      exec: createDivergenceExecMock({
+        internalErrorOn: (args) => args.join(' ') === 'rev-parse --show-toplevel',
+      }),
+    });
+
+    expect(summary.state).toBe('git_error');
+    expect(summary.error).toContain('index.lock');
+  });
+
   it('rejects unsafe base refs before running revision ranges', async () => {
     for (const badRef of [
       '',

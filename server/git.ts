@@ -892,6 +892,20 @@ function isTimeoutError(error: unknown): boolean {
   );
 }
 
+function isNotGitRepositoryError(error: unknown): boolean {
+  const text = errorText(error).toLowerCase();
+  return (
+    text.includes('not a git repository') ||
+    text.includes('not a gitdir')
+  );
+}
+
+function isNoMergeBaseError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: string | number };
+  return err.code === 1 && errorText(error) === '';
+}
+
 function hasInvalidBaseRefChar(ref: string): boolean {
   for (const char of ref) {
     const code = char.charCodeAt(0);
@@ -1073,7 +1087,8 @@ async function getRepoRootOrNull(
     return stdout.trim() || repoPath;
   } catch (err) {
     if (isTimeoutError(err)) throw err;
-    return null;
+    if (isNotGitRepositoryError(err)) return null;
+    throw err;
   }
 }
 
@@ -1148,7 +1163,8 @@ async function hasMergeBase(
     return true;
   } catch (err) {
     if (isTimeoutError(err)) throw err;
-    return false;
+    if (isNoMergeBaseError(err)) return false;
+    throw err;
   }
 }
 
