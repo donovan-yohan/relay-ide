@@ -120,6 +120,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  text-transform: none;
 }
 
 .ws-tab__meta {

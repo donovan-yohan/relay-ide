@@ -56,6 +56,7 @@ See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined �
 - Node.js ≥ 24.0.0 — `nvm use` from `.nvmrc`.
 - Relative imports end in `.js`; builtins use `node:` prefix.
 - npm package — GitHub Actions publish (see `docs/references/deployment.md`).
+- Frontend edits (TSX/CSS) only render locally after `npm run build` — server serves `dist/frontend/`, not sources. Restart `npm start` to pick up new bundle.
 
 ## Branching
 

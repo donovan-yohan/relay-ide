@@ -13,8 +13,6 @@
 .utility-selected-pane {
   min-width: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: 38px 1fr;
   overflow: hidden;
   border-right: 1px solid var(--border, #333);
 }
@@ -30,6 +28,7 @@
 }
 
 .utility-pane-body {
+  height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
