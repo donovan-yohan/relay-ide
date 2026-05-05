@@ -228,6 +228,9 @@ export function UtilityRailBranchPanel({
 
   const currentBase = selectedBase ?? data.selectedBase?.ref ?? '';
   const baseOptions = data.baseCandidates;
+  const shouldShowMissingBaseOption =
+    Boolean(currentBase) &&
+    !baseOptions.some((candidate) => candidate.ref === currentBase);
   const lineDelta = data.lineDelta;
   const isZeroLineDivergence =
     (data.aheadCount > 0 || data.behindCount > 0) &&
@@ -266,9 +269,14 @@ export function UtilityRailBranchPanel({
           onChange={(event) =>
             setUtilityBranchBase(workspacePath, event.target.value || null)
           }
-          disabled={baseOptions.length === 0}
+          disabled={baseOptions.length === 0 && !shouldShowMissingBaseOption}
         >
-          {baseOptions.length === 0 ? (
+          {shouldShowMissingBaseOption ? (
+            <option value={currentBase} disabled>
+              {currentBase} (missing)
+            </option>
+          ) : null}
+          {baseOptions.length === 0 && !shouldShowMissingBaseOption ? (
             <option value="">no base candidates</option>
           ) : (
             baseOptions.map((candidate) => (

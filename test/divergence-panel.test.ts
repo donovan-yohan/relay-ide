@@ -209,6 +209,39 @@ describe('UtilityRailBranchPanel', () => {
     ).toBe('review');
   });
 
+  it('shows the persisted missing base in the selector instead of falling back visually', async () => {
+    useUiStore.getState().setUtilityBranchBase('/repo', 'missing-base-qa');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const response: BranchDivergenceSummary = {
+          ...baseSummary,
+          selectedBase: null,
+          state: 'missing_base',
+          error: 'base ref not found: missing-base-qa',
+        };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(response),
+          json: async () => response,
+        };
+      })
+    );
+
+    await act(async () => renderPanel(root, queryClient));
+    await waitForText(container, 'base ref not found: missing-base-qa');
+
+    const select = container.querySelector('select') as HTMLSelectElement;
+    expect(select.value).toBe('missing-base-qa');
+    expect(
+      Array.from(select.options).some(
+        (option) => option.value === 'missing-base-qa' && option.disabled
+      )
+    ).toBe(true);
+    expect(container.textContent).toContain('missing-base-qa');
+  });
+
   it('describes clean, dirty-only, missing-base, and detached states clearly', async () => {
     const states: Array<Partial<BranchDivergenceSummary>> = [
       {
