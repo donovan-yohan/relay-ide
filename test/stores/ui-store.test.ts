@@ -122,15 +122,27 @@ describe('ui Zustand store', () => {
       const a = useUiStore.getState().getUtilityRailState('/repo/a');
       const b = useUiStore.getState().getUtilityRailState('/repo/b');
 
-      expect(a).toEqual({
+      expect(a).toMatchObject({
         visible: true,
         selectedRailTab: null,
         width: DEFAULT_UTILITY_RAIL_WIDTH,
+        review: {
+          activeFilePath: null,
+          diffSource: 'working',
+          defaultBranch: 'main',
+          currentHunkIndex: -1,
+        },
       });
-      expect(b).toEqual({
+      expect(b).toMatchObject({
         visible: true,
         selectedRailTab: null,
         width: DEFAULT_UTILITY_RAIL_WIDTH,
+        review: {
+          activeFilePath: null,
+          diffSource: 'working',
+          defaultBranch: 'main',
+          currentHunkIndex: -1,
+        },
       });
 
       useUiStore.getState().setSelectedUtilityRailTab('/repo/a', 'review');
@@ -143,7 +155,7 @@ describe('ui Zustand store', () => {
         selectedRailTab: 'review',
         width: MAX_UTILITY_RAIL_WIDTH,
       });
-      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toEqual({
+      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
         visible: true,
         selectedRailTab: null,
         width: DEFAULT_UTILITY_RAIL_WIDTH,
@@ -260,6 +272,93 @@ describe('ui Zustand store', () => {
             paneId: 'pane-1',
           },
         },
+      });
+    });
+
+    it('stores review file, source, default branch, and hunk per workspace', () => {
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/a.ts',
+        base: 'develop',
+      });
+      useUiStore.getState().setReviewActiveFile('/repo/a', 'src/a2.ts');
+      useUiStore.getState().setReviewCurrentHunkIndex('/repo/a', 2);
+      useUiStore.getState().openReviewWorkspace('/repo/b', {
+        filePath: 'src/b.ts',
+        base: 'cached',
+      });
+
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        selectedRailTab: 'review',
+        review: {
+          activeFilePath: 'src/a2.ts',
+          diffSource: 'branch',
+          defaultBranch: 'develop',
+          currentHunkIndex: 2,
+        },
+      });
+      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
+        selectedRailTab: 'review',
+        review: {
+          activeFilePath: 'src/b.ts',
+          diffSource: 'staged',
+          defaultBranch: 'main',
+          currentHunkIndex: -1,
+        },
+      });
+    });
+
+    it('openReviewWorkspace keeps workspace review navigation in the rail without file tabs', () => {
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/changed.ts',
+      });
+
+      expect(useUiStore.getState().openFileTabs).toEqual([]);
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        visible: true,
+        selectedRailTab: 'review',
+        review: {
+          activeFilePath: 'src/changed.ts',
+          diffSource: 'working',
+        },
+      });
+    });
+
+    it('openReviewWorkspace can seed review state without clearing the full-page overlay guard', () => {
+      useUiStore.setState({
+        fullPageDiff: { workspacePath: '/repo/a', file: 'src/changed.ts' },
+      });
+
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/changed.ts',
+        preserveFullPageDiff: true,
+      });
+
+      expect(useUiStore.getState().fullPageDiff).toEqual({
+        workspacePath: '/repo/a',
+        file: 'src/changed.ts',
+      });
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        selectedRailTab: 'review',
+        review: { activeFilePath: 'src/changed.ts' },
+      });
+    });
+
+    it('openReviewWorkspace preserves hunk navigation when only revealing the current review panel', () => {
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        filePath: 'src/changed.ts',
+        base: 'develop',
+      });
+      useUiStore.getState().setReviewCurrentHunkIndex('/repo/a', 3);
+
+      useUiStore.getState().openReviewWorkspace('/repo/a', {
+        preserveSelectedTab: true,
+      });
+
+      expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+        activeFilePath: 'src/changed.ts',
+        diffSource: 'branch',
+        defaultBranch: 'develop',
+        currentHunkIndex: 3,
       });
     });
   });

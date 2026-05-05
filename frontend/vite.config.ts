@@ -22,6 +22,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-utility-rail-branch-panel.html'
   );
+  buildInputs['test-full-page-diff'] = resolve(
+    import.meta.dirname,
+    'test-full-page-diff.html'
+  );
 }
 
 export default defineConfig({

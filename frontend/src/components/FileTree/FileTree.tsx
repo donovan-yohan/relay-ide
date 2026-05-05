@@ -70,12 +70,23 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
   function FileTree({ workspacePath }, ref) {
     const rightSidebarTab = useUiStore((s) => s.rightSidebarTab);
     const setRightSidebarTab = useUiStore((s) => s.setRightSidebarTab);
-    const fileDiffSource = useUiStore((s) => s.fileDiffSource);
-    const fileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+    const reviewState = useUiStore(
+      (s) => s.utilityRailByWorkspace[workspacePath]?.review
+    );
+    const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
+    const globalFileDiffDefaultBranch = useUiStore(
+      (s) => s.fileDiffDefaultBranch
+    );
+    const fileDiffSource = reviewState?.diffSource ?? globalFileDiffSource;
+    const reviewDefaultBranch = reviewState?.defaultBranch;
+    const fileDiffDefaultBranch =
+      reviewDefaultBranch ?? globalFileDiffDefaultBranch;
     const setFileDiffDefaultBranch = useUiStore(
       (s) => s.setFileDiffDefaultBranch
     );
+    const setReviewDefaultBranch = useUiStore((s) => s.setReviewDefaultBranch);
     const openFileTab = useUiStore((s) => s.openFileTab);
+    const openReviewWorkspace = useUiStore((s) => s.openReviewWorkspace);
     const queryClient = useQueryClient();
 
     const base = useMemo(
@@ -92,10 +103,22 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
     });
 
     useEffect(() => {
-      if (defaultBranchQuery.data) {
-        setFileDiffDefaultBranch(defaultBranchQuery.data);
+      const branch = defaultBranchQuery.data;
+      if (!branch) return;
+      if (branch !== globalFileDiffDefaultBranch) {
+        setFileDiffDefaultBranch(branch);
       }
-    }, [defaultBranchQuery.data, setFileDiffDefaultBranch]);
+      if ((!reviewDefaultBranch || reviewDefaultBranch === 'main') && branch !== reviewDefaultBranch) {
+        setReviewDefaultBranch(workspacePath, branch);
+      }
+    }, [
+      defaultBranchQuery.data,
+      globalFileDiffDefaultBranch,
+      reviewDefaultBranch,
+      setFileDiffDefaultBranch,
+      setReviewDefaultBranch,
+      workspacePath,
+    ]);
 
     const query = useQuery<ChangedFilesResponse>({
       queryKey: changedFilesQueryKey(workspacePath, base),
@@ -235,11 +258,15 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
     });
 
     const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
+    const reviewFilePath = useUiStore(
+      (s) => s.utilityRailByWorkspace[workspacePath]?.review?.activeFilePath ?? null
+    );
     const selectedPath = useMemo(() => {
+      if (rightSidebarTab === 'changes') return reviewFilePath;
       if (!activeFileTabKey) return null;
       const idx = activeFileTabKey.indexOf('::');
       return idx >= 0 ? activeFileTabKey.slice(idx + 2) : activeFileTabKey;
-    }, [activeFileTabKey]);
+    }, [activeFileTabKey, reviewFilePath, rightSidebarTab]);
 
     // ── Click ──
     const handleNodeClick = useCallback(
@@ -254,9 +281,13 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
           return;
         }
         const isChanged = files.some((f) => f.path === node.path);
-        openFileTab(node.path, isChanged);
+        if (isChanged) {
+          openReviewWorkspace(workspacePath, { filePath: node.path });
+        } else {
+          openFileTab(node.path, false);
+        }
       },
-      [files, openFileTab]
+      [files, openFileTab, openReviewWorkspace, workspacePath]
     );
 
     const toggleAllFilesDir = useCallback(

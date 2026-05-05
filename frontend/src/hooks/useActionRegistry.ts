@@ -489,8 +489,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             '';
           if (ws) {
             const ui = useUiStore.getState();
-            ui.openUtilityRailTab(ws, 'review');
-            useUiStore.setState({ fullPageDiff: null });
+            ui.openReviewWorkspace(ws);
           }
         },
       },

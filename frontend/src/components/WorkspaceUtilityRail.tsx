@@ -121,6 +121,7 @@ export function WorkspaceUtilityRail({
     (s) => s.setSelectedUtilityRailTab
   );
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
+  const fullPageDiff = useUiStore((s) => s.fullPageDiff);
   const selectedTab = railState.selectedRailTab;
 
   const handleTabClick = useCallback(
@@ -215,7 +216,8 @@ export function WorkspaceUtilityRail({
           >
             <UtilityRailReviewPanel
               workspacePath={workspacePath}
-              reviewFilePath={railState.reviewFilePath}
+              reviewState={railState.review}
+              active={selectedTab === 'review' && !fullPageDiff}
             />
           </div>
           <div

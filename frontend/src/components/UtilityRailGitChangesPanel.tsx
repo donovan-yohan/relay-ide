@@ -79,9 +79,11 @@ export function UtilityRailGitChangesPanel({
   workspacePath,
 }: UtilityRailGitChangesPanelProps) {
   const queryClient = useQueryClient();
-  const openFileTab = useUiStore((s) => s.openFileTab);
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
-  const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
+  const openReviewWorkspace = useUiStore((s) => s.openReviewWorkspace);
+  const reviewFilePath = useUiStore(
+    (s) => s.utilityRailByWorkspace[workspacePath]?.review?.activeFilePath ?? null
+  );
 
   const workingQuery = useQuery<ChangedFilesResponse>({
     queryKey: workingKey(workspacePath),
@@ -126,18 +128,21 @@ export function UtilityRailGitChangesPanel({
     return { staged, changes, untracked };
   }, [workingQuery.data?.files, stagedQuery.data?.files]);
 
-  const handleClick = useCallback(
+  const handleStagedClick = useCallback(
     (file: ChangedFile) => {
-      openFileTab(file.path, true, 'diff');
+      openReviewWorkspace(workspacePath, { filePath: file.path, base: 'cached' });
     },
-    [openFileTab]
+    [openReviewWorkspace, workspacePath]
   );
 
-  const selectedPath = useMemo(() => {
-    if (!activeFileTabKey) return null;
-    const idx = activeFileTabKey.indexOf('::');
-    return idx >= 0 ? activeFileTabKey.slice(idx + 2) : activeFileTabKey;
-  }, [activeFileTabKey]);
+  const handleWorkingClick = useCallback(
+    (file: ChangedFile) => {
+      openReviewWorkspace(workspacePath, { filePath: file.path, base: '' });
+    },
+    [openReviewWorkspace, workspacePath]
+  );
+
+  const selectedPath = reviewFilePath;
 
   const isLoading = workingQuery.isPending && !workingQuery.data;
   const errorMsg =
@@ -198,7 +203,7 @@ export function UtilityRailGitChangesPanel({
                     key={`s-${f.path}`}
                     file={f}
                     selected={selectedPath === f.path}
-                    onClick={handleClick}
+                    onClick={handleStagedClick}
                   />
                 ))}
               </section>
@@ -214,7 +219,7 @@ export function UtilityRailGitChangesPanel({
                     key={`c-${f.path}`}
                     file={f}
                     selected={selectedPath === f.path}
-                    onClick={handleClick}
+                    onClick={handleWorkingClick}
                   />
                 ))}
               </section>
@@ -232,7 +237,7 @@ export function UtilityRailGitChangesPanel({
                     key={`u-${f.path}`}
                     file={f}
                     selected={selectedPath === f.path}
-                    onClick={handleClick}
+                    onClick={handleWorkingClick}
                   />
                 ))}
               </section>
