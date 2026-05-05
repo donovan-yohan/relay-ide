@@ -516,7 +516,8 @@ export async function createSession(body: {
 }
 
 export async function killSession(id: string): Promise<void> {
-  await fetch('/sessions/' + id, { method: 'DELETE' });
+  const res = await fetch('/sessions/' + id, { method: 'DELETE' });
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to close session');
 }
 
 export async function renameSession(

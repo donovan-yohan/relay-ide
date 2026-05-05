@@ -573,8 +573,13 @@ export function useSessionHandlers({
       .sessions.find((s) => s.id === sessionId);
     if (!session) return;
 
-    // Kill the session
-    await killSession(sessionId);
+    // Kill the session. Archive still proceeds to worktree cleanup if the
+    // session was already gone or the backend close fails.
+    try {
+      await killSession(sessionId);
+    } catch (error) {
+      logger.warn('Failed to close session before archive:', error);
+    }
 
     // If worktree session, delete the worktree too
     if (session.worktreePath !== null) {

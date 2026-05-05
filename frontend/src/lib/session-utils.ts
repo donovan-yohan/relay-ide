@@ -64,6 +64,58 @@ export function getCurrentSessionContext(): CurrentSessionContext {
   };
 }
 
+function restoreSessionPlacement(
+  activeSessionId: string | null,
+  workspaceLastSession: Record<string, string>
+): void {
+  const liveIds = new Set(useSessionsStore.getState().sessions.map((s) => s.id));
+  useSessionsStore.setState({
+    activeSessionId:
+      activeSessionId && liveIds.has(activeSessionId) ? activeSessionId : null,
+    workspaceLastSession: Object.fromEntries(
+      Object.entries(workspaceLastSession).filter(([, id]) => liveIds.has(id))
+    ),
+  });
+}
+
+export async function createSessionWithoutActivation(
+  options: CreateAgentSessionOptions
+): Promise<CreateAgentSessionResult> {
+  const before = useSessionsStore.getState();
+  const activeSessionId = before.activeSessionId;
+  const workspaceLastSession = { ...before.workspaceLastSession };
+  try {
+    const session = await createSessionApi(options);
+    let refreshError: unknown = null;
+    try {
+      await useSessionsStore.getState().refreshAll();
+    } catch (error) {
+      refreshError = error;
+    }
+    restoreSessionPlacement(activeSessionId, workspaceLastSession);
+    return { session, error: refreshError };
+  } catch (error) {
+    if (error instanceof ConflictError) {
+      let refreshError: unknown = null;
+      try {
+        await useSessionsStore.getState().refreshAll();
+      } catch (caughtRefreshError) {
+        refreshError = caughtRefreshError;
+      }
+      const conflictingSessionId = error.sessionId;
+      const session = conflictingSessionId
+        ? useSessionsStore
+            .getState()
+            .sessions.find((existing) => existing.id === conflictingSessionId)
+        : undefined;
+      restoreSessionPlacement(activeSessionId, workspaceLastSession);
+      return { session, error: refreshError ?? error };
+    }
+
+    return { session: undefined, error };
+  }
+}
+
 export async function createAgentSession(
   options: CreateAgentSessionOptions
 ): Promise<CreateAgentSessionResult> {
