@@ -190,9 +190,15 @@ export function FileViewerPane({
 }: FileViewerPaneProps) {
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
-  const fileDiffSource = useUiStore((s) => s.fileDiffSource);
-  const fileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+  const reviewState = useUiStore(
+    (s) => s.utilityRailByWorkspace[workspacePath]?.review
+  );
+  const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
+  const globalFileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
+  const fileDiffSource = reviewState?.diffSource ?? globalFileDiffSource;
+  const fileDiffDefaultBranch =
+    reviewState?.defaultBranch ?? globalFileDiffDefaultBranch;
   const base = useMemo(
     () => diffSourceToBase(fileDiffSource, fileDiffDefaultBranch) ?? null,
     [fileDiffSource, fileDiffDefaultBranch]

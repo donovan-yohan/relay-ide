@@ -81,8 +81,14 @@ function FileTabContentBridge({
   renderDiff,
   renderCode,
 }: FileTabContentBridgeProps) {
-  const fileDiffSource = useUiStore((s) => s.fileDiffSource);
-  const fileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+  const reviewState = useUiStore(
+    (s) => s.utilityRailByWorkspace[workspacePath]?.review
+  );
+  const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
+  const globalFileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+  const fileDiffSource = reviewState?.diffSource ?? globalFileDiffSource;
+  const fileDiffDefaultBranch =
+    reviewState?.defaultBranch ?? globalFileDiffDefaultBranch;
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const fileWordWrap = useUiStore((s) => s.fileWordWrap);
   const closeFileTab = useUiStore((s) => s.closeFileTab);

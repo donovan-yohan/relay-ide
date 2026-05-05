@@ -1168,7 +1168,13 @@ export default function App() {
         recentFiles={openFileTabs}
         onClose={() => setFilePickerOpen(false)}
         onSelect={(path, isChanged) => {
-          openFileTab(path, isChanged);
+          if (isChanged && activeWorkspaceCwd) {
+            useUiStore
+              .getState()
+              .openReviewWorkspace(activeWorkspaceCwd, { filePath: path });
+          } else {
+            openFileTab(path, isChanged);
+          }
           setFilePickerOpen(false);
         }}
       />

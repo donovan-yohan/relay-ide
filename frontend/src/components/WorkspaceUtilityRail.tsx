@@ -215,7 +215,7 @@ export function WorkspaceUtilityRail({
           >
             <UtilityRailReviewPanel
               workspacePath={workspacePath}
-              reviewFilePath={railState.reviewFilePath}
+              reviewState={railState.review}
             />
           </div>
           <div

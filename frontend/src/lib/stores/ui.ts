@@ -33,6 +33,7 @@ export const UTILITY_ICON_RAIL_WIDTH = 48;
 
 export type RightSidebarTab = 'changes' | 'all-files' | 'checks';
 export type FileTabType = 'diff' | 'code' | 'html';
+export type DiffSource = 'working' | 'staged' | 'branch';
 export type DiffViewMode = 'unified' | 'side-by-side';
 export type UtilityRailTab =
   | 'files'
@@ -41,6 +42,19 @@ export type UtilityRailTab =
   | 'review'
   | 'logs'
   | 'stats';
+
+export interface WorkspaceReviewState {
+  activeFilePath: string | null;
+  diffSource: DiffSource;
+  defaultBranch: string;
+  currentHunkIndex: number;
+}
+
+export interface OpenReviewWorkspaceOptions {
+  filePath?: string;
+  base?: string;
+  preserveSelectedTab?: boolean;
+}
 export type UtilitySurfacePlacement =
   | { kind: 'rail' }
   | { kind: 'anchored-pane'; paneId: string };
@@ -51,6 +65,8 @@ export interface WorkspaceUtilityRailState {
   width: number;
   anchoredPaneWidths?: Partial<Record<UtilityRailTab, number>>;
   placements?: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>>;
+  review?: WorkspaceReviewState;
+  /** @deprecated migrated into review.activeFilePath */
   reviewFilePath?: string;
   filesMode?: 'changes' | 'all-files';
   branchBase?: string;
@@ -212,8 +228,62 @@ export function clearUtilityRailStateCacheForTesting(): void {
   utilityRailStateCache.clear();
 }
 
+function defaultReviewState(): WorkspaceReviewState {
+  return {
+    activeFilePath: null,
+    diffSource: 'working',
+    defaultBranch: 'main',
+    currentHunkIndex: -1,
+  };
+}
+
 function defaultUtilityRailState(): WorkspaceUtilityRailState {
-  return { ...DEFAULT_UTILITY_RAIL_STATE };
+  return { ...DEFAULT_UTILITY_RAIL_STATE, review: defaultReviewState() };
+}
+
+function deriveReviewStateFromBase(
+  base: string | undefined,
+  current: WorkspaceReviewState
+): Pick<WorkspaceReviewState, 'diffSource' | 'defaultBranch'> {
+  if (base === undefined) {
+    return {
+      diffSource: current.diffSource,
+      defaultBranch: current.defaultBranch,
+    };
+  }
+  if (base === 'cached') {
+    return { diffSource: 'staged', defaultBranch: current.defaultBranch };
+  }
+  if (base) {
+    return { diffSource: 'branch', defaultBranch: base };
+  }
+  return { diffSource: 'working', defaultBranch: current.defaultBranch };
+}
+
+function normalizeReviewState(
+  value: Partial<WorkspaceReviewState> | null | undefined,
+  legacyFilePath?: string
+): WorkspaceReviewState {
+  const next = defaultReviewState();
+  if (typeof legacyFilePath === 'string') next.activeFilePath = legacyFilePath;
+  if (!value) return next;
+  if (typeof value.activeFilePath === 'string' || value.activeFilePath === null) {
+    next.activeFilePath = value.activeFilePath;
+  }
+  if (
+    value.diffSource === 'working' ||
+    value.diffSource === 'staged' ||
+    value.diffSource === 'branch'
+  ) {
+    next.diffSource = value.diffSource;
+  }
+  if (typeof value.defaultBranch === 'string' && value.defaultBranch.trim()) {
+    next.defaultBranch = value.defaultBranch;
+  }
+  if (typeof value.currentHunkIndex === 'number') {
+    next.currentHunkIndex = Math.max(-1, Math.trunc(value.currentHunkIndex));
+  }
+  return next;
 }
 
 function normalizeUtilityRailState(
@@ -258,8 +328,10 @@ function normalizeUtilityRailState(
     if (Object.keys(placements).length > 0) next.placements = placements;
   }
 
-  if (typeof value.reviewFilePath === 'string')
-    next.reviewFilePath = value.reviewFilePath;
+  next.review = normalizeReviewState(value.review, value.reviewFilePath);
+  if (next.review.activeFilePath !== null) {
+    next.reviewFilePath = next.review.activeFilePath;
+  }
   if (value.filesMode === 'changes' || value.filesMode === 'all-files') {
     next.filesMode = value.filesMode;
   }
@@ -373,6 +445,14 @@ export interface UiState {
     tab: UtilityRailTab,
     placement: UtilitySurfacePlacement
   ) => void;
+  openReviewWorkspace: (
+    workspacePath: string,
+    options?: OpenReviewWorkspaceOptions
+  ) => void;
+  setReviewActiveFile: (workspacePath: string, filePath: string | null) => void;
+  setReviewDiffSource: (workspacePath: string, source: DiffSource) => void;
+  setReviewDefaultBranch: (workspacePath: string, branch: string) => void;
+  setReviewCurrentHunkIndex: (workspacePath: string, index: number) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
   fileViewerRatio: number;
@@ -636,6 +716,113 @@ export const useUiStore = create<UiState>()((set, get) => ({
         const next = state.placements ? { ...state.placements } : {};
         next[tab] = placement;
         state.placements = next;
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  openReviewWorkspace: (workspacePath, options) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.visible = true;
+        if (!options?.preserveSelectedTab) state.selectedRailTab = 'review';
+        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const derived = deriveReviewStateFromBase(options?.base, current);
+        state.review = {
+          ...current,
+          ...derived,
+          activeFilePath: options?.filePath ?? current.activeFilePath,
+          currentHunkIndex: -1,
+        };
+        if (state.review.activeFilePath) {
+          state.reviewFilePath = state.review.activeFilePath;
+        } else {
+          delete state.reviewFilePath;
+        }
+      }
+    );
+    set({
+      fullPageDiff: null,
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  setReviewActiveFile: (workspacePath, filePath) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        state.review = {
+          ...current,
+          activeFilePath: filePath,
+          currentHunkIndex: -1,
+        };
+        if (filePath) state.reviewFilePath = filePath;
+        else delete state.reviewFilePath;
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  setReviewDiffSource: (workspacePath, source) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        state.review = { ...current, diffSource: source, currentHunkIndex: -1 };
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  setReviewDefaultBranch: (workspacePath, branch) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        state.review = {
+          ...current,
+          defaultBranch: branch || 'main',
+          currentHunkIndex: -1,
+        };
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  setReviewCurrentHunkIndex: (workspacePath, index) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        state.review = {
+          ...current,
+          currentHunkIndex: Math.max(-1, Math.trunc(index)),
+        };
       }
     );
     set({

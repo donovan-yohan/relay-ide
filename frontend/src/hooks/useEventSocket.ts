@@ -107,6 +107,12 @@ export function useEventSocket({
         if (activeWs === msg.workspacePath) {
           throttledChangedFilesRefresh();
           queryClient.invalidateQueries({ queryKey: ['files-list'] });
+          queryClient.invalidateQueries({
+            queryKey: ['changedFiles', msg.workspacePath],
+          });
+          queryClient.invalidateQueries({
+            queryKey: ['fileDiff', msg.workspacePath],
+          });
           if (msg.changedFiles) {
             setChangedFilesData(msg.changedFiles);
           }
