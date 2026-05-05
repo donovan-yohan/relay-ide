@@ -527,17 +527,13 @@ export function FilePicker({
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         if (!hasItems) return;
-        setFocusedIndex((prev) => {
-          scrollFocusedIntoView();
-          return Math.min(prev + 1, flatItems.length - 1);
-        });
+        setFocusedIndex((prev) => Math.min(prev + 1, flatItems.length - 1));
+        scrollFocusedIntoView();
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         if (!hasItems) return;
-        setFocusedIndex((prev) => {
-          scrollFocusedIntoView();
-          return Math.max(prev - 1, 0);
-        });
+        setFocusedIndex((prev) => Math.max(prev - 1, 0));
+        scrollFocusedIntoView();
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (!hasItems) return;
