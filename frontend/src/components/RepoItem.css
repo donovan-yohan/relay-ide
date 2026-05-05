@@ -162,6 +162,38 @@
   color: var(--text);
 }
 
+.session-row.state-running:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-success) 70%, transparent);
+}
+
+.session-row.state-initializing:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-info) 65%, transparent);
+}
+
+.session-row.state-unseen-idle:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-warning) 75%, transparent);
+}
+
+.session-row.state-permission:not(.selected),
+.session-row.state-needs-answer:not(.selected),
+.session-row.state-error:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-error) 75%, transparent);
+}
+
+.session-row.attention.state-unseen-idle {
+  background: color-mix(in srgb, var(--status-warning) 6%, transparent);
+}
+
+.session-row.attention.state-permission,
+.session-row.attention.state-needs-answer,
+.session-row.attention.state-error {
+  background: color-mix(in srgb, var(--status-error) 6%, transparent);
+}
+
+.session-row.attention:hover {
+  background: var(--surface-hover);
+}
+
 .session-row.attention .session-name {
   font-weight: 700;
   color: var(--text);
@@ -195,6 +227,43 @@
   white-space: nowrap;
   flex-shrink: 0;
   opacity: 0.7;
+}
+
+.fleet-status {
+  display: inline-block;
+  max-width: 112px;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+
+.fleet-status.tone-active {
+  border-color: color-mix(in srgb, var(--status-success) 45%, transparent);
+  color: var(--status-success);
+}
+
+.fleet-status.tone-attention {
+  border-color: color-mix(in srgb, var(--status-warning) 55%, transparent);
+  color: var(--status-warning);
+}
+
+.fleet-status.tone-error {
+  border-color: color-mix(in srgb, var(--status-error) 55%, transparent);
+  color: var(--status-error);
+}
+
+.fleet-status.tone-idle,
+.fleet-status.tone-inactive {
+  border-color: var(--border);
+  color: var(--text-muted);
 }
 
 .row-menu-overlay {
