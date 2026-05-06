@@ -36,7 +36,6 @@ import {
 } from '../../lib/api.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
-import { useUiStore } from '../../lib/stores/ui.js';
 import { isFrameworkAvailable } from './CustomizeSessionDialog.js';
 import {
   requestPermission,
@@ -260,10 +259,6 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
       NotificationPermission | 'unsupported'
     >(getPermissionState());
     const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
-    const workspaceLayoutEnabled = useUiStore((s) => s.workspaceLayoutEnabled);
-    const setWorkspaceLayoutEnabled = useUiStore(
-      (s) => s.setWorkspaceLayoutEnabled
-    );
     const [searchQuery, setSearchQuery] = useState('');
     const [tocOpen, setTocOpen] = useState(false);
 
@@ -451,8 +446,6 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
                 localStorage.setItem('devtools-enabled', v ? 'true' : 'false');
                 window.dispatchEvent(new Event('devtools-changed'));
               }}
-              workspaceLayoutEnabled={workspaceLayoutEnabled}
-              onWorkspaceLayoutChange={setWorkspaceLayoutEnabled}
               onClearAnalytics={() => void handleClearAnalytics()}
             />
             <AboutSection
@@ -629,8 +622,6 @@ function AdvancedSection({
   clearing,
   devtoolsEnabled,
   onDevtoolsChange,
-  workspaceLayoutEnabled,
-  onWorkspaceLayoutChange,
   onClearAnalytics,
 }: {
   searchQuery: string;
@@ -638,8 +629,6 @@ function AdvancedSection({
   clearing: boolean;
   devtoolsEnabled: boolean;
   onDevtoolsChange: (v: boolean) => void;
-  workspaceLayoutEnabled: boolean;
-  onWorkspaceLayoutChange: (v: boolean) => void;
   onClearAnalytics: () => void;
 }) {
   return (
@@ -652,15 +641,6 @@ function AdvancedSection({
         <TuiCheckbox
           checked={devtoolsEnabled}
           onChange={(v) => onDevtoolsChange(v)}
-        />
-      </SettingRow>
-      <SettingRow
-        name="Workspace Layout"
-        description="Experimental sessions-as-tabs view"
-      >
-        <TuiCheckbox
-          checked={workspaceLayoutEnabled}
-          onChange={(v) => onWorkspaceLayoutChange(v)}
         />
       </SettingRow>
       <SettingRow name="Analytics" description="Local usage data">

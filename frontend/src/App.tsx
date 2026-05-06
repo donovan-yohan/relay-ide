@@ -47,12 +47,9 @@ import { useUrlNav } from './hooks/useUrlNav.js';
 import BootScreen from './components/BootScreen.js';
 import PinGate from './components/PinGate.js';
 import Sidebar from './components/Sidebar.js';
-import Terminal from './components/Terminal.js';
-import { ChatView } from './components/chat/ChatView.js';
 import type { TerminalHandle } from './components/Terminal.js';
 import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
-import SessionTabBar from './components/SessionTabBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
 import OrgDashboard from './components/OrgDashboard.js';
 import EmptyState from './components/EmptyState.js';
@@ -80,7 +77,6 @@ import type { WorkspaceSettingsDialogHandle } from './components/dialogs/Workspa
 import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
-import FileViewerPane from './components/FileViewerPane.js';
 import WorkspaceArea from './components/WorkspaceArea.js';
 import { SplitPaneLayout } from './components/SplitPaneLayout.js';
 import WorkspaceUtilityRail, {
@@ -177,7 +173,6 @@ function resolveTerminalFilePath(
 
 function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
-  const openFileTabs = useUiStore((s) => s.openFileTabs);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
@@ -232,16 +227,10 @@ function useTerminalDerivedState() {
     [activeSession, activeWorkspace]
   );
 
-  const activeSessionMode = useMemo(() => activeSession?.mode, [activeSession]);
-  const activeSessionUseTmux = useMemo(
-    () => activeSession?.useTmux ?? activeSession?.mode === 'pty',
-    [activeSession]
-  );
   const activeWorkspaceCwd = useMemo(
     () => activeSession?.worktreePath ?? activeSession?.repoPath ?? activeRepoPath ?? '',
     [activeRepoPath, activeSession]
   );
-  const fileViewerOpen = useMemo(() => openFileTabs.length > 0, [openFileTabs]);
 
   const viewMode = useMemo<
     'empty' | 'org' | 'dashboard' | 'session' | 'analytics'
@@ -261,10 +250,7 @@ function useTerminalDerivedState() {
     allWorkspaceSessions,
     workspaceSessions,
     sessionTitle,
-    activeSessionMode,
-    activeSessionUseTmux,
     activeWorkspaceCwd,
-    fileViewerOpen,
     viewMode,
     analyticsView,
     repos,
@@ -294,41 +280,6 @@ function AnalyticsViewContent() {
     <AnalyticsDashboard
       onSelectSession={(id) => setAnalyticsView({ sessionId: id })}
       onClose={() => setAnalyticsView(null)}
-    />
-  );
-}
-
-// ─── SessionContent ──────────────────────────────────────────────────────────
-// Routes between ChatView (web sessions) and Terminal (PTY sessions).
-
-function SessionContent({
-  mode,
-  sessionId,
-  terminalRef,
-  onImageUpload,
-  useTmux,
-  onCopyModeChange,
-  onFilePathClick,
-}: {
-  mode?: 'pty' | 'web' | undefined;
-  sessionId: string | null;
-  terminalRef: React.RefObject<TerminalHandle | null>;
-  onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
-  useTmux: boolean;
-  onCopyModeChange: (active: boolean) => void;
-  onFilePathClick: (path: string) => void;
-}) {
-  if (mode === 'web') {
-    return <ChatView sessionId={sessionId} />;
-  }
-  return (
-    <Terminal
-      ref={terminalRef}
-      sessionId={sessionId}
-      onImageUpload={onImageUpload}
-      useTmux={useTmux}
-      onCopyModeChange={onCopyModeChange}
-      onFilePathClick={onFilePathClick}
     />
   );
 }
@@ -493,8 +444,6 @@ interface TerminalAreaContentProps {
   onAddWorkspace: () => void;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onQuickAgent: () => Promise<void>;
-  onQuickTerminal: () => Promise<void>;
-  onCustomize: () => void;
   onNewWorktree: (workspace: Repo) => Promise<void>;
   onFixConflicts: (pr: PullRequest) => Promise<void>;
   onPrAction: (pr: PullRequest) => void;
@@ -512,8 +461,6 @@ function TerminalAreaContent({
   onAddWorkspace,
   onImageUpload,
   onQuickAgent,
-  onQuickTerminal,
-  onCustomize,
   onNewWorktree,
   onFixConflicts,
   onPrAction,
@@ -542,7 +489,6 @@ function TerminalAreaContent({
   const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
   const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
-  const workspaceLayoutEnabled = useUiStore((s) => s.workspaceLayoutEnabled);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -554,10 +500,7 @@ function TerminalAreaContent({
     allWorkspaceSessions,
     workspaceSessions,
     sessionTitle,
-    activeSessionMode,
-    activeSessionUseTmux,
     activeWorkspaceCwd,
-    fileViewerOpen,
     viewMode,
     repos,
     sessions,
@@ -601,10 +544,8 @@ function TerminalAreaContent({
   }, []);
   const getToolbarTerminalHandle = useCallback(() => {
     const activeHandle = getActiveTerminalHandle();
-    return workspaceLayoutEnabled
-      ? (activeHandle ?? terminalRef.current)
-      : (terminalRef.current ?? activeHandle);
-  }, [terminalRef, workspaceLayoutEnabled]);
+    return activeHandle ?? terminalRef.current;
+  }, [terminalRef]);
 
   const handleExitCopyMode = useCallback(() => {
     getToolbarTerminalHandle()?.exitCopyMode();
@@ -778,7 +719,7 @@ function TerminalAreaContent({
             onArchive={onArchive}
           />
           <SplitPaneLayout
-            fileViewerOpen={workspaceLayoutEnabled ? false : fileViewerOpen}
+            fileViewerOpen={false}
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}
             fileViewerRatio={fileViewerRatio}
@@ -794,87 +735,37 @@ function TerminalAreaContent({
               MAX_UTILITY_RAIL_WIDTH + UTILITY_ICON_RAIL_WIDTH
             }
             terminal={
-              workspaceLayoutEnabled ? (
-                <>
-                  <WorkspaceArea
-                    workspacePath={activeWorkspaceCwd}
-                    sessions={mainWorkspaceSessions}
-                    onInjectReference={handleInjectReference}
-                    onImageUpload={onImageUpload}
-                    onCopyModeChange={handleCopyModeChange}
-                    onFilePathClick={handleTerminalFilePathClick}
-                    onCloseSession={onCloseSession}
-                  />
-
-                  {activeSessionId && (
-                    <SessionStatusBar
-                      sessionId={activeSessionId}
-                      currentActivity={activeSession?.currentActivity ?? null}
-                      framework={activeSession?.agent}
-                    />
-                  )}
-
-                  <Toolbar
-                    onSendKey={handleSendKey}
-                    onFlushComposedText={handleFlushComposedText}
-                    onClearInput={handleClearInput}
-                    onUploadImage={handleUploadImage}
-                    onRefocusMobileInput={handleRefocusMobileInput}
-                    inCopyMode={copyModeActive}
-                    onExitCopyMode={handleExitCopyMode}
-                  />
-                </>
-              ) : (
-                <>
-                  <SessionTabBar
-                    sessions={mainWorkspaceSessions}
-                    activeSessionId={activeSessionId}
-                    onSelectSession={onSelectSession}
-                    onCloseSession={onCloseSession}
-                    onNewAgent={() => onQuickAgent()}
-                    onNewTerminal={() => onQuickTerminal()}
-                    onCustomize={() => onCustomize()}
-                    hidden={keyboardOpen}
-                  />
-
-                  <SessionContent
-                    mode={activeSessionMode}
-                    sessionId={activeSessionId}
-                    terminalRef={terminalRef}
-                    onImageUpload={onImageUpload}
-                    useTmux={activeSessionUseTmux}
-                    onCopyModeChange={handleCopyModeChange}
-                    onFilePathClick={handleTerminalFilePathClick}
-                  />
-
-                  {activeSessionId && (
-                    <SessionStatusBar
-                      sessionId={activeSessionId}
-                      currentActivity={activeSession?.currentActivity ?? null}
-                      framework={activeSession?.agent}
-                    />
-                  )}
-
-                  <Toolbar
-                    onSendKey={handleSendKey}
-                    onFlushComposedText={handleFlushComposedText}
-                    onClearInput={handleClearInput}
-                    onUploadImage={handleUploadImage}
-                    onRefocusMobileInput={handleRefocusMobileInput}
-                    inCopyMode={copyModeActive}
-                    onExitCopyMode={handleExitCopyMode}
-                  />
-                </>
-              )
-            }
-            fileViewer={
-              workspaceLayoutEnabled ? null : (
-                <FileViewerPane
+              <>
+                <WorkspaceArea
                   workspacePath={activeWorkspaceCwd}
+                  sessions={mainWorkspaceSessions}
                   onInjectReference={handleInjectReference}
+                  onImageUpload={onImageUpload}
+                  onCopyModeChange={handleCopyModeChange}
+                  onFilePathClick={handleTerminalFilePathClick}
+                  onCloseSession={onCloseSession}
                 />
-              )
+
+                {activeSessionId && (
+                  <SessionStatusBar
+                    sessionId={activeSessionId}
+                    currentActivity={activeSession?.currentActivity ?? null}
+                    framework={activeSession?.agent}
+                  />
+                )}
+
+                <Toolbar
+                  onSendKey={handleSendKey}
+                  onFlushComposedText={handleFlushComposedText}
+                  onClearInput={handleClearInput}
+                  onUploadImage={handleUploadImage}
+                  onRefocusMobileInput={handleRefocusMobileInput}
+                  inCopyMode={copyModeActive}
+                  onExitCopyMode={handleExitCopyMode}
+                />
+              </>
             }
+            fileViewer={null}
             rightSidebar={
               <WorkspaceUtilityRail
                 fileTreeSidebarRef={fileTreeSidebarRef}
@@ -1006,7 +897,6 @@ export default function App() {
     handleSelectSession,
     handleQuickAgent,
     handleQuickTerminal,
-    handleCustomize,
     handleOpenSettings,
     handleNewWorktree,
     handleLaunchWorkspaceSession,
@@ -1286,8 +1176,6 @@ export default function App() {
           onAddWorkspace={handleAddWorkspace}
           onImageUpload={handleImageUpload}
           onQuickAgent={handleQuickAgent}
-          onQuickTerminal={handleQuickTerminal}
-          onCustomize={handleCustomize}
           onNewWorktree={handleNewWorktree}
           onFixConflicts={handleFixConflicts}
           onPrAction={handlePrAction}
