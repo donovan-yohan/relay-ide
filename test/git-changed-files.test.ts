@@ -167,6 +167,25 @@ describe('getFileDiff', () => {
     expect(callCount).toBe(3);
   });
 
+  it('does not fall back to --no-index when untracked status cannot be confirmed', async () => {
+    let callCount = 0;
+    const diff = await getFileDiff(
+      '/tmp/repo',
+      'maybe-new-file.ts',
+      undefined,
+      async (_file, args) => {
+        callCount++;
+        if (callCount === 1) {
+          return { stdout: '', stderr: '' };
+        }
+        expect(args[0]).toBe('status');
+        throw new Error('status failed');
+      }
+    );
+    expect(diff).toBe('');
+    expect(callCount).toBe(2);
+  });
+
   it('throws on git failure', async () => {
     await expect(() =>
       getFileDiff('/tmp/repo', 'file.ts', undefined, async () => {

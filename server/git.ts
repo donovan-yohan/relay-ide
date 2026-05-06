@@ -789,7 +789,7 @@ async function getFileDiff(
         return stdout;
       }
     } catch {
-      // If status check fails, fall through to --no-index
+      return stdout;
     }
 
     try {
