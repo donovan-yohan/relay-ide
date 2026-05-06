@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useEffectEvent } from 'react';
 import type { SessionSummary } from '../lib/types.js';
 import {
   useUiStore,
@@ -13,7 +13,9 @@ import UtilityRailBranchPanel from './UtilityRailBranchPanel.js';
 import UtilityRailReviewPanel from './UtilityRailReviewPanel.js';
 import UtilityRailLogsPanel from './UtilityRailLogsPanel.js';
 import UtilityRailStatsPanel from './UtilityRailStatsPanel.js';
+import Terminal from './Terminal.js';
 import Tooltip from './Tooltip.js';
+import { getUtilityTerminalTitle } from '../lib/utility-terminals.js';
 import './WorkspaceUtilityRail.css';
 
 const TAB_META: Array<{
@@ -93,6 +95,16 @@ const TAB_META: Array<{
       </svg>
     ),
   },
+  {
+    id: 'terminal',
+    label: 'terminal',
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 17l6-6-6-6" />
+        <path d="M12 19h8" />
+      </svg>
+    ),
+  },
 ];
 
 export interface WorkspaceUtilityRailProps {
@@ -100,7 +112,169 @@ export interface WorkspaceUtilityRailProps {
   railState: WorkspaceUtilityRailState;
   activeSession?: SessionSummary | undefined;
   workspaceSessions: SessionSummary[];
+  utilityTerminalSessions?: SessionSummary[];
   fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null>;
+  onCreateUtilityTerminal?: () => void | Promise<void>;
+  onSelectUtilityTerminal?: (sessionId: string) => void;
+  onCloseUtilityTerminal?: (sessionId: string) => void | Promise<void>;
+  onPromoteUtilityTerminal?: (sessionId: string) => void;
+  onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
+  onCopyModeChange?: (active: boolean) => void;
+  onFilePathClick?: (path: string) => void;
+}
+
+interface UtilityRailTerminalPanelProps {
+  workspacePath: string;
+  railState: WorkspaceUtilityRailState;
+  sessions: SessionSummary[];
+  onCreateUtilityTerminal?: () => void | Promise<void>;
+  onSelectUtilityTerminal?: (sessionId: string) => void;
+  onCloseUtilityTerminal?: (sessionId: string) => void | Promise<void>;
+  onPromoteUtilityTerminal?: (sessionId: string) => void;
+  onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
+  onCopyModeChange?: (active: boolean) => void;
+  onFilePathClick?: (path: string) => void;
+}
+
+function UtilityRailTerminalPanel({
+  workspacePath,
+  railState,
+  sessions,
+  onCreateUtilityTerminal,
+  onSelectUtilityTerminal,
+  onCloseUtilityTerminal,
+  onPromoteUtilityTerminal,
+  onImageUpload,
+  onCopyModeChange,
+  onFilePathClick,
+}: UtilityRailTerminalPanelProps) {
+  const selectedSession =
+    sessions.find((session) => session.id === railState.selectedUtilityTerminalId) ??
+    sessions[0];
+  const notifyCopyModeInactive = useEffectEvent(() => {
+    onCopyModeChange?.(false);
+  });
+
+  useEffect(() => {
+    return () => notifyCopyModeInactive();
+  }, []);
+
+  const handleTerminalTabKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      if (sessions.length === 0) return;
+      let nextIndex: number | null = null;
+      if (event.key === 'ArrowRight') {
+        nextIndex = (index + 1) % sessions.length;
+      } else if (event.key === 'ArrowLeft') {
+        nextIndex = (index - 1 + sessions.length) % sessions.length;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = sessions.length - 1;
+      }
+      if (nextIndex === null) return;
+      event.preventDefault();
+      const nextSession = sessions[nextIndex];
+      if (!nextSession) return;
+      onSelectUtilityTerminal?.(nextSession.id);
+      requestAnimationFrame(() => {
+        document.getElementById(`utility-terminal-tab-${nextSession.id}`)?.focus();
+      });
+    },
+    [onSelectUtilityTerminal, sessions]
+  );
+
+  return (
+    <div className="utility-terminal-panel">
+      <div className="utility-terminal-toolbar">
+        <div
+          className="utility-terminal-tabs"
+          role="tablist"
+          aria-label="utility terminals"
+        >
+          {sessions.map((session, index) => {
+            const title = getUtilityTerminalTitle(session, index, workspacePath);
+            const selected = session.id === selectedSession?.id;
+            return (
+              <div
+                key={session.id}
+                className={[
+                  'utility-terminal-tab-shell',
+                  selected && 'utility-terminal-tab-shell--active',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <button
+                  id={`utility-terminal-tab-${session.id}`}
+                  className="utility-terminal-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  aria-label={title}
+                  tabIndex={selected ? 0 : -1}
+                  onClick={() => onSelectUtilityTerminal?.(session.id)}
+                  onKeyDown={(event) =>
+                    handleTerminalTabKeyDown(event, index)
+                  }
+                >
+                  <span className="utility-terminal-title">{title}</span>
+                </button>
+                <button
+                  className="utility-terminal-close"
+                  type="button"
+                  aria-label={`close ${title}`}
+                  onClick={() => void onCloseUtilityTerminal?.(session.id)}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <button
+          className="utility-panel-btn"
+          type="button"
+          onClick={() => void onCreateUtilityTerminal?.()}
+        >
+          + terminal
+        </button>
+      </div>
+      {selectedSession ? (
+        <>
+          <div className="utility-terminal-actions">
+            <button
+              className="utility-panel-btn"
+              type="button"
+              onClick={() => onPromoteUtilityTerminal?.(selectedSession.id)}
+            >
+              promote
+            </button>
+          </div>
+          <div className="utility-terminal-body">
+            <Terminal
+              sessionId={selectedSession.id}
+              useTmux={selectedSession.useTmux !== false}
+              {...(onImageUpload ? { onImageUpload } : {})}
+              {...(onCopyModeChange ? { onCopyModeChange } : {})}
+              {...(onFilePathClick ? { onFilePathClick } : {})}
+            />
+          </div>
+        </>
+      ) : (
+        <div className="utility-empty">
+          <p>no utility terminals yet.</p>
+          <button
+            className="utility-panel-btn"
+            type="button"
+            onClick={() => void onCreateUtilityTerminal?.()}
+          >
+            + terminal
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function utilityRailRenderedWidth(
@@ -115,7 +289,15 @@ export function WorkspaceUtilityRail({
   railState,
   activeSession,
   workspaceSessions,
+  utilityTerminalSessions = [],
   fileTreeSidebarRef,
+  onCreateUtilityTerminal,
+  onSelectUtilityTerminal,
+  onCloseUtilityTerminal,
+  onPromoteUtilityTerminal,
+  onImageUpload,
+  onCopyModeChange,
+  onFilePathClick,
 }: WorkspaceUtilityRailProps) {
   const setSelectedUtilityRailTab = useUiStore(
     (s) => s.setSelectedUtilityRailTab
@@ -242,6 +424,29 @@ export function WorkspaceUtilityRail({
               activeSession={activeSession}
               workspaceSessions={workspaceSessions}
             />
+          </div>
+          <div
+            id="utility-rail-panel-terminal"
+            className="utility-pane-panel"
+            role="tabpanel"
+            aria-labelledby="utility-rail-tab-terminal"
+            tabIndex={selectedTab === 'terminal' ? 0 : -1}
+            hidden={selectedTab !== 'terminal'}
+          >
+            {selectedTab === 'terminal' && (
+              <UtilityRailTerminalPanel
+                workspacePath={workspacePath}
+                railState={railState}
+                sessions={utilityTerminalSessions}
+                {...(onCreateUtilityTerminal ? { onCreateUtilityTerminal } : {})}
+                {...(onSelectUtilityTerminal ? { onSelectUtilityTerminal } : {})}
+                {...(onCloseUtilityTerminal ? { onCloseUtilityTerminal } : {})}
+                {...(onPromoteUtilityTerminal ? { onPromoteUtilityTerminal } : {})}
+                {...(onImageUpload ? { onImageUpload } : {})}
+                {...(onCopyModeChange ? { onCopyModeChange } : {})}
+                {...(onFilePathClick ? { onFilePathClick } : {})}
+              />
+            )}
           </div>
         </div>
       </div>

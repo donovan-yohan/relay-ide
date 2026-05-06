@@ -231,6 +231,107 @@
   font-size: var(--font-size-xs, 0.75rem);
 }
 
+.utility-terminal-panel {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--bg, #000);
+}
+
+.utility-terminal-toolbar {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.utility-terminal-tabs {
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.utility-terminal-tab-shell {
+  min-width: 92px;
+  max-width: 160px;
+  height: 28px;
+  display: inline-flex;
+  align-items: stretch;
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  border-radius: 0;
+  color: var(--text-muted, #888);
+}
+
+.utility-terminal-tab-shell:hover,
+.utility-terminal-tab-shell--active {
+  color: var(--text, #e0e0e0);
+  border-color: var(--accent, #d97757);
+}
+
+.utility-terminal-tab {
+  min-width: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  cursor: pointer;
+}
+
+.utility-terminal-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.utility-terminal-close {
+  width: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border, #333);
+  border-radius: 0;
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.utility-terminal-close:hover {
+  color: var(--status-error, #f87171);
+}
+
+.utility-terminal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.utility-terminal-body {
+  min-height: 0;
+  min-width: 0;
+}
+
+.utility-terminal-body .terminal-wrapper {
+  height: 100%;
+}
+
 @media (max-width: 767px) {
   .workspace-utility-rail {
     flex: 1 1 auto;

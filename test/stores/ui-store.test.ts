@@ -361,6 +361,82 @@ describe('ui Zustand store', () => {
         currentHunkIndex: 3,
       });
     });
+
+    it('tracks utility terminal membership, order, and selected id per workspace', () => {
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-1');
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-2');
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-1');
+      useUiStore.getState().addUtilityTerminal('/repo/b', 'term-b');
+
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        selectedRailTab: 'terminal',
+        utilityTerminalIds: ['term-1', 'term-2'],
+        selectedUtilityTerminalId: 'term-1',
+      });
+      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
+        utilityTerminalIds: ['term-b'],
+        selectedUtilityTerminalId: 'term-b',
+      });
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        '"utilityTerminalIds":["term-1","term-2"]'
+      );
+    });
+
+    it('selects, removes, promotes, and reconciles utility terminals without leaking stale ids', () => {
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-1');
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-2');
+      useUiStore.getState().selectUtilityTerminal('/repo/a', 'term-2');
+
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a').selectedUtilityTerminalId
+      ).toBe('term-2');
+
+      useUiStore.getState().removeUtilityTerminal('/repo/a', 'term-2');
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        utilityTerminalIds: ['term-1'],
+        selectedUtilityTerminalId: 'term-1',
+      });
+
+      useUiStore.getState().addUtilityTerminal('/repo/a', 'term-3');
+      useUiStore.getState().promoteUtilityTerminal('/repo/a', 'term-1');
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        utilityTerminalIds: ['term-3'],
+        selectedUtilityTerminalId: 'term-3',
+      });
+
+      useUiStore.getState().reconcileUtilityTerminals('/repo/a', new Set(['term-9']));
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).not.toHaveProperty(
+        'utilityTerminalIds'
+      );
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).not.toHaveProperty('selectedUtilityTerminalId');
+    });
+
+    it('reconciles stale persisted utility terminal ids after hydration', () => {
+      storage['relay-utility-rail::/repo/a'] = JSON.stringify({
+        visible: true,
+        selectedRailTab: 'terminal',
+        width: DEFAULT_UTILITY_RAIL_WIDTH,
+        utilityTerminalIds: ['stale-1', 'live-1', 'stale-2'],
+        selectedUtilityTerminalId: 'stale-1',
+      });
+
+      useUiStore.getState().hydrateUtilityRailState('/repo/a');
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        utilityTerminalIds: ['stale-1', 'live-1', 'stale-2'],
+        selectedUtilityTerminalId: 'stale-1',
+      });
+
+      useUiStore.getState().reconcileUtilityTerminals('/repo/a', new Set(['live-1']));
+      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+        utilityTerminalIds: ['live-1'],
+        selectedUtilityTerminalId: 'live-1',
+      });
+      expect(storage['relay-utility-rail::/repo/a']).toContain(
+        '"utilityTerminalIds":["live-1"]'
+      );
+    });
   });
 
   describe('active workspace', () => {

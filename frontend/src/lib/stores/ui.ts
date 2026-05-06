@@ -41,7 +41,8 @@ export type UtilityRailTab =
   | 'branch'
   | 'review'
   | 'logs'
-  | 'stats';
+  | 'stats'
+  | 'terminal';
 
 export interface WorkspaceReviewState {
   activeFilePath: string | null;
@@ -71,6 +72,8 @@ export interface WorkspaceUtilityRailState {
   reviewFilePath?: string;
   filesMode?: 'changes' | 'all-files';
   branchBase?: string;
+  utilityTerminalIds?: string[];
+  selectedUtilityTerminalId?: string | null;
 }
 
 export interface OpenUtilityRailTabOptions {
@@ -202,6 +205,7 @@ const UTILITY_RAIL_TABS: UtilityRailTab[] = [
   'review',
   'logs',
   'stats',
+  'terminal',
 ];
 
 function isUtilityRailTab(value: unknown): value is UtilityRailTab {
@@ -287,6 +291,55 @@ function normalizeReviewState(
   return next;
 }
 
+function normalizeAnchoredPaneWidths(
+  value: Partial<Record<UtilityRailTab, number>> | undefined
+): Partial<Record<UtilityRailTab, number>> | undefined {
+  if (!value) return undefined;
+  const anchoredPaneWidths: Partial<Record<UtilityRailTab, number>> = {};
+  for (const tab of UTILITY_RAIL_TABS) {
+    const width = value[tab];
+    if (typeof width === 'number') {
+      anchoredPaneWidths[tab] = clampUtilityRailWidth(width);
+    }
+  }
+  return Object.keys(anchoredPaneWidths).length > 0
+    ? anchoredPaneWidths
+    : undefined;
+}
+
+function isUtilitySurfacePlacement(
+  placement: UtilitySurfacePlacement | undefined
+): placement is UtilitySurfacePlacement {
+  return (
+    !!placement &&
+    (placement.kind === 'rail' ||
+      (placement.kind === 'anchored-pane' &&
+        typeof placement.paneId === 'string'))
+  );
+}
+
+function normalizePlacements(
+  value: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> | undefined
+): Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> | undefined {
+  if (!value) return undefined;
+  const placements: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> = {};
+  for (const tab of UTILITY_RAIL_TABS) {
+    const placement = value[tab];
+    if (isUtilitySurfacePlacement(placement)) placements[tab] = placement;
+  }
+  return Object.keys(placements).length > 0 ? placements : undefined;
+}
+
+function normalizeUtilityTerminalIds(ids: unknown): string[] | undefined {
+  if (!Array.isArray(ids)) return undefined;
+  const uniqueTerminalIds = Array.from(
+    new Set(
+      ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    )
+  );
+  return uniqueTerminalIds.length > 0 ? uniqueTerminalIds : undefined;
+}
+
 function normalizeUtilityRailState(
   value: Partial<WorkspaceUtilityRailState> | null | undefined
 ): WorkspaceUtilityRailState {
@@ -301,33 +354,10 @@ function normalizeUtilityRailState(
       : next.selectedRailTab;
   next.width = clampUtilityRailWidth(value.width ?? next.width);
 
-  if (value.anchoredPaneWidths) {
-    const anchoredPaneWidths: Partial<Record<UtilityRailTab, number>> = {};
-    for (const tab of UTILITY_RAIL_TABS) {
-      const width = value.anchoredPaneWidths[tab];
-      if (typeof width === 'number')
-        anchoredPaneWidths[tab] = clampUtilityRailWidth(width);
-    }
-    if (Object.keys(anchoredPaneWidths).length > 0)
-      next.anchoredPaneWidths = anchoredPaneWidths;
-  }
-
-  if (value.placements) {
-    const placements: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> =
-      {};
-    for (const tab of UTILITY_RAIL_TABS) {
-      const placement = value.placements[tab];
-      if (
-        placement &&
-        (placement.kind === 'rail' ||
-          (placement.kind === 'anchored-pane' &&
-            typeof placement.paneId === 'string'))
-      ) {
-        placements[tab] = placement;
-      }
-    }
-    if (Object.keys(placements).length > 0) next.placements = placements;
-  }
+  const anchoredPaneWidths = normalizeAnchoredPaneWidths(value.anchoredPaneWidths);
+  if (anchoredPaneWidths) next.anchoredPaneWidths = anchoredPaneWidths;
+  const placements = normalizePlacements(value.placements);
+  if (placements) next.placements = placements;
 
   next.review = normalizeReviewState(value.review, value.reviewFilePath);
   if (next.review.activeFilePath !== null) {
@@ -340,7 +370,31 @@ function normalizeUtilityRailState(
     next.branchBase = value.branchBase;
   }
 
+  const utilityTerminalIds = normalizeUtilityTerminalIds(value.utilityTerminalIds);
+  if (utilityTerminalIds) {
+    next.utilityTerminalIds = utilityTerminalIds;
+    next.selectedUtilityTerminalId = utilityTerminalIds.includes(
+      value.selectedUtilityTerminalId ?? ''
+    )
+      ? (value.selectedUtilityTerminalId ?? null)
+      : utilityTerminalIds[0]!;
+  }
+
   return next;
+}
+
+function syncSelectedUtilityTerminal(
+  state: WorkspaceUtilityRailState
+): void {
+  const ids = state.utilityTerminalIds ?? [];
+  if (ids.length === 0) {
+    delete state.utilityTerminalIds;
+    delete state.selectedUtilityTerminalId;
+    return;
+  }
+  if (!state.selectedUtilityTerminalId || !ids.includes(state.selectedUtilityTerminalId)) {
+    state.selectedUtilityTerminalId = ids[0]!;
+  }
 }
 
 function loadUtilityRailState(
@@ -454,6 +508,14 @@ export interface UiState {
   setReviewDiffSource: (workspacePath: string, source: DiffSource) => void;
   setReviewDefaultBranch: (workspacePath: string, branch: string) => void;
   setReviewCurrentHunkIndex: (workspacePath: string, index: number) => void;
+  addUtilityTerminal: (workspacePath: string, sessionId: string) => void;
+  selectUtilityTerminal: (workspacePath: string, sessionId: string) => void;
+  removeUtilityTerminal: (workspacePath: string, sessionId: string) => void;
+  promoteUtilityTerminal: (workspacePath: string, sessionId: string) => void;
+  reconcileUtilityTerminals: (
+    workspacePath: string,
+    liveTerminalSessionIds: Set<string>
+  ) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
   fileViewerRatio: number;
@@ -838,6 +900,93 @@ export const useUiStore = create<UiState>()((set, get) => ({
       },
     });
   },
+  addUtilityTerminal: (workspacePath, sessionId) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        const ids = state.utilityTerminalIds
+          ? [...state.utilityTerminalIds]
+          : [];
+        if (!ids.includes(sessionId)) ids.push(sessionId);
+        state.utilityTerminalIds = ids;
+        state.selectedUtilityTerminalId ??= ids[0] ?? sessionId;
+        state.visible = true;
+        state.selectedRailTab = 'terminal';
+        syncSelectedUtilityTerminal(state);
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  selectUtilityTerminal: (workspacePath, sessionId) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        if (state.utilityTerminalIds?.includes(sessionId)) {
+          state.selectedUtilityTerminalId = sessionId;
+          state.visible = true;
+          state.selectedRailTab = 'terminal';
+        }
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  removeUtilityTerminal: (workspacePath, sessionId) => {
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      get().utilityRailByWorkspace[workspacePath],
+      (state) => {
+        state.utilityTerminalIds = (state.utilityTerminalIds ?? []).filter(
+          (id) => id !== sessionId
+        );
+        if (state.selectedUtilityTerminalId === sessionId) {
+          state.selectedUtilityTerminalId = state.utilityTerminalIds[0] ?? null;
+        }
+        syncSelectedUtilityTerminal(state);
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
+  promoteUtilityTerminal: (workspacePath, sessionId) => {
+    get().removeUtilityTerminal(workspacePath, sessionId);
+  },
+  reconcileUtilityTerminals: (workspacePath, liveTerminalSessionIds) => {
+    const current = get().utilityRailByWorkspace[workspacePath];
+    const loaded = current ?? loadUtilityRailState(workspacePath);
+    if (!loaded.utilityTerminalIds?.length) return;
+    const nextState = mutateUtilityRailState(
+      workspacePath,
+      current,
+      (state) => {
+        state.utilityTerminalIds = (state.utilityTerminalIds ?? []).filter((id) =>
+          liveTerminalSessionIds.has(id)
+        );
+        syncSelectedUtilityTerminal(state);
+      }
+    );
+    set({
+      utilityRailByWorkspace: {
+        ...get().utilityRailByWorkspace,
+        [workspacePath]: nextState,
+      },
+    });
+  },
   setFileDiffSource: (source) => set({ fileDiffSource: source }),
   setFileDiffDefaultBranch: (branch) => set({ fileDiffDefaultBranch: branch }),
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
@@ -940,7 +1089,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
     if (next.has(path)) next.delete(path);
     else next.add(path);
     try {
-      localStorage.setItem(COLLAPSED_WORKSPACES_KEY, JSON.stringify([...next]));
+      localStorage.setItem(
+        COLLAPSED_WORKSPACES_KEY,
+        JSON.stringify(Array.from(next))
+      );
     } catch {
       /* unavailable */
     }
