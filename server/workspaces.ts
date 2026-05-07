@@ -188,6 +188,169 @@ export function clearFilesListCache(workspacePath?: string): void {
 
 const BROWSE_MAX_ENTRIES = 100;
 const BULK_MAX_PATHS = 50;
+const DASHBOARD_PR_CACHE_TTL_MS = 60_000;
+
+const DASHBOARD_PR_FIELDS =
+  'number,title,url,headRefName,baseRefName,state,author,updatedAt,additions,deletions,reviewDecision,mergeable,mergeStateStatus,isDraft';
+
+type ExecAsyncLike = (
+  file: string,
+  args: string[],
+  options: { cwd: string; timeout?: number }
+) => Promise<{ stdout: string; stderr: string }>;
+
+interface DashboardPrCacheEntry {
+  pullRequests: PullRequestsResponse;
+  fetchedAt: number;
+}
+
+const dashboardPrCache = new Map<string, DashboardPrCacheEntry>();
+const dashboardPrInFlight = new Map<
+  string,
+  Promise<PullRequestsResponse>
+>();
+let dashboardPrCacheVersion = 0;
+
+export function clearDashboardPrCache(repoPath?: string): void {
+  dashboardPrCacheVersion++;
+  if (!repoPath) {
+    dashboardPrCache.clear();
+    dashboardPrInFlight.clear();
+    return;
+  }
+  dashboardPrCache.delete(repoPath);
+  dashboardPrInFlight.delete(repoPath);
+}
+
+function mapRawDashboardPr(
+  raw: Record<string, unknown>,
+  role: 'author' | 'reviewer',
+  fallbackAuthor: string
+): PullRequest {
+  return {
+    number: raw.number as number,
+    title: raw.title as string,
+    url: raw.url as string,
+    headRefName: raw.headRefName as string,
+    baseRefName: (raw.baseRefName as string) ?? '',
+    state: raw.state as 'OPEN' | 'CLOSED' | 'MERGED',
+    author: (raw.author as { login?: string })?.login ?? fallbackAuthor,
+    role,
+    updatedAt: raw.updatedAt as string,
+    additions: (raw.additions as number) ?? 0,
+    deletions: (raw.deletions as number) ?? 0,
+    reviewDecision:
+      (raw.reviewDecision as
+        | 'APPROVED'
+        | 'CHANGES_REQUESTED'
+        | 'REVIEW_REQUIRED'
+        | null) ?? null,
+    mergeable:
+      (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ??
+      null,
+    isDraft: (raw.isDraft as boolean) ?? false,
+    ciStatus: null,
+  };
+}
+
+function getDashboardPrCached(repoPath: string): PullRequestsResponse | null {
+  const entry = dashboardPrCache.get(repoPath);
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt > DASHBOARD_PR_CACHE_TTL_MS) {
+    dashboardPrCache.delete(repoPath);
+    return null;
+  }
+  return entry.pullRequests;
+}
+
+async function fetchDashboardPullRequests(
+  repoPath: string,
+  currentUser: string,
+  exec: ExecAsyncLike
+): Promise<PullRequestsResponse> {
+  const [authored, reviewing] = await Promise.all([
+    fetchDashboardPrsForRole(repoPath, currentUser, 'author', exec),
+    fetchDashboardPrsForRole(repoPath, currentUser, 'reviewer', exec),
+  ]);
+
+  const seen = new Set(authored.map((pr) => pr.number));
+  const combined = [
+    ...authored,
+    ...reviewing.filter((pr) => !seen.has(pr.number)),
+  ];
+
+  combined.sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+  );
+
+  return { prs: combined };
+}
+
+async function fetchDashboardPrsForRole(
+  repoPath: string,
+  currentUser: string,
+  role: 'author' | 'reviewer',
+  exec: ExecAsyncLike
+): Promise<PullRequest[]> {
+  const roleArgs =
+    role === 'author'
+      ? ['--author', currentUser]
+      : ['--search', `review-requested:${currentUser}`];
+  try {
+    const { stdout } = await exec(
+      'gh',
+      [
+        'pr',
+        'list',
+        ...roleArgs,
+        '--state',
+        'open',
+        '--limit',
+        '30',
+        '--json',
+        DASHBOARD_PR_FIELDS,
+      ],
+      { cwd: repoPath }
+    );
+    const fallbackAuthor = role === 'author' ? currentUser : '';
+    return (JSON.parse(stdout) as Array<Record<string, unknown>>).map((pr) =>
+      mapRawDashboardPr(pr, role, fallbackAuthor)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function getDashboardPullRequests(
+  repoPath: string,
+  currentUser: string,
+  exec: ExecAsyncLike
+): Promise<PullRequestsResponse> {
+  const cached = getDashboardPrCached(repoPath);
+  if (cached) return Promise.resolve(cached);
+
+  const inFlight = dashboardPrInFlight.get(repoPath);
+  if (inFlight) return inFlight;
+
+  const cacheVersion = dashboardPrCacheVersion;
+  const promise = fetchDashboardPullRequests(repoPath, currentUser, exec)
+    .then((pullRequests) => {
+      if (cacheVersion === dashboardPrCacheVersion) {
+        dashboardPrCache.set(repoPath, {
+          pullRequests,
+          fetchedAt: Date.now(),
+        });
+      }
+      return pullRequests;
+    })
+    .finally(() => {
+      if (dashboardPrInFlight.get(repoPath) === promise) {
+        dashboardPrInFlight.delete(repoPath);
+      }
+    });
+  dashboardPrInFlight.set(repoPath, promise);
+  return promise;
+}
 
 export { clearPrCacheImpl as clearPrCache };
 
@@ -670,11 +833,8 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    const fields =
-      'number,title,url,headRefName,baseRefName,state,author,updatedAt,additions,deletions,reviewDecision,mergeable,mergeStateStatus,isDraft';
-
     // Get current GitHub user
-    let currentUser = '';
+    let currentUser: string;
     try {
       const { stdout: whoami } = await exec(
         'gh',
@@ -691,106 +851,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
-    // Helper to map raw gh JSON to PullRequest
-    function mapRawPr(
-      raw: Record<string, unknown>,
-      role: 'author' | 'reviewer',
-      fallbackAuthor: string
-    ): PullRequest {
-      return {
-        number: raw.number as number,
-        title: raw.title as string,
-        url: raw.url as string,
-        headRefName: raw.headRefName as string,
-        baseRefName: (raw.baseRefName as string) ?? '',
-        state: raw.state as 'OPEN' | 'CLOSED' | 'MERGED',
-        author: (raw.author as { login?: string })?.login ?? fallbackAuthor,
-        role,
-        updatedAt: raw.updatedAt as string,
-        additions: (raw.additions as number) ?? 0,
-        deletions: (raw.deletions as number) ?? 0,
-        reviewDecision:
-          (raw.reviewDecision as
-            | 'APPROVED'
-            | 'CHANGES_REQUESTED'
-            | 'REVIEW_REQUIRED'
-            | null) ?? null,
-        mergeable:
-          (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ??
-          null,
-        isDraft: (raw.isDraft as boolean) ?? false,
-        ciStatus: null,
-      };
-    }
-
-    // Fetch authored + review-requested PRs in parallel
-    const [authored, reviewing] = await Promise.all([
-      (async (): Promise<PullRequest[]> => {
-        try {
-          const { stdout } = await exec(
-            'gh',
-            [
-              'pr',
-              'list',
-              '--author',
-              currentUser,
-              '--state',
-              'open',
-              '--limit',
-              '30',
-              '--json',
-              fields,
-            ],
-            { cwd: repoPath }
-          );
-          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(
-            (pr) => mapRawPr(pr, 'author', currentUser)
-          );
-        } catch {
-          return [];
-        }
-      })(),
-      (async (): Promise<PullRequest[]> => {
-        try {
-          const { stdout } = await exec(
-            'gh',
-            [
-              'pr',
-              'list',
-              '--search',
-              `review-requested:${currentUser}`,
-              '--state',
-              'open',
-              '--limit',
-              '30',
-              '--json',
-              fields,
-            ],
-            { cwd: repoPath }
-          );
-          return (JSON.parse(stdout) as Array<Record<string, unknown>>).map(
-            (pr) => mapRawPr(pr, 'reviewer', '')
-          );
-        } catch {
-          return [];
-        }
-      })(),
-    ]);
-
-    // Deduplicate: if a PR appears in both, keep as 'author'
-    const seen = new Set(authored.map((pr) => pr.number));
-    const combined = [
-      ...authored,
-      ...reviewing.filter((pr) => !seen.has(pr.number)),
-    ];
-
-    // Sort by updatedAt descending
-    combined.sort(
-      (a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    const pullRequests = await getDashboardPullRequests(
+      repoPath,
+      currentUser,
+      exec as ExecAsyncLike
     );
-
-    const pullRequests: PullRequestsResponse = { prs: combined };
 
     // Fetch branches for the repo
     let branches: string[] = [];
