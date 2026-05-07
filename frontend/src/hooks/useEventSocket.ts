@@ -28,6 +28,53 @@ function repoNameFromOwnerRepo(value: string): string {
   return normalized.split('/').pop() ?? normalized;
 }
 
+function normalizePath(value: string): string {
+  if (value === '/') return value;
+  return value.replace(/\/+$/, '');
+}
+
+function pathIsAtOrUnder(path: string, root: string): boolean {
+  const normalizedPath = normalizePath(path);
+  const normalizedRoot = normalizePath(root);
+  return (
+    normalizedPath === normalizedRoot ||
+    normalizedPath.startsWith(`${normalizedRoot}/`)
+  );
+}
+
+function resolveAbsolutePathToRepoPath(value: string): string[] {
+  const state = useSessionsStore.getState();
+  const paths = new Set<string>();
+  const absolutePath = normalizePath(value);
+
+  for (const worktree of state.worktrees ?? []) {
+    if (pathIsAtOrUnder(absolutePath, worktree.path)) {
+      paths.add(worktree.repoPath);
+    }
+  }
+
+  for (const session of state.sessions ?? []) {
+    const sessionRoots = [
+      session.worktreePath ?? undefined,
+      session.cwd,
+      session.repoPath,
+    ];
+    if (
+      sessionRoots.some((root) => root && pathIsAtOrUnder(absolutePath, root))
+    ) {
+      paths.add(session.repoPath);
+    }
+  }
+
+  for (const repo of state.repos ?? []) {
+    if (pathIsAtOrUnder(absolutePath, repo.path)) {
+      paths.add(repo.path);
+    }
+  }
+
+  return paths.size > 0 ? Array.from(paths) : [absolutePath];
+}
+
 function resolveRepoPaths(values: string[]): string[] {
   const state = useSessionsStore.getState();
   const knownRepos = state.repos ?? [];
@@ -36,7 +83,9 @@ function resolveRepoPaths(values: string[]): string[] {
   for (const value of values) {
     if (!value) continue;
     if (isAbsolutePath(value)) {
-      paths.add(value);
+      for (const repoPath of resolveAbsolutePathToRepoPath(value)) {
+        paths.add(repoPath);
+      }
       continue;
     }
 
@@ -143,19 +192,25 @@ export function useEventSocket({
         if (repoPath) invalidateScopedPrData([repoPath], 'manual');
       },
       'session-branch-changed': (msg) => {
-        const repoPath = msg.cwdPath ?? sessionRepoPath(msg.sessionId);
+        const repoPaths = resolveRepoPaths([
+          msg.cwdPath ?? '',
+          sessionRepoPath(msg.sessionId) ?? '',
+        ]);
         useSessionsStore
           .getState()
           .handleBranchChanged(msg.sessionId, msg.branch);
-        if (repoPath) invalidateScopedPrData([repoPath], 'manual');
+        if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
       },
       'session-ended': (msg) => {
-        const repoPath = msg.cwd ?? sessionRepoPath(msg.sessionId);
-        if (repoPath) invalidateScopedPrData([repoPath], 'manual');
+        const repoPaths = resolveRepoPaths([
+          msg.cwd ?? '',
+          sessionRepoPath(msg.sessionId) ?? '',
+        ]);
+        if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
         useSessionsStore.getState().refreshAll();
       },
       'ref-changed': (msg) => {
-        invalidateScopedPrData([msg.cwdPath], 'manual');
+        invalidateScopedPrData(resolveRepoPaths([msg.cwdPath]), 'manual');
       },
       'pr-updated': (msg) => {
         throttledWebhookInvalidate(repoPathsFromPrOrCiMessage(msg));

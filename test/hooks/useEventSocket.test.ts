@@ -26,7 +26,13 @@ const storeMock = vi.hoisted(() => ({
   handleActivityChanged: vi.fn(),
   beginPtyReconnect: vi.fn(),
   activeSessionId: null as string | null,
-  sessions: [] as Array<{ id: string; repoPath: string; worktreePath?: string | null }>,
+  sessions: [] as Array<{
+    id: string;
+    repoPath: string;
+    worktreePath?: string | null;
+    cwd?: string;
+  }>,
+  worktrees: [] as Array<{ path: string; repoPath: string }>,
   repos: [
     { path: '/repos/relay-ide', name: 'relay-ide' },
     { path: '/repos/hermes-agent', name: 'hermes-agent' },
@@ -90,6 +96,7 @@ describe('useEventSocket repo-scoped refresh', () => {
     wsMock.onOpen = undefined;
     storeMock.activeSessionId = null;
     storeMock.sessions = [];
+    storeMock.worktrees = [];
   });
 
   function mount(): void {
@@ -124,8 +131,16 @@ describe('useEventSocket repo-scoped refresh', () => {
     vi.advanceTimersByTime(500);
 
     expect(storeMock.forceRefresh).toHaveBeenCalledTimes(2);
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(1, '/repos/relay-ide', 'webhook');
-    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(2, '/repos/hermes-agent', 'webhook');
+    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
+      1,
+      '/repos/relay-ide',
+      'webhook'
+    );
+    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
+      2,
+      '/repos/hermes-agent',
+      'webhook'
+    );
     expect(storeMock.ensureFreshAll).not.toHaveBeenCalled();
   });
 
@@ -142,15 +157,79 @@ describe('useEventSocket repo-scoped refresh', () => {
     });
     wsMock.onMessage?.({ type: 'ref-changed', cwdPath: '/repos/hermes-agent' });
 
-    expect(storeMock.forceRefresh).toHaveBeenCalledWith('/repos/relay-ide', 'manual');
-    expect(storeMock.forceRefresh).toHaveBeenCalledWith('/repos/hermes-agent', 'manual');
+    expect(storeMock.forceRefresh).toHaveBeenCalledWith(
+      '/repos/relay-ide',
+      'manual'
+    );
+    expect(storeMock.forceRefresh).toHaveBeenCalledWith(
+      '/repos/hermes-agent',
+      'manual'
+    );
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('maps worktree event paths back to the canonical repo before force-refreshing', () => {
+    storeMock.worktrees = [
+      {
+        path: '/repos/relay-ide/.worktrees/feature-a',
+        repoPath: '/repos/relay-ide',
+      },
+    ];
+    storeMock.sessions = [
+      {
+        id: 's1',
+        repoPath: '/repos/relay-ide',
+        worktreePath: '/repos/relay-ide/.worktrees/feature-a',
+        cwd: '/repos/relay-ide/.worktrees/feature-a/packages/app',
+      },
+    ];
+    mount();
+
+    wsMock.onMessage?.({
+      type: 'session-branch-changed',
+      sessionId: 's1',
+      branch: 'feature',
+      cwdPath: '/repos/relay-ide/.worktrees/feature-a',
+    });
+    wsMock.onMessage?.({
+      type: 'session-ended',
+      sessionId: 's1',
+      cwd: '/repos/relay-ide/.worktrees/feature-a/packages/app/src',
+    });
+    wsMock.onMessage?.({
+      type: 'ref-changed',
+      cwdPath: '/repos/relay-ide/.worktrees/feature-a',
+    });
+
+    expect(storeMock.forceRefresh).toHaveBeenCalledTimes(3);
+    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
+      1,
+      '/repos/relay-ide',
+      'manual'
+    );
+    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
+      2,
+      '/repos/relay-ide',
+      'manual'
+    );
+    expect(storeMock.forceRefresh).toHaveBeenNthCalledWith(
+      3,
+      '/repos/relay-ide',
+      'manual'
+    );
+    expect(storeMock.forceRefresh).not.toHaveBeenCalledWith(
+      '/repos/relay-ide/.worktrees/feature-a',
+      'manual'
+    );
   });
 
   it('cleanup cancels pending pr/ci throttle timers', () => {
     mount();
 
-    wsMock.onMessage?.({ type: 'ci-updated', workspacePaths: ['/repos/relay-ide'] });
+    wsMock.onMessage?.({
+      type: 'ci-updated',
+      workspacePaths: ['/repos/relay-ide'],
+    });
     expect(vi.getTimerCount()).toBe(1);
 
     if (effectState.cleanup) effectState.cleanup();
