@@ -25,16 +25,44 @@ type ExecFileAsyncLike = (
 
 const PR_CACHE_POSITIVE_TTL_MS = 60_000; // 60s — same as org-dashboard
 const PR_CACHE_NEGATIVE_TTL_MS = 300_000; // 5 min — "no PR" rarely changes without user action
+const BATCH_PR_CACHE_TTL_MS = 60_000;
+const CI_STATUS_CACHE_TTL_MS = 30_000;
 
 interface PrCacheEntry {
   result: PrInfo | null;
   fetchedAt: number;
 }
 
+interface BatchPrCacheEntry {
+  result: Map<string, PrInfo>;
+  fetchedAt: number;
+}
+
+type CiStatusResult = (CiStatus & { authError?: boolean }) | null;
+
+interface CiStatusCacheEntry {
+  result: CiStatusResult;
+  fetchedAt: number;
+}
+
 const prCache = new Map<string, PrCacheEntry>();
+const batchPrCache = new Map<string, BatchPrCacheEntry>();
+const batchPrInFlight = new Map<string, Promise<Map<string, PrInfo>>>();
+const ciStatusCache = new Map<string, CiStatusCacheEntry>();
+const ciStatusInFlight = new Map<string, Promise<CiStatusResult>>();
+let batchPrCacheVersion = 0;
+let ciStatusCacheVersion = 0;
 
 function prCacheKey(repoPath: string, branch: string): string {
   return `${repoPath}:${branch}`;
+}
+
+function ciStatusCacheKey(repoPath: string, branch: string): string {
+  return `${repoPath}:${branch}`;
+}
+
+function clonePrMap(prMap: Map<string, PrInfo>): Map<string, PrInfo> {
+  return new Map(prMap);
 }
 
 function getPrCached(
@@ -62,14 +90,86 @@ function setPrCached(
   prCache.set(prCacheKey(repoPath, branch), { result, fetchedAt: Date.now() });
 }
 
+function getBatchPrCached(repoPath: string): Map<string, PrInfo> | undefined {
+  const entry = batchPrCache.get(repoPath);
+  if (!entry) return undefined;
+  if (Date.now() - entry.fetchedAt > BATCH_PR_CACHE_TTL_MS) {
+    batchPrCache.delete(repoPath);
+    return undefined;
+  }
+  return clonePrMap(entry.result);
+}
+
+function setBatchPrCached(repoPath: string, result: Map<string, PrInfo>): void {
+  batchPrCache.set(repoPath, {
+    result: clonePrMap(result),
+    fetchedAt: Date.now(),
+  });
+}
+
+function getCiStatusCached(
+  repoPath: string,
+  branch: string
+): CiStatusResult | undefined {
+  const key = ciStatusCacheKey(repoPath, branch);
+  const entry = ciStatusCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.fetchedAt > CI_STATUS_CACHE_TTL_MS) {
+    ciStatusCache.delete(key);
+    return undefined;
+  }
+  return entry.result;
+}
+
+function setCiStatusCached(
+  repoPath: string,
+  branch: string,
+  result: CiStatusResult
+): void {
+  ciStatusCache.set(ciStatusCacheKey(repoPath, branch), {
+    result,
+    fetchedAt: Date.now(),
+  });
+}
+
+/** Clear batch PR cache entries. If repoPath is given, only clears that repo. */
+function clearBatchPrCache(repoPath?: string): void {
+  batchPrCacheVersion++;
+  if (!repoPath) {
+    batchPrCache.clear();
+    batchPrInFlight.clear();
+    return;
+  }
+  batchPrCache.delete(repoPath);
+  batchPrInFlight.delete(repoPath);
+}
+
+/** Clear CI status cache entries. If repoPath is given, only clears entries for that repo. */
+function clearCiStatusCache(repoPath?: string): void {
+  ciStatusCacheVersion++;
+  if (!repoPath) {
+    ciStatusCache.clear();
+    ciStatusInFlight.clear();
+    return;
+  }
+  const prefix = `${repoPath}:`;
+  for (const key of Array.from(ciStatusCache.keys())) {
+    if (key.startsWith(prefix)) ciStatusCache.delete(key);
+  }
+  for (const key of Array.from(ciStatusInFlight.keys())) {
+    if (key.startsWith(prefix)) ciStatusInFlight.delete(key);
+  }
+}
+
 /** Clear PR cache entries. If repoPath is given, only clears entries for that repo. */
 function clearPrCache(repoPath?: string): void {
+  clearBatchPrCache(repoPath);
   if (!repoPath) {
     prCache.clear();
     return;
   }
   const prefix = `${repoPath}:`;
-  for (const key of prCache.keys()) {
+  for (const key of Array.from(prCache.keys())) {
     if (key.startsWith(prefix)) prCache.delete(key);
   }
 }
@@ -151,9 +251,39 @@ async function getCiStatus(
   options: {
     exec?: ExecFileAsyncLike;
   } = {}
-): Promise<(CiStatus & { authError?: boolean }) | null> {
+): Promise<CiStatusResult> {
+  const cached = getCiStatusCached(repoPath, branch);
+  if (cached !== undefined) return cached;
+
+  const key = ciStatusCacheKey(repoPath, branch);
+  const inFlight = ciStatusInFlight.get(key);
+  if (inFlight) return inFlight;
+
   const run: ExecFileAsyncLike =
     options.exec || (execFileAsync as ExecFileAsyncLike);
+  const cacheVersion = ciStatusCacheVersion;
+
+  const promise = fetchCiStatus(repoPath, branch, run)
+    .then((result) => {
+      if (cacheVersion === ciStatusCacheVersion) {
+        setCiStatusCached(repoPath, branch, result);
+      }
+      return result;
+    })
+    .finally(() => {
+      if (ciStatusInFlight.get(key) === promise) {
+        ciStatusInFlight.delete(key);
+      }
+    });
+  ciStatusInFlight.set(key, promise);
+  return promise;
+}
+
+async function fetchCiStatus(
+  repoPath: string,
+  branch: string,
+  run: ExecFileAsyncLike
+): Promise<CiStatusResult> {
 
   let stdout: string;
   let stderr: string;
@@ -258,66 +388,93 @@ async function batchGetPrsForRepo(
   repoPath: string,
   options: { exec?: ExecFileAsyncLike } = {}
 ): Promise<Map<string, PrInfo>> {
+  const cached = getBatchPrCached(repoPath);
+  if (cached) return cached;
+
+  const inFlight = batchPrInFlight.get(repoPath);
+  if (inFlight) return inFlight;
+
   const run: ExecFileAsyncLike =
     options.exec || (execFileAsync as ExecFileAsyncLike);
+  const cacheVersion = batchPrCacheVersion;
+  const promise = fetchBatchPrsForRepo(repoPath, run)
+    .then((result) => {
+      if (cacheVersion === batchPrCacheVersion) {
+        setBatchPrCached(repoPath, result);
+      }
+      return clonePrMap(result);
+    })
+    .catch((err: unknown) => {
+      logger.warn(
+        '[gh] batchGetPrsForRepo failed for',
+        repoPath,
+        err instanceof Error ? err.message : err
+      );
+      return new Map<string, PrInfo>();
+    })
+    .finally(() => {
+      if (batchPrInFlight.get(repoPath) === promise) {
+        batchPrInFlight.delete(repoPath);
+      }
+    });
+  batchPrInFlight.set(repoPath, promise);
+  return promise;
+}
+
+async function fetchBatchPrsForRepo(
+  repoPath: string,
+  run: ExecFileAsyncLike
+): Promise<Map<string, PrInfo>> {
   const prMap = new Map<string, PrInfo>();
 
-  try {
-    const { stdout } = await run(
-      'gh',
-      [
-        'pr',
-        'list',
-        '--state',
-        'all',
-        '--limit',
-        '100',
-        '--json',
-        'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
-      ],
-      { cwd: repoPath, timeout: 10000 }
-    );
+  const { stdout } = await run(
+    'gh',
+    [
+      'pr',
+      'list',
+      '--state',
+      'all',
+      '--limit',
+      '100',
+      '--json',
+      'number,title,url,state,headRefName,baseRefName,reviewDecision,isDraft,additions,deletions,mergeable,updatedAt',
+    ],
+    { cwd: repoPath, timeout: 10000 }
+  );
 
-    if (!stdout.trim()) return prMap;
+  if (!stdout.trim()) return prMap;
 
-    const prs = JSON.parse(stdout) as Array<{
-      number: number;
-      title: string;
-      url: string;
-      state: string;
-      headRefName: string;
-      baseRefName: string;
-      isDraft: boolean;
-      reviewDecision: string | null;
-      additions: number;
-      deletions: number;
-      mergeable: string;
-      updatedAt: string;
-    }>;
+  const prs = JSON.parse(stdout) as Array<{
+    number: number;
+    title: string;
+    url: string;
+    state: string;
+    headRefName: string;
+    baseRefName: string;
+    isDraft: boolean;
+    reviewDecision: string | null;
+    additions: number;
+    deletions: number;
+    mergeable: string;
+    updatedAt: string;
+  }>;
 
-    for (const data of prs) {
-      prMap.set(data.headRefName, {
-        number: data.number,
-        title: data.title,
-        url: data.url,
-        state: data.state as PrInfo['state'],
-        headRefName: data.headRefName,
-        baseRefName: data.baseRefName,
-        isDraft: data.isDraft,
-        reviewDecision: data.reviewDecision ?? null,
-        additions: data.additions ?? 0,
-        deletions: data.deletions ?? 0,
-        mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
-        unresolvedCommentCount: 0,
-        updatedAt: data.updatedAt ?? '',
-      });
-    }
-  } catch (err) {
-    logger.warn(
-      '[gh] batchGetPrsForRepo failed for',
-      repoPath,
-      err instanceof Error ? err.message : err
-    );
+  for (const data of prs) {
+    prMap.set(data.headRefName, {
+      number: data.number,
+      title: data.title,
+      url: data.url,
+      state: data.state as PrInfo['state'],
+      headRefName: data.headRefName,
+      baseRefName: data.baseRefName,
+      isDraft: data.isDraft,
+      reviewDecision: data.reviewDecision ?? null,
+      additions: data.additions ?? 0,
+      deletions: data.deletions ?? 0,
+      mergeable: (data.mergeable as PrInfo['mergeable']) ?? 'UNKNOWN',
+      unresolvedCommentCount: 0,
+      updatedAt: data.updatedAt ?? '',
+    });
   }
 
   return prMap;
@@ -437,4 +594,6 @@ export {
   getPrCached,
   setPrCached,
   clearPrCache,
+  clearBatchPrCache,
+  clearCiStatusCache,
 };
