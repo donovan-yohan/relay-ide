@@ -4,6 +4,8 @@ import { Router } from 'express';
 import express from 'express';
 import type { Request, Response } from 'express';
 
+import { recordWebhookEventForRepo } from './webhook-manager.js';
+
 // ---------------------------------------------------------------------------
 // Deps type
 // ---------------------------------------------------------------------------
@@ -125,6 +127,10 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
           >
         )?.full_name as string | undefined)
       : undefined;
+
+    if (repoFullName) {
+      recordWebhookEventForRepo(repoFullName);
+    }
 
     if (event === 'pull_request' || event === 'pull_request_review') {
       const body = req.body as Record<string, unknown>;
