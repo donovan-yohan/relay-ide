@@ -15,6 +15,76 @@ export interface UseEventSocketParams {
   setChangedFilesData: (files: string[]) => void;
 }
 
+function isAbsolutePath(value: string): boolean {
+  return value.startsWith('/');
+}
+
+function normalizeOwnerRepo(value: string): string {
+  return value.toLowerCase().replace(/\.git$/, '');
+}
+
+function repoNameFromOwnerRepo(value: string): string {
+  const normalized = normalizeOwnerRepo(value);
+  return normalized.split('/').pop() ?? normalized;
+}
+
+function resolveRepoPaths(values: string[]): string[] {
+  const state = useSessionsStore.getState();
+  const knownRepos = state.repos ?? [];
+  const paths = new Set<string>();
+
+  for (const value of values) {
+    if (!value) continue;
+    if (isAbsolutePath(value)) {
+      paths.add(value);
+      continue;
+    }
+
+    const normalized = normalizeOwnerRepo(value);
+    const repoName = repoNameFromOwnerRepo(value);
+    for (const repo of knownRepos) {
+      const pathName = repo.path.split('/').pop()?.toLowerCase();
+      if (
+        repo.name.toLowerCase() === normalized ||
+        repo.name.toLowerCase() === repoName ||
+        pathName === repoName
+      ) {
+        paths.add(repo.path);
+      }
+    }
+  }
+
+  return Array.from(paths);
+}
+
+function repoPathsFromPrOrCiMessage(
+  msg: Extract<EventMessage, { type: 'pr-updated' | 'ci-updated' }>
+): string[] {
+  return resolveRepoPaths([
+    ...(msg.workspacePaths ?? []),
+    ...(msg.repos ?? []),
+    ...(msg.repo ? [msg.repo] : []),
+  ]);
+}
+
+function sessionRepoPath(sessionId: string | undefined): string | undefined {
+  if (!sessionId) return undefined;
+  return useSessionsStore
+    .getState()
+    .sessions.find((session) => session.id === sessionId)?.repoPath;
+}
+
+function invalidatePrQueries(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+  queryClient.invalidateQueries({ queryKey: ['org-prs'] });
+}
+
+function forceRefreshRepos(repoPaths: string[], source: 'webhook' | 'manual') {
+  for (const repoPath of repoPaths) {
+    void useSessionsStore.getState().forceRefresh(repoPath, source);
+  }
+}
+
 export function useEventSocket({
   authAuthenticated,
   queryClient,
@@ -24,23 +94,27 @@ export function useEventSocket({
   useEffect(() => {
     if (!authAuthenticated) return;
 
-    const refChangedTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let pollInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
+    let eventSocketOpened = false;
+    const pendingWebhookRepos = new Set<string>();
 
-    function invalidatePrData(): void {
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['org-prs'] });
-      useSessionsStore.getState().enrichSidebarBranches();
+    function invalidateScopedPrData(
+      repoPaths: string[],
+      source: 'webhook' | 'manual'
+    ): void {
+      invalidatePrQueries(queryClient);
+      forceRefreshRepos(repoPaths, source);
     }
 
-    /** Throttled invalidation for poll-based events (pr-updated/ci-updated).
-     *  Schedules one invalidation 500ms after the first event; subsequent
-     *  events within the window are dropped. */
-    function throttledPollInvalidate(): void {
+    /** Throttled invalidation for bursty webhook PR/CI events. */
+    function throttledWebhookInvalidate(repoPaths: string[]): void {
+      for (const repoPath of repoPaths) pendingWebhookRepos.add(repoPath);
       if (pollInvalidateTimer) return;
       pollInvalidateTimer = setTimeout(() => {
         pollInvalidateTimer = null;
-        invalidatePrData();
+        const repos = Array.from(pendingWebhookRepos);
+        pendingWebhookRepos.clear();
+        invalidateScopedPrData(repos, 'webhook');
       }, 500);
     }
 
@@ -62,37 +136,32 @@ export function useEventSocket({
           );
       },
       'session-renamed': (msg) => {
+        const repoPath = sessionRepoPath(msg.sessionId);
         useSessionsStore
           .getState()
           .renameSession(msg.sessionId, msg.branchName, msg.displayName);
-        invalidatePrData();
+        if (repoPath) invalidateScopedPrData([repoPath], 'manual');
       },
       'session-branch-changed': (msg) => {
+        const repoPath = msg.cwdPath ?? sessionRepoPath(msg.sessionId);
         useSessionsStore
           .getState()
           .handleBranchChanged(msg.sessionId, msg.branch);
+        if (repoPath) invalidateScopedPrData([repoPath], 'manual');
       },
-      'session-ended': () => {
-        invalidatePrData();
+      'session-ended': (msg) => {
+        const repoPath = msg.cwd ?? sessionRepoPath(msg.sessionId);
+        if (repoPath) invalidateScopedPrData([repoPath], 'manual');
         useSessionsStore.getState().refreshAll();
       },
       'ref-changed': (msg) => {
-        const key = msg.cwdPath;
-        const existing = refChangedTimers.get(key);
-        if (existing) clearTimeout(existing);
-        refChangedTimers.set(
-          key,
-          setTimeout(() => {
-            refChangedTimers.delete(key);
-            invalidatePrData();
-          }, 5000)
-        );
+        invalidateScopedPrData([msg.cwdPath], 'manual');
       },
-      'pr-updated': () => {
-        throttledPollInvalidate();
+      'pr-updated': (msg) => {
+        throttledWebhookInvalidate(repoPathsFromPrOrCiMessage(msg));
       },
-      'ci-updated': () => {
-        throttledPollInvalidate();
+      'ci-updated': (msg) => {
+        throttledWebhookInvalidate(repoPathsFromPrOrCiMessage(msg));
       },
       'files-changed': (msg) => {
         const currentActiveSessionId =
@@ -168,6 +237,10 @@ export function useEventSocket({
         if (handler) (handler as (msg: EventMessage) => void)(msg);
       },
       () => {
+        if (eventSocketOpened) {
+          void useSessionsStore.getState().ensureFreshAll(0);
+        }
+        eventSocketOpened = true;
         void useTelemetryStore.getState().refreshTelemetry();
       },
       () => {
@@ -176,8 +249,7 @@ export function useEventSocket({
     );
 
     return () => {
-      for (const timer of refChangedTimers.values()) clearTimeout(timer);
-      refChangedTimers.clear();
+      pendingWebhookRepos.clear();
       if (pollInvalidateTimer) {
         clearTimeout(pollInvalidateTimer);
         pollInvalidateTimer = null;

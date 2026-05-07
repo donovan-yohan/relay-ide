@@ -28,6 +28,18 @@ const WORKSPACE_SESSIONS_KEY = 'claude-remote-workspace-sessions';
 const logger = createLogger('sessions');
 
 const BOOT_FETCH_TIMEOUT_MS = 10_000;
+export const DEFAULT_ENRICHMENT_TTL_MS = 600_000;
+
+export type RepoEnrichmentSource = 'webhook' | 'manual';
+export interface RepoEnrichmentMeta {
+  lastEnrichedAt: number;
+  source: RepoEnrichmentSource;
+}
+
+type BranchEnrichment = {
+  pr: import('../types.js').PrInfo | null;
+  stale: boolean;
+};
 
 // ── localStorage helpers ───────────────────────────────────────────────────
 function loadActiveSessionId(): string | null {
@@ -139,10 +151,8 @@ export interface SessionsState {
   loadingItems: Record<string, boolean>;
   notificationSessions: Record<string, boolean>;
   sidebarItems: SidebarItem[];
-  enrichmentResults: Record<
-    string,
-    { pr: import('../types.js').PrInfo | null; stale: boolean }
-  >;
+  enrichmentResults: Record<string, BranchEnrichment>;
+  repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
   reconnectingPtySessionId: string | null;
   // Actions
   setActiveSessionId: (id: string | null) => void;
@@ -152,6 +162,12 @@ export interface SessionsState {
   ) => void;
   recallSessionForWorkspace: (workspacePath: string) => string | null;
   enrichSidebarBranches: () => Promise<void>;
+  ensureFresh: (repoPath: string, maxAgeMs?: number) => Promise<void>;
+  ensureFreshAll: (maxAgeMs?: number) => Promise<void>;
+  forceRefresh: (
+    repoPath: string,
+    source?: RepoEnrichmentSource
+  ) => Promise<void>;
   getEnrichment: (
     repoPath: string,
     branchName: string
@@ -187,6 +203,39 @@ export interface SessionsState {
   clearPtyReconnect: (sessionId?: string) => void;
 }
 
+function repoBranchEntriesFor(
+  state: Pick<SessionsState, 'sessions' | 'worktrees'>,
+  repoPath: string
+): Array<{ repoPath: string; branchName: string }> {
+  const seen = new Set<string>();
+  const branches: Array<{ repoPath: string; branchName: string }> = [];
+  const add = (branchName: string | null | undefined) => {
+    if (!branchName) return;
+    const key = `${repoPath}::${branchName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    branches.push({ repoPath, branchName });
+  };
+
+  for (const wt of state.worktrees) {
+    if (wt.repoPath === repoPath) add(wt.branchName);
+  }
+  for (const session of state.sessions) {
+    if (session.repoPath === repoPath) add(session.branchName);
+  }
+  return branches;
+}
+
+function visibleRepoPaths(
+  state: Pick<SessionsState, 'repos' | 'sessions' | 'worktrees'>
+): string[] {
+  const paths = new Set<string>();
+  for (const repo of state.repos) paths.add(repo.path);
+  for (const wt of state.worktrees) paths.add(wt.repoPath);
+  for (const session of state.sessions) paths.add(session.repoPath);
+  return Array.from(paths);
+}
+
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
   sessions: [],
   worktrees: [],
@@ -198,6 +247,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   notificationSessions: loadNotificationPrefs(),
   sidebarItems: [],
   enrichmentResults: {},
+  repoEnrichmentMeta: {},
   reconnectingPtySessionId: null,
 
   setActiveSessionId: (id) => {
@@ -226,17 +276,52 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   enrichSidebarBranches: async () => {
-    const { worktrees } = get();
-    const branches = worktrees.map((wt) => ({
-      repoPath: wt.repoPath,
-      branchName: wt.branchName,
-    }));
-    if (branches.length === 0) return;
+    await get().ensureFreshAll(0);
+  },
+
+  ensureFresh: async (repoPath, maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
+    const meta = get().repoEnrichmentMeta[repoPath];
+    if (meta && maxAgeMs > 0 && Date.now() - meta.lastEnrichedAt < maxAgeMs) {
+      return;
+    }
+    await get().forceRefresh(repoPath, 'manual');
+  },
+
+  ensureFreshAll: async (maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
+    const repos = visibleRepoPaths(get());
+    await Promise.all(repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs)));
+  },
+
+  forceRefresh: async (repoPath, source = 'manual') => {
+    const branches = repoBranchEntriesFor(get(), repoPath);
+    if (branches.length === 0) {
+      set((state) => ({
+        repoEnrichmentMeta: {
+          ...state.repoEnrichmentMeta,
+          [repoPath]: { lastEnrichedAt: Date.now(), source },
+        },
+      }));
+      return;
+    }
+
     try {
       const data = await api.enrichBranches(branches);
-      set({ enrichmentResults: data.results });
+      set((state) => {
+        const prefix = `${repoPath}::`;
+        const nextResults: Record<string, BranchEnrichment> = {};
+        for (const [key, value] of Object.entries(state.enrichmentResults)) {
+          if (!key.startsWith(prefix)) nextResults[key] = value;
+        }
+        return {
+          enrichmentResults: { ...nextResults, ...data.results },
+          repoEnrichmentMeta: {
+            ...state.repoEnrichmentMeta,
+            [repoPath]: { lastEnrichedAt: Date.now(), source },
+          },
+        };
+      });
     } catch (err) {
-      logger.warn('enrichSidebarBranches failed', err);
+      logger.warn('forceRefresh failed', err);
     }
   },
 
