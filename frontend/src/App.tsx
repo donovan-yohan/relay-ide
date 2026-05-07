@@ -39,6 +39,7 @@ import {
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
+import { useVisibilityRefresh } from './hooks/useVisibilityRefresh.js';
 import { useAppShortcuts } from './hooks/useAppShortcuts.js';
 import { useActionRegistry } from './hooks/useActionRegistry.js';
 import { useSessionHandlers } from './hooks/useSessionHandlers.js';
@@ -959,6 +960,7 @@ export default function App() {
     typeof setTimeout
   > | null>(null);
   const bootRefreshDone = useRef(false);
+  const navRefreshMounted = useRef(false);
 
   // ── Derived state ──────────────────────────────────────────────────────────
   // activeSession and activeWorkspaceCwd are needed for FilePicker
@@ -1156,8 +1158,8 @@ export default function App() {
 
       if (isInitialBoot) {
         finishBoot();
-        // Backfill PR info and staleness via batch enrichment
-        useSessionsStore.getState().enrichSidebarBranches();
+        // Backfill PR info and staleness via per-repo enrichment.
+        useSessionsStore.getState().ensureFreshAll(0);
       }
 
       // Restore navigation state from the URL path (or fall back to ?session= for legacy links)
@@ -1201,6 +1203,24 @@ export default function App() {
 
     runRefresh();
   }, [authAuthenticated, loadFrameworks]);
+
+  useVisibilityRefresh(authAuthenticated);
+
+  useEffect(() => {
+    if (!authAuthenticated) return;
+    if (!navRefreshMounted.current) {
+      navRefreshMounted.current = true;
+      return;
+    }
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void useSessionsStore.getState().ensureFreshAll();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [authAuthenticated, activeRepoPath, activeSessionId]);
 
   // ── Event socket ───────────────────────────────────────────────────────────
   useEventSocket({
