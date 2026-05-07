@@ -47,6 +47,7 @@ import type {
   Repo,
 } from './types.js';
 import { MOUNTAIN_NAMES } from './types.js';
+import { getLastWebhookEventAt, getWebhookStatus } from './webhook-manager.js';
 import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -467,6 +468,22 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     return loadConfig(configPath);
   }
 
+  function getRepoWebhookFields(
+    config: Config,
+    repoPath: string,
+    ownerRepo?: string
+  ): Pick<Repo, 'webhookStatus' | 'webhookError' | 'lastWebhookEventAt'> {
+    const webhookFields = getWebhookStatus(config.repoSettings?.[repoPath]);
+    const lastWebhookEventAt = ownerRepo
+      ? getLastWebhookEventAt(ownerRepo)
+      : null;
+
+    return {
+      ...webhookFields,
+      ...(lastWebhookEventAt ? { lastWebhookEventAt } : {}),
+    };
+  }
+
   // GET /workspaces — list all workspaces with git info
   router.get('/', async (_req: Request, res: Response) => {
     const config = getConfig();
@@ -478,6 +495,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
         let name = path.basename(p);
         let currentBranch: string | null = null;
+        let ownerRepo: string | undefined;
 
         if (isGitRepo) {
           try {
@@ -488,6 +506,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             );
             const url = stdout.trim();
             if (url) {
+              ownerRepo = extractOwnerRepo(url) ?? undefined;
               const remoteName = repoNameFromRemoteUrl(url);
               if (remoteName) name = remoteName;
             }
@@ -506,7 +525,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           }
         }
 
-        return { path: p, name, isGitRepo, defaultBranch, currentBranch };
+        return {
+          path: p,
+          name,
+          isGitRepo,
+          defaultBranch,
+          currentBranch,
+          ...getRepoWebhookFields(config, p, ownerRepo),
+        };
       })
     );
 
@@ -586,6 +612,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       isGitRepo,
       defaultBranch,
       currentBranch,
+      ...getRepoWebhookFields(config, resolved),
     };
 
     res.status(201).json(workspace);
@@ -720,7 +747,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             /* detached HEAD */
           }
         }
-        return { path: p, name, isGitRepo, defaultBranch, currentBranch };
+        return {
+          path: p,
+          name,
+          isGitRepo,
+          defaultBranch,
+          currentBranch,
+          ...getRepoWebhookFields(config, p),
+        };
       })
     );
 
@@ -798,6 +832,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         isGitRepo,
         defaultBranch,
         currentBranch,
+        ...getRepoWebhookFields(config, resolved),
       });
 
       // Store detected default branch in per-repo settings

@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 
 import { loadConfig, saveConfig } from './config.js';
 import { extractOwnerRepo, buildRepoMap } from './git.js';
-import type { Config } from './types.js';
+import type { Config, WebhookStatus, WorkspaceSettings } from './types.js';
 import { createLogger } from './logger.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -33,74 +33,49 @@ let smeeConnected = false;
 let lastEventAt: string | null = null;
 const logger = createLogger('webhook');
 
-// ── Smart polling state ────────────────────────────────────────────────────────
+// ── Per-repo webhook receipt state ──────────────────────────────────────────────
 
-let pollingTimer: ReturnType<typeof setInterval> | null = null;
+const lastWebhookEventByRepo = new Map<string, string>();
 
-export function stopSmartPolling(): void {
-  if (pollingTimer !== null) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
-  }
+function normalizeOwnerRepo(ownerRepo: string): string {
+  return ownerRepo.trim().toLowerCase();
 }
 
-/**
- * Starts a 30-second polling interval that broadcasts `pr-updated` and
- * `ci-updated` events only for workspaces that do NOT have a working webhook
- * configured (`webhookEnabled !== true` or `webhookError` is set).
- *
- * Calling this again replaces any existing polling timer.
- */
-export function startSmartPolling(
-  configPath: string,
-  broadcastEvent: (type: string, data?: Record<string, unknown>) => void,
-  opts?: { intervalMs?: number; buildRepoMap?: typeof buildRepoMap }
-): void {
-  stopSmartPolling();
+export function recordWebhookEventForRepo(
+  ownerRepo: string,
+  receivedAt: Date = new Date()
+): string {
+  const timestamp = receivedAt.toISOString();
+  const key = normalizeOwnerRepo(ownerRepo);
+  if (!key) return timestamp;
+  lastWebhookEventByRepo.set(key, timestamp);
+  lastEventAt = timestamp;
+  return timestamp;
+}
 
-  const POLL_INTERVAL_MS = opts?.intervalMs ?? 30_000;
+export function getLastWebhookEventAt(ownerRepo: string): string | null {
+  return lastWebhookEventByRepo.get(normalizeOwnerRepo(ownerRepo)) ?? null;
+}
 
-  const tick = (): void => {
-    const config = loadConfig(configPath);
-    const workspacePaths = config.repos ?? [];
-    if (workspacePaths.length === 0) return;
+export function clearWebhookEventTimestamps(): void {
+  lastWebhookEventByRepo.clear();
+  lastEventAt = null;
+}
 
-    const repoSettings = config.repoSettings ?? {};
-
-    // Collect paths that need polling (no webhook or webhook has an error)
-    const unwebhookedPaths = workspacePaths.filter((wsPath) => {
-      const ws = repoSettings[wsPath];
-      return !ws?.webhookEnabled || ws?.webhookError;
-    });
-
-    if (unwebhookedPaths.length === 0) return;
-
-    // Resolve owner/repo for each unwebhooked path synchronously via git config cache
-    // We use the async buildRepoMap but fire-and-forget inside the interval
-    void (async () => {
-      const execFn = (
-        file: string,
-        args: string[],
-        opts: { cwd: string; timeout?: number }
-      ) => execFileAsync(file, args, opts);
-      const repoMap = await (opts?.buildRepoMap ?? buildRepoMap)(
-        unwebhookedPaths,
-        execFn
-      );
-
-      // Single broadcast per poll cycle — frontend debounces invalidation
-      if (repoMap.size > 0) {
-        const repos = [...repoMap.keys()];
-        const workspacePaths = [...repoMap.values()];
-        broadcastEvent('pr-updated', { repos, workspacePaths });
-        broadcastEvent('ci-updated', { repos, workspacePaths });
-      }
-    })().catch((err: unknown) => {
-      logger.warn('Smart polling failed', { err });
-    });
-  };
-
-  pollingTimer = setInterval(tick, POLL_INTERVAL_MS);
+export function getWebhookStatus(
+  settings: Pick<WorkspaceSettings, 'webhookEnabled' | 'webhookError'> | undefined
+): { webhookStatus: WebhookStatus; webhookError?: string } {
+  const webhookError = settings?.webhookError;
+  if (webhookError === 'not-admin') {
+    return { webhookStatus: 'limited', webhookError };
+  }
+  if (webhookError) {
+    return { webhookStatus: 'error', webhookError };
+  }
+  if (settings?.webhookEnabled === true) {
+    return { webhookStatus: 'live' };
+  }
+  return { webhookStatus: 'manual' };
 }
 
 function stopSmee(): void {

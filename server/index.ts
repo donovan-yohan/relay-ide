@@ -88,7 +88,6 @@ import { createWebhookRouter } from './webhooks.js';
 import {
   createWebhookManagerRouter,
   reloadSmee,
-  startSmartPolling,
 } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
 import {
@@ -1130,7 +1129,7 @@ async function main(): Promise<void> {
   }
 
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available).
-  // Smart polling includes workspace paths, so clear those caches without flushing every repo.
+  // Webhook broadcasts may include workspace paths for targeted cache invalidation.
   broadcastEventDelegate = (type, data) => {
     if (type === 'pr-updated' || type === 'ci-updated') {
       const workspacePaths = data?.workspacePaths;
@@ -1495,9 +1494,6 @@ async function main(): Promise<void> {
 
   // Start smee-client via webhook-manager
   reloadSmee(CONFIG_PATH, startupConfig.port);
-
-  // Start smart polling — broadcasts pr-updated/ci-updated only for repos without webhooks
-  startSmartPolling(CONFIG_PATH, broadcastEventDelegate);
 
   // Invalidate branch linker cache on session lifecycle changes
   sessions.onSessionCreate(() => {

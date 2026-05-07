@@ -219,7 +219,7 @@ By default the app polls GitHub every 30 seconds for PR and CI status. Connect a
 
 - **PIN-protected access** with rate limiting
 - **Real-time updates** — worktree changes on disk are pushed to the browser instantly via WebSocket
-- **Smart polling** — falls back to 30-second polling for repos without webhooks; switches off automatically once a webhook is active
+- **Webhook status** — `/workspaces` reports whether each repo is using live webhooks, manual refresh, limited access, or an error state, plus the latest webhook receipt timestamp when available
 - **Update notifications** — toast notification when a new version is available, with one-click update
 - **CLI self-update** — `relay-ide update` to update from npm
 

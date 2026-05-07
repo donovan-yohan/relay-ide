@@ -1,9 +1,13 @@
-import { describe, it, beforeAll, afterAll, expect } from 'vitest';
+import { describe, it, beforeAll, afterAll, beforeEach, expect } from 'vitest';
 import crypto from 'node:crypto';
 import express from 'express';
 import type { Server } from 'node:http';
 
 import { createWebhookRouter } from '../server/webhooks.js';
+import {
+  clearWebhookEventTimestamps,
+  getLastWebhookEventAt,
+} from '../server/webhook-manager.js';
 import { createTestServer } from './helpers/test-server.js';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,7 @@ async function postWebhook(opts: {
 describe('webhook handler', () => {
   beforeAll(() => startServer());
   afterAll(() => stopServer());
+  beforeEach(() => clearWebhookEventTimestamps());
 
   it('rejects request with missing signature (401)', async () => {
     const res = await postWebhook({
@@ -163,19 +168,25 @@ describe('webhook handler', () => {
     expect(broadcasts.length).toBe(0);
   });
 
-  it('includes repository full_name in broadcast data', async () => {
+  it('records last webhook event timestamp per repository full_name', async () => {
     broadcasts = [];
     const body = {
       action: 'opened',
-      number: 42,
-      pull_request: { number: 42, state: 'open' },
+      pull_request: { number: 43, state: 'open' },
       repository: { full_name: 'owner/repo' },
     };
+
+    expect(getLastWebhookEventAt('owner/repo')).toBeNull();
+
     const res = await postWebhook({ body, event: 'pull_request' });
     expect(res.status).toBe(200);
+
+    const recorded = getLastWebhookEventAt('owner/repo');
     expect(broadcasts[0]?.data?.repo).toBe('owner/repo');
-    expect(broadcasts[0]?.data?.number).toBe(42);
-    expect(broadcasts[0]?.data?.action).toBe('opened');
+    expect(broadcasts[0]?.data?.number).toBe(43);
+    expect(recorded).toEqual(expect.any(String));
+    expect(new Date(recorded ?? '').toString()).not.toBe('Invalid Date');
+    expect(getLastWebhookEventAt('owner/other')).toBeNull();
   });
 });
 
