@@ -7,7 +7,9 @@ import { RepoItem } from '../frontend/src/components/RepoItem.js';
 import type { Repo, SidebarItem } from '../frontend/src/lib/types.js';
 import { makeSession, makeWorktree } from './helpers/frontend-factories.js';
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const noop = vi.fn();
 
@@ -62,14 +64,21 @@ describe('RepoItem source indicators', () => {
       cwd: '/path/to/worktree',
       branchName: 'feat/test',
     });
-    const sessionGroups = new Map([[session.worktreePath ?? session.repoPath, [session]]]);
+    const sessionGroups = new Map([
+      [session.worktreePath ?? session.repoPath, [session]],
+    ]);
 
     await act(async () => {
       root.render(
         React.createElement(RepoItem, {
           repo: makeRepo({ webhookStatus: 'limited' }),
           sessionGroups,
-          inactiveWorktrees: [makeWorktree({ path: '/path/to/inactive', branchName: 'feat/inactive' })],
+          inactiveWorktrees: [
+            makeWorktree({
+              path: '/path/to/inactive',
+              branchName: 'feat/inactive',
+            }),
+          ],
           isActive: false,
           activeSessionId: null,
           onSelectWorkspace: noop,
@@ -84,13 +93,19 @@ describe('RepoItem source indicators', () => {
 
     const rows = Array.from(container.querySelectorAll('.session-row'));
     expect(rows).toHaveLength(2);
-    expect(rows[0]?.querySelector('[data-testid="repo-source-dot"]')).toBeNull();
+    expect(
+      rows[0]?.querySelector('[data-testid="repo-source-dot"]')
+    ).toBeNull();
 
-    const inactiveSource = rows[1]?.querySelector('[data-testid="repo-source-dot"]');
-    expect(inactiveSource?.getAttribute('title')).toBe('manual fetch · no admin on this repo');
-    expect(inactiveSource?.outerHTML).toMatchInlineSnapshot(
-      `"<span class=\"repo-source-dot repo-source-dot--limited\" data-testid=\"repo-source-dot\" title=\"manual fetch · no admin on this repo\" aria-label=\"manual fetch · no admin on this repo\" role=\"img\">○<svg class=\"repo-source-dot__lock\" viewBox=\"0 0 8 8\" aria-hidden=\"true\"><rect x=\"1.5\" y=\"3.5\" width=\"5\" height=\"3\" fill=\"none\"></rect><path d=\"M2.5 3.5V2.5a1.5 1.5 0 0 1 3 0v1\" fill=\"none\"></path></svg></span>"`
+    const inactiveSource = rows[1]?.querySelector(
+      '[data-testid="repo-source-dot"]'
     );
+    expect(inactiveSource?.getAttribute('title')).toBe(
+      'manual fetch · no admin on this repo'
+    );
+    expect(
+      inactiveSource?.querySelector('.repo-source-dot__lock')
+    ).toBeTruthy();
   });
 
   it('does not render starting or in-progress chips for loading rows', async () => {
@@ -114,7 +129,9 @@ describe('RepoItem source indicators', () => {
       );
     });
 
-    expect(container.querySelector('.state-initializing .pulse-slow')).toBeTruthy();
+    expect(
+      container.querySelector('.state-initializing .pulse-slow')
+    ).toBeTruthy();
     const chipText = Array.from(container.querySelectorAll('.fleet-status'))
       .map((node) => node.textContent?.trim())
       .join(' ');

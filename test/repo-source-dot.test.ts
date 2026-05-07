@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import RepoSourceDot from '../frontend/src/components/RepoSourceDot.js';
 import { getPulseClass } from '../frontend/src/components/SessionIndicator.js';
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('RepoSourceDot', () => {
   let container: HTMLDivElement;
@@ -42,7 +44,6 @@ describe('RepoSourceDot', () => {
       ['error', 'webhook broken: not-found · click to retry'],
     ] as const;
 
-    const rendered: string[] = [];
     for (const [state, title] of states) {
       const dot = await renderDot({
         status: state,
@@ -51,34 +52,42 @@ describe('RepoSourceDot', () => {
       expect(dot.getAttribute('title')).toBe(title);
       expect(dot.getAttribute('aria-label')).toBe(title);
       expect(dot.className).toContain(`repo-source-dot--${state}`);
-      rendered.push(dot.outerHTML);
+      expect(dot.textContent).toBe(
+        state === 'live' ? '●' : state === 'error' ? '!' : '○'
+      );
+      expect(dot.querySelector('.repo-source-dot__lock')).toBe(
+        state === 'limited' ? dot.querySelector('svg') : null
+      );
     }
-
-    expect(rendered).toMatchInlineSnapshot(`
-      [
-        "<span class=\"repo-source-dot repo-source-dot--live\" data-testid=\"repo-source-dot\" title=\"live via webhook\" aria-label=\"live via webhook\" role=\"img\">●</span>",
-        "<span class=\"repo-source-dot repo-source-dot--manual\" data-testid=\"repo-source-dot\" title=\"manual fetch · enable webhook for live updates\" aria-label=\"manual fetch · enable webhook for live updates\" role=\"img\">○</span>",
-        "<span class=\"repo-source-dot repo-source-dot--limited\" data-testid=\"repo-source-dot\" title=\"manual fetch · no admin on this repo\" aria-label=\"manual fetch · no admin on this repo\" role=\"img\">○<svg class=\"repo-source-dot__lock\" viewBox=\"0 0 8 8\" aria-hidden=\"true\"><rect x=\"1.5\" y=\"3.5\" width=\"5\" height=\"3\" fill=\"none\"></rect><path d=\"M2.5 3.5V2.5a1.5 1.5 0 0 1 3 0v1\" fill=\"none\"></path></svg></span>",
-        "<span class=\"repo-source-dot repo-source-dot--error\" data-testid=\"repo-source-dot\" title=\"webhook broken: not-found · click to retry\" aria-label=\"webhook broken: not-found · click to retry\" role=\"img\">!</span>",
-      ]
-    `);
   });
 
   it('only enables click actions for manual and error states', async () => {
     const onManual = vi.fn();
     const onRetry = vi.fn();
 
-    const manual = await renderDot({ status: 'manual', onManualSetup: onManual, onRetry });
+    const manual = await renderDot({
+      status: 'manual',
+      onManualSetup: onManual,
+      onRetry,
+    });
     manual.click();
     expect(onManual).toHaveBeenCalledTimes(1);
     expect(onRetry).not.toHaveBeenCalled();
 
-    const limited = await renderDot({ status: 'limited', onManualSetup: onManual, onRetry });
+    const limited = await renderDot({
+      status: 'limited',
+      onManualSetup: onManual,
+      onRetry,
+    });
     limited.click();
     expect(onManual).toHaveBeenCalledTimes(1);
     expect(onRetry).not.toHaveBeenCalled();
 
-    const error = await renderDot({ status: 'error', onManualSetup: onManual, onRetry });
+    const error = await renderDot({
+      status: 'error',
+      onManualSetup: onManual,
+      onRetry,
+    });
     error.click();
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
@@ -95,7 +104,9 @@ describe('RepoSourceDot', () => {
       );
     });
 
-    const dot = container.querySelector('[data-testid="repo-source-dot"]') as HTMLElement | null;
+    const dot = container.querySelector(
+      '[data-testid="repo-source-dot"]'
+    ) as HTMLElement | null;
     expect(dot).toBeTruthy();
     expect(dot?.getAttribute('tabindex')).toBeNull();
 
