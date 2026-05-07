@@ -407,7 +407,7 @@ export interface WorkspaceSettings {
   // Webhook tracking
   webhookId?: number; // GitHub webhook ID for deletion tracking
   webhookEnabled?: boolean; // Per-workspace webhook toggle
-  webhookError?: string; // 'not-admin' | 'not-found' | null
+  webhookError?: string; // 'not-admin' | 'not-found' | other setup failure code
 
   /** Environment variable names that should receive per-worktree allocated ports. */
   portVariables?: string[];
@@ -667,12 +667,17 @@ export interface DashboardData {
   hasGhCli: boolean;
 }
 
+export type WebhookStatus = 'live' | 'manual' | 'limited' | 'error';
+
 export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
   currentBranch: string | null;
+  webhookStatus: WebhookStatus;
+  webhookError?: string;
+  lastWebhookEventAt?: string;
 }
 
 export type RepoRole =

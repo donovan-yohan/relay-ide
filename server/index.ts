@@ -69,7 +69,9 @@ import {
   createWorkspaceRouter,
   clearPrCache,
   clearFilesListCache,
+  clearDashboardPrCache,
 } from './workspaces.js';
+import { clearCiStatusCache } from './gh.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
@@ -86,7 +88,6 @@ import { createWebhookRouter } from './webhooks.js';
 import {
   createWebhookManagerRouter,
   reloadSmee,
-  startSmartPolling,
 } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
 import {
@@ -1128,16 +1129,21 @@ async function main(): Promise<void> {
   }
 
   // Wire up the delegate used by the webhook router (mounted before broadcastEvent was available).
-  // Smart polling includes workspace paths, so clear those caches without flushing every repo.
+  // Webhook broadcasts may include workspace paths for targeted cache invalidation.
   broadcastEventDelegate = (type, data) => {
-    if (type === 'pr-updated') {
+    if (type === 'pr-updated' || type === 'ci-updated') {
       const workspacePaths = data?.workspacePaths;
       if (Array.isArray(workspacePaths)) {
         for (const workspacePath of workspacePaths) {
-          if (typeof workspacePath === 'string') clearPrCache(workspacePath);
+          if (typeof workspacePath !== 'string') continue;
+          clearDashboardPrCache(workspacePath);
+          if (type === 'pr-updated') clearPrCache(workspacePath);
+          if (type === 'ci-updated') clearCiStatusCache(workspacePath);
         }
       } else {
-        clearPrCache();
+        clearDashboardPrCache();
+        if (type === 'pr-updated') clearPrCache();
+        if (type === 'ci-updated') clearCiStatusCache();
       }
     }
     broadcastEvent(type, data);
@@ -1488,9 +1494,6 @@ async function main(): Promise<void> {
 
   // Start smee-client via webhook-manager
   reloadSmee(CONFIG_PATH, startupConfig.port);
-
-  // Start smart polling — broadcasts pr-updated/ci-updated only for repos without webhooks
-  startSmartPolling(CONFIG_PATH, broadcastEventDelegate);
 
   // Invalidate branch linker cache on session lifecycle changes
   sessions.onSessionCreate(() => {
