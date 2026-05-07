@@ -1,0 +1,62 @@
+.repo-source-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.repo-source-dot--live {
+  color: var(--status-success);
+}
+
+.repo-source-dot--manual,
+.repo-source-dot--limited {
+  color: var(--text-muted);
+}
+
+.repo-source-dot--error {
+  color: var(--status-warning);
+  font-weight: 700;
+}
+
+.repo-source-dot--clickable {
+  cursor: pointer;
+}
+
+.repo-source-dot--clickable:hover,
+.repo-source-dot--clickable:focus-visible {
+  color: var(--text);
+  outline: 1px solid var(--border);
+  outline-offset: 2px;
+}
+
+.repo-source-dot__lock {
+  position: absolute;
+  right: -5px;
+  bottom: -3px;
+  width: 7px;
+  height: 7px;
+  color: var(--text-muted);
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+.repo-source-stack {
+  display: inline-flex;
+  width: 12px;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}

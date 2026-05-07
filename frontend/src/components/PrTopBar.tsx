@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  createRepoWebhook,
   fetchPrForBranchOrNull,
   fetchCiStatusOrNull,
   fetchCurrentBranch,
@@ -13,12 +14,15 @@ import {
   colorToVariant,
 } from '../lib/pr-state.js';
 import type { PrAction } from '../lib/pr-state.js';
-import type { PrInfo, CiStatus } from '../lib/types.js';
+import type { PrInfo, CiStatus, RepoWebhookStatus } from '../lib/types.js';
 import CipherText from './CipherText.js';
+import RepoSourceDot from './RepoSourceDot.js';
 import TuiButton from './TuiButton.js';
 import BranchSwitcher from './BranchSwitcher.js';
 import TargetBranchSwitcher from './TargetBranchSwitcher.js';
 import { DEFAULT_UTILITY_RAIL_STATE, useUiStore } from '../lib/stores/ui.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
+import { formatRelativeTime } from '../lib/utils.js';
 import RenameWarningModal from './dialogs/RenameWarningModal.js';
 import Tooltip from './Tooltip.js';
 import './PrTopBar.css';
@@ -39,7 +43,7 @@ interface PrDataState {
   ci: CiStatus | null;
   isRefreshing: boolean;
   prLoading: boolean;
-  refresh: () => void;
+  refresh: () => Promise<void>;
 }
 
 function usePrData(
@@ -79,9 +83,7 @@ function usePrData(
     ci,
     isRefreshing,
     prLoading,
-    refresh: () => {
-      void fetchPrAndCi();
-    },
+    refresh: fetchPrAndCi,
   };
 }
 
@@ -330,23 +332,75 @@ function BranchSection({
   );
 }
 
+interface SourceIndicatorProps {
+  status: RepoWebhookStatus;
+  error?: string | undefined;
+  lastEnrichedAt?: number | undefined;
+  onManualSetup: () => void;
+  onRetry: () => void;
+}
+
+function sourceLabel(status: RepoWebhookStatus): string {
+  if (status === 'live') return 'live';
+  if (status === 'manual') return 'manual';
+  if (status === 'limited') return 'limited';
+  return 'webhook broken';
+}
+
+function SourceIndicator({
+  status,
+  error,
+  lastEnrichedAt,
+  onManualSetup,
+  onRetry,
+}: SourceIndicatorProps) {
+  const updatedText = lastEnrichedAt
+    ? `updated ${formatRelativeTime(new Date(lastEnrichedAt).toISOString())}`
+    : 'updated never';
+
+  return (
+    <span className="source-indicator" data-testid="pr-source-indicator">
+      <RepoSourceDot
+        status={status}
+        error={error}
+        onManualSetup={onManualSetup}
+        onRetry={onRetry}
+      />
+      <span className="source-label">{sourceLabel(status)}</span>
+      <span className="source-updated">· {updatedText}</span>
+    </span>
+  );
+}
+
 interface PrActionsProps {
   utilityRailWorkspacePath: string;
+  sourceStatus: RepoWebhookStatus;
+  sourceError?: string | undefined;
+  sourceLastEnrichedAt?: number | undefined;
+  sourceRefreshing: boolean;
   isRefreshing: boolean;
   prLoading: boolean;
   prAction: PrAction;
   secondaryAction: PrAction | null;
-  onRefresh: () => void;
+  onSourceRefresh: () => void;
+  onManualSetup: () => void;
+  onWebhookRetry: () => void;
   onAction: (action?: PrAction) => void;
 }
 
 function PrActions({
   utilityRailWorkspacePath,
+  sourceStatus,
+  sourceError,
+  sourceLastEnrichedAt,
+  sourceRefreshing,
   isRefreshing,
   prLoading,
   prAction,
   secondaryAction,
-  onRefresh,
+  onSourceRefresh,
+  onManualSetup,
+  onWebhookRetry,
   onAction,
 }: PrActionsProps) {
   const workspaceUtilityRailState = useUiStore((s) =>
@@ -369,14 +423,35 @@ function PrActions({
 
   return (
     <div className="bar-right">
-      <Tooltip label="refresh PR data" actionId="pr.refresh">
+      <SourceIndicator
+        status={sourceStatus}
+        error={sourceError}
+        lastEnrichedAt={sourceLastEnrichedAt}
+        onManualSetup={onManualSetup}
+        onRetry={onWebhookRetry}
+      />
+      <Tooltip
+        label={
+          sourceStatus === 'error'
+            ? 'retry webhook provisioning'
+            : 'refresh repo data'
+        }
+        actionId="pr.refresh"
+      >
         <button
-          className={['refresh-btn', isRefreshing && 'refreshing']
+          className={[
+            'refresh-btn',
+            (isRefreshing || sourceRefreshing) && 'refreshing',
+          ]
             .filter(Boolean)
             .join(' ')}
-          onClick={onRefresh}
-          disabled={isRefreshing}
-          aria-label="Refresh PR data"
+          onClick={onSourceRefresh}
+          disabled={isRefreshing || sourceRefreshing}
+          aria-label={
+            sourceStatus === 'error'
+              ? 'Retry webhook provisioning'
+              : 'Refresh repo data'
+          }
           type="button"
         >
           <svg
@@ -535,6 +610,14 @@ export function PrTopBar({
     currentBranch,
     sessionId
   );
+  const [sourceRefreshing, setSourceRefreshing] = useState(false);
+  const repo = useSessionsStore((s) =>
+    s.repos.find((candidate) => candidate.path === workspacePath)
+  );
+  const repoMeta = useSessionsStore((s) => s.repoEnrichmentMeta[workspacePath]);
+  const forceRefresh = useSessionsStore((s) => s.forceRefresh);
+  const sourceStatus: RepoWebhookStatus =
+    repo?.webhookStatus ?? (repoMeta?.source === 'webhook' ? 'live' : 'manual');
   const rename = useRename(
     workspacePath,
     currentBranch,
@@ -578,6 +661,30 @@ export function PrTopBar({
       setTimeout(() => setCopyFeedback(false), 1500);
     } catch {
       /* clipboard may not be available */
+    }
+  }
+
+  function handleManualSetup() {
+    useUiStore
+      .getState()
+      .setActiveModal({ modal: 'settings', scrollToId: 'integration-webhooks' });
+  }
+
+  async function retryWebhookSetup() {
+    if (!workspacePath) return;
+    await createRepoWebhook(workspacePath);
+    await useSessionsStore.getState().refreshAll();
+  }
+
+  async function handleSourceRefresh() {
+    if (!workspacePath) return;
+    setSourceRefreshing(true);
+    try {
+      if (sourceStatus === 'error') await retryWebhookSetup();
+      await forceRefresh(workspacePath, 'manual');
+      await refresh();
+    } finally {
+      setSourceRefreshing(false);
     }
   }
 
@@ -633,11 +740,17 @@ export function PrTopBar({
       ) : null}
       <PrActions
         utilityRailWorkspacePath={utilityRailWorkspacePath}
+        sourceStatus={sourceStatus}
+        sourceError={repo?.webhookError}
+        sourceLastEnrichedAt={repoMeta?.lastEnrichedAt}
+        sourceRefreshing={sourceRefreshing}
         isRefreshing={isRefreshing}
         prLoading={prLoading}
         prAction={prAction}
         secondaryAction={secondaryAction}
-        onRefresh={refresh}
+        onSourceRefresh={() => void handleSourceRefresh()}
+        onManualSetup={handleManualSetup}
+        onWebhookRetry={() => void retryWebhookSetup()}
         onAction={handleActionClick}
       />
       {rename.renameWarning ? (

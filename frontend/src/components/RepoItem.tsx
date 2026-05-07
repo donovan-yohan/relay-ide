@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   Repo,
+  RepoWebhookStatus,
   SessionSummary,
   WorktreeInfo,
   PullRequest,
@@ -15,9 +16,13 @@ import { derivePrDotStatus } from '../lib/pr-status.js';
 import { formatRelativeTimeCompact, isMobileDevice } from '../lib/utils.js';
 import StatusDot from './StatusDot.js';
 import { SessionIndicator } from './SessionIndicator.js';
+import RepoSourceDot from './RepoSourceDot.js';
 import { MarqueeText } from './MarqueeText.js';
 import ContextMenu from './ContextMenu.js';
 import { useRepoAggregation } from '../hooks/useRepoAggregation.js';
+import { createRepoWebhook } from '../lib/api.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import './RepoItem.css';
 
 const DOUBLE_CLICK_DELAY_MS = 200;
@@ -292,12 +297,14 @@ function SessionGroupRow({
         {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
       </div>
       <div className="session-row-secondary">
-        <span
-          className={`fleet-status tone-${fleetStatus.tone}`}
-          title={fleetStatus.title}
-        >
-          {fleetStatus.label}
-        </span>
+        {dotState !== 'running' && dotState !== 'initializing' ? (
+          <span
+            className={`fleet-status tone-${fleetStatus.tone}`}
+            title={fleetStatus.title}
+          >
+            {fleetStatus.label}
+          </span>
+        ) : null}
         <span className="secondary-time">
           {formatRelativeTimeCompact(rep.lastActivity)}
         </span>
@@ -368,8 +375,12 @@ interface InactiveRepoRowProps {
   repoPath: string;
   repoCurrentBranch: string | null;
   repoDefaultBranch: string | null;
+  webhookStatus: RepoWebhookStatus;
+  webhookError?: string | undefined;
   sidebarItemById: Map<string, SidebarItem>;
   loadingItems: Set<string>;
+  onWebhookSetup: () => void;
+  onWebhookRetry: () => void;
   onLaunchRepoSession?: ((repoPath: string) => void) | undefined;
   onViewHistory?: ((repoPath: string) => void) | undefined;
 }
@@ -379,8 +390,12 @@ function InactiveRepoRow({
   repoPath,
   repoCurrentBranch,
   repoDefaultBranch,
+  webhookStatus,
+  webhookError,
   sidebarItemById,
   loadingItems,
+  onWebhookSetup,
+  onWebhookRetry,
   onLaunchRepoSession,
   onViewHistory,
 }: InactiveRepoRowProps) {
@@ -407,18 +422,28 @@ function InactiveRepoRow({
       }}
     >
       <div className="session-row-primary">
-        <SessionIndicator state="inactive" />
+        <span className="repo-source-stack">
+          <SessionIndicator state={isLoading ? 'initializing' : 'inactive'} />
+          <RepoSourceDot
+            status={webhookStatus}
+            error={webhookError}
+            onManualSetup={onWebhookSetup}
+            onRetry={onWebhookRetry}
+          />
+        </span>
         <span className="session-name">
           <MarqueeText>{isLoading ? 'starting...' : displayLabel}</MarqueeText>
         </span>
       </div>
       <div className="session-row-secondary">
-        <span
-          className={`fleet-status tone-${isLoading ? 'active' : 'inactive'}`}
-          title={`fleet status: ${isLoading ? 'starting' : 'inactive'}`}
-        >
-          {isLoading ? 'starting' : 'inactive'}
-        </span>
+        {!isLoading ? (
+          <span
+            className="fleet-status tone-inactive"
+            title="fleet status: inactive"
+          >
+            inactive
+          </span>
+        ) : null}
         {lastActivity ? (
           <span className="secondary-time">
             {formatRelativeTimeCompact(lastActivity)}
@@ -491,6 +516,18 @@ export function RepoItem({
     [sidebarItems, repo.path]
   );
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
+  const webhookStatus = repo.webhookStatus ?? 'manual';
+  const openWebhookSetup = useCallback(() => {
+    useUiStore
+      .getState()
+      .setActiveModal({ modal: 'settings', scrollToId: 'integration-webhooks' });
+  }, []);
+  const retryWebhookSetup = useCallback(() => {
+    void (async () => {
+      await createRepoWebhook(repo.path);
+      await useSessionsStore.getState().refreshAll();
+    })();
+  }, [repo.path]);
   const { highestState, attentionCount } = useRepoAggregation(
     repo.path,
     sidebarItems,
@@ -636,8 +673,12 @@ export function RepoItem({
                   repoPath={repo.path}
                   repoCurrentBranch={repo.currentBranch}
                   repoDefaultBranch={repo.defaultBranch}
+                  webhookStatus={webhookStatus}
+                  webhookError={repo.webhookError}
                   sidebarItemById={sidebarItemById}
                   loadingItems={loadingItems}
+                  onWebhookSetup={openWebhookSetup}
+                  onWebhookRetry={retryWebhookSetup}
                   onLaunchRepoSession={onLaunchRepoSession}
                   onViewHistory={onViewHistory}
                 />
@@ -666,7 +707,15 @@ export function RepoItem({
                 onTouchMove={cancelLongPress}
               >
                 <div className="session-row-primary">
-                  <SessionIndicator state="inactive" />
+                  <span className="repo-source-stack">
+                    <SessionIndicator state={isLoading ? 'initializing' : 'inactive'} />
+                    <RepoSourceDot
+                      status={webhookStatus}
+                      error={repo.webhookError}
+                      onManualSetup={openWebhookSetup}
+                      onRetry={retryWebhookSetup}
+                    />
+                  </span>
                   <span className="session-name">
                     <MarqueeText>
                       {isLoading
@@ -676,12 +725,14 @@ export function RepoItem({
                   </span>
                 </div>
                 <div className="session-row-secondary">
-                  <span
-                    className={`fleet-status tone-${isLoading ? 'active' : 'inactive'}`}
-                    title={`fleet status: ${isLoading ? 'resuming' : 'inactive'}`}
-                  >
-                    {isLoading ? 'resuming' : 'inactive'}
-                  </span>
+                  {!isLoading ? (
+                    <span
+                      className="fleet-status tone-inactive"
+                      title="fleet status: inactive"
+                    >
+                      inactive
+                    </span>
+                  ) : null}
                   {wt.lastActivity ? (
                     <span className="secondary-time">
                       {formatRelativeTimeCompact(wt.lastActivity)}

@@ -85,12 +85,17 @@ export interface AccountTelemetry {
   updatedAt: string;
 }
 
+export type RepoWebhookStatus = 'live' | 'manual' | 'limited' | 'error';
+
 export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
   defaultBranch: string | null;
   currentBranch: string | null;
+  webhookStatus?: RepoWebhookStatus;
+  webhookError?: string;
+  lastWebhookEventAt?: string;
 }
 
 export interface Workspace {

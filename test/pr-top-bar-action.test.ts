@@ -10,18 +10,47 @@ const mocks = vi.hoisted(() => ({
   fetchCiStatusOrNull: vi.fn(),
   fetchCurrentBranch: vi.fn(),
   renameBranch: vi.fn(),
+  createRepoWebhook: vi.fn(),
   sendPtyData: vi.fn(),
+  forceRefresh: vi.fn(),
+  refreshAll: vi.fn(),
+  repos: [] as Array<{
+    path: string;
+    name: string;
+    isGitRepo: boolean;
+    defaultBranch: string | null;
+    currentBranch: string | null;
+    webhookStatus?: 'live' | 'manual' | 'limited' | 'error';
+    webhookError?: string;
+  }>,
+  repoEnrichmentMeta: {} as Record<
+    string,
+    { lastEnrichedAt: number; source: 'webhook' | 'manual' }
+  >,
 }));
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../frontend/src/lib/api.js', () => ({
   fetchPrForBranchOrNull: mocks.fetchPrForBranchOrNull,
   fetchCiStatusOrNull: mocks.fetchCiStatusOrNull,
   fetchCurrentBranch: mocks.fetchCurrentBranch,
   renameBranch: mocks.renameBranch,
+  createRepoWebhook: mocks.createRepoWebhook,
 }));
 
 vi.mock('../frontend/src/lib/ws.js', () => ({
   sendPtyData: mocks.sendPtyData,
+}));
+
+vi.mock('../frontend/src/lib/stores/sessions.js', () => ({
+  useSessionsStore: (selector: (state: unknown) => unknown) =>
+    selector({
+      repos: mocks.repos,
+      repoEnrichmentMeta: mocks.repoEnrichmentMeta,
+      forceRefresh: mocks.forceRefresh,
+      refreshAll: mocks.refreshAll,
+    }),
 }));
 
 vi.mock('../frontend/src/lib/stores/ui.js', () => ({
@@ -40,6 +69,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => ({
       }),
       hydrateUtilityRailState: vi.fn(),
       toggleUtilityRailVisible: vi.fn(),
+      setActiveModal: vi.fn(),
     }),
 }));
 
@@ -110,6 +140,10 @@ describe('PrTopBar actions', () => {
     container = null;
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    mocks.repos.splice(0);
+    Object.keys(mocks.repoEnrichmentMeta).forEach((key) => {
+      delete mocks.repoEnrichmentMeta[key];
+    });
   });
 
   it('opens mergeable PRs in a new tab without archiving the session', async () => {
@@ -149,5 +183,54 @@ describe('PrTopBar actions', () => {
     );
     expect(onArchive).not.toHaveBeenCalled();
     expect(mocks.sendPtyData).not.toHaveBeenCalled();
+  });
+
+  it('renders source freshness and calls forceRefresh from the manual refresh button', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mocks.repos.push({
+      path: '/repo',
+      name: 'repo',
+      isGitRepo: true,
+      defaultBranch: 'nightly',
+      currentBranch: 'fix/115-merge-button',
+      webhookStatus: 'manual',
+    });
+    mocks.repoEnrichmentMeta['/repo'] = {
+      lastEnrichedAt: Date.now() - 4 * 60 * 1000,
+      source: 'manual',
+    };
+    mocks.fetchPrForBranchOrNull.mockResolvedValue(samplePr());
+    mocks.fetchCiStatusOrNull.mockResolvedValue(passingCi());
+    mocks.forceRefresh.mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(
+        React.createElement(PrTopBar, {
+          workspacePath: '/repo',
+          branchName: 'fix/115-merge-button',
+          sessionId: 'session-1',
+        })
+      );
+    });
+    await flushEffects();
+
+    const source = container.querySelector('[data-testid="pr-source-indicator"]');
+    expect(source?.textContent).toContain('manual');
+    expect(source?.textContent).toContain('updated 4m ago');
+
+    const refreshButton = container.querySelector(
+      'button[aria-label="Refresh repo data"]'
+    ) as HTMLButtonElement | null;
+    expect(refreshButton).toBeTruthy();
+
+    await act(async () => {
+      refreshButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.forceRefresh).toHaveBeenCalledWith('/repo', 'manual');
   });
 });
