@@ -79,7 +79,7 @@ React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 
 | Path                                  | Role                                                                                                                                                                                        |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontend/src/components/`            | React 19 TSX components (Terminal, Sidebar, RepoItem, PrTopBar, SessionTabBar, RepoDashboard, CommandPalette, dialogs, etc.)                                                                |
+| `frontend/src/components/`            | React 19 TSX components (Terminal, Sidebar, RepoItem, PrTopBar, WorkspaceArea, RepoDashboard, CommandPalette, dialogs, etc.)                                                                |
 | `frontend/src/lib/state/`             | Pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `attention.ts` — state priority scoring) |
 | `frontend/src/hooks/`                 | React hooks for state and side effects (`useEventSocket`, `useSessionHandlers`, `useActionRegistry`, `useRepoAggregation`, etc.)                                                            |
 | `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                                                   |

@@ -29,15 +29,23 @@ import {
 } from '../lib/session-utils.js';
 import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
-import type { TerminalHandle } from '../components/Terminal.js';
+import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
 
 const logger = createLogger('useSessionHandlers');
 
+function focusActiveTerminalSoon(): void {
+  const focus = () => getActiveTerminalHandle()?.focusTerm();
+  if (typeof window === 'undefined') {
+    focus();
+    return;
+  }
+  window.setTimeout(focus, 0);
+}
+
 export interface UseSessionHandlersParams {
-  terminalRef: React.RefObject<TerminalHandle | null>;
   customizeDialogRef: React.RefObject<CustomizeSessionDialogHandle | null>;
   deleteWorktreeDialogRef: React.RefObject<DeleteWorktreeDialogHandle | null>;
   workspaceSettingsDialogRef: React.RefObject<WorkspaceSettingsDialogHandle | null>;
@@ -45,7 +53,6 @@ export interface UseSessionHandlersParams {
 }
 
 export function useSessionHandlers({
-  terminalRef,
   customizeDialogRef,
   deleteWorktreeDialogRef,
   workspaceSettingsDialogRef,
@@ -93,9 +100,9 @@ export function useSessionHandlers({
       }
       useSessionsStore.getState().handleUserViewed(id);
       useUiStore.getState().closeSidebar();
-      terminalRef.current?.focusTerm();
+      focusActiveTerminalSoon();
     },
-    [setAnalyticsView, terminalRef]
+    [setAnalyticsView]
   );
 
   const handleSelectWorkspace = useCallback(
@@ -297,7 +304,7 @@ export function useSessionHandlers({
             );
         }
         useUiStore.getState().closeSidebar();
-        terminalRef.current?.focusTerm();
+        focusActiveTerminalSoon();
       } catch (e) {
         logger.error('Failed to create worktree session:', e);
         useToastStore
@@ -314,7 +321,7 @@ export function useSessionHandlers({
         useSessionsStore.getState().clearLoading(loadingKey);
       }
     },
-    [terminalRef, customizeDialogRef]
+    [customizeDialogRef]
   );
 
   const handleLaunchWorkspaceSession = useCallback(
@@ -748,9 +755,9 @@ export function useSessionHandlers({
           useConfigStore.getState().defaultNotifications
         );
       useUiStore.getState().closeSidebar();
-      terminalRef.current?.focusTerm();
+      focusActiveTerminalSoon();
     },
-    [terminalRef]
+    []
   );
 
   const handleResumeWorktree = useCallback(async (wt: WorktreeInfo) => {

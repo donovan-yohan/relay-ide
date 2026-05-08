@@ -91,10 +91,10 @@ import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
 import { createAgentSession } from '../lib/session-utils.js';
+import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
-import type { TerminalHandle } from '../components/Terminal.js';
 
 const logger = createLogger('ActionRegistry');
 
@@ -116,7 +116,6 @@ export interface UseActionRegistryParams {
   customizeDialogRef: React.RefObject<CustomizeSessionDialogHandle | null>;
   deleteWorktreeDialogRef: React.RefObject<DeleteWorktreeDialogHandle | null>;
   workspaceSettingsDialogRef: React.RefObject<WorkspaceSettingsDialogHandle | null>;
-  terminalRef: React.RefObject<TerminalHandle | null>;
   setFilePickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
@@ -133,7 +132,6 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
     customizeDialogRef,
     deleteWorktreeDialogRef,
     workspaceSettingsDialogRef,
-    terminalRef,
     setFilePickerOpen,
   } = params;
   const frameworks = useConfigStore((state) => state.frameworks);
@@ -362,11 +360,11 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       // ── Terminal ─────────────────────────────────────────────────────────────
       {
         ...terminalScrollTop,
-        handler: () => terminalRef.current?.getTerm()?.scrollToLine(0),
+        handler: () => getActiveTerminalHandle()?.getTerm()?.scrollToLine(0),
       },
       {
         ...terminalScrollBottom,
-        handler: () => terminalRef.current?.getTerm()?.scrollToBottom(),
+        handler: () => getActiveTerminalHandle()?.getTerm()?.scrollToBottom(),
       },
 
       // ── Navigation ──────────────────────────────────────────────────────────

@@ -313,8 +313,8 @@ export function WorkspaceArea({
       if (targetPane) addTab(targetPane, sessionToWorkspaceTab(s));
     }
 
-    // Close layout items that ui no longer has (e.g., FileViewerPane × button
-    // closed only the ui-side tab).
+    // Close layout items that ui no longer has (e.g., legacy ui-side close
+    // handlers removed only the file-tab store entry).
     for (const id of wsIds) {
       if (!liveUiIds.has(id)) closeTab(id);
     }

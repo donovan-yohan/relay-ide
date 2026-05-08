@@ -9,8 +9,6 @@ const TERMINAL_FONT_SIZE_KEY = 'claude-remote-terminal-font-size';
 const RIGHT_SIDEBAR_WIDTH_KEY = 'claude-remote-right-sidebar-width';
 const RIGHT_SIDEBAR_COLLAPSED_KEY = 'claude-remote-right-sidebar-collapsed';
 const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
-const FILE_VIEWER_WIDTH_KEY = 'claude-remote-file-viewer-width';
-const WORKSPACE_LAYOUT_KEY = 'claude-remote-workspace-layout-enabled';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
@@ -25,7 +23,6 @@ export const MAX_TERMINAL_FONT_SIZE = 28;
 export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 220;
 export const MIN_RIGHT_SIDEBAR_WIDTH = 160;
 export const MAX_RIGHT_SIDEBAR_WIDTH = 400;
-export const DEFAULT_FILE_VIEWER_RATIO = 0.35;
 export const DEFAULT_UTILITY_RAIL_WIDTH = 320;
 export const MIN_UTILITY_RAIL_WIDTH = 220;
 export const MAX_UTILITY_RAIL_WIDTH = 640;
@@ -142,36 +139,10 @@ function loadRightSidebarWidth(): number {
   return DEFAULT_RIGHT_SIDEBAR_WIDTH;
 }
 
-function loadFileViewerRatio(): number {
-  const stored = ls(FILE_VIEWER_WIDTH_KEY);
-  if (stored) {
-    const val = parseFloat(stored);
-    if (val >= 0.15 && val <= 0.75) return val;
-  }
-  return DEFAULT_FILE_VIEWER_RATIO;
-}
-
 function loadDiffViewMode(): DiffViewMode {
   const stored = ls(DIFF_VIEW_MODE_KEY);
   if (stored === 'unified' || stored === 'side-by-side') return stored;
   return 'unified';
-}
-
-function loadWorkspaceLayoutEnabled(): boolean {
-  if (typeof window !== 'undefined') {
-    const param = new URLSearchParams(window.location.search).get(
-      'workspaceLayout'
-    );
-    if (param === '1') {
-      lsSave(WORKSPACE_LAYOUT_KEY, 'true');
-      return true;
-    }
-    if (param === '0') {
-      lsRemove(WORKSPACE_LAYOUT_KEY);
-      return false;
-    }
-  }
-  return ls(WORKSPACE_LAYOUT_KEY) === 'true';
 }
 
 function loadTerminalFontSize(): number {
@@ -471,8 +442,6 @@ export interface UiState {
   rightSidebarCollapsed: boolean;
   rightSidebarWidth: number;
   rightSidebarTab: RightSidebarTab;
-  workspaceLayoutEnabled: boolean;
-  setWorkspaceLayoutEnabled: (enabled: boolean) => void;
   utilityRailByWorkspace: Record<string, WorkspaceUtilityRailState>;
   getUtilityRailState: (workspacePath: string) => WorkspaceUtilityRailState;
   hydrateUtilityRailState: (workspacePath: string) => void;
@@ -518,7 +487,6 @@ export interface UiState {
   ) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
-  fileViewerRatio: number;
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
@@ -536,7 +504,6 @@ export interface UiState {
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
   saveRightSidebarWidth: () => void;
-  saveFileViewerRatio: () => void;
   openFileTab: (
     filePath: string,
     isChanged: boolean,
@@ -576,11 +543,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   rightSidebarCollapsed: ls(RIGHT_SIDEBAR_COLLAPSED_KEY) === 'true',
   rightSidebarWidth: loadRightSidebarWidth(),
   rightSidebarTab: 'changes',
-  workspaceLayoutEnabled: loadWorkspaceLayoutEnabled(),
   utilityRailByWorkspace: {},
   openFileTabs: [],
   activeFileTabKey: null,
-  fileViewerRatio: loadFileViewerRatio(),
   sendToTargetSessionId: null,
   analyticsView: null,
   activeModal: null,
@@ -589,12 +554,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   openSidebar: () => set({ sidebarOpen: true }),
   closeSidebar: () => set({ sidebarOpen: false }),
-
-  setWorkspaceLayoutEnabled: (enabled) => {
-    if (enabled) lsSave(WORKSPACE_LAYOUT_KEY, 'true');
-    else lsRemove(WORKSPACE_LAYOUT_KEY);
-    set({ workspaceLayoutEnabled: enabled });
-  },
 
   saveSidebarWidth: () => lsSave(SIDEBAR_WIDTH_KEY, String(get().sidebarWidth)),
 
@@ -995,9 +954,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   saveRightSidebarWidth: () =>
     lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
-
-  saveFileViewerRatio: () =>
-    lsSave(FILE_VIEWER_WIDTH_KEY, String(get().fileViewerRatio)),
 
   openFileTab: (filePath, isChanged, tabType, token) => {
     const { openFileTabs } = get();
