@@ -1,5 +1,6 @@
 import React, {
   forwardRef,
+  useCallback,
   useImperativeHandle,
   useRef,
   useState,
@@ -97,6 +98,16 @@ function buildSavePayload(
     settings['portVariables'] = null;
   }
   return settings;
+}
+
+function sameValidationErrors(
+  a: Record<string, string>,
+  b: Record<string, string>
+) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
 }
 
 interface DialogHeaderProps {
@@ -252,9 +263,14 @@ const WorkspaceSettingsDialog = forwardRef<
     }
   }
 
-  function handleValidationChange(errors: Record<string, string>) {
-    setValidationErrors(errors);
-  }
+  const handleValidationChange = useCallback(
+    (errors: Record<string, string>) => {
+      setValidationErrors((prev) =>
+        sameValidationErrors(prev, errors) ? prev : errors
+      );
+    },
+    []
+  );
 
   const hasValidationErrors = Object.keys(validationErrors).length > 0;
   const hasOverriddenDefaults = overriddenKeys.some((k) =>
