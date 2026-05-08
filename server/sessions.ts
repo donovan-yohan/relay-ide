@@ -77,12 +77,27 @@ interface SerializedPtySession {
   continuePolicy?: ContinuePolicy;
   workspaceId?: string;
   additionalDirs?: string[];
+  pendingSince?: string;
 }
+
+type RestartReason =
+  | 'update'
+  | 'dev-restart'
+  | 'signal-shutdown'
+  | 'shutdown'
+  | 'crash-recovery'
+  | 'manual'
+  | 'unspecified';
 
 interface PendingSessionsFile {
   version: number; // now 6 — web sessions moved to relay-state.db
   timestamp: string;
+  reason?: RestartReason | string;
   sessions: SerializedPtySession[];
+}
+
+interface SerializeOptions {
+  reason?: RestartReason | string;
 }
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -579,12 +594,123 @@ function nextAgentName(): string {
   return `Agent ${++agentCounter}`;
 }
 
+function atomicWriteFileSync(filePath: string, data: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, data, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
+function pendingSessionsPath(configDir: string): string {
+  return path.join(configDir, 'pending-sessions.json');
+}
+
+function scrollbackDir(configDir: string): string {
+  return path.join(configDir, 'scrollback');
+}
+
+function writePendingSessionsFile(
+  configDir: string,
+  pending: PendingSessionsFile
+): void {
+  fs.mkdirSync(configDir, { recursive: true });
+  atomicWriteFileSync(
+    pendingSessionsPath(configDir),
+    JSON.stringify(pending, null, 2)
+  );
+}
+
+function pruneScrollbackFiles(
+  scrollbackDirPath: string,
+  keepSessionIds: Set<string>
+): number {
+  let pruned = 0;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(scrollbackDirPath);
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      err.code === 'ENOENT'
+    ) {
+      return 0;
+    }
+    logger.warn(
+      'failed to read scrollback dir for pruning %s: %s',
+      scrollbackDirPath,
+      err
+    );
+    return 0;
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith('.buf')) continue;
+    const sessionId = entry.slice(0, -'.buf'.length);
+    if (keepSessionIds.has(sessionId)) continue;
+    try {
+      fs.rmSync(path.join(scrollbackDirPath, entry), { force: true });
+      pruned++;
+    } catch (err) {
+      logger.warn('failed to prune stale scrollback file %s: %s', entry, err);
+    }
+  }
+  return pruned;
+}
+
+function removeScrollbackDir(configDir: string, reason: string): void {
+  const dir = scrollbackDir(configDir);
+  if (!fs.existsSync(dir)) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    logger.info('removed scrollback dir after %s: %s', reason, dir);
+  } catch (err) {
+    logger.warn(
+      'failed to remove scrollback dir after %s %s: %s',
+      reason,
+      dir,
+      err
+    );
+  }
+}
+
+function preservedPendingRestoreFailures(
+  configDir: string,
+  serializedSessionIds: Set<string>
+): PendingSessionsFile | null {
+  const pendingPath = pendingSessionsPath(configDir);
+  if (!fs.existsSync(pendingPath)) return null;
+
+  const existing = readPendingSessionsFile(pendingPath);
+  if (!existing) return null;
+
+  const sessionsToPreserve = existing.sessions
+    .filter((session) => !serializedSessionIds.has(session.id))
+    .filter((session) => !isPendingSessionStale(existing, session))
+    .map((session) => withPendingSince(existing, session));
+  if (sessionsToPreserve.length === 0) return null;
+
+  return {
+    ...existing,
+    sessions: sessionsToPreserve,
+  };
+}
+
 function serializePtySession(
   session: PtySession,
   scrollbackDirPath: string
 ): SerializedPtySession {
   const scrollbackPath = path.join(scrollbackDirPath, session.id + '.buf');
-  fs.writeFileSync(scrollbackPath, session.scrollback.join(''), 'utf-8');
+  atomicWriteFileSync(scrollbackPath, session.scrollback.join(''));
 
   return {
     id: session.id,
@@ -617,16 +743,18 @@ function serializePtySession(
   };
 }
 
-function serializeAll(configDir: string): void {
-  const scrollbackDirPath = path.join(configDir, 'scrollback');
+function serializeAll(configDir: string, options: SerializeOptions = {}): void {
+  const scrollbackDirPath = scrollbackDir(configDir);
   fs.mkdirSync(scrollbackDirPath, { recursive: true });
 
   const serializedPty: SerializedPtySession[] = [];
+  let webSessionCount = 0;
 
   for (const session of sessions.values()) {
     if (session.mode === 'pty') {
       serializedPty.push(serializePtySession(session, scrollbackDirPath));
     } else {
+      webSessionCount++;
       // Web sessions persisted to relay-state.db on patch (debounced) +
       // structural events. Final shutdown snapshot for any not-yet-flushed
       // mutations is handled by upsertWebSessionNow before serializeAll.
@@ -634,16 +762,42 @@ function serializeAll(configDir: string): void {
     }
   }
 
+  const serializedAt = new Date().toISOString();
+  const serializedSessionIds = new Set(serializedPty.map((s) => s.id));
+  const preservedFailures = preservedPendingRestoreFailures(
+    configDir,
+    serializedSessionIds
+  );
+  const freshSerializedPty = serializedPty.map((session) => ({
+    ...session,
+    pendingSince: serializedAt,
+  }));
+  const sessionsToWrite = preservedFailures
+    ? [...freshSerializedPty, ...preservedFailures.sessions]
+    : freshSerializedPty;
+
+  const reason = options.reason ?? 'unspecified';
   const pending: PendingSessionsFile = {
-    version: 6,
-    timestamp: new Date().toISOString(),
-    sessions: serializedPty,
+    version: Math.max(6, preservedFailures?.version ?? 6),
+    timestamp: serializedAt,
+    reason,
+    sessions: sessionsToWrite,
   };
 
-  fs.writeFileSync(
-    path.join(configDir, 'pending-sessions.json'),
-    JSON.stringify(pending, null, 2),
-    'utf-8'
+  writePendingSessionsFile(configDir, pending);
+  const pruned = pruneScrollbackFiles(
+    scrollbackDirPath,
+    new Set(sessionsToWrite.map((s) => s.id))
+  );
+
+  logger.info(
+    'serialized sessions for restart: reason=%s pty=%d preservedFailedPty=%d web=%d prunedScrollback=%d configDir=%s',
+    reason,
+    serializedPty.length,
+    preservedFailures?.sessions.length ?? 0,
+    webSessionCount,
+    pruned,
+    configDir
   );
 }
 
@@ -663,8 +817,13 @@ function readPendingSessionsFile(
     return JSON.parse(
       fs.readFileSync(pendingPath, 'utf-8')
     ) as PendingSessionsFile;
-  } catch {
-    fs.unlinkSync(pendingPath);
+  } catch (err) {
+    logger.warn(
+      'failed to read pending sessions manifest %s: %s',
+      pendingPath,
+      err
+    );
+    removePendingSessionsFile(pendingPath);
     return null;
   }
 }
@@ -1055,74 +1214,202 @@ function syncDisplayNameCounters(): void {
   }
 }
 
-async function restoreFromDisk(
+function assertRestorableCwd(s: SerializedPtySession): void {
+  if (!s.cwd || !fs.existsSync(s.cwd)) {
+    throw new Error(`restore cwd is unavailable: ${s.cwd || '<empty>'}`);
+  }
+}
+
+function removePendingSessionsFile(pendingPath: string): void {
+  try {
+    fs.unlinkSync(pendingPath);
+  } catch {
+    /* ignore */
+  }
+}
+
+function pendingSessionsAgeMs(pending: PendingSessionsFile): number | null {
+  const timestampMs = Date.parse(pending.timestamp);
+  if (!Number.isFinite(timestampMs)) return null;
+  return Date.now() - timestampMs;
+}
+
+function pendingSessionAgeMs(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): number | null {
+  const timestampMs = Date.parse(session.pendingSince ?? pending.timestamp);
+  if (!Number.isFinite(timestampMs)) return null;
+  return Date.now() - timestampMs;
+}
+
+function isPendingSessionStale(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): boolean {
+  const ageMs = pendingSessionAgeMs(pending, session);
+  return ageMs === null || ageMs > STALE_THRESHOLD_MS;
+}
+
+function withPendingSince(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): SerializedPtySession {
+  return {
+    ...session,
+    pendingSince: session.pendingSince ?? pending.timestamp,
+  };
+}
+
+function migratePendingSessionsFile(
+  pending: PendingSessionsFile,
+  workspaces?: string[]
+): void {
+  if (pending.version <= 2) migrateV2ToV3(pending.sessions, workspaces ?? []);
+  if (pending.version <= 3) migrateV3ToV4(pending.sessions);
+}
+
+async function tryRestorePtySession(
+  s: SerializedPtySession,
+  pendingVersion: number,
+  scrollbackDirPath: string,
+  frameworks?: Record<string, Partial<AgentFramework>>
+): Promise<boolean> {
+  const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
+  try {
+    if (pendingVersion >= 6) assertRestorableCwd(s);
+    const spawn = await resolveSessionSpawnParams(s, frameworks);
+    restoreSession(s, spawn, initialScrollback);
+    return true;
+  } catch (err) {
+    logger.error(`Failed to restore session ${s.id} (${s.displayName})`, err);
+    return false;
+  }
+}
+
+function preserveFailedPendingSessions(
+  configDir: string,
+  pending: PendingSessionsFile,
+  failedSessions: SerializedPtySession[]
+): void {
+  // Keep the original timestamp so repeatedly-failed restore records still age
+  // out under STALE_THRESHOLD_MS instead of being made fresh on every dev
+  // restart. Rapid restart loops retry within the window; genuinely stale
+  // failures are cleaned with their scrollback on a later startup.
+  const retrySessions = failedSessions.map((session) =>
+    withPendingSince(pending, session)
+  );
+  writePendingSessionsFile(configDir, {
+    ...pending,
+    sessions: retrySessions,
+  });
+  pruneScrollbackFiles(
+    scrollbackDir(configDir),
+    new Set(retrySessions.map((s) => s.id))
+  );
+}
+
+async function restoreFreshPendingSessions(
+  configDir: string,
+  pending: PendingSessionsFile,
+  workspaces?: string[],
+  frameworks?: Record<string, Partial<AgentFramework>>
+): Promise<number> {
+  migratePendingSessionsFile(pending, workspaces);
+  const failedSessions: SerializedPtySession[] = [];
+  const scrollbackDirPath = scrollbackDir(configDir);
+  let restored = 0;
+
+  for (const s of pending.sessions) {
+    const ok = await tryRestorePtySession(
+      s,
+      pending.version,
+      scrollbackDirPath,
+      frameworks
+    );
+    if (ok) restored++;
+    else failedSessions.push(s);
+  }
+
+  if (failedSessions.length > 0) {
+    preserveFailedPendingSessions(configDir, pending, failedSessions);
+  } else {
+    removePendingSessionsFile(pendingSessionsPath(configDir));
+    removeScrollbackDir(configDir, 'successful pending restore');
+  }
+
+  return restored;
+}
+
+async function restorePendingSessionsFromDisk(
   configDir: string,
   workspaces?: string[],
   frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<number> {
-  let restored = 0;
-
-  const pendingPath = path.join(configDir, 'pending-sessions.json');
-  if (fs.existsSync(pendingPath)) {
-    const pending = readPendingSessionsFile(pendingPath);
-    if (
-      pending &&
-      Date.now() - new Date(pending.timestamp).getTime() <= STALE_THRESHOLD_MS
-    ) {
-      if (pending.version <= 2) {
-        migrateV2ToV3(pending.sessions, workspaces ?? []);
-      }
-      if (pending.version <= 3) {
-        migrateV3ToV4(pending.sessions);
-      }
-
-      const scrollbackDirPath = path.join(configDir, 'scrollback');
-      for (const s of pending.sessions) {
-        const scrollbackPath = path.join(scrollbackDirPath, s.id + '.buf');
-        const initialScrollback = loadScrollback(scrollbackDirPath, s.id);
-
-        const spawn = await resolveSessionSpawnParams(s, frameworks);
-
-        try {
-          restoreSession(s, spawn, initialScrollback);
-          restored++;
-        } catch (err) {
-          logger.error(
-            `Failed to restore session ${s.id} (${s.displayName})`,
-            err
-          );
-        }
-
-        try {
-          fs.unlinkSync(scrollbackPath);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    try {
-      fs.unlinkSync(pendingPath);
-    } catch {
-      /* ignore */
-    }
-    // Recursively wipe scrollback dir. When pending was stale (or unreadable)
-    // per-session scrollback files weren't cleaned up by the restore loop;
-    // remove them here so stale buffers don't accumulate across restarts.
-    try {
-      fs.rmSync(path.join(configDir, 'scrollback'), {
-        recursive: true,
-        force: true,
-      });
-    } catch {
-      /* ignore */
-    }
+  const pendingPath = pendingSessionsPath(configDir);
+  if (!fs.existsSync(pendingPath)) {
+    removeScrollbackDir(configDir, 'missing pending manifest');
+    return 0;
   }
 
+  const pending = readPendingSessionsFile(pendingPath);
+  if (!pending) {
+    removeScrollbackDir(configDir, 'unreadable pending manifest');
+    return 0;
+  }
+
+  const ageMs = pendingSessionsAgeMs(pending);
+  logger.info(
+    'found pending sessions manifest: reason=%s version=%d pty=%d ageMs=%s configDir=%s',
+    pending.reason ?? 'unspecified',
+    pending.version,
+    pending.sessions.length,
+    ageMs === null ? 'invalid' : String(ageMs),
+    configDir
+  );
+
+  const freshSessions = pending.sessions
+    .filter((session) => !isPendingSessionStale(pending, session))
+    .map((session) => withPendingSince(pending, session));
+  const staleSessionCount = pending.sessions.length - freshSessions.length;
+  if (freshSessions.length === 0) {
+    logger.warn(
+      'discarding stale pending sessions manifest: reason=%s version=%d pty=%d ageMs=%s configDir=%s',
+      pending.reason ?? 'unspecified',
+      pending.version,
+      pending.sessions.length,
+      ageMs === null ? 'invalid' : String(ageMs),
+      configDir
+    );
+    removePendingSessionsFile(pendingPath);
+    removeScrollbackDir(configDir, 'stale pending manifest');
+    return 0;
+  }
+  if (staleSessionCount > 0) {
+    logger.warn(
+      'dropping stale pending session records: reason=%s version=%d stalePty=%d freshPty=%d ageMs=%s configDir=%s',
+      pending.reason ?? 'unspecified',
+      pending.version,
+      staleSessionCount,
+      freshSessions.length,
+      ageMs === null ? 'invalid' : String(ageMs),
+      configDir
+    );
+  }
+
+  return restoreFreshPendingSessions(
+    configDir,
+    { ...pending, sessions: freshSessions },
+    workspaces,
+    frameworks
+  );
+}
+
+async function restoreWebSessionsFromDb(): Promise<number> {
+  let restored = 0;
   // Web sessions live in relay-state.db. No staleness wipe — DB rows persist
   // until user archives or closes the session.
-  const dbRows = loadAllWebSessions();
-  for (const row of dbRows) {
+  for (const row of loadAllWebSessions()) {
     try {
       await restoreWebSessionFromDb(row);
       restored++;
@@ -1133,10 +1420,22 @@ async function restoreFromDisk(
       );
     }
   }
-
-  syncDisplayNameCounters();
-
   return restored;
+}
+
+async function restoreFromDisk(
+  configDir: string,
+  workspaces?: string[],
+  frameworks?: Record<string, Partial<AgentFramework>>
+): Promise<number> {
+  const restoredPty = await restorePendingSessionsFromDisk(
+    configDir,
+    workspaces,
+    frameworks
+  );
+  const restoredWeb = await restoreWebSessionsFromDb();
+  syncDisplayNameCounters();
+  return restoredPty + restoredWeb;
 }
 
 /** Returns the set of tmux session names currently owned by restored sessions */

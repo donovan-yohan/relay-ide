@@ -1,4 +1,4 @@
-import { describe, it, afterAll, afterEach, beforeAll, expect } from 'vitest';
+import { describe, it, afterAll, afterEach, beforeAll, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,13 +21,24 @@ const execFileAsync = promisify(execFile);
 const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
 let tmuxTmpdir: string;
 
+// Tmux tests run in a full-suite worker pool while other files also mutate
+// process.env.TMUX_TMPDIR. Pin every tmux CLI assertion/cleanup to this file's
+// socket dir so another test file cannot accidentally kill or query our server.
+function tmuxCommandEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, TMUX_TMPDIR: tmuxTmpdir };
+}
+
+function execTmux(args: string[]) {
+  return execFileAsync('tmux', args, { env: tmuxCommandEnv() });
+}
+
 beforeAll(() => {
   tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-tmux-'));
   process.env.TMUX_TMPDIR = tmuxTmpdir;
 });
 
 afterAll(async () => {
-  await execFileAsync('tmux', ['kill-server']).catch(() => {});
+  await execTmux(['kill-server']).catch(() => {});
   if (originalTmuxTmpdir === undefined) {
     delete process.env.TMUX_TMPDIR;
   } else {
@@ -43,13 +54,13 @@ function delay(ms: number): Promise<void> {
 async function waitForTmuxSession(name: string): Promise<void> {
   for (let i = 0; i < 20; i++) {
     try {
-      await execFileAsync('tmux', ['has-session', '-t', name]);
+      await execTmux(['has-session', '-t', name]);
       return;
     } catch {
       await delay(50);
     }
   }
-  await execFileAsync('tmux', ['has-session', '-t', name]);
+  await execTmux(['has-session', '-t', name]);
 }
 
 async function waitForSessionRemoval(id: string): Promise<void> {
@@ -659,11 +670,11 @@ describe('sessions', () => {
       await waitForSessionRemoval(result.id);
 
       await expect(
-        execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+        execTmux(['has-session', '-t', tmuxSessionName])
       ).resolves.toBeTruthy();
       expect(fs.existsSync(sentinelPath)).toBe(true);
     } finally {
-      await execFileAsync('tmux', [
+      await execTmux([
         'kill-session',
         '-t',
         tmuxSessionName,
@@ -808,6 +819,30 @@ describe('session persistence', () => {
     return tmpDir;
   }
 
+  function pendingPtySession(
+    id: string,
+    overrides: Record<string, unknown> = {}
+  ) {
+    const timestamp = new Date().toISOString();
+    return {
+      id,
+      type: 'agent' as const,
+      agent: 'claude' as const,
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      repoName: 'test',
+      branchName: '',
+      displayName: id,
+      createdAt: timestamp,
+      lastActivity: timestamp,
+      useTmux: true,
+      tmuxSessionName: `relay-ide-${id}`,
+      customCommand: '/bin/cat',
+      ...overrides,
+    };
+  }
+
   it('serializeAll writes pending-sessions.json and scrollback files', () => {
     const configDir = createTmpDir();
 
@@ -826,13 +861,14 @@ describe('session persistence', () => {
     expect(session!.mode).toBe('pty');
     (session as PtySession).scrollback.push('hello world');
 
-    serializeAll(configDir);
+    serializeAll(configDir, { reason: 'dev-restart' });
 
     // Check pending-sessions.json
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
     expect(pending.version).toBe(6);
+    expect(pending.reason).toBe('dev-restart');
     expect(pending.timestamp).toBeTruthy();
     expect(pending.sessions.length).toBe(1);
     expect(pending.sessions[0].id).toBe(s.id);
@@ -844,6 +880,32 @@ describe('session persistence', () => {
     expect(fs.existsSync(scrollbackPath)).toBeTruthy();
     const scrollbackData = fs.readFileSync(scrollbackPath, 'utf-8');
     expect(scrollbackData).toContain('hello world');
+  });
+
+  it('serializeAll prunes scrollback files that are not in the new manifest', () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    const orphanPath = path.join(scrollbackDir, 'orphan.buf');
+    fs.writeFileSync(orphanPath, 'stale output');
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    const session = sessions.get(s.id);
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
+    (session as PtySession).scrollback.push('current output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    expect(fs.existsSync(path.join(scrollbackDir, `${s.id}.buf`))).toBe(true);
+    expect(fs.existsSync(orphanPath)).toBe(false);
   });
 
   it('restoreFromDisk restores sessions with original IDs', async () => {
@@ -927,10 +989,314 @@ describe('session persistence', () => {
       path.join(configDir, 'pending-sessions.json'),
       JSON.stringify(pending)
     );
+    fs.mkdirSync(path.join(configDir, 'scrollback'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'scrollback', 'stale-id.buf'),
+      'stale'
+    );
 
     const restored = await restoreFromDisk(configDir);
     expect(restored).toBe(0);
     expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(path.join(configDir, 'scrollback'))).toBe(false);
+  });
+
+  it('restoreFromDisk removes malformed timestamp pending files and scrollback', async () => {
+    const configDir = createTmpDir();
+    const pending = {
+      version: 6,
+      timestamp: 'not-a-date',
+      reason: 'dev-restart',
+      sessions: [
+        {
+          id: 'bad-timestamp-id',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test',
+          branchName: '',
+          displayName: 'bad timestamp',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: true,
+          tmuxSessionName: 'relay-ide-bad-timestamp',
+          customCommand: '/bin/cat',
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'bad-timestamp-id.buf'), 'stale');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk removes orphan scrollback when no pending manifest exists', async () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'orphan.buf'), 'old output');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk keeps failed restore records and scrollback for a retry', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp,
+      sessions: [
+        {
+          id: 'restore-failure-kept',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: path.join(configDir, 'missing-cwd'),
+          repoName: 'test',
+          branchName: '',
+          displayName: 'retry-me',
+          createdAt: timestamp,
+          lastActivity: timestamp,
+          useTmux: true,
+          tmuxSessionName: 'relay-ide-retry-me-failure',
+          customCommand: '/bin/cat',
+          hookToken: 'keep-token',
+          hooksActive: true,
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'restore-failure-kept.buf'),
+      'important output'
+    );
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(retryPending.sessions).toHaveLength(1);
+    expect(retryPending.timestamp).toBe(timestamp);
+    expect(retryPending.sessions[0].id).toBe('restore-failure-kept');
+    expect(retryPending.sessions[0].hookToken).toBe('keep-token');
+    expect(
+      fs.readFileSync(
+        path.join(scrollbackDir, 'restore-failure-kept.buf'),
+        'utf-8'
+      )
+    ).toBe('important output');
+  });
+
+  it('serializeAll preserves failed restore records across the next clean restart', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp,
+      sessions: [
+        pendingPtySession('restore-ok', {
+          displayName: 'restores cleanly',
+          tmuxSessionName: 'relay-ide-restores-cleanly',
+        }),
+        pendingPtySession('restore-fails', {
+          cwd: path.join(configDir, 'missing-cwd'),
+          displayName: 'fails transiently',
+          tmuxSessionName: 'relay-ide-fails-transiently',
+          hookToken: 'failed-token',
+        }),
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'restore-ok.buf'), 'a output');
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'restore-fails.buf'),
+      'b output'
+    );
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(1);
+    expect(sessions.get('restore-ok')).toBeTruthy();
+    const failedOnlyPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(failedOnlyPending.sessions.map((s: { id: string }) => s.id)).toEqual([
+      'restore-fails',
+    ]);
+    expect(failedOnlyPending.timestamp).toBe(timestamp);
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    const retrySessions = retryPending.sessions as Array<{
+      id: string;
+      hookToken?: string;
+      pendingSince?: string;
+    }>;
+    expect(retryPending.timestamp).toBeTruthy();
+    expect(retrySessions.map((s) => s.id).sort()).toEqual([
+      'restore-fails',
+      'restore-ok',
+    ]);
+    const failedRetry = retrySessions.find((s) => s.id === 'restore-fails');
+    const liveRetry = retrySessions.find((s) => s.id === 'restore-ok');
+    expect(failedRetry?.pendingSince).toBe(timestamp);
+    expect(liveRetry?.pendingSince).toBe(retryPending.timestamp);
+    expect(failedRetry?.hookToken).toBe('failed-token');
+    expect(fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')).toBe(
+      'b output'
+    );
+  });
+
+  it('serializeAll keeps fresh live sessions restorable when old preserved failures age out', async () => {
+    const configDir = createTmpDir();
+    const nowMs = Date.now();
+    const nearlyStaleTime = new Date(
+      nowMs - (5 * 60 * 1000 - 1000)
+    ).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: nearlyStaleTime,
+      sessions: [
+        pendingPtySession('old-restore-fails', {
+          cwd: path.join(configDir, 'missing-cwd'),
+          displayName: 'old failed restore',
+          tmuxSessionName: 'relay-ide-old-failed-restore',
+          pendingSince: nearlyStaleTime,
+        }),
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'old-restore-fails.buf'),
+      'old failed output'
+    );
+
+    const live = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      displayName: 'fresh live session',
+    });
+    const liveSession = sessions.get(live.id);
+    expect(liveSession).toBeTruthy();
+    expect(liveSession!.mode).toBe('pty');
+    (liveSession as PtySession).scrollback.push('fresh output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    const serializedSessions = serialized.sessions as Array<{
+      id: string;
+      pendingSince?: string;
+    }>;
+    const serializedFailure = serializedSessions.find(
+      (session) => session.id === 'old-restore-fails'
+    );
+    const serializedLive = serializedSessions.find(
+      (session) => session.id === live.id
+    );
+    expect(serializedFailure?.pendingSince).toBe(nearlyStaleTime);
+    expect(serializedLive?.pendingSince).toBe(serialized.timestamp);
+
+    sessions.kill(live.id);
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs + 2000);
+    try {
+      const restored = await restoreFromDisk(configDir);
+
+      expect(restored).toBe(1);
+      expect(sessions.get(live.id)).toBeTruthy();
+      expect(sessions.get('old-restore-fails')).toBeUndefined();
+      expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+        false
+      );
+      expect(fs.existsSync(scrollbackDir)).toBe(false);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it('serializeAll prunes stale failed restore records instead of refreshing them', () => {
+    const configDir = createTmpDir();
+    const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: staleTime,
+      sessions: [pendingPtySession('stale-failure')],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'stale-failure.buf'), 'old output');
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(retryPending.sessions.map((session: { id: string }) => session.id)).toEqual([
+      s.id,
+    ]);
+    expect(fs.existsSync(path.join(scrollbackDir, 'stale-failure.buf'))).toBe(
       false
     );
   });

@@ -20,6 +20,16 @@ const execFileAsync = promisify(execFile);
 const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
 let tmuxTmpdir: string;
 
+// Keep tmux cleanup pinned to this file's socket dir. Full-suite runs may have
+// other tmux-backed test files mutating process.env.TMUX_TMPDIR concurrently.
+function tmuxCommandEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, TMUX_TMPDIR: tmuxTmpdir };
+}
+
+function execTmux(args: string[]) {
+  return execFileAsync('tmux', args, { env: tmuxCommandEnv() });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -51,7 +61,7 @@ describe('PTY multi-agent hook/plugin wiring', () => {
   });
 
   afterAll(async () => {
-    await execFileAsync('tmux', ['kill-server']).catch(() => {});
+    await execTmux(['kill-server']).catch(() => {});
     if (originalTmuxTmpdir === undefined) {
       delete process.env.TMUX_TMPDIR;
     } else {
