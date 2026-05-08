@@ -82,6 +82,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -210,5 +211,41 @@ describe('per-session PTY routing', () => {
     expect(sockets[0]!.close).toHaveBeenCalled();
     expect(sockets).toHaveLength(2);
     expect(sockets[1]!.url).toContain('/ws/sess-a');
+  });
+
+  it('reconnects an open PTY after server-restarting followed by clean close', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === '/auth/check') return { status: 200 };
+        if (url === '/sessions') {
+          return { json: async () => [{ id: 'sess-a' }] };
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      })
+    );
+    const ws = await importWs();
+    const term = fakeTerm();
+    const onEnd = vi.fn();
+    ws.connectPtySocket('sess-a', term, vi.fn(), onEnd);
+    sockets[0]!.__triggerOpen();
+
+    ws.connectEventSocket(vi.fn());
+    sockets[1]!.onmessage?.({
+      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+    } as MessageEvent);
+    sockets[0]!.readyState = FakeWebSocket.CLOSED;
+    sockets[0]!.onclose?.({ code: 1000 } as CloseEvent);
+
+    expect(term.write).not.toHaveBeenCalledWith('\r\n[Session ended]\r\n');
+    expect(onEnd).not.toHaveBeenCalled();
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(term.clear).toHaveBeenCalled();
+    expect(sockets).toHaveLength(3);
+    expect(sockets[2]!.url).toContain('/ws/sess-a');
   });
 });

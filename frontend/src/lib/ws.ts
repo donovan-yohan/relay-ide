@@ -75,7 +75,7 @@ export type EventMessage =
     }
   | { type: 'browser-tab-opened'; filePath: string; token: string }
   | { type: 'browser-tab-refreshed'; filePath: string }
-  | { type: 'server-restarting' };
+  | { type: 'server-restarting'; reason?: string };
 
 type EventCallback = (msg: EventMessage) => void;
 type EventOpenCallback = () => void;
@@ -91,6 +91,7 @@ const HIGH_WATER_MARK = 512 * 1024;
 const LOW_WATER_MARK = 128 * 1024;
 const MAX_QUEUE_SIZE = 2 * 1024 * 1024;
 const BG_FLUSH_INTERVAL = 250;
+const SERVER_RESTART_CLEAN_CLOSE_RECONNECT_WINDOW_MS = 30_000;
 
 // ── Event socket (singleton; not per-session) ────────────────────────────────
 
@@ -131,7 +132,11 @@ export function connectEventSocket(
     if (eventPongPending) clearEventPongTimeout();
     if (str === PONG_MSG) return;
     try {
-      onMessage(JSON.parse(str));
+      const msg = JSON.parse(str) as EventMessage;
+      if (msg.type === 'server-restarting') {
+        markPtyConnectionsForServerRestart();
+      }
+      onMessage(msg);
     } catch {
       /* ignore parse errors */
     }
@@ -218,6 +223,7 @@ interface PtyConnection {
 
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectAttempt: number;
+  reconnectOnCleanCloseUntil: number;
 
   pingTimer: ReturnType<typeof setInterval> | null;
   pongPending: boolean;
@@ -232,6 +238,32 @@ interface PtyConnection {
 }
 
 const ptyConnections = new Map<string, PtyConnection>();
+
+function markPtyConnectionsForServerRestart(): void {
+  const reconnectUntil =
+    Date.now() + SERVER_RESTART_CLEAN_CLOSE_RECONNECT_WINDOW_MS;
+  const sessions = useSessionsStore.getState();
+  ptyConnections.forEach((conn) => {
+    if (!conn.ws && !conn.pendingWs) return;
+    conn.reconnectOnCleanCloseUntil = Math.max(
+      conn.reconnectOnCleanCloseUntil,
+      reconnectUntil
+    );
+    sessions.beginPtyReconnect(conn.sessionId);
+  });
+}
+
+function shouldReconnectCleanPtyClose(conn: PtyConnection): boolean {
+  return conn.reconnectOnCleanCloseUntil > Date.now();
+}
+
+function beginPtyReconnect(conn: PtyConnection): void {
+  useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
+  if (conn.reconnectAttempt === 0) {
+    conn.term.write('\r\n[Reconnecting...]\r\n');
+  }
+  scheduleReconnect(conn);
+}
 
 function getActiveSessionId(): string | null {
   const sendTo = useUiStore.getState().sendToTargetSessionId;
@@ -339,6 +371,7 @@ export function connectPtySocket(
     onSessionEnd,
     reconnectTimer: null,
     reconnectAttempt: 0,
+    reconnectOnCleanCloseUntil: 0,
     pingTimer: null,
     pongPending: false,
     pongTimeout: null,
@@ -363,6 +396,7 @@ function openPtySocket(conn: PtyConnection): void {
     conn.pendingWs = null;
     conn.ws = socket;
     conn.reconnectAttempt = 0;
+    conn.reconnectOnCleanCloseUntil = 0;
     conn.onResize();
     startPtyPing(conn);
     useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
@@ -415,6 +449,11 @@ function openPtySocket(conn: PtyConnection): void {
     if (wasActive) conn.ws = null;
     if (!wasPending && !wasActive) return;
 
+    if (event.code === 1000 && shouldReconnectCleanPtyClose(conn)) {
+      beginPtyReconnect(conn);
+      return;
+    }
+
     if (event.code === 1000) {
       conn.term.write('\r\n[Session ended]\r\n');
       useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
@@ -422,11 +461,7 @@ function openPtySocket(conn: PtyConnection): void {
       conn.onSessionEnd();
       return;
     }
-    useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
-    if (conn.reconnectAttempt === 0) {
-      conn.term.write('\r\n[Reconnecting...]\r\n');
-    }
-    scheduleReconnect(conn);
+    beginPtyReconnect(conn);
   };
 
   socket.onerror = () => {};
@@ -517,11 +552,7 @@ function forceReconnectPty(conn: PtyConnection): void {
     conn.ws.close();
     conn.ws = null;
   }
-  useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
-  if (conn.reconnectAttempt === 0) {
-    conn.term.write('\r\n[Reconnecting...]\r\n');
-  }
-  scheduleReconnect(conn);
+  beginPtyReconnect(conn);
 }
 
 export function disconnectPtySocket(sessionId: string): void {
