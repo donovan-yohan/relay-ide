@@ -27,6 +27,7 @@ if (args.includes('--help') || args.includes('-h')) {
        relay-ide <command>
 
 Commands:
+  dev                Run backend + Vite frontend with HMR (source checkout)
   update             Update to the latest version from npm
   install            Install as a background service (survives reboot)
   uninstall          Stop and remove the background service
@@ -83,6 +84,11 @@ function runServiceCommand(fn: () => void): never {
 }
 
 const command = args[0];
+if (command === 'dev') {
+  await import('../scripts/dev.js');
+  await new Promise(() => {});
+}
+
 if (command === 'update') {
   try {
     const pkg = JSON.parse(

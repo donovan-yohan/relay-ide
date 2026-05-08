@@ -5,7 +5,8 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 ## Current State
 
 - React 19 with hooks, Zustand 5 for state management, TanStack React Query 5 for server state — TypeScript throughout
-- Vite builds `frontend/` to `dist/frontend/`; Express serves compiled output
+- Vite builds `frontend/` to `dist/frontend/`; Express serves compiled output in production
+- Source dev uses `npm run dev`: real backend on `127.0.0.1:3457`, Vite HMR frontend on `127.0.0.1:5173`, with REST and `/ws/*` requests proxied so frontend code keeps relative fetch/WebSocket URLs
 - xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while tmux owns the server-side session/process substrate
 - Mobile-first responsive design with touch toolbar (hidden on desktop)
 
