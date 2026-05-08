@@ -80,19 +80,21 @@
   width: 22px;
   height: 22px;
   border-radius: 0;
-  border: none;
+  border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   padding: 0;
   transition:
     color 0.12s,
-    background 0.12s;
+    background 0.12s,
+    border-color 0.12s;
 }
 
 .refresh-btn:hover:not(:disabled) {
   color: var(--text);
-  background: var(--border);
+  border-color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
 .refresh-btn:disabled {
@@ -110,6 +112,26 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+.source-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 220px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.source-label {
+  color: var(--text-muted);
+}
+
+.source-updated {
+  color: color-mix(in srgb, var(--text-muted) 78%, transparent);
 }
 
 .bar-merged {
@@ -224,7 +246,8 @@
 
   .target-section,
   .bar-middle,
-  .diff-stats {
+  .diff-stats,
+  .source-updated {
     display: none;
   }
 

@@ -21,7 +21,7 @@ export const config: Record<
 
 export function getPulseClass(state: DisplayState): string {
   if (state === 'permission' || state === 'needs-answer') return 'pulse-fast';
-  if (state === 'unseen-idle') return 'pulse-slow';
+  if (state === 'unseen-idle' || state === 'initializing') return 'pulse-slow';
   return '';
 }
 
