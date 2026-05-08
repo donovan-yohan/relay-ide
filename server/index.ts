@@ -85,10 +85,7 @@ import { createIntegrationJiraRouter } from './integration-jira.js';
 import { startPolling, stopPolling } from './review-poller.js';
 import { createGitHubAppRouter } from './github-app.js';
 import { createWebhookRouter } from './webhooks.js';
-import {
-  createWebhookManagerRouter,
-  reloadSmee,
-} from './webhook-manager.js';
+import { createWebhookManagerRouter, reloadSmee } from './webhook-manager.js';
 import { fetchPrsGraphQL } from './github-graphql.js';
 import {
   createTelemetryRouter,
@@ -766,7 +763,9 @@ function sessionCreateFailureMessage(err: unknown): string {
   if (!(err instanceof Error)) return 'Failed to create session.';
   // Surface the underlying message so failures (codex spawn, app-server
   // handshake, thread/start, etc.) reach the UI instead of a generic banner.
-  return err.message ? `Failed to create session: ${err.message}` : 'Failed to create session.';
+  return err.message
+    ? `Failed to create session: ${err.message}`
+    : 'Failed to create session.';
 }
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
@@ -2556,7 +2555,7 @@ async function main(): Promise<void> {
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
-        serializeAll(configDir);
+        serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
         broadcastEvent('server-restarting');
@@ -2629,7 +2628,9 @@ async function main(): Promise<void> {
     server.close();
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
-    serializeAll(configDir);
+    serializeAll(configDir, {
+      reason: process.env.NO_PIN === '1' ? 'dev-restart' : 'signal-shutdown',
+    });
     flushRelayStateWrites();
     closeRelayStateDb();
     for (const s of sessions.list()) {

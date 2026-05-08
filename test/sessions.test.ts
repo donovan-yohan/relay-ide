@@ -826,13 +826,14 @@ describe('session persistence', () => {
     expect(session!.mode).toBe('pty');
     (session as PtySession).scrollback.push('hello world');
 
-    serializeAll(configDir);
+    serializeAll(configDir, { reason: 'dev-restart' });
 
     // Check pending-sessions.json
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
     expect(pending.version).toBe(6);
+    expect(pending.reason).toBe('dev-restart');
     expect(pending.timestamp).toBeTruthy();
     expect(pending.sessions.length).toBe(1);
     expect(pending.sessions[0].id).toBe(s.id);
@@ -844,6 +845,32 @@ describe('session persistence', () => {
     expect(fs.existsSync(scrollbackPath)).toBeTruthy();
     const scrollbackData = fs.readFileSync(scrollbackPath, 'utf-8');
     expect(scrollbackData).toContain('hello world');
+  });
+
+  it('serializeAll prunes scrollback files that are not in the new manifest', () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    const orphanPath = path.join(scrollbackDir, 'orphan.buf');
+    fs.writeFileSync(orphanPath, 'stale output');
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+    const session = sessions.get(s.id);
+    expect(session).toBeTruthy();
+    expect(session!.mode).toBe('pty');
+    (session as PtySession).scrollback.push('current output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    expect(fs.existsSync(path.join(scrollbackDir, `${s.id}.buf`))).toBe(true);
+    expect(fs.existsSync(orphanPath)).toBe(false);
   });
 
   it('restoreFromDisk restores sessions with original IDs', async () => {
@@ -927,12 +954,129 @@ describe('session persistence', () => {
       path.join(configDir, 'pending-sessions.json'),
       JSON.stringify(pending)
     );
+    fs.mkdirSync(path.join(configDir, 'scrollback'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'scrollback', 'stale-id.buf'),
+      'stale'
+    );
 
     const restored = await restoreFromDisk(configDir);
     expect(restored).toBe(0);
     expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
       false
     );
+    expect(fs.existsSync(path.join(configDir, 'scrollback'))).toBe(false);
+  });
+
+  it('restoreFromDisk removes malformed timestamp pending files and scrollback', async () => {
+    const configDir = createTmpDir();
+    const pending = {
+      version: 6,
+      timestamp: 'not-a-date',
+      reason: 'dev-restart',
+      sessions: [
+        {
+          id: 'bad-timestamp-id',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: '/tmp',
+          repoName: 'test',
+          branchName: '',
+          displayName: 'bad timestamp',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          useTmux: true,
+          tmuxSessionName: 'relay-ide-bad-timestamp',
+          customCommand: '/bin/cat',
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'bad-timestamp-id.buf'), 'stale');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+      false
+    );
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk removes orphan scrollback when no pending manifest exists', async () => {
+    const configDir = createTmpDir();
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'orphan.buf'), 'old output');
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    expect(fs.existsSync(scrollbackDir)).toBe(false);
+  });
+
+  it('restoreFromDisk keeps failed restore records and scrollback for a retry', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp,
+      sessions: [
+        {
+          id: 'restore-failure-kept',
+          type: 'agent' as const,
+          agent: 'claude' as const,
+          repoPath: '/tmp',
+          worktreePath: null,
+          cwd: path.join(configDir, 'missing-cwd'),
+          repoName: 'test',
+          branchName: '',
+          displayName: 'retry-me',
+          createdAt: timestamp,
+          lastActivity: timestamp,
+          useTmux: true,
+          tmuxSessionName: 'relay-ide-retry-me-failure',
+          customCommand: '/bin/cat',
+          hookToken: 'keep-token',
+          hooksActive: true,
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'restore-failure-kept.buf'),
+      'important output'
+    );
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(0);
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(retryPending.sessions).toHaveLength(1);
+    expect(retryPending.timestamp).toBe(timestamp);
+    expect(retryPending.sessions[0].id).toBe('restore-failure-kept');
+    expect(retryPending.sessions[0].hookToken).toBe('keep-token');
+    expect(
+      fs.readFileSync(
+        path.join(scrollbackDir, 'restore-failure-kept.buf'),
+        'utf-8'
+      )
+    ).toBe('important output');
   });
 
   it('restoreFromDisk handles missing scrollback gracefully', async () => {
