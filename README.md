@@ -255,7 +255,7 @@ relay-ide/
 │   └── types.ts        # Shared TypeScript interfaces
 ├── frontend/
 │   └── src/
-│       ├── components/  # React components (Sidebar, Terminal, SessionTabBar, etc.)
+│       ├── components/  # React components (Sidebar, Terminal, WorkspaceArea, etc.)
 │       ├── lib/state/   # Pure UI state modules
 │       ├── lib/api.ts   # REST API client
 │       ├── lib/ws.ts    # WebSocket connection management

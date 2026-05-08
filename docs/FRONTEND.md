@@ -13,12 +13,11 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 
 | Component                            | Role                                                                                                                                                                 |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `App.tsx`                            | Root layout: left sidebar + SplitPaneLayout (terminal / FileViewerPane / WorkspaceUtilityRail) for session view; dashboard / PR top bar + tabs for non-session views |
+| `App.tsx`                            | Root layout: left sidebar + SplitPaneLayout hosting WorkspaceArea and WorkspaceUtilityRail for session view; dashboard / PR top bar + tabs for non-session views |
 | `Sidebar.tsx`                        | Flat workspace list with command palette search                                                                                                                      |
 | `RepoItem.tsx`                       | Repo tree item: sessions, inactive worktrees, context menus, workspace group membership                                                                              |
 | `CommandPalette.tsx`                 | Terminal-style command palette with action registry                                                                                                                  |
 | `PrTopBar.tsx`                       | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                                 |
-| `SessionTabBar.tsx`                  | Multi-tab session management per worktree (role=tablist)                                                                                                             |
 | `RepoDashboard.tsx`                  | Workspace dashboard: PRs with merge status, activity feed, CTAs                                                                                                      |
 | `BranchSwitcher.tsx`                 | Worktree-aware branch dropdown: filter, create new branch, jump-to-session links, agent-running guard                                                                |
 | `TargetBranchSwitcher.tsx`           | PR base branch dropdown: remote-only branches, changes base via `gh pr edit`                                                                                         |
@@ -37,8 +36,8 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 | `UtilityRailLogsPanel.tsx`           | Logs utility pane shell for current session/activity output                                                                                                          |
 | `UtilityRailStatsPanel.tsx`          | Stats utility pane using telemetry summaries for active session and workspace                                                                                        |
 | `FileTreeSidebar.tsx`                | Reusable files panel implementation: changes tab (git diff tree), all files tab (lazy filesystem browser)                                                            |
-| `FileViewerPane.tsx`                 | File viewer pane: tab bar, DiffViewer for changed files, CodeBlock for raw files                                                                                     |
-| `SplitPaneLayout.tsx`                | Resizable 3-pane layout (terminal / file viewer / utility rail) with draggable resize handles                                                                        |
+| `WorkspaceArea.tsx`                  | Workspace tab layout host for session, terminal, code, diff, and HTML tabs with draggable panes                                                                      |
+| `SplitPaneLayout.tsx`                | Resizable layout wrapper for the workspace area and utility rail with draggable resize handles                                                                        |
 | `DiffViewer.tsx`                     | Unified diff renderer with diff2html parsing and Shiki syntax highlighting                                                                                           |
 | `CodeBlock.tsx`                      | Shared Shiki syntax highlighting wrapper component                                                                                                                   |
 | `OrgDashboard.tsx`                   | Cross-repo PR list and tickets panel with tab navigation                                                                                                             |
@@ -135,7 +134,7 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 - Settings dialog close triggers `refreshAll()` for immediate sidebar update
 - All dialogs are built on `DialogShell.tsx` — use the `fullscreen` prop for the Settings modal and omit it for compact dialogs (AddWorkspace, CustomizeSession, DeleteWorktree). DialogShell uses `popover="manual"` + `showPopover()`/`hidePopover()` to guarantee top-layer stacking above xterm.js canvas elements (z-index alone is insufficient for canvas stacking contexts)
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
-- **Utility rail + file viewer split** — `SplitPaneLayout` wraps the session view with `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle) and `FileViewerPane` (center, appears on demand when files are opened). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is persisted per workspace path in the UI store with stable tab identities for future draggable/anchored panes. `openFileTab()`/`closeFileTab()` in `UI hooks` drive file viewer tab state.
+- **Utility rail + workspace tabs** — `SplitPaneLayout` wraps the session view with `WorkspaceArea` (session/file/diff/html tabs) and `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is persisted per workspace path in the UI store; `openFileTab()`/`closeFileTab()` drive file tabs inside WorkspaceArea.
 - Root directory scanning: one level deep for git repos, hidden directories excluded
 
 ## Mobile Touch & Input

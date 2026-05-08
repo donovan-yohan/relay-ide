@@ -5,6 +5,7 @@ import { useUiStore } from '../lib/stores/ui.js';
 import { isMobileDevice, isMac } from '../lib/utils.js';
 import { setupShortcutListener } from '../lib/actions/shortcuts.js';
 import { getAllActions } from '../lib/actions/registry.js';
+import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { ActionContext } from '../lib/actions/types.js';
 
 export interface UseAppShortcutsParams {
@@ -13,7 +14,6 @@ export interface UseAppShortcutsParams {
   setPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setFilePickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   mainAppRef: React.RefObject<HTMLDivElement | null>;
-  terminalRef: React.RefObject<{ fitTerm: () => void } | null>;
   actionContextRef: React.RefObject<ActionContext>;
 }
 
@@ -141,8 +141,7 @@ function setupKeyboardShortcuts(ctx: ShortcutContext, actionContextRef: React.Re
 // ── Mobile viewport setup ────────────────────────────────────────────────────
 
 function setupMobileViewport(
-  mainAppRef: React.RefObject<HTMLDivElement | null>,
-  terminalRef: React.RefObject<{ fitTerm: () => void } | null>,
+  mainAppRef: React.RefObject<HTMLDivElement | null>
 ): (() => void) | undefined {
   if (!isMobileDevice || !window.visualViewport) return undefined;
 
@@ -158,7 +157,7 @@ function setupMobileViewport(
     }
     window.scrollTo(0, 0);
     if (fitTimer) clearTimeout(fitTimer);
-    fitTimer = setTimeout(() => terminalRef.current?.fitTerm(), 100);
+    fitTimer = setTimeout(() => getActiveTerminalHandle()?.fitTerm(), 100);
   };
 
   vv.addEventListener('resize', onViewportResize);
@@ -272,7 +271,6 @@ export function useAppShortcuts(params: UseAppShortcutsParams): void {
     setPickerOpen,
     setFilePickerOpen,
     mainAppRef,
-    terminalRef,
     actionContextRef,
   } = params;
 
@@ -285,7 +283,7 @@ export function useAppShortcuts(params: UseAppShortcutsParams): void {
     };
 
     const cleanupKeydown = setupKeyboardShortcuts(shortcutCtx, actionContextRef);
-    const cleanupViewport = setupMobileViewport(mainAppRef, terminalRef);
+    const cleanupViewport = setupMobileViewport(mainAppRef);
     const cleanupSwipe = setupEdgeSwipe();
     setupHardwareKeyboardDetection();
 

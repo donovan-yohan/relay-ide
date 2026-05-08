@@ -9,7 +9,6 @@ const TERMINAL_FONT_SIZE_KEY = 'claude-remote-terminal-font-size';
 const RIGHT_SIDEBAR_WIDTH_KEY = 'claude-remote-right-sidebar-width';
 const RIGHT_SIDEBAR_COLLAPSED_KEY = 'claude-remote-right-sidebar-collapsed';
 const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
-const FILE_VIEWER_WIDTH_KEY = 'claude-remote-file-viewer-width';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
@@ -24,7 +23,6 @@ export const MAX_TERMINAL_FONT_SIZE = 28;
 export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 220;
 export const MIN_RIGHT_SIDEBAR_WIDTH = 160;
 export const MAX_RIGHT_SIDEBAR_WIDTH = 400;
-export const DEFAULT_FILE_VIEWER_RATIO = 0.35;
 export const DEFAULT_UTILITY_RAIL_WIDTH = 320;
 export const MIN_UTILITY_RAIL_WIDTH = 220;
 export const MAX_UTILITY_RAIL_WIDTH = 640;
@@ -139,15 +137,6 @@ function loadRightSidebarWidth(): number {
       return val;
   }
   return DEFAULT_RIGHT_SIDEBAR_WIDTH;
-}
-
-function loadFileViewerRatio(): number {
-  const stored = ls(FILE_VIEWER_WIDTH_KEY);
-  if (stored) {
-    const val = parseFloat(stored);
-    if (val >= 0.15 && val <= 0.75) return val;
-  }
-  return DEFAULT_FILE_VIEWER_RATIO;
 }
 
 function loadDiffViewMode(): DiffViewMode {
@@ -498,7 +487,6 @@ export interface UiState {
   ) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
-  fileViewerRatio: number;
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
@@ -516,7 +504,6 @@ export interface UiState {
   setFileWordWrap: (v: boolean) => void;
   toggleRightSidebarCollapsed: () => void;
   saveRightSidebarWidth: () => void;
-  saveFileViewerRatio: () => void;
   openFileTab: (
     filePath: string,
     isChanged: boolean,
@@ -559,7 +546,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
   utilityRailByWorkspace: {},
   openFileTabs: [],
   activeFileTabKey: null,
-  fileViewerRatio: loadFileViewerRatio(),
   sendToTargetSessionId: null,
   analyticsView: null,
   activeModal: null,
@@ -968,9 +954,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   saveRightSidebarWidth: () =>
     lsSave(RIGHT_SIDEBAR_WIDTH_KEY, String(get().rightSidebarWidth)),
-
-  saveFileViewerRatio: () =>
-    lsSave(FILE_VIEWER_WIDTH_KEY, String(get().fileViewerRatio)),
 
   openFileTab: (filePath, isChanged, tabType, token) => {
     const { openFileTabs } = get();

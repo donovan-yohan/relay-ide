@@ -48,7 +48,6 @@ import { useUrlNav } from './hooks/useUrlNav.js';
 import BootScreen from './components/BootScreen.js';
 import PinGate from './components/PinGate.js';
 import Sidebar from './components/Sidebar.js';
-import type { TerminalHandle } from './components/Terminal.js';
 import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
@@ -440,7 +439,6 @@ function useUtilityTerminalHandlers({
 
 interface TerminalAreaContentProps {
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  terminalRef: React.RefObject<TerminalHandle | null>;
   fileTreeSidebarRef: React.RefObject<FileTreeHandle | null>;
   onAddWorkspace: () => void;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
@@ -457,7 +455,6 @@ interface TerminalAreaContentProps {
 
 function TerminalAreaContent({
   setSpotlightOpen,
-  terminalRef,
   fileTreeSidebarRef,
   onAddWorkspace,
   onImageUpload,
@@ -487,8 +484,6 @@ function TerminalAreaContent({
   const toggleUtilityRailVisible = useUiStore(
     (s) => s.toggleUtilityRailVisible
   );
-  const fileViewerRatio = useUiStore((s) => s.fileViewerRatio);
-  const saveFileViewerRatio = useUiStore((s) => s.saveFileViewerRatio);
   const openFileTab = useUiStore((s) => s.openFileTab);
   const isItemLoading = useSessionsStore((s) => s.isItemLoading);
 
@@ -543,10 +538,7 @@ function TerminalAreaContent({
   const handleCopyModeChange = useCallback((active: boolean) => {
     setCopyModeActive(active);
   }, []);
-  const getToolbarTerminalHandle = useCallback(() => {
-    const activeHandle = getActiveTerminalHandle();
-    return activeHandle ?? terminalRef.current;
-  }, [terminalRef]);
+  const getToolbarTerminalHandle = useCallback(() => getActiveTerminalHandle(), []);
 
   const handleExitCopyMode = useCallback(() => {
     getToolbarTerminalHandle()?.exitCopyMode();
@@ -720,13 +712,10 @@ function TerminalAreaContent({
             onArchive={onArchive}
           />
           <SplitPaneLayout
-            fileViewerOpen={false}
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}
-            fileViewerRatio={fileViewerRatio}
             onRightSidebarWidthChange={handleUtilityRailWidthChange}
             onRightSidebarResizeEnd={handleUtilityRailResizeEnd}
-            onFileViewerRatioChange={saveFileViewerRatio}
             onToggleRightSidebar={handleToggleUtilityRail}
             rightSidebarResizable={utilityRailResizable}
             rightSidebarMinWidth={
@@ -766,7 +755,6 @@ function TerminalAreaContent({
                 />
               </>
             }
-            fileViewer={null}
             rightSidebar={
               <WorkspaceUtilityRail
                 fileTreeSidebarRef={fileTreeSidebarRef}
@@ -838,7 +826,6 @@ export default function App() {
   const setActiveModal = useUiStore((s) => s.setActiveModal);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const terminalRef = useRef<TerminalHandle>(null);
   const customizeDialogRef = useRef<CustomizeSessionDialogHandle>(null);
   const settingsDialogRef = useRef<SettingsDialogHandle>(null);
   const deleteWorktreeDialogRef = useRef<DeleteWorktreeDialogHandle>(null);
@@ -913,7 +900,6 @@ export default function App() {
     handleNewSessionCreated,
     handleCloseSession,
   } = useSessionHandlers({
-    terminalRef,
     customizeDialogRef,
     deleteWorktreeDialogRef,
     workspaceSettingsDialogRef,
@@ -1134,7 +1120,6 @@ export default function App() {
     customizeDialogRef,
     deleteWorktreeDialogRef,
     workspaceSettingsDialogRef,
-    terminalRef,
     setFilePickerOpen,
   });
 
@@ -1145,7 +1130,6 @@ export default function App() {
     setPickerOpen,
     setFilePickerOpen,
     mainAppRef,
-    terminalRef,
     actionContextRef,
   });
 
@@ -1191,7 +1175,6 @@ export default function App() {
 
         <TerminalAreaContent
           setSpotlightOpen={setSpotlightOpen}
-          terminalRef={terminalRef}
           fileTreeSidebarRef={fileTreeSidebarRef}
           onAddWorkspace={handleAddWorkspace}
           onImageUpload={handleImageUpload}
