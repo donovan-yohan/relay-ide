@@ -14,6 +14,7 @@ import {
   colorToVariant,
 } from '../lib/pr-state.js';
 import type { PrAction } from '../lib/pr-state.js';
+import { deriveRepoWebhookStatus } from '../lib/repo-source.js';
 import type { PrInfo, CiStatus, RepoWebhookStatus } from '../lib/types.js';
 import CipherText from './CipherText.js';
 import RepoSourceDot from './RepoSourceDot.js';
@@ -21,6 +22,7 @@ import TuiButton from './TuiButton.js';
 import BranchSwitcher from './BranchSwitcher.js';
 import TargetBranchSwitcher from './TargetBranchSwitcher.js';
 import { DEFAULT_UTILITY_RAIL_STATE, useUiStore } from '../lib/stores/ui.js';
+import { showToast } from '../lib/stores/toasts.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { formatRelativeTime } from '../lib/utils.js';
 import RenameWarningModal from './dialogs/RenameWarningModal.js';
@@ -612,12 +614,12 @@ export function PrTopBar({
   );
   const [sourceRefreshing, setSourceRefreshing] = useState(false);
   const repo = useSessionsStore((s) =>
-    s.repos.find((candidate) => candidate.path === workspacePath)
+    s.repos.find((r) => r.path === workspacePath)
   );
   const repoMeta = useSessionsStore((s) => s.repoEnrichmentMeta[workspacePath]);
   const forceRefresh = useSessionsStore((s) => s.forceRefresh);
-  const sourceStatus: RepoWebhookStatus =
-    repo?.webhookStatus ?? (repoMeta?.source === 'webhook' ? 'live' : 'manual');
+  const sourceStatus: RepoWebhookStatus = deriveRepoWebhookStatus(repo, repoMeta);
+
   const rename = useRename(
     workspacePath,
     currentBranch,
@@ -672,8 +674,14 @@ export function PrTopBar({
 
   async function retryWebhookSetup() {
     if (!workspacePath) return;
-    await createRepoWebhook(workspacePath);
-    await useSessionsStore.getState().refreshAll();
+    try {
+      await createRepoWebhook(workspacePath);
+      await useSessionsStore.getState().refreshAll();
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'failed to retry webhook setup'
+      );
+    }
   }
 
   async function handleSourceRefresh() {
@@ -683,6 +691,10 @@ export function PrTopBar({
       if (sourceStatus === 'error') await retryWebhookSetup();
       await forceRefresh(workspacePath, 'manual');
       await refresh();
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'failed to refresh repo data'
+      );
     } finally {
       setSourceRefreshing(false);
     }

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   sendPtyData: vi.fn(),
   forceRefresh: vi.fn(),
   refreshAll: vi.fn(),
+  showToast: vi.fn(),
   repos: [] as Array<{
     path: string;
     name: string;
@@ -29,7 +30,9 @@ const mocks = vi.hoisted(() => ({
   >,
 }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../frontend/src/lib/api.js', () => ({
   fetchPrForBranchOrNull: mocks.fetchPrForBranchOrNull,
@@ -41,6 +44,10 @@ vi.mock('../frontend/src/lib/api.js', () => ({
 
 vi.mock('../frontend/src/lib/ws.js', () => ({
   sendPtyData: mocks.sendPtyData,
+}));
+
+vi.mock('../frontend/src/lib/stores/toasts.js', () => ({
+  showToast: mocks.showToast,
 }));
 
 vi.mock('../frontend/src/lib/stores/sessions.js', () => ({
@@ -140,6 +147,7 @@ describe('PrTopBar actions', () => {
     container = null;
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.useRealTimers();
     mocks.repos.splice(0);
     Object.keys(mocks.repoEnrichmentMeta).forEach((key) => {
       delete mocks.repoEnrichmentMeta[key];
@@ -197,8 +205,11 @@ describe('PrTopBar actions', () => {
       currentBranch: 'fix/115-merge-button',
       webhookStatus: 'manual',
     });
+    const baseTime = 1_700_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(baseTime);
     mocks.repoEnrichmentMeta['/repo'] = {
-      lastEnrichedAt: Date.now() - 4 * 60 * 1000,
+      lastEnrichedAt: baseTime - 4 * 60 * 1000,
       source: 'manual',
     };
     mocks.fetchPrForBranchOrNull.mockResolvedValue(samplePr());
@@ -231,6 +242,52 @@ describe('PrTopBar actions', () => {
       await Promise.resolve();
     });
 
+    expect(mocks.forceRefresh).toHaveBeenCalledWith('/repo', 'manual');
+  });
+
+  it('reports webhook retry failures while still forcing a manual refresh', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mocks.repos.push({
+      path: '/repo',
+      name: 'repo',
+      isGitRepo: true,
+      defaultBranch: 'nightly',
+      currentBranch: 'fix/115-merge-button',
+      webhookStatus: 'error',
+      webhookError: 'hook failed',
+    });
+    mocks.fetchPrForBranchOrNull.mockResolvedValue(samplePr());
+    mocks.fetchCiStatusOrNull.mockResolvedValue(passingCi());
+    mocks.createRepoWebhook.mockRejectedValue(new Error('webhook denied'));
+    mocks.forceRefresh.mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(
+        React.createElement(PrTopBar, {
+          workspacePath: '/repo',
+          branchName: 'fix/115-merge-button',
+          sessionId: 'session-1',
+        })
+      );
+    });
+    await flushEffects();
+
+    const retryButton = container.querySelector(
+      'button[aria-label="Retry webhook provisioning"]'
+    ) as HTMLButtonElement | null;
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.createRepoWebhook).toHaveBeenCalledWith('/repo');
+    expect(mocks.showToast).toHaveBeenCalledWith('webhook denied');
     expect(mocks.forceRefresh).toHaveBeenCalledWith('/repo', 'manual');
   });
 });

@@ -21,6 +21,8 @@ import { MarqueeText } from './MarqueeText.js';
 import ContextMenu from './ContextMenu.js';
 import { useRepoAggregation } from '../hooks/useRepoAggregation.js';
 import { createRepoWebhook } from '../lib/api.js';
+import { deriveRepoWebhookStatus } from '../lib/repo-source.js';
+import { showToast } from '../lib/stores/toasts.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import './RepoItem.css';
@@ -516,17 +518,22 @@ export function RepoItem({
     [sidebarItems, repo.path]
   );
   const creatingWorktree = loadingItems.has(`new-worktree:${repo.path}`);
-  const webhookStatus = repo.webhookStatus ?? 'manual';
+  const repoMeta = useSessionsStore((s) => s.repoEnrichmentMeta[repo.path]);
+  const webhookStatus = deriveRepoWebhookStatus(repo, repoMeta);
   const openWebhookSetup = useCallback(() => {
     useUiStore
       .getState()
       .setActiveModal({ modal: 'settings', scrollToId: 'integration-webhooks' });
   }, []);
-  const retryWebhookSetup = useCallback(() => {
-    void (async () => {
+  const retryWebhookSetup = useCallback(async () => {
+    try {
       await createRepoWebhook(repo.path);
       await useSessionsStore.getState().refreshAll();
-    })();
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'failed to retry webhook setup'
+      );
+    }
   }, [repo.path]);
   const { highestState, attentionCount } = useRepoAggregation(
     repo.path,

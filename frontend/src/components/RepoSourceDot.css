@@ -45,7 +45,7 @@
   width: 7px;
   height: 7px;
   color: var(--text-muted);
-  stroke: currentColor;
+  stroke: currentcolor;
   stroke-width: 1;
   stroke-linecap: square;
   stroke-linejoin: miter;

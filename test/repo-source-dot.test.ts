@@ -114,6 +114,38 @@ describe('RepoSourceDot', () => {
 
     expect(onRowClick).toHaveBeenCalledTimes(1);
   });
+
+  it('only stops handled keyboard actions for actionable dots', async () => {
+    const onManual = vi.fn();
+    const onParentKeyDown = vi.fn();
+    await act(async () => {
+      root.render(
+        React.createElement(
+          'div',
+          { onKeyDown: onParentKeyDown },
+          React.createElement(RepoSourceDot, {
+            status: 'manual',
+            onManualSetup: onManual,
+          })
+        )
+      );
+    });
+
+    const dot = container.querySelector(
+      '[data-testid="repo-source-dot"]'
+    ) as HTMLElement | null;
+    expect(dot).toBeTruthy();
+
+    dot?.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    expect(onParentKeyDown).toHaveBeenCalledTimes(1);
+    expect(onManual).not.toHaveBeenCalled();
+
+    dot?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    expect(onParentKeyDown).toHaveBeenCalledTimes(1);
+    expect(onManual).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('SessionIndicator boot animation', () => {

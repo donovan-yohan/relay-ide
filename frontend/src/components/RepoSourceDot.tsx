@@ -1,10 +1,11 @@
 import type { KeyboardEvent } from 'react';
+import type { RepoWebhookStatus } from '../lib/types.js';
 import './RepoSourceDot.css';
 
-export type RepoSourceStatus = 'live' | 'manual' | 'limited' | 'error';
+export type RepoSourceStatus = RepoWebhookStatus;
 
 export interface RepoSourceDotProps {
-  status: RepoSourceStatus;
+  status: RepoWebhookStatus;
   error?: string | undefined;
   onManualSetup?: (() => void) | undefined;
   onRetry?: (() => void) | undefined;
@@ -41,10 +42,10 @@ export function RepoSourceDot({
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (!actionable) return;
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      handleAction();
-    }
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    handleAction();
   };
 
   return (
@@ -67,11 +68,7 @@ export function RepoSourceDot({
         event.stopPropagation();
         handleAction();
       }}
-      onKeyDown={(event) => {
-        if (!actionable) return;
-        event.stopPropagation();
-        handleKeyDown(event);
-      }}
+      onKeyDown={handleKeyDown}
     >
       {glyphFor(status)}
       {status === 'limited' ? (
