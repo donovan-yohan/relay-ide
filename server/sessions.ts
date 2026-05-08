@@ -77,6 +77,7 @@ interface SerializedPtySession {
   continuePolicy?: ContinuePolicy;
   workspaceId?: string;
   additionalDirs?: string[];
+  pendingSince?: string;
 }
 
 type RestartReason =
@@ -690,11 +691,12 @@ function preservedPendingRestoreFailures(
   if (!fs.existsSync(pendingPath)) return null;
 
   const existing = readPendingSessionsFile(pendingPath);
-  if (!existing || isPendingSessionsFileStale(existing)) return null;
+  if (!existing) return null;
 
-  const sessionsToPreserve = existing.sessions.filter(
-    (session) => !serializedSessionIds.has(session.id)
-  );
+  const sessionsToPreserve = existing.sessions
+    .filter((session) => !serializedSessionIds.has(session.id))
+    .filter((session) => !isPendingSessionStale(existing, session))
+    .map((session) => withPendingSince(existing, session));
   if (sessionsToPreserve.length === 0) return null;
 
   return {
@@ -760,19 +762,24 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
     }
   }
 
+  const serializedAt = new Date().toISOString();
   const serializedSessionIds = new Set(serializedPty.map((s) => s.id));
   const preservedFailures = preservedPendingRestoreFailures(
     configDir,
     serializedSessionIds
   );
+  const freshSerializedPty = serializedPty.map((session) => ({
+    ...session,
+    pendingSince: serializedAt,
+  }));
   const sessionsToWrite = preservedFailures
-    ? [...serializedPty, ...preservedFailures.sessions]
-    : serializedPty;
+    ? [...freshSerializedPty, ...preservedFailures.sessions]
+    : freshSerializedPty;
 
   const reason = options.reason ?? 'unspecified';
   const pending: PendingSessionsFile = {
     version: Math.max(6, preservedFailures?.version ?? 6),
-    timestamp: preservedFailures?.timestamp ?? new Date().toISOString(),
+    timestamp: serializedAt,
     reason,
     sessions: sessionsToWrite,
   };
@@ -1232,6 +1239,33 @@ function isPendingSessionsFileStale(pending: PendingSessionsFile): boolean {
   return ageMs === null || ageMs > STALE_THRESHOLD_MS;
 }
 
+function pendingSessionAgeMs(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): number | null {
+  const timestampMs = Date.parse(session.pendingSince ?? pending.timestamp);
+  if (!Number.isFinite(timestampMs)) return null;
+  return Date.now() - timestampMs;
+}
+
+function isPendingSessionStale(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): boolean {
+  const ageMs = pendingSessionAgeMs(pending, session);
+  return ageMs === null || ageMs > STALE_THRESHOLD_MS;
+}
+
+function withPendingSince(
+  pending: PendingSessionsFile,
+  session: SerializedPtySession
+): SerializedPtySession {
+  return {
+    ...session,
+    pendingSince: session.pendingSince ?? pending.timestamp,
+  };
+}
+
 function migratePendingSessionsFile(
   pending: PendingSessionsFile,
   workspaces?: string[]
@@ -1267,13 +1301,16 @@ function preserveFailedPendingSessions(
   // out under STALE_THRESHOLD_MS instead of being made fresh on every dev
   // restart. Rapid restart loops retry within the window; genuinely stale
   // failures are cleaned with their scrollback on a later startup.
+  const retrySessions = failedSessions.map((session) =>
+    withPendingSince(pending, session)
+  );
   writePendingSessionsFile(configDir, {
     ...pending,
-    sessions: failedSessions,
+    sessions: retrySessions,
   });
   pruneScrollbackFiles(
     scrollbackDir(configDir),
-    new Set(failedSessions.map((s) => s.id))
+    new Set(retrySessions.map((s) => s.id))
   );
 }
 
@@ -1336,7 +1373,11 @@ async function restorePendingSessionsFromDisk(
     configDir
   );
 
-  if (isPendingSessionsFileStale(pending)) {
+  const freshSessions = pending.sessions
+    .filter((session) => !isPendingSessionStale(pending, session))
+    .map((session) => withPendingSince(pending, session));
+  const staleSessionCount = pending.sessions.length - freshSessions.length;
+  if (freshSessions.length === 0) {
     logger.warn(
       'discarding stale pending sessions manifest: reason=%s version=%d pty=%d ageMs=%s configDir=%s',
       pending.reason ?? 'unspecified',
@@ -1349,10 +1390,21 @@ async function restorePendingSessionsFromDisk(
     removeScrollbackDir(configDir, 'stale pending manifest');
     return 0;
   }
+  if (staleSessionCount > 0) {
+    logger.warn(
+      'dropping stale pending session records: reason=%s version=%d stalePty=%d freshPty=%d ageMs=%s configDir=%s',
+      pending.reason ?? 'unspecified',
+      pending.version,
+      staleSessionCount,
+      freshSessions.length,
+      ageMs === null ? 'invalid' : String(ageMs),
+      configDir
+    );
+  }
 
   return restoreFreshPendingSessions(
     configDir,
-    pending,
+    { ...pending, sessions: freshSessions },
     workspaces,
     frameworks
   );

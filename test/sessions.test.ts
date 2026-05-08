@@ -1,4 +1,4 @@
-import { describe, it, afterAll, afterEach, beforeAll, expect } from 'vitest';
+import { describe, it, afterAll, afterEach, beforeAll, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1163,17 +1163,103 @@ describe('session persistence', () => {
     const retryPending = JSON.parse(
       fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
     );
-    expect(retryPending.timestamp).toBe(timestamp);
-    expect(retryPending.sessions.map((s: { id: string }) => s.id).sort()).toEqual(
-      ['restore-fails', 'restore-ok']
-    );
-    expect(
-      retryPending.sessions.find((s: { id: string }) => s.id === 'restore-fails')
-        .hookToken
-    ).toBe('failed-token');
+    const retrySessions = retryPending.sessions as Array<{
+      id: string;
+      hookToken?: string;
+      pendingSince?: string;
+    }>;
+    expect(retryPending.timestamp).toBeTruthy();
+    expect(retrySessions.map((s) => s.id).sort()).toEqual([
+      'restore-fails',
+      'restore-ok',
+    ]);
+    const failedRetry = retrySessions.find((s) => s.id === 'restore-fails');
+    const liveRetry = retrySessions.find((s) => s.id === 'restore-ok');
+    expect(failedRetry?.pendingSince).toBe(timestamp);
+    expect(liveRetry?.pendingSince).toBe(retryPending.timestamp);
+    expect(failedRetry?.hookToken).toBe('failed-token');
     expect(fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')).toBe(
       'b output'
     );
+  });
+
+  it('serializeAll keeps fresh live sessions restorable when old preserved failures age out', async () => {
+    const configDir = createTmpDir();
+    const nowMs = Date.now();
+    const nearlyStaleTime = new Date(
+      nowMs - (5 * 60 * 1000 - 1000)
+    ).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: nearlyStaleTime,
+      sessions: [
+        pendingPtySession('old-restore-fails', {
+          cwd: path.join(configDir, 'missing-cwd'),
+          displayName: 'old failed restore',
+          tmuxSessionName: 'relay-ide-old-failed-restore',
+          pendingSince: nearlyStaleTime,
+        }),
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'old-restore-fails.buf'),
+      'old failed output'
+    );
+
+    const live = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      displayName: 'fresh live session',
+    });
+    const liveSession = sessions.get(live.id);
+    expect(liveSession).toBeTruthy();
+    expect(liveSession!.mode).toBe('pty');
+    (liveSession as PtySession).scrollback.push('fresh output');
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const serialized = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    const serializedSessions = serialized.sessions as Array<{
+      id: string;
+      pendingSince?: string;
+    }>;
+    const serializedFailure = serializedSessions.find(
+      (session) => session.id === 'old-restore-fails'
+    );
+    const serializedLive = serializedSessions.find(
+      (session) => session.id === live.id
+    );
+    expect(serializedFailure?.pendingSince).toBe(nearlyStaleTime);
+    expect(serializedLive?.pendingSince).toBe(serialized.timestamp);
+
+    sessions.kill(live.id);
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs + 2000);
+    try {
+      const restored = await restoreFromDisk(configDir);
+
+      expect(restored).toBe(1);
+      expect(sessions.get(live.id)).toBeTruthy();
+      expect(sessions.get('old-restore-fails')).toBeUndefined();
+      expect(fs.existsSync(path.join(configDir, 'pending-sessions.json'))).toBe(
+        false
+      );
+      expect(fs.existsSync(scrollbackDir)).toBe(false);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
   });
 
   it('serializeAll prunes stale failed restore records instead of refreshing them', () => {
