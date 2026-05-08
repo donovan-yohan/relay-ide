@@ -1234,11 +1234,6 @@ function pendingSessionsAgeMs(pending: PendingSessionsFile): number | null {
   return Date.now() - timestampMs;
 }
 
-function isPendingSessionsFileStale(pending: PendingSessionsFile): boolean {
-  const ageMs = pendingSessionsAgeMs(pending);
-  return ageMs === null || ageMs > STALE_THRESHOLD_MS;
-}
-
 function pendingSessionAgeMs(
   pending: PendingSessionsFile,
   session: SerializedPtySession
