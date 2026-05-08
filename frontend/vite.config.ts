@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildBackendProxyTarget,
+  createDevProxyConfig,
+  getDevFrontendHost,
+  getDevFrontendPort,
+} from './dev-server.js';
 
 // Resolve via Node's module resolution so it works in worktrees, monorepos,
 // and any node_modules layout without hard-coded relative paths.
@@ -36,6 +42,12 @@ export default defineConfig({
       $lib: path.resolve(import.meta.dirname, 'src/lib'),
       '@xterm/addon-webgpu': addonWebgpu,
     },
+  },
+  server: {
+    host: getDevFrontendHost(),
+    port: getDevFrontendPort(),
+    strictPort: true,
+    proxy: createDevProxyConfig(buildBackendProxyTarget()),
   },
   build: {
     outDir: '../dist/frontend',
