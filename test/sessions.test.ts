@@ -808,6 +808,30 @@ describe('session persistence', () => {
     return tmpDir;
   }
 
+  function pendingPtySession(
+    id: string,
+    overrides: Record<string, unknown> = {}
+  ) {
+    const timestamp = new Date().toISOString();
+    return {
+      id,
+      type: 'agent' as const,
+      agent: 'claude' as const,
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      repoName: 'test',
+      branchName: '',
+      displayName: id,
+      createdAt: timestamp,
+      lastActivity: timestamp,
+      useTmux: true,
+      tmuxSessionName: `relay-ide-${id}`,
+      customCommand: '/bin/cat',
+      ...overrides,
+    };
+  }
+
   it('serializeAll writes pending-sessions.json and scrollback files', () => {
     const configDir = createTmpDir();
 
@@ -1077,6 +1101,107 @@ describe('session persistence', () => {
         'utf-8'
       )
     ).toBe('important output');
+  });
+
+  it('serializeAll preserves failed restore records across the next clean restart', async () => {
+    const configDir = createTmpDir();
+    const timestamp = new Date().toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp,
+      sessions: [
+        pendingPtySession('restore-ok', {
+          displayName: 'restores cleanly',
+          tmuxSessionName: 'relay-ide-restores-cleanly',
+        }),
+        pendingPtySession('restore-fails', {
+          cwd: path.join(configDir, 'missing-cwd'),
+          displayName: 'fails transiently',
+          tmuxSessionName: 'relay-ide-fails-transiently',
+          hookToken: 'failed-token',
+        }),
+      ],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'restore-ok.buf'), 'a output');
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'restore-fails.buf'),
+      'b output'
+    );
+
+    const restored = await restoreFromDisk(configDir);
+
+    expect(restored).toBe(1);
+    expect(sessions.get('restore-ok')).toBeTruthy();
+    const failedOnlyPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(failedOnlyPending.sessions.map((s: { id: string }) => s.id)).toEqual([
+      'restore-fails',
+    ]);
+    expect(failedOnlyPending.timestamp).toBe(timestamp);
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(retryPending.timestamp).toBe(timestamp);
+    expect(retryPending.sessions.map((s: { id: string }) => s.id).sort()).toEqual(
+      ['restore-fails', 'restore-ok']
+    );
+    expect(
+      retryPending.sessions.find((s: { id: string }) => s.id === 'restore-fails')
+        .hookToken
+    ).toBe('failed-token');
+    expect(fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')).toBe(
+      'b output'
+    );
+  });
+
+  it('serializeAll prunes stale failed restore records instead of refreshing them', () => {
+    const configDir = createTmpDir();
+    const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    const pending = {
+      version: 6,
+      reason: 'dev-restart',
+      timestamp: staleTime,
+      sessions: [pendingPtySession('stale-failure')],
+    };
+    fs.writeFileSync(
+      path.join(configDir, 'pending-sessions.json'),
+      JSON.stringify(pending)
+    );
+    const scrollbackDir = path.join(configDir, 'scrollback');
+    fs.mkdirSync(scrollbackDir, { recursive: true });
+    fs.writeFileSync(path.join(scrollbackDir, 'stale-failure.buf'), 'old output');
+
+    const s = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+    });
+
+    serializeAll(configDir, { reason: 'dev-restart' });
+
+    const retryPending = JSON.parse(
+      fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
+    );
+    expect(retryPending.sessions.map((session: { id: string }) => session.id)).toEqual([
+      s.id,
+    ]);
+    expect(fs.existsSync(path.join(scrollbackDir, 'stale-failure.buf'))).toBe(
+      false
+    );
   });
 
   it('restoreFromDisk handles missing scrollback gracefully', async () => {

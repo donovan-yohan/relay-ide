@@ -635,7 +635,20 @@ function pruneScrollbackFiles(
   let entries: string[];
   try {
     entries = fs.readdirSync(scrollbackDirPath);
-  } catch {
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      err.code === 'ENOENT'
+    ) {
+      return 0;
+    }
+    logger.warn(
+      'failed to read scrollback dir for pruning %s: %s',
+      scrollbackDirPath,
+      err
+    );
     return 0;
   }
 
@@ -660,8 +673,34 @@ function removeScrollbackDir(configDir: string, reason: string): void {
     fs.rmSync(dir, { recursive: true, force: true });
     logger.info('removed scrollback dir after %s: %s', reason, dir);
   } catch (err) {
-    logger.warn('failed to remove scrollback dir after %s: %s', reason, err);
+    logger.warn(
+      'failed to remove scrollback dir after %s %s: %s',
+      reason,
+      dir,
+      err
+    );
   }
+}
+
+function preservedPendingRestoreFailures(
+  configDir: string,
+  serializedSessionIds: Set<string>
+): PendingSessionsFile | null {
+  const pendingPath = pendingSessionsPath(configDir);
+  if (!fs.existsSync(pendingPath)) return null;
+
+  const existing = readPendingSessionsFile(pendingPath);
+  if (!existing || isPendingSessionsFileStale(existing)) return null;
+
+  const sessionsToPreserve = existing.sessions.filter(
+    (session) => !serializedSessionIds.has(session.id)
+  );
+  if (sessionsToPreserve.length === 0) return null;
+
+  return {
+    ...existing,
+    sessions: sessionsToPreserve,
+  };
 }
 
 function serializePtySession(
@@ -721,24 +760,34 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
     }
   }
 
+  const serializedSessionIds = new Set(serializedPty.map((s) => s.id));
+  const preservedFailures = preservedPendingRestoreFailures(
+    configDir,
+    serializedSessionIds
+  );
+  const sessionsToWrite = preservedFailures
+    ? [...serializedPty, ...preservedFailures.sessions]
+    : serializedPty;
+
   const reason = options.reason ?? 'unspecified';
   const pending: PendingSessionsFile = {
-    version: 6,
-    timestamp: new Date().toISOString(),
+    version: Math.max(6, preservedFailures?.version ?? 6),
+    timestamp: preservedFailures?.timestamp ?? new Date().toISOString(),
     reason,
-    sessions: serializedPty,
+    sessions: sessionsToWrite,
   };
 
   writePendingSessionsFile(configDir, pending);
   const pruned = pruneScrollbackFiles(
     scrollbackDirPath,
-    new Set(serializedPty.map((s) => s.id))
+    new Set(sessionsToWrite.map((s) => s.id))
   );
 
   logger.info(
-    'serialized sessions for restart: reason=%s pty=%d web=%d prunedScrollback=%d configDir=%s',
+    'serialized sessions for restart: reason=%s pty=%d preservedFailedPty=%d web=%d prunedScrollback=%d configDir=%s',
     reason,
     serializedPty.length,
+    preservedFailures?.sessions.length ?? 0,
     webSessionCount,
     pruned,
     configDir
