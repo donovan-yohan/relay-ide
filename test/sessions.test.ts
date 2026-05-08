@@ -21,13 +21,24 @@ const execFileAsync = promisify(execFile);
 const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
 let tmuxTmpdir: string;
 
+// Tmux tests run in a full-suite worker pool while other files also mutate
+// process.env.TMUX_TMPDIR. Pin every tmux CLI assertion/cleanup to this file's
+// socket dir so another test file cannot accidentally kill or query our server.
+function tmuxCommandEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, TMUX_TMPDIR: tmuxTmpdir };
+}
+
+function execTmux(args: string[]) {
+  return execFileAsync('tmux', args, { env: tmuxCommandEnv() });
+}
+
 beforeAll(() => {
   tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-tmux-'));
   process.env.TMUX_TMPDIR = tmuxTmpdir;
 });
 
 afterAll(async () => {
-  await execFileAsync('tmux', ['kill-server']).catch(() => {});
+  await execTmux(['kill-server']).catch(() => {});
   if (originalTmuxTmpdir === undefined) {
     delete process.env.TMUX_TMPDIR;
   } else {
@@ -43,13 +54,13 @@ function delay(ms: number): Promise<void> {
 async function waitForTmuxSession(name: string): Promise<void> {
   for (let i = 0; i < 20; i++) {
     try {
-      await execFileAsync('tmux', ['has-session', '-t', name]);
+      await execTmux(['has-session', '-t', name]);
       return;
     } catch {
       await delay(50);
     }
   }
-  await execFileAsync('tmux', ['has-session', '-t', name]);
+  await execTmux(['has-session', '-t', name]);
 }
 
 async function waitForSessionRemoval(id: string): Promise<void> {
@@ -659,11 +670,11 @@ describe('sessions', () => {
       await waitForSessionRemoval(result.id);
 
       await expect(
-        execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+        execTmux(['has-session', '-t', tmuxSessionName])
       ).resolves.toBeTruthy();
       expect(fs.existsSync(sentinelPath)).toBe(true);
     } finally {
-      await execFileAsync('tmux', [
+      await execTmux([
         'kill-session',
         '-t',
         tmuxSessionName,
