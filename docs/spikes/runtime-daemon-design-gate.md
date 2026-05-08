@@ -171,7 +171,7 @@ Use **Unix-domain-socket HTTP + WebSocket** for macOS/Linux:
 
 - socket path: `${configDir}/runtime/relay-runtime.sock`
 - mode: `0600`
-- auth: random runtime token in `${configDir}/runtime/runtime-token` with `0600`, sent as `Authorization: Bearer <runtime-token>` from the web process
+- auth: random runtime token in `${configDir}/runtime/runtime-token` with `0600`, sent in the runtime bearer-token `Authorization` header from the web process
 - API prefix: `/v1/...`
 - request/response: JSON over HTTP
 - streams: WebSocket over UDS for PTY bytes, web-agent patches, and event bus subscription
@@ -205,23 +205,100 @@ Example surface:
 | SQLite-only command queue   | reject for primary IPC | Fine for snapshots, bad for PTY byte streams and low-latency input/resize.                                                       |
 | direct browser -> daemon WS | reject                 | Browser auth, TLS/origin policy, and UI routing should remain in the web/API process. Keep daemon private.                       |
 
+### Stream reconnect/catch-up protocol
+
+Reconnect support is a required part of the daemon contract, not a later optional optimization. The daemon must make every browser-facing stream resumable across hot web/API restarts and transient browser disconnects.
+
+**Sequence model:**
+
+- The daemon assigns one monotonically increasing unsigned 64-bit `seq` per runtime event bus. The sequence space covers PTY output chunks, web-session patches, session lifecycle events, backend-state changes, telemetry deltas, and browser-content events.
+- Each stream item also carries a stable `streamId` and type-local id:
+  - PTY stream item: `{seq, streamId: "pty:<sessionId>", ptySeq, bytes}`
+  - web-session patch: `{seq, streamId: "web:<sessionId>", patchSeq, patch}`
+  - global event: `{seq, streamId: "events", eventSeq, event}`
+- `seq`, `ptySeq`, `patchSeq`, and `eventSeq` are monotonic within a daemon run and never reset while the daemon process is alive. Daemon restart may reset in-memory sequence ids; clients must treat a changed daemon `epoch` from `/v1/health` as a non-resumable boundary and request fresh snapshots.
+- Snapshot responses include the sequence boundary they are valid at: `GET /v1/sessions/:id/snapshot` returns `{epoch, snapshotSeq, kind, ...}`. All stream replay must start strictly after `snapshotSeq`.
+
+**Replay window:**
+
+- The daemon keeps an in-memory replay ring for every active session stream and for `/v1/events`.
+- Minimum ring size: the larger of 256 KiB of PTY bytes/web patches per session or 30 seconds of stream items. The global event ring keeps at least 1,000 events or 30 seconds, whichever is larger.
+- Rings are not durable across daemon restart. They are intended to cover hot web/API restarts and browser reconnects while the daemon remains alive.
+- If `lastSeenSeq` is older than the oldest retained item, the daemon returns `409 replay_window_missed` for stream attach. The web process must fetch a fresh snapshot, clear/reconcile browser state for that session, and reopen the stream from the new `snapshotSeq`.
+
+**Attach protocol:**
+
+1. Browser reconnects to the hot web process with the last ids it rendered, either in WebSocket query params or the first client message: global `lastSeenSeq` plus per-stream `lastSeenPtySeq`, `lastSeenPatchSeq`, and `lastSeenEventSeq` when those streams were previously attached.
+2. Web queries `/v1/health` and compares `epoch` + `protocolVersion`. Changed `epoch` or incompatible protocol version forces snapshot refresh instead of replay.
+3. Web gets `GET /v1/sessions/:id/snapshot`, records `snapshotSeq`, and sends the snapshot to the browser before live bytes/patches.
+4. Web opens `WS /v1/sessions/:id/stream?after=<snapshotSeq or client lastSeenSeq>` and `WS /v1/events?after=<lastSeenSeq>`. The daemon first replays retained items with `seq > after`, then switches to live fanout on the same socket.
+5. Browser acks/render-tracks the highest contiguous id per stream. The client may receive duplicates when a web process restarts between daemon replay and browser render; duplicates are dropped by id. Gaps are never silently skipped: a missing id or daemon `replay_window_missed` forces a fresh snapshot.
+
+**Duplicate/drop semantics:**
+
+- Daemon never intentionally emits two different payloads with the same `(epoch, streamId, type-local id)`.
+- Browser/web clients must make delivery idempotent by ignoring any PTY chunk, web patch, or event with an id less than or equal to the highest contiguous id already applied for that stream.
+- If an item arrives with an id greater than `lastSeen + 1`, the client treats it as a gap, pauses application for that stream, and asks the web process to refresh from snapshot. PTY streams may display a reconnect notice before re-rendering scrollback; web sessions reconcile from the latest snapshot + patches.
+- `/v1/sessions/:id/stream` and `/v1/events` are both replay-first streams. They must not use the current race-prone pattern of sending scrollback/snapshot and only then subscribing to live data without a sequence boundary.
+
+---
+
+## Daemon singleton and lifecycle contract
+
+There is exactly one runtime daemon per Relay config directory. The config directory, not the web server port or process id, is the daemon identity boundary.
+
+**Config-dir runtime files:**
+
+- `${configDir}/runtime/daemon.lock` — advisory lock file held for the daemon lifetime.
+- `${configDir}/runtime/daemon.json` — pid, start time, daemon `epoch`, protocol version, socket path, runtime token file path, hook ingress address, and last heartbeat timestamp.
+- `${configDir}/runtime/relay-runtime.sock` — preferred UDS path.
+- `${configDir}/runtime/runtime-token` — random bearer token, `0600`, rotated when a new daemon is created after stale validation.
+
+**Acquisition and stale validation:**
+
+1. A web/API process that needs runtime access first tries to acquire `daemon.lock`.
+2. If it gets the lock, it becomes the daemon launcher for that config dir, creates/rotates the runtime token, starts the daemon, waits for `/v1/health`, then releases only any short launcher lock while the daemon process holds the lifetime lock.
+3. If the lock is held, the web process reads `daemon.json`, validates the pid is alive, validates the socket path exists, and calls `GET /v1/health` with the runtime token.
+4. A lock/socket is stale only if pid liveness, socket connect, and authenticated health all fail. Stale cleanup removes socket/metadata/token only after those checks fail, then retries acquisition.
+5. If two Relay invocations race, only the process that holds the config-dir lock may launch or replace the daemon. Others must connect or fail closed; they must not spawn a parallel daemon on another socket.
+
+**Process ownership and supervision:**
+
+- In dev/self-hosting mode, the first web/API process for the config dir may spawn the daemon, but it does not own daemon lifetime after readiness. The daemon is not a stdio child protocol and must survive hot web/API restarts.
+- Production service managers may supervise a wrapper that starts both web/API and daemon, but daemon shutdown remains config-dir scoped and explicit.
+- If the hot web/API process dies, the daemon keeps tmux/node-pty/web-adapter state alive and continues accepting a replacement web/API process with the same runtime token.
+- If the daemon dies while web/API is alive, web/API marks runtime unavailable, closes browser PTY/event sockets with a retryable runtime-disconnected code, and attempts one guarded reconnect/relaunch through the lock path. Browser UI should show reconnecting rather than pretending sessions are live.
+- If daemon restart cannot restore a session, the daemon returns a snapshot with a recoverable disconnected/error state; it must not silently fabricate a live session.
+
+**Update and shutdown ownership:**
+
+- `POST /update` belongs to web/API/service-management code, but before replacing binaries it must ask the daemon to checkpoint and either keep running when protocol-compatible or shut down explicitly when an incompatible runtime binary is required.
+- Normal Relay shutdown should stop the web/API process only. Daemon shutdown requires an explicit config-dir owner action: service uninstall, user quit, update requiring daemon replacement, or `relay-ide daemon stop`-style command when that exists.
+- Daemon shutdown writes final checkpoints, closes stream sockets with a shutdown reason, stops hook ingress, and releases the lock last.
+
+**Protocol version and UDS limits:**
+
+- `/v1/health` returns `{protocolVersion, minWebProtocolVersion, epoch, configDir, socketPath, hookIngress}`. Web/API refuses to connect when its client version is outside the daemon's supported range and reports a protocol-mismatch recovery path instead of best-effort streaming.
+- UDS path length is checked before bind/connect. If `${configDir}/runtime/relay-runtime.sock` exceeds the platform limit, daemon startup falls back to a short symlinked/runtime directory under the OS temp dir (for example `/tmp/relay-ide-<hash>/runtime.sock`) and records the actual socket path in `daemon.json`.
+- The fallback directory must still be keyed by config-dir hash, mode `0700`, and validated against `daemon.json` so unrelated Relay installs cannot collide.
+
 ---
 
 ## State ownership contract
 
-| State                         | Owner after split                                           | Persistence                                  | Notes                                                                                                       |
-| ----------------------------- | ----------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Config (`config.json`)        | web/API primary, daemon read-only snapshot + reload command | JSON config file                             | Web remains settings authority; daemon receives the subset needed for session runtime.                      |
-| PIN/cookie auth               | web/API                                                     | config + in-memory authenticated token set   | Daemon trusts only web process via UDS bearer token.                                                        |
-| PTY session records           | daemon                                                      | daemon memory + checkpoint                   | Current `pending-sessions.json` can remain as migration format, then fold into `relay-state.db` later.      |
-| PTY scrollback                | daemon                                                      | memory + scrollback files or DB blob         | Keep 256KB cap; daemon can stream replay without web process involvement.                                   |
-| tmux process tree             | tmux                                                        | tmux server                                  | Daemon owns attach/spawn/kill policy; tmux remains the durable process substrate.                           |
-| Web sessions                  | daemon                                                      | `relay-state.db`                             | Existing DB is already the right destination; daemon should be sole writer.                                 |
-| Runtime events                | daemon                                                      | in-memory fanout; optional short replay ring | Web subscribes and rebroadcasts to browser. Add sequence ids if #365 needs missed-event recovery.           |
-| Telemetry                     | daemon                                                      | memory + pending telemetry file initially    | Later fold pending telemetry into DB if repeated restarts need stronger guarantees.                         |
-| Browser-content tokens        | daemon                                                      | memory while daemon is alive                 | Hot web restarts keep tokens valid. Daemon restart can invalidate tokens; browser can reopen via event/CLI. |
-| Workspace dashboard/git state | web/API                                                     | recompute/cache                              | Safe to restart; stale caches can be rebuilt.                                                               |
-| GitHub webhooks/smee          | web/API                                                     | config + GitHub                              | Not session-durable; keep out of runtime daemon.                                                            |
+| State                         | Owner after split                                           | Persistence                                       | Notes                                                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config (`config.json`)        | web/API primary, daemon read-only snapshot + reload command | JSON config file                                  | Web remains settings authority; daemon receives the subset needed for session runtime.                                                                   |
+| PIN/cookie auth               | web/API                                                     | config + in-memory authenticated token set        | Daemon trusts only web process via UDS bearer token.                                                                                                     |
+| PTY session records           | daemon                                                      | daemon memory + checkpoint                        | Current `pending-sessions.json` can remain as migration format, then fold into `relay-state.db` later.                                                   |
+| PTY scrollback                | daemon                                                      | memory + scrollback files or DB blob              | Keep 256KB cap; daemon can stream replay without web process involvement.                                                                                |
+| tmux process tree             | tmux                                                        | tmux server                                       | Daemon owns attach/spawn/kill policy; tmux remains the durable process substrate.                                                                        |
+| Web sessions                  | daemon                                                      | `relay-state.db`                                  | Existing DB is already the right destination; daemon should be sole writer.                                                                              |
+| Runtime events                | daemon                                                      | in-memory fanout plus required short replay rings | Web subscribes and rebroadcasts to browser. Sequence ids, daemon epoch, replay windows, and snapshot boundaries are mandatory for reconnect correctness. |
+| Telemetry                     | daemon                                                      | memory + pending telemetry file initially         | Later fold pending telemetry into DB if repeated restarts need stronger guarantees.                                                                      |
+| Browser-content tokens        | daemon                                                      | memory while daemon is alive                      | Hot web restarts keep tokens valid. Daemon restart can invalidate tokens; browser can reopen via event/CLI.                                              |
+| Workspace dashboard/git state | web/API                                                     | recompute/cache                                   | Safe to restart; stale caches can be rebuilt.                                                                                                            |
+| GitHub webhooks/smee          | web/API                                                     | config + GitHub                                   | Not session-durable; keep out of runtime daemon.                                                                                                         |
 
 The key rule: **the web process should never hold the canonical `Session` object after the split.** It holds DTOs and stream handles only.
 
@@ -229,22 +306,54 @@ The key rule: **the web process should never hold the canonical `Session` object
 
 ## Hooks implications
 
-Current Claude hooks post to `http://127.0.0.1:<relay-port>/hooks/...` and authenticate with a per-session token. That is too coupled to the hot web process.
+Current Claude hooks post to `http://127.0.0.1:<relay-port>/hooks/...` and authenticate with a per-session token. That is too coupled to the hot web process, and live tmux sessions keep whatever hook URL was baked into their generated settings when the agent started.
 
 Recommended final shape:
 
 1. Daemon starts a stable loopback hook ingress server, separate from the browser-facing web/API port.
 2. `pty-handler.ts` hook settings generation moves into daemon-owned PTY creation and points hooks at that stable ingress base URL.
 3. Hook ingress keeps current protections:
-   - localhost-only
+   - bind to `127.0.0.1` only by default; no public interface
    - per-session token
    - timing-safe token comparison
    - JSON payload limit
-4. Hot web/API may retain `/hooks` temporarily as a compatibility forwarder to daemon IPC, but new sessions should get daemon hook URLs once daemon extraction starts.
+   - health endpoint that does not expose session data
+4. Hot web/API retains `/hooks` as a compatibility forwarder for a bounded migration window, but new daemon-owned sessions get daemon hook URLs once daemon extraction starts.
+
+### Stable hook ingress address lifecycle
+
+The hook ingress address is daemon-owned runtime state and must be persisted under the config dir so web/API restarts do not change hook URLs for newly spawned sessions.
+
+**Bind and persistence strategy:**
+
+- Preferred bind host is `127.0.0.1`.
+- Preferred port strategy is persisted dynamic allocation: on first daemon startup for a config dir, bind `127.0.0.1:0`, record the selected port in `${configDir}/runtime/daemon.json`, and reuse that port on later daemon starts for the same config dir when available.
+- The daemon writes the hook base URL as `http://127.0.0.1:<hookPort>/hooks` in `daemon.json` and exposes it from `/v1/health`.
+- Hook port ownership follows the daemon singleton. Only the daemon holding `daemon.lock` may claim or change the persisted hook port.
+
+**Conflict handling:**
+
+- On daemon startup, if the persisted hook port is free, reuse it.
+- If the persisted hook port is occupied, call `GET /hooks/health` on that hook listener and compare config-dir hash/daemon epoch. If it is the same daemon instance, keep it. If it is unrelated or unhealthy, allocate a new dynamic port, update `daemon.json`, and log/report a hook-port-changed event.
+- The daemon must not kill an arbitrary process that happens to hold the port. It can only retire its own stale listener when pid/socket/health validation proves ownership.
+
+**Health checks and failure behavior:**
+
+- Hook ingress exposes `GET /hooks/health` returning daemon epoch, config-dir hash, protocol version, and readiness. It does not require a session token but must remain loopback-only.
+- Web/API includes hook ingress status in runtime health diagnostics and shows degraded runtime health if daemon IPC is healthy but hook ingress is not.
+- If hook ingress dies while the daemon is alive, the daemon attempts to rebind the persisted port once, then allocates a new port if necessary and emits `hook-ingress-changed` on `/v1/events`.
+
+**Compatibility forwarder and migration:**
+
+- Existing tmux sessions with old web-port hook settings continue posting to hot web `/hooks`. During migration, web `/hooks` must validate the per-session token as it does today, then forward the normalized hook event to daemon IPC (`POST /v1/hooks/:sessionId/:event`).
+- The compatibility forwarder remains until no restored active session has `hookBaseUrl` pointing at a web/API port, plus one release cycle. After that, only daemon-owned hook URLs are generated for new sessions.
+- Restored session metadata records `hookBaseUrl` and `hookGeneration` so Relay can tell whether a live tmux session is using old web ingress or daemon ingress.
+- Live tmux sessions are not force-restarted just to update hook URLs. They migrate naturally when the agent process exits, the user restarts the session, or Relay has to respawn with continue/resume args.
+- If a live old-web-port session emits hooks while the web/API process is down, those hooks may still drop; the migration contract is to avoid new exposure and preserve compatibility while the old process lives, not to rewrite settings inside already-running agent CLIs.
 
 Why not UDS-only hooks: the agent hook mechanism is process/CLI oriented and current settings are URL based. A tiny daemon-owned localhost listener keeps hook delivery simple without exposing the full browser API.
 
-Migration note: #363 can still use the existing web `/hooks` route during supervised restart work. #364's daemon split should not block #363.
+Migration note: #363 can still use the existing web `/hooks` route during supervised restart work. #364's daemon split should not block #363, but the first daemon extraction must implement the persisted daemon hook ingress before claiming hook durability.
 
 ---
 
@@ -348,7 +457,7 @@ Fold into or coordinate with #366:
 - make checkpoint writes explicit and logged
 - add stale-file tests around rapid repeated restarts
 - add a runtime health snapshot endpoint, even in-process
-- add event sequence ids if frontend reconnect needs missed-event replay
+- add mandatory runtime stream sequence ids, replay rings, snapshot boundaries, and reconnect health diagnostics
 
 ### Phase 3 — supervised backend restart
 
@@ -363,14 +472,16 @@ Fold into #363:
 
 Add `server/runtime-daemon.ts` and UDS transport implementation:
 
-- daemon boots session runtime, relay-state DB, telemetry, hook ingress, browser-token registry
-- web/API starts or connects to daemon in dev/self-hosting mode
+- daemon boots session runtime, relay-state DB, telemetry, persisted hook ingress, browser-token registry
+- web/API connects to exactly one daemon per config dir through the lock/lease and health-check contract
 - web/API routes and browser WebSockets call the same `RuntimeClient` interface over IPC
 - retain in-process runtime as fallback/test implementation
+- implement protocol-version mismatch handling and UDS path-length fallback before enabling daemon mode by default
 
 ### Phase 5 — move stable ingress and session-adjacent services
 
-- generate hooks settings pointing to daemon hook ingress
+- generate hooks settings pointing to daemon hook ingress and persist `hookBaseUrl`/`hookGeneration` in session metadata
+- keep hot web `/hooks` as a token-validating compatibility forwarder for restored sessions with old web-port hook URLs
 - move telemetry polling fully daemon-side
 - move browser-content token generation/validation daemon-side
 - optionally move session-scoped branch watching daemon-side
@@ -439,15 +550,15 @@ Proposed new follow-up if the team wants a dedicated first slice instead of expa
 
 ## Risks and mitigations
 
-| Risk                                           | Mitigation                                                                                         |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| The daemon becomes a second monolith           | Keep scope to session runtime; leave GitHub/workspace/static/auth in web/API.                      |
-| IPC adds latency to PTY input                  | Use one long-lived WS stream per attached browser session; avoid HTTP per byte.                    |
-| Hook delivery still drops during web restart   | Move hook URL generation to daemon hook ingress before calling daemon split complete.              |
-| Session DTOs drift from internal `Session`     | Introduce typed runtime DTOs in Phase 1 and test serialization.                                    |
-| Browser reconnect misses events during restart | Add sequence ids/replay ring only if #365 needs it; do not build Kafka in a trenchcoat.            |
-| SQLite writer contention                       | Make daemon sole writer for `relay-state.db`; web reads via daemon or read-only snapshots.         |
-| Dev daemon orphaning                           | Store daemon pid/socket/token under config dir; supervisor health-checks and cleans stale sockets. |
+| Risk                                           | Mitigation                                                                                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| The daemon becomes a second monolith           | Keep scope to session runtime; leave GitHub/workspace/static/auth in web/API.                                                         |
+| IPC adds latency to PTY input                  | Use one long-lived WS stream per attached browser session; avoid HTTP per byte.                                                       |
+| Hook delivery still drops during web restart   | Move hook URL generation to daemon hook ingress before calling daemon split complete.                                                 |
+| Session DTOs drift from internal `Session`     | Introduce typed runtime DTOs in Phase 1 and test serialization.                                                                       |
+| Browser reconnect misses events during restart | Make daemon streams replay-first with mandatory sequence ids, snapshot boundaries, and replay-window miss handling.                   |
+| SQLite writer contention                       | Make daemon sole writer for `relay-state.db`; web reads via daemon or read-only snapshots.                                            |
+| Dev daemon orphaning                           | Enforce one daemon per config dir with lock/lease ownership, stale pid/socket validation, explicit shutdown, and UDS fallback checks. |
 
 ---
 
