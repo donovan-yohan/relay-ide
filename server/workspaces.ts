@@ -49,6 +49,14 @@ import type {
 import { MOUNTAIN_NAMES } from './types.js';
 import { getLastWebhookEventAt, getWebhookStatus } from './webhook-manager.js';
 import { createLogger } from './logger.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createRepoInstanceId,
+} from '../shared/identity.js';
+import {
+  parseGitRemoteVerbose,
+  resolveCanonicalRepoIdentity,
+} from '../shared/repo-identity.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
@@ -436,6 +444,59 @@ export async function detectGitRepo(
   return { isGitRepo: true, defaultBranch };
 }
 
+async function resolveRepoIdentityFields(
+  repoPath: string,
+  isGitRepo: boolean,
+  execAsync: typeof execFileAsync
+): Promise<Pick<
+  Repo,
+  | 'localPath'
+  | 'nodeId'
+  | 'repoIdentity'
+  | 'repoInstanceId'
+  | 'selectedRemote'
+  | 'remotes'
+  | 'repoIdentityWarnings'
+>> {
+  const nodeId = DEFAULT_LOCAL_NODE_ID;
+  const base = {
+    localPath: repoPath,
+    nodeId,
+    repoInstanceId: createRepoInstanceId(nodeId, repoPath),
+  };
+
+  if (!isGitRepo) {
+    return {
+      ...base,
+      repoIdentity: null,
+      selectedRemote: null,
+      remotes: [],
+      repoIdentityWarnings: ['missing-remotes'],
+    };
+  }
+
+  try {
+    const { stdout } = await execAsync('git', ['remote', '-v'], { cwd: repoPath });
+    const resolution = resolveCanonicalRepoIdentity(parseGitRemoteVerbose(stdout));
+    return {
+      ...base,
+      repoIdentity: resolution.identity,
+      selectedRemote: resolution.selectedRemote,
+      remotes: resolution.remotes,
+      repoIdentityWarnings: resolution.warnings,
+    };
+  } catch {
+    const resolution = resolveCanonicalRepoIdentity([]);
+    return {
+      ...base,
+      repoIdentity: resolution.identity,
+      selectedRemote: resolution.selectedRemote,
+      remotes: resolution.remotes,
+      repoIdentityWarnings: resolution.warnings,
+    };
+  }
+}
+
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
     const homeDir = os.homedir();
@@ -525,12 +586,15 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           }
         }
 
+        const identityFields = await resolveRepoIdentityFields(p, isGitRepo, exec);
+
         return {
           path: p,
           name,
           isGitRepo,
           defaultBranch,
           currentBranch,
+          ...identityFields,
           ...getRepoWebhookFields(config, p, ownerRepo),
         };
       })
@@ -606,12 +670,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         /* detached HEAD */
       }
     }
+    const identityFields = await resolveRepoIdentityFields(
+      resolved,
+      isGitRepo,
+      exec
+    );
     const workspace: Repo = {
       path: resolved,
       name: path.basename(resolved),
       isGitRepo,
       defaultBranch,
       currentBranch,
+      ...identityFields,
       ...getRepoWebhookFields(config, resolved),
     };
 
@@ -747,12 +817,14 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             /* detached HEAD */
           }
         }
+        const identityFields = await resolveRepoIdentityFields(p, isGitRepo, exec);
         return {
           path: p,
           name,
           isGitRepo,
           defaultBranch,
           currentBranch,
+          ...identityFields,
           ...getRepoWebhookFields(config, p),
         };
       })
@@ -826,12 +898,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const currentBranch = isGitRepo
         ? await getCurrentBranchForRepo(resolved)
         : null;
+      const identityFields = await resolveRepoIdentityFields(
+        resolved,
+        isGitRepo,
+        exec
+      );
       added.push({
         path: resolved,
         name: path.basename(resolved),
         isGitRepo,
         defaultBranch,
         currentBranch,
+        ...identityFields,
         ...getRepoWebhookFields(config, resolved),
       });
 

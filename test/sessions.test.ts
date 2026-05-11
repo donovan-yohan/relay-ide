@@ -124,6 +124,32 @@ describe('sessions', () => {
     expect(list[0]?.id).toBe(result.id);
   });
 
+  it('does not synthesize repo instance identity without repoPath', () => {
+    const result = sessions.create({
+      repoName: 'shell-only',
+      repoPath: '',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/echo',
+      args: ['hello'],
+      cols: 80,
+      rows: 24,
+    });
+
+    createdIds.push(result.id);
+
+    expect(result.nodeId).toBe('local');
+    expect(result.globalSessionId).toBe(`local:${result.id}`);
+    expect(result.repoInstanceId).toBeUndefined();
+    expect(result.worktreeInstanceId).toBeUndefined();
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed?.globalSessionId).toBe(`local:${result.id}`);
+    expect(listed?.repoInstanceId).toBeUndefined();
+    expect(listed?.worktreeInstanceId).toBeUndefined();
+  });
+
   it('get returns session by id', () => {
     const result = sessions.create({
       repoName: 'test-repo',

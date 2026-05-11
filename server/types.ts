@@ -1,4 +1,15 @@
 import type { IPty } from 'node-pty';
+import type {
+  GlobalSessionId,
+  NodeId,
+  RepoIdentity,
+  RepoInstanceId,
+  WorktreeInstanceId,
+} from '../shared/identity.js';
+import type {
+  RepoIdentityWarning,
+  ResolvedRemoteIdentity,
+} from '../shared/repo-identity.js';
 import type { OutputParser } from './output-parsers/index.js';
 import type { ProtocolAdapter } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
@@ -326,6 +337,14 @@ export interface SessionSummary {
   lastActivity: string;
   idle: boolean;
   customCommand: string | null;
+  /** Execution node that owns this local session id. */
+  nodeId?: NodeId;
+  /** Node-scoped session id for hub/federated routing. */
+  globalSessionId?: GlobalSessionId;
+  /** Node-scoped checkout instance id for repoPath. */
+  repoInstanceId?: RepoInstanceId;
+  /** Node-scoped worktree/cwd instance id when this session runs in a worktree. */
+  worktreeInstanceId?: WorktreeInstanceId;
   /** PTY sessions only */
   useTmux?: boolean;
   /** PTY sessions only */
@@ -667,7 +686,8 @@ export interface DashboardData {
   hasGhCli: boolean;
 }
 
-export type WebhookStatus = 'live' | 'manual' | 'limited' | 'error';
+export type RepoWebhookStatus = 'live' | 'manual' | 'limited' | 'error';
+export type WebhookStatus = RepoWebhookStatus;
 
 export interface Repo {
   path: string;
@@ -675,7 +695,18 @@ export interface Repo {
   isGitRepo: boolean;
   defaultBranch: string | null;
   currentBranch: string | null;
-  webhookStatus: WebhookStatus;
+  /** Node-local checkout path. Kept beside path for backward-compatible local mode consumers. */
+  localPath?: string;
+  /** Execution node that owns this checkout path. Local mode uses DEFAULT_LOCAL_NODE_ID. */
+  nodeId?: NodeId;
+  /** Canonical logical repository identity, derived from remotes when possible. */
+  repoIdentity?: RepoIdentity | null;
+  /** Node-scoped checkout instance id. Do not use path alone for cross-node identity. */
+  repoInstanceId?: RepoInstanceId;
+  selectedRemote?: ResolvedRemoteIdentity | null;
+  remotes?: ResolvedRemoteIdentity[];
+  repoIdentityWarnings?: RepoIdentityWarning[];
+  webhookStatus?: RepoWebhookStatus;
   webhookError?: string;
   lastWebhookEventAt?: string;
 }

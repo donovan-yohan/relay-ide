@@ -41,6 +41,12 @@ import {
 } from './relay-state-db.js';
 import { applyWebSessionPatchV2 } from './web-session-v2-state.js';
 import { getWorkingTreeDiff } from './git.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createGlobalSessionId,
+  createRepoInstanceId,
+  createWorktreeInstanceId,
+} from '../shared/identity.js';
 import { getPrForBranch, isStalePr } from './gh.js';
 import {
   trackEvent,
@@ -132,6 +138,26 @@ function configure(opts: {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
+}
+
+function withLocalIdentity<T extends SessionSummary>(summary: T): T {
+  const nodeId = DEFAULT_LOCAL_NODE_ID;
+  return {
+    ...summary,
+    nodeId,
+    globalSessionId: createGlobalSessionId(nodeId, summary.id),
+    ...(summary.repoPath
+      ? { repoInstanceId: createRepoInstanceId(nodeId, summary.repoPath) }
+      : {}),
+    ...(summary.worktreePath
+      ? {
+          worktreeInstanceId: createWorktreeInstanceId(
+            nodeId,
+            summary.worktreePath
+          ),
+        }
+      : {}),
+  };
 }
 
 let terminalCounter = 0;
@@ -366,7 +392,10 @@ function create({
     };
     stateChangeCallbacks.push(promptHandler);
   }
-  return { ...result, needsBranchRename: !!ptySession.needsBranchRename };
+  return withLocalIdentity({
+    ...result,
+    needsBranchRename: !!ptySession.needsBranchRename,
+  });
 }
 
 function get(id: string): Session | undefined {
@@ -376,39 +405,40 @@ function get(id: string): Session | undefined {
 function list(): SessionSummary[] {
   return Array.from(sessions.values())
     .map(
-      (s): SessionSummary => ({
-        id: s.id,
-        type: s.type,
-        agent: s.agent,
-        mode: s.mode,
-        repoPath: s.repoPath,
-        worktreePath: s.worktreePath,
-        cwd: s.cwd,
-        repoName: s.repoName,
-        branchName: s.branchName,
-        displayName: s.displayName,
-        createdAt: s.createdAt,
-        lastActivity: s.lastActivity,
-        idle: s.idle,
-        customCommand: s.customCommand,
-        status: s.status,
-        needsBranchRename: !!s.needsBranchRename,
-        agentState: s.agentState,
-        currentActivity: s.currentActivity,
-        ...(s.mode === 'pty'
-          ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
-          : {}),
-        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-        ...(s.additionalDirs?.length
-          ? { additionalDirs: s.additionalDirs }
-          : {}),
-        ...(s.mode === 'pty' && s.dataQuality !== undefined
-          ? { dataQuality: s.dataQuality }
-          : {}),
-        ...(s._lastEmittedPermissionType !== undefined
-          ? { permissionType: s._lastEmittedPermissionType }
-          : {}),
-      })
+      (s): SessionSummary =>
+        withLocalIdentity({
+          id: s.id,
+          type: s.type,
+          agent: s.agent,
+          mode: s.mode,
+          repoPath: s.repoPath,
+          worktreePath: s.worktreePath,
+          cwd: s.cwd,
+          repoName: s.repoName,
+          branchName: s.branchName,
+          displayName: s.displayName,
+          createdAt: s.createdAt,
+          lastActivity: s.lastActivity,
+          idle: s.idle,
+          customCommand: s.customCommand,
+          status: s.status,
+          needsBranchRename: !!s.needsBranchRename,
+          agentState: s.agentState,
+          currentActivity: s.currentActivity,
+          ...(s.mode === 'pty'
+            ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
+            : {}),
+          ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+          ...(s.additionalDirs?.length
+            ? { additionalDirs: s.additionalDirs }
+            : {}),
+          ...(s.mode === 'pty' && s.dataQuality !== undefined
+            ? { dataQuality: s.dataQuality }
+            : {}),
+          ...(s._lastEmittedPermissionType !== undefined
+            ? { permissionType: s._lastEmittedPermissionType }
+            : {}),
+        })
     )
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }

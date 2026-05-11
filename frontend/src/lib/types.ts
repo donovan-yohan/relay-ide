@@ -1,4 +1,15 @@
 import type {
+  GlobalSessionId,
+  NodeId,
+  RepoIdentity,
+  RepoInstanceId,
+  WorktreeInstanceId,
+} from '../../../shared/identity.js';
+import type {
+  RepoIdentityWarning,
+  ResolvedRemoteIdentity,
+} from '../../../shared/repo-identity.js';
+import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
@@ -93,6 +104,17 @@ export interface Repo {
   isGitRepo: boolean;
   defaultBranch: string | null;
   currentBranch: string | null;
+  /** Node-local checkout path. Kept beside path for backward-compatible local mode consumers. */
+  localPath?: string;
+  /** Execution node that owns this checkout path. Local mode uses DEFAULT_LOCAL_NODE_ID. */
+  nodeId?: NodeId;
+  /** Canonical logical repository identity, derived from remotes when possible. */
+  repoIdentity?: RepoIdentity | null;
+  /** Node-scoped checkout instance id. Do not use path alone for cross-node identity. */
+  repoInstanceId?: RepoInstanceId;
+  selectedRemote?: ResolvedRemoteIdentity | null;
+  remotes?: ResolvedRemoteIdentity[];
+  repoIdentityWarnings?: RepoIdentityWarning[];
   webhookStatus?: RepoWebhookStatus;
   webhookError?: string;
   lastWebhookEventAt?: string;
@@ -120,6 +142,14 @@ export interface SessionSummary {
   createdAt: string;
   lastActivity: string;
   idle: boolean;
+  /** Execution node that owns this local session id. */
+  nodeId?: NodeId;
+  /** Node-scoped session id for hub/federated routing. */
+  globalSessionId?: GlobalSessionId;
+  /** Node-scoped checkout instance id for repoPath. */
+  repoInstanceId?: RepoInstanceId;
+  /** Node-scoped worktree/cwd instance id when this session runs in a worktree. */
+  worktreeInstanceId?: WorktreeInstanceId;
   useTmux?: boolean | undefined;
   status?: 'active' | 'disconnected' | undefined;
   agentState?: AgentState | undefined;
@@ -139,6 +169,10 @@ export interface WorktreeInfo {
   displayName: string;
   lastActivity: string;
   branchName: string;
+  nodeId?: NodeId;
+  repoIdentity?: RepoIdentity | null;
+  repoInstanceId?: RepoInstanceId;
+  worktreeInstanceId?: WorktreeInstanceId;
 }
 
 export interface RepoInfo {
@@ -356,6 +390,10 @@ export interface SidebarItem {
   displayState: DisplayState;
   lastKnownBackendState: BackendDisplayState | null;
   sessions: SessionSummary[];
+  nodeId?: NodeId;
+  repoIdentity?: RepoIdentity | null;
+  repoInstanceId?: RepoInstanceId;
+  worktreeInstanceId?: WorktreeInstanceId;
   isUnread?: boolean;
   prStatus?: PrDotStatus;
 }
