@@ -65,7 +65,14 @@ export interface CurrentActivity {
 }
 
 export interface SessionTelemetry {
+  /** Node-local session id. Kept for legacy single-node consumers. */
   sessionId: string;
+  /** Node-local session id when a scoped event carries both local and global ids. */
+  localSessionId?: string;
+  /** Execution node that owns this telemetry sample. */
+  nodeId?: NodeId;
+  /** Node-scoped session id for collision-free telemetry keying. */
+  globalSessionId?: GlobalSessionId;
   model: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;

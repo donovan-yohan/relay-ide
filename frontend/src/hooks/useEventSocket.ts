@@ -139,10 +139,13 @@ function eventSessionScope(msg: {
   localSessionId?: string;
   sessionId?: string;
 }): SessionEventScope {
+  const localSessionId = msg.localSessionId ?? msg.sessionId;
   return {
+    ...(localSessionId
+      ? { sessionId: localSessionId, localSessionId }
+      : {}),
     ...(msg.nodeId ? { nodeId: msg.nodeId } : {}),
     ...(msg.globalSessionId ? { globalSessionId: msg.globalSessionId } : {}),
-    ...(msg.localSessionId ? { localSessionId: msg.localSessionId } : {}),
   };
 }
 
@@ -301,7 +304,8 @@ export function useEventSocket({
           .getState()
           .handleSessionTelemetryEvent(
             msg.sessionId,
-            msg.data as SessionTelemetry | Record<string, unknown>
+            msg.data as SessionTelemetry | Record<string, unknown>,
+            eventSessionScope(msg)
           );
       },
       'account-telemetry': (msg) => {

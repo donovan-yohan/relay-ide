@@ -1,4 +1,5 @@
 import type { AccountTelemetry, SessionTelemetry } from './types.js';
+import { telemetrySessionKeyFromTelemetry } from './telemetry-session-key.js';
 
 function parseUpdatedAt(value: string | null | undefined): number {
   if (!value) return 0;
@@ -36,17 +37,18 @@ export function mergeSessionTelemetrySnapshot(
   const incomingIds = new Set<string>();
 
   for (const incoming of incomingSessions) {
-    incomingIds.add(incoming.sessionId);
-    next[incoming.sessionId] = pickNewerSessionTelemetry(
-      currentSessions[incoming.sessionId],
+    const telemetryKey = telemetrySessionKeyFromTelemetry(incoming);
+    incomingIds.add(telemetryKey);
+    next[telemetryKey] = pickNewerSessionTelemetry(
+      currentSessions[telemetryKey],
       incoming
     );
   }
 
-  for (const [sessionId, current] of Object.entries(currentSessions)) {
-    if (incomingIds.has(sessionId)) continue;
+  for (const [telemetryKey, current] of Object.entries(currentSessions)) {
+    if (incomingIds.has(telemetryKey)) continue;
     if (parseUpdatedAt(current.updatedAt) > requestStartedMs) {
-      next[sessionId] = current;
+      next[telemetryKey] = current;
     }
   }
 
@@ -85,7 +87,7 @@ export function mergeAccountTelemetryByFrameworkSnapshot(
   const result: Record<string, AccountTelemetry> = {};
   const incomingKeys = new Set(Object.keys(incomingByFramework));
 
-  for (const framework of incomingKeys) {
+  for (const framework of Array.from(incomingKeys)) {
     const current = currentByFramework[framework];
     const incoming = incomingByFramework[framework];
     const selected = pickNewerAccountTelemetryByFramework(current, incoming);

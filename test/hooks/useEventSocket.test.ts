@@ -310,6 +310,34 @@ describe('useEventSocket repo-scoped refresh', () => {
     );
   });
 
+  it('passes node/global session scope through telemetry events', () => {
+    mount();
+    const telemetry = {
+      sessionId: 'same-local-id',
+      totalInputTokens: 22,
+    };
+
+    wsMock.onMessage?.({
+      type: 'session-telemetry',
+      sessionId: 'same-local-id',
+      localSessionId: 'same-local-id',
+      nodeId: 'node-b',
+      globalSessionId: 'node-b:same-local-id',
+      data: telemetry,
+    });
+
+    expect(telemetryMock.handleSessionTelemetryEvent).toHaveBeenCalledWith(
+      'same-local-id',
+      telemetry,
+      {
+        sessionId: 'same-local-id',
+        localSessionId: 'same-local-id',
+        nodeId: 'node-b',
+        globalSessionId: 'node-b:same-local-id',
+      }
+    );
+  });
+
   it('cleanup cancels pending pr/ci throttle timers', () => {
     mount();
 

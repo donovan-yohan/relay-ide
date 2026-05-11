@@ -6,12 +6,18 @@ import type {
   SessionSummary,
   SessionTelemetry,
 } from '../types.js';
+import type { SessionEventScope } from '../../../../shared/node-boundary.js';
 import {
   mergeAccountTelemetryByFrameworkSnapshot,
   mergeSessionTelemetrySnapshot,
   pickNewerAccountTelemetry,
   pickNewerSessionTelemetry,
 } from '../telemetry-sync.js';
+import {
+  telemetrySessionKeyFromScope,
+  telemetrySessionKeyFromSession,
+  telemetrySessionKeyFromTelemetry,
+} from '../telemetry-session-key.js';
 
 export interface TelemetryAggregate {
   trackedSessions: number;
@@ -65,7 +71,8 @@ function buildAggregate(
   let contextPercentCount = 0;
 
   for (const session of sessions) {
-    const telemetry = telemetryById[session.id];
+    const telemetryKey = telemetrySessionKeyFromSession(session);
+    const telemetry = telemetryById[telemetryKey] ?? telemetryById[session.id];
     if (!telemetry) continue;
     aggregate.trackedSessions += 1;
     aggregate.totalInputTokens += telemetry.totalInputTokens || 0;
@@ -95,10 +102,17 @@ function buildAggregate(
 
 function normalizeSessionTelemetry(
   sessionId: string,
-  data: Partial<SessionTelemetry>
+  data: Partial<SessionTelemetry>,
+  scope?: SessionEventScope
 ): SessionTelemetry {
+  const localSessionId = data.localSessionId ?? scope?.localSessionId ?? sessionId;
+  const nodeId = data.nodeId ?? scope?.nodeId;
+  const globalSessionId = data.globalSessionId ?? scope?.globalSessionId;
   return {
-    sessionId,
+    sessionId: localSessionId,
+    ...(localSessionId ? { localSessionId } : {}),
+    ...(nodeId ? { nodeId } : {}),
+    ...(globalSessionId ? { globalSessionId } : {}),
     model:
       typeof data.model === 'string' || data.model === null
         ? (data.model ?? null)
@@ -152,14 +166,19 @@ export interface TelemetryState {
     repos: Repo[],
     sessions: SessionSummary[]
   ) => OrgTelemetrySummary;
-  summarizeSessionTelemetry: (sessionId: string) => SessionTelemetry | null;
+  summarizeSessionTelemetry: (
+    session: string | SessionSummary,
+    scope?: SessionEventScope
+  ) => SessionTelemetry | null;
   setSessionTelemetry: (data: SessionTelemetry) => void;
   setSessionTelemetryBatch: (
     items: SessionTelemetry[],
     requestStartedAt?: string
   ) => void;
-  clearSessionTelemetry: (sessionId: string) => void;
-  pruneSessionTelemetry: (activeSessionIds: Iterable<string>) => void;
+  clearSessionTelemetry: (sessionId: string, scope?: SessionEventScope) => void;
+  pruneSessionTelemetry: (
+    activeSessions: Iterable<string | SessionSummary>
+  ) => void;
   setAccountTelemetrySnapshot: (
     data: Record<string, AccountTelemetry> | null,
     requestStartedAt?: string
@@ -168,7 +187,8 @@ export interface TelemetryState {
   setTelemetrySetupInstalled: (installed: boolean | null) => void;
   handleSessionTelemetryEvent: (
     sessionId: string,
-    data: SessionTelemetry | Record<string, unknown>
+    data: SessionTelemetry | Record<string, unknown>,
+    scope?: SessionEventScope
   ) => void;
   handleAccountTelemetryEvent: (
     data: AccountTelemetry | Record<string, unknown> | null
@@ -200,9 +220,10 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
         sessionTelemetryById
       ),
     }));
-    const outsideRelaySessions = sessions.filter(
-      (s) => !sessionTelemetryById[s.id]
-    );
+    const outsideRelaySessions = sessions.filter((session) => {
+      const telemetryKey = telemetrySessionKeyFromSession(session);
+      return !sessionTelemetryById[telemetryKey] && !sessionTelemetryById[session.id];
+    });
     const outsideRelay = buildAggregate(
       outsideRelaySessions,
       sessionTelemetryById
@@ -211,21 +232,29 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     return { repos: repoSummaries, outsideRelay };
   },
 
-  summarizeSessionTelemetry: (sessionId) =>
-    get().sessionTelemetryById[sessionId] ?? null,
+  summarizeSessionTelemetry: (session, scope) => {
+    const { sessionTelemetryById } = get();
+    if (typeof session === 'string') {
+      const telemetryKey = telemetrySessionKeyFromScope(session, scope);
+      return sessionTelemetryById[telemetryKey] ?? sessionTelemetryById[session] ?? null;
+    }
+    const telemetryKey = telemetrySessionKeyFromSession(session);
+    return sessionTelemetryById[telemetryKey] ?? sessionTelemetryById[session.id] ?? null;
+  },
 
   setSessionTelemetry: (data) => {
     const { sessionTelemetryById } = get();
     const normalized = normalizeSessionTelemetry(data.sessionId, data);
+    const telemetryKey = telemetrySessionKeyFromTelemetry(normalized);
     const next = pickNewerSessionTelemetry(
-      sessionTelemetryById[normalized.sessionId],
+      sessionTelemetryById[telemetryKey],
       normalized
     );
-    if (sessionTelemetryById[normalized.sessionId] === next) return;
+    if (sessionTelemetryById[telemetryKey] === next) return;
     set({
       sessionTelemetryById: {
         ...sessionTelemetryById,
-        [normalized.sessionId]: next,
+        [telemetryKey]: next,
       },
     });
   },
@@ -247,22 +276,34 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     });
   },
 
-  clearSessionTelemetry: (sessionId) => {
+  clearSessionTelemetry: (sessionId, scope) => {
     const { sessionTelemetryById } = get();
-    if (!(sessionId in sessionTelemetryById)) return;
+    const telemetryKey = telemetrySessionKeyFromScope(sessionId, scope);
+    if (!(telemetryKey in sessionTelemetryById) && !(sessionId in sessionTelemetryById)) {
+      return;
+    }
     const next = { ...sessionTelemetryById };
+    delete next[telemetryKey];
     delete next[sessionId];
     set({ sessionTelemetryById: next });
   },
 
-  pruneSessionTelemetry: (activeSessionIds) => {
+  pruneSessionTelemetry: (activeSessions) => {
     const { sessionTelemetryById } = get();
-    const allowed = new Set(activeSessionIds);
+    const allowed = new Set<string>();
+    for (const session of Array.from(activeSessions)) {
+      if (typeof session === 'string') {
+        allowed.add(session);
+      } else {
+        allowed.add(telemetrySessionKeyFromSession(session));
+        allowed.add(session.id);
+      }
+    }
     const next: Record<string, SessionTelemetry> = {};
     let changed = false;
-    for (const [sessionId, telemetry] of Object.entries(sessionTelemetryById)) {
-      if (allowed.has(sessionId)) {
-        next[sessionId] = telemetry;
+    for (const [telemetryKey, telemetry] of Object.entries(sessionTelemetryById)) {
+      if (allowed.has(telemetryKey)) {
+        next[telemetryKey] = telemetry;
       } else {
         changed = true;
       }
@@ -295,10 +336,14 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
   setTelemetrySetupInstalled: (installed) =>
     set({ telemetrySetupInstalled: installed }),
 
-  handleSessionTelemetryEvent: (sessionId, data) => {
+  handleSessionTelemetryEvent: (sessionId, data, scope) => {
     if (!data || typeof data !== 'object') return;
     get().setSessionTelemetry(
-      normalizeSessionTelemetry(sessionId, data as Partial<SessionTelemetry>)
+      normalizeSessionTelemetry(
+        sessionId,
+        data as Partial<SessionTelemetry>,
+        scope
+      )
     );
   },
 
