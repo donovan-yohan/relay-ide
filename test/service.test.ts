@@ -1,12 +1,13 @@
 import { test, expect } from 'vitest';
-import type { execSync } from 'node:child_process';
 import * as service from '../server/service.js';
 
-function execSucceedsFor(commands: string[]): typeof execSync {
+type ExecSyncFn = typeof import('node:child_process').execSync;
+
+function execSucceedsFor(commands: string[]): ExecSyncFn {
   return ((command: string) => {
     if (commands.includes(command)) return '';
     throw new Error(`unexpected command: ${command}`);
-  }) as unknown as typeof execSync;
+  }) as unknown as ExecSyncFn;
 }
 
 test('getPlatform returns macos or linux', () => {
@@ -146,6 +147,37 @@ test('detectServiceManager distinguishes system systemd without a user manager',
     supported: false,
     installable: false,
   });
+});
+
+test('detectServiceManager bounds systemctl probes and treats timeouts as unavailable', () => {
+  const calls: Array<{ command: string; timeout?: number }> = [];
+  const exec = ((command: string, options?: { timeout?: number }) => {
+    calls.push({ command, timeout: options?.timeout });
+    if (command === 'command -v systemctl') return '';
+    if (command === 'systemctl is-system-running --quiet') return '';
+    if (command === 'systemctl --user show-environment') {
+      throw Object.assign(new Error('systemctl timed out'), { code: 'ETIMEDOUT' });
+    }
+    throw new Error(`unexpected command: ${command}`);
+  }) as unknown as ExecSyncFn;
+
+  const manager = service.detectServiceManager({
+    platform: 'linux',
+    home: '/home/test',
+    wsl: { detected: false, version: null, systemd: false },
+    execSync: exec,
+  });
+
+  expect(manager).toMatchObject({
+    kind: 'systemd-system',
+    supported: false,
+    installable: false,
+  });
+  expect(calls).toEqual([
+    { command: 'command -v systemctl', timeout: 2_000 },
+    { command: 'systemctl --user show-environment', timeout: 2_000 },
+    { command: 'systemctl is-system-running --quiet', timeout: 2_000 },
+  ]);
 });
 
 test('detectWslInfo recognizes WSL2 and systemd availability', () => {

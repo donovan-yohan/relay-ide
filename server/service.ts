@@ -17,6 +17,7 @@ const SERVICE_LABEL = 'com.relay-ide';
 const HOME = process.env.HOME || process.env.USERPROFILE || '~';
 const CONFIG_DIR = path.join(HOME, '.config', 'relay-ide');
 const SYSTEMD_UNIT_NAME = 'relay-ide.service';
+const SERVICE_PROBE_TIMEOUT_MS = 2_000;
 
 type ExecSyncLike = typeof execSync;
 
@@ -148,7 +149,10 @@ function makeManager(
 
 function commandSucceeds(command: string, exec: ExecSyncLike): boolean {
   try {
-    exec(command, { stdio: ['pipe', 'pipe', 'pipe'] });
+    exec(command, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: SERVICE_PROBE_TIMEOUT_MS,
+    });
     return true;
   } catch {
     return false;
@@ -240,12 +244,6 @@ function detectServiceManager(
   }
 
   const paths = getSystemdUserServicePaths(home);
-  const hasSystemctl = commandSucceeds('command -v systemctl', exec);
-  const userManagerAvailable =
-    hasSystemctl && commandSucceeds('systemctl --user show-environment', exec);
-  const systemManagerAvailable =
-    hasSystemctl && commandSucceeds('systemctl is-system-running --quiet', exec);
-
   if (wsl.detected && !wsl.systemd) {
     return makeManager({
       kind: 'wsl-manual',
@@ -266,6 +264,10 @@ function detectServiceManager(
       ],
     });
   }
+
+  const hasSystemctl = commandSucceeds('command -v systemctl', exec);
+  const userManagerAvailable =
+    hasSystemctl && commandSucceeds('systemctl --user show-environment', exec);
 
   if (wsl.detected && wsl.systemd && userManagerAvailable) {
     return makeManager({
@@ -327,6 +329,9 @@ function detectServiceManager(
       ],
     });
   }
+
+  const systemManagerAvailable =
+    hasSystemctl && commandSucceeds('systemctl is-system-running --quiet', exec);
 
   if (systemManagerAvailable) {
     return makeManager({
@@ -588,6 +593,7 @@ function checkRunning(managerOrPlatform: NodeServiceManager | Platform): boolean
     try {
       execSync('systemctl is-active relay-ide', {
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: SERVICE_PROBE_TIMEOUT_MS,
       });
       return true;
     } catch (_) {
@@ -602,6 +608,7 @@ function checkLaunchdRunning(): boolean {
     const out = execSync('launchctl list ' + SERVICE_LABEL, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: SERVICE_PROBE_TIMEOUT_MS,
     });
     return !out.includes('"LastExitStatus" = -1');
   } catch (_) {
@@ -613,6 +620,7 @@ function checkSystemdUserRunning(): boolean {
   try {
     execSync('systemctl --user is-active relay-ide', {
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: SERVICE_PROBE_TIMEOUT_MS,
     });
     return true;
   } catch (_) {
