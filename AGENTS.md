@@ -12,6 +12,7 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Build              | `npm run build`                                                          |
 | Self-host Relay    | `npm run dev:self`                                                       |
 | Test               | `npm test`                                                               |
+| Node capabilities  | `relay-ide manifest`                                                     |
 | Start              | `npm start`                                                              |
 | Run (global)       | `relay-ide`                                                              |
 | Version bump       | `npm version patch\|minor\|major`                                        |
@@ -48,7 +49,7 @@ See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined �
 
 ## Key Patterns
 
-- 68 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
+- 69 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
 - tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer.
