@@ -132,3 +132,18 @@
 .zoom-overlay.visible {
   opacity: 1;
 }
+
+.terminal-reconnect-banner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  border: 1px solid var(--status-warning);
+  background: var(--bg);
+  color: var(--status-warning);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  padding: 4px 8px;
+  pointer-events: none;
+}

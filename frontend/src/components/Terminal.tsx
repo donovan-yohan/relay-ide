@@ -1076,6 +1076,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const reconnectingPtySessionId = useSessionsStore(
       (s) => s.reconnectingPtySessionId
     );
+    const isPtyReconnecting = reconnectingPtySessionId === sessionId;
     const isFullscreenTerminal =
       (claudeFullscreen && activeAgent === 'claude') || useTmux;
 
@@ -1142,12 +1143,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     useEffect(() => {
       if (
         sessionId &&
-        reconnectingPtySessionId === sessionId &&
+        isPtyReconnecting &&
         termRef.current &&
         !companionMode
       ) {
-        const term = termRef.current;
-        term.reset();
         const container = containerRef.current;
         if (container) {
           const viewport =
@@ -1157,11 +1156,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
           }
         }
         fit();
-        term.refresh(0, term.rows - 1);
+        termRef.current.refresh(0, termRef.current.rows - 1);
       }
     }, [
       sessionId,
-      reconnectingPtySessionId,
+      isPtyReconnecting,
       companionMode,
       isFullscreenTerminal,
       fit,
@@ -1260,6 +1259,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
               .join(' ')}
           >
             {zoomText}
+          </div>
+        )}
+        {isPtyReconnecting && !companionMode && (
+          <div className="terminal-reconnect-banner" role="status">
+            reconnecting pty
           </div>
         )}
       </div>

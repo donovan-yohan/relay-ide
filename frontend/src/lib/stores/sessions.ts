@@ -31,6 +31,10 @@ const BOOT_FETCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_ENRICHMENT_TTL_MS = 600_000;
 
 export type RepoEnrichmentSource = 'webhook' | 'manual';
+export type BackendConnectionStatus =
+  | 'connected'
+  | 'reconnecting'
+  | 'restarting';
 export interface RepoEnrichmentMeta {
   lastEnrichedAt: number;
   source: RepoEnrichmentSource;
@@ -154,6 +158,7 @@ export interface SessionsState {
   enrichmentResults: Record<string, BranchEnrichment>;
   repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
   reconnectingPtySessionId: string | null;
+  backendConnectionStatus: BackendConnectionStatus;
   // Actions
   setActiveSessionId: (id: string | null) => void;
   rememberSessionForWorkspace: (
@@ -199,6 +204,7 @@ export interface SessionsState {
   clearLoading: (key: string) => void;
   isItemLoading: (key: string) => boolean;
   reorderWorkspaces: (paths: string[]) => Promise<void>;
+  setBackendConnectionStatus: (status: BackendConnectionStatus) => void;
   beginPtyReconnect: (sessionId: string) => void;
   clearPtyReconnect: (sessionId?: string) => void;
 }
@@ -249,6 +255,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   enrichmentResults: {},
   repoEnrichmentMeta: {},
   reconnectingPtySessionId: null,
+  backendConnectionStatus: 'connected',
 
   setActiveSessionId: (id) => {
     saveActiveSessionId(id);
@@ -635,6 +642,13 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   reorderWorkspaces: async (paths) => {
     const updated = await api.reorderWorkspaces(paths);
     set({ repos: updated });
+  },
+
+  setBackendConnectionStatus: (status) => {
+    set((state) => {
+      if (state.backendConnectionStatus === status) return state;
+      return { backendConnectionStatus: status };
+    });
   },
 
   beginPtyReconnect: (sessionId: string) => {

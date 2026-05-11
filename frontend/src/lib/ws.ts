@@ -79,6 +79,8 @@ export type EventMessage =
 
 type EventCallback = (msg: EventMessage) => void;
 type EventOpenCallback = () => void;
+export type EventConnectionStatus = 'connected' | 'reconnecting';
+type EventConnectionStatusCallback = (status: EventConnectionStatus) => void;
 
 const MAX_RECONNECT_ATTEMPTS = 30;
 const PING_INTERVAL = 30_000;
@@ -103,11 +105,14 @@ let eventPongTimeout: ReturnType<typeof setTimeout> | null = null;
 let lastEventOnMessage: EventCallback | null = null;
 let lastEventOnOpen: EventOpenCallback | null = null;
 let lastOnAuthRequired: (() => void) | null = null;
+let lastEventOnStatus: EventConnectionStatusCallback | null = null;
+let serverRestartAuthGraceUntil = 0;
 
 export function connectEventSocket(
   onMessage: EventCallback,
   onOpen?: EventOpenCallback,
-  onAuthRequired?: () => void
+  onAuthRequired?: () => void,
+  onStatus?: EventConnectionStatusCallback
 ): void {
   if (eventWs) {
     eventWs.onclose = null;
@@ -117,6 +122,7 @@ export function connectEventSocket(
   lastEventOnMessage = onMessage;
   lastEventOnOpen = onOpen ?? null;
   lastOnAuthRequired = onAuthRequired ?? lastOnAuthRequired;
+  lastEventOnStatus = onStatus ?? lastEventOnStatus;
   clearEventPing();
 
   const url = wsProtocol + '//' + location.host + '/ws/events';
@@ -124,6 +130,7 @@ export function connectEventSocket(
 
   eventWs.onopen = () => {
     startEventPing();
+    lastEventOnStatus?.('connected');
     onOpen?.();
   };
 
@@ -134,7 +141,7 @@ export function connectEventSocket(
     try {
       const msg = JSON.parse(str) as EventMessage;
       if (msg.type === 'server-restarting') {
-        markPtyConnectionsForServerRestart();
+        markServerRestarting();
       }
       onMessage(msg);
     } catch {
@@ -144,6 +151,7 @@ export function connectEventSocket(
 
   eventWs.onclose = () => {
     clearEventPing();
+    lastEventOnStatus?.('reconnecting');
     setTimeout(() => void reconnectWithAuthCheck(), 3000);
   };
 
@@ -154,6 +162,10 @@ async function reconnectWithAuthCheck(): Promise<void> {
   try {
     const res = await fetch('/auth/check');
     if (res.status === 401) {
+      if (isWithinServerRestartGrace()) {
+        setTimeout(() => void reconnectWithAuthCheck(), 1000);
+        return;
+      }
       lastOnAuthRequired?.();
       return;
     }
@@ -161,7 +173,12 @@ async function reconnectWithAuthCheck(): Promise<void> {
     /* keep trying */
   }
   if (lastEventOnMessage) {
-    connectEventSocket(lastEventOnMessage, lastEventOnOpen ?? undefined);
+    connectEventSocket(
+      lastEventOnMessage,
+      lastEventOnOpen ?? undefined,
+      lastOnAuthRequired ?? undefined,
+      lastEventOnStatus ?? undefined
+    );
   }
 }
 
@@ -183,6 +200,7 @@ function sendEventPing(): void {
 
 function forceReconnectEvent(): void {
   clearEventPing();
+  lastEventOnStatus?.('reconnecting');
   if (eventWs) {
     eventWs.onclose = null;
     eventWs.close();
@@ -239,6 +257,18 @@ interface PtyConnection {
 
 const ptyConnections = new Map<string, PtyConnection>();
 
+function isWithinServerRestartGrace(): boolean {
+  return serverRestartAuthGraceUntil > Date.now();
+}
+
+function markServerRestarting(): void {
+  markPtyConnectionsForServerRestart();
+  serverRestartAuthGraceUntil = Math.max(
+    serverRestartAuthGraceUntil,
+    Date.now() + SERVER_RESTART_CLEAN_CLOSE_RECONNECT_WINDOW_MS
+  );
+}
+
 function markPtyConnectionsForServerRestart(): void {
   const reconnectUntil =
     Date.now() + SERVER_RESTART_CLEAN_CLOSE_RECONNECT_WINDOW_MS;
@@ -260,7 +290,7 @@ function shouldReconnectCleanPtyClose(conn: PtyConnection): boolean {
 function beginPtyReconnect(conn: PtyConnection): void {
   useSessionsStore.getState().beginPtyReconnect(conn.sessionId);
   if (conn.reconnectAttempt === 0) {
-    conn.term.write('\r\n[Reconnecting...]\r\n');
+    conn.term.write('\r\n[reconnecting...]\r\n');
   }
   scheduleReconnect(conn);
 }
@@ -455,7 +485,7 @@ function openPtySocket(conn: PtyConnection): void {
     }
 
     if (event.code === 1000) {
-      conn.term.write('\r\n[Session ended]\r\n');
+      conn.term.write('\r\n[session ended]\r\n');
       useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
       ptyConnections.delete(conn.sessionId);
       conn.onSessionEnd();
@@ -470,7 +500,7 @@ function openPtySocket(conn: PtyConnection): void {
 function scheduleReconnect(conn: PtyConnection): void {
   if (conn.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
     conn.term.write(
-      '\r\n[Gave up reconnecting after ' +
+      '\r\n[gave up reconnecting after ' +
         MAX_RECONNECT_ATTEMPTS +
         ' attempts]\r\n'
     );
@@ -485,6 +515,10 @@ function scheduleReconnect(conn: PtyConnection): void {
     try {
       const authRes = await fetch('/auth/check');
       if (authRes.status === 401) {
+        if (isWithinServerRestartGrace()) {
+          scheduleReconnect(conn);
+          return;
+        }
         useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
         lastOnAuthRequired?.();
         return;
@@ -492,13 +526,12 @@ function scheduleReconnect(conn: PtyConnection): void {
       const res = await fetch('/sessions');
       const sessionList = (await res.json()) as Array<{ id: string }>;
       if (!sessionList.some((s) => s.id === conn.sessionId)) {
-        conn.term.write('\r\n[Session ended]\r\n');
+        conn.term.write('\r\n[session ended]\r\n');
         useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
         ptyConnections.delete(conn.sessionId);
         conn.onSessionEnd();
         return;
       }
-      conn.term.clear();
       openPtySocket(conn);
     } catch {
       scheduleReconnect(conn);

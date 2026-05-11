@@ -128,6 +128,13 @@ function invalidatePrQueries(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: ['org-prs'] });
 }
 
+function invalidateReconnectQueries(queryClient: QueryClient): void {
+  invalidatePrQueries(queryClient);
+  queryClient.invalidateQueries({ queryKey: ['files-list'] });
+  queryClient.invalidateQueries({ queryKey: ['changedFiles'] });
+  queryClient.invalidateQueries({ queryKey: ['fileDiff'] });
+}
+
 function forceRefreshRepos(repoPaths: string[], source: 'webhook' | 'manual') {
   for (const repoPath of repoPaths) {
     void useSessionsStore.getState().forceRefresh(repoPath, source);
@@ -153,6 +160,16 @@ export function useEventSocket({
     ): void {
       invalidatePrQueries(queryClient);
       forceRefreshRepos(repoPaths, source);
+    }
+
+    async function refreshAfterReconnect(): Promise<void> {
+      const sessions = useSessionsStore.getState();
+      sessions.setBackendConnectionStatus('connected');
+      await sessions.refreshAll();
+      invalidateReconnectQueries(queryClient);
+      throttledChangedFilesRefresh();
+      void sessions.ensureFreshAll(0);
+      void useTelemetryStore.getState().refreshTelemetry();
     }
 
     /** Throttled invalidation for bursty webhook PR/CI events. */
@@ -274,6 +291,7 @@ export function useEventSocket({
       },
       'server-restarting': () => {
         const state = useSessionsStore.getState();
+        state.setBackendConnectionStatus('restarting');
         const activeSessionId = state.activeSessionId;
         if (activeSessionId) {
           const activeSession = state.sessions.find(
@@ -293,13 +311,27 @@ export function useEventSocket({
       },
       () => {
         if (eventSocketOpened) {
-          void useSessionsStore.getState().ensureFreshAll(0);
+          void refreshAfterReconnect();
+        } else {
+          useSessionsStore
+            .getState()
+            .setBackendConnectionStatus('connected');
+          void useTelemetryStore.getState().refreshTelemetry();
         }
         eventSocketOpened = true;
-        void useTelemetryStore.getState().refreshTelemetry();
       },
       () => {
         useAuthStore.getState().deauthenticate();
+      },
+      (status) => {
+        const sessions = useSessionsStore.getState();
+        if (
+          status === 'reconnecting' &&
+          sessions.backendConnectionStatus === 'restarting'
+        ) {
+          return;
+        }
+        sessions.setBackendConnectionStatus(status);
       }
     );
 

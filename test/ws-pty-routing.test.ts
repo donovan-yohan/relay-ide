@@ -244,8 +244,32 @@ describe('per-session PTY routing', () => {
 
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(term.clear).toHaveBeenCalled();
+    expect(term.clear).not.toHaveBeenCalled();
     expect(sockets).toHaveLength(3);
     expect(sockets[2]!.url).toContain('/ws/sess-a');
+  });
+
+  it('does not invoke auth fallback for 401 checks during the restart grace window', async () => {
+    vi.useFakeTimers();
+    const onAuthRequired = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === '/auth/check') return { status: 401 };
+        throw new Error(`unexpected fetch ${url}`);
+      })
+    );
+
+    const ws = await importWs();
+    ws.connectEventSocket(vi.fn(), vi.fn(), onAuthRequired);
+    sockets[0]!.onmessage?.({
+      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+    } as MessageEvent);
+    sockets[0]!.readyState = FakeWebSocket.CLOSED;
+    sockets[0]!.onclose?.({ code: 1006 } as CloseEvent);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(onAuthRequired).not.toHaveBeenCalled();
   });
 });
