@@ -277,73 +277,88 @@ describe('sessions store pure logic', () => {
   });
 
   describe('PTY reconnect state', () => {
+    type PtyReconnectIds = Record<string, true>;
     type PtyReconnectAction =
       | { type: 'begin'; sessionId: string }
       | { type: 'clear'; sessionId?: string };
 
     function applyPtyReconnectTransition(
-      currentId: string | null,
+      currentIds: PtyReconnectIds,
       action: PtyReconnectAction
-    ): string | null {
+    ): PtyReconnectIds {
       if (action.type === 'begin') {
-        return action.sessionId;
+        return { ...currentIds, [action.sessionId]: true };
       }
 
-      if (action.sessionId === undefined || currentId === action.sessionId) {
-        return null;
-      }
+      if (action.sessionId === undefined) return {};
+      if (!currentIds[action.sessionId]) return currentIds;
 
-      return currentId;
+      const next = { ...currentIds };
+      delete next[action.sessionId];
+      return next;
     }
 
     function beginPtyReconnect(
-      currentId: string | null,
+      currentIds: PtyReconnectIds,
       sessionId: string
-    ): string | null {
-      return applyPtyReconnectTransition(currentId, {
+    ): PtyReconnectIds {
+      return applyPtyReconnectTransition(currentIds, {
         type: 'begin',
         sessionId,
       });
     }
 
     function clearPtyReconnect(
-      currentId: string | null,
+      currentIds: PtyReconnectIds,
       sessionId?: string
-    ): string | null {
-      return applyPtyReconnectTransition(currentId, {
+    ): PtyReconnectIds {
+      return applyPtyReconnectTransition(currentIds, {
         type: 'clear',
         sessionId,
       });
     }
 
-    it('beginPtyReconnect sets the reconnecting session ID', () => {
-      const result = beginPtyReconnect(null, 'session-a');
-      expect(result).toBe('session-a');
+    function isPtyReconnecting(
+      currentIds: PtyReconnectIds,
+      sessionId: string | null
+    ): boolean {
+      return sessionId ? currentIds[sessionId] === true : false;
+    }
+
+    it('beginPtyReconnect adds the reconnecting session ID', () => {
+      const result = beginPtyReconnect({}, 'session-a');
+      expect(result).toEqual({ 'session-a': true });
     });
 
-    it('beginPtyReconnect replaces previous session ID', () => {
-      const result = beginPtyReconnect('session-a', 'session-b');
-      expect(result).toBe('session-b');
+    it('beginPtyReconnect preserves prior reconnecting session IDs', () => {
+      const result = beginPtyReconnect({ 'session-a': true }, 'session-b');
+      expect(result).toEqual({ 'session-a': true, 'session-b': true });
     });
 
-    it('clearPtyReconnect clears when sessionId matches', () => {
-      const result = clearPtyReconnect('session-a', 'session-a');
-      expect(result).toBeNull();
+    it('clearPtyReconnect clears only the matching sessionId', () => {
+      const result = clearPtyReconnect(
+        { 'session-a': true, 'session-b': true },
+        'session-a'
+      );
+      expect(result).toEqual({ 'session-b': true });
     });
 
-    it('clearPtyReconnect keeps current when sessionId does not match', () => {
-      const result = clearPtyReconnect('session-a', 'session-b');
-      expect(result).toBe('session-a');
+    it('clearPtyReconnect keeps current state when sessionId does not match', () => {
+      const current: PtyReconnectIds = { 'session-a': true };
+      const result = clearPtyReconnect(current, 'session-b');
+      expect(result).toBe(current);
     });
 
     it('clearPtyReconnect clears unconditionally when no sessionId provided', () => {
-      const result = clearPtyReconnect('session-a');
-      expect(result).toBeNull();
+      const result = clearPtyReconnect({ 'session-a': true, 'session-b': true });
+      expect(result).toEqual({});
     });
 
-    it('clearPtyReconnect is a no-op when already null', () => {
-      const result = clearPtyReconnect(null, 'session-a');
-      expect(result).toBeNull();
+    it('isPtyReconnecting guards null session IDs', () => {
+      const current: PtyReconnectIds = { 'session-a': true };
+      expect(isPtyReconnecting(current, 'session-a')).toBe(true);
+      expect(isPtyReconnecting(current, 'session-b')).toBe(false);
+      expect(isPtyReconnecting(current, null)).toBe(false);
     });
   });
 });

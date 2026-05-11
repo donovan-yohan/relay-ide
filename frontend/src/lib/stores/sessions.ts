@@ -157,7 +157,7 @@ export interface SessionsState {
   sidebarItems: SidebarItem[];
   enrichmentResults: Record<string, BranchEnrichment>;
   repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
-  reconnectingPtySessionId: string | null;
+  reconnectingPtySessionIds: Record<string, true>;
   backendConnectionStatus: BackendConnectionStatus;
   // Actions
   setActiveSessionId: (id: string | null) => void;
@@ -254,7 +254,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   sidebarItems: [],
   enrichmentResults: {},
   repoEnrichmentMeta: {},
-  reconnectingPtySessionId: null,
+  reconnectingPtySessionIds: {},
   backendConnectionStatus: 'connected',
 
   setActiveSessionId: (id) => {
@@ -652,13 +652,30 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   beginPtyReconnect: (sessionId: string) => {
-    set({ reconnectingPtySessionId: sessionId });
+    set((state) => {
+      if (state.reconnectingPtySessionIds[sessionId]) return state;
+      return {
+        reconnectingPtySessionIds: {
+          ...state.reconnectingPtySessionIds,
+          [sessionId]: true,
+        },
+      };
+    });
   },
 
   clearPtyReconnect: (sessionId?: string) => {
-    const current = get().reconnectingPtySessionId;
-    if (sessionId === undefined || current === sessionId) {
-      set({ reconnectingPtySessionId: null });
-    }
+    set((state) => {
+      if (sessionId === undefined) {
+        if (Object.keys(state.reconnectingPtySessionIds).length === 0) {
+          return state;
+        }
+        return { reconnectingPtySessionIds: {} };
+      }
+
+      if (!state.reconnectingPtySessionIds[sessionId]) return state;
+      const next = { ...state.reconnectingPtySessionIds };
+      delete next[sessionId];
+      return { reconnectingPtySessionIds: next };
+    });
   },
 }));

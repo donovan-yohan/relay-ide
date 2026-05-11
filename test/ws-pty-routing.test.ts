@@ -213,6 +213,23 @@ describe('per-session PTY routing', () => {
     expect(sockets[1]!.url).toContain('/ws/sess-a');
   });
 
+  it('marks every live PTY reconnecting when the server restarts', async () => {
+    const ws = await importWs();
+    ws.connectPtySocket('sess-a', fakeTerm(), vi.fn(), vi.fn());
+    ws.connectPtySocket('sess-b', fakeTerm(), vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+    sockets[1]!.__triggerOpen();
+
+    ws.connectEventSocket(vi.fn());
+    sockets[2]!.onmessage?.({
+      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+    } as MessageEvent);
+
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledTimes(2);
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-b');
+  });
+
   it('reconnects an open PTY after server-restarting followed by clean close', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -238,7 +255,7 @@ describe('per-session PTY routing', () => {
     sockets[0]!.readyState = FakeWebSocket.CLOSED;
     sockets[0]!.onclose?.({ code: 1000 } as CloseEvent);
 
-    expect(term.write).not.toHaveBeenCalledWith('\r\n[Session ended]\r\n');
+    expect(term.write).not.toHaveBeenCalledWith('\r\n[session ended]\r\n');
     expect(onEnd).not.toHaveBeenCalled();
     expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
 

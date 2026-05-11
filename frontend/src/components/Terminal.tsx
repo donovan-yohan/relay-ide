@@ -1073,10 +1073,9 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const activeAgent = useSessionsStore(
       (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
     );
-    const reconnectingPtySessionId = useSessionsStore(
-      (s) => s.reconnectingPtySessionId
+    const isPtyReconnecting = useSessionsStore((s) =>
+      sessionId ? s.reconnectingPtySessionIds[sessionId] === true : false
     );
-    const isPtyReconnecting = reconnectingPtySessionId === sessionId;
     const isFullscreenTerminal =
       (claudeFullscreen && activeAgent === 'claude') || useTmux;
 

@@ -10,7 +10,10 @@ import {
   UTILITY_ICON_RAIL_WIDTH,
   type WorkspaceUtilityRailState,
 } from './lib/stores/ui.js';
-import { useSessionsStore } from './lib/stores/sessions.js';
+import {
+  useSessionsStore,
+  type BackendConnectionStatus,
+} from './lib/stores/sessions.js';
 import { useConfigStore } from './lib/stores/config.js';
 import { useToastStore } from './lib/stores/toasts.js';
 import { useBootStateStore } from './lib/stores/boot-state.js';
@@ -782,7 +785,7 @@ function TerminalAreaContent({
 function BackendConnectionBanner({
   status,
 }: {
-  status: 'connected' | 'reconnecting' | 'restarting';
+  status: BackendConnectionStatus;
 }) {
   if (status === 'connected') return null;
   const label =
