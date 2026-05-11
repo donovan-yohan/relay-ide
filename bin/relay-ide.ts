@@ -27,7 +27,7 @@ if (args.includes('--help') || args.includes('-h')) {
        relay-ide <command>
 
 Commands:
-  dev                Run backend + Vite frontend with HMR (source checkout)
+  dev [--self-host]  Run backend + Vite frontend with HMR (source checkout)
   update             Update to the latest version from npm
   install            Install as a background service (survives reboot)
   uninstall          Stop and remove the background service

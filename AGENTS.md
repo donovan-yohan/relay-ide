@@ -10,6 +10,7 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Action             | Command                                                                  |
 | ------------------ | ------------------------------------------------------------------------ |
 | Build              | `npm run build`                                                          |
+| Self-host Relay    | `npm run dev:self`                                                       |
 | Test               | `npm test`                                                               |
 | Start              | `npm start`                                                              |
 | Run (global)       | `relay-ide`                                                              |
@@ -27,6 +28,7 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Quality        | `docs/QUALITY.md`               | Test runner, test files, isolation patterns                      |
 | Review         | `docs/REVIEW_GUIDANCE.md`       | Review agent config, question bank, escape log                   |
 | Deployment     | `docs/references/deployment.md` | Publishing + branching (nightly/master + tags)                   |
+| Self-hosting   | `docs/SELF_HOSTING.md`          | Build Relay with Relay using isolated dev config/ports/tmux      |
 | Learnings      | `docs/LEARNINGS.md`             | Persistent cross-session learnings                               |
 | Project skills | `.chalk/skills/<name>/SKILL.md` | Repo-local skills (see §Skills)                                  |
 | Work tracking  | GitHub Issues                   | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`          |

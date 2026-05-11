@@ -143,7 +143,8 @@ Tmux session names are stable and human-readable:
 ```
 
 - Production sessions use the `relay-ide-` prefix.
-- Dev mode sessions (`NO_PIN=1`) use the `relay-dev-` prefix.
+- Ordinary dev mode sessions (`NO_PIN=1`) use the `relay-dev-` prefix.
+- Self-host mode sessions (`relay-ide dev --self-host` / `npm run dev:self`) use the `relay-self-` prefix and a config path under user config state, not the production config.
 - The slug is sanitized to alphanumeric/hyphen characters and capped before the session id suffix.
 - Restore paths preserve the original session id and tmux session name so browser tabs can reconnect to the same server-side process after a server restart.
 - On startup, the server checks whether the named tmux session still exists. If it does, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed process.
