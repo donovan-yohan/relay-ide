@@ -60,7 +60,7 @@ RELAY_IDE_DEV_FRONTEND_PORT=10001
 # --- end relay-ide managed ports ---
 ```
 
-Content outside that block is preserved. Do not hand-edit the managed block. If it drifts, restart `npm run dev:self`; the allocator rewrites it from the current assignment state.
+Content outside that block is preserved. Do not hand-edit the managed block. If it drifts, restart `npm run dev:self`; the allocator rewrites it from the current assignment state. When the self-host UI adds the current Relay worktree as a normal workspace, ordinary workspace `PORT` reconciliation must preserve the existing `RELAY_IDE_DEV_BACKEND_PORT` and `RELAY_IDE_DEV_FRONTEND_PORT` entries instead of replacing the block with only `PORT`.
 
 ## Port and host overrides
 
@@ -74,18 +74,18 @@ npm run dev:self
 
 Supported dev override variables:
 
-| Variable                      | Default in ordinary dev           | Self-host behavior                                                     |
-| ----------------------------- | --------------------------------- | ---------------------------------------------------------------------- |
-| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                            | Overrides allocator backend port                                       |
+| Variable                      | Default in ordinary dev           | Self-host behavior                                                                                                                       |
+| ----------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                            | Overrides allocator backend port                                                                                                         |
 | `RELAY_IDE_PORT`              | unset                             | Ignored to avoid inherited production daemon collisions; use `--port` or `RELAY_IDE_DEV_BACKEND_PORT` for an explicit self-host override |
-| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                            | Overrides allocator frontend port                                      |
-| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                       | Backend bind host                                                      |
-| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                         |
-| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                      |
-| `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override |
-| `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                          |
+| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                            | Overrides allocator frontend port                                                                                                        |
+| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                       | Backend bind host                                                                                                                        |
+| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                                                                                           |
+| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                                                                                        |
+| `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override                           |
+| `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                                                                                            |
 
-Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block.
+Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block. Generic parent-process `RELAY_IDE_CONFIG` and `RELAY_IDE_PORT` values are intentionally ignored in self-host mode; this prevents a child Relay launched from production Relay from reusing the production config or port by accident.
 
 ## Running inside production Relay
 
