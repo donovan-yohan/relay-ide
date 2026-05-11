@@ -6,8 +6,10 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as service from '../server/service.js';
-import { DEFAULTS } from '../server/config.js';
+import { DEFAULTS, loadConfig } from '../server/config.js';
 import { createLogger } from '../server/logger.js';
+import { getNodeManifest } from '../server/node-manifest.js';
+import type { Config } from '../server/types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +34,7 @@ Commands:
   install            Install as a background service (survives reboot)
   uninstall          Stop and remove the background service
   status             Show whether the service is running
+  manifest           Print local node capability manifest as JSON
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
@@ -46,6 +49,7 @@ Options:
   --port <port>      Override server port (default: 3456)
   --host <host>      Override bind address (default: 0.0.0.0)
   --config <path>    Path to config.json (default: ~/.config/relay-ide/config.json)
+  --compact          With 'manifest': print compact JSON
   --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
   --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
@@ -133,6 +137,25 @@ if (command === 'update') {
     logger.error(`Update failed: ${(e as Error).message}`);
     process.exit(1);
   }
+  process.exit(0);
+}
+
+if (command === 'manifest') {
+  const configPath = resolveConfigPath();
+  let config: Pick<Config, 'frameworks'> | undefined;
+  if (fs.existsSync(configPath)) {
+    try {
+      config = loadConfig(configPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `[cli] Warning: could not load config for framework probes: ${message}\n`
+      );
+    }
+  }
+
+  const manifest = await getNodeManifest(config ? { config } : {});
+  console.log(JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2));
   process.exit(0);
 }
 
@@ -337,6 +360,8 @@ if (
   } else if (command === 'status') {
     runServiceCommand(() => {
       const st = service.status();
+      logger.info(`Service manager: ${st.manager.label} (${st.manager.kind})`);
+      logger.info(st.manager.message);
       if (!st.installed) {
         logger.info('Service is not installed.');
       } else if (st.running) {
@@ -344,6 +369,11 @@ if (
       } else {
         logger.info('Service is installed but not running.');
       }
+      if (st.manager.statusCommand) {
+        logger.info(`Status command: ${st.manager.statusCommand}`);
+      }
+      logger.info(st.installed ? st.manager.uninstallHint : st.manager.installHint);
+      for (const caveat of st.manager.caveats) logger.info(caveat);
     });
   } else {
     runServiceCommand(() => {

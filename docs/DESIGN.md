@@ -111,6 +111,8 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 
 - `--bg` is shortcut for `install` (installs + starts)
 - Service files generated with current CLI flags baked in
+- Service manager detection is capability-based, not platform-only: macOS uses launchd user agents; Linux uses systemd `--user` only when the user manager is actually available; WSL reports `wsl-systemd` only when WSL systemd and the user bus are both present, otherwise `wsl-manual`.
+- Unsupported/manual modes are non-fatal for status and node manifest reporting; `relay-ide manifest` prints the same local capability schema as `GET /api/node/manifest`, while `install`/`uninstall` print actionable foreground/manual, WSL systemd, or headless Linux linger guidance instead of pretending a service exists.
 - macOS: launchd plist (`RunAtLoad` + `KeepAlive`); Linux: systemd user unit (`Restart=on-failure`)
 - To change port/host: `uninstall` then re-install with new flags
 

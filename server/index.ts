@@ -99,6 +99,7 @@ import {
   getFrameworkClientInfoWithRuntime,
   getFrameworkWebAvailability,
 } from './frameworks.js';
+import { getNodeManifest } from './node-manifest.js';
 import type {
   AgentType,
   AutomationSettings,
@@ -1393,6 +1394,12 @@ async function main(): Promise<void> {
       getConfig().frameworks
     );
     res.json({ frameworks });
+  });
+
+  // GET /api/node/manifest — reports local node platform, service, and capability probes.
+  app.get('/api/node/manifest', requireAuth, async (_req, res) => {
+    const manifest = await getNodeManifest({ config: getConfig() });
+    res.json({ manifest });
   });
 
   // Restore sessions from a previous update restart
