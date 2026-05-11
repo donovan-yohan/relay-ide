@@ -33,8 +33,21 @@ const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
 const logger = createLogger('pty');
 
+function normalizeTmuxPrefix(prefix: string | undefined): string | null {
+  const sanitized = prefix
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+/, '');
+  if (!sanitized) return null;
+  return sanitized.endsWith('-') ? sanitized : `${sanitized}-`;
+}
+
 export function getTmuxPrefix(): string {
-  return process.env.NO_PIN === '1' ? 'relay-dev-' : 'relay-ide-';
+  return (
+    normalizeTmuxPrefix(process.env.RELAY_IDE_TMUX_PREFIX) ??
+    (process.env.NO_PIN === '1' ? 'relay-dev-' : 'relay-ide-')
+  );
 }
 
 export function generateTmuxSessionName(

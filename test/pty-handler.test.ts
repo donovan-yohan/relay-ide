@@ -2,7 +2,26 @@ import { describe, it, afterEach, expect } from 'vitest';
 import * as sessions from '../server/sessions.js';
 import type { PtySession, EventSourceType } from '../server/types.js';
 
-import { buildStatusLineRelayScript } from '../server/pty-handler.js';
+import {
+  buildStatusLineRelayScript,
+  getTmuxPrefix,
+} from '../server/pty-handler.js';
+
+const originalRelayTmuxPrefix = process.env.RELAY_IDE_TMUX_PREFIX;
+const originalNoPin = process.env.NO_PIN;
+
+afterEach(() => {
+  if (originalRelayTmuxPrefix === undefined) {
+    delete process.env.RELAY_IDE_TMUX_PREFIX;
+  } else {
+    process.env.RELAY_IDE_TMUX_PREFIX = originalRelayTmuxPrefix;
+  }
+  if (originalNoPin === undefined) {
+    delete process.env.NO_PIN;
+  } else {
+    process.env.NO_PIN = originalNoPin;
+  }
+});
 
 describe('status-line relay script', () => {
   it('writes telemetry via a temp file while streaming stdin once', () => {
@@ -16,6 +35,24 @@ describe('status-line relay script', () => {
     expect(script).toMatch(/tee "\$tmp_file"/);
     expect(script).toMatch(/mv "\$tmp_file"/);
     expect(script).not.toMatch(/input=\$\(cat\)/);
+  });
+});
+
+describe('tmux prefix resolution', () => {
+  it('uses explicit relay tmux prefix for self-hosted dev servers', () => {
+    process.env.NO_PIN = '1';
+    process.env.RELAY_IDE_TMUX_PREFIX = 'relay-self-';
+
+    expect(getTmuxPrefix()).toBe('relay-self-');
+  });
+
+  it('falls back to dev and production prefixes without an explicit override', () => {
+    delete process.env.RELAY_IDE_TMUX_PREFIX;
+    process.env.NO_PIN = '1';
+    expect(getTmuxPrefix()).toBe('relay-dev-');
+
+    delete process.env.NO_PIN;
+    expect(getTmuxPrefix()).toBe('relay-ide-');
   });
 });
 

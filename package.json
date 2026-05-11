@@ -20,6 +20,7 @@
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "dev": "npm run build:server && node dist/scripts/dev.js",
+    "dev:self": "npm run build:server && node dist/bin/relay-ide.js dev --self-host",
     "dev:backend": "npm run build:server && RELAY_IDE_CONFIG=./config.dev.json NO_PIN=1 RELAY_IDE_HOST=${RELAY_IDE_DEV_BACKEND_HOST:-127.0.0.1} RELAY_IDE_PORT=${RELAY_IDE_DEV_BACKEND_PORT:-3457} node dist/server/index.js",
     "dev:vite": "vite --config frontend/vite.config.ts --host ${RELAY_IDE_DEV_FRONTEND_HOST:-127.0.0.1} --port ${RELAY_IDE_DEV_FRONTEND_PORT:-5173}",
     "start": "npm run build && node dist/server/index.js",

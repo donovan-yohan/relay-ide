@@ -74,6 +74,8 @@ export interface PortVerificationResult {
 export interface PortAllocatorOptions {
   /** Path to config.json (used to derive config directory) */
   configPath: string;
+  /** Variable names whose existing assignments should not be OS-verified/reassigned on initialize. */
+  skipVerifyVariableNames?: string[] | undefined;
   /** Optional logger for debug/warn output */
   logger?:
     | {
@@ -145,11 +147,11 @@ function logWarn(
   logger?.debug(message, ...args);
 }
 
-export function normalizePortVariables(
+function sanitizeOptionalPortVariables(
   variableNames?: string[] | null
 ): string[] {
   const seen = new Set<string>();
-  const normalized = (variableNames ?? [])
+  return (variableNames ?? [])
     .filter((name): name is string => typeof name === 'string')
     .map((name) => name.trim())
     .filter(Boolean)
@@ -159,6 +161,12 @@ export function normalizePortVariables(
       seen.add(name);
       return true;
     });
+}
+
+export function normalizePortVariables(
+  variableNames?: string[] | null
+): string[] {
+  const normalized = sanitizeOptionalPortVariables(variableNames);
   return normalized.length > 0 ? normalized : [...DEFAULT_PORT_VARIABLES];
 }
 
@@ -179,6 +187,7 @@ export class PortAllocator {
   private readonly logger:
     | { debug: (msg: string, ...args: unknown[]) => void }
     | undefined;
+  private readonly skipVerifyVariableNames: Set<string>;
   private assignments: PortAssignmentsFile;
   private initialized = false;
 
@@ -188,6 +197,11 @@ export class PortAllocator {
       options.configPath
     );
     this.logger = options.logger;
+    this.skipVerifyVariableNames = new Set(
+      (options.skipVerifyVariableNames ?? []).filter(
+        (name): name is string => typeof name === 'string' && name.trim() !== ''
+      )
+    );
     const loaded = this.loadAssignments();
     this.assignments = loaded.assignments;
     if (loaded.source === 'legacy') {
@@ -251,6 +265,25 @@ export class PortAllocator {
     }
   }
 
+  releasePortForWorktreeVariable(
+    repoId: string,
+    worktreeId: string,
+    variableName: string
+  ): void {
+    const before = this.assignments.assignments.length;
+    this.assignments.assignments = this.assignments.assignments.filter(
+      (a) =>
+        !(
+          a.repoId === repoId &&
+          a.worktreeId === worktreeId &&
+          a.variableName === variableName
+        )
+    );
+    if (this.assignments.assignments.length !== before) {
+      this.saveAssignments();
+    }
+  }
+
   /**
    * Get all ports for a worktree.
    *
@@ -281,26 +314,35 @@ export class PortAllocator {
    *
    * Existing allocations are preserved for variables still requested, stale
    * variable assignments are removed, and any newly requested variables are
-   * allocated fresh ports.
+   * allocated fresh ports. Optional preserved variables stay in allocator state
+   * and in the returned env mapping if they already exist, but are not allocated
+   * when absent.
    */
   async reconcilePortsForWorktree(
     repoId: string,
     worktreeId: string,
-    variableNames: string[]
+    variableNames: string[],
+    preserveVariableNames?: string[]
   ): Promise<Record<string, number>> {
     const requestedVariables = new Set(normalizePortVariables(variableNames));
+    const preservedVariables = new Set(
+      sanitizeOptionalPortVariables(preserveVariableNames)
+    );
+    const variablesToKeep = new Set(
+      Array.from(requestedVariables).concat(Array.from(preservedVariables))
+    );
     const preserved = this.assignments.assignments.filter(
       (a) =>
         a.repoId === repoId &&
         a.worktreeId === worktreeId &&
-        requestedVariables.has(a.variableName)
+        variablesToKeep.has(a.variableName)
     );
 
     this.assignments.assignments = this.assignments.assignments.filter(
       (a) =>
         a.repoId !== repoId ||
         a.worktreeId !== worktreeId ||
-        requestedVariables.has(a.variableName)
+        variablesToKeep.has(a.variableName)
     );
 
     const result: Record<string, number> = {};
@@ -308,7 +350,7 @@ export class PortAllocator {
       result[assignment.variableName] = assignment.port;
     }
 
-    for (const variableName of requestedVariables) {
+    for (const variableName of Array.from(requestedVariables)) {
       if (result[variableName] !== undefined) continue;
       result[variableName] = await this.allocateSinglePort(
         repoId,
@@ -468,6 +510,12 @@ export class PortAllocator {
     const verified: PortAssignment[] = [];
 
     for (const assignment of this.assignments.assignments) {
+      if (this.skipVerifyVariableNames.has(assignment.variableName)) {
+        assignment.verifiedAt = new Date().toISOString();
+        verified.push(assignment);
+        continue;
+      }
+
       const available = await this.isPortAvailable(assignment.port);
       if (available) {
         assignment.verifiedAt = new Date().toISOString();
@@ -638,6 +686,27 @@ export function parseEnvBlock(content: string): Record<string, number> | null {
   return Object.keys(result).length > 0 ? result : null;
 }
 
+export function removeEnvBlockVariables(
+  content: string,
+  variableNames: string[]
+): string {
+  const existing = parseEnvBlock(content);
+  if (!existing) return content;
+
+  const variablesToRemove = new Set(sanitizeOptionalPortVariables(variableNames));
+  const remaining = Object.fromEntries(
+    Object.entries(existing).filter(
+      ([variableName]) => !variablesToRemove.has(variableName)
+    )
+  );
+
+  if (Object.keys(remaining).length === 0) {
+    return removeEnvBlock(content);
+  }
+
+  return upsertEnvBlock(content, remaining);
+}
+
 export function upsertPortsInEnvFile(
   worktreePath: string,
   portMapping: Record<string, number>
@@ -650,11 +719,16 @@ export function upsertPortsInEnvFile(
   fs.writeFileSync(envPath, next, 'utf8');
 }
 
-export function removePortsFromEnvFile(worktreePath: string): void {
+export function removePortsFromEnvFile(
+  worktreePath: string,
+  variableNames?: string[]
+): void {
   const envPath = path.join(worktreePath, '.env');
   if (!fs.existsSync(envPath)) return;
   const current = fs.readFileSync(envPath, 'utf8');
-  const next = removeEnvBlock(current);
+  const next = variableNames
+    ? removeEnvBlockVariables(current, variableNames)
+    : removeEnvBlock(current);
   if (next.length === 0) {
     fs.rmSync(envPath, { force: true });
     return;
@@ -693,9 +767,14 @@ let defaultAllocator: PortAllocator | null = null;
  */
 export async function initializeDefaultAllocator(
   configPath: string,
-  logger?: PortAllocatorOptions['logger']
+  logger?: PortAllocatorOptions['logger'],
+  skipVerifyVariableNames?: string[]
 ): Promise<PortAllocator> {
-  defaultAllocator = new PortAllocator({ configPath, logger });
+  defaultAllocator = new PortAllocator({
+    configPath,
+    logger,
+    skipVerifyVariableNames,
+  });
   await defaultAllocator.initialize();
   return defaultAllocator;
 }

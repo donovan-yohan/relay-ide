@@ -10,6 +10,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
 import {
   PortAllocator,
   initializeDefaultAllocator,
@@ -19,6 +20,7 @@ import {
   extractEnvBlock,
   upsertEnvBlock,
   removeEnvBlock,
+  removeEnvBlockVariables,
   parseEnvBlock,
   normalizePortVariables,
   upsertPortsInEnvFile,
@@ -231,6 +233,56 @@ describe('PortAllocator', () => {
     expect(allocator.getPortsForWorktree('repo-1', 'wt-2')).toBeDefined();
   });
 
+  test('releasePortForWorktreeVariable removes one variable without dropping self-host assignments', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+
+    const initial = await allocator.allocatePortsForWorktree('repo-1', 'wt-1', [
+      'PORT',
+      'RELAY_IDE_DEV_BACKEND_PORT',
+      'RELAY_IDE_DEV_FRONTEND_PORT',
+    ]);
+
+    allocator.releasePortForWorktreeVariable('repo-1', 'wt-1', 'PORT');
+
+    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual({
+      RELAY_IDE_DEV_BACKEND_PORT: initial.RELAY_IDE_DEV_BACKEND_PORT,
+      RELAY_IDE_DEV_FRONTEND_PORT: initial.RELAY_IDE_DEV_FRONTEND_PORT,
+    });
+  });
+
+  test('reconcilePortsForWorktree preserves existing self-host variables when normal workspace ports are requested', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+
+    const initial = await allocator.allocatePortsForWorktree('repo-1', 'wt-1', [
+      'RELAY_IDE_DEV_BACKEND_PORT',
+      'RELAY_IDE_DEV_FRONTEND_PORT',
+    ]);
+
+    const reconciled = await allocator.reconcilePortsForWorktree(
+      'repo-1',
+      'wt-1',
+      ['PORT'],
+      ['RELAY_IDE_DEV_BACKEND_PORT', 'RELAY_IDE_DEV_FRONTEND_PORT']
+    );
+
+    expect(reconciled).toEqual({
+      RELAY_IDE_DEV_BACKEND_PORT: initial.RELAY_IDE_DEV_BACKEND_PORT,
+      RELAY_IDE_DEV_FRONTEND_PORT: initial.RELAY_IDE_DEV_FRONTEND_PORT,
+      PORT: expect.any(Number),
+    });
+    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual(
+      reconciled
+    );
+  });
+
   test('returns same port for repeated allocation of same variable', async () => {
     const configPath = path.join(tmpDir, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
@@ -313,6 +365,27 @@ describe('PortAllocator', () => {
     expect(reconciled.API_PORT).toBeTypeOf('number');
     expect(reconciled.DEV_PORT).toBeUndefined();
   });
+
+  test('reconcilePortsForWorktree removes stale PORT when only VITE_PORT is requested', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+
+    await allocator.allocatePortsForWorktree('repo-1', 'wt-1', ['PORT']);
+    const reconciled = await allocator.reconcilePortsForWorktree(
+      'repo-1',
+      'wt-1',
+      ['VITE_PORT']
+    );
+
+    expect(reconciled.PORT).toBeUndefined();
+    expect(reconciled.VITE_PORT).toBeTypeOf('number');
+    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual({
+      VITE_PORT: reconciled.VITE_PORT,
+    });
+  });
 });
 
 // ── Port Verification Tests ───────────────────────────────────────────────
@@ -358,6 +431,54 @@ describe('PortAllocator port verification', () => {
     // Port should be in valid range (may be reassigned if 10001 was taken)
     expect(ports?.PORT).toBeGreaterThanOrEqual(PORT_RANGE_START);
     expect(ports?.PORT).toBeLessThan(OVERFLOW_RANGE_END);
+  });
+
+  test('skips OS verification for configured self-host dev variables', async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('expected TCP server address');
+      }
+      const occupiedPort = address.port;
+      const configPath = path.join(tmpDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+      const assignmentsPath = resolvePortAssignmentsPath(configPath);
+      fs.mkdirSync(path.dirname(assignmentsPath), { recursive: true });
+      fs.writeFileSync(
+        assignmentsPath,
+        JSON.stringify({
+          version: 1,
+          assignments: [
+            {
+              repoId: 'repo-existing',
+              worktreeId: 'wt-existing',
+              variableName: 'RELAY_IDE_DEV_BACKEND_PORT',
+              port: occupiedPort,
+              verifiedAt: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      const allocator = new PortAllocator({
+        configPath,
+        skipVerifyVariableNames: ['RELAY_IDE_DEV_BACKEND_PORT'],
+      });
+      await allocator.initialize();
+
+      expect(
+        allocator.getPortsForWorktree('repo-existing', 'wt-existing')
+      ).toEqual({ RELAY_IDE_DEV_BACKEND_PORT: occupiedPort });
+    } finally {
+      server.close();
+    }
   });
 });
 
@@ -574,6 +695,53 @@ MY_VAR=value`;
     expect(result).toBe(content);
   });
 
+  test('removes selected variables while preserving the rest of the managed block', () => {
+    const content = upsertEnvBlock('EXISTING=true\n', {
+      PORT: 10000,
+      RELAY_IDE_DEV_BACKEND_PORT: 10001,
+      RELAY_IDE_DEV_FRONTEND_PORT: 10002,
+    });
+
+    const result = removeEnvBlockVariables(content, ['PORT']);
+
+    expect(result).toContain('EXISTING=true');
+    expect(result).not.toContain('PORT=10000');
+    expect(result).toContain('RELAY_IDE_DEV_BACKEND_PORT=10001');
+    expect(result).toContain('RELAY_IDE_DEV_FRONTEND_PORT=10002');
+    expect(parseEnvBlock(result)).toEqual({
+      RELAY_IDE_DEV_BACKEND_PORT: 10001,
+      RELAY_IDE_DEV_FRONTEND_PORT: 10002,
+    });
+  });
+
+  test('removeEnvBlockVariables leaves block unchanged for empty remove list', () => {
+    const content = upsertEnvBlock('EXISTING=true\n', {
+      PORT: 10000,
+      VITE_PORT: 10001,
+    });
+
+    expect(removeEnvBlockVariables(content, [])).toBe(content);
+  });
+
+  test('removeEnvBlockVariables leaves block unchanged for invalid-only remove list', () => {
+    const content = upsertEnvBlock('EXISTING=true\n', {
+      PORT: 10000,
+      VITE_PORT: 10001,
+    });
+
+    expect(removeEnvBlockVariables(content, ['BAD-NAME', '123BAD'])).toBe(
+      content
+    );
+  });
+
+  test('removing selected variables deletes block-only env when no variables remain', () => {
+    const content = upsertEnvBlock('', { PORT: 10000 });
+
+    const result = removeEnvBlockVariables(content, ['PORT']);
+
+    expect(result.trim()).toBe('');
+  });
+
   test('handles empty content', () => {
     const result = removeEnvBlock('');
     expect(result).toBe('');
@@ -768,6 +936,24 @@ describe('Port allocator + .env block integration', () => {
       'utf8'
     );
     expect(withoutPorts.trim()).toBe('EXISTING=true');
+  });
+
+  test('env file helper can remove one stale variable without deleting self-host ports', () => {
+    const worktreeDir = fs.mkdtempSync(path.join(tmpDir, 'wt-'));
+    upsertPortsInEnvFile(worktreeDir, {
+      PORT: 10001,
+      RELAY_IDE_DEV_BACKEND_PORT: 10002,
+      RELAY_IDE_DEV_FRONTEND_PORT: 10003,
+    });
+
+    removePortsFromEnvFile(worktreeDir, ['PORT']);
+
+    const content = fs.readFileSync(path.join(worktreeDir, '.env'), 'utf8');
+    expect(content).not.toContain('PORT=10001');
+    expect(parseEnvBlock(content)).toEqual({
+      RELAY_IDE_DEV_BACKEND_PORT: 10002,
+      RELAY_IDE_DEV_FRONTEND_PORT: 10003,
+    });
   });
 
   test('removePortsFromEnvFile deletes block-only env files', () => {

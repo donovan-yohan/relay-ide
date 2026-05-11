@@ -5,10 +5,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { BackendSupervisor, createDevSourceWatcher } from './dev-supervisor.js';
-
-const DEV_BACKEND_PORT = 3457;
-const DEV_FRONTEND_PORT = 5173;
-const DEV_HOST = '127.0.0.1';
+import { resolveDevModeOptions } from './dev-mode.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..', '..');
 const require = createRequire(import.meta.url);
@@ -21,27 +18,22 @@ const vitePackageRoot = path.resolve(
 const viteBin = path.join(vitePackageRoot, 'bin', 'vite.js');
 const viteConfig = path.join(packageRoot, 'frontend', 'vite.config.ts');
 
-function parsePort(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
-}
+const mode = await resolveDevModeOptions({
+  argv: process.argv.slice(2),
+  env: process.env,
+  packageRoot,
+});
 
-const backendPort = String(
-  parsePort(
-    process.env.RELAY_IDE_DEV_BACKEND_PORT ?? process.env.RELAY_IDE_PORT,
-    DEV_BACKEND_PORT
-  )
-);
-const frontendPort = String(
-  parsePort(process.env.RELAY_IDE_DEV_FRONTEND_PORT, DEV_FRONTEND_PORT)
-);
-const backendHost = process.env.RELAY_IDE_DEV_BACKEND_HOST ?? DEV_HOST;
-const frontendHost = process.env.RELAY_IDE_DEV_FRONTEND_HOST ?? DEV_HOST;
-const backendTarget =
-  process.env.RELAY_IDE_DEV_BACKEND_URL ?? `http://127.0.0.1:${backendPort}`;
-const configPath =
-  process.env.RELAY_IDE_CONFIG ?? path.join(packageRoot, 'config.dev.json');
+const {
+  selfHost,
+  backendPort,
+  frontendPort,
+  backendHost,
+  frontendHost,
+  backendTarget,
+  configPath,
+  tmuxPrefix,
+} = mode;
 
 const children = new Set<ChildProcess>();
 let shuttingDown = false;
@@ -58,6 +50,8 @@ const backendSupervisor = new BackendSupervisor({
     RELAY_IDE_HOST: backendHost,
     RELAY_IDE_DEV_BACKEND_PORT: backendPort,
     RELAY_IDE_DEV_BACKEND_URL: backendTarget,
+    RELAY_IDE_TMUX_PREFIX: tmuxPrefix,
+    RELAY_IDE_SELF_HOST: selfHost ? '1' : undefined,
     NO_PIN: '1',
   },
   log: (message) => console.log(message),
@@ -134,6 +128,8 @@ console.log(`relay dev backend:  http://${backendHost}:${backendPort}`);
 console.log(`relay dev frontend: http://${frontendHost}:${frontendPort}`);
 console.log(`proxy target:        ${backendTarget}`);
 console.log(`config:              ${configPath}`);
+console.log(`tmux prefix:         ${tmuxPrefix}`);
+if (selfHost) console.log('self-host mode:      on');
 
 backendSupervisor.start();
 sourceWatcher = createDevSourceWatcher(
@@ -167,5 +163,7 @@ spawnChild(
     RELAY_IDE_DEV_BACKEND_URL: backendTarget,
     RELAY_IDE_DEV_FRONTEND_HOST: frontendHost,
     RELAY_IDE_DEV_FRONTEND_PORT: frontendPort,
+    RELAY_IDE_TMUX_PREFIX: tmuxPrefix,
+    RELAY_IDE_SELF_HOST: selfHost ? '1' : undefined,
   }
 );

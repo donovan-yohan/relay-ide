@@ -142,6 +142,10 @@ const CONFIG_PATH =
 const DEFAULT_GITHUB_CLIENT_ID = 'Ov23lilheF3LelYSo0bu';
 
 const VERSION_CACHE_TTL = 5 * 60 * 1000;
+const SELF_HOST_DEV_PORT_VARIABLES = new Set([
+  'RELAY_IDE_DEV_BACKEND_PORT',
+  'RELAY_IDE_DEV_FRONTEND_PORT',
+]);
 const versionCache: Map<string, { latest: string; fetchedAt: number }> =
   new Map();
 
@@ -245,7 +249,13 @@ async function initializePortAllocatorAndReconcile(
   reconcilePortsForAllRepos: (repoPaths: string[]) => Promise<void>
 ): Promise<void> {
   try {
-    await initializeDefaultAllocator(configPath, logger);
+    await initializeDefaultAllocator(
+      configPath,
+      logger,
+      process.env.RELAY_IDE_SELF_HOST === '1'
+        ? Array.from(SELF_HOST_DEV_PORT_VARIABLES)
+        : undefined
+    );
   } catch (err) {
     logger.warn(
       'Port allocator disabled: failed to initialize:',
@@ -873,7 +883,10 @@ async function main(): Promise<void> {
         const ports = await allocator.reconcilePortsForWorktree(
           repoPath,
           worktree.path,
-          portVariables
+          portVariables,
+          process.env.RELAY_IDE_SELF_HOST === '1'
+            ? Array.from(SELF_HOST_DEV_PORT_VARIABLES)
+            : undefined
         );
         upsertPortsInEnvFile(worktree.path, ports);
       } catch (err) {
@@ -888,9 +901,16 @@ async function main(): Promise<void> {
     for (const assignment of allocator.getAllAssignments()) {
       if (assignment.repoId !== repoPath) continue;
       if (activeWorktreePaths.has(assignment.worktreeId)) continue;
+      if (SELF_HOST_DEV_PORT_VARIABLES.has(assignment.variableName)) continue;
       try {
-        allocator.releasePortsForWorktree(repoPath, assignment.worktreeId);
-        removePortsFromEnvFile(assignment.worktreeId);
+        allocator.releasePortForWorktreeVariable(
+          repoPath,
+          assignment.worktreeId,
+          assignment.variableName
+        );
+        removePortsFromEnvFile(assignment.worktreeId, [
+          assignment.variableName,
+        ]);
       } catch (err) {
         logger.warn(
           'Failed to clean up stale port assignment:',
