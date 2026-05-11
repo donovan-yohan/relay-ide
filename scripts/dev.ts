@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { BackendSupervisor, createDevSourceWatcher } from './dev-supervisor.js';
 
 const DEV_BACKEND_PORT = 3457;
 const DEV_FRONTEND_PORT = 5173;
@@ -12,16 +13,18 @@ const DEV_HOST = '127.0.0.1';
 const packageRoot = path.resolve(import.meta.dirname, '..', '..');
 const require = createRequire(import.meta.url);
 const backendScript = path.join(packageRoot, 'dist', 'server', 'index.js');
-const vitePackageRoot = path.resolve(path.dirname(require.resolve('vite')), '..', '..');
+const vitePackageRoot = path.resolve(
+  path.dirname(require.resolve('vite')),
+  '..',
+  '..'
+);
 const viteBin = path.join(vitePackageRoot, 'bin', 'vite.js');
 const viteConfig = path.join(packageRoot, 'frontend', 'vite.config.ts');
 
 function parsePort(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535
-    ? port
-    : fallback;
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
 }
 
 const backendPort = String(
@@ -42,6 +45,25 @@ const configPath =
 
 const children = new Set<ChildProcess>();
 let shuttingDown = false;
+let backendRestartTimer: ReturnType<typeof setTimeout> | null = null;
+let sourceWatcher: { close(): void } | null = null;
+
+const backendSupervisor = new BackendSupervisor({
+  packageRoot,
+  backendScript,
+  backendEnv: {
+    ...process.env,
+    RELAY_IDE_CONFIG: configPath,
+    RELAY_IDE_PORT: backendPort,
+    RELAY_IDE_HOST: backendHost,
+    RELAY_IDE_DEV_BACKEND_PORT: backendPort,
+    RELAY_IDE_DEV_BACKEND_URL: backendTarget,
+    NO_PIN: '1',
+  },
+  log: (message) => console.log(message),
+  error: (message) => console.error(message),
+  onFatal: (code) => stopDevMode(code),
+});
 
 function spawnChild(
   name: string,
@@ -58,28 +80,43 @@ function spawnChild(
   child.on('exit', (code, signal) => {
     children.delete(child);
     if (shuttingDown) return;
-    shuttingDown = true;
-    console.error(
+    stopDevMode(
+      code ?? 1,
+      child,
       `${name} exited${signal ? ` via ${signal}` : ''}${code === null ? '' : ` with code ${code}`}; stopping relay dev mode.`
     );
-    stopChildren(child);
-    process.exit(code ?? 1);
   });
   child.on('error', (err) => {
     if (shuttingDown) return;
-    shuttingDown = true;
-    console.error(`${name} failed to start: ${err.message}`);
-    stopChildren(child);
-    process.exit(1);
+    stopDevMode(1, child, `${name} failed to start: ${err.message}`);
   });
   return child;
 }
 
 function stopChildren(skip?: ChildProcess): void {
+  sourceWatcher?.close();
+  sourceWatcher = null;
+  if (backendRestartTimer) {
+    clearTimeout(backendRestartTimer);
+    backendRestartTimer = null;
+  }
+  backendSupervisor.stop();
   for (const child of children) {
     if (child === skip || child.killed) continue;
     child.kill('SIGTERM');
   }
+}
+
+function stopDevMode(
+  code: number,
+  skip?: ChildProcess,
+  message?: string
+): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (message) console.error(message);
+  stopChildren(skip);
+  process.exit(code);
 }
 
 function shutdown(signal: NodeJS.Signals): void {
@@ -98,20 +135,32 @@ console.log(`relay dev frontend: http://${frontendHost}:${frontendPort}`);
 console.log(`proxy target:        ${backendTarget}`);
 console.log(`config:              ${configPath}`);
 
-spawnChild('backend', process.execPath, [backendScript], {
-  ...process.env,
-  RELAY_IDE_CONFIG: configPath,
-  RELAY_IDE_PORT: backendPort,
-  RELAY_IDE_HOST: backendHost,
-  RELAY_IDE_DEV_BACKEND_PORT: backendPort,
-  RELAY_IDE_DEV_BACKEND_URL: backendTarget,
-  NO_PIN: '1',
-});
+backendSupervisor.start();
+sourceWatcher = createDevSourceWatcher(
+  packageRoot,
+  (filePath) => {
+    if (backendRestartTimer) clearTimeout(backendRestartTimer);
+    backendRestartTimer = setTimeout(() => {
+      backendRestartTimer = null;
+      backendSupervisor.requestRestart(filePath);
+    }, 250);
+  },
+  (message) => console.log(message),
+  (message) => console.error(message)
+);
 
 spawnChild(
   'vite',
   process.execPath,
-  [viteBin, '--config', viteConfig, '--host', frontendHost, '--port', frontendPort],
+  [
+    viteBin,
+    '--config',
+    viteConfig,
+    '--host',
+    frontendHost,
+    '--port',
+    frontendPort,
+  ],
   {
     ...process.env,
     RELAY_IDE_DEV_BACKEND_PORT: backendPort,

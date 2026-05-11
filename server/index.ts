@@ -2618,6 +2618,9 @@ async function main(): Promise<void> {
   }
 
   async function gracefulShutdown() {
+    const restartReason =
+      process.env.NO_PIN === '1' ? 'dev-restart' : 'signal-shutdown';
+    broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
     stopEventBatching();
     stopTelemetry();
@@ -2628,9 +2631,7 @@ async function main(): Promise<void> {
     server.close();
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
-    serializeAll(configDir, {
-      reason: process.env.NO_PIN === '1' ? 'dev-restart' : 'signal-shutdown',
-    });
+    serializeAll(configDir, { reason: restartReason });
     flushRelayStateWrites();
     closeRelayStateDb();
     for (const s of sessions.list()) {
