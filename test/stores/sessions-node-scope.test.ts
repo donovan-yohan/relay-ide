@@ -1,0 +1,138 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const apiMocks = vi.hoisted(() => ({
+  enrichBranches: vi.fn(),
+  fetchSessions: vi.fn(),
+  fetchWorktrees: vi.fn(),
+  fetchWorkspaces: vi.fn(),
+  fetchWorkspaceGroups: vi.fn(),
+}));
+
+vi.mock('../../frontend/src/lib/api.js', () => ({
+  enrichBranches: apiMocks.enrichBranches,
+  fetchSessions: apiMocks.fetchSessions,
+  fetchWorktrees: apiMocks.fetchWorktrees,
+  fetchWorkspaces: apiMocks.fetchWorkspaces,
+  fetchWorkspaceGroups: apiMocks.fetchWorkspaceGroups,
+}));
+
+const storage: Record<string, string> = {};
+Object.defineProperty(globalThis, 'localStorage', {
+  value: {
+    getItem: (key: string) => storage[key] ?? null,
+    setItem: (key: string, value: string) => {
+      storage[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete storage[key];
+    },
+  },
+  configurable: true,
+});
+
+import type {
+  SessionSummary,
+  SidebarItem,
+} from '../../frontend/src/lib/types.js';
+import { useSessionsStore } from '../../frontend/src/lib/stores/sessions.js';
+
+const nodeASession: SessionSummary = {
+  id: 'same-local-id',
+  type: 'agent',
+  agent: 'claude',
+  mode: 'pty',
+  repoName: 'relay-ide',
+  repoPath: '/node-a/relay-ide',
+  worktreePath: null,
+  cwd: '/node-a/relay-ide',
+  branchName: 'main',
+  displayName: 'node a',
+  createdAt: '2026-05-11T00:00:00.000Z',
+  lastActivity: '2026-05-11T00:00:00.000Z',
+  idle: false,
+  nodeId: 'node-a',
+  globalSessionId: 'node-a:same-local-id',
+  agentState: 'processing',
+};
+
+const nodeBSession: SessionSummary = {
+  ...nodeASession,
+  repoPath: '/node-b/relay-ide',
+  cwd: '/node-b/relay-ide',
+  displayName: 'node b',
+  nodeId: 'node-b',
+  globalSessionId: 'node-b:same-local-id',
+};
+
+function sidebarItem(session: SessionSummary): SidebarItem {
+  return {
+    id: `session::${session.globalSessionId}`,
+    kind: 'repo',
+    path: session.repoPath,
+    repoPath: session.repoPath,
+    displayName: session.displayName,
+    branchName: session.branchName,
+    lastActivity: session.lastActivity,
+    displayState: 'running',
+    lastKnownBackendState: 'running',
+    sessions: [session],
+    nodeId: session.nodeId,
+    repoInstanceId: session.repoInstanceId,
+  };
+}
+
+describe('sessions store node-scoped events', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-11T00:00:00.000Z'));
+    vi.clearAllMocks();
+    useSessionsStore.setState({
+      sessions: [nodeASession, nodeBSession],
+      worktrees: [],
+      repos: [],
+      workspaceGroups: [],
+      activeSessionId: null,
+      sidebarItems: [sidebarItem(nodeASession), sidebarItem(nodeBSession)],
+      enrichmentResults: {},
+      repoEnrichmentMeta: {},
+      reconnectingPtySessionIds: {},
+      backendConnectionStatus: 'connected',
+    });
+  });
+
+  it('updates only the matching global session when local ids collide across nodes', () => {
+    (useSessionsStore.getState().handleBackendStateChanged as any)(
+      'same-local-id',
+      'idle',
+      undefined,
+      { nodeId: 'node-b', globalSessionId: 'node-b:same-local-id' }
+    );
+
+    const sessions = useSessionsStore.getState().sessions;
+    expect(
+      sessions.find((s) => s.globalSessionId === 'node-a:same-local-id')
+        ?.agentState
+    ).toBe('processing');
+    expect(
+      sessions.find((s) => s.globalSessionId === 'node-b:same-local-id')
+        ?.agentState
+    ).toBe('idle');
+  });
+
+  it('renames only the scoped session when nodeId disambiguates a duplicate local id', () => {
+    (useSessionsStore.getState().renameSession as any)(
+      'same-local-id',
+      'feature-b',
+      'renamed b',
+      { nodeId: 'node-b' }
+    );
+
+    const sessions = useSessionsStore.getState().sessions;
+    expect(sessions.find((s) => s.nodeId === 'node-a')?.displayName).toBe(
+      'node a'
+    );
+    expect(sessions.find((s) => s.nodeId === 'node-b')?.displayName).toBe(
+      'renamed b'
+    );
+  });
+});

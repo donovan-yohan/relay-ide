@@ -5,6 +5,13 @@ import type {
   CurrentActivity,
   SessionTelemetry,
 } from './types.js';
+import type {
+  EnvironmentAuthority,
+  EnvironmentId,
+  NodeScopedFileEvent,
+  NodeScopedSessionEvent,
+} from '../../../shared/node-boundary.js';
+import type { NodeId } from '../../../shared/identity.js';
 import { createLogger } from './logger.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
@@ -14,32 +21,40 @@ const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 // Discriminated union for WebSocket event messages.
 // Each event type declares only its required fields.
+type NodeScopedEvent = Partial<{
+  nodeId: NodeId;
+  environmentId: EnvironmentId;
+  authority: EnvironmentAuthority;
+}>;
+type SessionScopedEvent = NodeScopedEvent & Partial<NodeScopedSessionEvent>;
+type FileScopedEvent = NodeScopedEvent & Partial<NodeScopedFileEvent>;
+
 export type EventMessage =
-  | { type: 'worktrees-changed' }
-  | {
+  | ({ type: 'worktrees-changed' } & NodeScopedEvent)
+  | ({
       type: 'session-backend-state-changed';
       sessionId: string;
       state: BackendDisplayState;
       permissionType?: 'approval' | 'question';
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-renamed';
       sessionId: string;
       branchName: string;
       displayName: string;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-branch-changed';
       sessionId: string;
       branch: string;
       cwdPath?: string;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-ended';
       sessionId?: string;
       cwd?: string;
       branchName?: string;
-    }
+    } & SessionScopedEvent)
   | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
   | {
       type: 'pr-updated';
@@ -57,18 +72,22 @@ export type EventMessage =
       repos?: string[];
       workspacePaths?: string[];
     }
-  | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
-  | {
+  | ({
+      type: 'files-changed';
+      workspacePath: string;
+      changedFiles?: string[];
+    } & FileScopedEvent)
+  | ({
       type: 'session-activity-changed';
       sessionId: string;
       timestamp?: string;
       currentActivity?: CurrentActivity | null;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-telemetry';
       sessionId: string;
       data: SessionTelemetry | Record<string, unknown>;
-    }
+    } & SessionScopedEvent)
   | {
       type: 'account-telemetry';
       data: AccountTelemetry | Record<string, unknown> | null;

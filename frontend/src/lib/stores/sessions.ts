@@ -21,6 +21,10 @@ import {
 } from '../state/sidebar-items.js';
 import { shouldMarkUnread } from '../state/unread-logic.js';
 import { useUnreadStore } from './unread.js';
+import {
+  sessionEventMatches,
+  type SessionEventScope,
+} from '../../../../shared/node-boundary.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -183,20 +187,27 @@ export interface SessionsState {
   renameSession: (
     sessionId: string,
     branchName: string,
-    displayName: string
+    displayName: string,
+    scope?: SessionEventScope
   ) => void;
-  handleBranchChanged: (sessionId: string, branch: string) => void;
+  handleBranchChanged: (
+    sessionId: string,
+    branch: string,
+    scope?: SessionEventScope
+  ) => void;
   handleActivityChanged: (
     sessionId: string,
     timestamp?: string,
-    currentActivity?: CurrentActivity | null
+    currentActivity?: CurrentActivity | null,
+    scope?: SessionEventScope
   ) => void;
   handleBackendStateChanged: (
     sessionId: string,
     backendState: BackendDisplayState,
-    permissionType?: 'approval' | 'question'
+    permissionType?: 'approval' | 'question',
+    scope?: SessionEventScope
   ) => void;
-  handleUserViewed: (sessionId: string) => void;
+  handleUserViewed: (sessionId: string, scope?: SessionEventScope) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
   initSessionNotification: (sessionId: string, defaultEnabled: boolean) => void;
   getNotificationSessionIds: () => string[];
@@ -240,6 +251,17 @@ function visibleRepoPaths(
   for (const wt of state.worktrees) paths.add(wt.repoPath);
   for (const session of state.sessions) paths.add(session.repoPath);
   return Array.from(paths);
+}
+
+function sessionMatchesEventScope(
+  session: SessionSummary,
+  sessionId: string,
+  scope?: SessionEventScope
+): boolean {
+  return sessionEventMatches(session, {
+    sessionId,
+    ...(scope ?? {}),
+  });
 }
 
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
@@ -296,7 +318,9 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   ensureFreshAll: async (maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
     const repos = visibleRepoPaths(get());
-    await Promise.all(repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs)));
+    await Promise.all(
+      repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs))
+    );
   },
 
   forceRefresh: async (repoPath, source = 'manual') => {
@@ -457,60 +481,78 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     return [...directSessions, ...repoSessions];
   },
 
-  renameSession: (sessionId, branchName, displayName) => {
+  renameSession: (sessionId, branchName, displayName, scope) => {
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, branchName, displayName } : s
+        sessionMatchesEventScope(s, sessionId, scope)
+          ? { ...s, branchName, displayName }
+          : s
       ),
       sidebarItems: state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        if (
+          !item.sessions.some((s) =>
+            sessionMatchesEventScope(s, sessionId, scope)
+          )
+        )
+          return item;
         return {
           ...item,
           branchName,
           displayName,
           sessions: item.sessions.map((s) =>
-            s.id === sessionId ? { ...s, branchName, displayName } : s
+            sessionMatchesEventScope(s, sessionId, scope)
+              ? { ...s, branchName, displayName }
+              : s
           ),
         };
       }),
     }));
   },
 
-  handleBranchChanged: (sessionId, branch) => {
+  handleBranchChanged: (sessionId, branch, scope) => {
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, branchName: branch } : s
+        sessionMatchesEventScope(s, sessionId, scope)
+          ? { ...s, branchName: branch }
+          : s
       ),
       sidebarItems: state.sidebarItems.map((item) =>
-        item.sessions.some((s) => s.id === sessionId)
+        item.sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
           ? { ...item, branchName: branch }
           : item
       ),
     }));
-    if (!get().sessions.some((s) => s.id === sessionId)) {
+    if (
+      !get().sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
+    ) {
       logger.debug('handleBranchChanged: session not found', sessionId);
     }
   },
 
-  handleActivityChanged: (sessionId, timestamp, currentActivity) => {
+  handleActivityChanged: (sessionId, timestamp, currentActivity, scope) => {
     const now = timestamp || new Date().toISOString();
     set((state) => ({
       sessions: state.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+        if (!sessionMatchesEventScope(s, sessionId, scope)) return s;
         const updated = { ...s, lastActivity: now };
         if (currentActivity !== undefined)
           updated.currentActivity = currentActivity ?? undefined;
         return updated;
       }),
       sidebarItems: state.sidebarItems.map((item) =>
-        item.sessions.some((s) => s.id === sessionId)
+        item.sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
           ? { ...item, lastActivity: now }
           : item
       ),
     }));
   },
 
-  handleBackendStateChanged: (sessionId, backendState, permissionType) => {
+  handleBackendStateChanged: (
+    sessionId,
+    backendState,
+    permissionType,
+    scope
+  ) => {
     set((state) => {
       const agentStateMap: Record<
         BackendDisplayState,
@@ -523,7 +565,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
         initializing: 'initializing',
       };
       const sessions = state.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+        if (!sessionMatchesEventScope(s, sessionId, scope)) return s;
         return {
           ...s,
           idle: backendState === 'idle',
@@ -533,7 +575,12 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
       const { activeSessionId, notificationSessions } = state;
       const sidebarItems = state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        if (
+          !item.sessions.some((s) =>
+            sessionMatchesEventScope(s, sessionId, scope)
+          )
+        )
+          return item;
 
         const updatedSessions = sessions.filter((s) =>
           item.sessions.some((is) => is.id === s.id)
@@ -561,14 +608,17 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
           if (isViewing) {
             useUnreadStore.getState().markRead(item.id);
             isUnread = false;
-          } else if (shouldMarkUnread(oldDisplayState, newDisplayState, false)) {
+          } else if (
+            shouldMarkUnread(oldDisplayState, newDisplayState, false)
+          ) {
             useUnreadStore.getState().markUnread(item.id);
             isUnread = true;
           }
           if (shouldNotify(oldDisplayState, newDisplayState)) {
             const notifySession =
-              item.sessions.find((s) => s.id === sessionId) ??
-              item.sessions.find((s) => notificationSessions[s.id]);
+              item.sessions.find((s) =>
+                sessionMatchesEventScope(s, sessionId, scope)
+              ) ?? item.sessions.find((s) => notificationSessions[s.id]);
             if (
               notifySession &&
               notificationSessions[notifySession.id] &&
@@ -591,10 +641,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     });
   },
 
-  handleUserViewed: (sessionId) => {
+  handleUserViewed: (sessionId, scope) => {
     set((state) => ({
       sidebarItems: state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        if (
+          !item.sessions.some((s) =>
+            sessionMatchesEventScope(s, sessionId, scope)
+          )
+        )
+          return item;
         useUnreadStore.getState().markRead(item.id);
         return {
           ...item,
