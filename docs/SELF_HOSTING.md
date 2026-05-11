@@ -77,15 +77,15 @@ Supported dev override variables:
 | Variable                      | Default in ordinary dev           | Self-host behavior                                                     |
 | ----------------------------- | --------------------------------- | ---------------------------------------------------------------------- |
 | `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                            | Overrides allocator backend port                                       |
-| `RELAY_IDE_PORT`              | unset                             | Also overrides backend port when `RELAY_IDE_DEV_BACKEND_PORT` is unset |
+| `RELAY_IDE_PORT`              | unset                             | Ignored to avoid inherited production daemon collisions; use `--port` or `RELAY_IDE_DEV_BACKEND_PORT` for an explicit self-host override |
 | `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                            | Overrides allocator frontend port                                      |
 | `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                       | Backend bind host                                                      |
 | `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                         |
 | `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                      |
-| `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Overrides the self-host config path                                    |
+| `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override |
 | `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                          |
 
-If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block.
+Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block.
 
 ## Running inside production Relay
 

@@ -43,10 +43,36 @@ export interface DevModeOptions {
   portMapping: Record<string, number> | null;
 }
 
-function parsePort(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
+function getArgValue(argv: string[], flag: string): string | undefined {
+  const inlinePrefix = `${flag}=`;
+  const inlineValue = argv.find((arg) => arg.startsWith(inlinePrefix));
+  if (inlineValue) return inlineValue.slice(inlinePrefix.length);
+
+  const idx = argv.indexOf(flag);
+  if (idx === -1 || idx + 1 >= argv.length) return undefined;
+  const value = argv[idx + 1];
+  if (value === undefined || value.startsWith('--')) return undefined;
+  return value;
+}
+
+function parsePortOverride(value: string | undefined): number | null {
+  if (!value) return null;
   const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
+}
+
+function parsePort(value: string | undefined, fallback: number): number {
+  return parsePortOverride(value) ?? fallback;
+}
+
+function normalizeTmuxPrefix(prefix: string | undefined): string | null {
+  const sanitized = prefix
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+/, '');
+  if (!sanitized) return null;
+  return sanitized.endsWith('-') ? sanitized : `${sanitized}-`;
 }
 
 function userConfigDir(
@@ -118,8 +144,10 @@ export async function resolveDevModeOptions(
   const env = params.env ?? process.env;
   const packageRoot = path.resolve(params.packageRoot);
   const selfHost = isSelfHostRequested(argv, env);
+  const explicitConfigPath = getArgValue(argv, '--config');
   const configPath = path.resolve(
-    env.RELAY_IDE_CONFIG ??
+    explicitConfigPath ??
+      (selfHost ? undefined : env.RELAY_IDE_CONFIG) ??
       (selfHost
         ? resolveSelfHostConfigPath(packageRoot, {
             env,
@@ -130,30 +158,35 @@ export async function resolveDevModeOptions(
 
   let portMapping: Record<string, number> | null = null;
   if (selfHost) {
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(configPath), { recursive: true });
     portMapping = await allocateSelfHostPorts(configPath, packageRoot);
   }
 
-  const backendPort = String(
-    parsePort(
-      env.RELAY_IDE_DEV_BACKEND_PORT ??
-        env.RELAY_IDE_PORT ??
-        (portMapping?.RELAY_IDE_DEV_BACKEND_PORT != null
-          ? String(portMapping.RELAY_IDE_DEV_BACKEND_PORT)
-          : undefined),
-      DEV_BACKEND_PORT
-    )
-  );
-  const frontendPort = String(
-    parsePort(
-      env.RELAY_IDE_DEV_FRONTEND_PORT ??
-        (portMapping?.RELAY_IDE_DEV_FRONTEND_PORT != null
-          ? String(portMapping.RELAY_IDE_DEV_FRONTEND_PORT)
-          : undefined),
-      DEV_FRONTEND_PORT
-    )
-  );
-  const backendHost = env.RELAY_IDE_DEV_BACKEND_HOST ?? DEV_HOST;
+  const cliBackendPort = getArgValue(argv, '--port');
+  const allocatedBackendPort = portMapping?.RELAY_IDE_DEV_BACKEND_PORT;
+  const backendPortNumber = selfHost
+    ? (parsePortOverride(cliBackendPort) ??
+      parsePortOverride(env.RELAY_IDE_DEV_BACKEND_PORT) ??
+      allocatedBackendPort ??
+      DEV_BACKEND_PORT)
+    : parsePort(
+        cliBackendPort ??
+          env.RELAY_IDE_DEV_BACKEND_PORT ??
+          env.RELAY_IDE_PORT,
+        DEV_BACKEND_PORT
+      );
+  const backendPort = String(backendPortNumber);
+
+  const allocatedFrontendPort = portMapping?.RELAY_IDE_DEV_FRONTEND_PORT;
+  const frontendPortNumber = selfHost
+    ? (parsePortOverride(env.RELAY_IDE_DEV_FRONTEND_PORT) ??
+      allocatedFrontendPort ??
+      DEV_FRONTEND_PORT)
+    : parsePort(env.RELAY_IDE_DEV_FRONTEND_PORT, DEV_FRONTEND_PORT);
+  const frontendPort = String(frontendPortNumber);
+
+  const backendHost =
+    getArgValue(argv, '--host') ?? env.RELAY_IDE_DEV_BACKEND_HOST ?? DEV_HOST;
   const frontendHost = env.RELAY_IDE_DEV_FRONTEND_HOST ?? DEV_HOST;
   const backendTarget =
     env.RELAY_IDE_DEV_BACKEND_URL ?? `http://127.0.0.1:${backendPort}`;
@@ -176,7 +209,9 @@ export async function resolveDevModeOptions(
     frontendHost,
     backendTarget,
     configPath,
-    tmuxPrefix: selfHost ? SELF_HOST_TMUX_PREFIX : DEV_TMUX_PREFIX,
+    tmuxPrefix:
+      normalizeTmuxPrefix(env.RELAY_IDE_TMUX_PREFIX) ??
+      (selfHost ? SELF_HOST_TMUX_PREFIX : DEV_TMUX_PREFIX),
     portMapping: effectivePortMapping,
   };
 }

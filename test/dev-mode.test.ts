@@ -110,4 +110,105 @@ describe('dev mode option resolution', () => {
     expect(envContent).toContain('EXISTING=value');
     expect(parseEnvBlock(envContent)).toEqual(options.portMapping);
   });
+
+  it('self-host mode ignores inherited production config and port env', async () => {
+    const home = makeTmpDir();
+    const xdgConfigHome = path.join(home, '.config');
+    const packageRoot = path.join(home, 'repo', '.worktrees', 'feature');
+    const globalConfigPath = path.join(home, 'global-config.json');
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const options = await resolveDevModeOptions({
+      argv: ['dev', '--self-host'],
+      env: {
+        XDG_CONFIG_HOME: xdgConfigHome,
+        RELAY_IDE_CONFIG: globalConfigPath,
+        RELAY_IDE_PORT: '3456',
+      },
+      packageRoot,
+      homedir: home,
+    });
+
+    expect(options.selfHost).toBe(true);
+    expect(options.configPath).not.toBe(globalConfigPath);
+    expect(options.configPath.startsWith(packageRoot)).toBe(false);
+    expect(
+      options.configPath.startsWith(
+        path.join(xdgConfigHome, 'relay-ide', 'self-host')
+      )
+    ).toBe(true);
+    expect(fs.existsSync(globalConfigPath)).toBe(false);
+    expect(options.backendPort).not.toBe('3456');
+    expect(options.backendPort).toBe(
+      String(options.portMapping?.RELAY_IDE_DEV_BACKEND_PORT)
+    );
+
+    const envContent = fs.readFileSync(path.join(packageRoot, '.env'), 'utf8');
+    expect(parseEnvBlock(envContent)).toEqual(options.portMapping);
+    expect(envContent).not.toContain('RELAY_IDE_DEV_BACKEND_PORT=3456');
+  });
+
+  it('self-host mode treats invalid port overrides as unset and falls back to allocator ports', async () => {
+    const home = makeTmpDir();
+    const xdgConfigHome = path.join(home, '.config');
+    const packageRoot = path.join(home, 'repo', '.worktrees', 'invalid-ports');
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const options = await resolveDevModeOptions({
+      argv: ['dev', '--self-host'],
+      env: {
+        XDG_CONFIG_HOME: xdgConfigHome,
+        RELAY_IDE_DEV_BACKEND_PORT: 'definitely-not-a-port',
+        RELAY_IDE_DEV_FRONTEND_PORT: '70000',
+      },
+      packageRoot,
+      homedir: home,
+    });
+
+    expect(options.backendPort).toBe(
+      String(options.portMapping?.RELAY_IDE_DEV_BACKEND_PORT)
+    );
+    expect(options.frontendPort).toBe(
+      String(options.portMapping?.RELAY_IDE_DEV_FRONTEND_PORT)
+    );
+    expect(options.backendPort).not.toBe('3457');
+    expect(options.frontendPort).not.toBe('5173');
+  });
+
+  it('self-host mode still honors explicit dev overrides', async () => {
+    const home = makeTmpDir();
+    const xdgConfigHome = path.join(home, '.config');
+    const packageRoot = path.join(home, 'repo', '.worktrees', 'explicit');
+    const explicitConfigPath = path.join(home, 'explicit-self-host.json');
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const options = await resolveDevModeOptions({
+      argv: [
+        'dev',
+        '--self-host',
+        '--config',
+        explicitConfigPath,
+        '--port',
+        '4567',
+      ],
+      env: {
+        XDG_CONFIG_HOME: xdgConfigHome,
+        RELAY_IDE_CONFIG: path.join(home, 'global-config.json'),
+        RELAY_IDE_PORT: '3456',
+        RELAY_IDE_DEV_FRONTEND_PORT: '5678',
+        RELAY_IDE_TMUX_PREFIX: ' Custom Prefix ',
+      },
+      packageRoot,
+      homedir: home,
+    });
+
+    expect(options.configPath).toBe(explicitConfigPath);
+    expect(options.backendPort).toBe('4567');
+    expect(options.frontendPort).toBe('5678');
+    expect(options.tmuxPrefix).toBe('custom-prefix-');
+    expect(options.portMapping).toEqual({
+      RELAY_IDE_DEV_BACKEND_PORT: 4567,
+      RELAY_IDE_DEV_FRONTEND_PORT: 5678,
+    });
+  });
 });
