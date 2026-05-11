@@ -365,6 +365,27 @@ describe('PortAllocator', () => {
     expect(reconciled.API_PORT).toBeTypeOf('number');
     expect(reconciled.DEV_PORT).toBeUndefined();
   });
+
+  test('reconcilePortsForWorktree removes stale PORT when only VITE_PORT is requested', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+
+    await allocator.allocatePortsForWorktree('repo-1', 'wt-1', ['PORT']);
+    const reconciled = await allocator.reconcilePortsForWorktree(
+      'repo-1',
+      'wt-1',
+      ['VITE_PORT']
+    );
+
+    expect(reconciled.PORT).toBeUndefined();
+    expect(reconciled.VITE_PORT).toBeTypeOf('number');
+    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual({
+      VITE_PORT: reconciled.VITE_PORT,
+    });
+  });
 });
 
 // ── Port Verification Tests ───────────────────────────────────────────────
@@ -691,6 +712,26 @@ MY_VAR=value`;
       RELAY_IDE_DEV_BACKEND_PORT: 10001,
       RELAY_IDE_DEV_FRONTEND_PORT: 10002,
     });
+  });
+
+  test('removeEnvBlockVariables leaves block unchanged for empty remove list', () => {
+    const content = upsertEnvBlock('EXISTING=true\n', {
+      PORT: 10000,
+      VITE_PORT: 10001,
+    });
+
+    expect(removeEnvBlockVariables(content, [])).toBe(content);
+  });
+
+  test('removeEnvBlockVariables leaves block unchanged for invalid-only remove list', () => {
+    const content = upsertEnvBlock('EXISTING=true\n', {
+      PORT: 10000,
+      VITE_PORT: 10001,
+    });
+
+    expect(removeEnvBlockVariables(content, ['BAD-NAME', '123BAD'])).toBe(
+      content
+    );
   });
 
   test('removing selected variables deletes block-only env when no variables remain', () => {

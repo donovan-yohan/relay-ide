@@ -147,11 +147,11 @@ function logWarn(
   logger?.debug(message, ...args);
 }
 
-export function normalizePortVariables(
+function sanitizeOptionalPortVariables(
   variableNames?: string[] | null
 ): string[] {
   const seen = new Set<string>();
-  const normalized = (variableNames ?? [])
+  return (variableNames ?? [])
     .filter((name): name is string => typeof name === 'string')
     .map((name) => name.trim())
     .filter(Boolean)
@@ -161,6 +161,12 @@ export function normalizePortVariables(
       seen.add(name);
       return true;
     });
+}
+
+export function normalizePortVariables(
+  variableNames?: string[] | null
+): string[] {
+  const normalized = sanitizeOptionalPortVariables(variableNames);
   return normalized.length > 0 ? normalized : [...DEFAULT_PORT_VARIABLES];
 }
 
@@ -320,7 +326,7 @@ export class PortAllocator {
   ): Promise<Record<string, number>> {
     const requestedVariables = new Set(normalizePortVariables(variableNames));
     const preservedVariables = new Set(
-      normalizePortVariables(preserveVariableNames ?? [])
+      sanitizeOptionalPortVariables(preserveVariableNames)
     );
     const variablesToKeep = new Set(
       Array.from(requestedVariables).concat(Array.from(preservedVariables))
@@ -687,7 +693,7 @@ export function removeEnvBlockVariables(
   const existing = parseEnvBlock(content);
   if (!existing) return content;
 
-  const variablesToRemove = new Set(normalizePortVariables(variableNames));
+  const variablesToRemove = new Set(sanitizeOptionalPortVariables(variableNames));
   const remaining = Object.fromEntries(
     Object.entries(existing).filter(
       ([variableName]) => !variablesToRemove.has(variableName)
