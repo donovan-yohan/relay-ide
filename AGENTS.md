@@ -48,7 +48,7 @@ See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined �
 
 ## Key Patterns
 
-- 58 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
+- 68 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
 - tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer.

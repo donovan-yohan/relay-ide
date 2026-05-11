@@ -86,7 +86,7 @@ Usage: relay-ide [options]
        relay-ide <command>
 
 Commands:
-  dev                Run backend + Vite frontend with HMR (source checkout)
+  dev [--self-host]  Run backend + Vite frontend with HMR (source checkout)
   update             Update to the latest version from npm
   install            Install as a background service (survives reboot)
   uninstall          Stop and remove the background service
@@ -162,16 +162,18 @@ npm run dev
 
 This builds the TypeScript backend once, starts the real Relay backend in no-PIN dev mode on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open `http://127.0.0.1:5173`; frontend TSX/CSS changes hot-update through Vite without rebuilding `dist/frontend`. The backend remains the real Express/WebSocket server, and Vite proxies relative REST requests plus `/ws/events` and `/ws/:sessionId` upgrades to the backend, so frontend code keeps using relative URLs.
 
+When developing Relay from inside an already-running Relay instance, use `npm run dev:self` instead. It keeps the child instance on isolated config, allocator-chosen ports, and the `relay-self-` tmux prefix. See [Self-hosting Relay IDE](docs/SELF_HOSTING.md).
+
 Useful overrides:
 
-| Environment variable              | Default                     | Description                                      |
-| --------------------------------- | --------------------------- | ------------------------------------------------ |
-| `RELAY_IDE_DEV_BACKEND_PORT`      | `3457`                      | Backend port used by `npm run dev` and the proxy |
-| `RELAY_IDE_DEV_BACKEND_HOST`      | `127.0.0.1`                 | Backend bind host                                |
-| `RELAY_IDE_DEV_BACKEND_URL`       | `http://127.0.0.1:<port>`   | Explicit Vite proxy target                       |
-| `RELAY_IDE_DEV_FRONTEND_PORT`     | `5173`                      | Vite dev-server port                             |
-| `RELAY_IDE_DEV_FRONTEND_HOST`     | `127.0.0.1`                 | Vite bind host                                   |
-| `RELAY_IDE_CONFIG`                | `./config.dev.json`         | Dev-mode config path                             |
+| Environment variable          | Default                   | Description                                      |
+| ----------------------------- | ------------------------- | ------------------------------------------------ |
+| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                    | Backend port used by `npm run dev` and the proxy |
+| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`               | Backend bind host                                |
+| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<port>` | Explicit Vite proxy target                       |
+| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                    | Vite dev-server port                             |
+| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`               | Vite bind host                                   |
+| `RELAY_IDE_CONFIG`            | `./config.dev.json`       | Dev-mode config path                             |
 
 For split terminals, `npm run dev:backend` starts only the backend and `npm run dev:vite` starts only Vite with the same proxy defaults.
 

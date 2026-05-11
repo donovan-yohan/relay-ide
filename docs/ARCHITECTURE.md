@@ -16,7 +16,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 
 ### `server/`
 
-59 TypeScript modules (including `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories) compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
+68 TypeScript modules (including `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories) compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
 
 | Module                                  | Role                                                                                                                                                                                                                                                               |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -43,7 +43,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | `github-app.ts`                         | GitHub OAuth App flow: authorization URL generation (with CSRF state), token exchange callback, connection status, disconnect                                                                                                                                      |
 | `github-graphql.ts`                     | GitHub GraphQL client: PR search query, response mapping (PRs → PullRequest[]), fetchPrsGraphQL()                                                                                                                                                                  |
 | `webhooks.ts`                           | GitHub webhook receiver: HMAC signature verification, event routing, broadcast to frontend                                                                                                                                                                         |
-| `webhook-manager.ts`                    | GitHub webhook CRUD, smee client lifecycle, health state, auto-provision backfill, webhook source status mapping, and per-repo last webhook receipt timestamps                                                                                                      |
+| `webhook-manager.ts`                    | GitHub webhook CRUD, smee client lifecycle, health state, auto-provision backfill, webhook source status mapping, and per-repo last webhook receipt timestamps                                                                                                     |
 | `branch-linker.ts`                      | Maps ticket IDs (Jira-style and GH-NNN) extracted from branch names to workspace repos; 60s cache; Express Router at `/branch-linker/links`; exports `invalidateBranchLinkerCache()`                                                                               |
 | `integration-github.ts`                 | GitHub Issues integration: fetches open issues assigned to `@me` across all workspaces via `gh` CLI; per-repo 60s cache; Express Router at `/integrations/github/issues`                                                                                           |
 | `integration-jira.ts`                   | Jira integration via `acli`: fetches open issues assigned to current user, fetches project statuses; 60s cache; Express Router at `/integrations/jira/issues` and `/integrations/jira/statuses`                                                                    |
@@ -56,11 +56,11 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | `git-routes.ts`                         | Express Router for git operations that don't live on workspaces (branch lifecycle, PR lookups, branch switches) — delegates to `git.ts`                                                                                                                            |
 | `logger.ts`                             | `createLogger(name)` factory; pino-backed, used uniformly across server modules (zero raw `console.*` in production)                                                                                                                                               |
 | `opencode-relay.ts`                     | OpenCode agent transport relay: WebSocket/SSE proxy that bridges web sessions to the OpenCode CLI                                                                                                                                                                  |
-| `protocol-adapter.ts`                   | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,hermes,mock}.ts`                                                                                                                                               |
+| `protocol-adapter.ts`                   | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,hermes,mock}.ts`                                                                                                                                        |
 | `telemetry.ts` / `telemetry-adapter.ts` | Framework-neutral telemetry bus + abstract adapter; concrete adapters in `adapters/{claude,codex,opencode}-telemetry.ts` self-register at import time                                                                                                              |
 | `web-session-handler.ts`                | Request/response handler for web-chat sessions (non-PTY): creation, input delivery, event streaming via `ChatEvent`                                                                                                                                                |
 | `sandbox.ts`                            | Spawns isolated relay-ide server instances with ephemeral config, dynamic port allocation, and readiness polling for agent-driven testing                                                                                                                          |
-| `agent-browser.ts`                      | Playwright-based browser automation for agents: launches Chromium, captures screenshots, validates pages via console-error collection (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`)                                                               |
+| `agent-browser.ts`                      | Playwright-based browser automation for agents: launches Chromium, captures screenshots, validates pages via console-error collection (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`)                                                              |
 
 ### `shared/`
 
@@ -71,7 +71,7 @@ Compiled by both `tsconfig.json` (server build) and `frontend/tsconfig.json` (Vi
 | `chat-events.ts`           | `ChatEvent` discriminated union and type guards — the wire protocol for web-chat transcripts                                                         |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input — consumed by the React `MobileInput` component; unit-tested via JSON fixtures |
 
-**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` receives `sessions`, `git`, `config`, `analytics`, `telemetry`, and `push` via a `HookDeps` injection seam (composition root wires them; `hooks.ts` does statically import those modules to type the deps but does not invoke them directly from module scope); all other modules are self-contained. **Exception:** `analytics.ts`, `push.ts`, and `logger.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently 58 server modules, including modules in the `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories.
+**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` receives `sessions`, `git`, `config`, `analytics`, `telemetry`, and `push` via a `HookDeps` injection seam (composition root wires them; `hooks.ts` does statically import those modules to type the deps but does not invoke them directly from module scope); all other modules are self-contained. **Exception:** `analytics.ts`, `push.ts`, and `logger.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently 68 server modules, including modules in the `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories.
 
 ### `frontend/`
 
@@ -222,14 +222,14 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 > Normative constraints are summarized in the table below. The underlying ADR markdown files referenced here (`docs/adrs/`) were never committed to the repository — the table is authoritative. Regenerate with `/adr:update`.
 
-| ADR     | Topic                                                                          |
-| ------- | ------------------------------------------------------------------------------ |
-| ADR-001 | Modular server architecture (composition root, dependency flow) |
+| ADR     | Topic                                                                                      |
+| ------- | ------------------------------------------------------------------------------------------ |
+| ADR-001 | Modular server architecture (composition root, dependency flow)                            |
 | ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping) |
-| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                      |
-| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)    |
-| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)             |
-| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)       |
-| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)       |
+| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                                  |
+| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                |
+| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                         |
+| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                   |
+| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                   |
 
 > ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration, which was subsequently superseded by the React 19 migration. `hooks.ts` does not yet have a dedicated ADR.
