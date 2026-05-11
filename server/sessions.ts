@@ -142,13 +142,13 @@ function configure(opts: {
 
 function withLocalIdentity<T extends SessionSummary>(summary: T): T {
   const nodeId = DEFAULT_LOCAL_NODE_ID;
-  const repoPathForIdentity =
-    summary.repoPath || summary.cwd || summary.worktreePath || summary.id;
   return {
     ...summary,
     nodeId,
     globalSessionId: createGlobalSessionId(nodeId, summary.id),
-    repoInstanceId: createRepoInstanceId(nodeId, repoPathForIdentity),
+    ...(summary.repoPath
+      ? { repoInstanceId: createRepoInstanceId(nodeId, summary.repoPath) }
+      : {}),
     ...(summary.worktreePath
       ? {
           worktreeInstanceId: createWorktreeInstanceId(
