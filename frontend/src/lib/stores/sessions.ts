@@ -31,6 +31,10 @@ const BOOT_FETCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_ENRICHMENT_TTL_MS = 600_000;
 
 export type RepoEnrichmentSource = 'webhook' | 'manual';
+export type BackendConnectionStatus =
+  | 'connected'
+  | 'reconnecting'
+  | 'restarting';
 export interface RepoEnrichmentMeta {
   lastEnrichedAt: number;
   source: RepoEnrichmentSource;
@@ -153,7 +157,8 @@ export interface SessionsState {
   sidebarItems: SidebarItem[];
   enrichmentResults: Record<string, BranchEnrichment>;
   repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
-  reconnectingPtySessionId: string | null;
+  reconnectingPtySessionIds: Record<string, true>;
+  backendConnectionStatus: BackendConnectionStatus;
   // Actions
   setActiveSessionId: (id: string | null) => void;
   rememberSessionForWorkspace: (
@@ -199,6 +204,7 @@ export interface SessionsState {
   clearLoading: (key: string) => void;
   isItemLoading: (key: string) => boolean;
   reorderWorkspaces: (paths: string[]) => Promise<void>;
+  setBackendConnectionStatus: (status: BackendConnectionStatus) => void;
   beginPtyReconnect: (sessionId: string) => void;
   clearPtyReconnect: (sessionId?: string) => void;
 }
@@ -248,7 +254,8 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   sidebarItems: [],
   enrichmentResults: {},
   repoEnrichmentMeta: {},
-  reconnectingPtySessionId: null,
+  reconnectingPtySessionIds: {},
+  backendConnectionStatus: 'connected',
 
   setActiveSessionId: (id) => {
     saveActiveSessionId(id);
@@ -637,14 +644,38 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     set({ repos: updated });
   },
 
+  setBackendConnectionStatus: (status) => {
+    set((state) => {
+      if (state.backendConnectionStatus === status) return state;
+      return { backendConnectionStatus: status };
+    });
+  },
+
   beginPtyReconnect: (sessionId: string) => {
-    set({ reconnectingPtySessionId: sessionId });
+    set((state) => {
+      if (state.reconnectingPtySessionIds[sessionId]) return state;
+      return {
+        reconnectingPtySessionIds: {
+          ...state.reconnectingPtySessionIds,
+          [sessionId]: true,
+        },
+      };
+    });
   },
 
   clearPtyReconnect: (sessionId?: string) => {
-    const current = get().reconnectingPtySessionId;
-    if (sessionId === undefined || current === sessionId) {
-      set({ reconnectingPtySessionId: null });
-    }
+    set((state) => {
+      if (sessionId === undefined) {
+        if (Object.keys(state.reconnectingPtySessionIds).length === 0) {
+          return state;
+        }
+        return { reconnectingPtySessionIds: {} };
+      }
+
+      if (!state.reconnectingPtySessionIds[sessionId]) return state;
+      const next = { ...state.reconnectingPtySessionIds };
+      delete next[sessionId];
+      return { reconnectingPtySessionIds: next };
+    });
   },
 }));

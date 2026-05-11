@@ -106,6 +106,22 @@ body {
   overflow: hidden;
 }
 
+.backend-connection-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  border: 1px solid var(--status-warning);
+  background: var(--bg);
+  color: var(--status-warning);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  padding: 6px 10px;
+  pointer-events: none;
+}
+
 .sidebar-overlay {
   display: none;
 }

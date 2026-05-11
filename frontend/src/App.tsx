@@ -10,7 +10,10 @@ import {
   UTILITY_ICON_RAIL_WIDTH,
   type WorkspaceUtilityRailState,
 } from './lib/stores/ui.js';
-import { useSessionsStore } from './lib/stores/sessions.js';
+import {
+  useSessionsStore,
+  type BackendConnectionStatus,
+} from './lib/stores/sessions.js';
 import { useConfigStore } from './lib/stores/config.js';
 import { useToastStore } from './lib/stores/toasts.js';
 import { useBootStateStore } from './lib/stores/boot-state.js';
@@ -779,6 +782,23 @@ function TerminalAreaContent({
   );
 }
 
+function BackendConnectionBanner({
+  status,
+}: {
+  status: BackendConnectionStatus;
+}) {
+  if (status === 'connected') return null;
+  const label =
+    status === 'restarting'
+      ? 'backend restarting — reconnecting'
+      : 'backend unavailable — reconnecting';
+  return (
+    <div className="backend-connection-banner" role="status">
+      {label}
+    </div>
+  );
+}
+
 // ─── App Component ────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -804,6 +824,9 @@ export default function App() {
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const backendConnectionStatus = useSessionsStore(
+    (s) => s.backendConnectionStatus
+  );
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const recallSessionForWorkspace = useSessionsStore(
     (s) => s.recallSessionForWorkspace
@@ -1155,6 +1178,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <div className="main-app" ref={mainAppRef}>
+        <BackendConnectionBanner status={backendConnectionStatus} />
         {/* Sidebar overlay (mobile) */}
         {sidebarOpen && (
           <div className="sidebar-overlay" onClick={closeSidebar} />

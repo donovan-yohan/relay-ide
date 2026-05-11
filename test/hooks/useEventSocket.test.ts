@@ -8,10 +8,17 @@ const effectState = vi.hoisted(() => ({
 const wsMock = vi.hoisted(() => ({
   onMessage: undefined as undefined | ((msg: EventMessage) => void),
   onOpen: undefined as undefined | (() => void),
+  onConnectionState: undefined as undefined | ((state: string) => void),
   connectEventSocket: vi.fn(
-    (onMessage: (msg: EventMessage) => void, onOpen?: () => void) => {
+    (
+      onMessage: (msg: EventMessage) => void,
+      onOpen?: () => void,
+      _onAuthRequired?: () => void,
+      onConnectionState?: (state: string) => void
+    ) => {
       wsMock.onMessage = onMessage;
       wsMock.onOpen = onOpen;
+      wsMock.onConnectionState = onConnectionState;
     }
   ),
 }));
@@ -25,10 +32,16 @@ const storeMock = vi.hoisted(() => ({
   handleBranchChanged: vi.fn(),
   handleActivityChanged: vi.fn(),
   beginPtyReconnect: vi.fn(),
+  setBackendConnectionStatus: vi.fn(),
+  backendConnectionStatus: 'connected' as
+    | 'connected'
+    | 'reconnecting'
+    | 'restarting',
   activeSessionId: null as string | null,
   sessions: [] as Array<{
     id: string;
     repoPath: string;
+    mode?: 'pty' | 'web';
     worktreePath?: string | null;
     cwd?: string;
   }>,
@@ -94,21 +107,23 @@ describe('useEventSocket repo-scoped refresh', () => {
     effectState.cleanup = undefined;
     wsMock.onMessage = undefined;
     wsMock.onOpen = undefined;
+    wsMock.onConnectionState = undefined;
     storeMock.activeSessionId = null;
+    storeMock.backendConnectionStatus = 'connected';
     storeMock.sessions = [];
     storeMock.worktrees = [];
   });
 
-  function mount(): void {
+  function mount(queryClient = { invalidateQueries: vi.fn() } as any): void {
     useEventSocket({
       authAuthenticated: true,
-      queryClient: { invalidateQueries: vi.fn() } as any,
+      queryClient,
       throttledChangedFilesRefresh: vi.fn(),
       setChangedFilesData: vi.fn(),
     });
   }
 
-  it('forces all visible repo enrichment on websocket reconnect after the initial open', () => {
+  it('forces all visible repo enrichment on websocket reconnect after the initial open', async () => {
     mount();
 
     wsMock.onOpen?.();
@@ -116,8 +131,80 @@ describe('useEventSocket repo-scoped refresh', () => {
 
     wsMock.onOpen?.();
 
-    expect(storeMock.ensureFreshAll).toHaveBeenCalledWith(0);
+    await vi.waitFor(() =>
+      expect(storeMock.ensureFreshAll).toHaveBeenCalledWith(0)
+    );
     expect(telemetryMock.refreshTelemetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes sessions, worktrees, dashboard, and file data after websocket reconnect', async () => {
+    const queryClient = { invalidateQueries: vi.fn() } as any;
+    const changedFilesRefresh = vi.fn();
+    useEventSocket({
+      authAuthenticated: true,
+      queryClient,
+      throttledChangedFilesRefresh: changedFilesRefresh,
+      setChangedFilesData: vi.fn(),
+    });
+
+    wsMock.onOpen?.();
+    wsMock.onOpen?.();
+    await vi.waitFor(() => expect(storeMock.refreshAll).toHaveBeenCalled());
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['dashboard'],
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['files-list'],
+    });
+    expect(changedFilesRefresh).toHaveBeenCalled();
+  });
+
+  it('marks backend restart state and preserves the active pty session for reconnect', () => {
+    storeMock.activeSessionId = 'sess-a';
+    storeMock.sessions = [
+      { id: 'sess-a', repoPath: '/repos/relay-ide', mode: 'pty' },
+    ];
+    mount();
+
+    wsMock.onMessage?.({ type: 'server-restarting', reason: 'dev-restart' });
+
+    expect(storeMock.setBackendConnectionStatus).toHaveBeenCalledWith(
+      'restarting'
+    );
+    expect(storeMock.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
+  });
+
+  it('mirrors event socket reconnect status without auth fallback', () => {
+    mount();
+
+    wsMock.onConnectionState?.('reconnecting');
+    wsMock.onConnectionState?.('connected');
+
+    expect(storeMock.setBackendConnectionStatus).toHaveBeenNthCalledWith(
+      1,
+      'reconnecting'
+    );
+    expect(storeMock.setBackendConnectionStatus).toHaveBeenNthCalledWith(
+      2,
+      'connected'
+    );
+  });
+
+  it('keeps the explicit restarting label until reconnect succeeds', () => {
+    mount();
+
+    wsMock.onMessage?.({ type: 'server-restarting', reason: 'dev-restart' });
+    storeMock.backendConnectionStatus = 'restarting';
+    wsMock.onConnectionState?.('reconnecting');
+    wsMock.onConnectionState?.('connected');
+
+    expect(storeMock.setBackendConnectionStatus).not.toHaveBeenCalledWith(
+      'reconnecting'
+    );
+    expect(storeMock.setBackendConnectionStatus).toHaveBeenLastCalledWith(
+      'connected'
+    );
   });
 
   it('throttles pr-updated events but force-refreshes only repos listed in the payload', () => {

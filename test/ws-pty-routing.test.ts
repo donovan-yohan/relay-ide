@@ -213,6 +213,23 @@ describe('per-session PTY routing', () => {
     expect(sockets[1]!.url).toContain('/ws/sess-a');
   });
 
+  it('marks every live PTY reconnecting when the server restarts', async () => {
+    const ws = await importWs();
+    ws.connectPtySocket('sess-a', fakeTerm(), vi.fn(), vi.fn());
+    ws.connectPtySocket('sess-b', fakeTerm(), vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+    sockets[1]!.__triggerOpen();
+
+    ws.connectEventSocket(vi.fn());
+    sockets[2]!.onmessage?.({
+      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+    } as MessageEvent);
+
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledTimes(2);
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
+    expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-b');
+  });
+
   it('reconnects an open PTY after server-restarting followed by clean close', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -238,14 +255,38 @@ describe('per-session PTY routing', () => {
     sockets[0]!.readyState = FakeWebSocket.CLOSED;
     sockets[0]!.onclose?.({ code: 1000 } as CloseEvent);
 
-    expect(term.write).not.toHaveBeenCalledWith('\r\n[Session ended]\r\n');
+    expect(term.write).not.toHaveBeenCalledWith('\r\n[session ended]\r\n');
     expect(onEnd).not.toHaveBeenCalled();
     expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledWith('sess-a');
 
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(term.clear).toHaveBeenCalled();
+    expect(term.clear).not.toHaveBeenCalled();
     expect(sockets).toHaveLength(3);
     expect(sockets[2]!.url).toContain('/ws/sess-a');
+  });
+
+  it('does not invoke auth fallback for 401 checks during the restart grace window', async () => {
+    vi.useFakeTimers();
+    const onAuthRequired = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === '/auth/check') return { status: 401 };
+        throw new Error(`unexpected fetch ${url}`);
+      })
+    );
+
+    const ws = await importWs();
+    ws.connectEventSocket(vi.fn(), vi.fn(), onAuthRequired);
+    sockets[0]!.onmessage?.({
+      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+    } as MessageEvent);
+    sockets[0]!.readyState = FakeWebSocket.CLOSED;
+    sockets[0]!.onclose?.({ code: 1006 } as CloseEvent);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(onAuthRequired).not.toHaveBeenCalled();
   });
 });
