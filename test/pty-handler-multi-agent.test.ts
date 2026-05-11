@@ -51,6 +51,22 @@ async function waitForScrollbackContains(
   throw new Error(`Timed out waiting for scrollback to contain: ${needle}`);
 }
 
+async function waitForFileContains(
+  filePath: string,
+  needle: string,
+  timeoutMs = 8000
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath)) {
+      const output = fs.readFileSync(filePath, 'utf-8');
+      if (output.includes(needle)) return output;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${filePath} to contain: ${needle}`);
+}
+
 describe('PTY multi-agent hook/plugin wiring', () => {
   const originalHome = process.env.HOME;
   let testHome: string;
@@ -242,6 +258,7 @@ sleep 10
   });
 
   it('injects framework.yoloEnv for opencode in yolo mode', async () => {
+    const probePath = path.join(testHome, 'opencode-yolo-env.txt');
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -253,20 +270,18 @@ sleep 10
       args: [
         '-e',
         [
+          "const fs=require('node:fs');",
+          `const probePath=${JSON.stringify(probePath)};`,
           "const cfg=process.env.OPENCODE_CONFIG_CONTENT||'';",
+          "fs.writeFileSync(probePath,cfg);",
           "console.log('OPENCODE_CONFIG_CONTENT='+cfg);",
           'setTimeout(()=>{},10000);',
         ].join(' '),
       ],
-      port: 3456,
-      hookToken: 'tok-opencode',
     });
     createdIds.push(result.id);
 
-    const output = await waitForScrollbackContains(
-      result.id,
-      'OPENCODE_CONFIG_CONTENT='
-    );
-    expect(output).toMatch(/OPENCODE_CONFIG_CONTENT=.*"permission"/);
+    const output = await waitForFileContains(probePath, '"permission"');
+    expect(output).toMatch(/"permission"/);
   });
 });
