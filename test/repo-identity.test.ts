@@ -38,6 +38,21 @@ describe('canonical repo identity', () => {
     });
   });
 
+  it('rejects GitHub remote urls with extra path segments', () => {
+    for (const url of [
+      'https://github.com/Owner/Repo/extra',
+      'https://github.com/Owner/Repo/tree/main',
+      'git@github.com:Owner/Repo/extra.git',
+    ]) {
+      expect(normalizeRemoteUrl(url)).toMatchObject({
+        identity: null,
+        provider: null,
+        host: 'github.com',
+        warning: 'malformed-remote-url',
+      });
+    }
+  });
+
   it('selects origin as primary and warns when upstream differs', () => {
     const resolved = resolveCanonicalRepoIdentity([
       { name: 'upstream', url: 'https://github.com/upstream/relay-ide.git' },

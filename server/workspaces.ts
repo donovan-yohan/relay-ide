@@ -898,12 +898,18 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       const currentBranch = isGitRepo
         ? await getCurrentBranchForRepo(resolved)
         : null;
+      const identityFields = await resolveRepoIdentityFields(
+        resolved,
+        isGitRepo,
+        exec
+      );
       added.push({
         path: resolved,
         name: path.basename(resolved),
         isGitRepo,
         defaultBranch,
         currentBranch,
+        ...identityFields,
         ...getRepoWebhookFields(config, resolved),
       });
 

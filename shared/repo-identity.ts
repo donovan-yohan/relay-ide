@@ -109,7 +109,7 @@ export function normalizeRemoteUrl(rawUrl: string): NormalizedRemoteIdentity {
   if (parsed.host === 'github.com') {
     const owner = segments[0]?.toLowerCase() ?? null;
     const name = segments[1]?.toLowerCase() ?? null;
-    if (!owner || !name) {
+    if (!owner || !name || segments.length !== 2) {
       return {
         identity: null,
         provider: null,

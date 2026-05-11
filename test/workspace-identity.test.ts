@@ -57,12 +57,13 @@ function makeExec(remotes: Record<string, Array<{ name: string; url: string }>>)
   };
 }
 
-describe('GET /workspaces repo identity', () => {
+describe('workspace repo identity', () => {
   it('exposes canonical identity plus node-local path and instance ids', async () => {
     const repo = path.join(tmpDir, 'relay-ide');
     fs.mkdirSync(repo, { recursive: true });
     const configPath = makeTempConfig('identity', { repos: [repo] });
     const app = express();
+    app.use(express.json());
     app.use(
       '/workspaces',
       createWorkspaceRouter({
@@ -86,7 +87,7 @@ describe('GET /workspaces repo identity', () => {
       expect(workspace.localPath).toBe(repo);
       expect(workspace.nodeId).toBe('local');
       expect(workspace.repoIdentity).toBe('github.com/donovan-yohan/relay-ide');
-      expect(workspace.repoInstanceId).toBe(`local:${repo}`);
+      expect(workspace.repoInstanceId).toBe(`local:${encodeURIComponent(repo)}`);
       expect(workspace.selectedRemote?.name).toBe('origin');
       expect(workspace.repoIdentityWarnings).toContain('fork-upstream-ambiguity');
       expect(workspace.remotes).toEqual(
@@ -95,6 +96,56 @@ describe('GET /workspaces repo identity', () => {
           expect.objectContaining({ name: 'upstream', identity: 'github.com/nousresearch/relay-ide' }),
         ])
       );
+    } finally {
+      await close();
+    }
+  });
+
+  it('includes identity fields for POST /workspaces/bulk added repos', async () => {
+    const repo = path.join(tmpDir, 'bulk relay:repo');
+    fs.mkdirSync(repo, { recursive: true });
+    const configPath = makeTempConfig('bulk-identity', { repos: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/workspaces',
+      createWorkspaceRouter({
+        configPath,
+        execAsync: makeExec({
+          [repo]: [
+            { name: 'origin', url: 'git@github.com:donovan-yohan/relay-ide.git' },
+          ],
+        }) as any,
+      })
+    );
+    const { url, close } = await createTestServer(app);
+    try {
+      const response = await fetch(`${url}/workspaces/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: [repo] }),
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { added: any[]; errors: any[] };
+      const workspace = payload.added[0];
+
+      expect(payload.errors).toEqual([]);
+      expect(workspace.path).toBe(repo);
+      expect(workspace.localPath).toBe(repo);
+      expect(workspace.nodeId).toBe('local');
+      expect(workspace.repoIdentity).toBe('github.com/donovan-yohan/relay-ide');
+      expect(workspace.repoInstanceId).toBe(`local:${encodeURIComponent(repo)}`);
+      expect(workspace.selectedRemote?.name).toBe('origin');
+      expect(workspace.selectedRemote?.identity).toBe(
+        'github.com/donovan-yohan/relay-ide'
+      );
+      expect(workspace.remotes).toEqual([
+        expect.objectContaining({
+          name: 'origin',
+          identity: 'github.com/donovan-yohan/relay-ide',
+        }),
+      ]);
+      expect(workspace.repoIdentityWarnings).toEqual([]);
     } finally {
       await close();
     }
