@@ -15,6 +15,20 @@ export interface NodeLinkCredential {
   token: string;
 }
 
+export interface NodeLinkEnvelopeHandlerContext {
+  send: (envelope: RelayNodeEnvelope) => void;
+  buildEnvelope: (
+    channel: RelayNodeEnvelope['channel'],
+    type: string,
+    extras?: Partial<RelayNodeEnvelope>
+  ) => RelayNodeEnvelope;
+}
+
+export type NodeLinkChannelHandler = (
+  envelope: RelayNodeEnvelope,
+  context: NodeLinkEnvelopeHandlerContext
+) => void;
+
 export interface NodeLinkClientDeps {
   hubUrl: string;
   credential: NodeLinkCredential;
@@ -29,6 +43,8 @@ export interface NodeLinkClientDeps {
   clearTimeoutFn?: typeof clearTimeout;
   random?: () => number;
   logger?: Logger;
+  onPtyEnvelope?: NodeLinkChannelHandler;
+  onRpcEnvelope?: NodeLinkChannelHandler;
 }
 
 export interface NodeLinkWebSocketLike {
@@ -249,10 +265,26 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
         return;
       }
     }
-    if (env.channel === 'pty' || env.channel === 'rpc') {
-      logger.debug(
-        `received ${env.channel}/${env.type}; node-side handler not implemented yet`
-      );
+    if (env.channel === 'pty') {
+      if (deps.onPtyEnvelope) {
+        deps.onPtyEnvelope(env, {
+          send,
+          buildEnvelope: envelope,
+        });
+        return;
+      }
+      logger.debug(`received pty/${env.type} but no handler registered`);
+      return;
+    }
+    if (env.channel === 'rpc') {
+      if (deps.onRpcEnvelope) {
+        deps.onRpcEnvelope(env, {
+          send,
+          buildEnvelope: envelope,
+        });
+        return;
+      }
+      logger.debug(`received rpc/${env.type} but no handler registered`);
       return;
     }
   }

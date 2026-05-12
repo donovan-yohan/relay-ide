@@ -17,6 +17,7 @@ import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config } from '../server/types.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
+import { createNodeLinkPtyHost } from '../server/node-link-pty-host.js';
 import { collectLocalRepoInventory } from '../server/repo-inventory.js';
 
 const execFileAsync = promisify(execFile);
@@ -354,6 +355,7 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
   } catch {
     config = undefined;
   }
+  const ptyHost = createNodeLinkPtyHost({ nodeId: credential.nodeId });
   const client = createNodeLinkClient({
     hubUrl,
     credential,
@@ -370,12 +372,14 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
         return undefined;
       }
     },
+    onPtyEnvelope: (envelope, ctx) => ptyHost.handle(envelope, ctx),
   });
   await new Promise<void>((resolve) => {
     let exiting = false;
     const finish = (exitCode: number): void => {
       if (exiting) return;
       exiting = true;
+      ptyHost.closeAll('node-link client stopping');
       const safetyTimer = setTimeout(() => process.exit(exitCode), 5_000);
       safetyTimer.unref?.();
       void client.stop().then(() => {
