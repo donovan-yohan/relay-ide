@@ -307,6 +307,26 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
+    const agentArrayManifestError = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    ws.send(
+      JSON.stringify({
+        protocol: 'relay-node-link',
+        protocolVersion: '1.0',
+        nodeId: exchanged.node.nodeId,
+        channel: 'control',
+        type: 'control.heartbeat',
+        timestamp: now.toISOString(),
+        payload: { manifest: agentArrayManifest() },
+      })
+    );
+    expect(await agentArrayManifestError).toMatchObject({
+      channel: 'control',
+      type: 'control.error',
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+
     const skewError = new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
     });
