@@ -51,6 +51,27 @@ export interface RelayNodeCredential {
 
 export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
 
+export type NodeCapabilityStatus =
+  | 'available'
+  | 'degraded'
+  | 'unavailable'
+  | 'unknown';
+
+export type HubNodeCoreCapability =
+  | 'shell'
+  | 'tmux'
+  | 'git'
+  | 'worktrees'
+  | 'browserAutomation'
+  | 'clipboardImage'
+  | 'ssh'
+  | 'tailscale';
+
+export interface HubNodeConnectionSummary {
+  route: 'reverse-link' | 'local' | 'unknown';
+  status: string;
+}
+
 export interface NodeCapabilityManifestSummary {
   totals: {
     available: number;
@@ -58,7 +79,8 @@ export interface NodeCapabilityManifestSummary {
     unavailable: number;
     unknown: number;
   };
-  agents: Record<string, 'available' | 'degraded' | 'unavailable' | 'unknown'>;
+  core: Record<HubNodeCoreCapability, NodeCapabilityStatus>;
+  agents: Record<string, NodeCapabilityStatus>;
   serviceManager: string;
   wsl: boolean;
 }
@@ -72,6 +94,7 @@ export interface HubNodeSummary {
   relayVersion: string;
   protocolVersion: string;
   status: HubNodeStatus;
+  connection: HubNodeConnectionSummary;
   capabilities: NodeCapabilityManifestSummary;
   createdAt: string;
   pairedAt: string;

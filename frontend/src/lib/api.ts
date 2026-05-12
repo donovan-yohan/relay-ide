@@ -30,6 +30,7 @@ import type {
   FrameworkInfo,
   BranchDivergenceSummary,
 } from './types.js';
+import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
 import { parseGlobalSessionId } from '../../../shared/identity.js';
 
 export class ConflictError extends Error {
@@ -170,6 +171,11 @@ export async function setupPin(pin: string, confirm: string): Promise<void> {
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
+}
+
+export async function fetchHubNodes(): Promise<HubNodeSummary[]> {
+  const data = await json<{ nodes?: HubNodeSummary[] }>(await fetch('/nodes'));
+  return Array.isArray(data.nodes) ? data.nodes : [];
 }
 
 function normalizeTelemetryMapEntry(

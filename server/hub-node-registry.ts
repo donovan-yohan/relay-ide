@@ -9,12 +9,15 @@ import {
   type HubNodeStatus,
   type HubNodeSummary,
   type NodeCapabilityManifestSummary,
+  type NodeCapabilityStatus,
   type RelayNodeCredential,
   type RelayNodeError,
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
 
 const logger = createLogger('hub-node-registry');
+const REVERSE_LINK_ROUTE = 'reverse-link' as const;
+const UNKNOWN_CAPABILITY_STATUS = 'unknown' as const;
 
 interface StoredPairToken {
   tokenId: string;
@@ -147,10 +150,25 @@ function summarizeCapabilities(manifest: NodeManifest): NodeCapabilityManifestSu
 
   return {
     totals,
+    core: {
+      shell: 'available',
+      tmux: manifest.capabilities.tmux.status,
+      git: manifest.capabilities.git.status,
+      worktrees: worktreeCapabilityStatus(manifest.capabilities.git.status),
+      browserAutomation: manifest.capabilities.browserAutomation.status,
+      clipboardImage: manifest.capabilities.clipboard.status,
+      ssh: manifest.capabilities.ssh.status,
+      tailscale: manifest.capabilities.tailscale.status,
+    },
     agents,
     serviceManager: manifest.serviceManager.kind,
     wsl: manifest.wsl.detected,
   };
+}
+
+function worktreeCapabilityStatus(gitStatus: NodeCapabilityStatus): NodeCapabilityStatus {
+  if (gitStatus === 'available') return 'available';
+  return gitStatus;
 }
 
 function nodeDisplayName(displayName: string | undefined, manifest: NodeManifest): string {
@@ -220,6 +238,25 @@ function statusForNode(
   return 'online';
 }
 
+function normalizeCapabilitySummary(
+  capabilities: NodeCapabilityManifestSummary
+): NodeCapabilityManifestSummary {
+  if (capabilities.core) return capabilities;
+  return {
+    ...capabilities,
+    core: {
+      shell: UNKNOWN_CAPABILITY_STATUS,
+      tmux: UNKNOWN_CAPABILITY_STATUS,
+      git: UNKNOWN_CAPABILITY_STATUS,
+      worktrees: UNKNOWN_CAPABILITY_STATUS,
+      browserAutomation: UNKNOWN_CAPABILITY_STATUS,
+      clipboardImage: UNKNOWN_CAPABILITY_STATUS,
+      ssh: UNKNOWN_CAPABILITY_STATUS,
+      tailscale: UNKNOWN_CAPABILITY_STATUS,
+    },
+  };
+}
+
 function publicNode(
   node: StoredNodeRecord,
   status: HubNodeStatus
@@ -233,12 +270,20 @@ function publicNode(
     relayVersion: node.relayVersion,
     protocolVersion: node.protocolVersion,
     status,
-    capabilities: node.capabilities,
+    connection: connectionSummary(status),
+    capabilities: normalizeCapabilitySummary(node.capabilities),
     createdAt: node.createdAt,
     pairedAt: node.pairedAt,
     lastSeenAt: node.lastSeenAt,
     credentialId: node.credentialId,
   };
+}
+
+function connectionSummary(status: HubNodeStatus): HubNodeSummary['connection'] {
+  if (status === 'online') return { route: REVERSE_LINK_ROUTE, status: 'connected' };
+  if (status === 'stale') return { route: REVERSE_LINK_ROUTE, status: 'stale heartbeat' };
+  if (status === 'offline') return { route: REVERSE_LINK_ROUTE, status: 'offline' };
+  return { route: REVERSE_LINK_ROUTE, status: 'revoked' };
 }
 
 export class HubNodeRegistry {

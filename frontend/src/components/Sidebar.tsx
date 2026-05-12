@@ -11,6 +11,7 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import type { Repo, WorktreeInfo, PullRequest } from '../lib/types.js';
 import { fetchOrgPrs } from '../lib/api.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
+import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
 import { TuiButton } from './TuiButton.js';
@@ -540,6 +541,7 @@ export function Sidebar({
             />
           ) : (
             <div className="sidebar-workspace-list">
+              <HubNodeDashboardPanel />
               <WorkspaceGroupsList
                 sortedGroups={sortedGroups}
                 reposByPath={reposByPath}
