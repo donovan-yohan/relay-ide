@@ -36,10 +36,15 @@ if (args.includes('--help') || args.includes('-h')) {
 
 Commands:
   dev [--self-host]  Run backend + Vite frontend with HMR (source checkout)
-  update             Update to the latest version from npm
-  install            Install as a background service (survives reboot)
-  uninstall          Stop and remove the background service
-  status             Show whether the service is running
+  update             Update this single relay-ide package from npm
+  hub                Run the Relay hub web server (same as bare relay-ide)
+    install                           Install/start the hub background service
+    uninstall                         Stop and remove the hub background service
+    status                            Show hub service status
+    logs                              Print platform log commands for the hub service
+  install            Back-compat alias for relay-ide hub install
+  uninstall          Back-compat alias for relay-ide hub uninstall
+  status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
@@ -179,7 +184,7 @@ function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
   return nodeArgs[idx + 1];
 }
 
-function nodeLogHints(kind: string): string[] {
+function serviceLogHints(kind: string, mode: 'hub' | 'node'): string[] {
   if (kind === 'launchd') {
     return ['launchctl print gui/$(id -u)/com.relay-ide'];
   }
@@ -195,9 +200,36 @@ function nodeLogHints(kind: string): string[] {
       'sudo journalctl -u relay-ide --no-pager -n 100',
     ];
   }
+  if (mode === 'hub') {
+    return ['manual mode has no Relay-managed service logs; run relay-ide hub in the foreground'];
+  }
   return [
     'manual mode has no Relay-managed service logs; node connect only pairs credentials and exits',
   ];
+}
+
+function printHubStatus(): void {
+  const st = service.status();
+  logger.info(`Hub service manager: ${st.manager.label} (${st.manager.kind})`);
+  logger.info(st.manager.message);
+  if (!st.installed) {
+    logger.info('Hub service is not installed.');
+  } else if (st.running) {
+    logger.info('Hub service is installed and running.');
+  } else {
+    logger.info('Hub service is installed but not running.');
+  }
+  if (st.manager.statusCommand) {
+    logger.info(`Status command: ${st.manager.statusCommand}`);
+  }
+  logger.info(st.installed ? st.manager.uninstallHint : st.manager.installHint);
+  for (const caveat of st.manager.caveats) logger.info(caveat);
+}
+
+function printHubLogs(): void {
+  const st = service.status();
+  logger.info(`Log hints for ${st.manager.label} (${st.manager.kind}):`);
+  for (const hint of serviceLogHints(st.manager.kind, 'hub')) logger.info(hint);
 }
 
 async function printNodeStatus(): Promise<void> {
@@ -215,7 +247,7 @@ async function printNodeStatus(): Promise<void> {
 async function printNodeLogs(): Promise<void> {
   const manifest = await getNodeManifest();
   logger.info(`Log hints for ${manifest.serviceManager.label} (${manifest.serviceManager.kind}):`);
-  for (const hint of nodeLogHints(manifest.serviceManager.kind)) logger.info(hint);
+  for (const hint of serviceLogHints(manifest.serviceManager.kind, 'node')) logger.info(hint);
 }
 
 async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
@@ -340,6 +372,45 @@ async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'conn
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: ${message}`));
+    process.exit(1);
+  }
+}
+
+if (command === 'hub') {
+  const hubArgs = args.slice(1);
+  const subCommand = hubArgs[0];
+  if (subCommand === 'install') {
+    runServiceCommand(() => {
+      process.env['RELAY_IDE_BACKGROUND'] = '1';
+      service.install({
+        configPath: resolveConfigPath(),
+        port: getArg('--port') ?? String(DEFAULTS.port),
+        host: getArg('--host') ?? DEFAULTS.host,
+      });
+    });
+  } else if (subCommand === 'uninstall') {
+    runServiceCommand(() => {
+      service.uninstall();
+    });
+  } else if (subCommand === 'status') {
+    runServiceCommand(printHubStatus);
+  } else if (subCommand === 'logs') {
+    runServiceCommand(printHubLogs);
+  } else if (hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))) {
+    runServiceCommand(() => {
+      process.env['RELAY_IDE_BACKGROUND'] = '1';
+      service.install({
+        configPath: resolveConfigPath(),
+        port: getArg('--port') ?? String(DEFAULTS.port),
+        host: getArg('--host') ?? DEFAULTS.host,
+      });
+    });
+  } else if (!subCommand || subCommand.startsWith('-')) {
+    logger.info('Starting Relay hub web server.');
+    // Fall through to the default server startup path below. Keeping this as
+    // an alias preserves bare `relay-ide` while making the runtime role explicit.
+  } else {
+    logger.error('Usage: relay-ide hub [install|uninstall|status|logs] [--port <port>] [--host <host>] [--config <path>]');
     process.exit(1);
   }
 }

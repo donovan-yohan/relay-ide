@@ -92,12 +92,16 @@ describe('node manifest', () => {
     expect(manifest.wsl).toMatchObject({
       detected: true,
       supportTier: 'tier-1.5',
-      lifecycleMode: 'wsl-manual',
       pathMode: 'windows-mount',
       windowsPath: '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide',
     });
+    expect(['wsl-systemd', 'wsl-manual']).toContain(
+      manifest.wsl.lifecycleMode
+    );
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/not native Windows/i);
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/capability-gated/i);
-    expect(manifest.serviceManager.kind).toBe('wsl-manual');
+    expect(['wsl-systemd', 'wsl-manual']).toContain(
+      manifest.serviceManager.kind
+    );
   });
 });

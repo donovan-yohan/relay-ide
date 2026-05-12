@@ -208,12 +208,12 @@ function wslCaveats(systemd: boolean, pathMode: NodePathMode): string[] {
   }
   if (pathMode === 'windows-mount') {
     caveats.push(
-      '/mnt/<drive> repositories may have slower file watching and Windows filesystem permission/case semantics.'
+      'Working directory under /mnt/<drive> may have slower file watching and Windows filesystem permission/case semantics.'
     );
   }
   if (pathMode === 'unknown') {
     caveats.push(
-      'Repository path is neither /home nor /mnt/<drive>; treat path behavior as unvalidated.'
+      'Working directory is neither /home nor /mnt/<drive>; treat path behavior as unvalidated.'
     );
   }
   return caveats;

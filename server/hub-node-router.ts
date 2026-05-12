@@ -4,9 +4,16 @@ import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
   aggregateRepoInventoryReports,
   isRepoInventoryReport,
+  type RepoInventoryDirtySummary,
+  type RepoInventoryDivergenceSummary,
+  type RepoInventoryRepoInstance,
   type RepoInventoryReport,
+  type RepoInventoryWorktreeInstance,
 } from '../shared/repo-inventory.js';
-import { HubNodeRegistryError, type HubNodeRegistry } from './hub-node-registry.js';
+import {
+  HubNodeRegistryError,
+  type HubNodeRegistry,
+} from './hub-node-registry.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeError,
@@ -67,8 +74,13 @@ function sendRegistryError(
   res.status(errorStatus(body.error)).json(body);
 }
 
-function relayError(code: RelayNodeError['code'], message: string, retryable = false): RelayNodeError {
-  return { code, message, retryable };
+function relayError(
+  code: RelayNodeError['code'],
+  message: string,
+  retryable = false,
+  details?: Record<string, unknown>
+): RelayNodeError {
+  return { code, message, retryable, ...(details ? { details } : {}) };
 }
 
 function sendRelayError(res: Response, error: RelayNodeError): void {
@@ -83,7 +95,8 @@ function isSessionSummary(value: unknown): value is SessionSummary {
     (session.type === 'agent' || session.type === 'terminal') &&
     (session.mode === 'pty' || session.mode === 'web') &&
     typeof session.repoPath === 'string' &&
-    (typeof session.worktreePath === 'string' || session.worktreePath === null) &&
+    (typeof session.worktreePath === 'string' ||
+      session.worktreePath === null) &&
     typeof session.cwd === 'string' &&
     typeof session.repoName === 'string' &&
     typeof session.branchName === 'string' &&
@@ -91,14 +104,18 @@ function isSessionSummary(value: unknown): value is SessionSummary {
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
     typeof session.idle === 'boolean' &&
-    (typeof session.customCommand === 'string' || session.customCommand === null) &&
+    (typeof session.customCommand === 'string' ||
+      session.customCommand === null) &&
     (session.status === 'active' || session.status === 'disconnected') &&
     typeof session.needsBranchRename === 'boolean' &&
     typeof session.agentState === 'string'
   );
 }
 
-function scopedNodeSession(nodeId: string, session: SessionSummary): SessionSummary {
+function scopedNodeSession(
+  nodeId: string,
+  session: SessionSummary
+): SessionSummary {
   const scoped: SessionSummary = { ...session };
   delete scoped.nodeId;
   delete scoped.globalSessionId;
@@ -109,20 +126,33 @@ function scopedNodeSession(nodeId: string, session: SessionSummary): SessionSumm
     ...scoped,
     nodeId,
     globalSessionId: createGlobalSessionId(nodeId, scoped.id),
-    ...(scoped.repoPath ? { repoInstanceId: createRepoInstanceId(nodeId, scoped.repoPath) } : {}),
+    ...(scoped.repoPath
+      ? { repoInstanceId: createRepoInstanceId(nodeId, scoped.repoPath) }
+      : {}),
     ...(scoped.worktreePath
-      ? { worktreeInstanceId: createWorktreeInstanceId(nodeId, scoped.worktreePath) }
+      ? {
+          worktreeInstanceId: createWorktreeInstanceId(
+            nodeId,
+            scoped.worktreePath
+          ),
+        }
       : {}),
   };
 }
 
 function sessionFromPayload(payload: unknown): SessionSummary {
   if (typeof payload !== 'object' || payload === null) {
-    throw new HubNodeRegistryError('INVALID_REQUEST', 'node session create response was malformed');
+    throw new HubNodeRegistryError(
+      'INVALID_REQUEST',
+      'node session create response was malformed'
+    );
   }
   const session = (payload as Record<string, unknown>)['session'];
   if (!isSessionSummary(session)) {
-    throw new HubNodeRegistryError('INVALID_REQUEST', 'node session create response was malformed');
+    throw new HubNodeRegistryError(
+      'INVALID_REQUEST',
+      'node session create response was malformed'
+    );
   }
   return session;
 }
@@ -133,7 +163,322 @@ function bodyRecord(req: Request): Record<string, unknown> {
     : {};
 }
 
-function manifestFromBody(body: Record<string, unknown>, required = false): NodeManifest | null {
+interface ColdReopenWarning {
+  code:
+    | 'source-dirty-checkout'
+    | 'source-diverged-checkout'
+    | 'target-dirty-checkout'
+    | 'target-diverged-checkout';
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+interface ColdReopenTarget {
+  repo: RepoInventoryRepoInstance;
+  worktree: RepoInventoryWorktreeInstance | null;
+  branchName: string | null;
+  warnings: ColdReopenWarning[];
+}
+
+function stringField(
+  record: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function recordField(
+  record: Record<string, unknown>,
+  key: string
+): Record<string, unknown> {
+  const value = record[key];
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function dirtyCount(
+  dirty: RepoInventoryDirtySummary | null | undefined
+): number {
+  if (!dirty) return 0;
+  return (
+    dirty.stagedCount +
+    dirty.unstagedCount +
+    dirty.untrackedCount +
+    dirty.conflictedCount
+  );
+}
+
+function isDiverged(
+  divergence: RepoInventoryDivergenceSummary | null | undefined
+): boolean {
+  if (!divergence) return false;
+  return divergence.aheadCount > 0 || divergence.behindCount > 0;
+}
+
+function checkoutWarnings(
+  scope: 'source' | 'target',
+  checkout: RepoInventoryRepoInstance | RepoInventoryWorktreeInstance
+): ColdReopenWarning[] {
+  const warnings: ColdReopenWarning[] = [];
+  if (dirtyCount(checkout.dirty) > 0) {
+    warnings.push({
+      code: `${scope}-dirty-checkout`,
+      message: `${scope} checkout has uncommitted changes; cold reopen uses git/worktree state and will not migrate live process state`,
+      details: { dirty: checkout.dirty },
+    });
+  }
+  if (isDiverged(checkout.divergence)) {
+    warnings.push({
+      code: `${scope}-diverged-checkout`,
+      message: `${scope} checkout is ahead or behind its upstream; push/fetch before relying on this reopened session`,
+      details: { divergence: checkout.divergence },
+    });
+  }
+  return warnings;
+}
+
+interface SourceCheckoutLookup {
+  nodeId?: string;
+  repoInstanceId?: string;
+  worktreeInstanceId?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  repoIdentity?: string;
+  branchName?: string;
+}
+
+function sourceCheckoutLookup(
+  source: Record<string, unknown>
+): SourceCheckoutLookup | null {
+  const nodeId = stringField(source, 'nodeId');
+  const repoInstanceId = stringField(source, 'repoInstanceId');
+  const worktreeInstanceId = stringField(source, 'worktreeInstanceId');
+  const repoPath = stringField(source, 'repoPath');
+  const worktreePath = stringField(source, 'worktreePath');
+  const repoIdentity = stringField(source, 'repoIdentity');
+  const branchName = stringField(source, 'branchName');
+  const lookup: SourceCheckoutLookup = {
+    ...(nodeId ? { nodeId } : {}),
+    ...(repoInstanceId ? { repoInstanceId } : {}),
+    ...(worktreeInstanceId ? { worktreeInstanceId } : {}),
+    ...(repoPath ? { repoPath } : {}),
+    ...(worktreePath ? { worktreePath } : {}),
+    ...(repoIdentity ? { repoIdentity } : {}),
+    ...(branchName ? { branchName } : {}),
+  };
+  return Object.keys(lookup).length > 0 ? lookup : null;
+}
+
+function matchingWorktree(
+  repo: RepoInventoryRepoInstance,
+  lookup: SourceCheckoutLookup
+): RepoInventoryWorktreeInstance | undefined {
+  return repo.worktrees.find(
+    (candidate) =>
+      candidate.worktreeInstanceId === lookup.worktreeInstanceId ||
+      candidate.localPath === lookup.worktreePath
+  );
+}
+
+function matchingRepoCheckout(
+  repo: RepoInventoryRepoInstance,
+  lookup: SourceCheckoutLookup
+): RepoInventoryRepoInstance | RepoInventoryWorktreeInstance | null {
+  const worktree = matchingWorktree(repo, lookup);
+  if (worktree) return worktree;
+  if (lookup.repoInstanceId && repo.repoInstanceId === lookup.repoInstanceId)
+    return repo;
+  if (lookup.repoPath && repo.localPath === lookup.repoPath) return repo;
+  if (lookup.repoIdentity && repo.repoIdentity === lookup.repoIdentity) {
+    return lookup.branchName
+      ? (repo.worktrees.find(
+          (candidate) => candidate.branchName === lookup.branchName
+        ) ?? repo)
+      : repo;
+  }
+  return null;
+}
+
+function findSourceCheckout(
+  reports: RepoInventoryReport[],
+  source: Record<string, unknown>
+): RepoInventoryRepoInstance | RepoInventoryWorktreeInstance | null {
+  const lookup = sourceCheckoutLookup(source);
+  if (!lookup) return null;
+
+  for (const report of reports) {
+    if (lookup.nodeId && report.nodeId !== lookup.nodeId) continue;
+    for (const repo of report.repos) {
+      const checkout = matchingRepoCheckout(repo, lookup);
+      if (checkout) return checkout;
+    }
+  }
+  return null;
+}
+
+function findColdReopenTarget(
+  reports: RepoInventoryReport[],
+  nodeId: string,
+  body: Record<string, unknown>
+): ColdReopenTarget | RelayNodeError {
+  const source = recordField(body, 'source');
+  const target = recordField(body, 'target');
+  const repoIdentity =
+    stringField(body, 'repoIdentity') ??
+    stringField(source, 'repoIdentity') ??
+    stringField(target, 'repoIdentity');
+  const branchName =
+    stringField(body, 'branchName') ??
+    stringField(source, 'branchName') ??
+    stringField(target, 'branchName') ??
+    null;
+  const targetRepoInstanceId = stringField(target, 'repoInstanceId');
+  const targetWorktreeInstanceId = stringField(target, 'worktreeInstanceId');
+  const targetRepoPath = stringField(target, 'repoPath');
+  const targetWorktreePath = stringField(target, 'worktreePath');
+
+  if (!repoIdentity && !targetRepoInstanceId && !targetRepoPath) {
+    return relayError(
+      'INVALID_REQUEST',
+      'source.repoIdentity or target.repoInstanceId is required for cold reopen'
+    );
+  }
+
+  const report = reports.find((candidate) => candidate.nodeId === nodeId);
+  if (!report) {
+    return relayError(
+      'NOT_FOUND',
+      'target node has not reported repo inventory',
+      false,
+      {
+        suggestedAction: 'pair-node-heartbeat-with-repo-inventory',
+        repoIdentity: repoIdentity ?? null,
+        targetNodeId: nodeId,
+      }
+    );
+  }
+
+  const repo = report.repos.find((candidate) => {
+    if (targetRepoInstanceId)
+      return candidate.repoInstanceId === targetRepoInstanceId;
+    if (targetRepoPath) return candidate.localPath === targetRepoPath;
+    return candidate.repoIdentity === repoIdentity;
+  });
+
+  if (!repo) {
+    return relayError(
+      'NOT_FOUND',
+      'target node does not have this repository checkout',
+      false,
+      {
+        suggestedAction: 'clone-or-add-worktree',
+        repoIdentity: repoIdentity ?? null,
+        targetNodeId: nodeId,
+      }
+    );
+  }
+
+  const worktree =
+    repo.worktrees.find((candidate) => {
+      if (targetWorktreeInstanceId)
+        return candidate.worktreeInstanceId === targetWorktreeInstanceId;
+      if (targetWorktreePath) return candidate.localPath === targetWorktreePath;
+      return branchName ? candidate.branchName === branchName : false;
+    }) ?? null;
+  const repoMatchesRequestedBranch =
+    branchName !== null && repo.currentBranch === branchName;
+  if (
+    (targetWorktreeInstanceId || targetWorktreePath || branchName) &&
+    !worktree &&
+    !repoMatchesRequestedBranch
+  ) {
+    return relayError(
+      'NOT_FOUND',
+      'target node does not have this branch/worktree checkout',
+      false,
+      {
+        suggestedAction: 'add-worktree-or-checkout-branch',
+        repoIdentity: repo.repoIdentity,
+        branchName,
+        targetNodeId: nodeId,
+      }
+    );
+  }
+
+  const sourceCheckout = findSourceCheckout(reports, source);
+  const warnings = [
+    ...(sourceCheckout ? checkoutWarnings('source', sourceCheckout) : []),
+    ...checkoutWarnings('target', worktree ?? repo),
+  ];
+
+  return {
+    repo,
+    worktree,
+    branchName: worktree?.branchName ?? branchName,
+    warnings,
+  };
+}
+
+function coldReopenPrompt(input: {
+  source: Record<string, unknown>;
+  target: ColdReopenTarget;
+  existingPrompt?: string;
+}): string {
+  const lines = [
+    'cold reopen handoff: this starts/reopens work on this node from git/worktree state. it is not a live tmux/PTY migration and no running process state was transferred.',
+    `target repo: ${input.target.repo.localPath}`,
+    ...(input.target.worktree
+      ? [`target worktree: ${input.target.worktree.localPath}`]
+      : []),
+    ...(input.target.branchName ? [`branch: ${input.target.branchName}`] : []),
+  ];
+  const sourceSessionId = stringField(input.source, 'sessionId');
+  if (sourceSessionId) lines.push(`source session: ${sourceSessionId}`);
+  if (input.target.warnings.length > 0) {
+    lines.push('warnings:');
+    for (const warning of input.target.warnings)
+      lines.push(`- ${warning.message}`);
+  }
+  const handoff = lines.join('\n');
+  return input.existingPrompt
+    ? `${input.existingPrompt}\n\n${handoff}`
+    : handoff;
+}
+
+function coldReopenSessionPayload(
+  body: Record<string, unknown>,
+  target: ColdReopenTarget
+): Record<string, unknown> {
+  const source = recordField(body, 'source');
+  const payload = { ...body };
+  delete payload['source'];
+  delete payload['target'];
+  delete payload['repoIdentity'];
+  delete payload['sourceSession'];
+  payload['type'] =
+    typeof payload['type'] === 'string' ? payload['type'] : 'agent';
+  payload['repoPath'] = target.repo.localPath;
+  payload['worktreePath'] = target.worktree?.localPath ?? null;
+  if (target.branchName) payload['branchName'] = target.branchName;
+  if (payload['continue'] === undefined) payload['continue'] = false;
+  const existingPrompt =
+    typeof body['initialPrompt'] === 'string'
+      ? body['initialPrompt']
+      : undefined;
+  payload['initialPrompt'] = coldReopenPrompt({
+    source,
+    target,
+    ...(existingPrompt !== undefined ? { existingPrompt } : {}),
+  });
+  return payload;
+}
+
+function manifestFromBody(
+  body: Record<string, unknown>,
+  required = false
+): NodeManifest | null {
   const manifest = body['manifest'];
   if (manifest === undefined || manifest === null) {
     if (required) {
@@ -147,20 +492,30 @@ function manifestFromBody(body: Record<string, unknown>, required = false): Node
   return manifest;
 }
 
-function repoInventoryFromBody(body: Record<string, unknown>): RepoInventoryReport | null {
+function repoInventoryFromBody(
+  body: Record<string, unknown>
+): RepoInventoryReport | null {
   const repoInventory = body['repoInventory'];
   if (repoInventory === undefined || repoInventory === null) return null;
   if (!isRepoInventoryReport(repoInventory)) {
-    throw new HubNodeRegistryError('INVALID_REQUEST', 'repoInventory is malformed');
+    throw new HubNodeRegistryError(
+      'INVALID_REQUEST',
+      'repoInventory is malformed'
+    );
   }
   return repoInventory;
 }
 
 function pairTtlMs(body: Record<string, unknown>): number | undefined {
   const ttlMs = body['ttlMs'];
-  if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0) return ttlMs;
+  if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0)
+    return ttlMs;
   const ttlSeconds = body['ttlSeconds'];
-  if (typeof ttlSeconds === 'number' && Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
+  if (
+    typeof ttlSeconds === 'number' &&
+    Number.isFinite(ttlSeconds) &&
+    ttlSeconds > 0
+  ) {
     return Math.round(ttlSeconds * 1000);
   }
   return undefined;
@@ -174,22 +529,31 @@ const serviceModeValues = new Set<BootstrapServiceMode>([
   'wsl-manual',
 ]);
 
-function serviceModesFromBody(body: Record<string, unknown>): BootstrapServiceMode[] | undefined {
+function serviceModesFromBody(
+  body: Record<string, unknown>
+): BootstrapServiceMode[] | undefined {
   const serviceModes = body['serviceModes'];
   if (!Array.isArray(serviceModes)) return undefined;
   const valid = serviceModes.filter(
     (mode): mode is BootstrapServiceMode =>
-      typeof mode === 'string' && serviceModeValues.has(mode as BootstrapServiceMode)
+      typeof mode === 'string' &&
+      serviceModeValues.has(mode as BootstrapServiceMode)
   );
   return valid.length > 0 ? Array.from(new Set(valid)) : undefined;
 }
 
-function stringFromBody(body: Record<string, unknown>, key: string): string | undefined {
+function stringFromBody(
+  body: Record<string, unknown>,
+  key: string
+): string | undefined {
   const value = body[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function hubUrlFromRequest(req: Request, body: Record<string, unknown>): string {
+function hubUrlFromRequest(
+  req: Request,
+  body: Record<string, unknown>
+): string {
   const explicitHubUrl = stringFromBody(body, 'hubUrl');
   if (explicitHubUrl) return explicitHubUrl;
   const forwardedProto = req.header('x-forwarded-proto')?.split(',')[0]?.trim();
@@ -199,7 +563,9 @@ function hubUrlFromRequest(req: Request, body: Record<string, unknown>): string 
   return `${proto}://${host}`;
 }
 
-export function createHubNodeRouter(options: HubNodeRouterOptions): express.Router {
+export function createHubNodeRouter(
+  options: HubNodeRouterOptions
+): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
 
@@ -246,9 +612,13 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     try {
       const manifest = manifestFromBody(body, true)!;
       const protocolVersion =
-        typeof body['protocolVersion'] === 'string' ? body['protocolVersion'] : undefined;
+        typeof body['protocolVersion'] === 'string'
+          ? body['protocolVersion']
+          : undefined;
       const displayName =
-        typeof body['displayName'] === 'string' ? body['displayName'] : undefined;
+        typeof body['displayName'] === 'string'
+          ? body['displayName']
+          : undefined;
       res.status(201).json(
         registry.exchangePairToken({
           pairToken,
@@ -264,17 +634,27 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
 
   router.post('/hub/node-heartbeat', (req, res) => {
     const token = bearerToken(req);
-    const authenticated = token ? registry.authenticateCredential(token) : null;
+    const authenticated = token
+      ? registry.authenticateCredentialDetailed(token)
+      : null;
     if (!authenticated) {
-      res.status(401).json({
-        error: { code: 'UNAUTHORIZED', message: 'invalid node credential', retryable: false },
-      });
+      const error = {
+        code: 'UNAUTHORIZED' as const,
+        message: 'invalid node credential',
+        retryable: false,
+      };
+      res.status(errorStatus(error)).json({ error });
+      return;
+    }
+    if (authenticated.ok === false) {
+      const { error } = authenticated;
+      res.status(errorStatus(error)).json({ error });
       return;
     }
     const body = bodyRecord(req);
     const protocolVersion = body['protocolVersion'];
     if (
-      body['nodeId'] !== authenticated.nodeId ||
+      body['nodeId'] !== authenticated.node.nodeId ||
       typeof protocolVersion !== 'string'
     ) {
       res.status(400).json({
@@ -291,7 +671,7 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       const repoInventory = repoInventoryFromBody(body);
       res.json({
         node: registry.recordHeartbeat({
-          nodeId: authenticated.nodeId,
+          nodeId: authenticated.node.nodeId,
           protocolVersion,
           ...(manifest ? { manifest } : {}),
           ...(repoInventory ? { repoInventory } : {}),
@@ -318,13 +698,121 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     }
   });
 
+  router.post(
+    '/hub/nodes/:nodeId/sessions/reopen',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId } = req.params;
+      if (!nodeId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
+        return;
+      }
+      const node = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+        const [nodeMajor] = node.protocolVersion.split('.');
+        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+        sendRelayError(
+          res,
+          relayError(
+            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+          )
+        );
+        return;
+      }
+      if (node.capabilities.core.tmux !== 'available') {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_UNSUPPORTED',
+            `node ${nodeId} cannot host tmux-backed PTY sessions`
+          )
+        );
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      const body = bodyRecord(req);
+      try {
+        const reports = [...registry.listRepoInventoryReports()];
+        if (options.collectLocalRepoInventory) {
+          reports.push(await options.collectLocalRepoInventory());
+        }
+        const target = findColdReopenTarget(reports, nodeId, body);
+        if ('code' in target) {
+          sendRelayError(res, target);
+          return;
+        }
+
+        const sessionPayload = coldReopenSessionPayload(body, target);
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          'sessions.create',
+          sessionPayload
+        );
+        const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
+        res.status(201).json({
+          session,
+          transfer: {
+            mode: 'cold-reopen',
+            livePtyMigrated: false,
+            message:
+              'cold reopen started a new session from git/worktree state; it did not migrate live tmux/PTY process state',
+            source: recordField(body, 'source'),
+            target: {
+              nodeId,
+              repoPath: target.repo.localPath,
+              worktreePath: target.worktree?.localPath ?? null,
+              branchName: target.branchName,
+              repoInstanceId: target.repo.repoInstanceId,
+              ...(target.worktree
+                ? { worktreeInstanceId: target.worktree.worktreeInstanceId }
+                : {}),
+            },
+            warnings: target.warnings,
+          },
+        });
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
   router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {
       sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
       return;
     }
-    const node = registry.listNodes().find((candidate) => candidate.nodeId === nodeId);
+    const node = registry
+      .listNodes()
+      .find((candidate) => candidate.nodeId === nodeId);
     if (!node || node.status === 'revoked') {
       sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
       return;
@@ -354,14 +842,24 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
       sendRelayError(
         res,
-        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+        relayError(
+          'NODE_OFFLINE',
+          `node ${nodeId} has no live reverse link`,
+          true
+        )
       );
       return;
     }
 
     try {
-      const payload = await options.nodeLinks.request(nodeId, 'sessions.create', bodyRecord(req));
-      res.status(201).json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
+      const payload = await options.nodeLinks.request(
+        nodeId,
+        'sessions.create',
+        bodyRecord(req)
+      );
+      res
+        .status(201)
+        .json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
         sendRelayError(res, error.relayNodeError);
@@ -375,7 +873,11 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     const { nodeId } = req.params;
     if (!nodeId) {
       res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'nodeId is required', retryable: false },
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'nodeId is required',
+          retryable: false,
+        },
       });
       return;
     }

@@ -13,13 +13,19 @@ PRs target `nightly` by default. Stable releases are promoted from `nightly` to 
 
 ## Install Channels
 
+Relay hub and node roles use the same npm package and the same `relay-ide` binary. See [Relay Hub/Node Packaging Decision](../RELAY_HUB_NODE_PACKAGING.md) for the command contract.
+
 ```bash
 # Stable (recommended)
 npm install -g relay-ide
+relay-ide hub
 
 # Nightly (latest dev build)
 npm install -g relay-ide@nightly
+relay-ide hub
 ```
+
+Nodes install the same package and use `relay-ide node ...`; there is no separate `relay-ide-node` package or npm tag.
 
 ## Three Release Paths
 
@@ -128,7 +134,7 @@ Both stable and nightly publishing are handled by a single workflow (`publish.ym
 
 Controlled by the `files` field in `package.json`:
 
-- `dist/bin/` -- Compiled CLI entry point
+- `dist/bin/` -- Compiled CLI entry point, including `relay-ide hub` and `relay-ide node` subcommands behind the single `relay-ide` npm binary
 - `dist/server/` -- Compiled server modules
 - `dist/frontend/` -- Frontend SPA
 
