@@ -230,7 +230,7 @@ function sourceCheckoutLookup(source: Record<string, unknown>): SourceCheckoutLo
     ...(repoIdentity ? { repoIdentity } : {}),
     ...(branchName ? { branchName } : {}),
   };
-  return nodeId || repoInstanceId || worktreeInstanceId || repoPath || worktreePath ? lookup : null;
+  return Object.keys(lookup).length > 0 ? lookup : null;
 }
 
 function matchingWorktree(

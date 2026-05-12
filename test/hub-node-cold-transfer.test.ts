@@ -414,8 +414,86 @@ describe('hub cold transfer / reopen-on-other-node', () => {
       transfer: {
         livePtyMigrated: false,
         warnings: [
+          { code: 'source-dirty-checkout' },
+          { code: 'source-diverged-checkout' },
           { code: 'target-dirty-checkout' },
           { code: 'target-diverged-checkout' },
+        ],
+      },
+    });
+  });
+
+  it('surfaces source dirty/diverged warnings when only repoIdentity/branchName is provided', async () => {
+    const { base, wsBase } = await startHub();
+    const { token: sourceToken, nodeId: sourceNodeId } = await pairNode(base);
+    await heartbeatRepoInventory(
+      base,
+      sourceToken,
+      sourceNodeId,
+      repoInventoryReport(sourceNodeId, '/srv/relay-ide', {
+        worktrees: [
+          {
+            worktreeInstanceId: `${sourceNodeId}:${encodeURIComponent('/srv/relay-ide/.worktrees/feature-a')}`,
+            localPath: '/srv/relay-ide/.worktrees/feature-a',
+            branchName: 'feature/a',
+            dirty: {
+              stagedCount: 1,
+              unstagedCount: 1,
+              untrackedCount: 0,
+              conflictedCount: 0,
+              files: [{ path: 'server/hub-node-router.ts', status: 'modified' }],
+              truncated: false,
+            },
+            divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+          },
+        ],
+      })
+    );
+
+    const { token: targetToken, nodeId: targetNodeId } = await pairNode(base);
+    await heartbeatRepoInventory(base, targetToken, targetNodeId, repoInventoryReport(targetNodeId, '/srv/relay-ide'));
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${targetToken}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({
+        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
+        type: 'agent',
+      }),
+    });
+    const request = await nextJson(nodeWs);
+    expect(request.payload).toMatchObject({
+      repoPath: '/srv/relay-ide',
+      worktreePath: '/srv/relay-ide/.worktrees/feature-a',
+      branchName: 'feature/a',
+    });
+    expect(JSON.stringify(request.payload)).toContain('cold reopen');
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId: targetNodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      transfer: {
+        livePtyMigrated: false,
+        warnings: [
+          { code: 'source-dirty-checkout' },
+          { code: 'source-diverged-checkout' },
         ],
       },
     });
