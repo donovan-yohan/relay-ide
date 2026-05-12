@@ -235,16 +235,26 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 
 ## Architecture Decision Records
 
-> Normative constraints are summarized in the table below. The underlying ADR markdown files referenced here (`docs/adrs/`) were never committed to the repository — the table is authoritative. Regenerate with `/adr:update`.
+> Full ADR markdown lives under `docs/adrs/` for entries that have been
+> committed; older entries are summarized below until backfilled. Regenerate
+> with `/adr:update`.
 
-| ADR     | Topic                                                                                      |
-| ------- | ------------------------------------------------------------------------------------------ |
-| ADR-001 | Modular server architecture (composition root, dependency flow)                            |
-| ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping) |
-| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                                  |
-| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                |
-| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                         |
-| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                   |
-| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                   |
+| ADR     | Topic                                                                                                                                                |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR-001 | Modular server architecture (composition root, dependency flow)                                                                                      |
+| ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping)                                                           |
+| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                                                                                            |
+| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                                                                          |
+| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                                                                                   |
+| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                                                                             |
+| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                                                                             |
+| ADR-009 | Hub/Node Federation (hub accepts node registrations via reverse WebSocket; nodes own data plane; hub owns routing/aggregation)                       |
+| ADR-010 | Node-Initiated Outbound Links (nodes dial hub to avoid NAT/firewall inbound)                                                                         |
+| ADR-011 | Agent-driven browser automation (`server/agent-browser.ts`, Playwright)                                                                              |
+| ADR-012 | Pair-Token/Credential Lifecycle (short-lived pair token → persistent revocable node credential; SHA256 storage; immediate revocation)                |
+| ADR-013 | Capability Manifest (nodes self-report probes; hub gates routing on capability state)                                                                |
+| ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                             |
+| ADR-015 | Core relay primitives are domain-agnostic; repo/git is a feature layer ([`docs/adrs/ADR-015-core-primitives-domain-agnostic.md`](./adrs/ADR-015-core-primitives-domain-agnostic.md)) |
+| ADR-016 | Node-to-node isolation invariant; inter-node traffic flows through the hub ([`docs/adrs/ADR-016-node-to-node-isolation.md`](./adrs/ADR-016-node-to-node-isolation.md))               |
 
 > ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration, which was subsequently superseded by the React 19 migration. `hooks.ts` does not yet have a dedicated ADR.
