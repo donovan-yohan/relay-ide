@@ -1,0 +1,19 @@
+docs/spikes/424-file-rpc-streaming.md
+  s_0837e04cd7f585::t_8c9ca9b573b127 1-118,120-513,519-555,557-568,573-624,626-641,643-701,703-744,755-776
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "df7018ee1b4781eb3876499995605449dac8ed2e",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
