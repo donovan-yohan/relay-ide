@@ -6,7 +6,7 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 
 ## Overview
 
-```
+```text
 ┌─────────────┐          ┌──────────┐          ┌──────────────────────────────┐
 │  Browser    │◄─HTTPS──►│   Hub    │◄─WS────►│  Node (macOS/Linux/WSL)      │
 │  (React UI) │          │relay-ide │  reverse │  relay-ide install           │
@@ -28,7 +28,7 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 | **Repo identity** | Canonical repository identity derived from git remotes (e.g. `github.com/donovan-yohan/relay-ide`). Same repo cloned on different nodes shares one identity. |
 | **Repo instance** | A node-local checkout of a repo, identified by `(nodeId, repoPath)`. |
 | **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`. |
-| **Global session ID** | A node-scoped session identifier: `global:session:{nodeId}:{sessionId}`. |
+| **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. |
 
 ## Reverse WebSocket Model
 
@@ -94,6 +94,7 @@ An authenticated hub user creates a short-lived, one-time token:
 
 ```http
 POST /hub/pair-tokens
+Cookie: token={auth-cookie}
 Content-Type: application/json
 
 {
@@ -134,7 +135,7 @@ Both commands exchange the pair token, receive a persistent credential, and send
 The node writes its credential to:
 
 ```text
-~/.config/relay-ide/node-credential.json   (mode 0600)
+<configDir>/node-credential.json   (mode 0600)
 ```
 
 Format:
@@ -158,6 +159,7 @@ A persistent node-side process reads `node-credential.json` and opens the revers
 
 ```http
 DELETE /nodes/{nodeId}
+Cookie: token={auth-cookie}
 ```
 
 Revoking a node:
@@ -166,14 +168,15 @@ Revoking a node:
 - Clears pending RPCs and PTY streams
 - The credential is permanently rejected on subsequent authentication attempts
 
-The registry is stored in `~/.config/relay-ide/node-registry.json` (mode `0600`) with a JSON schema version of `1`.
+The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) with a JSON schema version of `1`.
 
 ### Security Properties
 
 | Property | Implementation |
 | --- | --- |
-| Pair token storage | SHA256 hash only; raw token is never stored |
-| Node credential storage | SHA256 hash only; raw `token` is never stored |
+| Pair token storage (hub) | SHA256 hash only; raw token is never stored |
+| Node credential storage (hub) | SHA256 hash only; raw `token` is never stored |
+| Node credential storage (node-local) | Raw token in `<configDir>/node-credential.json`; file mode `0600` |
 | Comparison | `crypto.timingSafeEqual` on hex buffers |
 | Pair token lifetime | Default 10 minutes; single-use; consumed on exchange |
 | Registry file | Written with `0600` mode; atomic write via temp+rename |
@@ -230,7 +233,7 @@ WSL state is reported in the manifest:
 
 ```http
 POST /hub/nodes/{nodeId}/sessions
-Authorization: Bearer {user-cookie-token}
+Cookie: token={auth-cookie}
 Content-Type: application/json
 
 { "type": "agent", "workspacePath": "/Users/kyle/dev/relay-ide", ... }
@@ -255,9 +258,9 @@ If any precondition fails, the hub returns a typed error with `retryable` guidan
 
 On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session with:
 
-- `globalSessionId`: `global:session:{nodeId}:{sessionId}`
-- `repoInstanceId`: `repo:instance:{nodeId}:{repoPath}` (when applicable)
-- `worktreeInstanceId`: `worktree:instance:{nodeId}:{worktreePath}` (when applicable)
+- `globalSessionId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`
+- `repoInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(repoPath)}` (when applicable)
+- `worktreeInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(worktreePath)}` (when applicable)
 
 ### Attaching to a PTY on a node
 
@@ -289,6 +292,7 @@ Each node reports its local repo inventory in the heartbeat payload. The hub agg
 
 ```http
 GET /hub/repo-inventory
+Cookie: token={auth-cookie}
 ```
 
 Response groups repo instances by canonical identity, showing per-node paths, branch counts, worktree counts, and online status.
@@ -337,7 +341,7 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) before
 
 - WSL is supported as a **Linux-like node**, not as a native Windows node.
 - `node-pty → tmux → shell/agent` behave normally inside WSL2 when systemd is enabled.
-- `wsl-systemd` mode requires WSL systemd and the user bus to be enabled. A WSL distro shutdown stops the service.
+- `wsl-systemd` mode requires WSL systemd and the user bus to be enabled. Set `/etc/wsl.conf` to `[boot] systemd=true`, then run `wsl.exe --shutdown` to apply. A WSL distro shutdown stops the service.
 - `wsl-manual` is a pair-only fallback; no background service is installed.
 - Native Windows node support is explicitly **out of scope**.
 - Windows-side clipboard image paste and browser automation may degrade under WSL.
@@ -385,7 +389,7 @@ curl -X DELETE https://hub.example.com/nodes/{nodeId} -b "token=..."
 Revocation is immediate. The node's credential is permanently rejected. Clean up the local credential file on the node manually if desired:
 
 ```bash
-rm ~/.config/relay-ide/node-credential.json
+rm <configDir>/node-credential.json
 ```
 
 ### Diagnosing an offline node
