@@ -54,5 +54,20 @@ describe('relay-node bootstrap docs', () => {
     );
     expect(wslDocs).toContain('Real WSL2 host smoke');
     expect(wslDocs).toContain('Blocked');
+    expect(joined).toContain('real-host validation is pending (#378)');
+  });
+
+  it('keeps the WSL manifest example valid JSON with escaped UNC paths', () => {
+    const wslDocs = readRepoFile('docs/WSL2_RELAY_NODE_SUPPORT.md');
+    const manifestJsonMatch = wslDocs.match(/```json\n([\s\S]*?)\n```/);
+
+    expect(manifestJsonMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestJsonMatch?.[1] ?? '{}') as {
+      windowsPath?: string;
+    };
+
+    expect(manifest.windowsPath).toBe(
+      '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide'
+    );
   });
 });

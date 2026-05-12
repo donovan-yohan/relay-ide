@@ -151,7 +151,7 @@ On headless Linux, run `loginctl enable-linger $USER` so the user service surviv
 
 ### WSL2
 
-WSL2 is a Tier 1.5 Linux-like node target, not native Windows node support. The detailed support matrix and real-host validation checklist live in [`docs/WSL2_RELAY_NODE_SUPPORT.md`](./WSL2_RELAY_NODE_SUPPORT.md). This slice adds simulated diagnostics/manifest coverage; #378 must remain open until the real-host matrix runs on a Windows/WSL2 machine.
+WSL2 is a Tier 1.5 Linux-like node target, not native Windows node support. The detailed support matrix and real-host validation checklist live in [`docs/WSL2_RELAY_NODE_SUPPORT.md`](./WSL2_RELAY_NODE_SUPPORT.md). This slice adds simulated diagnostics/manifest coverage; real-host validation is pending (#378), and #378 must remain open until the real-host matrix runs on a Windows/WSL2 machine.
 
 1. **systemd must be explicitly enabled** in `/etc/wsl.conf`:
 

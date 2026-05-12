@@ -52,7 +52,7 @@ WSL capability state appears under `manifest.wsl`:
   "supportTier": "tier-1.5",
   "lifecycleMode": "wsl-manual",
   "pathMode": "windows-mount",
-  "windowsPath": "\\wsl.localhost\Ubuntu\mnt\c\Users\dev\relay-ide",
+  "windowsPath": "\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide",
   "caveats": [
     "WSL is a Tier 1.5 Linux-like relay-node environment, not native Windows node support.",
     "Use outbound node-to-hub WebSocket traffic; do not require inbound hub-to-WSL networking."
