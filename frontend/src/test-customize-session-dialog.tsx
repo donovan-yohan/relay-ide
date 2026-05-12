@@ -13,7 +13,7 @@ import './components/dialogs/DialogShell.css';
 import './components/dialogs/CustomizeSessionDialog.css';
 
 const nativeFetch = window.fetch.bind(window);
-let scenario: 'multi' | 'single' = 'multi';
+let scenario: 'multi' | 'single' | 'single-disabled' = 'multi';
 let lastCreateRequest = '';
 
 function framework(id: string): FrameworkInfo {
@@ -69,7 +69,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
 }
 
 function inventory(): AggregatedRepoInventoryResponse {
-  if (scenario === 'single') {
+  if (scenario === 'single' || scenario === 'single-disabled') {
     return {
       generatedAt: '2026-05-12T00:00:00.000Z',
       reports: [],
@@ -246,6 +246,7 @@ function inventory(): AggregatedRepoInventoryResponse {
 }
 
 function nodes(): HubNodeSummary[] {
+  if (scenario === 'single-disabled') return [node({ status: 'offline' })];
   if (scenario === 'single') return [node()];
   return [
     node(),
@@ -364,6 +365,15 @@ function Harness() {
         }}
       >
         open single-node customize session
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          scenario = 'single-disabled';
+          void dialogRef.current?.open({ name: 'relay-ide', path: '/Users/kyle/relay-ide' });
+        }}
+      >
+        open single disabled-node customize session
       </button>
       <output data-testid="created-session">{createdSession}</output>
       <output data-testid="last-create-request">{lastCreateRequest}</output>

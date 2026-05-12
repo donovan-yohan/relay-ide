@@ -71,6 +71,18 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(page.getByLabel('coding agent')).toBeVisible();
   });
 
+  test('shows the disabled-node reason when the single-node picker is otherwise hidden', async ({
+    page,
+  }) => {
+    await page.getByText('open single disabled-node customize session').click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('repo identity')).toHaveCount(0);
+    await expect(page.getByLabel('execution node')).toBeVisible();
+    await expect(page.getByText('node is offline', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Start Session' })).toBeDisabled();
+  });
+
   test('has Start Session and Cancel buttons', async ({ page }) => {
     await page.getByText('open customize session').click();
     await expect(

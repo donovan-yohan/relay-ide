@@ -365,7 +365,10 @@ export function buildEnvironmentPickerModel(
 
   return {
     showPicker:
-      groups.length > 1 || nodeChoices.length > 1 || checkoutChoices.length > 1,
+      groups.length > 1 ||
+      nodeChoices.length > 1 ||
+      checkoutChoices.length > 1 ||
+      Boolean(selectedNodeReason),
     repoChoices: groups.map((group) => ({
       value: group.groupId,
       label: labelForRepo(group),
@@ -519,7 +522,8 @@ function CustomizeSessionBody({
               </select>
             </div>
           )}
-          {environmentModel.nodeChoices.length > 1 && (
+          {(environmentModel.nodeChoices.length > 1 ||
+            environmentModel.selectedNodeReason) && (
             <div className="customize-session-dialog-field">
               <label
                 className="customize-session-dialog-label"

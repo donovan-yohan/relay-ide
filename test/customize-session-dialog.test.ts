@@ -253,6 +253,45 @@ describe('CustomizeSessionDialog environment picker model', () => {
     });
   });
 
+  it('shows a picker reason when the only selected node is disabled', () => {
+    const repoInventory = inventory();
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[0]!,
+        identityDebug: {
+          ...repoInventory.groups[0]!.identityDebug,
+          instanceCount: 1,
+          nodeIds: ['local'],
+        },
+        instances: [
+          {
+            ...repoInventory.groups[0]!.instances[1]!,
+            worktrees: [],
+          },
+        ],
+      },
+    ];
+
+    const model = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node({ status: 'offline' })],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'local',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.showPicker).toBe(true);
+    expect(model.selectedNodeReason).toBe('node is offline');
+    expect(model.nodeChoices).toHaveLength(1);
+    expect(model.nodeChoices[0]).toMatchObject({
+      disabled: true,
+      reason: 'node is offline',
+    });
+  });
+
   it('orders repo identity before node and checkout choices for multi-node inventory', () => {
     const model = buildEnvironmentPickerModel({
       inventory: inventory(),
