@@ -372,50 +372,22 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) before
 
 ## Runbook
 
+Operator commands and per-platform service setup have moved to `docs/RELAY_NODE_BOOTSTRAP.md`. This section retains only high-level summaries.
+
 ### Adding a new node
 
 1. Open the hub UI → Environment Picker → Add Node.
-2. Copy the generated pair token (or the SSH/Tailscale command).
+2. Copy the generated pair token.
 3. On the target machine, run `relay-ide node connect` (pair-only) or `relay-ide node install --service <mode>`.
 4. Verify the node appears online in the hub dashboard.
 
 ### Removing a node
 
-```bash
-# From the hub UI or API
-curl -X DELETE https://hub.example.com/nodes/{nodeId} -b "token=..."
-```
-
-Revocation is immediate. The node's credential is permanently rejected. Clean up the local credential file on the node manually if desired:
-
-```bash
-rm <configDir>/node-credential.json
-```
+Revoke from the hub UI/API (`DELETE /nodes/{nodeId}`). The credential is immediately rejected. Clean up the local credential file on the node manually if desired. See `docs/RELAY_NODE_BOOTSTRAP.md` for full unpairing steps.
 
 ### Diagnosing an offline node
 
-```bash
-# On the node
-relay-ide node status
-relay-ide node logs
-relay-ide node doctor --hub https://hub.example.com
-
-# On the hub
-# Check the node registry for lastSeenAt and version state
-```
-
-### Protocol version mismatch
-
-If the hub and node report incompatible protocol versions, upgrade both to the same Relay npm version. The hub rejects session routing to nodes with mismatched `relay-node-link` protocol versions.
-
-### Service logs
-
-| Platform | Command |
-| --- | --- |
-| macOS launchd | `relay-ide node logs` or `log show --predicate 'subsystem == "com.relay-ide"'` |
-| Linux systemd | `journalctl --user -u relay-ide --no-pager -n 100` |
-| WSL systemd | Same as Linux; may require `wsl.exe -d <distro> -u <user>` |
-| Manual | No persistent logs; run `relay-ide node connect` in a terminal |
+Use `relay-ide node status`, `relay-ide node logs`, and `relay-ide node doctor --hub <url>` on the node. See `docs/RELAY_NODE_BOOTSTRAP.md` for platform-specific log commands and troubleshooting taxonomy.
 
 ## Architecture Decision Records
 
