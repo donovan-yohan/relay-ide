@@ -713,6 +713,7 @@ function CustomizeSessionBody({
 const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
   function CustomizeSessionDialog({ onSessionCreated }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
+    const openRequestIdRef = useRef(0);
     const [workspacePath, setWorkspacePath] = useState('');
     const [worktreePath, setWorktreePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState('');
@@ -761,6 +762,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         nextWorktreePath?: string | null,
         preselectedFramework?: AgentType
       ) {
+        const requestId = ++openRequestIdRef.current;
         setError(null);
         setForm(defaultForm());
         setInventory(null);
@@ -777,7 +779,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           fetchRepoInventory(),
           fetchHubNodes(),
         ]);
+        if (requestId !== openRequestIdRef.current) return;
         await useConfigStore.getState().refreshConfig();
+        if (requestId !== openRequestIdRef.current) return;
         if (inventoryResult.status === 'fulfilled') {
           setInventory(inventoryResult.value);
         }
