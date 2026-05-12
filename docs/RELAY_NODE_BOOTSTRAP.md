@@ -28,7 +28,13 @@ Useful body fields:
   "hubUrl": "https://hub.example.com",
   "sshTarget": "dev@example.internal",
   "tailscaleTarget": "dev@tail-host",
-  "serviceModes": ["manual", "launchd", "systemd-user", "wsl-systemd", "wsl-manual"],
+  "serviceModes": [
+    "manual",
+    "launchd",
+    "systemd-user",
+    "wsl-systemd",
+    "wsl-manual"
+  ],
   "ttlSeconds": 600
 }
 ```
@@ -91,6 +97,8 @@ Relay-managed node install currently writes per-user service files only. For roo
 
 ## WSL
 
+WSL2 is a Tier 1.5 Linux-like node target, not native Windows node support. The detailed support matrix and real-host validation checklist live in [`docs/WSL2_RELAY_NODE_SUPPORT.md`](./WSL2_RELAY_NODE_SUPPORT.md). This slice adds simulated diagnostics/manifest coverage, but the assigned worker did not have a reachable Windows/WSL2 host, so #378 must remain open until the real-host matrix is run.
+
 Systemd-enabled WSL:
 
 ```bash
@@ -108,7 +116,17 @@ relay-ide node connect \
   --pair-token <token>
 ```
 
-WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, `node install --service wsl-systemd` does not establish `/hub/node-link` in this slice, and Relay does not install a Windows scheduled task in MVP.
+WSL diagnostics are reported through the node manifest and `relay-ide node status` / `relay-ide node doctor` output:
+
+- `wsl.supportTier`: `tier-1.5`.
+- `wsl.lifecycleMode`: `wsl-systemd` or `wsl-manual`.
+- `wsl.pathMode`: `wsl-native`, `windows-mount`, or `unknown`.
+- `wsl.windowsPath`: display/open-in-Windows hint such as `\\wsl.localhost\Ubuntu\home\dev\repo` when the distro name is known.
+- `wsl.caveats`: explicit notes for distro shutdown, outbound-only hub networking, native-Windows unsupported state, and degraded clipboard/browser/notification/port-preview behavior.
+
+WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, `node install --service wsl-systemd` does not establish `/hub/node-link` in this slice, and Relay does not install a Windows scheduled task in MVP. Keep execution paths as Linux paths inside WSL; treat `\\wsl.localhost\...` as a display/open-in-Windows hint only. Prefer repos under `/home`; repos under `/mnt/<drive>` are allowed but caveated for slower file watching and Windows filesystem permission/case semantics.
+
+Native Windows relay-node support remains out of scope.
 
 ## SSH and Tailscale SSH
 
@@ -136,19 +154,19 @@ Tailscale is the private reachability/trust layer. Relay does not manage tailnet
 
 ## Diagnostics taxonomy
 
-| Code | Meaning |
-| --- | --- |
-| `BOOTSTRAP_UNREACHABLE` | Cannot connect to host over SSH/Tailscale. |
-| `BOOTSTRAP_REMOTE_SHELL_FAILED` | SSH worked but the bootstrap script could not run. |
-| `BOOTSTRAP_INSTALL_FAILED` | Relay install/update failed on the target. |
-| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd/WSL service path; use `node connect` only to pair credentials, then install your own supervisor or enable a supported service manager. |
-| `SERVICE_START_FAILED` | Service installed but did not start or stay running. |
-| `PAIR_TOKEN_INVALID` | Pair token is malformed, unknown, or already consumed. |
-| `PAIR_TOKEN_EXPIRED` | Pair token expired before exchange. |
-| `NODE_CREDENTIAL_REJECTED` | Persistent node credential was revoked or rejected. |
-| `NODE_CONNECT_FAILED` | Node cannot reach the hub for heartbeat/reverse WebSocket. |
-| `PROTOCOL_INCOMPATIBLE` | Hub/node protocol versions are incompatible. |
-| `NODE_STARTED_NO_HEARTBEAT` | Bootstrap exited but no hub heartbeat was observed. |
+| Code                            | Meaning                                                                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BOOTSTRAP_UNREACHABLE`         | Cannot connect to host over SSH/Tailscale.                                                                                                                |
+| `BOOTSTRAP_REMOTE_SHELL_FAILED` | SSH worked but the bootstrap script could not run.                                                                                                        |
+| `BOOTSTRAP_INSTALL_FAILED`      | Relay install/update failed on the target.                                                                                                                |
+| `SERVICE_MANAGER_UNSUPPORTED`   | No launchd/systemd/WSL service path; use `node connect` only to pair credentials, then install your own supervisor or enable a supported service manager. |
+| `SERVICE_START_FAILED`          | Service installed but did not start or stay running.                                                                                                      |
+| `PAIR_TOKEN_INVALID`            | Pair token is malformed, unknown, or already consumed.                                                                                                    |
+| `PAIR_TOKEN_EXPIRED`            | Pair token expired before exchange.                                                                                                                       |
+| `NODE_CREDENTIAL_REJECTED`      | Persistent node credential was revoked or rejected.                                                                                                       |
+| `NODE_CONNECT_FAILED`           | Node cannot reach the hub for heartbeat/reverse WebSocket.                                                                                                |
+| `PROTOCOL_INCOMPATIBLE`         | Hub/node protocol versions are incompatible.                                                                                                              |
+| `NODE_STARTED_NO_HEARTBEAT`     | Bootstrap exited but no hub heartbeat was observed.                                                                                                       |
 
 Use:
 

@@ -2,18 +2,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  getNodeManifest,
-  probeCommand,
-} from '../server/node-manifest.js';
+import { getNodeManifest, probeCommand } from '../server/node-manifest.js';
 
 describe('node manifest', () => {
   it('reports platform, service manager, and degraded missing tool probes without throwing', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-manifest-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-node-manifest-')
+    );
     try {
       for (const command of ['tmux', 'git']) {
         const bin = path.join(tmpDir, command);
-        fs.writeFileSync(bin, '#!/bin/sh\necho fake-version\n', { mode: 0o755 });
+        fs.writeFileSync(bin, '#!/bin/sh\necho fake-version\n', {
+          mode: 0o755,
+        });
       }
 
       const manifest = await getNodeManifest({
@@ -75,5 +76,28 @@ describe('node manifest', () => {
       status: 'unavailable',
       message: 'definitely-missing-tool was not found on PATH.',
     });
+  });
+
+  it('includes simulated WSL lifecycle and path capability state in the manifest', async () => {
+    const manifest = await getNodeManifest({
+      env: {
+        PATH: '',
+        WSL_DISTRO_NAME: 'Ubuntu',
+        WSL_INTEROP: '/run/WSL/123_interop',
+      },
+      platform: 'linux',
+      cwd: '/mnt/c/Users/dev/relay-ide',
+    });
+
+    expect(manifest.wsl).toMatchObject({
+      detected: true,
+      supportTier: 'tier-1.5',
+      lifecycleMode: 'wsl-manual',
+      pathMode: 'windows-mount',
+      windowsPath: '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide',
+    });
+    expect(manifest.wsl.caveats?.join(' ')).toMatch(/not native Windows/i);
+    expect(manifest.wsl.caveats?.join(' ')).toMatch(/capability-gated/i);
+    expect(manifest.serviceManager.kind).toBe('wsl-manual');
   });
 });

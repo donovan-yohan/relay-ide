@@ -15,7 +15,9 @@ describe('relay-node bootstrap docs', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
     const serviceSource = readRepoFile('server/service.ts');
-    const serviceLabelMatch = serviceSource.match(/\bSERVICE_LABEL\s*=\s*['"]([^'"]+)['"]/);
+    const serviceLabelMatch = serviceSource.match(
+      /\bSERVICE_LABEL\s*=\s*['"]([^'"]+)['"]/
+    );
     expect(serviceLabelMatch).not.toBeNull();
     const serviceLabel = serviceLabelMatch![1];
 
@@ -31,9 +33,26 @@ describe('relay-node bootstrap docs', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
 
-    expect(docs).toContain('This bootstrap slice does not start or maintain `/hub/node-link`.');
+    expect(docs).toContain(
+      'This bootstrap slice does not start or maintain `/hub/node-link`.'
+    );
     expect(cliSource).toContain('does not start or maintain /hub/node-link');
     expect(docs).not.toMatch(/node install[^\n]+establishes steady-state/i);
     expect(docs).not.toMatch(/install\/start creates steady-state/i);
+  });
+
+  it('documents WSL support as simulated and keeps real-host validation open', () => {
+    const bootstrapDocs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
+    const wslDocs = readRepoFile('docs/WSL2_RELAY_NODE_SUPPORT.md');
+    const joined = `${bootstrapDocs}\n${wslDocs}`;
+
+    expect(joined).toContain('tier-1.5');
+    expect(joined).toContain('simulated diagnostics/manifest coverage');
+    expect(joined).toContain('#378 must remain open');
+    expect(joined).toContain(
+      'Native Windows relay-node support remains out of scope'
+    );
+    expect(wslDocs).toContain('Real WSL2 host smoke');
+    expect(wslDocs).toContain('Blocked');
   });
 });
