@@ -9,6 +9,11 @@ import * as service from '../server/service.js';
 import { DEFAULTS, loadConfig } from '../server/config.js';
 import { createLogger } from '../server/logger.js';
 import { getNodeManifest } from '../server/node-manifest.js';
+import {
+  BOOTSTRAP_DIAGNOSTICS,
+  redactBootstrapSecrets,
+} from '../shared/bootstrap-diagnostics.js';
+import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
 import type { Config } from '../server/types.js';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +40,14 @@ Commands:
   uninstall          Stop and remove the background service
   status             Show whether the service is running
   manifest           Print local node capability manifest as JSON
+  node               Manage relay-node pairing and diagnostics
+    status                             Show local node/service status
+    logs                               Print platform log commands
+    doctor --hub <url>                 Check hub reachability and local node capability
+    connect --hub <url> --pair-token <token>
+                                       Exchange a pair token and send one heartbeat
+    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|systemd-system|wsl-systemd]
+                                       Bootstrap node pairing; SSH/Tailscale are only transport
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
@@ -157,6 +170,167 @@ if (command === 'manifest') {
   const manifest = await getNodeManifest(config ? { config } : {});
   console.log(JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2));
   process.exit(0);
+}
+
+function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
+  const idx = nodeArgs.indexOf(flag);
+  if (idx === -1 || idx + 1 >= nodeArgs.length) return undefined;
+  return nodeArgs[idx + 1];
+}
+
+function nodeLogHints(kind: string): string[] {
+  if (kind === 'launchd') {
+    return ['launchctl print gui/$(id -u)/com.relay-ide.node'];
+  }
+  if (kind === 'systemd-user' || kind === 'wsl-systemd') {
+    return [
+      'systemctl --user status relay-node',
+      'journalctl --user -u relay-node --no-pager -n 100',
+    ];
+  }
+  if (kind === 'systemd-system') {
+    return [
+      'sudo systemctl status relay-node',
+      'sudo journalctl -u relay-node --no-pager -n 100',
+    ];
+  }
+  return ['manual/foreground mode: inspect the terminal where relay-ide node connect is running'];
+}
+
+async function printNodeStatus(): Promise<void> {
+  const manifest = await getNodeManifest();
+  const st = service.status();
+  logger.info(`Node host: ${manifest.hostname} (${manifest.platform}/${manifest.arch})`);
+  logger.info(`Relay version: ${manifest.relayVersion}`);
+  logger.info(`Service manager: ${manifest.serviceManager.label} (${manifest.serviceManager.kind})`);
+  logger.info(manifest.serviceManager.message);
+  logger.info(`Local service installed: ${st.installed ? 'yes' : 'no'}`);
+  logger.info(`Local service running: ${st.running ? 'yes' : 'no'}`);
+  for (const caveat of manifest.serviceManager.caveats) logger.info(caveat);
+}
+
+async function printNodeLogs(): Promise<void> {
+  const manifest = await getNodeManifest();
+  logger.info(`Log hints for ${manifest.serviceManager.label} (${manifest.serviceManager.kind}):`);
+  for (const hint of nodeLogHints(manifest.serviceManager.kind)) logger.info(hint);
+}
+
+async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
+  const manifest = await getNodeManifest();
+  logger.info(`Local manifest: ${manifest.hostname} ${manifest.platform}/${manifest.arch}`);
+  logger.info(`Service manager: ${manifest.serviceManager.kind}`);
+  if (!manifest.serviceManager.supported) {
+    const diagnostic = BOOTSTRAP_DIAGNOSTICS.find(
+      (entry) => entry.code === 'SERVICE_MANAGER_UNSUPPORTED'
+    );
+    logger.info(`${diagnostic?.code}: ${diagnostic?.meaning}`);
+    logger.info(manifest.serviceManager.installHint);
+  }
+  if (!hubUrl) {
+    logger.info('No --hub supplied; skipping hub reachability check.');
+    return;
+  }
+  try {
+    const res = await fetch(new URL('/version', hubUrl));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    logger.info(`Hub reachable: ${hubUrl}`);
+  } catch (error) {
+    const diagnostic = BOOTSTRAP_DIAGNOSTICS.find(
+      (entry) => entry.code === 'NODE_CONNECT_FAILED'
+    );
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(redactBootstrapSecrets(`${diagnostic?.code}: ${diagnostic?.meaning} (${message})`));
+    process.exit(1);
+  }
+}
+
+function nodeEndpoint(hubUrl: string, pathname: string): string {
+  return new URL(pathname, hubUrl).toString();
+}
+
+async function pairNode(nodeArgs: string[]): Promise<void> {
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  const pairToken = getNodeArg(nodeArgs, '--pair-token');
+  if (!hubUrl || !pairToken) {
+    logger.error('Usage: relay-ide node connect --hub <url> --pair-token <token>');
+    process.exit(1);
+  }
+  const manifest = await getNodeManifest();
+  const exchangeRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/exchange'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      pairToken,
+      manifest,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    }),
+  });
+  const exchange = (await exchangeRes.json()) as {
+    credential?: { token: string; nodeId: string };
+    node?: { displayName: string };
+    error?: { code: string; message: string };
+  };
+  if (!exchangeRes.ok || !exchange.credential) {
+    const code = exchange.error?.code === 'TOKEN_EXPIRED' ? 'PAIR_TOKEN_EXPIRED' : 'PAIR_TOKEN_INVALID';
+    logger.error(redactBootstrapSecrets(`${code}: ${exchange.error?.message ?? 'pairing failed'}`));
+    process.exit(1);
+  }
+
+  fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
+  const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
+  fs.writeFileSync(credentialPath, `${JSON.stringify(exchange.credential, null, 2)}\n`, {
+    mode: 0o600,
+  });
+
+  const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${exchange.credential.token}`,
+    },
+    body: JSON.stringify({
+      nodeId: exchange.credential.nodeId,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      manifest,
+    }),
+  });
+  if (!heartbeatRes.ok) {
+    const body = await heartbeatRes.text();
+    logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: heartbeat rejected: ${body}`));
+    process.exit(1);
+  }
+
+  logger.info(`Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`);
+  logger.info(`Credential saved to ${credentialPath}.`);
+  logger.info('Sent initial heartbeat; steady-state node traffic uses the reverse WebSocket protocol.');
+}
+
+if (command === 'node') {
+  const nodeArgs = args.slice(1);
+  const subCommand = nodeArgs[0];
+  if (subCommand === 'status') {
+    await printNodeStatus();
+    process.exit(0);
+  }
+  if (subCommand === 'logs') {
+    await printNodeLogs();
+    process.exit(0);
+  }
+  if (subCommand === 'doctor') {
+    await runNodeDoctor(getNodeArg(nodeArgs, '--hub'));
+    process.exit(0);
+  }
+  if (subCommand === 'connect' || subCommand === 'install') {
+    if (subCommand === 'install') {
+      const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';
+      logger.info(`Bootstrap service mode requested: ${serviceMode}`);
+      logger.info('SSH/Tailscale are bootstrap transports only; steady state uses reverse WebSocket.');
+    }
+    await pairNode(nodeArgs);
+    process.exit(0);
+  }
+  logger.error('Usage: relay-ide node <status|logs|doctor|connect|install>');
+  process.exit(1);
 }
 
 if (command === 'worktree') {

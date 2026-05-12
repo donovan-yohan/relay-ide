@@ -166,8 +166,21 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({ displayName: 'Route Node' }),
     });
     expect(pairRes.status).toBe(201);
-    const pair = (await pairRes.json()) as { pairToken: string; expiresAt: string };
+    const pair = (await pairRes.json()) as {
+      pairToken: string;
+      expiresAt: string;
+      hubUrl: string;
+      suggestedCommands: Array<{ id: string; command: string; redactedCommand: string }>;
+      diagnostics: Array<{ code: string }>;
+    };
     expect(pair.pairToken).toMatch(/^pair_/);
+    expect(pair.hubUrl).toBe(base);
+    expect(pair.suggestedCommands.map((command) => command.id)).toContain('local-manual');
+    expect(pair.suggestedCommands[0]!.command).toContain(pair.pairToken);
+    expect(pair.suggestedCommands[0]!.redactedCommand).not.toContain(pair.pairToken);
+    expect(pair.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      'NODE_STARTED_NO_HEARTBEAT'
+    );
     expect(pair).not.toHaveProperty('bootstrapCommand');
 
     const malformedExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {

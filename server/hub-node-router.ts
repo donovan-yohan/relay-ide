@@ -11,6 +11,11 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
+import {
+  BOOTSTRAP_DIAGNOSTICS,
+  generateBootstrapCommands,
+  type BootstrapServiceMode,
+} from '../shared/bootstrap-diagnostics.js';
 import { HubNodeLinkError, type HubNodeLinkManager } from './hub-node-link.js';
 import type { SessionSummary } from './types.js';
 import {
@@ -161,6 +166,37 @@ function pairTtlMs(body: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
+const serviceModeValues = new Set<BootstrapServiceMode>([
+  'manual',
+  'launchd',
+  'systemd-user',
+  'systemd-system',
+  'wsl-systemd',
+  'wsl-manual',
+]);
+
+function serviceModesFromBody(body: Record<string, unknown>): BootstrapServiceMode[] | undefined {
+  const serviceModes = body['serviceModes'];
+  if (!Array.isArray(serviceModes)) return undefined;
+  return serviceModes.filter(
+    (mode): mode is BootstrapServiceMode =>
+      typeof mode === 'string' && serviceModeValues.has(mode as BootstrapServiceMode)
+  );
+}
+
+function stringFromBody(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function hubUrlFromRequest(req: Request, body: Record<string, unknown>): string {
+  const explicitHubUrl = stringFromBody(body, 'hubUrl');
+  if (explicitHubUrl) return explicitHubUrl;
+  const forwardedProto = req.header('x-forwarded-proto')?.split(',')[0]?.trim();
+  const proto = forwardedProto || req.protocol || 'http';
+  return `${proto}://${req.get('host')}`;
+}
+
 export function createHubNodeRouter(options: HubNodeRouterOptions): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
@@ -174,7 +210,22 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       ...(displayName ? { displayName } : {}),
       ...(ttlMs !== undefined ? { ttlMs } : {}),
     });
-    res.status(201).json(pairToken);
+    const hubUrl = hubUrlFromRequest(req, body);
+    const sshTarget = stringFromBody(body, 'sshTarget');
+    const tailscaleTarget = stringFromBody(body, 'tailscaleTarget');
+    const serviceModes = serviceModesFromBody(body);
+    res.status(201).json({
+      ...pairToken,
+      hubUrl,
+      suggestedCommands: generateBootstrapCommands({
+        hubUrl,
+        pairToken: pairToken.pairToken,
+        ...(sshTarget ? { sshTarget } : {}),
+        ...(tailscaleTarget ? { tailscaleTarget } : {}),
+        ...(serviceModes ? { serviceModes } : {}),
+      }),
+      diagnostics: BOOTSTRAP_DIAGNOSTICS,
+    });
   });
 
   router.post('/hub/pairing/exchange', (req, res) => {
