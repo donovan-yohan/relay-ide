@@ -145,6 +145,15 @@ describe('node link pty host (unit)', () => {
       ctx
     );
     expect(lastPty!.killed).toBe(true);
+
+    // After detach the host marks the stream closing but waits for onExit
+    // before deleting the entry + emitting pty.exit. Simulate the OS-level
+    // exit signal that kill() would normally produce.
+    const sentBeforeExit = sent.length;
+    lastPty!.emitExit(0, 15);
+    const exit = sent.slice(sentBeforeExit).find((e) => e.type === 'pty.exit');
+    expect(exit).toBeDefined();
+    expect((exit!.payload as { exitCode: number }).exitCode).toBe(0);
   });
 
   it('emits pty.exit when the underlying pty exits', () => {

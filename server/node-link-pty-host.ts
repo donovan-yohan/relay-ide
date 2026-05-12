@@ -46,6 +46,7 @@ interface ActiveStream {
   ptyProcess: IPty;
   scrollback: string[];
   scrollbackBytes: number;
+  closing: boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -68,10 +69,13 @@ function asStringArray(value: unknown): string[] | undefined {
   return out;
 }
 
+const UNSAFE_ENV_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function asEnv(value: unknown): NodeJS.ProcessEnv | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const out: NodeJS.ProcessEnv = {};
+  const out = Object.create(null) as NodeJS.ProcessEnv;
   for (const [k, v] of Object.entries(value)) {
+    if (UNSAFE_ENV_KEYS.has(k)) continue;
     if (typeof v === 'string') out[k] = v;
   }
   return out;
@@ -82,9 +86,12 @@ function defaultLoginShell(): string {
 }
 
 function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const next = { ...base };
-  // Strip CLAUDECODE so nested Claude sessions don't reuse parent state.
-  delete next['CLAUDECODE'];
+  const next = Object.create(null) as NodeJS.ProcessEnv;
+  for (const [k, v] of Object.entries(base)) {
+    if (UNSAFE_ENV_KEYS.has(k)) continue;
+    if (k === 'CLAUDECODE') continue;
+    if (typeof v === 'string') next[k] = v;
+  }
   return next;
 }
 
@@ -134,14 +141,17 @@ export function createNodeLinkPtyHost(
   }
 
   function recordScrollback(stream: ActiveStream, chunk: string): void {
+    const chunkBytes = Buffer.byteLength(chunk, 'utf8');
     stream.scrollback.push(chunk);
-    stream.scrollbackBytes += chunk.length;
+    stream.scrollbackBytes += chunkBytes;
     while (
       stream.scrollbackBytes > SCROLLBACK_BYTE_LIMIT &&
       stream.scrollback.length > 1
     ) {
       const dropped = stream.scrollback.shift();
-      stream.scrollbackBytes -= dropped?.length ?? 0;
+      stream.scrollbackBytes -= dropped
+        ? Buffer.byteLength(dropped, 'utf8')
+        : 0;
     }
   }
 
@@ -179,12 +189,13 @@ export function createNodeLinkPtyHost(
       ptyProcess,
       scrollback: [],
       scrollbackBytes: 0,
+      closing: false,
     };
     streams.set(streamId, stream);
 
     ptyProcess.onData((chunk) => {
       const live = streams.get(streamId);
-      if (!live || live.ptyProcess !== ptyProcess) return;
+      if (!live || live.ptyProcess !== ptyProcess || live.closing) return;
       recordScrollback(live, chunk);
       sendData(streamId, chunk);
     });
@@ -226,12 +237,14 @@ export function createNodeLinkPtyHost(
   function detach(streamId: string): void {
     const stream = streams.get(streamId);
     if (!stream) return;
-    streams.delete(streamId);
+    stream.closing = true;
     try {
       stream.ptyProcess.kill();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`pty kill failed (${streamId}): ${message}`);
+      streams.delete(streamId);
+      sendExit(streamId, -1);
     }
   }
 
@@ -267,14 +280,16 @@ export function createNodeLinkPtyHost(
     },
     closeAll(reason?: string): void {
       for (const stream of Array.from(streams.values())) {
-        streams.delete(stream.streamId);
+        stream.closing = true;
+        if (reason) {
+          sendError(stream.streamId, reason, false);
+        }
         try {
           stream.ptyProcess.kill();
         } catch {
-          /* best effort */
-        }
-        if (reason) {
-          sendError(stream.streamId, reason, false);
+          // onExit will not fire; force terminal envelope and drop the stream.
+          streams.delete(stream.streamId);
+          sendExit(stream.streamId, -1);
         }
       }
     },
