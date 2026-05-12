@@ -46,8 +46,8 @@ Commands:
     doctor --hub <url>                 Check hub reachability and local node capability
     connect --hub <url> --pair-token <token>
                                        Exchange a pair token and send one heartbeat
-    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|systemd-system|wsl-systemd]
-                                       Bootstrap node pairing; SSH/Tailscale are only transport
+    install --hub <url> --pair-token <token> [--service auto|launchd|systemd-user|wsl-systemd]
+                                       Pair the node, then install/start the local Relay-managed service
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
@@ -180,18 +180,18 @@ function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
 
 function nodeLogHints(kind: string): string[] {
   if (kind === 'launchd') {
-    return ['launchctl print gui/$(id -u)/com.relay-ide.node'];
+    return ['launchctl print gui/$(id -u)/com.relay-ide'];
   }
   if (kind === 'systemd-user' || kind === 'wsl-systemd') {
     return [
-      'systemctl --user status relay-node',
-      'journalctl --user -u relay-node --no-pager -n 100',
+      'systemctl --user status relay-ide',
+      'journalctl --user -u relay-ide --no-pager -n 100',
     ];
   }
   if (kind === 'systemd-system') {
     return [
-      'sudo systemctl status relay-node',
-      'sudo journalctl -u relay-node --no-pager -n 100',
+      'sudo systemctl status relay-ide',
+      'sudo journalctl -u relay-ide --no-pager -n 100',
     ];
   }
   return ['manual/foreground mode: inspect the terminal where relay-ide node connect is running'];
@@ -255,54 +255,62 @@ async function pairNode(nodeArgs: string[]): Promise<void> {
     logger.error('Usage: relay-ide node connect --hub <url> --pair-token <token>');
     process.exit(1);
   }
-  const manifest = await getNodeManifest();
-  const exchangeRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/exchange'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      pairToken,
-      manifest,
-      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-    }),
-  });
-  const exchange = (await exchangeRes.json()) as {
-    credential?: { token: string; nodeId: string };
-    node?: { displayName: string };
-    error?: { code: string; message: string };
-  };
-  if (!exchangeRes.ok || !exchange.credential) {
-    const code = exchange.error?.code === 'TOKEN_EXPIRED' ? 'PAIR_TOKEN_EXPIRED' : 'PAIR_TOKEN_INVALID';
-    logger.error(redactBootstrapSecrets(`${code}: ${exchange.error?.message ?? 'pairing failed'}`));
+
+  try {
+    const manifest = await getNodeManifest();
+    const exchangeRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/exchange'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pairToken,
+        manifest,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      }),
+    });
+    const exchange = (await exchangeRes.json()) as {
+      credential?: { token: string; nodeId: string };
+      node?: { displayName: string };
+      error?: { code: string; message: string };
+    };
+    if (!exchangeRes.ok || !exchange.credential) {
+      const code = exchange.error?.code === 'TOKEN_EXPIRED' ? 'PAIR_TOKEN_EXPIRED' : 'PAIR_TOKEN_INVALID';
+      logger.error(redactBootstrapSecrets(`${code}: ${exchange.error?.message ?? 'pairing failed'}`));
+      process.exit(1);
+    }
+
+    fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
+    const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
+    fs.writeFileSync(credentialPath, `${JSON.stringify(exchange.credential, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    fs.chmodSync(credentialPath, 0o600);
+
+    const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchange.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchange.credential.nodeId,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        manifest,
+      }),
+    });
+    if (!heartbeatRes.ok) {
+      const body = await heartbeatRes.text();
+      logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: heartbeat rejected: ${body}`));
+      process.exit(1);
+    }
+
+    logger.info(`Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`);
+    logger.info(`Credential saved to ${credentialPath}.`);
+    logger.info('Sent initial heartbeat; steady-state node traffic uses the reverse WebSocket protocol.');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: ${message}`));
     process.exit(1);
   }
-
-  fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
-  const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
-  fs.writeFileSync(credentialPath, `${JSON.stringify(exchange.credential, null, 2)}\n`, {
-    mode: 0o600,
-  });
-
-  const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${exchange.credential.token}`,
-    },
-    body: JSON.stringify({
-      nodeId: exchange.credential.nodeId,
-      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-      manifest,
-    }),
-  });
-  if (!heartbeatRes.ok) {
-    const body = await heartbeatRes.text();
-    logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: heartbeat rejected: ${body}`));
-    process.exit(1);
-  }
-
-  logger.info(`Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`);
-  logger.info(`Credential saved to ${credentialPath}.`);
-  logger.info('Sent initial heartbeat; steady-state node traffic uses the reverse WebSocket protocol.');
 }
 
 if (command === 'node') {
@@ -325,6 +333,19 @@ if (command === 'node') {
       const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';
       logger.info(`Bootstrap service mode requested: ${serviceMode}`);
       logger.info('SSH/Tailscale are bootstrap transports only; steady state uses reverse WebSocket.');
+      await pairNode(nodeArgs);
+      if (serviceMode === 'manual') {
+        logger.info('Manual service mode requested; leaving the paired node in foreground mode.');
+        process.exit(0);
+      }
+      runServiceCommand(() => {
+        process.env['RELAY_IDE_BACKGROUND'] = '1';
+        service.install({
+          configPath: resolveConfigPath(),
+          port: getArg('--port') ?? String(DEFAULTS.port),
+          host: getArg('--host') ?? DEFAULTS.host,
+        });
+      });
     }
     await pairNode(nodeArgs);
     process.exit(0);

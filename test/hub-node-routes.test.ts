@@ -183,6 +183,36 @@ describe('hub node routes and link', () => {
     );
     expect(pair).not.toHaveProperty('bootstrapCommand');
 
+    const defaultedModesRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ serviceModes: ['bogus', 'also-bogus'] }),
+    });
+    expect(defaultedModesRes.status).toBe(201);
+    const defaultedModes = (await defaultedModesRes.json()) as {
+      suggestedCommands: Array<{ id: string }>;
+    };
+    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
+      'local-manual'
+    );
+    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
+      'macos-launchd'
+    );
+
+    const forwardedHostRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'relay.example.com',
+      },
+      body: JSON.stringify({ displayName: 'Proxy Node' }),
+    });
+    expect(forwardedHostRes.status).toBe(201);
+    const forwardedHost = (await forwardedHostRes.json()) as { hubUrl: string };
+    expect(forwardedHost.hubUrl).toBe('https://relay.example.com');
+
     const malformedExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

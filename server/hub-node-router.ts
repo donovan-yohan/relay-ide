@@ -170,7 +170,6 @@ const serviceModeValues = new Set<BootstrapServiceMode>([
   'manual',
   'launchd',
   'systemd-user',
-  'systemd-system',
   'wsl-systemd',
   'wsl-manual',
 ]);
@@ -178,10 +177,11 @@ const serviceModeValues = new Set<BootstrapServiceMode>([
 function serviceModesFromBody(body: Record<string, unknown>): BootstrapServiceMode[] | undefined {
   const serviceModes = body['serviceModes'];
   if (!Array.isArray(serviceModes)) return undefined;
-  return serviceModes.filter(
+  const valid = serviceModes.filter(
     (mode): mode is BootstrapServiceMode =>
       typeof mode === 'string' && serviceModeValues.has(mode as BootstrapServiceMode)
   );
+  return valid.length > 0 ? Array.from(new Set(valid)) : undefined;
 }
 
 function stringFromBody(body: Record<string, unknown>, key: string): string | undefined {
@@ -194,7 +194,9 @@ function hubUrlFromRequest(req: Request, body: Record<string, unknown>): string 
   if (explicitHubUrl) return explicitHubUrl;
   const forwardedProto = req.header('x-forwarded-proto')?.split(',')[0]?.trim();
   const proto = forwardedProto || req.protocol || 'http';
-  return `${proto}://${req.get('host')}`;
+  const forwardedHost = req.header('x-forwarded-host')?.split(',')[0]?.trim();
+  const host = forwardedHost || req.get('host');
+  return `${proto}://${host}`;
 }
 
 export function createHubNodeRouter(options: HubNodeRouterOptions): express.Router {
