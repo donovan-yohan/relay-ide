@@ -1,0 +1,37 @@
+server/node-link-pty-host.ts
+  s_0837e04cd7f585::t_1d9123cdfce3b7 91-92,104,107-109,117-119,127-129
+  s_0837e04cd7f585::t_3cb2113c8ac192 1-29,39,41-90,93-96,98-103,105-106,110-116,120-126,130-244,246-247,249-282
+  s_0837e04cd7f585::t_810437563e7807 245,248
+  s_0837e04cd7f585::t_544d029b5585e6 97
+  s_0837e04cd7f585::t_77c1087158ed55 30-38,40
+bin/relay-ide.ts
+  s_0837e04cd7f585::t_c2fd1230a6a625 358,375
+  s_0837e04cd7f585::t_13e0a3f117fbe9 382
+  s_0837e04cd7f585::t_5e1517f5492a41 20
+test/node-link-pty-host.test.ts
+  s_0837e04cd7f585::t_9a56487b93e7b4 6
+  s_0837e04cd7f585::t_9b778c7d29fdc7 1-5,7-423
+docs/RELAY_NODE_BOOTSTRAP.md
+  s_0837e04cd7f585::t_ae4eb8a3b7e140 84
+server/node-link-client.ts
+  s_0837e04cd7f585::t_58e4476912ba77 18-31,46-47
+  s_0837e04cd7f585::t_528a64fa968a0e 268-287
+docs/federated-relay.md
+  s_0837e04cd7f585::t_0b7028689733ea 160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "e42bfe2ca3d206b718e7c8c108a5c03a95ada9fb",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
