@@ -34,10 +34,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const PTY_STARTUP_TIMEOUT_MS = 10000;
+
+// These assertions verify hook/env wiring, not tmux itself. The probe sessions
+// use tmuxAttach:true so node-pty runs the tiny probe process directly; real
+// tmux startup is covered in sessions.test.ts and was the source of CI flakes.
 async function waitForScrollbackContains(
   sessionId: string,
   needle: string,
-  timeoutMs = 8000
+  timeoutMs = PTY_STARTUP_TIMEOUT_MS
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -48,23 +53,42 @@ async function waitForScrollbackContains(
     }
     await delay(50);
   }
-  throw new Error(`Timed out waiting for scrollback to contain: ${needle}`);
+  const session = sessions.get(sessionId) as PtySession | undefined;
+  throw new Error(
+    `Timed out waiting for scrollback to contain: ${needle}. Last scrollback: ${JSON.stringify(
+      session?.scrollback?.join('').slice(-1000) ?? '<missing session>'
+    )}`
+  );
 }
 
 async function waitForFileContains(
   filePath: string,
   needle: string,
-  timeoutMs = 8000
+  timeoutMs = PTY_STARTUP_TIMEOUT_MS
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (fs.existsSync(filePath)) {
+    try {
       const output = fs.readFileSync(filePath, 'utf-8');
       if (output.includes(needle)) return output;
+    } catch {
+      // File may not exist yet, or may be rewritten while polling.
     }
     await delay(50);
   }
-  throw new Error(`Timed out waiting for ${filePath} to contain: ${needle}`);
+  let lastOutput = '<missing file>';
+  try {
+    if (fs.existsSync(filePath)) {
+      lastOutput = fs.readFileSync(filePath, 'utf-8').slice(-1000);
+    }
+  } catch {
+    lastOutput = '<error reading file>';
+  }
+  throw new Error(
+    `Timed out waiting for ${filePath} to contain: ${needle}. Last contents: ${JSON.stringify(
+      lastOutput
+    )}`
+  );
 }
 
 describe('PTY multi-agent hook/plugin wiring', () => {
@@ -131,6 +155,7 @@ describe('PTY multi-agent hook/plugin wiring', () => {
           'setTimeout(()=>{},10000);',
         ].join(' '),
       ],
+      tmuxAttach: true,
       port,
       hookToken,
     });
@@ -167,6 +192,7 @@ describe('PTY multi-agent hook/plugin wiring', () => {
           'setTimeout(()=>{},10000);',
         ].join(' '),
       ],
+      tmuxAttach: true,
       port: 7777,
       hookToken: 'codex-token',
       configDir: '/tmp',
@@ -190,6 +216,7 @@ describe('PTY multi-agent hook/plugin wiring', () => {
       agent: 'claude',
       command: '/bin/cat',
       args: [],
+      tmuxAttach: true,
       frameworks: {
         claude: {
           eventSource: 'parser',
@@ -203,7 +230,7 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     expect(session.dataQuality).toBe('parser');
   });
 
-  it('uses parser startup signal for hook-backed tmux sessions before hooks fire', async () => {
+  it('uses parser startup signal for hook-backed sessions before hooks fire', async () => {
     const agentStub = path.join(testHome, 'claude-stub.sh');
     fs.writeFileSync(
       agentStub,
@@ -225,6 +252,7 @@ sleep 10
       cwd: '/tmp',
       agent: 'claude',
       args: [],
+      tmuxAttach: true,
       port: 4568,
       hookToken: 'claude-hook-token',
       configDir: '/tmp',
@@ -278,6 +306,7 @@ sleep 10
           'setTimeout(()=>{},10000);',
         ].join(' '),
       ],
+      tmuxAttach: true,
     });
     createdIds.push(result.id);
 
