@@ -980,6 +980,19 @@ async function main(): Promise<void> {
   const hubNodeRegistry = createHubNodeRegistry({
     storagePath: path.join(configDir, 'hub-node-registry.json'),
   });
+
+  async function flushHubNodeHeartbeatsBestEffort(context: string): Promise<void> {
+    try {
+      await hubNodeRegistry.flushPendingHeartbeatPersist();
+    } catch (err) {
+      logger.warn(
+        'Failed to flush pending hub node heartbeat state during %s; continuing lifecycle sequence: %s',
+        context,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
   await ensureTmuxAvailable();
 
   await initializePortAllocatorAndReconcile(
@@ -2596,7 +2609,7 @@ async function main(): Promise<void> {
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
-        await hubNodeRegistry.flushPendingHeartbeatPersist();
+        await flushHubNodeHeartbeatsBestEffort('update restart');
         serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
@@ -2671,7 +2684,7 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
-    await hubNodeRegistry.flushPendingHeartbeatPersist();
+    await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir, { reason: restartReason });

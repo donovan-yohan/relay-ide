@@ -374,6 +374,37 @@ describe('hub node registry', () => {
     }
   });
 
+  it('still throws heartbeat persistence failures to explicit flush callers', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-registry-'));
+    const storageDir = path.join(tmpRoot, 'registry-dir');
+    const storagePath = path.join(storageDir, 'nodes.json');
+    let now = new Date('2026-01-02T03:04:05.000Z');
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath,
+        now: () => now,
+        heartbeatPersistDebounceMs: 60_000,
+      });
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+
+      fs.rmSync(storageDir, { recursive: true, force: true });
+      fs.writeFileSync(storageDir, 'not a directory');
+      now = new Date('2026-01-02T03:05:05.000Z');
+      registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest({ hostname: 'heartbeat-host', relayVersion: '10.0.0' }),
+      });
+
+      await expect(registry.flushPendingHeartbeatPersist()).rejects.toThrow();
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('returns typed errors for expired tokens, bad credentials, and incompatible protocol versions', () => {
     withTmpRegistry((registry) => {
       const pair = registry.createPairToken({ ttlMs: 1 });
