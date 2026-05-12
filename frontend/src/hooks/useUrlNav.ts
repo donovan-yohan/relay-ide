@@ -2,6 +2,10 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import {
+  resolveSessionByKey,
+  scopedSessionKey,
+} from '../lib/session-keys.js';
+import {
   parseRoute,
   buildPath,
   parseModal,
@@ -43,16 +47,18 @@ export function useUrlNav() {
         useUiStore.getState().setAnalyticsView(null);
         break;
 
-      case 'session':
+      case 'session': {
         useUiStore.getState().setActiveRepoPath(route.repoPath);
-        if (currentSessions.some((s) => s.id === route.sessionId)) {
-          useSessionsStore.getState().setActiveSessionId(route.sessionId);
+        const session = resolveSessionByKey(currentSessions, route.sessionId);
+        if (session) {
+          useSessionsStore.getState().setActiveSessionId(scopedSessionKey(session));
         } else {
           // Session no longer exists — fall back to repo view and fix URL
           useSessionsStore.getState().setActiveSessionId(null);
         }
         useUiStore.getState().setAnalyticsView(null);
         break;
+      }
 
       case 'analytics':
         useUiStore.getState().setAnalyticsView('dashboard');
@@ -120,15 +126,19 @@ export function useUrlNav() {
           useUiStore.getState().setAnalyticsView(null);
           break;
 
-        case 'session':
+        case 'session': {
           useUiStore.getState().setActiveRepoPath(route.repoPath);
-          if (currentSessions.some((s) => s.id === route.sessionId)) {
-            useSessionsStore.getState().setActiveSessionId(route.sessionId);
+          const session = resolveSessionByKey(currentSessions, route.sessionId);
+          if (session) {
+            useSessionsStore
+              .getState()
+              .setActiveSessionId(scopedSessionKey(session));
           } else {
             useSessionsStore.getState().setActiveSessionId(null);
           }
           useUiStore.getState().setAnalyticsView(null);
           break;
+        }
 
         case 'analytics':
           useUiStore.getState().setAnalyticsView('dashboard');

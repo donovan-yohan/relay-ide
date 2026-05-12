@@ -23,6 +23,7 @@ import { shouldMarkUnread } from '../state/unread-logic.js';
 import { useUnreadStore } from './unread.js';
 import {
   isLiveSessionKey,
+  resolveSessionByKey,
   resolveSessionKey,
   scopedSessionKey,
 } from '../session-keys.js';
@@ -749,24 +750,27 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   handleUserViewed: (sessionId, scope) => {
-    set((state) => ({
-      sidebarItems: state.sidebarItems.map((item) => {
-        if (
-          !item.sessions.some((s) =>
-            sessionMatchesEventScope(s, sessionId, scope)
-          )
-        )
-          return item;
-        useUnreadStore.getState().markRead(item.id);
-        return {
-          ...item,
-          displayState: transitionDisplayState(item.displayState, {
-            type: 'user-viewed',
-          }),
-          isUnread: false,
-        };
-      }),
-    }));
+    set((state) => {
+      const viewedSession = resolveSessionByKey(state.sessions, sessionId);
+      const matchesViewedSession = (session: SessionSummary): boolean =>
+        viewedSession
+          ? sessionsShareScopedIdentity(session, viewedSession)
+          : sessionMatchesEventScope(session, sessionId, scope);
+
+      return {
+        sidebarItems: state.sidebarItems.map((item) => {
+          if (!item.sessions.some(matchesViewedSession)) return item;
+          useUnreadStore.getState().markRead(item.id);
+          return {
+            ...item,
+            displayState: transitionDisplayState(item.displayState, {
+              type: 'user-viewed',
+            }),
+            isUnread: false,
+          };
+        }),
+      };
+    });
   },
 
   setNotificationEnabled: (sessionId, enabled) => {

@@ -81,9 +81,11 @@ export function useSessionHandlers({
 
   const handleRenameActiveSession = useCallback(async () => {
     const name = prompt('rename session:');
-    const id = useSessionsStore.getState().activeSessionId;
-    if (name?.trim() && id) {
-      await renameSessionApi(id, name.trim());
+    const state = useSessionsStore.getState();
+    const id = state.activeSessionId;
+    const session = id ? resolveSessionByKey(state.sessions, id) : undefined;
+    if (name?.trim() && session) {
+      await renameSessionApi(session.id, name.trim());
     }
   }, []);
 
@@ -242,11 +244,10 @@ export function useSessionHandlers({
           .getState()
           .repos.find((w) => w.path === currentRepoPath)
       : undefined;
-    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+    const sessionsState = useSessionsStore.getState();
+    const currentActiveSessionId = sessionsState.activeSessionId;
     const currentActiveSession = currentActiveSessionId
-      ? useSessionsStore
-          .getState()
-          .sessions.find((s) => s.id === currentActiveSessionId)
+      ? resolveSessionByKey(sessionsState.sessions, currentActiveSessionId)
       : undefined;
     if (currentActiveWorkspace) {
       customizeDialogRef.current?.open(
@@ -573,17 +574,16 @@ export function useSessionHandlers({
   );
 
   const handleArchive = useCallback(async () => {
-    const sessionId = useSessionsStore.getState().activeSessionId;
+    const sessionState = useSessionsStore.getState();
+    const sessionId = sessionState.activeSessionId;
     if (!sessionId) return;
-    const session = useSessionsStore
-      .getState()
-      .sessions.find((s) => s.id === sessionId);
+    const session = resolveSessionByKey(sessionState.sessions, sessionId);
     if (!session) return;
 
     // Kill the session. Archive still proceeds to worktree cleanup if the
     // session was already gone or the backend close fails.
     try {
-      await killSession(sessionId);
+      await killSession(session.id);
     } catch (error) {
       logger.warn('Failed to close session before archive:', error);
     }

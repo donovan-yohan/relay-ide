@@ -3,6 +3,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { connectEventSocket } from '../lib/ws.js';
 import type { EventMessage } from '../lib/ws.js';
 import { useAuthStore } from '../lib/stores/auth.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
@@ -266,12 +267,10 @@ export function useEventSocket({
         throttledWebhookInvalidate(repoPathsFromPrOrCiMessage(msg));
       },
       'files-changed': (msg) => {
-        const currentActiveSessionId =
-          useSessionsStore.getState().activeSessionId;
+        const sessionsState = useSessionsStore.getState();
+        const currentActiveSessionId = sessionsState.activeSessionId;
         const currentActiveSession = currentActiveSessionId
-          ? useSessionsStore
-              .getState()
-              .sessions.find((s) => s.id === currentActiveSessionId)
+          ? resolveSessionByKey(sessionsState.sessions, currentActiveSessionId)
           : undefined;
         const activeWs =
           currentActiveSession?.worktreePath ?? currentActiveSession?.repoPath;
@@ -326,8 +325,9 @@ export function useEventSocket({
         state.setBackendConnectionStatus('restarting');
         const activeSessionId = state.activeSessionId;
         if (activeSessionId) {
-          const activeSession = state.sessions.find(
-            (s) => s.id === activeSessionId
+          const activeSession = resolveSessionByKey(
+            state.sessions,
+            activeSessionId
           );
           if (activeSession && activeSession.mode === 'pty') {
             state.beginPtyReconnect(activeSessionId);

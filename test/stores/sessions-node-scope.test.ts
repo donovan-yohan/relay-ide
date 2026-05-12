@@ -188,4 +188,85 @@ describe('sessions store node-scoped events', () => {
       'renamed b'
     );
   });
+
+  it('treats a scoped active session id as viewing only that node item', () => {
+    useSessionsStore.setState({ activeSessionId: 'node-b:same-local-id' });
+
+    (useSessionsStore.getState().handleBackendStateChanged as any)(
+      'same-local-id',
+      'permission',
+      'approval',
+      { nodeId: 'node-b', globalSessionId: 'node-b:same-local-id' }
+    );
+
+    const sidebarItems = useSessionsStore.getState().sidebarItems;
+    const nodeAItem = sidebarItems.find((item) => item.nodeId === 'node-a');
+    const nodeBItem = sidebarItems.find((item) => item.nodeId === 'node-b');
+
+    expect(nodeAItem?.displayState).toBe('running');
+    expect(nodeAItem?.isUnread).toBeFalsy();
+    expect(nodeBItem?.displayState).toBe('permission');
+    expect(nodeBItem?.isUnread).toBe(false);
+    expect(useUnreadStore.getState().isUnread(nodeBItem!.id)).toBe(false);
+  });
+
+  it('marks only the scoped viewed session read', () => {
+    const nodeBItem = useSessionsStore
+      .getState()
+      .sidebarItems.find((item) => item.nodeId === 'node-b')!;
+    useUnreadStore.getState().markUnread(nodeBItem.id);
+    useSessionsStore.setState((state) => ({
+      sidebarItems: state.sidebarItems.map((item) =>
+        item.nodeId === 'node-b'
+          ? { ...item, displayState: 'permission', isUnread: true }
+          : item
+      ),
+    }));
+
+    useSessionsStore.getState().handleUserViewed('node-b:same-local-id');
+
+    const sidebarItems = useSessionsStore.getState().sidebarItems;
+    const nodeAItem = sidebarItems.find((item) => item.nodeId === 'node-a');
+    const updatedNodeBItem = sidebarItems.find((item) => item.nodeId === 'node-b');
+
+    expect(nodeAItem?.displayState).toBe('running');
+    expect(nodeAItem?.isUnread).toBeFalsy();
+    expect(updatedNodeBItem?.isUnread).toBe(false);
+    expect(useUnreadStore.getState().isUnread(nodeBItem.id)).toBe(false);
+  });
+
+  it('does not apply legacy bare notification prefs to ambiguous node-scoped sessions', () => {
+    useSessionsStore.setState({
+      activeSessionId: null,
+      notificationSessions: { 'same-local-id': true },
+    });
+
+    (useSessionsStore.getState().handleBackendStateChanged as any)(
+      'same-local-id',
+      'permission',
+      'approval',
+      { nodeId: 'node-b', globalSessionId: 'node-b:same-local-id' }
+    );
+
+    expect(notificationMocks.fireNotification).not.toHaveBeenCalled();
+  });
+
+  it('prunes ambiguous bare session-keyed maps during refreshAll', async () => {
+    apiMocks.fetchSessions.mockResolvedValue([nodeASession, nodeBSession]);
+    apiMocks.fetchWorktrees.mockResolvedValue([]);
+    apiMocks.fetchWorkspaces.mockResolvedValue([]);
+    apiMocks.fetchWorkspaceGroups.mockResolvedValue([]);
+
+    useSessionsStore.setState({
+      activeSessionId: 'same-local-id',
+      notificationSessions: { 'same-local-id': true },
+      workspaceLastSession: { '/node-b/relay-ide': 'same-local-id' },
+    });
+
+    await useSessionsStore.getState().refreshAll();
+
+    expect(useSessionsStore.getState().activeSessionId).toBe(null);
+    expect(useSessionsStore.getState().notificationSessions).toEqual({});
+    expect(useSessionsStore.getState().workspaceLastSession).toEqual({});
+  });
 });

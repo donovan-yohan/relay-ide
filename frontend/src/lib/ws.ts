@@ -13,6 +13,7 @@ import type {
 } from '../../../shared/node-boundary.js';
 import type { NodeId } from '../../../shared/identity.js';
 import { createLogger } from './logger.js';
+import { resolveSessionByKey } from './session-keys.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 
@@ -315,9 +316,14 @@ function beginPtyReconnect(conn: PtyConnection): void {
 }
 
 function getActiveSessionId(): string | null {
-  const sendTo = useUiStore.getState().sendToTargetSessionId;
-  if (sendTo) return sendTo;
-  return useSessionsStore.getState().activeSessionId;
+  const sessionKey =
+    useUiStore.getState().sendToTargetSessionId ??
+    useSessionsStore.getState().activeSessionId;
+  if (!sessionKey) return null;
+  return (
+    resolveSessionByKey(useSessionsStore.getState().sessions, sessionKey)?.id ??
+    sessionKey
+  );
 }
 
 function getActiveConnection(): PtyConnection | null {

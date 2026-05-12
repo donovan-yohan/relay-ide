@@ -34,6 +34,10 @@ import {
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
+import {
+  resolveSessionByKey,
+  scopedSessionKey,
+} from './lib/session-keys.js';
 import { killSession } from './lib/api.js';
 import {
   getMainWorkspaceSessions,
@@ -189,9 +193,7 @@ function useTerminalDerivedState() {
 
   const activeSession = useMemo(
     () =>
-      activeSessionId
-        ? sessions.find((s) => s.id === activeSessionId)
-        : undefined,
+      activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : undefined,
     [activeSessionId, sessions]
   );
 
@@ -561,12 +563,10 @@ function TerminalAreaContent({
   }, [getToolbarTerminalHandle]);
   const handleTerminalFilePathClick = useCallback(
     (clickedPath: string) => {
-      const currentActiveSessionId =
-        useSessionsStore.getState().activeSessionId;
+      const sessionsState = useSessionsStore.getState();
+      const currentActiveSessionId = sessionsState.activeSessionId;
       const currentActiveSession = currentActiveSessionId
-        ? useSessionsStore
-            .getState()
-            .sessions.find((s) => s.id === currentActiveSessionId)
+        ? resolveSessionByKey(sessionsState.sessions, currentActiveSessionId)
         : undefined;
       const cwd =
         currentActiveSession?.worktreePath ??
@@ -867,9 +867,7 @@ export default function App() {
   // activeSession and activeWorkspaceCwd are needed for FilePicker
   const activeSession = useMemo(
     () =>
-      activeSessionId
-        ? sessions.find((s) => s.id === activeSessionId)
-        : undefined,
+      activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : undefined,
     [activeSessionId, sessions]
   );
 
@@ -1080,7 +1078,7 @@ export default function App() {
         !sessionParam &&
         currentSessions.length === 1
       ) {
-        handleSelectSession(currentSessions[0]!.id);
+        handleSelectSession(scopedSessionKey(currentSessions[0]!));
       }
 
       // Initialize notifications for existing sessions
