@@ -317,11 +317,18 @@ function loadNodeCredential(): { nodeId: string; token: string } {
     process.exit(1);
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as {
-      nodeId?: string;
-      token?: string;
-    };
-    if (!parsed.nodeId || !parsed.token) {
+    const raw = JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as unknown;
+    if (typeof raw !== 'object' || raw === null) {
+      logger.error(`NODE_LINK_FAILED: malformed credential at ${credentialPath}.`);
+      process.exit(1);
+    }
+    const parsed = raw as { nodeId?: unknown; token?: unknown };
+    if (
+      typeof parsed.nodeId !== 'string' ||
+      !parsed.nodeId ||
+      typeof parsed.token !== 'string' ||
+      !parsed.token
+    ) {
       logger.error(`NODE_LINK_FAILED: malformed credential at ${credentialPath}.`);
       process.exit(1);
     }
@@ -364,18 +371,30 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
       }
     },
   });
-  client.onStateChange((state) => {
-    logger.info(`node-link state: ${state}`);
-  });
-  const shutdown = (signal: string) => {
-    logger.info(`received ${signal}; closing node-link`);
-    void client.stop(`signal ${signal}`).then(() => process.exit(0));
-  };
-  process.once('SIGINT', () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
-  client.start();
-  await new Promise<void>(() => {
-    /* hold foreground until signal */
+  await new Promise<void>((resolve) => {
+    let exiting = false;
+    const finish = (exitCode: number): void => {
+      if (exiting) return;
+      exiting = true;
+      const safetyTimer = setTimeout(() => process.exit(exitCode), 5_000);
+      safetyTimer.unref?.();
+      void client.stop().then(() => {
+        clearTimeout(safetyTimer);
+        resolve();
+        process.exit(exitCode);
+      });
+    };
+    client.onStateChange((state) => {
+      logger.info(`node-link state: ${state}`);
+      if (state === 'stopped') finish(0);
+    });
+    const shutdown = (signal: string) => {
+      logger.info(`received ${signal}; closing node-link`);
+      finish(0);
+    };
+    process.once('SIGINT', () => shutdown('SIGINT'));
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    client.start();
   });
 }
 

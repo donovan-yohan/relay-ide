@@ -116,50 +116,32 @@ function fakeManifest(): NodeManifest {
 interface FakeTimerEnv {
   setTimeoutFn: typeof setTimeout;
   clearTimeoutFn: typeof clearTimeout;
-  setIntervalFn: typeof setInterval;
-  clearIntervalFn: typeof clearInterval;
   run(): void;
   scheduled(): Array<{ delay: number }>;
 }
 
 function fakeTimerEnv(): FakeTimerEnv {
-  const timers: Array<{ id: number; delay: number; fn: () => void; type: 'timeout' | 'interval' }> = [];
+  const timers: Array<{ id: number; delay: number; fn: () => void }> = [];
   let nextId = 1;
   const setTimeoutFn = ((fn: () => void, delay: number) => {
     const id = nextId++;
-    timers.push({ id, delay, fn, type: 'timeout' });
+    timers.push({ id, delay, fn });
     return id as unknown as ReturnType<typeof setTimeout>;
   }) as typeof setTimeout;
   const clearTimeoutFn = ((id: unknown) => {
     const idx = timers.findIndex((t) => t.id === id);
     if (idx >= 0) timers.splice(idx, 1);
   }) as typeof clearTimeout;
-  const setIntervalFn = ((fn: () => void, delay: number) => {
-    const id = nextId++;
-    timers.push({ id, delay, fn, type: 'interval' });
-    return id as unknown as ReturnType<typeof setInterval>;
-  }) as typeof setInterval;
-  const clearIntervalFn = ((id: unknown) => {
-    const idx = timers.findIndex((t) => t.id === id);
-    if (idx >= 0) timers.splice(idx, 1);
-  }) as typeof clearInterval;
   return {
     setTimeoutFn,
     clearTimeoutFn,
-    setIntervalFn,
-    clearIntervalFn,
     run() {
-      const due = timers.filter((t) => t.type === 'timeout');
-      for (const timer of due) {
-        const idx = timers.indexOf(timer);
-        if (idx >= 0) timers.splice(idx, 1);
-        timer.fn();
-      }
+      const due = timers.slice();
+      timers.length = 0;
+      for (const timer of due) timer.fn();
     },
     scheduled() {
-      return timers
-        .filter((t) => t.type === 'timeout')
-        .map((t) => ({ delay: t.delay }));
+      return timers.map((t) => ({ delay: t.delay }));
     },
   };
 }

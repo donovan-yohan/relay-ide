@@ -4,7 +4,7 @@ Operator guide for pairing, installing, updating, diagnosing, and unpairing Rela
 
 Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
 
-Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are implemented here; steady-state routed sessions still require a future persistent node-side client that opens `/hub/node-link` with the stored node credential. This bootstrap slice does not start or maintain `/hub/node-link`.
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are handled by `relay-ide node connect` / `node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node connect`, `node install`) themselves do not open or maintain `/hub/node-link`.
 
 > This document is the runbook. For architecture and protocol details, see `docs/federated-relay.md`. For the generic Relay service install/uninstall (non-node), see `docs/references/deployment.md`.
 

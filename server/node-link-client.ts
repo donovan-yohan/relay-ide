@@ -27,8 +27,6 @@ export interface NodeLinkClientDeps {
   webSocketFactory?: NodeLinkWebSocketFactory;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
-  setIntervalFn?: typeof setInterval;
-  clearIntervalFn?: typeof clearInterval;
   random?: () => number;
   logger?: Logger;
 }
@@ -99,8 +97,6 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
   const webSocketFactory = deps.webSocketFactory ?? defaultWebSocketFactory;
   const setTimer = deps.setTimeoutFn ?? setTimeout;
   const clearTimer = deps.clearTimeoutFn ?? clearTimeout;
-  const setIntervalImpl = deps.setIntervalFn ?? setInterval;
-  const clearIntervalImpl = deps.clearIntervalFn ?? clearInterval;
   const random = deps.random ?? Math.random;
   const linkUrl = toLinkUrl(deps.hubUrl);
   const headers = { Authorization: `Bearer ${deps.credential.token}` };
@@ -109,7 +105,7 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
   let ws: NodeLinkWebSocketLike | undefined;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   const stateHandlers = new Set<(state: NodeLinkState) => void>();
 
@@ -167,28 +163,46 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     send(envelope('control', 'control.hello', { payload }));
   }
 
-  function sendHeartbeat(): void {
+  function scheduleNextHeartbeat(): void {
+    if (stopped) return;
+    heartbeatTimer = setTimer(() => {
+      heartbeatTimer = undefined;
+      runHeartbeat();
+    }, heartbeatIntervalMs);
+    (heartbeatTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  function runHeartbeat(): void {
+    const inflightWs = ws;
+    if (stopped || !inflightWs || inflightWs.readyState !== inflightWs.OPEN) {
+      return;
+    }
     void buildControlPayload()
       .then((payload) => {
+        if (stopped || ws !== inflightWs || inflightWs.readyState !== inflightWs.OPEN) {
+          return;
+        }
         send(envelope('control', 'control.heartbeat', { payload }));
       })
       .catch((error) => {
         logger.warn(
           `heartbeat payload build failed: ${error instanceof Error ? error.message : String(error)}`
         );
+      })
+      .finally(() => {
+        if (stopped || ws !== inflightWs) return;
+        scheduleNextHeartbeat();
       });
   }
 
   function startHeartbeat(): void {
     stopHeartbeat();
-    heartbeatTimer = setIntervalImpl(sendHeartbeat, heartbeatIntervalMs);
-    // unref so heartbeat does not keep node alive on its own
-    (heartbeatTimer as unknown as { unref?: () => void }).unref?.();
+    scheduleNextHeartbeat();
   }
 
   function stopHeartbeat(): void {
     if (!heartbeatTimer) return;
-    clearIntervalImpl(heartbeatTimer);
+    clearTimer(heartbeatTimer);
     heartbeatTimer = undefined;
   }
 
@@ -257,13 +271,25 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     ws = socket;
 
     socket.on('open', () => {
+      if (stopped || ws !== socket) return;
       setState('connected');
       logger.info(`connected to ${linkUrl}`);
-      void sendHello();
+      sendHello().catch((error) => {
+        if (stopped || ws !== socket) return;
+        logger.warn(
+          `hello failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        try {
+          socket.close(1011, 'hello failed');
+        } catch {
+          /* ignore */
+        }
+      });
       startHeartbeat();
     });
 
     socket.on('message', (data) => {
+      if (stopped || ws !== socket) return;
       let parsed: unknown;
       try {
         parsed = JSON.parse(data.toString());
@@ -283,9 +309,10 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     });
 
     socket.on('close', (code, reason) => {
+      if (ws !== socket && !stopped) return;
       const reasonText = reason?.toString?.() ?? '';
       stopHeartbeat();
-      ws = undefined;
+      if (ws === socket) ws = undefined;
       if (stopped) {
         setState('stopped');
         return;
@@ -300,6 +327,7 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     });
 
     socket.on('error', (err) => {
+      if (stopped || ws !== socket) return;
       logger.warn(`socket error: ${err.message}`);
     });
   }
@@ -312,14 +340,15 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
       reconnectTimer = undefined;
     }
     stopHeartbeat();
-    if (ws && ws.readyState === ws.OPEN) {
+    const current = ws;
+    ws = undefined;
+    if (current) {
       try {
-        ws.close(1000, reason ?? 'node-link client stop');
+        current.close(1000, reason ?? 'node-link client stop');
       } catch {
         /* ignore */
       }
     }
-    ws = undefined;
     setState('stopped');
   }
 
