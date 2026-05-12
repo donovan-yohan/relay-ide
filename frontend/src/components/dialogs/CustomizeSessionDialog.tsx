@@ -6,7 +6,20 @@ import { estimateTerminalDimensions } from '../../lib/utils.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { createAgentSession } from '../../lib/session-utils.js';
-import type { AgentType, FrameworkInfo } from '../../lib/types.js';
+import { fetchHubNodes, fetchRepoInventory } from '../../lib/api.js';
+import type {
+  AgentType,
+  AggregatedRepoInventoryGroup,
+  AggregatedRepoInventoryResponse,
+  FrameworkInfo,
+  RepoInventoryRepoInstance,
+  RepoInventoryWorktreeInstance,
+} from '../../lib/types.js';
+import type {
+  HubNodeSummary,
+  NodeCapabilityStatus,
+} from '../../../../shared/relay-node-protocol.js';
+import { DEFAULT_LOCAL_NODE_ID, type NodeId } from '../../../../shared/identity.js';
 import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
@@ -80,6 +93,292 @@ export function defaultSessionModeForAgent(
   return selectedAgent === 'hermes' && supportsWeb ? 'web' : 'pty';
 }
 
+type EnvironmentChoice = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  reason?: string;
+};
+
+export interface EnvironmentCheckoutChoice extends EnvironmentChoice {
+  nodeId: NodeId;
+  repoPath: string;
+  worktreePath: string | null;
+}
+
+export interface EnvironmentPickerModel {
+  showPicker: boolean;
+  repoChoices: EnvironmentChoice[];
+  nodeChoices: EnvironmentChoice[];
+  checkoutChoices: EnvironmentCheckoutChoice[];
+  selectedGroupId: string | null;
+  selectedNodeId: NodeId;
+  selectedCheckoutId: string | null;
+  selectedNodeReason: string | null;
+  resolved: {
+    nodeId: NodeId;
+    repoPath: string;
+    worktreePath: string | null;
+  };
+}
+
+export interface EnvironmentPickerInput {
+  inventory: AggregatedRepoInventoryResponse | null;
+  nodes: HubNodeSummary[];
+  selectedAgent: AgentType;
+  selectedGroupId: string | null;
+  selectedNodeId: NodeId | null;
+  selectedCheckoutId: string | null;
+  fallbackWorkspace: { name: string; path: string };
+  fallbackWorktreePath: string | null;
+}
+
+const CHECKOUT_ROOT_PREFIX = 'repo:';
+const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
+
+function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
+  return {
+    nodeId: DEFAULT_LOCAL_NODE_ID,
+    displayName: 'local',
+    hostname: 'local',
+    platform: 'local',
+    arch: 'unknown',
+    relayVersion: 'local',
+    protocolVersion: 'local',
+    status: 'online',
+    connection: { route: 'local', status: 'connected' },
+    capabilities: {
+      totals: { available: 8, degraded: 0, unavailable: 0, unknown: 0 },
+      core: {
+        shell: 'available',
+        tmux: 'available',
+        git: 'available',
+        worktrees: 'available',
+        browserAutomation: 'available',
+        clipboardImage: 'available',
+        ssh: 'available',
+        tailscale: 'available',
+      },
+      agents: { [selectedAgent]: 'available' },
+      serviceManager: 'local',
+      wsl: false,
+    },
+    createdAt: '',
+    pairedAt: '',
+    lastSeenAt: '',
+    credentialId: 'local',
+  };
+}
+
+function fallbackGroupFor(
+  workspace: { name: string; path: string },
+  worktreePath: string | null
+): AggregatedRepoInventoryGroup {
+  const repoInstanceId = `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(workspace.path)}`;
+  const worktrees = worktreePath
+    ? [
+        {
+          worktreeInstanceId: `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(worktreePath)}`,
+          localPath: worktreePath,
+          branchName: null,
+          displayName: worktreePath.split('/').pop() || worktreePath,
+        } satisfies RepoInventoryWorktreeInstance,
+      ]
+    : [];
+  return {
+    groupId: repoInstanceId,
+    repoIdentity: null,
+    displayName: workspace.name,
+    selectedRemote: null,
+    remotes: [],
+    warnings: [],
+    instances: [
+      {
+        repoInstanceId,
+        nodeId: DEFAULT_LOCAL_NODE_ID,
+        localPath: workspace.path,
+        name: workspace.name,
+        isGitRepo: true,
+        defaultBranch: null,
+        currentBranch: null,
+        repoIdentity: null,
+        selectedRemote: null,
+        remotes: [],
+        repoIdentityWarnings: [],
+        worktrees,
+        reportedAt: '',
+      },
+    ],
+    identityDebug: {
+      groupedBy: 'repoInstanceId',
+      repoIdentity: null,
+      instanceCount: 1,
+      nodeIds: [DEFAULT_LOCAL_NODE_ID],
+    },
+  };
+}
+
+function findGroupForPath(
+  groups: AggregatedRepoInventoryGroup[],
+  path: string
+): AggregatedRepoInventoryGroup | undefined {
+  return groups.find((group) =>
+    group.instances.some(
+      (instance) =>
+        instance.localPath === path ||
+        instance.worktrees.some((worktree) => worktree.localPath === path)
+    )
+  );
+}
+
+function labelForRepo(group: AggregatedRepoInventoryGroup): string {
+  return group.repoIdentity
+    ? `${group.displayName} — ${group.repoIdentity}`
+    : `${group.displayName} — unidentified repo`;
+}
+
+function capabilityProblem(
+  capability: NodeCapabilityStatus | undefined,
+  name: string
+): string | null {
+  if (capability === undefined) return `${name} capability unknown`;
+  if (capability === 'available') return null;
+  return `${name} ${capability}`;
+}
+
+function nodeBlockReason(
+  node: HubNodeSummary | null,
+  selectedAgent: AgentType
+): string | null {
+  if (!node) return 'node availability unknown';
+  if (node.status === 'offline') return 'node is offline';
+  if (node.status === 'stale') return 'heartbeat is stale';
+  if (node.status === 'revoked') return 'node is revoked';
+  const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
+  if (shellProblem) return shellProblem;
+  const agentProblem = capabilityProblem(
+    node.capabilities.agents[selectedAgent],
+    selectedAgent
+  );
+  return agentProblem ? `${agentProblem} on ${node.displayName}` : null;
+}
+
+function uniqueInstancesByNode(
+  instances: RepoInventoryRepoInstance[]
+): RepoInventoryRepoInstance[] {
+  const seen = new Set<NodeId>();
+  return instances.filter((instance) => {
+    if (seen.has(instance.nodeId)) return false;
+    seen.add(instance.nodeId);
+    return true;
+  });
+}
+
+function checkoutChoicesFor(
+  instance: RepoInventoryRepoInstance | undefined,
+  disabledReason: string | null
+): EnvironmentCheckoutChoice[] {
+  if (!instance) return [];
+  const disabled = disabledReason ? { disabled: true, reason: disabledReason } : {};
+  return [
+    {
+      value: `${CHECKOUT_ROOT_PREFIX}${instance.repoInstanceId}`,
+      label: `default — ${instance.localPath}`,
+      nodeId: instance.nodeId,
+      repoPath: instance.localPath,
+      worktreePath: null,
+      ...disabled,
+    },
+    ...instance.worktrees.map((worktree) => ({
+      value: `${CHECKOUT_WORKTREE_PREFIX}${worktree.worktreeInstanceId}`,
+      label: `${worktree.branchName ?? worktree.displayName ?? 'worktree'} — ${worktree.localPath}`,
+      nodeId: instance.nodeId,
+      repoPath: instance.localPath,
+      worktreePath: worktree.localPath,
+      ...disabled,
+    })),
+  ];
+}
+
+export function buildEnvironmentPickerModel(
+  input: EnvironmentPickerInput
+): EnvironmentPickerModel {
+  const groups =
+    input.inventory?.groups.length ? input.inventory.groups : [
+      fallbackGroupFor(input.fallbackWorkspace, input.fallbackWorktreePath),
+    ];
+  const selectedGroup =
+    groups.find((group) => group.groupId === input.selectedGroupId) ??
+    findGroupForPath(groups, input.fallbackWorktreePath ?? input.fallbackWorkspace.path) ??
+    groups[0]!;
+  const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
+  if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
+    nodeById.set(DEFAULT_LOCAL_NODE_ID, syntheticLocalNode(input.selectedAgent));
+  }
+  const nodeChoices = uniqueInstancesByNode(selectedGroup.instances).map((instance) => {
+    const node = nodeById.get(instance.nodeId) ?? null;
+    const reason = nodeBlockReason(node, input.selectedAgent);
+    return {
+      value: instance.nodeId,
+      label: node?.displayName ?? instance.nodeId,
+      ...(reason ? { disabled: true, reason } : {}),
+    };
+  });
+  const selectedNodeChoice =
+    nodeChoices.find(
+      (choice) => choice.value === input.selectedNodeId && !choice.disabled
+    ) ?? nodeChoices.find((choice) => !choice.disabled) ?? nodeChoices[0];
+  const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
+  const selectedNodeReason = selectedNodeChoice?.reason ?? null;
+  const selectedInstance = selectedGroup.instances.find(
+    (instance) => instance.nodeId === selectedNodeId
+  );
+  const checkoutChoices = checkoutChoicesFor(selectedInstance, selectedNodeReason);
+  const selectedCheckout =
+    checkoutChoices.find(
+      (choice) => choice.value === input.selectedCheckoutId && !choice.disabled
+    ) ??
+    checkoutChoices.find(
+      (choice) =>
+        !choice.disabled && choice.worktreePath === input.fallbackWorktreePath
+    ) ??
+    checkoutChoices.find(
+      (choice) =>
+        !choice.disabled &&
+        !choice.worktreePath &&
+        choice.repoPath === input.fallbackWorkspace.path
+    ) ??
+    checkoutChoices.find((choice) => !choice.disabled) ??
+    checkoutChoices[0];
+  const resolved = selectedCheckout
+    ? {
+        nodeId: selectedCheckout.nodeId,
+        repoPath: selectedCheckout.repoPath,
+        worktreePath: selectedCheckout.worktreePath,
+      }
+    : {
+        nodeId: DEFAULT_LOCAL_NODE_ID,
+        repoPath: input.fallbackWorkspace.path,
+        worktreePath: input.fallbackWorktreePath,
+      };
+
+  return {
+    showPicker:
+      groups.length > 1 || nodeChoices.length > 1 || checkoutChoices.length > 1,
+    repoChoices: groups.map((group) => ({
+      value: group.groupId,
+      label: labelForRepo(group),
+    })),
+    nodeChoices,
+    checkoutChoices,
+    selectedGroupId: selectedGroup.groupId,
+    selectedNodeId,
+    selectedCheckoutId: selectedCheckout?.value ?? null,
+    selectedNodeReason,
+    resolved,
+  };
+}
+
 interface FormState {
   claudeArgsInput: string;
   selectedAgent: AgentType;
@@ -99,8 +398,7 @@ function defaultForm(): FormState {
 }
 
 async function createSessionFromForm(
-  workspacePath: string,
-  worktreePath: string | null,
+  environment: EnvironmentPickerModel['resolved'],
   form: FormState
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
@@ -108,8 +406,9 @@ async function createSessionFromForm(
     useUiStore.getState().terminalFontSize
   );
   return createAgentSession({
-    repoPath: workspacePath,
-    worktreePath,
+    nodeId: environment.nodeId,
+    repoPath: environment.repoPath,
+    worktreePath: environment.worktreePath,
     type: 'agent',
     mode: form.sessionMode,
     continue: form.continueExisting,
@@ -124,13 +423,23 @@ async function createSessionFromForm(
 interface BodyProps {
   workspaceName: string;
   form: FormState;
+  environmentModel: EnvironmentPickerModel;
   onFormChange: (patch: Partial<FormState>) => void;
+  onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
+}
+
+interface EnvironmentSelection {
+  selectedGroupId: string | null;
+  selectedNodeId: NodeId | null;
+  selectedCheckoutId: string | null;
 }
 
 function CustomizeSessionBody({
   workspaceName,
   form,
+  environmentModel,
   onFormChange,
+  onEnvironmentChange,
 }: BodyProps) {
   const frameworks = useConfigStore((state) => state.frameworks);
   const frameworkOptions =
@@ -171,9 +480,119 @@ function CustomizeSessionBody({
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
       )}
+      {environmentModel.showPicker && (
+        <section
+          className="customize-session-environment-picker"
+          aria-label="environment picker"
+        >
+          <div className="customize-session-environment-copy">
+            choose repo identity, execution node, then node-local checkout.
+            no live cross-host pty migration or automatic filesystem sync.
+          </div>
+          {environmentModel.repoChoices.length > 1 && (
+            <div className="customize-session-dialog-field">
+              <label
+                className="customize-session-dialog-label"
+                htmlFor="cs-repo"
+              >
+                repo identity
+              </label>
+              <select
+                id="cs-repo"
+                className="customize-session-dialog-select"
+                data-track="dialog.customize-session.repo"
+                value={environmentModel.selectedGroupId ?? ''}
+                onChange={(e) =>
+                  onEnvironmentChange({
+                    selectedGroupId: e.currentTarget.value,
+                    selectedNodeId: null,
+                    selectedCheckoutId: null,
+                  })
+                }
+              >
+                {environmentModel.repoChoices.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {environmentModel.nodeChoices.length > 1 && (
+            <div className="customize-session-dialog-field">
+              <label
+                className="customize-session-dialog-label"
+                htmlFor="cs-node"
+              >
+                execution node
+              </label>
+              <select
+                id="cs-node"
+                className="customize-session-dialog-select"
+                data-track="dialog.customize-session.node"
+                value={environmentModel.selectedNodeId}
+                onChange={(e) =>
+                  onEnvironmentChange({
+                    selectedNodeId: e.currentTarget.value,
+                    selectedCheckoutId: null,
+                  })
+                }
+              >
+                {environmentModel.nodeChoices.map((choice) => (
+                  <option
+                    key={choice.value}
+                    value={choice.value}
+                    disabled={choice.disabled}
+                  >
+                    {choice.label}
+                    {choice.reason ? ` — ${choice.reason}` : ''}
+                  </option>
+                ))}
+              </select>
+              {environmentModel.selectedNodeReason && (
+                <div className="customize-session-field-note">
+                  {environmentModel.selectedNodeReason}
+                </div>
+              )}
+            </div>
+          )}
+          {environmentModel.checkoutChoices.length > 1 && (
+            <div className="customize-session-dialog-field">
+              <label
+                className="customize-session-dialog-label"
+                htmlFor="cs-checkout"
+              >
+                node-local checkout
+              </label>
+              <select
+                id="cs-checkout"
+                className="customize-session-dialog-select"
+                data-track="dialog.customize-session.checkout"
+                value={environmentModel.selectedCheckoutId ?? ''}
+                onChange={(e) =>
+                  onEnvironmentChange({
+                    selectedCheckoutId: e.currentTarget.value,
+                  })
+                }
+              >
+                {environmentModel.checkoutChoices.map((choice) => (
+                  <option
+                    key={choice.value}
+                    value={choice.value}
+                    disabled={choice.disabled}
+                  >
+                    {choice.label}
+                    {choice.reason ? ` — ${choice.reason}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </section>
+      )}
       <div className="customize-session-dialog-field">
         <label className="customize-session-dialog-label" htmlFor="cs-agent">
-          Coding agent
+          coding agent
         </label>
         <select
           id="cs-agent"
@@ -247,17 +666,17 @@ function CustomizeSessionBody({
         checked={form.continueExisting}
         onChange={(checked) => onFormChange({ continueExisting: checked })}
       >
-        Continue existing session
+        continue existing session
       </TuiCheckbox>
       <TuiCheckbox
         checked={form.yoloMode}
         onChange={(checked) => onFormChange({ yoloMode: checked })}
       >
-        Yolo mode (skip permission checks)
+        yolo mode (skip permission checks)
       </TuiCheckbox>
       <div className="customize-session-dialog-field">
         <label className="customize-session-dialog-label" htmlFor="cs-args">
-          Extra args (optional)
+          extra args (optional)
         </label>
         <input
           id="cs-args"
@@ -284,7 +703,27 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [form, setForm] = useState<FormState>(defaultForm());
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [inventory, setInventory] =
+      useState<AggregatedRepoInventoryResponse | null>(null);
+    const [nodes, setNodes] = useState<HubNodeSummary[]>([]);
+    const [environmentSelection, setEnvironmentSelection] =
+      useState<EnvironmentSelection>({
+        selectedGroupId: null,
+        selectedNodeId: null,
+        selectedCheckoutId: null,
+      });
     const frameworks = useConfigStore((state) => state.frameworks);
+
+    const environmentModel = buildEnvironmentPickerModel({
+      inventory,
+      nodes,
+      selectedAgent: form.selectedAgent,
+      selectedGroupId: environmentSelection.selectedGroupId,
+      selectedNodeId: environmentSelection.selectedNodeId,
+      selectedCheckoutId: environmentSelection.selectedCheckoutId,
+      fallbackWorkspace: { name: workspaceName, path: workspacePath },
+      fallbackWorktreePath: worktreePath,
+    });
 
     useImperativeHandle(ref, () => ({
       async open(
@@ -294,10 +733,27 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       ) {
         setError(null);
         setForm(defaultForm());
+        setInventory(null);
+        setNodes([]);
+        setEnvironmentSelection({
+          selectedGroupId: null,
+          selectedNodeId: null,
+          selectedCheckoutId: null,
+        });
         setWorkspacePath(workspace.path);
         setWorktreePath(nextWorktreePath ?? null);
         setWorkspaceName(workspace.name);
+        const [inventoryResult, nodesResult] = await Promise.allSettled([
+          fetchRepoInventory(),
+          fetchHubNodes(),
+        ]);
         await useConfigStore.getState().refreshConfig();
+        if (inventoryResult.status === 'fulfilled') {
+          setInventory(inventoryResult.value);
+        }
+        if (nodesResult.status === 'fulfilled') {
+          setNodes(nodesResult.value);
+        }
         const config = useConfigStore.getState();
         const selectedAgent = selectLaunchAgent(
           config.frameworks,
@@ -346,8 +802,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       setCreating(true);
       setError(null);
       const { session, error: submitError } = await createSessionFromForm(
-        workspacePath,
-        worktreePath,
+        environmentModel.resolved,
         form
       );
       try {
@@ -381,6 +836,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           onClick={handleSubmit}
           disabled={
             !workspacePath ||
+            Boolean(environmentModel.selectedNodeReason) ||
             creating ||
             frameworks.some(
               (framework) =>
@@ -411,7 +867,11 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         <CustomizeSessionBody
           workspaceName={workspaceName}
           form={form}
+          environmentModel={environmentModel}
           onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+          onEnvironmentChange={(patch) =>
+            setEnvironmentSelection((selection) => ({ ...selection, ...patch }))
+          }
         />
       </DialogShell>
     );
