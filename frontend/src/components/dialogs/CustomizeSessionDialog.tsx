@@ -1,4 +1,10 @@
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import TuiCheckbox from '../TuiCheckbox.js';
@@ -19,7 +25,10 @@ import type {
   HubNodeSummary,
   NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
-import { DEFAULT_LOCAL_NODE_ID, type NodeId } from '../../../../shared/identity.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  type NodeId,
+} from '../../../../shared/identity.js';
 import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
@@ -147,6 +156,17 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
     protocolVersion: 'local',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: {
+      state: 'trusted',
+      level: 'privileged-local-user',
+      warning: '',
+    },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: 'local',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 8, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
@@ -280,7 +300,9 @@ function checkoutChoicesFor(
   instances: RepoInventoryRepoInstance[],
   disabledReason: string | null
 ): EnvironmentCheckoutChoice[] {
-  const disabled = disabledReason ? { disabled: true, reason: disabledReason } : {};
+  const disabled = disabledReason
+    ? { disabled: true, reason: disabledReason }
+    : {};
   return instances.flatMap((instance) => [
     {
       value: `${CHECKOUT_ROOT_PREFIX}${instance.repoInstanceId}`,
@@ -304,37 +326,49 @@ function checkoutChoicesFor(
 export function buildEnvironmentPickerModel(
   input: EnvironmentPickerInput
 ): EnvironmentPickerModel {
-  const groups =
-    input.inventory?.groups.length ? input.inventory.groups : [
-      fallbackGroupFor(input.fallbackWorkspace, input.fallbackWorktreePath),
-    ];
+  const groups = input.inventory?.groups.length
+    ? input.inventory.groups
+    : [fallbackGroupFor(input.fallbackWorkspace, input.fallbackWorktreePath)];
   const selectedGroup =
     groups.find((group) => group.groupId === input.selectedGroupId) ??
-    findGroupForPath(groups, input.fallbackWorktreePath ?? input.fallbackWorkspace.path) ??
+    findGroupForPath(
+      groups,
+      input.fallbackWorktreePath ?? input.fallbackWorkspace.path
+    ) ??
     groups[0]!;
   const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
   if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
-    nodeById.set(DEFAULT_LOCAL_NODE_ID, syntheticLocalNode(input.selectedAgent));
+    nodeById.set(
+      DEFAULT_LOCAL_NODE_ID,
+      syntheticLocalNode(input.selectedAgent)
+    );
   }
-  const nodeChoices = uniqueInstancesByNode(selectedGroup.instances).map((instance) => {
-    const node = nodeById.get(instance.nodeId) ?? null;
-    const reason = nodeBlockReason(node, input.selectedAgent);
-    return {
-      value: instance.nodeId,
-      label: node?.displayName ?? instance.nodeId,
-      ...(reason ? { disabled: true, reason } : {}),
-    };
-  });
+  const nodeChoices = uniqueInstancesByNode(selectedGroup.instances).map(
+    (instance) => {
+      const node = nodeById.get(instance.nodeId) ?? null;
+      const reason = nodeBlockReason(node, input.selectedAgent);
+      return {
+        value: instance.nodeId,
+        label: node?.displayName ?? instance.nodeId,
+        ...(reason ? { disabled: true, reason } : {}),
+      };
+    }
+  );
   const selectedNodeChoice =
     nodeChoices.find(
       (choice) => choice.value === input.selectedNodeId && !choice.disabled
-    ) ?? nodeChoices.find((choice) => !choice.disabled) ?? nodeChoices[0];
+    ) ??
+    nodeChoices.find((choice) => !choice.disabled) ??
+    nodeChoices[0];
   const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
   const selectedNodeReason = selectedNodeChoice?.reason ?? null;
   const selectedNodeInstances = selectedGroup.instances.filter(
     (instance) => instance.nodeId === selectedNodeId
   );
-  const checkoutChoices = checkoutChoicesFor(selectedNodeInstances, selectedNodeReason);
+  const checkoutChoices = checkoutChoicesFor(
+    selectedNodeInstances,
+    selectedNodeReason
+  );
   const selectedCheckout =
     checkoutChoices.find(
       (choice) => choice.value === input.selectedCheckoutId && !choice.disabled
@@ -490,8 +524,8 @@ function CustomizeSessionBody({
           aria-label="environment picker"
         >
           <div className="customize-session-environment-copy">
-            choose repo identity, execution node, then node-local checkout.
-            no live cross-host pty migration or automatic filesystem sync.
+            choose repo identity, execution node, then node-local checkout. no
+            live cross-host pty migration or automatic filesystem sync.
           </div>
           {environmentModel.repoChoices.length > 1 && (
             <div className="customize-session-dialog-field">
@@ -702,6 +736,7 @@ function CustomizeSessionBody({
 const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
   function CustomizeSessionDialog({ onSessionCreated }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
+    const openRequestIdRef = useRef(0);
     const [workspacePath, setWorkspacePath] = useState('');
     const [worktreePath, setWorktreePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState('');
@@ -750,6 +785,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         nextWorktreePath?: string | null,
         preselectedFramework?: AgentType
       ) {
+        const requestId = ++openRequestIdRef.current;
         setError(null);
         setForm(defaultForm());
         setInventory(null);
@@ -766,7 +802,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           fetchRepoInventory(),
           fetchHubNodes(),
         ]);
+        if (requestId !== openRequestIdRef.current) return;
         await useConfigStore.getState().refreshConfig();
+        if (requestId !== openRequestIdRef.current) return;
         if (inventoryResult.status === 'fulfilled') {
           setInventory(inventoryResult.value);
         }
