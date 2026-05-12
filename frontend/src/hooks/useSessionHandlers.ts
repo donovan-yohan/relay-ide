@@ -27,6 +27,7 @@ import {
   createAgentSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
@@ -65,9 +66,10 @@ export function useSessionHandlers({
   const navigateToSession = useCallback(
     (sessionId: string, _sessionType: string) => {
       useSessionsStore.getState().setActiveSessionId(sessionId);
-      const session = useSessionsStore
-        .getState()
-        .sessions.find((s) => s.id === sessionId);
+      const session = resolveSessionByKey(
+        useSessionsStore.getState().sessions,
+        sessionId
+      );
       if (session) {
         useUiStore.getState().setActiveRepoPath(session.repoPath);
       }
@@ -79,9 +81,11 @@ export function useSessionHandlers({
 
   const handleRenameActiveSession = useCallback(async () => {
     const name = prompt('rename session:');
-    const id = useSessionsStore.getState().activeSessionId;
-    if (name?.trim() && id) {
-      await renameSessionApi(id, name.trim());
+    const state = useSessionsStore.getState();
+    const id = state.activeSessionId;
+    const session = id ? resolveSessionByKey(state.sessions, id) : undefined;
+    if (name?.trim() && session) {
+      await renameSessionApi(session.id, name.trim());
     }
   }, []);
 
@@ -89,9 +93,7 @@ export function useSessionHandlers({
     (id: string) => {
       setAnalyticsView(null);
       useSessionsStore.getState().setActiveSessionId(id);
-      const session = useSessionsStore
-        .getState()
-        .sessions.find((s) => s.id === id);
+      const session = resolveSessionByKey(useSessionsStore.getState().sessions, id);
       if (session) {
         useSessionsStore
           .getState()
@@ -242,11 +244,10 @@ export function useSessionHandlers({
           .getState()
           .repos.find((w) => w.path === currentRepoPath)
       : undefined;
-    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
+    const sessionsState = useSessionsStore.getState();
+    const currentActiveSessionId = sessionsState.activeSessionId;
     const currentActiveSession = currentActiveSessionId
-      ? useSessionsStore
-          .getState()
-          .sessions.find((s) => s.id === currentActiveSessionId)
+      ? resolveSessionByKey(sessionsState.sessions, currentActiveSessionId)
       : undefined;
     if (currentActiveWorkspace) {
       customizeDialogRef.current?.open(
@@ -573,17 +574,16 @@ export function useSessionHandlers({
   );
 
   const handleArchive = useCallback(async () => {
-    const sessionId = useSessionsStore.getState().activeSessionId;
+    const sessionState = useSessionsStore.getState();
+    const sessionId = sessionState.activeSessionId;
     if (!sessionId) return;
-    const session = useSessionsStore
-      .getState()
-      .sessions.find((s) => s.id === sessionId);
+    const session = resolveSessionByKey(sessionState.sessions, sessionId);
     if (!session) return;
 
     // Kill the session. Archive still proceeds to worktree cleanup if the
     // session was already gone or the backend close fails.
     try {
-      await killSession(sessionId);
+      await killSession(session.id);
     } catch (error) {
       logger.warn('Failed to close session before archive:', error);
     }
@@ -814,16 +814,21 @@ export function useSessionHandlers({
   }, []);
 
   const handleCloseSession = useCallback((sessionId: string) => {
+    const state = useSessionsStore.getState();
+    const targetSession = resolveSessionByKey(state.sessions, sessionId);
+    const localSessionId = targetSession?.id ?? sessionId;
     // Kill session via API, then refresh
-    fetch(`/sessions/${sessionId}`, { method: 'DELETE' }).then(() =>
+    fetch(`/sessions/${localSessionId}`, { method: 'DELETE' }).then(() =>
       useSessionsStore.getState().refreshAll()
     );
-    const currentActiveSessionId = useSessionsStore.getState().activeSessionId;
-    if (currentActiveSessionId === sessionId) {
+    const currentActiveSessionId = state.activeSessionId;
+    const isClosingActive =
+      currentActiveSessionId !== null &&
+      targetSession !== undefined &&
+      resolveSessionByKey(state.sessions, currentActiveSessionId) === targetSession;
+    if (isClosingActive) {
       // Select next available session in this workspace
-      const currentActiveSession = useSessionsStore
-        .getState()
-        .sessions.find((s) => s.id === currentActiveSessionId);
+      const currentActiveSession = targetSession;
       const currentRepoPath = useUiStore.getState().activeRepoPath;
       const allWs = currentRepoPath
         ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
@@ -831,7 +836,7 @@ export function useSessionHandlers({
       const sameDir = currentActiveSession
         ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
         : allWs;
-      const remaining = sameDir.filter((s) => s.id !== sessionId);
+      const remaining = sameDir.filter((s) => s !== targetSession);
       useSessionsStore.getState().setActiveSessionId(remaining[0]?.id ?? null);
     }
   }, []);

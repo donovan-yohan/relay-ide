@@ -59,6 +59,44 @@ test('fetchSessionTelemetry handles plain object-map responses', async () => {
   ]);
 });
 
+test('fetchSessionTelemetry handles globally scoped object-map responses', async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        sessions: {
+          'node-a:same-local-id': {
+            model: 'Claude Sonnet 4',
+            totalInputTokens: 10,
+            totalOutputTokens: 20,
+            totalCacheRead: 30,
+            totalCacheWrite: 40,
+            contextPercent: 12,
+            contextWindowSize: 200000,
+            costUsd: 0.5,
+            turnCount: 1,
+            subagentCount: 2,
+            source: 'statusLine',
+            updatedAt: '2026-04-01T00:00:00.000Z',
+          },
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )) as typeof globalThis.fetch;
+
+  const result = await fetchSessionTelemetry();
+
+  expect(result[0]).toMatchObject({
+    sessionId: 'same-local-id',
+    localSessionId: 'same-local-id',
+    nodeId: 'node-a',
+    globalSessionId: 'node-a:same-local-id',
+    totalInputTokens: 10,
+  });
+});
+
 test('fetchTelemetrySetupStatus returns installed flag from the server response', async () => {
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ installed: true }), {

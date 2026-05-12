@@ -1,6 +1,7 @@
 import type { IPty } from 'node-pty';
 import type {
   GlobalSessionId,
+  LocalSessionId,
   NodeId,
   RepoIdentity,
   RepoInstanceId,
@@ -362,7 +363,14 @@ export interface SessionSummary {
 }
 
 export interface TelemetryData {
+  /** Node-local session id. Kept for legacy single-node consumers. */
   sessionId: string;
+  /** Node-local session id when a scoped payload carries both local and global ids. */
+  localSessionId?: LocalSessionId;
+  /** Execution node that owns this telemetry sample. */
+  nodeId?: NodeId;
+  /** Node-scoped session id for collision-free telemetry keying. */
+  globalSessionId?: GlobalSessionId;
   model: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;

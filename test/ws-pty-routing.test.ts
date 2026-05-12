@@ -3,6 +3,11 @@ import type { Terminal } from '@xterm/xterm';
 
 // We need to mock store imports BEFORE importing ws.ts
 const sessionsStore = {
+  sessions: [] as Array<{
+    id: string;
+    nodeId?: string;
+    globalSessionId?: string;
+  }>,
   activeSessionId: null as string | null,
   beginPtyReconnect: vi.fn(),
   clearPtyReconnect: vi.fn(),
@@ -64,6 +69,7 @@ class FakeWebSocket {
 
 beforeEach(() => {
   sockets.length = 0;
+  sessionsStore.sessions = [];
   sessionsStore.activeSessionId = null;
   sessionsStore.beginPtyReconnect.mockClear();
   sessionsStore.clearPtyReconnect.mockClear();
@@ -181,6 +187,54 @@ describe('per-session PTY routing', () => {
     expect(sockets[0]!.send).toHaveBeenCalledWith('to-active');
   });
 
+  it('no-arg sendPtyData resolves a scoped activeSessionId to its PTY socket', async () => {
+    const ws = await importWs();
+    sessionsStore.sessions = [
+      {
+        id: 'local-session',
+        nodeId: 'node-a',
+        globalSessionId: 'node-a:local-session',
+      },
+    ];
+    ws.connectPtySocket('local-session', fakeTerm(), vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+    sessionsStore.activeSessionId = 'node-a:local-session';
+    ws.sendPtyData('to-scoped-active');
+    expect(sockets[0]!.send).toHaveBeenCalledWith('to-scoped-active');
+  });
+
+  it('keeps duplicate local ids in separate scoped PTY connection slots', async () => {
+    const ws = await importWs();
+    sessionsStore.sessions = [
+      {
+        id: 'same-local-id',
+        nodeId: 'node-a',
+        globalSessionId: 'node-a:same-local-id',
+      },
+      {
+        id: 'same-local-id',
+        nodeId: 'node-b',
+        globalSessionId: 'node-b:same-local-id',
+      },
+    ];
+
+    ws.connectPtySocket('node-a:same-local-id', fakeTerm(), vi.fn(), vi.fn());
+    ws.connectPtySocket('node-b:same-local-id', fakeTerm(), vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+    sockets[1]!.__triggerOpen();
+
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0]!.url).toContain('/ws/same-local-id');
+    expect(sockets[1]!.url).toContain('/ws/same-local-id');
+    uiStore.sendToTargetSessionId = 'node-b:same-local-id';
+    ws.sendPtyData('to-node-b');
+
+    expect(sockets[1]!.send).toHaveBeenCalledWith('to-node-b');
+    expect(sockets[0]!.send).not.toHaveBeenCalledWith('to-node-b');
+    expect(ws.isPtyConnected('node-a:same-local-id')).toBe(true);
+    expect(ws.isPtyConnected('node-b:same-local-id')).toBe(true);
+  });
+
   it('no-arg sendPtyData is a no-op when no active target', async () => {
     const ws = await importWs();
     ws.connectPtySocket('sess-a', fakeTerm(), vi.fn(), vi.fn());
@@ -222,7 +276,10 @@ describe('per-session PTY routing', () => {
 
     ws.connectEventSocket(vi.fn());
     sockets[2]!.onmessage?.({
-      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+      data: JSON.stringify({
+        type: 'server-restarting',
+        reason: 'dev-restart',
+      }),
     } as MessageEvent);
 
     expect(sessionsStore.beginPtyReconnect).toHaveBeenCalledTimes(2);
@@ -250,7 +307,10 @@ describe('per-session PTY routing', () => {
 
     ws.connectEventSocket(vi.fn());
     sockets[1]!.onmessage?.({
-      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+      data: JSON.stringify({
+        type: 'server-restarting',
+        reason: 'dev-restart',
+      }),
     } as MessageEvent);
     sockets[0]!.readyState = FakeWebSocket.CLOSED;
     sockets[0]!.onclose?.({ code: 1000 } as CloseEvent);
@@ -280,7 +340,10 @@ describe('per-session PTY routing', () => {
     const ws = await importWs();
     ws.connectEventSocket(vi.fn(), vi.fn(), onAuthRequired);
     sockets[0]!.onmessage?.({
-      data: JSON.stringify({ type: 'server-restarting', reason: 'dev-restart' }),
+      data: JSON.stringify({
+        type: 'server-restarting',
+        reason: 'dev-restart',
+      }),
     } as MessageEvent);
     sockets[0]!.readyState = FakeWebSocket.CLOSED;
     sockets[0]!.onclose?.({ code: 1006 } as CloseEvent);

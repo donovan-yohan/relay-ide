@@ -28,7 +28,7 @@ export function UtilityRailStatsPanel({
   );
   const aggregate = summarizeSessionSetTelemetry(workspaceSessions);
   const activeTelemetry = activeSession
-    ? summarizeSessionTelemetry(activeSession.id)
+    ? summarizeSessionTelemetry(activeSession)
     : null;
 
   return (

@@ -12,6 +12,7 @@ import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type { LocalRelayNode } from './local-node.js';
 
 const logger = createLogger('ws');
 
@@ -106,13 +107,22 @@ function parseApprovalDecision(
   if (kind === 'cancel') return { kind: 'cancel' };
   if (kind === 'accept') {
     const scope = d['scope'];
-    const result: Extract<AgentApprovalDecisionV2, { kind: 'accept' }> = { kind: 'accept' };
-    if (scope === 'once' || scope === 'session' || scope === 'turn' || scope === 'permanent') {
+    const result: Extract<AgentApprovalDecisionV2, { kind: 'accept' }> = {
+      kind: 'accept',
+    };
+    if (
+      scope === 'once' ||
+      scope === 'session' ||
+      scope === 'turn' ||
+      scope === 'permanent'
+    ) {
       result.scope = scope;
     }
     const amendments = d['amendments'];
     if (Array.isArray(amendments)) {
-      result.amendments = amendments as AgentApprovalDecisionV2 extends { amendments?: infer A }
+      result.amendments = amendments as AgentApprovalDecisionV2 extends {
+        amendments?: infer A;
+      }
         ? NonNullable<A>
         : never;
     }
@@ -265,7 +275,8 @@ function setupWebSocket(
   authenticatedTokens: Set<string>,
   watcher: WorktreeWatcher | null,
   configPath?: string,
-  noPinMode = false
+  noPinMode = false,
+  localNode?: LocalRelayNode
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -288,8 +299,36 @@ function setupWebSocket(
     }
   }
 
+  function scopedEventPayload(
+    data: Record<string, unknown> | undefined
+  ): Record<string, unknown> | undefined {
+    if (!localNode) return data;
+
+    const payload: Record<string, unknown> = {
+      ...(data ?? {}),
+      ...localNode.authority(),
+    };
+    const sessionId = payload['sessionId'];
+    if (typeof sessionId === 'string') {
+      Object.assign(payload, localNode.sessionEventScope(sessionId));
+    }
+
+    const workspacePath = payload['workspacePath'];
+    if (typeof workspacePath === 'string') {
+      const fileScopeInput = {
+        workspacePath,
+        ...(typeof payload['worktreePath'] === 'string'
+          ? { worktreePath: payload['worktreePath'] }
+          : {}),
+      };
+      Object.assign(payload, localNode.fileEventScope(fileScopeInput));
+    }
+
+    return payload;
+  }
+
   function broadcastEvent(type: string, data?: Record<string, unknown>): void {
-    const msg = JSON.stringify({ type, ...data });
+    const msg = JSON.stringify({ type, ...scopedEventPayload(data) });
     for (const client of eventClients) {
       if (client.readyState === client.OPEN) {
         client.send(msg);

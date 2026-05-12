@@ -21,6 +21,16 @@ import {
 } from '../state/sidebar-items.js';
 import { shouldMarkUnread } from '../state/unread-logic.js';
 import { useUnreadStore } from './unread.js';
+import {
+  isLiveSessionKey,
+  resolveSessionByKey,
+  resolveSessionKey,
+  scopedSessionKey,
+} from '../session-keys.js';
+import {
+  sessionEventMatches,
+  type SessionEventScope,
+} from '../../../../shared/node-boundary.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -183,20 +193,27 @@ export interface SessionsState {
   renameSession: (
     sessionId: string,
     branchName: string,
-    displayName: string
+    displayName: string,
+    scope?: SessionEventScope
   ) => void;
-  handleBranchChanged: (sessionId: string, branch: string) => void;
+  handleBranchChanged: (
+    sessionId: string,
+    branch: string,
+    scope?: SessionEventScope
+  ) => void;
   handleActivityChanged: (
     sessionId: string,
     timestamp?: string,
-    currentActivity?: CurrentActivity | null
+    currentActivity?: CurrentActivity | null,
+    scope?: SessionEventScope
   ) => void;
   handleBackendStateChanged: (
     sessionId: string,
     backendState: BackendDisplayState,
-    permissionType?: 'approval' | 'question'
+    permissionType?: 'approval' | 'question',
+    scope?: SessionEventScope
   ) => void;
-  handleUserViewed: (sessionId: string) => void;
+  handleUserViewed: (sessionId: string, scope?: SessionEventScope) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
   initSessionNotification: (sessionId: string, defaultEnabled: boolean) => void;
   getNotificationSessionIds: () => string[];
@@ -242,6 +259,85 @@ function visibleRepoPaths(
   return Array.from(paths);
 }
 
+function sessionMatchesEventScope(
+  session: SessionSummary,
+  sessionId: string,
+  scope?: SessionEventScope
+): boolean {
+  return sessionEventMatches(session, {
+    sessionId,
+    ...(scope ?? {}),
+  });
+}
+
+function sessionsShareScopedIdentity(
+  left: SessionSummary,
+  right: SessionSummary
+): boolean {
+  if (left.globalSessionId && right.globalSessionId) {
+    return left.globalSessionId === right.globalSessionId;
+  }
+
+  if (left.nodeId && right.nodeId) {
+    return left.nodeId === right.nodeId && left.id === right.id;
+  }
+
+  if (left.globalSessionId || right.globalSessionId || left.nodeId || right.nodeId) {
+    return false;
+  }
+
+  return left.id === right.id;
+}
+
+function isLegacyLocalSessionIdUnambiguous(
+  sessions: SessionSummary[],
+  sessionId: string
+): boolean {
+  const matchingNodes = new Set<string>();
+  let matches = 0;
+  for (const session of sessions) {
+    if (session.id !== sessionId) continue;
+    matches += 1;
+    if (session.nodeId) matchingNodes.add(session.nodeId);
+  }
+  return matches <= 1 || matchingNodes.size <= 1;
+}
+
+function storedSessionIdMatchesSession(
+  session: SessionSummary,
+  storedId: string,
+  sessions: SessionSummary[]
+): boolean {
+  if (
+    (session.globalSessionId || session.nodeId) &&
+    storedId === scopedSessionKey(session)
+  ) {
+    return true;
+  }
+
+  return (
+    session.id === storedId && isLegacyLocalSessionIdUnambiguous(sessions, storedId)
+  );
+}
+
+function notificationEnabledForSession(
+  session: SessionSummary,
+  notificationSessions: Record<string, boolean>,
+  sessions: SessionSummary[]
+): boolean {
+  if (
+    (session.globalSessionId || session.nodeId) &&
+    notificationSessions[scopedSessionKey(session)]
+  ) {
+    return true;
+  }
+
+  return (
+    notificationSessions[session.id] === true &&
+    isLegacyLocalSessionIdUnambiguous(sessions, session.id)
+  );
+}
+
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
   sessions: [],
   worktrees: [],
@@ -258,12 +354,14 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   backendConnectionStatus: 'connected',
 
   setActiveSessionId: (id) => {
-    saveActiveSessionId(id);
-    set({ activeSessionId: id });
+    const key = id === null ? null : resolveSessionKey(get().sessions, id);
+    saveActiveSessionId(key);
+    set({ activeSessionId: key });
   },
 
   rememberSessionForWorkspace: (workspacePath, sessionId) => {
-    const next = { ...get().workspaceLastSession, [workspacePath]: sessionId };
+    const key = resolveSessionKey(get().sessions, sessionId);
+    const next = { ...get().workspaceLastSession, [workspacePath]: key };
     persistWorkspaceSessions(next);
     set({ workspaceLastSession: next });
   },
@@ -272,14 +370,14 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     const { workspaceLastSession, sessions } = get();
     const id = workspaceLastSession[workspacePath];
     if (!id) return null;
-    if (!sessions.some((s) => s.id === id)) {
+    if (!isLiveSessionKey(sessions, id)) {
       const next = { ...workspaceLastSession };
       delete next[workspacePath];
       persistWorkspaceSessions(next);
       set({ workspaceLastSession: next });
       return null;
     }
-    return id;
+    return resolveSessionKey(sessions, id);
   },
 
   enrichSidebarBranches: async () => {
@@ -296,7 +394,9 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   ensureFreshAll: async (maxAgeMs = DEFAULT_ENRICHMENT_TTL_MS) => {
     const repos = visibleRepoPaths(get());
-    await Promise.all(repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs)));
+    await Promise.all(
+      repos.map((repoPath) => get().ensureFresh(repoPath, maxAgeMs))
+    );
   },
 
   forceRefresh: async (repoPath, source = 'manual') => {
@@ -385,17 +485,28 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
         wgResult.reason
       );
 
-    const activeIds = new Set(sessions.map((s) => s.id));
+    const hasSessionIdentity = (id: string): boolean =>
+      sessions.some((session) =>
+        storedSessionIdMatchesSession(session, id, sessions)
+      );
 
-    if (activeSessionId !== null && !activeIds.has(activeSessionId)) {
-      activeSessionId = null;
-      saveActiveSessionId(null);
+    if (activeSessionId !== null) {
+      if (!hasSessionIdentity(activeSessionId)) {
+        activeSessionId = null;
+        saveActiveSessionId(null);
+      } else {
+        const resolved = resolveSessionKey(sessions, activeSessionId);
+        if (resolved !== activeSessionId) {
+          activeSessionId = resolved;
+          saveActiveSessionId(resolved);
+        }
+      }
     }
 
     let notifPruned = false;
     notificationSessions = { ...notificationSessions };
     for (const id of Object.keys(notificationSessions)) {
-      if (!activeIds.has(id)) {
+      if (!hasSessionIdentity(id)) {
         delete notificationSessions[id];
         notifPruned = true;
       }
@@ -405,9 +516,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     let wsPruned = false;
     workspaceLastSession = { ...workspaceLastSession };
     for (const [path, id] of Object.entries(workspaceLastSession)) {
-      if (!activeIds.has(id)) {
+      if (!hasSessionIdentity(id)) {
         delete workspaceLastSession[path];
         wsPruned = true;
+      } else {
+        const resolved = resolveSessionKey(sessions, id);
+        if (resolved !== id) {
+          workspaceLastSession[path] = resolved;
+          wsPruned = true;
+        }
       }
     }
     if (wsPruned) persistWorkspaceSessions(workspaceLastSession);
@@ -457,60 +574,78 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     return [...directSessions, ...repoSessions];
   },
 
-  renameSession: (sessionId, branchName, displayName) => {
+  renameSession: (sessionId, branchName, displayName, scope) => {
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, branchName, displayName } : s
+        sessionMatchesEventScope(s, sessionId, scope)
+          ? { ...s, branchName, displayName }
+          : s
       ),
       sidebarItems: state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        if (
+          !item.sessions.some((s) =>
+            sessionMatchesEventScope(s, sessionId, scope)
+          )
+        )
+          return item;
         return {
           ...item,
           branchName,
           displayName,
           sessions: item.sessions.map((s) =>
-            s.id === sessionId ? { ...s, branchName, displayName } : s
+            sessionMatchesEventScope(s, sessionId, scope)
+              ? { ...s, branchName, displayName }
+              : s
           ),
         };
       }),
     }));
   },
 
-  handleBranchChanged: (sessionId, branch) => {
+  handleBranchChanged: (sessionId, branch, scope) => {
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, branchName: branch } : s
+        sessionMatchesEventScope(s, sessionId, scope)
+          ? { ...s, branchName: branch }
+          : s
       ),
       sidebarItems: state.sidebarItems.map((item) =>
-        item.sessions.some((s) => s.id === sessionId)
+        item.sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
           ? { ...item, branchName: branch }
           : item
       ),
     }));
-    if (!get().sessions.some((s) => s.id === sessionId)) {
+    if (
+      !get().sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
+    ) {
       logger.debug('handleBranchChanged: session not found', sessionId);
     }
   },
 
-  handleActivityChanged: (sessionId, timestamp, currentActivity) => {
+  handleActivityChanged: (sessionId, timestamp, currentActivity, scope) => {
     const now = timestamp || new Date().toISOString();
     set((state) => ({
       sessions: state.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+        if (!sessionMatchesEventScope(s, sessionId, scope)) return s;
         const updated = { ...s, lastActivity: now };
         if (currentActivity !== undefined)
           updated.currentActivity = currentActivity ?? undefined;
         return updated;
       }),
       sidebarItems: state.sidebarItems.map((item) =>
-        item.sessions.some((s) => s.id === sessionId)
+        item.sessions.some((s) => sessionMatchesEventScope(s, sessionId, scope))
           ? { ...item, lastActivity: now }
           : item
       ),
     }));
   },
 
-  handleBackendStateChanged: (sessionId, backendState, permissionType) => {
+  handleBackendStateChanged: (
+    sessionId,
+    backendState,
+    permissionType,
+    scope
+  ) => {
     set((state) => {
       const agentStateMap: Record<
         BackendDisplayState,
@@ -523,7 +658,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
         initializing: 'initializing',
       };
       const sessions = state.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+        if (!sessionMatchesEventScope(s, sessionId, scope)) return s;
         return {
           ...s,
           idle: backendState === 'idle',
@@ -533,10 +668,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
       const { activeSessionId, notificationSessions } = state;
       const sidebarItems = state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
+        if (
+          !item.sessions.some((s) =>
+            sessionMatchesEventScope(s, sessionId, scope)
+          )
+        )
+          return item;
 
         const updatedSessions = sessions.filter((s) =>
-          item.sessions.some((is) => is.id === s.id)
+          item.sessions.some((is) => sessionsShareScopedIdentity(is, s))
         );
         const aggregateState = deriveBackendState(updatedSessions);
         if (aggregateState === item.lastKnownBackendState) return item;
@@ -557,21 +697,39 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
         let isUnread = item.isUnread;
         if (newDisplayState !== oldDisplayState) {
-          const isViewing = item.sessions.some((s) => s.id === activeSessionId);
+          const isViewing =
+            activeSessionId !== null &&
+            item.sessions.some((s) =>
+              storedSessionIdMatchesSession(s, activeSessionId, state.sessions)
+            );
           if (isViewing) {
             useUnreadStore.getState().markRead(item.id);
             isUnread = false;
-          } else if (shouldMarkUnread(oldDisplayState, newDisplayState, false)) {
+          } else if (
+            shouldMarkUnread(oldDisplayState, newDisplayState, false)
+          ) {
             useUnreadStore.getState().markUnread(item.id);
             isUnread = true;
           }
           if (shouldNotify(oldDisplayState, newDisplayState)) {
             const notifySession =
-              item.sessions.find((s) => s.id === sessionId) ??
-              item.sessions.find((s) => notificationSessions[s.id]);
+              item.sessions.find((s) =>
+                sessionMatchesEventScope(s, sessionId, scope)
+              ) ??
+              item.sessions.find((s) =>
+                notificationEnabledForSession(
+                  s,
+                  notificationSessions,
+                  state.sessions
+                )
+              );
             if (
               notifySession &&
-              notificationSessions[notifySession.id] &&
+              notificationEnabledForSession(
+                notifySession,
+                notificationSessions,
+                state.sessions
+              ) &&
               shouldFireNotification()
             ) {
               fireNotification(notifySession);
@@ -591,32 +749,42 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     });
   },
 
-  handleUserViewed: (sessionId) => {
-    set((state) => ({
-      sidebarItems: state.sidebarItems.map((item) => {
-        if (!item.sessions.some((s) => s.id === sessionId)) return item;
-        useUnreadStore.getState().markRead(item.id);
-        return {
-          ...item,
-          displayState: transitionDisplayState(item.displayState, {
-            type: 'user-viewed',
-          }),
-          isUnread: false,
-        };
-      }),
-    }));
+  handleUserViewed: (sessionId, scope) => {
+    set((state) => {
+      const viewedSession = resolveSessionByKey(state.sessions, sessionId);
+      const matchesViewedSession = (session: SessionSummary): boolean =>
+        viewedSession
+          ? sessionsShareScopedIdentity(session, viewedSession)
+          : sessionMatchesEventScope(session, sessionId, scope);
+
+      return {
+        sidebarItems: state.sidebarItems.map((item) => {
+          if (!item.sessions.some(matchesViewedSession)) return item;
+          useUnreadStore.getState().markRead(item.id);
+          return {
+            ...item,
+            displayState: transitionDisplayState(item.displayState, {
+              type: 'user-viewed',
+            }),
+            isUnread: false,
+          };
+        }),
+      };
+    });
   },
 
   setNotificationEnabled: (sessionId, enabled) => {
-    const next = { ...get().notificationSessions, [sessionId]: enabled };
+    const key = resolveSessionKey(get().sessions, sessionId);
+    const next = { ...get().notificationSessions, [key]: enabled };
     saveNotificationPrefs(next);
     set({ notificationSessions: next });
   },
 
   initSessionNotification: (sessionId, defaultEnabled) => {
     const { notificationSessions } = get();
-    if (!(sessionId in notificationSessions)) {
-      const next = { ...notificationSessions, [sessionId]: defaultEnabled };
+    const key = resolveSessionKey(get().sessions, sessionId);
+    if (!(key in notificationSessions)) {
+      const next = { ...notificationSessions, [key]: defaultEnabled };
       saveNotificationPrefs(next);
       set({ notificationSessions: next });
     }

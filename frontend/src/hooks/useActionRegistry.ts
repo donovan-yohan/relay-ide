@@ -91,6 +91,10 @@ import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
 import { createAgentSession } from '../lib/session-utils.js';
+import {
+  resolveSessionByKey,
+  scopedSessionKey,
+} from '../lib/session-keys.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
@@ -194,8 +198,12 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: async () => {
           const id = useSessionsStore.getState().activeSessionId;
           if (id) {
+            const session = resolveSessionByKey(
+              useSessionsStore.getState().sessions,
+              id
+            );
             try {
-              await killSession(id);
+              await killSession(session?.id ?? id);
             } catch (err) {
               logger.error('Failed to kill session', err);
             }
@@ -252,9 +260,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           const currentActiveSessionId =
             useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+            ? resolveSessionByKey(
+                useSessionsStore.getState().sessions,
+                currentActiveSessionId
+              )
             : undefined;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const allWs = currentRepoPath
@@ -338,7 +347,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: () => {
           const state = useSessionsStore.getState();
           const currentActiveSession = state.activeSessionId
-            ? state.sessions.find((s) => s.id === state.activeSessionId)
+            ? resolveSessionByKey(state.sessions, state.activeSessionId)
             : undefined;
           const wt = state.worktrees.find(
             (w) => w.path === currentActiveSession?.worktreePath
@@ -375,9 +384,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             useSessionsStore.getState().activeSessionId;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+            ? resolveSessionByKey(
+                useSessionsStore.getState().sessions,
+                currentActiveSessionId
+              )
             : undefined;
           const allWs = currentRepoPath
             ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
@@ -392,11 +402,11 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           );
           if (wsSessions.length === 0) return;
           const idx = wsSessions.findIndex(
-            (s) => s.id === currentActiveSessionId
+            (s) => scopedSessionKey(s) === currentActiveSessionId
           );
           const prev =
             idx <= 0 ? wsSessions[wsSessions.length - 1] : wsSessions[idx - 1];
-          if (prev) handleSelectSession(prev.id);
+          if (prev) handleSelectSession(scopedSessionKey(prev));
         },
       },
       {
@@ -406,9 +416,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             useSessionsStore.getState().activeSessionId;
           const currentRepoPath = useUiStore.getState().activeRepoPath;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+            ? resolveSessionByKey(
+                useSessionsStore.getState().sessions,
+                currentActiveSessionId
+              )
             : undefined;
           const allWs = currentRepoPath
             ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
@@ -423,13 +434,13 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           );
           if (wsSessions.length === 0) return;
           const idx = wsSessions.findIndex(
-            (s) => s.id === currentActiveSessionId
+            (s) => scopedSessionKey(s) === currentActiveSessionId
           );
           const next =
             idx === -1 || idx === wsSessions.length - 1
               ? wsSessions[0]
               : wsSessions[idx + 1];
-          if (next) handleSelectSession(next.id);
+          if (next) handleSelectSession(scopedSessionKey(next));
         },
       },
       {
@@ -451,9 +462,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           const currentActiveSessionId =
             useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+            ? resolveSessionByKey(
+                useSessionsStore.getState().sessions,
+                currentActiveSessionId
+              )
             : undefined;
           const ws =
             currentActiveSession?.worktreePath ??
@@ -477,9 +489,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           const currentActiveSessionId =
             useSessionsStore.getState().activeSessionId;
           const currentActiveSession = currentActiveSessionId
-            ? useSessionsStore
-                .getState()
-                .sessions.find((s) => s.id === currentActiveSessionId)
+            ? resolveSessionByKey(
+                useSessionsStore.getState().sessions,
+                currentActiveSessionId
+              )
             : undefined;
           const ws =
             currentActiveSession?.worktreePath ??
@@ -520,9 +533,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             ? state.repos.find((repo) => repo.path === currentRepoPath)
             : undefined;
           const activeSession = state.activeSessionId
-            ? state.sessions.find(
-                (session) => session.id === state.activeSessionId
-              )
+            ? resolveSessionByKey(state.sessions, state.activeSessionId)
             : undefined;
 
           if (!workspace) return;

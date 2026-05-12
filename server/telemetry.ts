@@ -17,6 +17,7 @@ import './adapters/codex-telemetry.js';
 // Side-effect import: registers the OpenCode adapter in the adapter registry
 import './adapters/opencode-telemetry.js';
 import { createLogger } from './logger.js';
+import { createGlobalSessionId } from '../shared/identity.js';
 
 const logger = createLogger('telemetry');
 
@@ -48,7 +49,25 @@ function pendingFilePath(configDir: string): string {
 }
 
 function telemetryToObject(): Record<string, TelemetryData> {
-  return Object.fromEntries(sessionTelemetry.entries());
+  const activeSessionsById = new Map(
+    (activeDeps?.getActiveSessions() ?? []).map((session) => [session.id, session])
+  );
+  const result: Record<string, TelemetryData> = {};
+  for (const [sessionId, telemetry] of Array.from(sessionTelemetry.entries())) {
+    const session = activeSessionsById.get(sessionId);
+    const globalSessionId =
+      session?.globalSessionId ??
+      (session?.nodeId ? createGlobalSessionId(session.nodeId, sessionId) : undefined);
+    const telemetryKey = globalSessionId ?? sessionId;
+    result[telemetryKey] = {
+      ...telemetry,
+      sessionId,
+      ...(globalSessionId || session?.nodeId ? { localSessionId: sessionId } : {}),
+      ...(session?.nodeId ? { nodeId: session.nodeId } : {}),
+      ...(globalSessionId ? { globalSessionId } : {}),
+    };
+  }
+  return result;
 }
 
 function sameTelemetry(

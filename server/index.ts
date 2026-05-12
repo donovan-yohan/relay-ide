@@ -33,6 +33,7 @@ import type { CreateResult } from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
+import { createLocalRelayNode } from './local-node.js';
 import {
   WorktreeWatcher,
   BranchWatcher,
@@ -133,6 +134,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
+const localRelayNode = createLocalRelayNode();
 
 // When run via CLI bin, config lives in ~/.config/relay-ide/
 // When run directly (development), fall back to local config.json
@@ -680,7 +682,7 @@ function createTerminalSessionRecord(
 ): CreateResult {
   const shell = process.env.SHELL || '/bin/sh';
   const displayName = sessions.nextTerminalName();
-  return sessions.create({
+  return localRelayNode.sessions.create({
     type: 'terminal',
     agent: 'claude' as AgentType,
     repoName: params.repoName,
@@ -699,7 +701,7 @@ function createTerminalSessionRecord(
 
 /** Creates an agent session record and writes worktree metadata if applicable. */
 function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
-  const session = sessions.create({
+  const session = localRelayNode.sessions.create({
     type: 'agent',
     agent: params.resolvedAgent,
     repoName: params.repoName,
@@ -740,7 +742,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
 }
 
 function activePtySessionCount(): number {
-  return countActivePtySessions(sessions.list());
+  return countActivePtySessions(localRelayNode.sessions.list());
 }
 
 function sendPtyCapacityError(
@@ -1137,7 +1139,8 @@ async function main(): Promise<void> {
     authenticatedTokens,
     watcher,
     CONFIG_PATH,
-    process.env.NO_PIN === '1'
+    process.env.NO_PIN === '1',
+    localRelayNode
   );
 
   const browserScopedToken = generateScopedToken();
@@ -1182,11 +1185,11 @@ async function main(): Promise<void> {
 
   // Watch .git/HEAD files for branch changes and update active sessions
   const branchWatcher = new BranchWatcher((cwdPath, newBranch) => {
-    for (const session of sessions.list()) {
+    for (const session of localRelayNode.sessions.list()) {
       // Match by worktreePath or repoPath — session.cwd can drift to subdirectories
       const groupPath = session.worktreePath ?? session.repoPath;
       if (groupPath === cwdPath) {
-        const raw = sessions.get(session.id);
+        const raw = localRelayNode.sessions.get(session.id);
         if (raw) {
           raw.branchName = newBranch;
           broadcastEvent('session-renamed', {
@@ -1281,7 +1284,7 @@ async function main(): Promise<void> {
       configPath: CONFIG_PATH,
       getConfig,
       getSessions: () =>
-        sessions.list().map((s) => ({
+        localRelayNode.sessions.list().map((s) => ({
           id: s.id,
           worktreePath: s.worktreePath ?? s.repoPath,
         })),
@@ -1316,7 +1319,7 @@ async function main(): Promise<void> {
     configPath: CONFIG_PATH,
     getActiveBranchNames: () => {
       const map = new Map<string, Set<string>>();
-      for (const s of sessions.list()) {
+      for (const s of localRelayNode.sessions.list()) {
         if (!s.branchName) continue;
         // Use repoPath so all sessions (main worktree and sub-worktrees) group correctly
         const wsRoot = s.repoPath || s.cwd;
@@ -1411,7 +1414,7 @@ async function main(): Promise<void> {
   if (restoredCount > 0) {
     logger.info(`Restored ${restoredCount} session(s) from previous update.`);
     // Start git watching for restored sessions
-    for (const session of sessions.list()) {
+    for (const session of localRelayNode.sessions.list()) {
       gitWatcher.watch(session.cwd);
     }
   }
@@ -1484,7 +1487,7 @@ async function main(): Promise<void> {
         const displayName = sessions.nextAgentName();
         // Get port env var names from repo settings for port injection
         const portVariables = getRepoPortVariables(freshCfg, opts.repoPath);
-        sessions.create({
+        localRelayNode.sessions.create({
           type: 'agent',
           agent: resolved.agent,
           repoName,
@@ -1603,7 +1606,7 @@ async function main(): Promise<void> {
       prevState === 'running' &&
       (state === 'idle' || state === 'permission')
     ) {
-      const session = sessions.get(sessionId);
+      const session = localRelayNode.sessions.get(sessionId);
       if (session && session.type !== 'terminal') {
         // Dedup: if hooks fired an attention notification within last 10s, skip
         if (
@@ -1761,7 +1764,7 @@ async function main(): Promise<void> {
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
   app.get('/sessions', requireAuth, async (_req, res) => {
-    const allSessions = sessions.list();
+    const allSessions = localRelayNode.sessions.list();
     const now = Date.now();
 
     // Prune cache entries for sessions that no longer exist
@@ -1787,7 +1790,7 @@ async function main(): Promise<void> {
           const liveBranch = stdout.trim();
           if (liveBranch && liveBranch !== s.branchName) {
             s.branchName = liveBranch;
-            const raw = sessions.get(s.id);
+            const raw = localRelayNode.sessions.get(s.id);
             if (raw) raw.branchName = liveBranch;
           }
         } catch {
@@ -1882,7 +1885,7 @@ async function main(): Promise<void> {
     }
 
     // Check for active sessions in this worktree
-    const allSessions = sessions.list();
+    const allSessions = localRelayNode.sessions.list();
     const activeSessions = allSessions
       .filter((s) => s.worktreePath === resolved || s.cwd === resolved)
       .map((s) => s.id);
@@ -2158,7 +2161,7 @@ async function main(): Promise<void> {
     if (force) {
       for (const sessionId of worktreeSessions) {
         try {
-          sessions.kill(sessionId);
+          localRelayNode.sessions.kill(sessionId);
         } catch (err) {
           logger.warn(
             `[worktrees] failed to kill session ${sessionId}:`,
@@ -2366,7 +2369,7 @@ async function main(): Promise<void> {
       }
       const displayName = sessions.nextAgentName();
       try {
-        const { session } = await sessions.createWeb({
+        const { session } = await localRelayNode.sessions.createWeb({
           agentType: resolvedAgent,
           cwd,
           repoPath,
@@ -2461,8 +2464,8 @@ async function main(): Promise<void> {
   app.delete('/sessions/:id', requireAuth, (req, res) => {
     const id = req.params['id'] as string;
     try {
-      const sessionToDelete = sessions.get(id);
-      sessions.kill(id);
+      const sessionToDelete = localRelayNode.sessions.get(id);
+      localRelayNode.sessions.kill(id);
       push.removeSession(id);
       if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
       res.json({ ok: true });
@@ -2480,8 +2483,11 @@ async function main(): Promise<void> {
     }
     try {
       const id = req.params['id'] as string;
-      const updated = sessions.updateDisplayName(id, displayName);
-      const session = sessions.get(id);
+      const updated = localRelayNode.sessions.updateDisplayName(
+        id,
+        displayName
+      );
+      const session = localRelayNode.sessions.get(id);
       if (session) {
         writeMeta(CONFIG_PATH, {
           worktreePath: session.cwd,
@@ -2518,7 +2524,7 @@ async function main(): Promise<void> {
       return;
     }
     const sessionId = req.params['id'] as string;
-    if (!sessions.get(sessionId)) {
+    if (!localRelayNode.sessions.get(sessionId)) {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
@@ -2537,7 +2543,7 @@ async function main(): Promise<void> {
       }
 
       if (clipboardSet) {
-        sessions.write(sessionId, '\x16');
+        localRelayNode.sessions.write(sessionId, '\x16');
       }
 
       res.json({ path: filePath, clipboardSet });
@@ -2661,7 +2667,7 @@ async function main(): Promise<void> {
     serializeAll(configDir, { reason: restartReason });
     flushRelayStateWrites();
     closeRelayStateDb();
-    for (const s of sessions.list()) {
+    for (const s of localRelayNode.sessions.list()) {
       try {
         sessions.detachForRestart(s.id);
       } catch {

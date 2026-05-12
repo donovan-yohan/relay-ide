@@ -1,6 +1,7 @@
 import { ConflictError, createSession as createSessionApi } from './api.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
+import { resolveSessionByKey } from './session-keys.js';
 import type { Repo, SessionSummary } from './types.js';
 
 export interface CreateAgentSessionOptions {
@@ -51,9 +52,7 @@ export function getCurrentSessionContext(): CurrentSessionContext {
       )
     : undefined;
   const currentActiveSession = sessionsStore.activeSessionId
-    ? sessionsStore.sessions.find(
-        (session) => session.id === sessionsStore.activeSessionId
-      )
+    ? resolveSessionByKey(sessionsStore.sessions, sessionsStore.activeSessionId)
     : undefined;
 
   return {
@@ -68,12 +67,16 @@ function restoreSessionPlacement(
   activeSessionId: string | null,
   workspaceLastSession: Record<string, string>
 ): void {
-  const liveIds = new Set(useSessionsStore.getState().sessions.map((s) => s.id));
+  const liveSessions = useSessionsStore.getState().sessions;
   useSessionsStore.setState({
     activeSessionId:
-      activeSessionId && liveIds.has(activeSessionId) ? activeSessionId : null,
+      activeSessionId && resolveSessionByKey(liveSessions, activeSessionId)
+        ? activeSessionId
+        : null,
     workspaceLastSession: Object.fromEntries(
-      Object.entries(workspaceLastSession).filter(([, id]) => liveIds.has(id))
+      Object.entries(workspaceLastSession).filter(([, id]) =>
+        Boolean(resolveSessionByKey(liveSessions, id))
+      )
     ),
   });
 }
@@ -104,9 +107,10 @@ export async function createSessionWithoutActivation(
       }
       const conflictingSessionId = error.sessionId;
       const session = conflictingSessionId
-        ? useSessionsStore
-            .getState()
-            .sessions.find((existing) => existing.id === conflictingSessionId)
+        ? resolveSessionByKey(
+            useSessionsStore.getState().sessions,
+            conflictingSessionId
+          )
         : undefined;
       restoreSessionPlacement(activeSessionId, workspaceLastSession);
       return { session, error: refreshError ?? error };
@@ -129,9 +133,10 @@ export async function createAgentSession(
       await useSessionsStore.getState().refreshAll();
       const conflictingSessionId = error.sessionId;
       const session = conflictingSessionId
-        ? useSessionsStore
-            .getState()
-            .sessions.find((existing) => existing.id === conflictingSessionId)
+        ? resolveSessionByKey(
+            useSessionsStore.getState().sessions,
+            conflictingSessionId
+          )
         : undefined;
       if (conflictingSessionId) {
         useSessionsStore.getState().setActiveSessionId(conflictingSessionId);

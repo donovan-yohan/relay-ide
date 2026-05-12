@@ -30,6 +30,7 @@ import type {
   FrameworkInfo,
   BranchDivergenceSummary,
 } from './types.js';
+import { parseGlobalSessionId } from '../../../shared/identity.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -171,6 +172,34 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
 }
 
+function normalizeTelemetryMapEntry(
+  mapKey: string,
+  raw: Record<string, unknown>
+): SessionTelemetry {
+  const parsed = parseGlobalSessionId(mapKey);
+  const rawSessionId =
+    typeof raw.sessionId === 'string' ? raw.sessionId : undefined;
+  return {
+    ...(raw as Omit<SessionTelemetry, 'sessionId'>),
+    sessionId: rawSessionId ?? parsed?.localSessionId ?? mapKey,
+    ...(typeof raw.localSessionId === 'string'
+      ? {}
+      : parsed
+        ? { localSessionId: parsed.localSessionId }
+        : {}),
+    ...(typeof raw.nodeId === 'string'
+      ? {}
+      : parsed
+        ? { nodeId: parsed.nodeId }
+        : {}),
+    ...(typeof raw.globalSessionId === 'string'
+      ? {}
+      : parsed
+        ? { globalSessionId: mapKey }
+        : {}),
+  };
+}
+
 function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
   if (Array.isArray(data)) {
     return data.filter(
@@ -189,9 +218,7 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
       return Object.entries(value.sessions as Record<string, unknown>).flatMap(
         ([sessionId, raw]) => {
           if (!raw || typeof raw !== 'object') return [];
-          return [
-            { sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) },
-          ];
+          return [normalizeTelemetryMapEntry(sessionId, raw as Record<string, unknown>)];
         }
       );
     }
@@ -201,7 +228,7 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
       return normalizeTelemetrySessions(value.data);
     return Object.entries(value).flatMap(([sessionId, raw]) => {
       if (!raw || typeof raw !== 'object') return [];
-      return [{ sessionId, ...(raw as Omit<SessionTelemetry, 'sessionId'>) }];
+      return [normalizeTelemetryMapEntry(sessionId, raw as Record<string, unknown>)];
     });
   }
   return [];

@@ -16,6 +16,7 @@ import UtilityRailStatsPanel from './UtilityRailStatsPanel.js';
 import Terminal from './Terminal.js';
 import Tooltip from './Tooltip.js';
 import { getUtilityTerminalTitle } from '../lib/utility-terminals.js';
+import { scopedSessionKey } from '../lib/session-keys.js';
 import './WorkspaceUtilityRail.css';
 
 const TAB_META: Array<{
@@ -149,8 +150,9 @@ function UtilityRailTerminalPanel({
   onFilePathClick,
 }: UtilityRailTerminalPanelProps) {
   const selectedSession =
-    sessions.find((session) => session.id === railState.selectedUtilityTerminalId) ??
-    sessions[0];
+    sessions.find(
+      (session) => session.id === railState.selectedUtilityTerminalId
+    ) ?? sessions[0];
   const notifyCopyModeInactive = useEffectEvent(() => {
     onCopyModeChange?.(false);
   });
@@ -178,7 +180,9 @@ function UtilityRailTerminalPanel({
       if (!nextSession) return;
       onSelectUtilityTerminal?.(nextSession.id);
       requestAnimationFrame(() => {
-        document.getElementById(`utility-terminal-tab-${nextSession.id}`)?.focus();
+        document
+          .getElementById(`utility-terminal-tab-${nextSession.id}`)
+          ?.focus();
       });
     },
     [onSelectUtilityTerminal, sessions]
@@ -193,7 +197,11 @@ function UtilityRailTerminalPanel({
           aria-label="utility terminals"
         >
           {sessions.map((session, index) => {
-            const title = getUtilityTerminalTitle(session, index, workspacePath);
+            const title = getUtilityTerminalTitle(
+              session,
+              index,
+              workspacePath
+            );
             const selected = session.id === selectedSession?.id;
             return (
               <div
@@ -214,9 +222,7 @@ function UtilityRailTerminalPanel({
                   aria-label={title}
                   tabIndex={selected ? 0 : -1}
                   onClick={() => onSelectUtilityTerminal?.(session.id)}
-                  onKeyDown={(event) =>
-                    handleTerminalTabKeyDown(event, index)
-                  }
+                  onKeyDown={(event) => handleTerminalTabKeyDown(event, index)}
                 >
                   <span className="utility-terminal-title">{title}</span>
                 </button>
@@ -254,6 +260,7 @@ function UtilityRailTerminalPanel({
           <div className="utility-terminal-body">
             <Terminal
               sessionId={selectedSession.id}
+              sessionKey={scopedSessionKey(selectedSession)}
               useTmux={selectedSession.useTmux !== false}
               {...(onImageUpload ? { onImageUpload } : {})}
               {...(onCopyModeChange ? { onCopyModeChange } : {})}
@@ -438,10 +445,16 @@ export function WorkspaceUtilityRail({
                 workspacePath={workspacePath}
                 railState={railState}
                 sessions={utilityTerminalSessions}
-                {...(onCreateUtilityTerminal ? { onCreateUtilityTerminal } : {})}
-                {...(onSelectUtilityTerminal ? { onSelectUtilityTerminal } : {})}
+                {...(onCreateUtilityTerminal
+                  ? { onCreateUtilityTerminal }
+                  : {})}
+                {...(onSelectUtilityTerminal
+                  ? { onSelectUtilityTerminal }
+                  : {})}
                 {...(onCloseUtilityTerminal ? { onCloseUtilityTerminal } : {})}
-                {...(onPromoteUtilityTerminal ? { onPromoteUtilityTerminal } : {})}
+                {...(onPromoteUtilityTerminal
+                  ? { onPromoteUtilityTerminal }
+                  : {})}
                 {...(onImageUpload ? { onImageUpload } : {})}
                 {...(onCopyModeChange ? { onCopyModeChange } : {})}
                 {...(onFilePathClick ? { onFilePathClick } : {})}

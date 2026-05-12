@@ -3,10 +3,12 @@ import type { QueryClient } from '@tanstack/react-query';
 import { connectEventSocket } from '../lib/ws.js';
 import type { EventMessage } from '../lib/ws.js';
 import { useAuthStore } from '../lib/stores/auth.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import type { AccountTelemetry, SessionTelemetry } from '../lib/types.js';
+import type { SessionEventScope } from '../../../shared/node-boundary.js';
 
 export interface UseEventSocketParams {
   authAuthenticated: boolean;
@@ -116,11 +118,36 @@ function repoPathsFromPrOrCiMessage(
   ]);
 }
 
-function sessionRepoPath(sessionId: string | undefined): string | undefined {
+function sessionRepoPath(
+  sessionId: string | undefined,
+  scope?: SessionEventScope
+): string | undefined {
   if (!sessionId) return undefined;
-  return useSessionsStore
-    .getState()
-    .sessions.find((session) => session.id === sessionId)?.repoPath;
+  return useSessionsStore.getState().sessions.find((session) => {
+    if (scope?.globalSessionId) {
+      return session.globalSessionId === scope.globalSessionId;
+    }
+    if (scope?.nodeId) {
+      return session.id === sessionId && session.nodeId === scope.nodeId;
+    }
+    return session.id === sessionId;
+  })?.repoPath;
+}
+
+function eventSessionScope(msg: {
+  nodeId?: string;
+  globalSessionId?: string;
+  localSessionId?: string;
+  sessionId?: string;
+}): SessionEventScope {
+  const localSessionId = msg.localSessionId ?? msg.sessionId;
+  return {
+    ...(localSessionId
+      ? { sessionId: localSessionId, localSessionId }
+      : {}),
+    ...(msg.nodeId ? { nodeId: msg.nodeId } : {}),
+    ...(msg.globalSessionId ? { globalSessionId: msg.globalSessionId } : {}),
+  };
 }
 
 function invalidatePrQueries(queryClient: QueryClient): void {
@@ -198,30 +225,34 @@ export function useEventSocket({
           .handleBackendStateChanged(
             msg.sessionId,
             msg.state,
-            msg.permissionType
+            msg.permissionType,
+            eventSessionScope(msg)
           );
       },
       'session-renamed': (msg) => {
-        const repoPath = sessionRepoPath(msg.sessionId);
+        const scope = eventSessionScope(msg);
+        const repoPath = sessionRepoPath(msg.sessionId, scope);
         useSessionsStore
           .getState()
-          .renameSession(msg.sessionId, msg.branchName, msg.displayName);
+          .renameSession(msg.sessionId, msg.branchName, msg.displayName, scope);
         if (repoPath) invalidateScopedPrData([repoPath], 'manual');
       },
       'session-branch-changed': (msg) => {
+        const scope = eventSessionScope(msg);
         const repoPaths = resolveRepoPaths([
           msg.cwdPath ?? '',
-          sessionRepoPath(msg.sessionId) ?? '',
+          sessionRepoPath(msg.sessionId, scope) ?? '',
         ]);
         useSessionsStore
           .getState()
-          .handleBranchChanged(msg.sessionId, msg.branch);
+          .handleBranchChanged(msg.sessionId, msg.branch, scope);
         if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
       },
       'session-ended': (msg) => {
+        const scope = eventSessionScope(msg);
         const repoPaths = resolveRepoPaths([
           msg.cwd ?? '',
-          sessionRepoPath(msg.sessionId) ?? '',
+          sessionRepoPath(msg.sessionId, scope) ?? '',
         ]);
         if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
         useSessionsStore.getState().refreshAll();
@@ -236,12 +267,10 @@ export function useEventSocket({
         throttledWebhookInvalidate(repoPathsFromPrOrCiMessage(msg));
       },
       'files-changed': (msg) => {
-        const currentActiveSessionId =
-          useSessionsStore.getState().activeSessionId;
+        const sessionsState = useSessionsStore.getState();
+        const currentActiveSessionId = sessionsState.activeSessionId;
         const currentActiveSession = currentActiveSessionId
-          ? useSessionsStore
-              .getState()
-              .sessions.find((s) => s.id === currentActiveSessionId)
+          ? resolveSessionByKey(sessionsState.sessions, currentActiveSessionId)
           : undefined;
         const activeWs =
           currentActiveSession?.worktreePath ?? currentActiveSession?.repoPath;
@@ -265,7 +294,8 @@ export function useEventSocket({
           .handleActivityChanged(
             msg.sessionId,
             msg.timestamp,
-            msg.currentActivity ?? undefined
+            msg.currentActivity ?? undefined,
+            eventSessionScope(msg)
           );
       },
       'session-telemetry': (msg) => {
@@ -273,7 +303,8 @@ export function useEventSocket({
           .getState()
           .handleSessionTelemetryEvent(
             msg.sessionId,
-            msg.data as SessionTelemetry | Record<string, unknown>
+            msg.data as SessionTelemetry | Record<string, unknown>,
+            eventSessionScope(msg)
           );
       },
       'account-telemetry': (msg) => {
@@ -294,8 +325,9 @@ export function useEventSocket({
         state.setBackendConnectionStatus('restarting');
         const activeSessionId = state.activeSessionId;
         if (activeSessionId) {
-          const activeSession = state.sessions.find(
-            (s) => s.id === activeSessionId
+          const activeSession = resolveSessionByKey(
+            state.sessions,
+            activeSessionId
           );
           if (activeSession && activeSession.mode === 'pty') {
             state.beginPtyReconnect(activeSessionId);
@@ -313,9 +345,7 @@ export function useEventSocket({
         if (eventSocketOpened) {
           void refreshAfterReconnect();
         } else {
-          useSessionsStore
-            .getState()
-            .setBackendConnectionStatus('connected');
+          useSessionsStore.getState().setBackendConnectionStatus('connected');
           void useTelemetryStore.getState().refreshTelemetry();
         }
         eventSocketOpened = true;

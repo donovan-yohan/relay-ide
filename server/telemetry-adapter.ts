@@ -1,7 +1,11 @@
 import type { AccountTelemetry, Session, TelemetryData } from './types.js';
+import type { GlobalSessionId, NodeId } from '../shared/identity.js';
 import type { AgentEventAdapter } from './agent-events.js';
 
-export type TelemetrySession = Pick<Session, 'id'>;
+export type TelemetrySession = Pick<Session, 'id'> & {
+  nodeId?: NodeId;
+  globalSessionId?: GlobalSessionId;
+};
 
 export interface TelemetryAdapter {
   readonly framework: string;

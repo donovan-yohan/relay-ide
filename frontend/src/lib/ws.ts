@@ -5,7 +5,19 @@ import type {
   CurrentActivity,
   SessionTelemetry,
 } from './types.js';
+import type {
+  EnvironmentAuthority,
+  EnvironmentId,
+  NodeScopedFileEvent,
+  NodeScopedSessionEvent,
+} from '../../../shared/node-boundary.js';
+import type { NodeId } from '../../../shared/identity.js';
+import {
+  createGlobalSessionId,
+  parseGlobalSessionId,
+} from '../../../shared/identity.js';
 import { createLogger } from './logger.js';
+import { resolveSessionByKey, resolveSessionKey } from './session-keys.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 
@@ -14,32 +26,40 @@ const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
 // Discriminated union for WebSocket event messages.
 // Each event type declares only its required fields.
+type NodeScopedEvent = Partial<{
+  nodeId: NodeId;
+  environmentId: EnvironmentId;
+  authority: EnvironmentAuthority;
+}>;
+type SessionScopedEvent = NodeScopedEvent & Partial<NodeScopedSessionEvent>;
+type FileScopedEvent = NodeScopedEvent & Partial<NodeScopedFileEvent>;
+
 export type EventMessage =
-  | { type: 'worktrees-changed' }
-  | {
+  | ({ type: 'worktrees-changed' } & NodeScopedEvent)
+  | ({
       type: 'session-backend-state-changed';
       sessionId: string;
       state: BackendDisplayState;
       permissionType?: 'approval' | 'question';
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-renamed';
       sessionId: string;
       branchName: string;
       displayName: string;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-branch-changed';
       sessionId: string;
       branch: string;
       cwdPath?: string;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-ended';
       sessionId?: string;
       cwd?: string;
       branchName?: string;
-    }
+    } & SessionScopedEvent)
   | { type: 'ref-changed'; cwdPath: string; branch?: string; repo?: string }
   | {
       type: 'pr-updated';
@@ -57,18 +77,22 @@ export type EventMessage =
       repos?: string[];
       workspacePaths?: string[];
     }
-  | { type: 'files-changed'; workspacePath: string; changedFiles?: string[] }
-  | {
+  | ({
+      type: 'files-changed';
+      workspacePath: string;
+      changedFiles?: string[];
+    } & FileScopedEvent)
+  | ({
       type: 'session-activity-changed';
       sessionId: string;
       timestamp?: string;
       currentActivity?: CurrentActivity | null;
-    }
-  | {
+    } & SessionScopedEvent)
+  | ({
       type: 'session-telemetry';
       sessionId: string;
       data: SessionTelemetry | Record<string, unknown>;
-    }
+    } & SessionScopedEvent)
   | {
       type: 'account-telemetry';
       data: AccountTelemetry | Record<string, unknown> | null;
@@ -232,7 +256,10 @@ function clearEventPongTimeout(): void {
 // ── Per-session PTY connection registry ──────────────────────────────────────
 
 interface PtyConnection {
+  /** Scoped registry key for the mounted frontend terminal. */
   sessionId: string;
+  /** Legacy local id used by the current single-node /ws/:sessionId endpoint. */
+  localSessionId: string;
   ws: WebSocket | null;
   pendingWs: WebSocket | null;
   term: Terminal;
@@ -295,10 +322,32 @@ function beginPtyReconnect(conn: PtyConnection): void {
   scheduleReconnect(conn);
 }
 
+function resolvePtyTarget(sessionKey: string): {
+  registryKey: string;
+  localSessionId: string;
+} {
+  const sessions = useSessionsStore.getState().sessions;
+  const session = resolveSessionByKey(sessions, sessionKey);
+  if (session) {
+    return {
+      registryKey: resolveSessionKey(sessions, sessionKey),
+      localSessionId: session.id,
+    };
+  }
+
+  const parsedGlobalSessionId = parseGlobalSessionId(sessionKey);
+  return {
+    registryKey: sessionKey,
+    localSessionId: parsedGlobalSessionId?.localSessionId ?? sessionKey,
+  };
+}
+
 function getActiveSessionId(): string | null {
-  const sendTo = useUiStore.getState().sendToTargetSessionId;
-  if (sendTo) return sendTo;
-  return useSessionsStore.getState().activeSessionId;
+  const sessionKey =
+    useUiStore.getState().sendToTargetSessionId ??
+    useSessionsStore.getState().activeSessionId;
+  if (!sessionKey) return null;
+  return resolvePtyTarget(sessionKey).registryKey;
 }
 
 function getActiveConnection(): PtyConnection | null {
@@ -373,8 +422,9 @@ export function connectPtySocket(
   onResize: () => void,
   onSessionEnd: () => void
 ): void {
-  // Tear down any existing connection for this session.
-  const existing = ptyConnections.get(sessionId);
+  const { registryKey, localSessionId } = resolvePtyTarget(sessionId);
+  // Tear down any existing connection for this scoped terminal target.
+  const existing = ptyConnections.get(registryKey);
   if (existing) {
     disposePtyConnectionResources(existing);
     if (existing.pendingWs) {
@@ -393,7 +443,8 @@ export function connectPtySocket(
   }
 
   const conn: PtyConnection = {
-    sessionId,
+    sessionId: registryKey,
+    localSessionId,
     ws: null,
     pendingWs: null,
     term,
@@ -412,13 +463,22 @@ export function connectPtySocket(
     rafHandle: null,
     bgTimer: null,
   };
-  ptyConnections.set(sessionId, conn);
+  ptyConnections.set(registryKey, conn);
 
   openPtySocket(conn);
 }
 
 function openPtySocket(conn: PtyConnection): void {
-  const url = wsProtocol + '//' + location.host + '/ws/' + conn.sessionId;
+  // Remote node PTY proxying is intentionally deferred server-side for now.
+  // Keep the WebSocket path on the legacy local endpoint while keying the
+  // frontend registry by conn.sessionId so hub-fed duplicate local ids do not
+  // overwrite each other's mounted terminal connection state.
+  const url =
+    wsProtocol +
+    '//' +
+    location.host +
+    '/ws/' +
+    encodeURIComponent(conn.localSessionId);
   const socket = new WebSocket(url);
   conn.pendingWs = socket;
 
@@ -524,8 +584,21 @@ function scheduleReconnect(conn: PtyConnection): void {
         return;
       }
       const res = await fetch('/sessions');
-      const sessionList = (await res.json()) as Array<{ id: string }>;
-      if (!sessionList.some((s) => s.id === conn.sessionId)) {
+      const sessionList = (await res.json()) as Array<{
+        id: string;
+        nodeId?: string;
+        globalSessionId?: string;
+      }>;
+      if (
+        !sessionList.some(
+          (s) =>
+            s.globalSessionId === conn.sessionId ||
+            (s.nodeId
+              ? (s.globalSessionId ?? createGlobalSessionId(s.nodeId, s.id)) ===
+                conn.sessionId
+              : s.id === conn.localSessionId)
+        )
+      ) {
         conn.term.write('\r\n[session ended]\r\n');
         useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
         ptyConnections.delete(conn.sessionId);
@@ -589,7 +662,8 @@ function forceReconnectPty(conn: PtyConnection): void {
 }
 
 export function disconnectPtySocket(sessionId: string): void {
-  const conn = ptyConnections.get(sessionId);
+  const registryKey = resolvePtyTarget(sessionId).registryKey;
+  const conn = ptyConnections.get(registryKey);
   if (!conn) return;
   disposePtyConnectionResources(conn);
   if (conn.pendingWs) {
@@ -602,8 +676,8 @@ export function disconnectPtySocket(sessionId: string): void {
     conn.ws.close();
     conn.ws = null;
   }
-  ptyConnections.delete(sessionId);
-  useSessionsStore.getState().clearPtyReconnect(sessionId);
+  ptyConnections.delete(conn.sessionId);
+  useSessionsStore.getState().clearPtyReconnect(conn.sessionId);
 }
 
 // ── Visibility change — proactive reconnection on mobile wake ────────────────
@@ -634,7 +708,7 @@ export function sendPtyData(arg1: string, arg2?: string): void {
   let conn: PtyConnection | null;
   let data: string;
   if (arg2 !== undefined) {
-    conn = ptyConnections.get(arg1) ?? null;
+    conn = ptyConnections.get(resolvePtyTarget(arg1).registryKey) ?? null;
     data = arg2;
   } else {
     conn = getActiveConnection();
@@ -660,7 +734,7 @@ export function sendPtyResize(
   let cols: number;
   let rows: number;
   if (typeof arg1 === 'string' && arg3 !== undefined) {
-    conn = ptyConnections.get(arg1) ?? null;
+    conn = ptyConnections.get(resolvePtyTarget(arg1).registryKey) ?? null;
     cols = arg2;
     rows = arg3;
   } else if (typeof arg1 === 'number') {
@@ -677,7 +751,7 @@ export function sendPtyResize(
 
 export function isPtyConnected(sessionId?: string): boolean {
   const conn = sessionId
-    ? (ptyConnections.get(sessionId) ?? null)
+    ? (ptyConnections.get(resolvePtyTarget(sessionId).registryKey) ?? null)
     : getActiveConnection();
   return !!conn?.ws && conn.ws.readyState === WebSocket.OPEN;
 }
