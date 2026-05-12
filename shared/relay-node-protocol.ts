@@ -51,6 +51,10 @@ export interface RelayNodeCredential {
 }
 
 export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
+export type HubNodeCredentialState = 'active' | 'revoked';
+export type HubNodeTrustState = 'trusted' | 'revoked';
+export type HubNodeTrustLevel = 'privileged-local-user';
+export type HubNodeVersionState = 'compatible' | 'version-skew' | 'incompatible';
 
 export type NodeCapabilityStatus =
   | 'available'
@@ -96,6 +100,17 @@ export interface HubNodeSummary {
   protocolVersion: string;
   status: HubNodeStatus;
   connection: HubNodeConnectionSummary;
+  trust: {
+    state: HubNodeTrustState;
+    level: HubNodeTrustLevel;
+    warning: string;
+  };
+  credentialState: HubNodeCredentialState;
+  version: {
+    state: HubNodeVersionState;
+    nodeProtocolVersion: string;
+    hubProtocolVersion: typeof RELAY_NODE_LINK_PROTOCOL_VERSION;
+  };
   capabilities: NodeCapabilityManifestSummary;
   createdAt: string;
   pairedAt: string;

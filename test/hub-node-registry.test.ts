@@ -214,6 +214,17 @@ describe('hub node registry', () => {
         relayVersion: '9.9.9',
         protocolVersion: '1.0',
         status: 'online',
+        trust: {
+          state: 'trusted',
+          level: 'privileged-local-user',
+          warning: expect.stringContaining('local OS user'),
+        },
+        credentialState: 'active',
+        version: {
+          state: 'compatible',
+          nodeProtocolVersion: '1.0',
+          hubProtocolVersion: '1.0',
+        },
         capabilities: {
           totals: { available: 6, degraded: 1, unavailable: 2, unknown: 0 },
           agents: { claude: 'available', codex: 'unavailable' },
@@ -410,6 +421,41 @@ describe('hub node registry', () => {
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+
+  it('revokes node credentials with typed trust state and rejects later heartbeats', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+
+      const revoked = registry.revokeNode(exchanged.node.nodeId);
+
+      expect(revoked).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        status: 'revoked',
+        credentialState: 'revoked',
+        trust: {
+          state: 'revoked',
+          level: 'privileged-local-user',
+          warning: expect.stringContaining('local OS user'),
+        },
+      });
+      expect(registry.listNodes()[0]).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        status: 'revoked',
+        credentialState: 'revoked',
+      });
+      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+      expect(() =>
+        registry.recordHeartbeat({
+          nodeId: exchanged.node.nodeId,
+          protocolVersion: '1.0',
+          manifest: manifest(),
+        })
+      ).toThrow(/NODE_REVOKED/);
+    });
   });
 
   it('returns typed errors for expired tokens, bad credentials, and incompatible protocol versions', () => {
