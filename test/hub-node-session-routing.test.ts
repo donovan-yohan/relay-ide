@@ -471,6 +471,85 @@ describe('hub-routed node session create and attach', () => {
     expect((await browserClose).code).toBe(1000);
   });
 
+  it('rejects pending RPCs promptly when a node reverse link is replaced', async () => {
+    const { base, wsBase, nodeLinks } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const pending = nodeLinks.request(nodeId, 'sessions.create', {
+      repoPath: '/srv/relay-ide',
+      type: 'terminal',
+    });
+    const pendingFailure = pending.then(
+      () => new Error('pending RPC unexpectedly resolved'),
+      (error: unknown) => error
+    );
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'sessions.create',
+    });
+
+    const replacementWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => replacementWs.close());
+    await waitForOpen(replacementWs);
+
+    await expect(pendingFailure).resolves.toMatchObject({
+      relayNodeError: {
+        code: 'NODE_OFFLINE',
+        message: `node ${nodeId} link closed`,
+        retryable: true,
+      },
+    });
+  });
+
+  it('closes browser PTY streams promptly when a node reverse link is replaced', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const browserWs = new WebSocket(
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+    );
+    cleanup.push(() => browserWs.close());
+    await waitForOpen(browserWs);
+
+    const attach = await nextJson(nodeWs);
+    expect(attach).toMatchObject({
+      nodeId,
+      channel: 'pty',
+      type: 'pty.attach',
+      payload: { sessionId: 'remote-session-1' },
+    });
+
+    const browserClose = new Promise<{ code: number; reason: string }>((resolve) => {
+      browserWs.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    const replacementWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => replacementWs.close());
+    await waitForOpen(replacementWs);
+
+    await expect(Promise.race([
+      browserClose,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('browser PTY stream stayed open after replacement')), 250)
+      ),
+    ])).resolves.toMatchObject({ code: 1011, reason: 'node link closed' });
+  });
+
   it('broadcasts remote node session events with node-scoped identity', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);

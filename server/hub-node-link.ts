@@ -20,6 +20,7 @@ interface AuthenticatedNodeLink {
 
 interface PendingRpc {
   nodeId: string;
+  nodeWs: WebSocket;
   resolve: (payload: unknown) => void;
   reject: (error: HubNodeLinkError) => void;
   timer: NodeJS.Timeout;
@@ -27,6 +28,7 @@ interface PendingRpc {
 
 interface BrowserPtyStream {
   nodeId: string;
+  nodeWs: WebSocket;
   sessionId: string;
   browserWs: WebSocket;
 }
@@ -170,8 +172,11 @@ export class HubNodeLinkManager {
 
   registerNodeLink(nodeId: string, ws: WebSocket): void {
     const existing = this.links.get(nodeId);
-    if (existing && existing !== ws && existing.readyState === existing.OPEN) {
-      existing.close(1012, 'replaced by newer relay-node link');
+    if (existing && existing !== ws) {
+      this.cleanupNodeLinkResources(nodeId, existing);
+      if (existing.readyState === existing.OPEN) {
+        existing.close(1012, 'replaced by newer relay-node link');
+      }
     }
     this.links.set(nodeId, ws);
     const cleanup = () => this.unregisterNodeLink(nodeId, ws);
@@ -202,7 +207,7 @@ export class HubNodeLinkManager {
         );
       }, DEFAULT_RPC_TIMEOUT_MS);
       timer.unref?.();
-      this.pending.set(requestId, { nodeId, resolve, reject, timer });
+      this.pending.set(requestId, { nodeId, nodeWs: ws, resolve, reject, timer });
       sendJson(
         ws,
         envelope(nodeId, 'rpc', type, {
@@ -219,7 +224,7 @@ export class HubNodeLinkManager {
       throw new HubNodeLinkError(nodeOffline(`node ${nodeId} has no live reverse link`));
     }
     const streamId = crypto.randomUUID();
-    this.ptyStreams.set(streamId, { nodeId, sessionId, browserWs });
+    this.ptyStreams.set(streamId, { nodeId, nodeWs, sessionId, browserWs });
     sendJson(
       nodeWs,
       envelope(nodeId, 'pty', 'pty.attach', {
@@ -270,9 +275,8 @@ export class HubNodeLinkManager {
       const stream = this.ptyStreams.get(streamId);
       if (!stream) return;
       this.ptyStreams.delete(streamId);
-      const activeNodeWs = this.links.get(nodeId);
-      if (activeNodeWs && activeNodeWs.readyState === activeNodeWs.OPEN) {
-        sendJson(activeNodeWs, envelope(nodeId, 'pty', 'pty.detach', { streamId }));
+      if (stream.nodeWs.readyState === stream.nodeWs.OPEN) {
+        sendJson(stream.nodeWs, envelope(nodeId, 'pty', 'pty.detach', { streamId }));
       }
     };
     browserWs.once('close', cleanup);
@@ -341,16 +345,19 @@ export class HubNodeLinkManager {
   }
 
   private unregisterNodeLink(nodeId: string, ws: WebSocket): void {
-    if (this.links.get(nodeId) !== ws) return;
-    this.links.delete(nodeId);
+    if (this.links.get(nodeId) === ws) this.links.delete(nodeId);
+    this.cleanupNodeLinkResources(nodeId, ws);
+  }
+
+  private cleanupNodeLinkResources(nodeId: string, ws: WebSocket): void {
     for (const [requestId, pending] of Array.from(this.pending)) {
-      if (pending.nodeId !== nodeId) continue;
+      if (pending.nodeId !== nodeId || pending.nodeWs !== ws) continue;
       clearTimeout(pending.timer);
       this.pending.delete(requestId);
       pending.reject(new HubNodeLinkError(nodeOffline(`node ${nodeId} link closed`)));
     }
     for (const [streamId, stream] of Array.from(this.ptyStreams)) {
-      if (stream.nodeId !== nodeId) continue;
+      if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;
       this.ptyStreams.delete(streamId);
       if (stream.browserWs.readyState === stream.browserWs.OPEN) {
         stream.browserWs.close(1011, 'node link closed');
