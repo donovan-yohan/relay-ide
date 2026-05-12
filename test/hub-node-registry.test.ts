@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createHubNodeRegistry,
   DEFAULT_NODE_HEARTBEAT_TIMEOUTS,
@@ -456,6 +456,43 @@ describe('hub node registry', () => {
         })
       ).toThrow(/NODE_REVOKED/);
     });
+  });
+
+  it('isolates revoke listener exceptions and continues notifying later listeners', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withTmpRegistry((registry) => {
+        const exchanged = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        const notifiedNodeIds: string[] = [];
+
+        registry.onNodeRevoked(() => {
+          throw new Error('listener should not leak');
+        });
+        registry.onNodeRevoked((nodeId) => {
+          notifiedNodeIds.push(nodeId);
+        });
+
+        expect(() => registry.revokeNode(exchanged.node.nodeId)).not.toThrow();
+
+        expect(notifiedNodeIds).toEqual([exchanged.node.nodeId]);
+        expect(registry.listNodes()[0]).toMatchObject({
+          nodeId: exchanged.node.nodeId,
+          status: 'revoked',
+          credentialState: 'revoked',
+        });
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            '[hub-node-registry] hub node revoke listener failed; continuing revoke notifications for node %s'
+          ),
+          exchanged.node.nodeId
+        );
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('returns typed errors for expired tokens, bad credentials, and incompatible protocol versions', () => {

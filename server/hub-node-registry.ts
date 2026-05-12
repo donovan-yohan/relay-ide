@@ -539,7 +539,16 @@ export class HubNodeRegistry {
   }
 
   private notifyNodeRevoked(nodeId: string): void {
-    this.nodeRevokedListeners.forEach((listener) => listener(nodeId));
+    this.nodeRevokedListeners.forEach((listener) => {
+      try {
+        listener(nodeId);
+      } catch {
+        logger.warn(
+          'hub node revoke listener failed; continuing revoke notifications for node %s',
+          nodeId
+        );
+      }
+    });
   }
 
   private persist(): void {
