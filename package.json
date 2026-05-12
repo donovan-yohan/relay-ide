@@ -28,6 +28,7 @@
     "sandbox:dev": "node dist/scripts/sandbox-cli.js",
     "agent-browser": "node dist/scripts/agent-browser-cli.js",
     "test": "vitest run",
+    "test:smoke:multi-node": "vitest run test/multi-node-smoke.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
