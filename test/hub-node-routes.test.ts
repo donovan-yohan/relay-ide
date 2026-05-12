@@ -346,8 +346,42 @@ describe('hub node routes and link', () => {
     expect(nodesRes.status).toBe(200);
     const nodesBody = await nodesRes.text();
     expect(nodesBody).toContain('0.1.1-test');
+    expect(nodesBody).toContain('privileged-local-user');
+    expect(nodesBody).toContain('local OS user');
     expect(nodesBody).not.toContain(pair.pairToken);
     expect(nodesBody).not.toContain(exchange.credential.token);
+
+    const revokeRes = await fetch(`${base}/nodes/${exchange.node.nodeId}`, {
+      method: 'DELETE',
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(revokeRes.status).toBe(200);
+    expect(await revokeRes.json()).toMatchObject({
+      node: {
+        nodeId: exchange.node.nodeId,
+        status: 'revoked',
+        credentialState: 'revoked',
+        trust: { state: 'revoked', level: 'privileged-local-user' },
+      },
+    });
+
+    const revokedHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchange.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchange.credential.nodeId,
+        protocolVersion: '1.0',
+      }),
+    });
+    const revokedHeartbeatBody = await revokedHeartbeatRes.text();
+    expect(revokedHeartbeatRes.status).toBe(403);
+    expect(JSON.parse(revokedHeartbeatBody)).toMatchObject({
+      error: { code: 'NODE_REVOKED', retryable: false },
+    });
+    expect(revokedHeartbeatBody).not.toContain(exchange.credential.token);
   });
 
   it('accepts authenticated reverse websocket heartbeats and rejects incompatible protocol envelopes with typed errors', async () => {
@@ -471,6 +505,20 @@ describe('hub node routes and link', () => {
       type: 'control.error',
       error: { code: 'PROTOCOL_INCOMPATIBLE', retryable: false },
     });
+
+    const revokedError = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    registry.revokeNode(exchanged.node.nodeId);
+    expect(await revokedError).toMatchObject({
+      channel: 'control',
+      type: 'control.error',
+      error: { code: 'NODE_REVOKED', retryable: false },
+    });
+    expect(await closed).toEqual({ code: 4003, reason: 'node revoked' });
   });
 
   it('accepts heartbeat repo inventory and returns aggregated hub groups with local inventory', async () => {

@@ -44,6 +44,17 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: {
+      state: 'trusted',
+      level: 'privileged-local-user',
+      warning: 'test node is trusted',
+    },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {

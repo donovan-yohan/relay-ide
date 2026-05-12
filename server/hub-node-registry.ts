@@ -9,6 +9,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeStatus,
   type HubNodeSummary,
+  type HubNodeVersionState,
   type NodeCapabilityManifestSummary,
   type NodeCapabilityStatus,
   type RelayNodeCredential,
@@ -87,6 +88,13 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   offlineMs: 90 * 1000,
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
+const PRIVILEGED_NODE_WARNING =
+  'A paired Relay node is trusted to act as the local OS user on that machine.';
+
+export type CredentialAuthResult =
+  | { ok: true; node: HubNodeSummary }
+  | { ok: false; error: RelayNodeError };
+type NodeRevokedListener = (nodeId: string) => void;
 
 class HubNodeRegistryError extends Error {
   readonly relayNodeError: RelayNodeError;
@@ -260,6 +268,13 @@ function normalizeCapabilitySummary(
   };
 }
 
+function versionState(protocolVersion: string): HubNodeVersionState {
+  if (protocolVersion === RELAY_NODE_LINK_PROTOCOL_VERSION) return 'compatible';
+  const [nodeMajor] = protocolVersion.split('.');
+  const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+  return nodeMajor === hubMajor ? 'version-skew' : 'incompatible';
+}
+
 function publicNode(
   node: StoredNodeRecord,
   status: HubNodeStatus
@@ -274,6 +289,17 @@ function publicNode(
     protocolVersion: node.protocolVersion,
     status,
     connection: connectionSummary(status),
+    trust: {
+      state: node.revokedAt ? 'revoked' : 'trusted',
+      level: 'privileged-local-user',
+      warning: PRIVILEGED_NODE_WARNING,
+    },
+    credentialState: node.revokedAt ? 'revoked' : 'active',
+    version: {
+      state: versionState(node.protocolVersion),
+      nodeProtocolVersion: node.protocolVersion,
+      hubProtocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    },
     capabilities: normalizeCapabilitySummary(node.capabilities),
     createdAt: node.createdAt,
     pairedAt: node.pairedAt,
@@ -299,6 +325,7 @@ export class HubNodeRegistry {
   private heartbeatPersistTimer: NodeJS.Timeout | null = null;
   private heartbeatPersistDirty = false;
   private heartbeatPersistError: unknown = null;
+  private readonly nodeRevokedListeners = new Set<NodeRevokedListener>();
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
@@ -312,6 +339,13 @@ export class HubNodeRegistry {
 
   setNowForTest(now: () => Date): void {
     this.now = now;
+  }
+
+  onNodeRevoked(listener: NodeRevokedListener): () => void {
+    this.nodeRevokedListeners.add(listener);
+    return () => {
+      this.nodeRevokedListeners.delete(listener);
+    };
   }
 
   createPairToken(options: { displayName?: string; ttlMs?: number }): PairTokenResponse {
@@ -394,19 +428,33 @@ export class HubNodeRegistry {
   }
 
   authenticateCredential(token: string): HubNodeSummary | null {
+    const result = this.authenticateCredentialDetailed(token);
+    return result.ok ? result.node : null;
+  }
+
+  authenticateCredentialDetailed(token: string): CredentialAuthResult {
     const tokenHash = sha256(token);
     const [nodeId] = token.split('.', 1);
-    const node = this.state.nodes.find(
-      (candidate) =>
-        candidate.nodeId === nodeId &&
-        !candidate.revokedAt &&
-        timingSafeEqualHex(candidate.credentialHash, tokenHash)
-    );
-    if (!node) return null;
-    return publicNode(
-      node,
-      statusForNode(node, this.now(), this.staleMs, this.offlineMs)
-    );
+    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    if (!node || !timingSafeEqualHex(node.credentialHash, tokenHash)) {
+      return {
+        ok: false,
+        error: { code: 'UNAUTHORIZED', message: 'invalid node credential', retryable: false },
+      };
+    }
+    if (node.revokedAt) {
+      return {
+        ok: false,
+        error: { code: 'NODE_REVOKED', message: 'node credential was revoked', retryable: false },
+      };
+    }
+    return {
+      ok: true,
+      node: publicNode(
+        node,
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+      ),
+    };
   }
 
   recordHeartbeat(input: HeartbeatInput): HubNodeSummary {
@@ -468,8 +516,12 @@ export class HubNodeRegistry {
   revokeNode(nodeId: string): HubNodeSummary {
     const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
     if (!node) throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
-    node.revokedAt = this.now().toISOString();
-    this.persist();
+    const alreadyRevoked = Boolean(node.revokedAt);
+    if (!alreadyRevoked) {
+      node.revokedAt = this.now().toISOString();
+      this.persist();
+      this.notifyNodeRevoked(nodeId);
+    }
     return publicNode(node, 'revoked');
   }
 
@@ -484,6 +536,19 @@ export class HubNodeRegistry {
         retryable: true,
       },
     };
+  }
+
+  private notifyNodeRevoked(nodeId: string): void {
+    this.nodeRevokedListeners.forEach((listener) => {
+      try {
+        listener(nodeId);
+      } catch {
+        logger.warn(
+          'hub node revoke listener failed; continuing revoke notifications for node %s',
+          nodeId
+        );
+      }
+    });
   }
 
   private persist(): void {

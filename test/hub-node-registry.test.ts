@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createHubNodeRegistry,
   DEFAULT_NODE_HEARTBEAT_TIMEOUTS,
@@ -214,6 +214,17 @@ describe('hub node registry', () => {
         relayVersion: '9.9.9',
         protocolVersion: '1.0',
         status: 'online',
+        trust: {
+          state: 'trusted',
+          level: 'privileged-local-user',
+          warning: expect.stringContaining('local OS user'),
+        },
+        credentialState: 'active',
+        version: {
+          state: 'compatible',
+          nodeProtocolVersion: '1.0',
+          hubProtocolVersion: '1.0',
+        },
         capabilities: {
           totals: { available: 6, degraded: 1, unavailable: 2, unknown: 0 },
           agents: { claude: 'available', codex: 'unavailable' },
@@ -409,6 +420,78 @@ describe('hub node registry', () => {
       await expect(registry.flushPendingHeartbeatPersist()).rejects.toThrow();
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('revokes node credentials with typed trust state and rejects later heartbeats', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+
+      const revoked = registry.revokeNode(exchanged.node.nodeId);
+
+      expect(revoked).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        status: 'revoked',
+        credentialState: 'revoked',
+        trust: {
+          state: 'revoked',
+          level: 'privileged-local-user',
+          warning: expect.stringContaining('local OS user'),
+        },
+      });
+      expect(registry.listNodes()[0]).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        status: 'revoked',
+        credentialState: 'revoked',
+      });
+      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+      expect(() =>
+        registry.recordHeartbeat({
+          nodeId: exchanged.node.nodeId,
+          protocolVersion: '1.0',
+          manifest: manifest(),
+        })
+      ).toThrow(/NODE_REVOKED/);
+    });
+  });
+
+  it('isolates revoke listener exceptions and continues notifying later listeners', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withTmpRegistry((registry) => {
+        const exchanged = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        const notifiedNodeIds: string[] = [];
+
+        registry.onNodeRevoked(() => {
+          throw new Error('listener should not leak');
+        });
+        registry.onNodeRevoked((nodeId) => {
+          notifiedNodeIds.push(nodeId);
+        });
+
+        expect(() => registry.revokeNode(exchanged.node.nodeId)).not.toThrow();
+
+        expect(notifiedNodeIds).toEqual([exchanged.node.nodeId]);
+        expect(registry.listNodes()[0]).toMatchObject({
+          nodeId: exchanged.node.nodeId,
+          status: 'revoked',
+          credentialState: 'revoked',
+        });
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            '[hub-node-registry] hub node revoke listener failed; continuing revoke notifications for node %s'
+          ),
+          exchanged.node.nodeId
+        );
+      });
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 

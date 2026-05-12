@@ -147,6 +147,17 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
     protocolVersion: 'local',
     status: 'online',
     connection: { route: 'local', status: 'connected' },
+    trust: {
+      state: 'trusted',
+      level: 'privileged-local-user',
+      warning: '',
+    },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: 'local',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 8, degraded: 0, unavailable: 0, unknown: 0 },
       core: {

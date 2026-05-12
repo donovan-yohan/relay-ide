@@ -264,17 +264,25 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
 
   router.post('/hub/node-heartbeat', (req, res) => {
     const token = bearerToken(req);
-    const authenticated = token ? registry.authenticateCredential(token) : null;
+    const authenticated = token ? registry.authenticateCredentialDetailed(token) : null;
     if (!authenticated) {
-      res.status(401).json({
-        error: { code: 'UNAUTHORIZED', message: 'invalid node credential', retryable: false },
-      });
+      const error = {
+        code: 'UNAUTHORIZED' as const,
+        message: 'invalid node credential',
+        retryable: false,
+      };
+      res.status(errorStatus(error)).json({ error });
+      return;
+    }
+    if (authenticated.ok === false) {
+      const { error } = authenticated;
+      res.status(errorStatus(error)).json({ error });
       return;
     }
     const body = bodyRecord(req);
     const protocolVersion = body['protocolVersion'];
     if (
-      body['nodeId'] !== authenticated.nodeId ||
+      body['nodeId'] !== authenticated.node.nodeId ||
       typeof protocolVersion !== 'string'
     ) {
       res.status(400).json({
@@ -291,7 +299,7 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       const repoInventory = repoInventoryFromBody(body);
       res.json({
         node: registry.recordHeartbeat({
-          nodeId: authenticated.nodeId,
+          nodeId: authenticated.node.nodeId,
           protocolVersion,
           ...(manifest ? { manifest } : {}),
           ...(repoInventory ? { repoInventory } : {}),

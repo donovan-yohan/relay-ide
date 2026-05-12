@@ -378,6 +378,21 @@ export function handleHubNodeLink(
 ): void {
   const authenticatedNodeId = authenticatedNode.nodeId;
   nodeLinks?.registerNodeLink(authenticatedNodeId, ws);
+  const unsubscribeRevoked = registry.onNodeRevoked((nodeId) => {
+    if (nodeId !== authenticatedNodeId) return;
+    sendJson(
+      ws,
+      errorEnvelope(authenticatedNodeId, {}, {
+        code: 'NODE_REVOKED',
+        message: 'node credential was revoked',
+        retryable: false,
+      })
+    );
+    ws.close(4003, 'node revoked');
+  });
+  const cleanup = () => unsubscribeRevoked();
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
 
   ws.on('message', (data) => {
     const parsed = parseEnvelope(data);
