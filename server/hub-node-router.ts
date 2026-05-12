@@ -630,13 +630,17 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     }
 
     const body = bodyRecord(req);
-    const target = findColdReopenTarget(registry.listRepoInventoryReports(), nodeId, body);
-    if ('code' in target) {
-      sendRelayError(res, target);
-      return;
-    }
-
     try {
+      const reports = [...registry.listRepoInventoryReports()];
+      if (options.collectLocalRepoInventory) {
+        reports.push(await options.collectLocalRepoInventory());
+      }
+      const target = findColdReopenTarget(reports, nodeId, body);
+      if ('code' in target) {
+        sendRelayError(res, target);
+        return;
+      }
+
       const sessionPayload = coldReopenSessionPayload(body, target);
       const payload = await options.nodeLinks.request(nodeId, 'sessions.create', sessionPayload);
       const session = scopedNodeSession(nodeId, sessionFromPayload(payload));

@@ -182,7 +182,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     while (cleanup.length > 0) await cleanup.pop()?.();
   });
 
-  async function startHub() {
+  async function startHub(options?: {
+    collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
+  }) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-cold-transfer-'));
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
     const registry = createHubNodeRegistry({
@@ -200,6 +202,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
         },
+        collectLocalRepoInventory: options?.collectLocalRepoInventory,
       })
     );
     const server = http.createServer(app);
@@ -560,6 +563,150 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         nodeId,
         globalSessionId: `${nodeId}:cold-reopen-session-1`,
       },
+      transfer: {
+        mode: 'cold-reopen',
+        livePtyMigrated: false,
+        target: {
+          repoPath: '/srv/relay-ide',
+          worktreePath: '/srv/relay-ide/.worktrees/feature-a',
+          branchName: 'feature/a',
+        },
+        warnings: [],
+      },
+    });
+  });
+
+  it('surfaces source warnings when source checkout is on the hub node via local inventory', async () => {
+    const localNodeId = 'local';
+    const { base, wsBase } = await startHub({
+      collectLocalRepoInventory: async () =>
+        repoInventoryReport(localNodeId, '/Users/hub/relay-ide', {
+          worktrees: [
+            {
+              worktreeInstanceId: `${localNodeId}:${encodeURIComponent('/Users/hub/relay-ide/.worktrees/feature-a')}`,
+              localPath: '/Users/hub/relay-ide/.worktrees/feature-a',
+              branchName: 'feature/a',
+              dirty: {
+                stagedCount: 1,
+                unstagedCount: 1,
+                untrackedCount: 0,
+                conflictedCount: 0,
+                files: [{ path: 'server/hub-node-router.ts', status: 'modified' }],
+                truncated: false,
+              },
+              divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+            },
+          ],
+        }),
+    });
+    const { token, nodeId: targetNodeId } = await pairNode(base);
+    await heartbeatRepoInventory(base, token, targetNodeId, repoInventoryReport(targetNodeId, '/srv/relay-ide'));
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({
+        source: {
+          nodeId: localNodeId,
+          repoIdentity: 'github.com/donovan-yohan/relay-ide',
+          branchName: 'feature/a',
+        },
+        type: 'agent',
+      }),
+    });
+    const request = await nextJson(nodeWs);
+    expect(request.payload).toMatchObject({
+      repoPath: '/srv/relay-ide',
+      worktreePath: '/srv/relay-ide/.worktrees/feature-a',
+      branchName: 'feature/a',
+    });
+    expect(JSON.stringify(request.payload)).toContain('cold reopen');
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId: targetNodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      transfer: {
+        livePtyMigrated: false,
+        warnings: [
+          { code: 'source-dirty-checkout' },
+          { code: 'source-diverged-checkout' },
+        ],
+      },
+    });
+  });
+
+  it('reopens cold when target inventory is only available via local collection', async () => {
+    let localReport: RepoInventoryReport | null = null;
+    const { base, wsBase } = await startHub({
+      collectLocalRepoInventory: async () => {
+        if (!localReport) throw new Error('localReport not set');
+        return localReport;
+      },
+    });
+    const { token, nodeId: targetNodeId } = await pairNode(base);
+    // keep the node online but do not heartbeat repo inventory into the registry
+    const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ nodeId: targetNodeId, protocolVersion: '1.0' }),
+    });
+    expect(heartbeatRes.status).toBe(200);
+    localReport = repoInventoryReport(targetNodeId, '/srv/relay-ide');
+
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({
+        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
+        type: 'agent',
+      }),
+    });
+    const request = await nextJson(nodeWs);
+    expect(request.payload).toMatchObject({
+      repoPath: '/srv/relay-ide',
+      worktreePath: '/srv/relay-ide/.worktrees/feature-a',
+      branchName: 'feature/a',
+    });
+    expect(JSON.stringify(request.payload)).toContain('cold reopen');
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId: targetNodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
       transfer: {
         mode: 'cold-reopen',
         livePtyMigrated: false,
