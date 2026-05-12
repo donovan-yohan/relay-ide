@@ -356,7 +356,7 @@ async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'conn
 if (command === 'hub') {
   const hubArgs = args.slice(1);
   const subCommand = hubArgs[0];
-  if (subCommand === 'install' || hubArgs.includes('--bg')) {
+  if (subCommand === 'install') {
     runServiceCommand(() => {
       process.env['RELAY_IDE_BACKGROUND'] = '1';
       service.install({
@@ -373,6 +373,15 @@ if (command === 'hub') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
     runServiceCommand(printHubLogs);
+  } else if (hubArgs.includes('--bg')) {
+    runServiceCommand(() => {
+      process.env['RELAY_IDE_BACKGROUND'] = '1';
+      service.install({
+        configPath: resolveConfigPath(),
+        port: getArg('--port') ?? String(DEFAULTS.port),
+        host: getArg('--host') ?? DEFAULTS.host,
+      });
+    });
   } else if (!subCommand || subCommand.startsWith('-')) {
     logger.info('Starting Relay hub web server.');
     // Fall through to the default server startup path below. Keeping this as
@@ -401,6 +410,11 @@ if (command === 'node') {
   if (subCommand === 'connect' || subCommand === 'install') {
     if (subCommand === 'install') {
       const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';
+      const validServiceModes = ['auto', 'launchd', 'systemd-user', 'wsl-systemd', 'manual'];
+      if (!validServiceModes.includes(serviceMode)) {
+        logger.error(`Invalid --service value: ${serviceMode}. Expected one of: ${validServiceModes.join(', ')}`);
+        process.exit(1);
+      }
       logger.info(`Bootstrap service mode requested: ${serviceMode}`);
       logger.info('SSH/Tailscale are bootstrap transports only; current bootstrap does not establish a persistent /hub/node-link.');
       await pairNode(nodeArgs, 'install');

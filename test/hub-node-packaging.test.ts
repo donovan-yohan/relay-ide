@@ -65,4 +65,39 @@ describe('hub/node packaging decision', () => {
     expect(bootstrapDoc).toContain('run the web server as `relay-ide hub`');
     expect(bootstrapDoc).toContain('relay-ide node install');
   });
+
+  it('keeps explicit hub subcommands ahead of the --bg shorthand fallback', () => {
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const hubStart = cliSource.indexOf("if (command === 'hub')");
+    const hubEnd = cliSource.indexOf("if (command === 'node')", hubStart);
+    const hubSource = cliSource.slice(hubStart, hubEnd);
+
+    const installIndex = hubSource.indexOf("subCommand === 'install'");
+    const uninstallIndex = hubSource.indexOf("subCommand === 'uninstall'");
+    const statusIndex = hubSource.indexOf("subCommand === 'status'");
+    const logsIndex = hubSource.indexOf("subCommand === 'logs'");
+    const bgFallbackIndex = hubSource.indexOf("hubArgs.includes('--bg')");
+
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(uninstallIndex).toBeGreaterThan(installIndex);
+    expect(statusIndex).toBeGreaterThan(uninstallIndex);
+    expect(logsIndex).toBeGreaterThan(statusIndex);
+    expect(bgFallbackIndex).toBeGreaterThan(logsIndex);
+  });
+
+  it('rejects unknown node install --service values before pairing or service install', () => {
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const serviceModeIndex = cliSource.indexOf("const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';");
+    const pairNodeIndex = cliSource.indexOf("await pairNode(nodeArgs, 'install');", serviceModeIndex);
+    const validationSource = cliSource.slice(serviceModeIndex, pairNodeIndex);
+
+    expect(validationSource).toContain('auto');
+    expect(validationSource).toContain('launchd');
+    expect(validationSource).toContain('systemd-user');
+    expect(validationSource).toContain('wsl-systemd');
+    expect(validationSource).toContain('manual');
+    expect(validationSource).toContain('includes(serviceMode)');
+    expect(validationSource).toContain('Invalid --service value');
+    expect(validationSource).toContain('process.exit(1)');
+  });
 });
