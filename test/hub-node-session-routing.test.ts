@@ -1,0 +1,600 @@
+import * as fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import express from 'express';
+import { WebSocket } from 'ws';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createHubNodeRegistry } from '../server/hub-node-registry.js';
+import { createHubNodeRouter } from '../server/hub-node-router.js';
+import { createHubNodeLinkManager } from '../server/hub-node-link.js';
+import { createLocalRelayNode } from '../server/local-node.js';
+import { setupWebSocket } from '../server/ws.js';
+import type { SessionSummary } from '../server/types.js';
+import type { NodeManifest } from '../shared/node-manifest.js';
+import {
+  RELAY_NODE_LINK_PROTOCOL,
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type RelayNodeEnvelope,
+} from '../shared/relay-node-protocol.js';
+
+function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
+  return {
+    schemaVersion: 1,
+    platform: 'linux',
+    arch: 'x64',
+    hostname: 'session-route-node',
+    relayVersion: '0.1.0-test',
+    generatedAt: '2026-01-02T03:04:05.000Z',
+    wsl: { detected: false, version: null, systemd: false },
+    serviceManager: {
+      kind: 'systemd-user',
+      label: 'systemd user',
+      supported: true,
+      installable: true,
+      installHint: 'install',
+      uninstallHint: 'uninstall',
+      message: 'ok',
+      caveats: [],
+    },
+    capabilities: {
+      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
+      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
+      browserAutomation: {
+        id: 'browserAutomation',
+        label: 'Browser automation',
+        status: 'degraded',
+        message: 'missing deps',
+      },
+      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
+      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
+      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      agents: {
+        claude: { id: 'claude', label: 'Claude', status: 'available', message: 'ok' },
+      },
+    },
+    ...overrides,
+  };
+}
+
+async function listen(server: http.Server): Promise<number> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('missing server address');
+  return address.port;
+}
+
+async function close(server: http.Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function waitForOpen(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.OPEN) return;
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+}
+
+async function nextJson(ws: WebSocket): Promise<RelayNodeEnvelope> {
+  return await new Promise<RelayNodeEnvelope>((resolve) => {
+    ws.once('message', (data) => resolve(JSON.parse(data.toString()) as RelayNodeEnvelope));
+  });
+}
+
+async function nextEvent(ws: WebSocket): Promise<Record<string, unknown>> {
+  return await new Promise<Record<string, unknown>>((resolve) => {
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+    );
+  });
+}
+
+async function rawUpgrade(port: number, pathName: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(
+        `GET ${pathName} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          'Connection: Upgrade\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'
+      );
+    });
+    let response = '';
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      reject(new Error('timed out waiting for raw upgrade response'));
+    });
+    socket.on('data', (chunk) => {
+      response += chunk.toString();
+      socket.destroy();
+      resolve(response);
+    });
+    socket.on('error', reject);
+  });
+}
+
+async function pairNode(base: string, nodeManifest = manifest()): Promise<{
+  token: string;
+  nodeId: string;
+}> {
+  const pairRes = await fetch(`${base}/hub/pair-tokens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+    body: JSON.stringify({ displayName: 'Remote Node' }),
+  });
+  expect(pairRes.status).toBe(201);
+  const pair = (await pairRes.json()) as { pairToken: string };
+
+  const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pairToken: pair.pairToken, manifest: nodeManifest }),
+  });
+  expect(exchangeRes.status).toBe(201);
+  const exchange = (await exchangeRes.json()) as {
+    credential: { token: string; nodeId: string };
+  };
+  return { token: exchange.credential.token, nodeId: exchange.credential.nodeId };
+}
+
+function remoteSession(nodeId: string): SessionSummary {
+  return {
+    id: 'remote-session-1',
+    type: 'terminal',
+    agent: 'claude',
+    mode: 'pty',
+    repoPath: '/srv/relay-ide',
+    worktreePath: null,
+    cwd: '/srv/relay-ide',
+    repoName: 'relay-ide',
+    branchName: 'nightly',
+    displayName: 'relay-ide terminal',
+    createdAt: '2026-01-02T03:04:05.000Z',
+    lastActivity: '2026-01-02T03:04:05.000Z',
+    idle: false,
+    customCommand: null,
+    nodeId,
+    globalSessionId: `${nodeId}:remote-session-1`,
+    repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
+    useTmux: true,
+    tmuxSessionName: 'relay-ide-remote-session-1',
+    status: 'active',
+    needsBranchRename: false,
+    agentState: 'idle',
+  };
+}
+
+describe('hub-routed node session create and attach', () => {
+  const cleanup: Array<() => Promise<void> | void> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) await cleanup.pop()?.();
+  });
+
+  async function startHub(now = () => new Date('2026-01-02T03:04:05.000Z')) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-session-route-'));
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const registry = createHubNodeRegistry({ storagePath: path.join(tmpDir, 'nodes.json'), now });
+    const nodeLinks = createHubNodeLinkManager();
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      true,
+      createLocalRelayNode({ nodeId: 'hub-node' }),
+      registry,
+      nodeLinks
+    );
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    return {
+      base: `http://127.0.0.1:${port}`,
+      wsBase: `ws://127.0.0.1:${port}`,
+      port,
+      nodeLinks,
+    };
+  }
+
+  it('returns NODE_OFFLINE when a selected node has no live reverse link', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+
+    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'NODE_OFFLINE', retryable: true },
+    });
+  });
+
+  it('returns NODE_UNSUPPORTED when the node cannot host tmux PTY sessions', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(
+      base,
+      manifest({
+        capabilities: {
+          ...manifest().capabilities,
+          tmux: { id: 'tmux', label: 'tmux', status: 'unavailable', message: 'missing' },
+        },
+      })
+    );
+
+    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'NODE_UNSUPPORTED', retryable: false },
+    });
+  });
+
+  it('routes session creation to the selected connected node and scopes the returned session', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'sessions.create',
+      payload: { repoPath: '/srv/relay-ide', type: 'terminal' },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: { session: { ...remoteSession(nodeId), nodeId: undefined, globalSessionId: undefined } },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      id: 'remote-session-1',
+      nodeId,
+      globalSessionId: `${nodeId}:remote-session-1`,
+      mode: 'pty',
+    });
+  });
+
+  it('does not trust node-provided scoped identity fields when worktree scope is absent', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    const request = await nextJson(nodeWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: 'spoofed-node',
+            globalSessionId: 'spoofed-global-session',
+            repoInstanceId: 'spoofed-repo-instance',
+            worktreeInstanceId: 'stale-worktree-instance',
+            worktreePath: null,
+          },
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    const scoped = (await res.json()) as Record<string, unknown>;
+    expect(scoped).toMatchObject({
+      nodeId,
+      globalSessionId: `${nodeId}:remote-session-1`,
+      repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
+      worktreePath: null,
+    });
+    expect(scoped).not.toHaveProperty('worktreeInstanceId');
+  });
+
+  it('preserves typed node RPC errors when session creation fails on the node link', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    const request = await nextJson(nodeWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.error',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        error: {
+          code: 'NODE_OFFLINE',
+          message: 'remote node lost its tmux session host',
+          retryable: true,
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        code: 'NODE_OFFLINE',
+        message: 'remote node lost its tmux session host',
+        retryable: true,
+      },
+    });
+  });
+
+  it('proxies browser PTY attach through the hub to the node-owned session', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const browserWs = new WebSocket(
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+    );
+    cleanup.push(() => browserWs.close());
+    await waitForOpen(browserWs);
+
+    const attach = await nextJson(nodeWs);
+    expect(attach).toMatchObject({
+      nodeId,
+      channel: 'pty',
+      type: 'pty.attach',
+      payload: { sessionId: 'remote-session-1' },
+    });
+    expect(attach.streamId).toBeTruthy();
+
+    const browserMessage = new Promise<string>((resolve) => {
+      browserWs.once('message', (data) => resolve(data.toString()));
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: attach.protocol,
+        protocolVersion: attach.protocolVersion,
+        nodeId,
+        channel: 'pty',
+        type: 'pty.data',
+        streamId: attach.streamId,
+        timestamp: new Date().toISOString(),
+        payload: { data: 'hello from node' },
+      })
+    );
+    expect(await browserMessage).toBe('hello from node');
+
+    browserWs.send('input from browser');
+    const input = await nextJson(nodeWs);
+    expect(input).toMatchObject({
+      channel: 'pty',
+      type: 'pty.input',
+      streamId: attach.streamId,
+      payload: { data: 'input from browser' },
+    });
+
+    browserWs.send(JSON.stringify({ type: 'resize', cols: 101, rows: 33 }));
+    const resize = await nextJson(nodeWs);
+    expect(resize).toMatchObject({
+      channel: 'pty',
+      type: 'pty.resize',
+      streamId: attach.streamId,
+      payload: { cols: 101, rows: 33 },
+    });
+
+    const browserClose = new Promise<CloseEvent>((resolve) => {
+      browserWs.once('close', (code, reason) => resolve({ code, reason } as unknown as CloseEvent));
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: attach.protocol,
+        protocolVersion: attach.protocolVersion,
+        nodeId,
+        channel: 'pty',
+        type: 'pty.exit',
+        streamId: attach.streamId,
+        timestamp: new Date().toISOString(),
+      })
+    );
+    expect((await browserClose).code).toBe(1000);
+  });
+
+  it('rejects pending RPCs promptly when a node reverse link is replaced', async () => {
+    const { base, wsBase, nodeLinks } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const pending = nodeLinks.request(nodeId, 'sessions.create', {
+      repoPath: '/srv/relay-ide',
+      type: 'terminal',
+    });
+    const pendingFailure = pending.then(
+      () => new Error('pending RPC unexpectedly resolved'),
+      (error: unknown) => error
+    );
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'sessions.create',
+    });
+
+    const replacementWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => replacementWs.close());
+    await waitForOpen(replacementWs);
+
+    await expect(pendingFailure).resolves.toMatchObject({
+      relayNodeError: {
+        code: 'NODE_OFFLINE',
+        message: `node ${nodeId} link closed`,
+        retryable: true,
+      },
+    });
+  });
+
+  it('closes browser PTY streams promptly when a node reverse link is replaced', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const browserWs = new WebSocket(
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+    );
+    cleanup.push(() => browserWs.close());
+    await waitForOpen(browserWs);
+
+    const attach = await nextJson(nodeWs);
+    expect(attach).toMatchObject({
+      nodeId,
+      channel: 'pty',
+      type: 'pty.attach',
+      payload: { sessionId: 'remote-session-1' },
+    });
+
+    const browserClose = new Promise<{ code: number; reason: string }>((resolve) => {
+      browserWs.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    const replacementWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => replacementWs.close());
+    await waitForOpen(replacementWs);
+
+    await expect(Promise.race([
+      browserClose,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('browser PTY stream stayed open after replacement')), 250)
+      ),
+    ])).resolves.toMatchObject({ code: 1011, reason: 'node link closed' });
+  });
+
+  it('broadcasts remote node session events with node-scoped identity', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const eventsWs = new WebSocket(`${wsBase}/ws/events`);
+    cleanup.push(() => eventsWs.close());
+    await waitForOpen(eventsWs);
+
+    const eventPromise = nextEvent(eventsWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId,
+        channel: 'events',
+        type: 'events.publish',
+        timestamp: new Date().toISOString(),
+        payload: {
+          type: 'session-activity-changed',
+          sessionId: 'remote-session-1',
+          timestamp: '2026-01-02T03:04:05.000Z',
+        },
+      })
+    );
+
+    await expect(eventPromise).resolves.toMatchObject({
+      type: 'session-activity-changed',
+      nodeId,
+      sessionId: 'remote-session-1',
+      localSessionId: 'remote-session-1',
+      globalSessionId: `${nodeId}:remote-session-1`,
+      timestamp: '2026-01-02T03:04:05.000Z',
+    });
+  });
+
+  it('rejects malformed routed PTY path escapes with a controlled 400', async () => {
+    const { port } = await startHub();
+
+    await expect(
+      rawUpgrade(port, '/nodes/%E0%A4%A/ws/sessions/remote-session-1')
+    ).resolves.toContain('HTTP/1.1 400 Bad Request');
+  });
+});

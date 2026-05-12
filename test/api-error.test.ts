@@ -75,4 +75,55 @@ describe('frontend api errors', () => {
         'Too many terminal sessions are already active. Close inactive sessions and try again.',
     });
   });
+
+  it('posts selected remote node session creates to the hub route without leaking nodeId to the node payload', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: 'remote-session-1' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSession({ nodeId: 'node-a', repoPath: '/repo', type: 'terminal' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/hub/nodes/node-a/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoPath: '/repo', type: 'terminal' }),
+    });
+  });
+
+  it('preserves typed relay error bodies for remote session create failures', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'NODE_OFFLINE',
+                message: 'node node-a has no live reverse link',
+                retryable: true,
+              },
+            }),
+            {
+              status: 404,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(
+      createSession({ nodeId: 'node-a', repoPath: '/repo', type: 'terminal' })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 404,
+      code: 'NODE_OFFLINE',
+      message: 'node node-a has no live reverse link',
+      retryable: true,
+    });
+  });
 });

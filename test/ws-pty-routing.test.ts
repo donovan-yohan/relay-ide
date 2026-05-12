@@ -224,8 +224,8 @@ describe('per-session PTY routing', () => {
     sockets[1]!.__triggerOpen();
 
     expect(sockets).toHaveLength(2);
-    expect(sockets[0]!.url).toContain('/ws/same-local-id');
-    expect(sockets[1]!.url).toContain('/ws/same-local-id');
+    expect(sockets[0]!.url).toContain('/nodes/node-a/ws/sessions/same-local-id');
+    expect(sockets[1]!.url).toContain('/nodes/node-b/ws/sessions/same-local-id');
     uiStore.sendToTargetSessionId = 'node-b:same-local-id';
     ws.sendPtyData('to-node-b');
 

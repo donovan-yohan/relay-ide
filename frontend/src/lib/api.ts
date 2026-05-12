@@ -32,7 +32,11 @@ import type {
   AggregatedRepoInventoryResponse,
 } from './types.js';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
-import { parseGlobalSessionId } from '../../../shared/identity.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  parseGlobalSessionId,
+  type NodeId,
+} from '../../../shared/identity.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -46,15 +50,18 @@ export class ConflictError extends Error {
 export class HttpError extends Error {
   status: number;
   code: string | undefined;
+  retryable: boolean | undefined;
   constructor(
     status: number,
     message = httpErrorMessage(status),
-    code?: string | undefined
+    code?: string | undefined,
+    retryable?: boolean | undefined
   ) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
   }
 }
 
@@ -118,14 +125,29 @@ async function httpErrorFromResponse(
 ): Promise<HttpError> {
   try {
     const data = (await res.json()) as { error?: unknown; message?: unknown };
-    const code = typeof data.error === 'string' ? data.error : undefined;
+    const structuredError =
+      typeof data.error === 'object' && data.error !== null
+        ? (data.error as Record<string, unknown>)
+        : null;
+    const code =
+      typeof data.error === 'string'
+        ? data.error
+        : typeof structuredError?.['code'] === 'string'
+          ? structuredError['code']
+          : undefined;
+    const retryable =
+      typeof structuredError?.['retryable'] === 'boolean'
+        ? structuredError['retryable']
+        : undefined;
     const message =
       typeof data.message === 'string'
         ? data.message
+        : typeof structuredError?.['message'] === 'string'
+          ? structuredError['message']
         : typeof data.error === 'string'
           ? httpErrorMessage(res.status, data.error)
           : httpErrorMessage(res.status, fallback);
-    return new HttpError(res.status, message, code);
+    return new HttpError(res.status, message, code, retryable);
   } catch {
     return new HttpError(res.status, httpErrorMessage(res.status, fallback));
   }
@@ -511,6 +533,7 @@ export async function enrichBranches(
 }
 
 export async function createSession(body: {
+  nodeId?: NodeId | undefined;
   repoPath: string;
   worktreePath?: string | null | undefined;
   type?: 'agent' | 'terminal' | undefined;
@@ -536,10 +559,15 @@ export async function createSession(body: {
     repoName: string;
   };
 }): Promise<SessionSummary> {
-  const res = await fetch('/sessions', {
+  const { nodeId, ...sessionBody } = body;
+  const sessionPath =
+    nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? '/hub/nodes/' + encodeURIComponent(nodeId) + '/sessions'
+      : '/sessions';
+  const res = await fetch(sessionPath, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(sessionBody),
   });
   if (res.status === 409) {
     try {
