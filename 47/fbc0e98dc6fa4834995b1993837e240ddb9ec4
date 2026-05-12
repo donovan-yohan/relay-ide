@@ -1,0 +1,27 @@
+server/node-link-pty-host.ts
+  s_0837e04cd7f585::t_418c05372b91ad 49
+  s_0837e04cd7f585::t_808eefd394a9e7 144,146,152-154
+  s_0837e04cd7f585::t_58ab757599489c 89-94
+  s_0837e04cd7f585::t_4b0894f8ba157f 192,198
+  s_0837e04cd7f585::t_827281ab259a60 240,246-247
+  s_0837e04cd7f585::t_e69503797d9ea3 72-73,76,78
+  s_0837e04cd7f585::t_b22fbb34faed16 283-286,290-292
+test/node-link-pty-host.test.ts
+  s_0837e04cd7f585::t_2352c2ee9f4579 148-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "47fbc0e98dc6fa4834995b1993837e240ddb9ec4",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
