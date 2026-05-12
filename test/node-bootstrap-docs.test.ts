@@ -15,13 +15,25 @@ describe('relay-node bootstrap docs', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
     const serviceSource = readRepoFile('server/service.ts');
-    const serviceLabel = serviceSource.match(/SERVICE_LABEL = '([^']+)'/)?.[1];
+    const serviceLabelMatch = serviceSource.match(/\bSERVICE_LABEL\s*=\s*['"]([^'"]+)['"]/);
+    expect(serviceLabelMatch).not.toBeNull();
+    const serviceLabel = serviceLabelMatch![1];
 
     expect(serviceLabel).toBe('com.relay-ide');
 
     const launchdLogHint = `launchctl print gui/$(id -u)/${serviceLabel}`;
-    expect(cliSource).toContain(`return ['${launchdLogHint}'];`);
+    expect(cliSource).toContain(launchdLogHint);
     expect(docs).toContain(launchdLogHint);
     expect(docs).not.toContain(`${serviceLabel}.node`);
+  });
+
+  it('keeps node install docs and CLI diagnostics honest about reverse-link lifecycle', () => {
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
+
+    expect(docs).toContain('This bootstrap slice does not start or maintain `/hub/node-link`.');
+    expect(cliSource).toContain('does not start or maintain /hub/node-link');
+    expect(docs).not.toMatch(/node install[^\n]+establishes steady-state/i);
+    expect(docs).not.toMatch(/install\/start creates steady-state/i);
   });
 });

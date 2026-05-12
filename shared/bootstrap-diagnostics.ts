@@ -133,11 +133,14 @@ const DEFAULT_SERVICE_MODES: BootstrapServiceMode[] = [
 
 const SERVICE_LABELS: Record<BootstrapServiceMode, { id: BootstrapCommandId; label: string }> = {
   manual: { id: 'local-manual', label: 'Local/manual pair-only node setup' },
-  launchd: { id: 'macos-launchd', label: 'macOS launchd node service' },
-  'systemd-user': { id: 'linux-systemd-user', label: 'Linux systemd --user node service' },
-  'wsl-systemd': { id: 'wsl-systemd', label: 'WSL systemd-enabled node service' },
+  launchd: { id: 'macos-launchd', label: 'macOS launchd Relay service bootstrap' },
+  'systemd-user': { id: 'linux-systemd-user', label: 'Linux systemd --user Relay service bootstrap' },
+  'wsl-systemd': { id: 'wsl-systemd', label: 'WSL systemd-enabled Relay service bootstrap' },
   'wsl-manual': { id: 'wsl-manual', label: 'WSL manual pair-only node setup' },
 };
+
+const NODE_LINK_NOT_STARTED_CAVEAT =
+  'Current bootstrap diagnostics pair credentials and install/start the generic Relay service only; this slice does not start or maintain /hub/node-link, so routed sessions still need a persistent node-link client.';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -155,7 +158,7 @@ function localNodeCommand(input: Required<Pick<BootstrapCommandInput, 'hubUrl' |
     shellQuote(input.pairToken),
   ];
   if (subCommand === 'install') {
-    base.push('--service', service === 'wsl-manual' ? 'manual' : service);
+    base.push('--service', service);
   }
   return base.join(' ');
 }
@@ -174,7 +177,10 @@ function remoteCommand(binary: 'ssh' | 'tailscale ssh', target: string, script: 
 
 function commandCaveats(service: BootstrapServiceMode): string[] {
   if (service === 'wsl-systemd') {
-    return ['Only works when WSL systemd and the user bus are enabled; WSL distro shutdown still stops the node.'];
+    return [
+      'Only works when WSL systemd and the user bus are enabled; WSL distro shutdown still stops the node.',
+      NODE_LINK_NOT_STARTED_CAVEAT,
+    ];
   }
   if (service === 'wsl-manual') {
     return [
@@ -186,7 +192,7 @@ function commandCaveats(service: BootstrapServiceMode): string[] {
       'Pair-only fallback; node connect stores credentials and sends one heartbeat, then exits. Install a service-specific variant or supervisor for steady-state node traffic.',
     ];
   }
-  return [];
+  return [NODE_LINK_NOT_STARTED_CAVEAT];
 }
 
 function withRedaction(command: Omit<BootstrapCommand, 'redactedCommand'>): BootstrapCommand {

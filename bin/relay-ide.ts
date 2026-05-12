@@ -250,7 +250,9 @@ function nodeEndpoint(hubUrl: string, pathname: string): string {
   return new URL(pathname, hubUrl).toString();
 }
 
-async function pairNode(nodeArgs: string[]): Promise<void> {
+type NodePairLifecycle = 'connect' | 'install';
+
+async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'connect'): Promise<void> {
   const hubUrl = getNodeArg(nodeArgs, '--hub');
   const pairToken = getNodeArg(nodeArgs, '--pair-token');
   if (!hubUrl || !pairToken) {
@@ -307,7 +309,11 @@ async function pairNode(nodeArgs: string[]): Promise<void> {
 
     logger.info(`Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`);
     logger.info(`Credential saved to ${credentialPath}.`);
-    logger.info('Sent initial heartbeat; steady-state node traffic uses the reverse WebSocket protocol.');
+    if (lifecycle === 'install') {
+      logger.info('Sent initial heartbeat; node install is pairing plus local service setup only and does not start or maintain /hub/node-link.');
+    } else {
+      logger.info('Sent initial heartbeat; node connect is pair-only and exits without starting /hub/node-link.');
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: ${message}`));
@@ -334,8 +340,8 @@ if (command === 'node') {
     if (subCommand === 'install') {
       const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';
       logger.info(`Bootstrap service mode requested: ${serviceMode}`);
-      logger.info('SSH/Tailscale are bootstrap transports only; steady state uses reverse WebSocket.');
-      await pairNode(nodeArgs);
+      logger.info('SSH/Tailscale are bootstrap transports only; current bootstrap does not establish a persistent /hub/node-link.');
+      await pairNode(nodeArgs, 'install');
       if (serviceMode === 'manual') {
         logger.info('Manual service mode requested; paired credentials only. No foreground node process was started.');
         process.exit(0);
@@ -348,9 +354,10 @@ if (command === 'node') {
           host: getArg('--host') ?? DEFAULTS.host,
         });
       });
+    } else {
+      await pairNode(nodeArgs, 'connect');
+      process.exit(0);
     }
-    await pairNode(nodeArgs);
-    process.exit(0);
   }
   logger.error('Usage: relay-ide node <status|logs|doctor|connect|install>');
   process.exit(1);

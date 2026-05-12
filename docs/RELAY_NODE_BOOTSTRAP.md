@@ -1,14 +1,14 @@
 # Relay Node Bootstrap
 
-Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. After pairing, relay-node traffic uses the reverse WebSocket protocol at `/hub/node-link` plus heartbeat/pairing HTTP routes.
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are implemented here; steady-state routed sessions still require a future persistent node-side client that opens `/hub/node-link` with the stored node credential. This bootstrap slice does not start or maintain `/hub/node-link`.
 
 ## Flow
 
 1. The hub creates a short-lived, one-time pair token with `POST /hub/pair-tokens`.
 2. The response includes the raw `pairToken` for copy actions and redacted `suggestedCommands[*].redactedCommand` for safe display/logging.
-3. A trusted target runs `relay-ide node connect` to pair credentials once, or `relay-ide node install` to pair credentials and install/start a Relay-managed service.
+3. A trusted target runs `relay-ide node connect` to pair credentials once, or `relay-ide node install` to pair credentials and install/start Relay's generic background service.
 4. The node exchanges the pair token at `/hub/pairing/exchange` for a persistent revocable node credential, stores it locally with `0600` permissions, and sends an initial heartbeat. `node connect` exits after this one-shot pairing/heartbeat. `node install` then delegates service install/start to Relay's local service manager abstraction.
-5. Steady-state node traffic connects back to the hub using the reverse WebSocket protocol. SSH/Tailscale are no longer in the request path.
+5. This slice stops there: installed services do not read `node-credential.json` or maintain `/hub/node-link` yet, so routed sessions still require the follow-up persistent reverse-link client.
 
 Tokens and credentials must be redacted in logs, issue comments, and diagnostics. Use redacted command copies when rendering status or writing logs.
 
@@ -49,7 +49,7 @@ relay-ide node connect \
   --pair-token <token>
 ```
 
-This is the safest fallback for unsupported service managers when you only need to pair credentials. It is not a foreground node lifecycle: the command stores credentials, sends one initial heartbeat, then exits. Use a launchd/systemd install command or your own supervisor for steady-state reverse WebSocket traffic.
+This is the safest fallback for unsupported service managers when you only need to pair credentials. It is not a foreground node lifecycle: the command stores credentials, sends one initial heartbeat, then exits. A separate persistent `/hub/node-link` client is still required for steady-state routed sessions.
 
 ## macOS launchd
 
@@ -60,7 +60,7 @@ relay-ide node install \
   --service launchd
 ```
 
-Diagnostics/log hints:
+Diagnostics/log hints (these confirm the generic Relay service; they do not prove a routed-session node link is online):
 
 ```bash
 relay-ide node status
@@ -77,7 +77,7 @@ relay-ide node install \
   --service systemd-user
 ```
 
-Headless Linux caveat: user services may require linger to survive logout/reboot:
+Headless Linux caveat: user services may require linger to survive logout/reboot. In this bootstrap slice, the service install does not start or maintain `/hub/node-link`:
 
 ```bash
 loginctl enable-linger "$USER"
@@ -87,7 +87,7 @@ journalctl --user -u relay-ide --no-pager -n 100
 
 ## Linux system service
 
-Relay-managed node install currently writes per-user service files only. For root-owned host-level lifecycle, pair with `relay-ide node connect` or `relay-ide node install --service systemd-user` first, then create a site-specific system unit that runs the global `relay-ide` binary under the intended user. There is no `--user` flag on `relay-ide node install`.
+Relay-managed node install currently writes per-user service files only. For root-owned host-level lifecycle, pair with `relay-ide node connect` or `relay-ide node install --service systemd-user` first, then create a site-specific system unit that runs the global `relay-ide` binary under the intended user. There is no `--user` flag on `relay-ide node install`. None of these commands establishes `/hub/node-link` in this slice.
 
 ## WSL
 
@@ -108,7 +108,7 @@ relay-ide node connect \
   --pair-token <token>
 ```
 
-WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, and Relay does not install a Windows scheduled task in MVP.
+WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, `node install --service wsl-systemd` does not establish `/hub/node-link` in this slice, and Relay does not install a Windows scheduled task in MVP.
 
 ## SSH and Tailscale SSH
 
@@ -132,7 +132,7 @@ relay-ide node install --hub 'https://hub.example.com' --pair-token '<token>' --
 RELAY_IDE_BOOTSTRAP
 ```
 
-Tailscale is the private reachability/trust layer. Relay does not manage tailnet ACLs in MVP.
+Tailscale is the private reachability/trust layer. Relay does not manage tailnet ACLs in MVP. SSH/Tailscale generated commands install the same pairing/service bootstrap described above; they do not establish routed-session reverse-link traffic by themselves.
 
 ## Diagnostics taxonomy
 

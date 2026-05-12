@@ -71,6 +71,20 @@ describe('bootstrap command generation and diagnostics', () => {
     }
   });
 
+  it('does not advertise service install commands as active reverse-link bootstrap', () => {
+    const commands = generateBootstrapCommands({
+      hubUrl: 'https://hub.example.com',
+      pairToken: 'pair_secret-token-value',
+      serviceModes: ['launchd', 'systemd-user', 'wsl-systemd'],
+    });
+
+    for (const command of commands) {
+      expect(command.command).toContain('node install');
+      expect(command.caveats.join(' ')).toContain('does not start or maintain /hub/node-link');
+      expect(command.caveats.join(' ')).not.toMatch(/node traffic is established/i);
+    }
+  });
+
   it('does not advertise unsupported service managers as a foreground node lifecycle', () => {
     const unsupported = BOOTSTRAP_DIAGNOSTICS.find(
       (diagnostic) => diagnostic.code === 'SERVICE_MANAGER_UNSUPPORTED'

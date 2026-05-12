@@ -112,7 +112,7 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 - `--bg` is shortcut for `install` (installs + starts)
 - Service files generated with current CLI flags baked in
 - Service manager detection is capability-based, not platform-only: macOS uses launchd user agents; Linux uses systemd `--user` only when the user manager is actually available; WSL reports `wsl-systemd` only when WSL systemd and the user bus are both present, otherwise `wsl-manual`.
-- `GET /api/node/manifest` exposes the same local node capability schema as `relay-ide manifest`; hub pairing uses `POST /hub/pair-tokens` to return a short-lived token plus local/SSH/Tailscale bootstrap commands, and `relay-ide node status|logs|doctor` prints redacted diagnostics for reachability, service, token, connect-back, protocol, and heartbeat failures. SSH/Tailscale are bootstrap/fallback transports only; steady-state hub-node traffic uses the reverse WebSocket protocol.
+- `GET /api/node/manifest` exposes the same local node capability schema as `relay-ide manifest`; hub pairing uses `POST /hub/pair-tokens` to return a short-lived token plus local/SSH/Tailscale bootstrap commands, and `relay-ide node status|logs|doctor` prints redacted diagnostics for reachability, service, token, connect-back, protocol, and heartbeat failures. SSH/Tailscale are bootstrap/fallback transports only; this slice pairs credentials and emits service-manager commands but does not start or maintain `/hub/node-link` for routed sessions yet.
 - macOS: launchd plist (`RunAtLoad` + `KeepAlive`); Linux: systemd user unit (`Restart=on-failure`)
 - To change port/host: `uninstall` then re-install with new flags
 
