@@ -13,11 +13,26 @@ export interface NodeCapabilityProbe {
   version?: string;
 }
 
+export type NodePathMode =
+  | 'native'
+  | 'wsl-native'
+  | 'windows-mount'
+  | 'unknown';
+
+export type WslLifecycleMode = 'wsl-systemd' | 'wsl-manual';
+
+export type WslSupportTier = 'tier-1.5';
+
 export interface WslInfo {
   detected: boolean;
   version: 1 | 2 | null;
   distroName?: string;
   systemd: boolean;
+  supportTier?: WslSupportTier;
+  lifecycleMode?: WslLifecycleMode;
+  pathMode?: NodePathMode;
+  windowsPath?: string;
+  caveats?: string[];
   message?: string;
 }
 
@@ -88,6 +103,28 @@ function isWslVersion(value: unknown): value is WslInfo['version'] {
   return value === 1 || value === 2 || value === null;
 }
 
+function isNodePathMode(value: unknown): value is NodePathMode | undefined {
+  return (
+    value === undefined ||
+    value === 'native' ||
+    value === 'wsl-native' ||
+    value === 'windows-mount' ||
+    value === 'unknown'
+  );
+}
+
+function isWslLifecycleMode(
+  value: unknown
+): value is WslLifecycleMode | undefined {
+  return (
+    value === undefined || value === 'wsl-systemd' || value === 'wsl-manual'
+  );
+}
+
+function isWslSupportTier(value: unknown): value is WslSupportTier | undefined {
+  return value === undefined || value === 'tier-1.5';
+}
+
 function isServiceManagerKind(value: unknown): value is ServiceManagerKind {
   return (
     value === 'launchd' ||
@@ -111,10 +148,18 @@ const requiredCapabilityKeys = [
 ] as const;
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
 }
 
-export function isNodeCapabilityProbe(value: unknown): value is NodeCapabilityProbe {
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+  return value === undefined || isStringArray(value);
+}
+
+export function isNodeCapabilityProbe(
+  value: unknown
+): value is NodeCapabilityProbe {
   if (!isRecord(value)) return false;
   return (
     typeof value['id'] === 'string' &&
@@ -133,6 +178,11 @@ function isWslInfo(value: unknown): value is WslInfo {
     isWslVersion(value['version']) &&
     typeof value['systemd'] === 'boolean' &&
     isOptionalString(value['distroName']) &&
+    isWslSupportTier(value['supportTier']) &&
+    isWslLifecycleMode(value['lifecycleMode']) &&
+    isNodePathMode(value['pathMode']) &&
+    isOptionalString(value['windowsPath']) &&
+    isOptionalStringArray(value['caveats']) &&
     isOptionalString(value['message'])
   );
 }

@@ -210,22 +210,28 @@ describe('hub/node packaging decision', () => {
 
   it('rejects unknown node install --service values before pairing or service install', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
-    const serviceModeIndex = cliSource.indexOf(
-      "const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';"
+    const serviceModeDefinitionIndex = cliSource.indexOf('type RequestedNodeServiceMode');
+    const serviceModeParserIndex = cliSource.indexOf('function parseNodeServiceMode', serviceModeDefinitionIndex);
+    const serviceModeUsageIndex = cliSource.indexOf(
+      "const serviceMode = parseNodeServiceMode(getNodeArg(nodeArgs, '--service') ?? 'auto');",
+      serviceModeParserIndex
     );
     const pairNodeIndex = cliSource.indexOf(
       "await pairNode(nodeArgs, 'install');",
-      serviceModeIndex
+      serviceModeUsageIndex
     );
-    const validationSource = cliSource.slice(serviceModeIndex, pairNodeIndex);
+    const validationSource = cliSource.slice(serviceModeDefinitionIndex, pairNodeIndex);
 
+    expect(serviceModeDefinitionIndex).toBeGreaterThanOrEqual(0);
+    expect(serviceModeParserIndex).toBeGreaterThan(serviceModeDefinitionIndex);
+    expect(serviceModeUsageIndex).toBeGreaterThan(serviceModeParserIndex);
     expect(validationSource).toContain('auto');
     expect(validationSource).toContain('launchd');
     expect(validationSource).toContain('systemd-user');
     expect(validationSource).toContain('wsl-systemd');
     expect(validationSource).toContain('manual');
-    expect(validationSource).toContain('includes(serviceMode)');
-    expect(validationSource).toContain('Invalid --service value');
+    expect(validationSource).toContain('requestedNodeServiceModes.includes');
+    expect(validationSource).toContain('Invalid --service');
     expect(validationSource).toContain('process.exit(1)');
   });
 });

@@ -40,4 +40,34 @@ describe('relay-node bootstrap docs', () => {
     expect(docs).not.toMatch(/node install[^\n]+establishes steady-state/i);
     expect(docs).not.toMatch(/install\/start creates steady-state/i);
   });
+
+  it('documents WSL support as simulated and keeps real-host validation open', () => {
+    const bootstrapDocs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
+    const wslDocs = readRepoFile('docs/WSL2_RELAY_NODE_SUPPORT.md');
+    const joined = `${bootstrapDocs}\n${wslDocs}`;
+
+    expect(joined).toContain('tier-1.5');
+    expect(joined).toContain('simulated diagnostics/manifest coverage');
+    expect(joined).toContain('#378 must remain open');
+    expect(joined).toContain(
+      'Native Windows relay-node support remains out of scope'
+    );
+    expect(wslDocs).toContain('Real WSL2 host smoke');
+    expect(wslDocs).toContain('Blocked');
+    expect(joined).toContain('real-host validation is pending (#378)');
+  });
+
+  it('keeps the WSL manifest example valid JSON with escaped UNC paths', () => {
+    const wslDocs = readRepoFile('docs/WSL2_RELAY_NODE_SUPPORT.md');
+    const manifestJsonMatch = wslDocs.match(/```json\n([\s\S]*?)\n```/);
+
+    expect(manifestJsonMatch).not.toBeNull();
+    const manifest = JSON.parse(manifestJsonMatch?.[1] ?? '{}') as {
+      windowsPath?: string;
+    };
+
+    expect(manifest.windowsPath).toBe(
+      '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide'
+    );
+  });
 });

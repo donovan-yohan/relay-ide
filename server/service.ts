@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { DEFAULTS } from './config.js';
 import type { Platform, ServicePaths, InstallOpts } from './types.js';
-import type { NodeServiceManager, WslInfo } from '../shared/node-manifest.js';
+import type {
+  NodePathMode,
+  NodeServiceManager,
+  WslInfo,
+} from '../shared/node-manifest.js';
 import { createLogger } from './logger.js';
 import { WORKTREE_DIRS } from './watcher.js';
 
@@ -29,6 +33,7 @@ interface ServiceDetectionDeps {
   fsReadFileSync?: (p: string, encoding: BufferEncoding) => string;
   execSync?: ExecSyncLike;
   wsl?: WslInfo;
+  cwd?: string;
 }
 
 /**
@@ -170,31 +175,86 @@ function readOptionalFile(
   }
 }
 
+function detectWslPathMode(cwd: string): NodePathMode {
+  if (!cwd.startsWith('/')) return 'unknown';
+  if (/^\/mnt\/[a-z](?:\/|$)/i.test(cwd)) return 'windows-mount';
+  if (cwd === '/home' || cwd.startsWith('/home/')) return 'wsl-native';
+  return 'unknown';
+}
+
+function wslLocalhostPath(
+  distroName: string | undefined,
+  cwd: string
+): string | undefined {
+  if (!distroName || !cwd.startsWith('/')) return undefined;
+  const segments = cwd.split('/').filter(Boolean).join('\\');
+  return `\\\\wsl.localhost\\${distroName}${segments ? `\\${segments}` : ''}`;
+}
+
+function wslCaveats(systemd: boolean, pathMode: NodePathMode): string[] {
+  const caveats = [
+    'WSL is a Tier 1.5 Linux-like relay-node environment, not native Windows node support.',
+    'Use outbound node-to-hub WebSocket traffic; do not require inbound hub-to-WSL networking.',
+    'Clipboard, browser automation, notifications, and port previews must remain capability-gated.',
+  ];
+  if (systemd) {
+    caveats.push(
+      'WSL systemd services still stop when the distro is shut down.'
+    );
+  } else {
+    caveats.push(
+      'WSL without systemd uses manual foreground startup; Relay does not install a Windows scheduled task in MVP.'
+    );
+  }
+  if (pathMode === 'windows-mount') {
+    caveats.push(
+      'Working directory under /mnt/<drive> may have slower file watching and Windows filesystem permission/case semantics.'
+    );
+  }
+  if (pathMode === 'unknown') {
+    caveats.push(
+      'Working directory is neither /home nor /mnt/<drive>; treat path behavior as unvalidated.'
+    );
+  }
+  return caveats;
+}
+
 function detectWslInfo(deps: ServiceDetectionDeps = {}): WslInfo {
   const platform = deps.platform ?? process.platform;
   const env = deps.env ?? process.env;
   const exists = deps.fsExistsSync ?? fs.existsSync;
   const readFile = deps.fsReadFileSync ?? fs.readFileSync;
-  if (platform !== 'linux') return { detected: false, version: null, systemd: false };
+  const cwd = deps.cwd ?? process.cwd();
+  if (platform !== 'linux')
+    return { detected: false, version: null, systemd: false };
 
   const release = readOptionalFile('/proc/sys/kernel/osrelease', readFile);
   const versionText = readOptionalFile('/proc/version', readFile);
   const combined = `${release}\n${versionText}`;
   const envDistro = env['WSL_DISTRO_NAME'];
   const envInterop = env['WSL_INTEROP'];
-  const detected = /microsoft|wsl/i.test(combined) || Boolean(envDistro || envInterop);
+  const detected =
+    /microsoft|wsl/i.test(combined) || Boolean(envDistro || envInterop);
   if (!detected) return { detected: false, version: null, systemd: false };
 
-  const version: 1 | 2 | null = /wsl2/i.test(combined) || Boolean(envInterop)
-    ? 2
-    : /microsoft/i.test(combined)
-      ? 1
-      : null;
+  const version: 1 | 2 | null =
+    /wsl2/i.test(combined) || Boolean(envInterop)
+      ? 2
+      : /microsoft/i.test(combined)
+        ? 1
+        : null;
   const systemd = exists('/run/systemd/system');
+  const pathMode = detectWslPathMode(cwd);
+  const windowsPath = wslLocalhostPath(envDistro, cwd);
   const base = {
     detected: true,
     version,
     systemd,
+    supportTier: 'tier-1.5' as const,
+    lifecycleMode: systemd ? ('wsl-systemd' as const) : ('wsl-manual' as const),
+    pathMode,
+    ...(windowsPath ? { windowsPath } : {}),
+    caveats: wslCaveats(systemd, pathMode),
     ...(envDistro ? { distroName: envDistro } : {}),
   };
   if (systemd) {
@@ -225,8 +285,10 @@ function detectServiceManager(
       servicePath: paths.servicePath,
       unitName: SERVICE_LABEL,
       statusCommand: `launchctl list ${SERVICE_LABEL}`,
-      installHint: 'relay-ide install writes a launchd user agent and starts it with launchctl.',
-      uninstallHint: 'relay-ide uninstall unloads the launchd agent and removes the plist.',
+      installHint:
+        'relay-ide install writes a launchd user agent and starts it with launchctl.',
+      uninstallHint:
+        'relay-ide uninstall unloads the launchd agent and removes the plist.',
       message: 'macOS launchd user agents are supported.',
     });
   }
@@ -237,7 +299,8 @@ function detectServiceManager(
       label: 'unsupported platform',
       supported: false,
       installable: false,
-      installHint: 'Run relay-ide in the foreground or install your own process supervisor.',
+      installHint:
+        'Run relay-ide in the foreground or install your own process supervisor.',
       uninstallHint: 'No Relay-managed service is available on this platform.',
       message: `Unsupported service platform: ${platform}.`,
     });
@@ -331,7 +394,8 @@ function detectServiceManager(
   }
 
   const systemManagerAvailable =
-    hasSystemctl && commandSucceeds('systemctl is-system-running --quiet', exec);
+    hasSystemctl &&
+    commandSucceeds('systemctl is-system-running --quiet', exec);
 
   if (systemManagerAvailable) {
     return makeManager({
@@ -348,9 +412,7 @@ function detectServiceManager(
         'relay-ide uninstall only manages per-user units; remove any manual system unit with systemctl as root.',
       message:
         'systemd is present, but the current user manager is unavailable.',
-      caveats: [
-        'Relay does not write root-owned system units automatically.',
-      ],
+      caveats: ['Relay does not write root-owned system units automatically.'],
     });
   }
 
@@ -444,9 +506,7 @@ function isInstalled(): boolean {
 function install(opts: InstallOpts): void {
   const manager = detectServiceManager();
   if (!manager.installable) {
-    throw new Error(
-      `${manager.message}\n${manager.installHint}`
-    );
+    throw new Error(`${manager.message}\n${manager.installHint}`);
   }
 
   const platform = getPlatform();
@@ -576,7 +636,9 @@ function status(): ServiceStatus {
   return { installed: true, running, manager };
 }
 
-function checkRunning(managerOrPlatform: NodeServiceManager | Platform): boolean {
+function checkRunning(
+  managerOrPlatform: NodeServiceManager | Platform
+): boolean {
   if (managerOrPlatform === 'macos') {
     return checkLaunchdRunning();
   }

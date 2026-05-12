@@ -82,7 +82,7 @@ Format:
   "protocolVersion": "1.0",
   "nodeId": "node_...",
   "credentialId": "cred_...",
-  "token": "node_...._...",
+  "token": "***",
   "issuedAt": "2026-05-12T..."
 }
 ```
@@ -151,7 +151,7 @@ On headless Linux, run `loginctl enable-linger $USER` so the user service surviv
 
 ### WSL2
 
-WSL2 behaves like Linux, but with two caveats:
+WSL2 is a Tier 1.5 Linux-like node target, not native Windows node support. The detailed support matrix and real-host validation checklist live in [`docs/WSL2_RELAY_NODE_SUPPORT.md`](./WSL2_RELAY_NODE_SUPPORT.md). This slice adds simulated diagnostics/manifest coverage; real-host validation is pending (#378), and #378 must remain open until the real-host matrix runs on a Windows/WSL2 machine.
 
 1. **systemd must be explicitly enabled** in `/etc/wsl.conf`:
 
@@ -168,7 +168,7 @@ WSL2 behaves like Linux, but with two caveats:
    relay-ide node install --hub <url> --pair-token <token> --service wsl-manual
    ```
 
-WSL service lifetime is tied to the distro. A WSL shutdown stops the node. Native Windows node support is explicitly out of scope.
+WSL service lifetime is tied to the distro. A WSL shutdown stops the node. Native Windows relay-node support remains out of scope.
 
 ### Manual / Foreground
 
@@ -185,6 +185,16 @@ relay-ide --port 3456
 Manual mode has no Relay-managed logs. Use terminal output or redirect to a file.
 
 ## Status Checks
+
+WSL diagnostics are reported through the node manifest and `relay-ide node status` / `relay-ide node doctor` output:
+
+- `wsl.supportTier`: `tier-1.5`.
+- `wsl.lifecycleMode`: `wsl-systemd` or `wsl-manual`.
+- `wsl.pathMode`: `wsl-native`, `windows-mount`, or `unknown`.
+- `wsl.windowsPath`: display/open-in-Windows hint such as `\\wsl.localhost\Ubuntu\home\dev\repo` when the distro name is known.
+- `wsl.caveats`: explicit notes for distro shutdown, outbound-only hub networking, native-Windows unsupported state, and degraded clipboard/browser/notification/port-preview behavior.
+
+WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, `node install --service wsl-systemd` does not establish `/hub/node-link` in this slice, and Relay does not install a Windows scheduled task in MVP. Keep execution paths as Linux paths inside WSL; treat `\\wsl.localhost\...` as a display/open-in-Windows hint only. Prefer repos under `/home`; repos under `/mnt/<drive>` are allowed but caveated for slower file watching and Windows filesystem permission/case semantics.
 
 ### Node-level status
 
@@ -348,7 +358,7 @@ All CLI output, diagnostics, and bootstrap command generation redact sensitive t
 | `pair_...` tokens                      | `pair_…redacted`                  |
 | `node_...._....secret_...` credentials | `node_…redacted.secret_…redacted` |
 | `secret_...` fragments                 | `secret_…redacted`                |
-| `Authorization: Bearer <token>`        | `Authorization: Bearer …redacted` |
+| `Authorization: Bearer ***        | `Authorization: Bearer *** |
 | `Bearer <token>`                       | `Bearer …redacted`                |
 
 The redaction is applied by `redactBootstrapSecrets()` in `shared/bootstrap-diagnostics.ts`.

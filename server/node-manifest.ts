@@ -28,6 +28,7 @@ interface NodeManifestOptions {
   arch?: string;
   hostname?: string;
   relayVersion?: string;
+  cwd?: string;
 }
 
 function packageJsonPath(): string {
@@ -45,7 +46,10 @@ function getRelayVersion(): string {
   }
 }
 
-function commandVersion(command: string, args = ['--version']): string | undefined {
+function commandVersion(
+  command: string,
+  args = ['--version']
+): string | undefined {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     timeout: 1_000,
@@ -91,7 +95,8 @@ function probeClipboard(
   if (platform === 'darwin') {
     return probeCommand('clipboard', 'Clipboard', 'osascript', env, {
       versionArgs: ['-e', 'return "osascript"'],
-      missingMessage: 'osascript is missing; image clipboard passthrough will fall back to file paths.',
+      missingMessage:
+        'osascript is missing; image clipboard passthrough will fall back to file paths.',
     });
   }
   const candidates = ['wl-copy', 'xclip', 'xsel', 'pbcopy'];
@@ -148,7 +153,8 @@ function frameworkProbeFromClientInfo(framework: {
       id: framework.id,
       label: framework.displayName,
       status: 'unavailable',
-      message: availability?.reason ?? `${framework.displayName} is not installed.`,
+      message:
+        availability?.reason ?? `${framework.displayName} is not installed.`,
     };
   }
   if (framework.webAvailability && !framework.webAvailability.available) {
@@ -156,7 +162,9 @@ function frameworkProbeFromClientInfo(framework: {
       id: framework.id,
       label: framework.displayName,
       status: 'degraded',
-      message: framework.webAvailability.reason ?? 'CLI is installed but web runtime probe failed.',
+      message:
+        framework.webAvailability.reason ??
+        'CLI is installed but web runtime probe failed.',
       ...(availability.path ? { path: availability.path } : {}),
     };
   }
@@ -174,9 +182,15 @@ async function probeAgents(
   env: NodeJS.ProcessEnv
 ): Promise<Record<string, NodeCapabilityProbe>> {
   try {
-    const frameworks = await getFrameworkClientInfoWithRuntime(config?.frameworks, env);
+    const frameworks = await getFrameworkClientInfoWithRuntime(
+      config?.frameworks,
+      env
+    );
     return Object.fromEntries(
-      frameworks.map((framework) => [framework.id, frameworkProbeFromClientInfo(framework)])
+      frameworks.map((framework) => [
+        framework.id,
+        frameworkProbeFromClientInfo(framework),
+      ])
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -213,7 +227,11 @@ async function getNodeManifest(
 ): Promise<NodeManifest> {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
-  const wsl = detectWslInfo({ platform, env });
+  const wsl = detectWslInfo({
+    platform,
+    env,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+  });
   const serviceManager = detectServiceManager({ platform, env, wsl });
   return {
     schemaVersion: 1,

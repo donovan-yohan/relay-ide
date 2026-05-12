@@ -90,7 +90,10 @@ test('isGlobalInstall returns false when running from repo checkout', () => {
 });
 
 test('detectServiceManager models macOS launchd explicitly', () => {
-  const manager = service.detectServiceManager({ platform: 'darwin', home: '/Users/test' });
+  const manager = service.detectServiceManager({
+    platform: 'darwin',
+    home: '/Users/test',
+  });
 
   expect(manager).toMatchObject({
     kind: 'launchd',
@@ -161,7 +164,9 @@ test('detectServiceManager bounds systemctl probes and treats timeouts as unavai
     if (command === 'command -v systemctl') return '';
     if (command === 'systemctl is-system-running --quiet') return '';
     if (command === 'systemctl --user show-environment') {
-      throw Object.assign(new Error('systemctl timed out'), { code: 'ETIMEDOUT' });
+      throw Object.assign(new Error('systemctl timed out'), {
+        code: 'ETIMEDOUT',
+      });
     }
     throw new Error(`unexpected command: ${command}`);
   }) as unknown as ExecSyncFn;
@@ -189,9 +194,12 @@ test('detectWslInfo recognizes WSL2 and systemd availability', () => {
   const wsl = service.detectWslInfo({
     platform: 'linux',
     env: { WSL_DISTRO_NAME: 'Ubuntu', WSL_INTEROP: '/run/WSL/123_interop' },
+    cwd: '/home/dev/relay-ide',
     fsExistsSync: (p) => p === '/run/systemd/system',
     fsReadFileSync: (p) =>
-      p === '/proc/sys/kernel/osrelease' ? '5.15.90.1-microsoft-standard-WSL2' : '',
+      p === '/proc/sys/kernel/osrelease'
+        ? '5.15.90.1-microsoft-standard-WSL2'
+        : '',
   });
 
   expect(wsl).toMatchObject({
@@ -199,5 +207,37 @@ test('detectWslInfo recognizes WSL2 and systemd availability', () => {
     version: 2,
     distroName: 'Ubuntu',
     systemd: true,
+    supportTier: 'tier-1.5',
+    lifecycleMode: 'wsl-systemd',
+    pathMode: 'wsl-native',
+    windowsPath: '\\\\wsl.localhost\\Ubuntu\\home\\dev\\relay-ide',
   });
+  expect(wsl.caveats).toEqual(
+    expect.arrayContaining([expect.stringMatching(/not native Windows/i)])
+  );
+});
+
+test('detectWslInfo marks /mnt drive repos as degraded Windows mounts', () => {
+  const wsl = service.detectWslInfo({
+    platform: 'linux',
+    env: { WSL_DISTRO_NAME: 'Ubuntu' },
+    cwd: '/mnt/c/Users/dev/relay-ide',
+    fsExistsSync: () => false,
+    fsReadFileSync: (p) =>
+      p === '/proc/sys/kernel/osrelease'
+        ? '5.15.90.1-microsoft-standard-WSL2'
+        : '',
+  });
+
+  expect(wsl).toMatchObject({
+    detected: true,
+    systemd: false,
+    lifecycleMode: 'wsl-manual',
+    pathMode: 'windows-mount',
+    windowsPath: '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide',
+  });
+  expect(wsl.caveats?.join(' ')).toMatch(/slower file watching/i);
+  expect(wsl.caveats?.join(' ')).toMatch(
+    /does not install a Windows scheduled task/i
+  );
 });

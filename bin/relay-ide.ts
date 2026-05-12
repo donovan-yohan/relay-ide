@@ -14,6 +14,7 @@ import {
   redactBootstrapSecrets,
 } from '../shared/bootstrap-diagnostics.js';
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config } from '../server/types.js';
 
 const execFileAsync = promisify(execFile);
@@ -51,8 +52,8 @@ Commands:
     doctor --hub <url>                 Check hub reachability and local node capability
     connect --hub <url> --pair-token <token>
                                        Exchange a pair token and send one heartbeat
-    install --hub <url> --pair-token <token> [--service auto|launchd|systemd-user|wsl-systemd|manual]
-                                       Pair the node, then install/start the local Relay-managed service
+    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
+                                       Pair the node, then install/start the local Relay-managed service when requested/available
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
@@ -282,6 +283,28 @@ function nodeEndpoint(hubUrl: string, pathname: string): string {
   return new URL(pathname, hubUrl).toString();
 }
 
+type RequestedNodeServiceMode = 'auto' | 'manual' | 'launchd' | 'systemd-user' | 'wsl-systemd' | 'wsl-manual';
+const requestedNodeServiceModes: RequestedNodeServiceMode[] = ['auto', 'manual', 'launchd', 'systemd-user', 'wsl-systemd', 'wsl-manual'];
+
+function parseNodeServiceMode(value: string): RequestedNodeServiceMode {
+  if (requestedNodeServiceModes.includes(value as RequestedNodeServiceMode)) return value as RequestedNodeServiceMode;
+  logger.error(`Invalid --service ${value}. Expected one of: ${requestedNodeServiceModes.join(', ')}`);
+  process.exit(1);
+}
+
+function validateNodeServiceMode(manifest: NodeManifest, mode: RequestedNodeServiceMode): void {
+  if (mode === 'auto' || mode === 'manual') return;
+  if (mode === 'wsl-manual') {
+    if (manifest.wsl.detected && manifest.wsl.version === 2) return;
+    logger.error('SERVICE_MANAGER_UNSUPPORTED: --service wsl-manual requires running relay-ide inside a WSL2 distro. Native Windows relay-node is unsupported.');
+    process.exit(1);
+  }
+  if (mode !== manifest.serviceManager.kind) {
+    logger.error(`SERVICE_MANAGER_UNSUPPORTED: --service ${mode} requested, but this node reports ${manifest.serviceManager.kind}. ${manifest.serviceManager.installHint}`);
+    process.exit(1);
+  }
+}
+
 type NodePairLifecycle = 'connect' | 'install';
 
 async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'connect'): Promise<void> {
@@ -409,16 +432,13 @@ if (command === 'node') {
   }
   if (subCommand === 'connect' || subCommand === 'install') {
     if (subCommand === 'install') {
-      const serviceMode = getNodeArg(nodeArgs, '--service') ?? 'auto';
-      const validServiceModes = ['auto', 'launchd', 'systemd-user', 'wsl-systemd', 'manual'];
-      if (!validServiceModes.includes(serviceMode)) {
-        logger.error(`Invalid --service value: ${serviceMode}. Expected one of: ${validServiceModes.join(', ')}`);
-        process.exit(1);
-      }
+      const serviceMode = parseNodeServiceMode(getNodeArg(nodeArgs, '--service') ?? 'auto');
+      const manifest = await getNodeManifest();
+      validateNodeServiceMode(manifest, serviceMode);
       logger.info(`Bootstrap service mode requested: ${serviceMode}`);
       logger.info('SSH/Tailscale are bootstrap transports only; current bootstrap does not establish a persistent /hub/node-link.');
       await pairNode(nodeArgs, 'install');
-      if (serviceMode === 'manual') {
+      if (serviceMode === 'manual' || serviceMode === 'wsl-manual') {
         logger.info('Manual service mode requested; paired credentials only. No foreground node process was started.');
         process.exit(0);
       }
