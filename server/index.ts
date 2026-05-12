@@ -103,6 +103,7 @@ import {
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
+import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
   AutomationSettings,
@@ -1069,7 +1070,14 @@ async function main(): Promise<void> {
     next();
   };
 
-  app.use(createHubNodeRouter({ registry: hubNodeRegistry, requireAuth }));
+  app.use(
+    createHubNodeRouter({
+      registry: hubNodeRegistry,
+      requireAuth,
+      collectLocalRepoInventory: () =>
+        collectLocalRepoInventory({ config: getConfig(), configPath: CONFIG_PATH }),
+    })
+  );
 
   const webhookManagerRouter = createWebhookManagerRouter({
     configPath: CONFIG_PATH,

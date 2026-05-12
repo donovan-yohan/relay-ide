@@ -9,6 +9,7 @@ import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
+import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -67,6 +68,55 @@ function tmpRegistry(now = () => new Date('2026-01-02T03:04:05.000Z')) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-routes-'));
   const registry = createHubNodeRegistry({ storagePath: path.join(tmpDir, 'nodes.json'), now });
   return { tmpDir, registry };
+}
+
+function repoInventoryReport(nodeId: string, localPath: string): RepoInventoryReport {
+  const selectedRemote = {
+    name: 'origin',
+    url: 'git@github.com:donovan-yohan/relay-ide.git',
+    identity: 'github.com/donovan-yohan/relay-ide',
+    provider: 'github' as const,
+    host: 'github.com',
+    path: 'donovan-yohan/relay-ide',
+    owner: 'donovan-yohan',
+    repoName: 'relay-ide',
+  };
+  return {
+    nodeId,
+    generatedAt: '2026-01-02T03:04:05.000Z',
+    repos: [
+      {
+        repoInstanceId: `${encodeURIComponent(nodeId)}:${encodeURIComponent(localPath)}`,
+        nodeId,
+        localPath,
+        name: 'relay-ide',
+        isGitRepo: true,
+        defaultBranch: 'nightly',
+        currentBranch: 'feature/inventory',
+        repoIdentity: 'github.com/donovan-yohan/relay-ide',
+        selectedRemote,
+        remotes: [selectedRemote],
+        repoIdentityWarnings: [],
+        dirty: {
+          stagedCount: 0,
+          unstagedCount: 1,
+          untrackedCount: 0,
+          conflictedCount: 0,
+          files: [{ path: 'server/repo-inventory.ts', status: 'modified' }],
+          truncated: false,
+        },
+        divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+        worktrees: [
+          {
+            worktreeInstanceId: `${encodeURIComponent(nodeId)}:${encodeURIComponent(`${localPath}/.worktrees/a`)}`,
+            localPath: `${localPath}/.worktrees/a`,
+            branchName: 'feature/a',
+          },
+        ],
+        reportedAt: '2026-01-02T03:04:05.000Z',
+      },
+    ],
+  };
 }
 
 async function listen(server: http.Server): Promise<number> {
@@ -364,5 +414,56 @@ describe('hub node routes and link', () => {
       type: 'control.error',
       error: { code: 'PROTOCOL_INCOMPATIBLE', retryable: false },
     });
+  });
+
+  it('accepts heartbeat repo inventory and returns aggregated hub groups with local inventory', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        collectLocalRepoInventory: async () => repoInventoryReport('local', '/Users/kyle/dev/relay-ide'),
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const pairToken = registry.createPairToken({}).pairToken;
+    const exchanged = registry.exchangePairToken({ pairToken, manifest: manifest() });
+    const heartbeat = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchanged.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        repoInventory: repoInventoryReport(exchanged.node.nodeId, '/srv/repos/relay-ide'),
+      }),
+    });
+    expect(heartbeat.status).toBe(200);
+
+    const inventory = await fetch(`${base}/hub/repo-inventory`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(inventory.status).toBe(200);
+    const payload = (await inventory.json()) as {
+      groups: Array<{ repoIdentity: string | null; instances: Array<{ nodeId: string; localPath: string }> }>;
+    };
+    expect(payload.groups).toHaveLength(1);
+    expect(payload.groups[0]).toMatchObject({ repoIdentity: 'github.com/donovan-yohan/relay-ide' });
+    expect(payload.groups[0]?.instances.map((instance) => instance.localPath).sort()).toEqual([
+      '/Users/kyle/dev/relay-ide',
+      '/srv/repos/relay-ide',
+    ]);
   });
 });
