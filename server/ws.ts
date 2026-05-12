@@ -302,9 +302,12 @@ function setupWebSocket(
   function scopedEventPayload(
     data: Record<string, unknown> | undefined
   ): Record<string, unknown> | undefined {
-    if (!data || !localNode) return data;
+    if (!localNode) return data;
 
-    const payload: Record<string, unknown> = { ...data };
+    const payload: Record<string, unknown> = {
+      ...(data ?? {}),
+      ...localNode.authority(),
+    };
     const sessionId = payload['sessionId'];
     if (typeof sessionId === 'string') {
       Object.assign(payload, localNode.sessionEventScope(sessionId));

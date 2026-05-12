@@ -7,6 +7,7 @@ import type {
   PullRequest,
 } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { scopedSessionKey } from '../lib/session-keys.js';
 import { deriveColor } from '../lib/colors.js';
 import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
@@ -135,7 +136,7 @@ export function WorkspaceGroup({
                 <li
                   key={session.id}
                   className="ws-session-row"
-                  onClick={() => onSelectSession(session.id)}
+                  onClick={() => onSelectSession(scopedSessionKey(session))}
                 >
                   <span className="ws-badge">workspace</span>
                   <span className="ws-session-name">{session.displayName}</span>

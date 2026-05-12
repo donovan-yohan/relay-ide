@@ -22,6 +22,7 @@ import { getAllActions } from '../lib/actions/registry.js';
 import { formatShortcut } from '../lib/actions/shortcuts.js';
 import type { ActionContext, Action } from '../lib/actions/types.js';
 import { isMobileDevice, isMac } from '../lib/utils.js';
+import { scopedSessionKey } from '../lib/session-keys.js';
 import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -471,7 +472,7 @@ function usePaletteHandlers(
       if (item.type === 'workspace')
         onSelectWorkspace((item.data as Repo).path);
       else if (item.type === 'session')
-        onSelectSession((item.data as SessionSummary).id);
+        onSelectSession(scopedSessionKey(item.data as SessionSummary));
       else if (item.type === 'attention' || item.type === 'pr')
         onSelectPr(item.data as PullRequest);
       else if (item.type === 'setting')

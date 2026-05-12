@@ -7,6 +7,7 @@ import { setupShortcutListener } from '../lib/actions/shortcuts.js';
 import { getAllActions } from '../lib/actions/registry.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { ActionContext } from '../lib/actions/types.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 
 export interface UseAppShortcutsParams {
   handleSelectSession: (id: string) => void;
@@ -42,7 +43,7 @@ function isActiveElementInput(): boolean {
 
 function getActiveSession() {
   const { activeSessionId, sessions } = useSessionsStore.getState();
-  return activeSessionId ? sessions.find((s) => s.id === activeSessionId) : undefined;
+  return activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : undefined;
 }
 
 // Cmd/Ctrl+1-9: switch to the nth tab in the active workspace.
@@ -63,7 +64,7 @@ function handleTabSwitch(e: KeyboardEvent, handleSelectSession: (id: string) => 
   e.preventDefault();
   const n = parseInt(e.key, 10);
   const target = n === 9 ? wsSessions[wsSessions.length - 1] : wsSessions[n - 1];
-  if (target) handleSelectSession(target.id);
+  if (target) handleSelectSession(scopedSessionKey(target));
   return true;
 }
 

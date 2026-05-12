@@ -11,6 +11,10 @@ import {
 import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js';
 import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
+import {
+  resolveSessionByKey,
+  scopedSessionKey,
+} from '../lib/session-keys.js';
 import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import { useFileContent } from '../hooks/useFileContent.js';
@@ -36,13 +40,13 @@ function uiTabId(tab: OpenFileTab): string {
 function sessionToWorkspaceTab(session: SessionSummary): WorkspaceTab {
   return {
     kind: 'session',
-    sessionId: session.id,
+    sessionId: scopedSessionKey(session),
     sessionType: session.type,
   };
 }
 
 function sessionTabId(session: SessionSummary): string {
-  return `session::${session.id}`;
+  return `session::${scopedSessionKey(session)}`;
 }
 
 function propagateLayoutSideRemoval(
@@ -389,7 +393,7 @@ export function WorkspaceArea({
     const changed = new Set(
       openFileTabs.filter((t) => t.isChanged).map((t) => t.filePath)
     );
-    const findSession = (id: string) => sessions.find((s) => s.id === id);
+    const findSession = (id: string) => resolveSessionByKey(sessions, id);
     return {
       isFileChanged: (path) => changed.has(path),
       findSession,
@@ -409,7 +413,7 @@ export function WorkspaceArea({
           />
         );
       }
-      const session = sessions.find((s) => s.id === tab.sessionId);
+      const session = resolveSessionByKey(sessions, tab.sessionId);
       if (!session) {
         return (
           <div className="ws-session-mount ws-session-mount--missing">

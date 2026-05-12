@@ -8,12 +8,22 @@ const apiMocks = vi.hoisted(() => ({
   fetchWorkspaceGroups: vi.fn(),
 }));
 
+const notificationMocks = vi.hoisted(() => ({
+  fireNotification: vi.fn(),
+  shouldFireNotification: vi.fn(() => true),
+}));
+
 vi.mock('../../frontend/src/lib/api.js', () => ({
   enrichBranches: apiMocks.enrichBranches,
   fetchSessions: apiMocks.fetchSessions,
   fetchWorktrees: apiMocks.fetchWorktrees,
   fetchWorkspaces: apiMocks.fetchWorkspaces,
   fetchWorkspaceGroups: apiMocks.fetchWorkspaceGroups,
+}));
+
+vi.mock('../../frontend/src/lib/notifications.js', () => ({
+  fireNotification: notificationMocks.fireNotification,
+  shouldFireNotification: notificationMocks.shouldFireNotification,
 }));
 
 const storage: Record<string, string> = {};
@@ -35,6 +45,7 @@ import type {
   SidebarItem,
 } from '../../frontend/src/lib/types.js';
 import { useSessionsStore } from '../../frontend/src/lib/stores/sessions.js';
+import { useUnreadStore } from '../../frontend/src/lib/stores/unread.js';
 
 const nodeASession: SessionSummary = {
   id: 'same-local-id',
@@ -86,6 +97,7 @@ describe('sessions store node-scoped events', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-11T00:00:00.000Z'));
     vi.clearAllMocks();
+    useUnreadStore.setState({ unreadItems: new Set() });
     useSessionsStore.setState({
       sessions: [nodeASession, nodeBSession],
       worktrees: [],
@@ -117,6 +129,47 @@ describe('sessions store node-scoped events', () => {
       sessions.find((s) => s.globalSessionId === 'node-b:same-local-id')
         ?.agentState
     ).toBe('idle');
+  });
+
+
+
+  it('scopes sidebar aggregate state when duplicate local ids collide across nodes', () => {
+    (useSessionsStore.getState().handleBackendStateChanged as any)(
+      'same-local-id',
+      'idle',
+      undefined,
+      { nodeId: 'node-b', globalSessionId: 'node-b:same-local-id' }
+    );
+
+    const sidebarItems = useSessionsStore.getState().sidebarItems;
+    const nodeAItem = sidebarItems.find((item) => item.nodeId === 'node-a');
+    const nodeBItem = sidebarItems.find((item) => item.nodeId === 'node-b');
+
+    expect(nodeAItem?.lastKnownBackendState).toBe('running');
+    expect(nodeAItem?.displayState).toBe('running');
+    expect(nodeBItem?.lastKnownBackendState).toBe('idle');
+    expect(nodeBItem?.displayState).toBe('unseen-idle');
+  });
+
+  it('does not treat an ambiguous bare active session id as viewing a sibling node item', () => {
+    useSessionsStore.setState({ activeSessionId: 'same-local-id' });
+
+    (useSessionsStore.getState().handleBackendStateChanged as any)(
+      'same-local-id',
+      'permission',
+      'approval',
+      { nodeId: 'node-b', globalSessionId: 'node-b:same-local-id' }
+    );
+
+    const sidebarItems = useSessionsStore.getState().sidebarItems;
+    const nodeAItem = sidebarItems.find((item) => item.nodeId === 'node-a');
+    const nodeBItem = sidebarItems.find((item) => item.nodeId === 'node-b');
+
+    expect(nodeAItem?.displayState).toBe('running');
+    expect(nodeAItem?.isUnread).toBeFalsy();
+    expect(nodeBItem?.displayState).toBe('permission');
+    expect(nodeBItem?.isUnread).toBe(true);
+    expect(useUnreadStore.getState().isUnread(nodeBItem!.id)).toBe(true);
   });
 
   it('renames only the scoped session when nodeId disambiguates a duplicate local id', () => {

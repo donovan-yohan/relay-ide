@@ -24,6 +24,7 @@ import { createRepoWebhook } from '../lib/api.js';
 import { deriveRepoWebhookStatus } from '../lib/repo-source.js';
 import { showToast } from '../lib/stores/toasts.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { scopedSessionKey, sessionKeyMatches } from '../lib/session-keys.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import './RepoItem.css';
 
@@ -278,7 +279,7 @@ function SessionGroupRow({
         .filter(Boolean)
         .join(' ')}
       data-track="sidebar.session.click"
-      onClick={() => onSelectSession(rep.id)}
+      onClick={() => onSelectSession(scopedSessionKey(rep))}
       onTouchEnd={cancelLongPress}
       onTouchMove={cancelLongPress}
     >
@@ -646,9 +647,9 @@ export function RepoItem({
             const isRepoRoot = groupPath === repo.path;
             if (rep) {
               const matchedPr = findPr(groupSessions[0]?.branchName ?? '');
-              const isSelected = groupSessions.some(
-                (s) => activeSessionId === s.id
-              );
+              const isSelected =
+                activeSessionId !== null &&
+                groupSessions.some((s) => sessionKeyMatches(s, activeSessionId));
               const sidebarItem = sidebarItemById.get(groupPath);
               const attention =
                 sidebarItem !== undefined &&
