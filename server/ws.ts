@@ -14,7 +14,11 @@ import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { LocalRelayNode } from './local-node.js';
 import type { HubNodeRegistry } from './hub-node-registry.js';
-import { authenticateHubNodeLink, handleHubNodeLink } from './hub-node-link.js';
+import {
+  authenticateHubNodeLink,
+  handleHubNodeLink,
+  type HubNodeLinkManager,
+} from './hub-node-link.js';
 
 const logger = createLogger('ws');
 
@@ -279,7 +283,8 @@ function setupWebSocket(
   configPath?: string,
   noPinMode = false,
   localNode?: LocalRelayNode,
-  hubNodeRegistry?: HubNodeRegistry
+  hubNodeRegistry?: HubNodeRegistry,
+  nodeLinks?: HubNodeLinkManager
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -376,7 +381,7 @@ function setupWebSocket(
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        handleHubNodeLink(ws, hubNodeRegistry, authenticated.node);
+        handleHubNodeLink(ws, hubNodeRegistry, authenticated.node, nodeLinks);
       });
       return;
     }
@@ -384,6 +389,27 @@ function setupWebSocket(
     if (!isAuthenticated(request.headers.cookie)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
+      return;
+    }
+
+    const routedPtyMatch = requestPath.match(
+      /^\/nodes\/([^/]+)\/ws\/sessions\/([^/]+)$/
+    );
+    if (routedPtyMatch) {
+      const nodeId = decodeURIComponent(routedPtyMatch[1]!);
+      const sessionId = decodeURIComponent(routedPtyMatch[2]!);
+      if (!nodeLinks?.hasActiveNode(nodeId)) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        try {
+          nodeLinks.attachPty(nodeId, sessionId, ws);
+        } catch {
+          ws.close(1011);
+        }
+      });
       return;
     }
 

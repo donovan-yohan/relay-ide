@@ -13,6 +13,7 @@ import type {
 } from '../../../shared/node-boundary.js';
 import type { NodeId } from '../../../shared/identity.js';
 import {
+  DEFAULT_LOCAL_NODE_ID,
   createGlobalSessionId,
   parseGlobalSessionId,
 } from '../../../shared/identity.js';
@@ -258,8 +259,9 @@ function clearEventPongTimeout(): void {
 interface PtyConnection {
   /** Scoped registry key for the mounted frontend terminal. */
   sessionId: string;
-  /** Legacy local id used by the current single-node /ws/:sessionId endpoint. */
+  /** Node-local id used by local and remote PTY endpoints. */
   localSessionId: string;
+  nodeId?: NodeId;
   ws: WebSocket | null;
   pendingWs: WebSocket | null;
   term: Terminal;
@@ -325,6 +327,7 @@ function beginPtyReconnect(conn: PtyConnection): void {
 function resolvePtyTarget(sessionKey: string): {
   registryKey: string;
   localSessionId: string;
+  nodeId?: NodeId;
 } {
   const sessions = useSessionsStore.getState().sessions;
   const session = resolveSessionByKey(sessions, sessionKey);
@@ -332,6 +335,7 @@ function resolvePtyTarget(sessionKey: string): {
     return {
       registryKey: resolveSessionKey(sessions, sessionKey),
       localSessionId: session.id,
+      ...(session.nodeId ? { nodeId: session.nodeId } : {}),
     };
   }
 
@@ -339,6 +343,7 @@ function resolvePtyTarget(sessionKey: string): {
   return {
     registryKey: sessionKey,
     localSessionId: parsedGlobalSessionId?.localSessionId ?? sessionKey,
+    ...(parsedGlobalSessionId ? { nodeId: parsedGlobalSessionId.nodeId } : {}),
   };
 }
 
@@ -422,7 +427,7 @@ export function connectPtySocket(
   onResize: () => void,
   onSessionEnd: () => void
 ): void {
-  const { registryKey, localSessionId } = resolvePtyTarget(sessionId);
+  const { registryKey, localSessionId, nodeId } = resolvePtyTarget(sessionId);
   // Tear down any existing connection for this scoped terminal target.
   const existing = ptyConnections.get(registryKey);
   if (existing) {
@@ -445,6 +450,7 @@ export function connectPtySocket(
   const conn: PtyConnection = {
     sessionId: registryKey,
     localSessionId,
+    ...(nodeId ? { nodeId } : {}),
     ws: null,
     pendingWs: null,
     term,
@@ -469,16 +475,14 @@ export function connectPtySocket(
 }
 
 function openPtySocket(conn: PtyConnection): void {
-  // Remote node PTY proxying is intentionally deferred server-side for now.
-  // Keep the WebSocket path on the legacy local endpoint while keying the
-  // frontend registry by conn.sessionId so hub-fed duplicate local ids do not
-  // overwrite each other's mounted terminal connection state.
-  const url =
-    wsProtocol +
-    '//' +
-    location.host +
-    '/ws/' +
-    encodeURIComponent(conn.localSessionId);
+  const path =
+    conn.nodeId && conn.nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? '/nodes/' +
+        encodeURIComponent(conn.nodeId) +
+        '/ws/sessions/' +
+        encodeURIComponent(conn.localSessionId)
+      : '/ws/' + encodeURIComponent(conn.localSessionId);
+  const url = wsProtocol + '//' + location.host + path;
   const socket = new WebSocket(url);
   conn.pendingWs = socket;
 

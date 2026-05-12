@@ -7,12 +7,23 @@ import {
   type RepoInventoryReport,
 } from '../shared/repo-inventory.js';
 import { HubNodeRegistryError, type HubNodeRegistry } from './hub-node-registry.js';
-import type { RelayNodeError } from '../shared/relay-node-protocol.js';
+import {
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type RelayNodeError,
+} from '../shared/relay-node-protocol.js';
+import type { HubNodeLinkManager } from './hub-node-link.js';
+import type { SessionSummary } from './types.js';
+import {
+  createGlobalSessionId,
+  createRepoInstanceId,
+  createWorktreeInstanceId,
+} from '../shared/identity.js';
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
+  nodeLinks?: HubNodeLinkManager;
 }
 
 function bearerToken(req: Request): string | null {
@@ -29,6 +40,7 @@ function errorStatus(error: RelayNodeError): number {
     case 'TOKEN_ALREADY_USED':
     case 'PROTOCOL_INCOMPATIBLE':
     case 'VERSION_SKEW':
+    case 'NODE_UNSUPPORTED':
     case 'INVALID_REQUEST':
       return 400;
     case 'NODE_REVOKED':
@@ -48,6 +60,60 @@ function sendRegistryError(
 ): void {
   const body = registry.errorBody(error);
   res.status(errorStatus(body.error)).json(body);
+}
+
+function relayError(code: RelayNodeError['code'], message: string, retryable = false): RelayNodeError {
+  return { code, message, retryable };
+}
+
+function sendRelayError(res: Response, error: RelayNodeError): void {
+  res.status(errorStatus(error)).json({ error });
+}
+
+function isSessionSummary(value: unknown): value is SessionSummary {
+  if (typeof value !== 'object' || value === null) return false;
+  const session = value as Partial<SessionSummary>;
+  return (
+    typeof session.id === 'string' &&
+    (session.type === 'agent' || session.type === 'terminal') &&
+    (session.mode === 'pty' || session.mode === 'web') &&
+    typeof session.repoPath === 'string' &&
+    (typeof session.worktreePath === 'string' || session.worktreePath === null) &&
+    typeof session.cwd === 'string' &&
+    typeof session.repoName === 'string' &&
+    typeof session.branchName === 'string' &&
+    typeof session.displayName === 'string' &&
+    typeof session.createdAt === 'string' &&
+    typeof session.lastActivity === 'string' &&
+    typeof session.idle === 'boolean' &&
+    (typeof session.customCommand === 'string' || session.customCommand === null) &&
+    (session.status === 'active' || session.status === 'disconnected') &&
+    typeof session.needsBranchRename === 'boolean' &&
+    typeof session.agentState === 'string'
+  );
+}
+
+function scopedNodeSession(nodeId: string, session: SessionSummary): SessionSummary {
+  return {
+    ...session,
+    nodeId,
+    globalSessionId: createGlobalSessionId(nodeId, session.id),
+    ...(session.repoPath ? { repoInstanceId: createRepoInstanceId(nodeId, session.repoPath) } : {}),
+    ...(session.worktreePath
+      ? { worktreeInstanceId: createWorktreeInstanceId(nodeId, session.worktreePath) }
+      : {}),
+  };
+}
+
+function sessionFromPayload(payload: unknown): SessionSummary {
+  if (typeof payload !== 'object' || payload === null) {
+    throw new HubNodeRegistryError('INVALID_REQUEST', 'node session create response was malformed');
+  }
+  const session = (payload as Record<string, unknown>)['session'];
+  if (!isSessionSummary(session)) {
+    throw new HubNodeRegistryError('INVALID_REQUEST', 'node session create response was malformed');
+  }
+  return session;
 }
 
 function bodyRecord(req: Request): Record<string, unknown> {
@@ -190,6 +256,56 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       res.json(aggregateRepoInventoryReports(reports));
     } catch (error) {
       sendRegistryError(registry, res, error);
+    }
+  });
+
+  router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
+    const { nodeId } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    const node = registry.listNodes().find((candidate) => candidate.nodeId === nodeId);
+    if (!node || node.status === 'revoked') {
+      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+      return;
+    }
+    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+      const [nodeMajor] = node.protocolVersion.split('.');
+      const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+      sendRelayError(
+        res,
+        relayError(
+          nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+          `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+        )
+      );
+      return;
+    }
+    if (node.capabilities.core.tmux !== 'available') {
+      sendRelayError(
+        res,
+        relayError(
+          'NODE_UNSUPPORTED',
+          `node ${nodeId} cannot host tmux-backed PTY sessions`
+        )
+      );
+      return;
+    }
+    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
+      sendRelayError(
+        res,
+        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+      );
+      return;
+    }
+
+    try {
+      const payload = await options.nodeLinks.request(nodeId, 'sessions.create', bodyRecord(req));
+      res.status(201).json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
+    } catch (error) {
+      const body = registry.errorBody(error);
+      res.status(errorStatus(body.error)).json(body);
     }
   });
 
