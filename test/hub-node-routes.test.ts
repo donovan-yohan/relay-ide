@@ -56,6 +56,13 @@ function nestedMalformedManifest(): unknown {
   return candidate;
 }
 
+function agentArrayManifest(): unknown {
+  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<string, unknown>;
+  const capabilities = candidate['capabilities'] as Record<string, unknown>;
+  capabilities['agents'] = [];
+  return candidate;
+}
+
 function tmpRegistry(now = () => new Date('2026-01-02T03:04:05.000Z')) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-routes-'));
   const registry = createHubNodeRegistry({ storagePath: path.join(tmpDir, 'nodes.json'), now });
@@ -139,6 +146,19 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
+    const agentArrayExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pairToken: pair.pairToken,
+        manifest: agentArrayManifest(),
+      }),
+    });
+    expect(agentArrayExchangeRes.status).toBe(400);
+    expect(await agentArrayExchangeRes.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+
     const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -195,6 +215,23 @@ describe('hub node routes and link', () => {
     });
     expect(nestedMalformedHeartbeatRes.status).toBe(400);
     expect(await nestedMalformedHeartbeatRes.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+
+    const agentArrayHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchange.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchange.credential.nodeId,
+        protocolVersion: '1.0',
+        manifest: agentArrayManifest(),
+      }),
+    });
+    expect(agentArrayHeartbeatRes.status).toBe(400);
+    expect(await agentArrayHeartbeatRes.json()).toMatchObject({
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 

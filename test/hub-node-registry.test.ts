@@ -154,6 +154,13 @@ describe('hub node registry', () => {
         }),
       ],
       [
+        'agents record',
+        malformedManifest((candidate) => {
+          const capabilities = candidate['capabilities'] as Record<string, unknown>;
+          capabilities['agents'] = [];
+        }),
+      ],
+      [
         'service manager kind',
         malformedManifest((candidate) => {
           const serviceManager = candidate['serviceManager'] as Record<string, unknown>;
