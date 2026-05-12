@@ -3,6 +3,11 @@ import type { Terminal } from '@xterm/xterm';
 
 // We need to mock store imports BEFORE importing ws.ts
 const sessionsStore = {
+  sessions: [] as Array<{
+    id: string;
+    nodeId?: string;
+    globalSessionId?: string;
+  }>,
   activeSessionId: null as string | null,
   beginPtyReconnect: vi.fn(),
   clearPtyReconnect: vi.fn(),
@@ -64,6 +69,7 @@ class FakeWebSocket {
 
 beforeEach(() => {
   sockets.length = 0;
+  sessionsStore.sessions = [];
   sessionsStore.activeSessionId = null;
   sessionsStore.beginPtyReconnect.mockClear();
   sessionsStore.clearPtyReconnect.mockClear();
@@ -179,6 +185,22 @@ describe('per-session PTY routing', () => {
     sessionsStore.activeSessionId = 'sess-a';
     ws.sendPtyData('to-active');
     expect(sockets[0]!.send).toHaveBeenCalledWith('to-active');
+  });
+
+  it('no-arg sendPtyData resolves a scoped activeSessionId to its PTY socket', async () => {
+    const ws = await importWs();
+    ws.connectPtySocket('local-session', fakeTerm(), vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+    sessionsStore.sessions = [
+      {
+        id: 'local-session',
+        nodeId: 'node-a',
+        globalSessionId: 'node-a:local-session',
+      },
+    ];
+    sessionsStore.activeSessionId = 'node-a:local-session';
+    ws.sendPtyData('to-scoped-active');
+    expect(sockets[0]!.send).toHaveBeenCalledWith('to-scoped-active');
   });
 
   it('no-arg sendPtyData is a no-op when no active target', async () => {
