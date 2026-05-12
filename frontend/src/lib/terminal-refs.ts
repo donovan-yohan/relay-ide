@@ -1,5 +1,5 @@
 import type { TerminalHandle } from '../components/Terminal.js';
-import { resolveSessionByKey } from './session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from './session-keys.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 
@@ -35,7 +35,7 @@ export function getActiveTerminalHandle(): TerminalHandle | null {
     useSessionsStore.getState().activeSessionId;
   if (!id) return null;
   const session = resolveSessionByKey(useSessionsStore.getState().sessions, id);
-  return handles.get(session?.id ?? id) ?? null;
+  return handles.get(session ? scopedSessionKey(session) : id) ?? null;
 }
 
 /** @internal — exposed for tests */

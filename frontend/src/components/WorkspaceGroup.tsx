@@ -134,7 +134,7 @@ export function WorkspaceGroup({
             <ul className="workspace-sessions">
               {workspaceSessions.map((session) => (
                 <li
-                  key={session.id}
+                  key={scopedSessionKey(session)}
                   className="ws-session-row"
                   onClick={() => onSelectSession(scopedSessionKey(session))}
                 >

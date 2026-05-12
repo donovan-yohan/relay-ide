@@ -11,10 +11,7 @@ import {
 import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js';
 import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
-import {
-  resolveSessionByKey,
-  scopedSessionKey,
-} from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import { useFileContent } from '../hooks/useFileContent.js';
@@ -89,7 +86,9 @@ function FileTabContentBridge({
     (s) => s.utilityRailByWorkspace[workspacePath]?.review
   );
   const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
-  const globalFileDiffDefaultBranch = useUiStore((s) => s.fileDiffDefaultBranch);
+  const globalFileDiffDefaultBranch = useUiStore(
+    (s) => s.fileDiffDefaultBranch
+  );
   const fileDiffSource = reviewState?.diffSource ?? globalFileDiffSource;
   const fileDiffDefaultBranch =
     reviewState?.defaultBranch ?? globalFileDiffDefaultBranch;
@@ -206,6 +205,7 @@ function SessionContentMount({
     <div className="ws-session-mount ws-session-mount--pty">
       <Terminal
         sessionId={session.id}
+        sessionKey={scopedSessionKey(session)}
         useTmux={session.useTmux !== false}
         onImageUpload={onImageUpload}
         onCopyModeChange={onCopyModeChange}

@@ -25,6 +25,7 @@ import { useUiStore, DEFAULT_TERMINAL_FONT_SIZE } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { clampFontSize, zoomPercentage } from '../lib/terminal-zoom.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   detectRendererContext,
   pickTerminalRenderer,
@@ -44,7 +45,10 @@ export interface TerminalHandle {
 }
 
 export interface TerminalProps {
+  /** Local session id used by legacy REST endpoints such as image upload. */
   sessionId: string | null;
+  /** Scoped node/global key used for terminal handles and PTY routing. */
+  sessionKey?: string | null;
   onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
   useTmux?: boolean;
   onCopyModeChange?: (active: boolean) => void;
@@ -751,7 +755,7 @@ function registerEscapeSequenceSanitizers(
 
 function useTerminalSetup(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  sessionId: string | null,
+  ptySessionKey: string | null,
   companionMode: boolean,
   onFilePathClick: ((path: string) => void) | undefined,
   updateScrollbar: () => void
@@ -760,14 +764,14 @@ function useTerminalSetup(
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalFontSize = useUiStore((s) => s.terminalFontSize);
 
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
+  const ptySessionKeyRef = useRef(ptySessionKey);
+  ptySessionKeyRef.current = ptySessionKey;
   const sendData = useCallback((data: string) => {
-    const id = sessionIdRef.current;
+    const id = ptySessionKeyRef.current;
     if (id) sendPtyData(id, data);
   }, []);
   const sendResize = useCallback((cols: number, rows: number) => {
-    const id = sessionIdRef.current;
+    const id = ptySessionKeyRef.current;
     if (id) sendPtyResize(id, cols, rows);
   }, []);
 
@@ -905,10 +909,10 @@ function useTerminalSetup(
     };
   }, []); // intentionally empty: terminal is created once per mount
 
-  // React to sessionId changes
+  // React to ptySessionKey changes
   useEffect(() => {
     const term = termRef.current;
-    if (!sessionId || !term || companionMode) return undefined;
+    if (!ptySessionKey || !term || companionMode) return undefined;
 
     // Full reset (RIS) — synchronously resets parser state, all terminal
     // modes (mouse tracking, bracketed paste, alternate screen), and clears
@@ -922,11 +926,15 @@ function useTerminalSetup(
     fitAddonRef.current?.fit();
     term.refresh(0, term.rows - 1);
     connectPtySocket(
-      sessionId,
+      ptySessionKey,
       term,
       () => {
         if (termRef.current)
-          sendPtyResize(sessionId, termRef.current.cols, termRef.current.rows);
+          sendPtyResize(
+            ptySessionKey,
+            termRef.current.cols,
+            termRef.current.rows
+          );
       },
       () => {
         /* session ended */
@@ -934,9 +942,9 @@ function useTerminalSetup(
     );
 
     return () => {
-      disconnectPtySocket(sessionId);
+      disconnectPtySocket(ptySessionKey);
     };
-  }, [sessionId, companionMode]);
+  }, [ptySessionKey, companionMode]);
 
   return { termRef, fitAddonRef, fit };
 }
@@ -1050,6 +1058,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
   function Terminal(
     {
       sessionId,
+      sessionKey,
       onImageUpload,
       useTmux = true,
       onCopyModeChange,
@@ -1061,27 +1070,30 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollbarRef = useRef<HTMLDivElement>(null);
     const thumbRef = useRef<HTMLDivElement>(null);
+    const ptySessionKey = sessionKey ?? sessionId;
 
-    const sessionIdRef = useRef(sessionId);
-    sessionIdRef.current = sessionId;
+    const ptySessionKeyRef = useRef(ptySessionKey);
+    ptySessionKeyRef.current = ptySessionKey;
     const sendData = useCallback((data: string) => {
-      const id = sessionIdRef.current;
+      const id = ptySessionKeyRef.current;
       if (id) sendPtyData(id, data);
     }, []);
 
     const claudeFullscreen = useConfigStore((s) => s.claudeFullscreen);
     const activeAgent = useSessionsStore(
-      (s) => s.sessions.find((sess) => sess.id === sessionId)?.agent
+      (s) => resolveSessionByKey(s.sessions, ptySessionKey)?.agent
     );
     const isPtyReconnecting = useSessionsStore((s) =>
-      sessionId ? s.reconnectingPtySessionIds[sessionId] === true : false
+      ptySessionKey
+        ? s.reconnectingPtySessionIds[ptySessionKey] === true
+        : false
     );
     const isFullscreenTerminal =
       (claudeFullscreen && activeAgent === 'claude') || useTmux;
 
     const { termRef, fit } = useTerminalSetup(
       containerRef,
-      sessionId,
+      ptySessionKey,
       companionMode,
       onFilePathClick,
       () => updateSb()
@@ -1134,14 +1146,14 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     useImperativeHandle(ref, () => handle, [handle]);
 
     useEffect(() => {
-      if (!sessionId) return undefined;
-      setTerminalHandle(sessionId, handle);
-      return () => setTerminalHandle(sessionId, null);
-    }, [sessionId, handle]);
+      if (!ptySessionKey) return undefined;
+      setTerminalHandle(ptySessionKey, handle);
+      return () => setTerminalHandle(ptySessionKey, null);
+    }, [ptySessionKey, handle]);
 
     useEffect(() => {
       if (
-        sessionId &&
+        ptySessionKey &&
         isPtyReconnecting &&
         termRef.current &&
         !companionMode
@@ -1158,7 +1170,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         termRef.current.refresh(0, termRef.current.rows - 1);
       }
     }, [
-      sessionId,
+      ptySessionKey,
       isPtyReconnecting,
       companionMode,
       isFullscreenTerminal,
