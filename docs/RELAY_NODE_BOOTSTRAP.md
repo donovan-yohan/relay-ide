@@ -65,7 +65,7 @@ Diagnostics/log hints:
 ```bash
 relay-ide node status
 relay-ide node logs
-launchctl print gui/$(id -u)/com.relay-ide.node
+launchctl print gui/$(id -u)/com.relay-ide
 ```
 
 ## Linux systemd user
