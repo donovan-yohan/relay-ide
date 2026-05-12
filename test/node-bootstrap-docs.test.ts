@@ -31,7 +31,7 @@ describe('relay-node bootstrap docs', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
 
-    expect(docs).toContain('This bootstrap slice does not start or maintain `/hub/node-link`.');
+    expect(docs).toContain('do **not** start or maintain the reverse WebSocket link `/hub/node-link`');
     expect(cliSource).toContain('does not start or maintain /hub/node-link');
     expect(docs).not.toMatch(/node install[^\n]+establishes steady-state/i);
     expect(docs).not.toMatch(/install\/start creates steady-state/i);
