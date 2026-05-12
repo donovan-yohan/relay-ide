@@ -1,0 +1,19 @@
+docs/spikes/423-cli-gateway-schema.md
+  s_0837e04cd7f585::t_fe55ae3457cc2b 1-54,56-66,68,76-88,90-100,102-212,214-268,270-275,277,280-338,340-342,344-370,377-557
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "55f00c32bb74a852b0d4b8f1d5216f94c16486a2",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
