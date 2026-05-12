@@ -101,6 +101,8 @@ import {
   getFrameworkWebAvailability,
 } from './frameworks.js';
 import { getNodeManifest } from './node-manifest.js';
+import { createHubNodeRegistry } from './hub-node-registry.js';
+import { createHubNodeRouter } from './hub-node-router.js';
 import type {
   AgentType,
   AutomationSettings,
@@ -975,6 +977,9 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
+  const hubNodeRegistry = createHubNodeRegistry({
+    storagePath: path.join(configDir, 'hub-node-registry.json'),
+  });
   await ensureTmuxAvailable();
 
   await initializePortAllocatorAndReconcile(
@@ -1050,6 +1055,8 @@ async function main(): Promise<void> {
     }
     next();
   };
+
+  app.use(createHubNodeRouter({ registry: hubNodeRegistry, requireAuth }));
 
   const webhookManagerRouter = createWebhookManagerRouter({
     configPath: CONFIG_PATH,
@@ -1140,7 +1147,8 @@ async function main(): Promise<void> {
     watcher,
     CONFIG_PATH,
     process.env.NO_PIN === '1',
-    localRelayNode
+    localRelayNode,
+    hubNodeRegistry
   );
 
   const browserScopedToken = generateScopedToken();
