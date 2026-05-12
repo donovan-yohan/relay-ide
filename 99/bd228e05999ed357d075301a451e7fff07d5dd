@@ -1,0 +1,37 @@
+test/node-link-client.test.ts
+  s_0837e04cd7f585::t_4ed7206e8a149f 348
+  s_0837e04cd7f585::t_c22a94ef7793e9 9
+  s_0837e04cd7f585::t_f990b3cd79fde3 334-337
+  s_0837e04cd7f585::t_c912f6cd1b61b5 1-8,10-299,302-333,338-347,349-362,365-410
+  s_0837e04cd7f585::t_2fa71de964069c 300-301,363-364
+server/node-link-client.ts
+  s_0837e04cd7f585::t_3d518dabbdfc9e 1-344
+docs/RELAY_NODE_BOOTSTRAP.md
+  s_0837e04cd7f585::t_48707b950d9139 67-84
+docs/federated-relay.md
+  s_0837e04cd7f585::t_ae75e214e86140 131
+  s_0837e04cd7f585::t_add53427f4a6d7 156-160
+bin/relay-ide.ts
+  s_0837e04cd7f585::t_98d22e8532793c 59
+  s_0837e04cd7f585::t_611860ac32c12f 343-349,355,359
+  s_0837e04cd7f585::t_3d8000bd401131 536
+  s_0837e04cd7f585::t_882d486db616e8 507-510
+  s_0837e04cd7f585::t_fea00e07c8b532 19-20
+  s_0837e04cd7f585::t_8a98c97590fac7 311-342,350-354,356-358,360-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "99bd228e05999ed357d075301a451e7fff07d5dd",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
