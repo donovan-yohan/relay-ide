@@ -207,6 +207,8 @@ export function generateBootstrapCommands(input: BootstrapCommandInput): Bootstr
     relayCommand,
     installCommand,
     hubUrl: input.hubUrl.trim(),
+    sshTarget: input.sshTarget?.trim(),
+    tailscaleTarget: input.tailscaleTarget?.trim(),
   };
   const commands: BootstrapCommand[] = [];
 
@@ -225,26 +227,26 @@ export function generateBootstrapCommands(input: BootstrapCommandInput): Bootstr
   }
 
   const script = remoteBootstrapScript(normalized);
-  if (input.sshTarget) {
+  if (normalized.sshTarget) {
     commands.push(
       withRedaction({
         id: 'ssh-auto',
         label: 'SSH pairing/service bootstrap with auto-detection',
         transport: 'ssh',
         service: 'auto',
-        command: remoteCommand('ssh', input.sshTarget, script),
+        command: remoteCommand('ssh', normalized.sshTarget, script),
         caveats: [NODE_LINK_NOT_STARTED_CAVEAT],
       })
     );
   }
-  if (input.tailscaleTarget) {
+  if (normalized.tailscaleTarget) {
     commands.push(
       withRedaction({
         id: 'tailscale-ssh-auto',
         label: 'Tailscale SSH pairing/service bootstrap with auto-detection',
         transport: 'tailscale-ssh',
         service: 'auto',
-        command: remoteCommand('tailscale ssh', input.tailscaleTarget, script),
+        command: remoteCommand('tailscale ssh', normalized.tailscaleTarget, script),
         caveats: [
           'Tailscale is the private reachability/trust layer, not the Relay hub-node protocol.',
           NODE_LINK_NOT_STARTED_CAVEAT,

