@@ -76,13 +76,29 @@ describe('hub/node packaging decision', () => {
     const uninstallIndex = hubSource.indexOf("subCommand === 'uninstall'");
     const statusIndex = hubSource.indexOf("subCommand === 'status'");
     const logsIndex = hubSource.indexOf("subCommand === 'logs'");
-    const bgFallbackIndex = hubSource.indexOf("hubArgs.includes('--bg')");
+    const bgFallbackIndex = hubSource.indexOf("hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))");
 
     expect(installIndex).toBeGreaterThanOrEqual(0);
     expect(uninstallIndex).toBeGreaterThan(installIndex);
     expect(statusIndex).toBeGreaterThan(uninstallIndex);
     expect(logsIndex).toBeGreaterThan(statusIndex);
     expect(bgFallbackIndex).toBeGreaterThan(logsIndex);
+  });
+
+  it('does not route unknown hub subcommands with --bg through service install', () => {
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const hubStart = cliSource.indexOf("if (command === 'hub')");
+    const hubEnd = cliSource.indexOf("if (command === 'node')", hubStart);
+    const hubSource = cliSource.slice(hubStart, hubEnd);
+
+    const bgFallbackIndex = hubSource.indexOf("hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))");
+    const foregroundHubIndex = hubSource.indexOf("!subCommand || subCommand.startsWith('-')", bgFallbackIndex + 1);
+    const usageIndex = hubSource.indexOf('Usage: relay-ide hub', foregroundHubIndex);
+
+    expect(bgFallbackIndex).toBeGreaterThanOrEqual(0);
+    expect(foregroundHubIndex).toBeGreaterThan(bgFallbackIndex);
+    expect(usageIndex).toBeGreaterThan(foregroundHubIndex);
+    expect(hubSource).not.toContain("} else if (hubArgs.includes('--bg')) {");
   });
 
   it('rejects unknown node install --service values before pairing or service install', () => {

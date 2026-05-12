@@ -373,7 +373,7 @@ if (command === 'hub') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
     runServiceCommand(printHubLogs);
-  } else if (hubArgs.includes('--bg')) {
+  } else if (hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))) {
     runServiceCommand(() => {
       process.env['RELAY_IDE_BACKGROUND'] = '1';
       service.install({
