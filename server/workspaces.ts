@@ -444,7 +444,7 @@ export async function detectGitRepo(
   return { isGitRepo: true, defaultBranch };
 }
 
-async function resolveRepoIdentityFields(
+export async function resolveRepoIdentityFields(
   repoPath: string,
   isGitRepo: boolean,
   execAsync: typeof execFileAsync

@@ -1,12 +1,18 @@
 import * as express from 'express';
 import type { Request, Response } from 'express';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
+import {
+  aggregateRepoInventoryReports,
+  isRepoInventoryReport,
+  type RepoInventoryReport,
+} from '../shared/repo-inventory.js';
 import { HubNodeRegistryError, type HubNodeRegistry } from './hub-node-registry.js';
 import type { RelayNodeError } from '../shared/relay-node-protocol.js';
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
 }
 
 function bearerToken(req: Request): string | null {
@@ -62,6 +68,15 @@ function manifestFromBody(body: Record<string, unknown>, required = false): Node
     throw new HubNodeRegistryError('INVALID_REQUEST', 'manifest is malformed');
   }
   return manifest;
+}
+
+function repoInventoryFromBody(body: Record<string, unknown>): RepoInventoryReport | null {
+  const repoInventory = body['repoInventory'];
+  if (repoInventory === undefined || repoInventory === null) return null;
+  if (!isRepoInventoryReport(repoInventory)) {
+    throw new HubNodeRegistryError('INVALID_REQUEST', 'repoInventory is malformed');
+  }
+  return repoInventory;
 }
 
 function pairTtlMs(body: Record<string, unknown>): number | undefined {
@@ -148,11 +163,13 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
     }
     try {
       const manifest = manifestFromBody(body);
+      const repoInventory = repoInventoryFromBody(body);
       res.json({
         node: registry.recordHeartbeat({
           nodeId: authenticated.nodeId,
           protocolVersion,
           ...(manifest ? { manifest } : {}),
+          ...(repoInventory ? { repoInventory } : {}),
         }),
       });
     } catch (error) {
@@ -162,6 +179,18 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
 
   router.get('/nodes', requireAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
+  });
+
+  router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
+    try {
+      const reports = [...registry.listRepoInventoryReports()];
+      if (options.collectLocalRepoInventory) {
+        reports.push(await options.collectLocalRepoInventory());
+      }
+      res.json(aggregateRepoInventoryReports(reports));
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
   });
 
   router.delete('/nodes/:nodeId', requireAuth, (req, res) => {

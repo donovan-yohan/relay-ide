@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { NodeCapabilityProbe, NodeManifest } from '../shared/node-manifest.js';
+import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import { createLogger } from './logger.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -39,6 +40,7 @@ interface StoredNodeRecord {
   relayVersion: string;
   protocolVersion: string;
   capabilities: NodeCapabilityManifestSummary;
+  repoInventory?: RepoInventoryReport;
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;
@@ -68,6 +70,7 @@ export interface HeartbeatInput {
   nodeId: string;
   protocolVersion: string;
   manifest?: NodeManifest;
+  repoInventory?: RepoInventoryReport;
 }
 
 export interface HubNodeRegistryOptions {
@@ -421,6 +424,15 @@ export class HubNodeRegistry {
       node.relayVersion = input.manifest.relayVersion;
       node.capabilities = summarizeCapabilities(input.manifest);
     }
+    if (input.repoInventory) {
+      if (input.repoInventory.nodeId !== input.nodeId) {
+        throw new HubNodeRegistryError(
+          'INVALID_REQUEST',
+          'repoInventory.nodeId must match authenticated nodeId'
+        );
+      }
+      node.repoInventory = input.repoInventory;
+    }
     this.scheduleHeartbeatPersist();
     return publicNode(node, 'online');
   }
@@ -444,6 +456,13 @@ export class HubNodeRegistry {
     return this.state.nodes.map((node) =>
       publicNode(node, statusForNode(node, now, this.staleMs, this.offlineMs))
     );
+  }
+
+  listRepoInventoryReports(options: { includeRevoked?: boolean } = {}): RepoInventoryReport[] {
+    return this.state.nodes
+      .filter((node) => options.includeRevoked || !node.revokedAt)
+      .map((node) => node.repoInventory)
+      .filter((report): report is RepoInventoryReport => Boolean(report));
   }
 
   revokeNode(nodeId: string): HubNodeSummary {

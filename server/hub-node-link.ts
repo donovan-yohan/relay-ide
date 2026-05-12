@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
+import { isRepoInventoryReport, type RepoInventoryReport } from '../shared/repo-inventory.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -85,6 +86,14 @@ function manifestFromPayload(payload: unknown): NodeManifest | RelayNodeError | 
   return manifest;
 }
 
+function repoInventoryFromPayload(payload: unknown): RepoInventoryReport | RelayNodeError | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const repoInventory = (payload as Record<string, unknown>)['repoInventory'];
+  if (repoInventory === undefined || repoInventory === null) return undefined;
+  if (!isRepoInventoryReport(repoInventory)) return invalidRequest('repoInventory is malformed');
+  return repoInventory;
+}
+
 function sendJson(ws: WebSocket, payload: RelayNodeEnvelope): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
 }
@@ -133,10 +142,18 @@ export function handleHubNodeLink(
         sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, manifestResult));
         return;
       }
+      const manifest = manifestResult as NodeManifest | undefined;
+      const repoInventoryResult = repoInventoryFromPayload(parsed.payload);
+      if (repoInventoryResult && 'code' in repoInventoryResult) {
+        sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, repoInventoryResult));
+        return;
+      }
+      const repoInventory = repoInventoryResult as RepoInventoryReport | undefined;
       const node = registry.recordHeartbeat({
         nodeId: authenticatedNodeId,
         protocolVersion: parsed.protocolVersion,
-        ...(manifestResult ? { manifest: manifestResult } : {}),
+        ...(manifest ? { manifest } : {}),
+        ...(repoInventory ? { repoInventory } : {}),
       });
       sendJson(ws, {
         protocol: RELAY_NODE_LINK_PROTOCOL,

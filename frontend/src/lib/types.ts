@@ -13,6 +13,13 @@ import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
+export type {
+  AggregatedRepoInventoryGroup,
+  AggregatedRepoInventoryResponse,
+  RepoInventoryReport,
+  RepoInventoryRepoInstance,
+  RepoInventoryWorktreeInstance,
+} from '../../../shared/repo-inventory.js';
 
 export type PrDotStatus =
   | 'draft'

@@ -29,6 +29,7 @@ import type {
   AnalyticsRateLimitHistory,
   FrameworkInfo,
   BranchDivergenceSummary,
+  AggregatedRepoInventoryResponse,
 } from './types.js';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
 import { parseGlobalSessionId } from '../../../shared/identity.js';
@@ -306,6 +307,10 @@ export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
 export async function fetchWorkspaces(): Promise<Repo[]> {
   const data = await json<{ workspaces: Repo[] }>(await fetch('/workspaces'));
   return data.workspaces;
+}
+
+export async function fetchRepoInventory(): Promise<AggregatedRepoInventoryResponse> {
+  return json<AggregatedRepoInventoryResponse>(await fetch('/hub/repo-inventory'));
 }
 
 export async function addWorkspace(path: string): Promise<void> {
