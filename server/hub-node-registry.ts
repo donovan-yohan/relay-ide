@@ -1,7 +1,10 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { NodeCapabilityProbe, NodeManifest } from '../shared/node-manifest.js';
+import type {
+  NodeCapabilityProbe,
+  NodeManifest,
+} from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import { createLogger } from './logger.js';
 import {
@@ -143,7 +146,9 @@ function countProbe(
   totals[status] += 1;
 }
 
-function summarizeCapabilities(manifest: NodeManifest): NodeCapabilityManifestSummary {
+function summarizeCapabilities(
+  manifest: NodeManifest
+): NodeCapabilityManifestSummary {
   const totals = { available: 0, degraded: 0, unavailable: 0, unknown: 0 };
   countProbe(totals, manifest.capabilities.tmux);
   countProbe(totals, manifest.capabilities.git);
@@ -177,19 +182,26 @@ function summarizeCapabilities(manifest: NodeManifest): NodeCapabilityManifestSu
   };
 }
 
-function worktreeCapabilityStatus(gitStatus: NodeCapabilityStatus): NodeCapabilityStatus {
+function worktreeCapabilityStatus(
+  gitStatus: NodeCapabilityStatus
+): NodeCapabilityStatus {
   if (gitStatus === 'available') return 'available';
   return gitStatus;
 }
 
-function nodeDisplayName(displayName: string | undefined, manifest: NodeManifest): string {
+function nodeDisplayName(
+  displayName: string | undefined,
+  manifest: NodeManifest
+): string {
   const trimmed = displayName?.trim();
   return trimmed || manifest.hostname;
 }
 
 function readRegistryFile(storagePath: string): RegistryFile {
   try {
-    const parsed = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as Partial<RegistryFile>;
+    const parsed = JSON.parse(
+      fs.readFileSync(storagePath, 'utf8')
+    ) as Partial<RegistryFile>;
     if (parsed.schemaVersion !== 1) return emptyRegistryFile();
     return {
       schemaVersion: 1,
@@ -308,10 +320,15 @@ function publicNode(
   };
 }
 
-function connectionSummary(status: HubNodeStatus): HubNodeSummary['connection'] {
-  if (status === 'online') return { route: REVERSE_LINK_ROUTE, status: 'connected' };
-  if (status === 'stale') return { route: REVERSE_LINK_ROUTE, status: 'stale heartbeat' };
-  if (status === 'offline') return { route: REVERSE_LINK_ROUTE, status: 'offline' };
+function connectionSummary(
+  status: HubNodeStatus
+): HubNodeSummary['connection'] {
+  if (status === 'online')
+    return { route: REVERSE_LINK_ROUTE, status: 'connected' };
+  if (status === 'stale')
+    return { route: REVERSE_LINK_ROUTE, status: 'stale heartbeat' };
+  if (status === 'offline')
+    return { route: REVERSE_LINK_ROUTE, status: 'offline' };
   return { route: REVERSE_LINK_ROUTE, status: 'revoked' };
 }
 
@@ -331,9 +348,11 @@ export class HubNodeRegistry {
     this.storagePath = options.storagePath;
     this.now = options.now ?? (() => new Date());
     this.staleMs = options.staleMs ?? DEFAULT_NODE_HEARTBEAT_TIMEOUTS.staleMs;
-    this.offlineMs = options.offlineMs ?? DEFAULT_NODE_HEARTBEAT_TIMEOUTS.offlineMs;
+    this.offlineMs =
+      options.offlineMs ?? DEFAULT_NODE_HEARTBEAT_TIMEOUTS.offlineMs;
     this.heartbeatPersistDebounceMs =
-      options.heartbeatPersistDebounceMs ?? DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
+      options.heartbeatPersistDebounceMs ??
+      DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
     this.state = readRegistryFile(options.storagePath);
   }
 
@@ -348,7 +367,10 @@ export class HubNodeRegistry {
     };
   }
 
-  createPairToken(options: { displayName?: string; ttlMs?: number }): PairTokenResponse {
+  createPairToken(options: {
+    displayName?: string;
+    ttlMs?: number;
+  }): PairTokenResponse {
     const createdAt = this.now();
     const expiresAt = new Date(
       createdAt.getTime() + (options.ttlMs ?? DEFAULT_PAIR_TOKEN_TTL_MS)
@@ -374,17 +396,24 @@ export class HubNodeRegistry {
     credential: RelayNodeCredential;
     node: HubNodeSummary;
   } {
-    const protocolVersion = input.protocolVersion ?? RELAY_NODE_LINK_PROTOCOL_VERSION;
+    const protocolVersion =
+      input.protocolVersion ?? RELAY_NODE_LINK_PROTOCOL_VERSION;
     assertCompatibleProtocol(protocolVersion);
     const tokenHash = sha256(input.pairToken);
     const pairToken = this.state.pairTokens.find((candidate) =>
       timingSafeEqualHex(candidate.tokenHash, tokenHash)
     );
     if (!pairToken) {
-      throw new HubNodeRegistryError('UNAUTHORIZED', 'pair token was not found');
+      throw new HubNodeRegistryError(
+        'UNAUTHORIZED',
+        'pair token was not found'
+      );
     }
     if (pairToken.usedAt) {
-      throw new HubNodeRegistryError('TOKEN_ALREADY_USED', 'pair token has already been used');
+      throw new HubNodeRegistryError(
+        'TOKEN_ALREADY_USED',
+        'pair token has already been used'
+      );
     }
     const now = this.now();
     if (Date.parse(pairToken.expiresAt) <= now.getTime()) {
@@ -400,7 +429,10 @@ export class HubNodeRegistry {
       nodeId,
       credentialId,
       credentialHash: sha256(token),
-      displayName: nodeDisplayName(input.displayName ?? pairToken.displayName, input.manifest),
+      displayName: nodeDisplayName(
+        input.displayName ?? pairToken.displayName,
+        input.manifest
+      ),
       hostname: input.manifest.hostname,
       platform: input.manifest.platform,
       arch: input.manifest.arch,
@@ -435,17 +467,27 @@ export class HubNodeRegistry {
   authenticateCredentialDetailed(token: string): CredentialAuthResult {
     const tokenHash = sha256(token);
     const [nodeId] = token.split('.', 1);
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
     if (!node || !timingSafeEqualHex(node.credentialHash, tokenHash)) {
       return {
         ok: false,
-        error: { code: 'UNAUTHORIZED', message: 'invalid node credential', retryable: false },
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'invalid node credential',
+          retryable: false,
+        },
       };
     }
     if (node.revokedAt) {
       return {
         ok: false,
-        error: { code: 'NODE_REVOKED', message: 'node credential was revoked', retryable: false },
+        error: {
+          code: 'NODE_REVOKED',
+          message: 'node credential was revoked',
+          retryable: false,
+        },
       };
     }
     return {
@@ -459,9 +501,13 @@ export class HubNodeRegistry {
 
   recordHeartbeat(input: HeartbeatInput): HubNodeSummary {
     assertCompatibleProtocol(input.protocolVersion);
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === input.nodeId);
-    if (!node) throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
-    if (node.revokedAt) throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === input.nodeId
+    );
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.revokedAt)
+      throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
     const now = this.now().toISOString();
     node.lastSeenAt = now;
     node.protocolVersion = input.protocolVersion;
@@ -506,7 +552,9 @@ export class HubNodeRegistry {
     );
   }
 
-  listRepoInventoryReports(options: { includeRevoked?: boolean } = {}): RepoInventoryReport[] {
+  listRepoInventoryReports(
+    options: { includeRevoked?: boolean } = {}
+  ): RepoInventoryReport[] {
     return this.state.nodes
       .filter((node) => options.includeRevoked || !node.revokedAt)
       .map((node) => node.repoInventory)
@@ -514,8 +562,11 @@ export class HubNodeRegistry {
   }
 
   revokeNode(nodeId: string): HubNodeSummary {
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
-    if (!node) throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
     const alreadyRevoked = Boolean(node.revokedAt);
     if (!alreadyRevoked) {
       node.revokedAt = this.now().toISOString();
@@ -532,7 +583,10 @@ export class HubNodeRegistry {
     return {
       error: {
         code: 'INTERNAL',
-        message: error instanceof Error ? error.message : 'internal hub node registry error',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'internal hub node registry error',
         retryable: true,
       },
     };
@@ -592,7 +646,9 @@ export class HubNodeRegistry {
   }
 }
 
-export function createHubNodeRegistry(options: HubNodeRegistryOptions): HubNodeRegistry {
+export function createHubNodeRegistry(
+  options: HubNodeRegistryOptions
+): HubNodeRegistry {
   return new HubNodeRegistry(options);
 }
 

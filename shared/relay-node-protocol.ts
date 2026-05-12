@@ -54,7 +54,10 @@ export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
 export type HubNodeCredentialState = 'active' | 'revoked';
 export type HubNodeTrustState = 'trusted' | 'revoked';
 export type HubNodeTrustLevel = 'privileged-local-user';
-export type HubNodeVersionState = 'compatible' | 'version-skew' | 'incompatible';
+export type HubNodeVersionState =
+  | 'compatible'
+  | 'version-skew'
+  | 'incompatible';
 
 export type NodeCapabilityStatus =
   | 'available'

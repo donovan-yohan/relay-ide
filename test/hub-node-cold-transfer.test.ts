@@ -37,18 +37,43 @@ function manifest(): NodeManifest {
     capabilities: {
       tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'unknown',
+        message: 'unknown',
+      },
       browserAutomation: {
         id: 'browserAutomation',
         label: 'Browser automation',
         status: 'degraded',
         message: 'missing deps',
       },
-      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
-      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
-      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'ok',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'unavailable',
+        message: 'missing',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'ok',
+      },
       agents: {
-        claude: { id: 'claude', label: 'Claude', status: 'available', message: 'ok' },
+        claude: {
+          id: 'claude',
+          label: 'Claude',
+          status: 'available',
+          message: 'ok',
+        },
       },
     },
   };
@@ -83,7 +108,11 @@ function repoInventoryReport(
         files: [],
         truncated: false,
       },
-      divergence: { upstreamRef: 'origin/nightly', aheadCount: 0, behindCount: 0 },
+      divergence: {
+        upstreamRef: 'origin/nightly',
+        aheadCount: 0,
+        behindCount: 0,
+      },
     },
   ];
 
@@ -111,7 +140,11 @@ function repoInventoryReport(
           files: [],
           truncated: false,
         },
-        divergence: { upstreamRef: 'origin/nightly', aheadCount: 0, behindCount: 0 },
+        divergence: {
+          upstreamRef: 'origin/nightly',
+          aheadCount: 0,
+          behindCount: 0,
+        },
         worktrees,
         reportedAt: '2026-01-02T03:04:05.000Z',
         ...overrides,
@@ -151,7 +184,8 @@ function remoteSession(nodeId: string): SessionSummary {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -171,7 +205,9 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
 
 async function nextJson(ws: WebSocket): Promise<RelayNodeEnvelope> {
   return await new Promise<RelayNodeEnvelope>((resolve) => {
-    ws.once('message', (data) => resolve(JSON.parse(data.toString()) as RelayNodeEnvelope));
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as RelayNodeEnvelope)
+    );
   });
 }
 
@@ -185,7 +221,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
   async function startHub(options?: {
     collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   }) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-cold-transfer-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-cold-transfer-')
+    );
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
     const registry = createHubNodeRegistry({
       storagePath: path.join(tmpDir, 'nodes.json'),
@@ -218,10 +256,15 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     );
     const port = await listen(server);
     cleanup.push(() => close(server));
-    return { base: `http://127.0.0.1:${port}`, wsBase: `ws://127.0.0.1:${port}` };
+    return {
+      base: `http://127.0.0.1:${port}`,
+      wsBase: `ws://127.0.0.1:${port}`,
+    };
   }
 
-  async function pairNode(base: string): Promise<{ token: string; nodeId: string }> {
+  async function pairNode(
+    base: string
+  ): Promise<{ token: string; nodeId: string }> {
     const pairRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
@@ -234,7 +277,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
       body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest() }),
     });
     expect(exchangeRes.status).toBe(201);
-    const exchange = (await exchangeRes.json()) as { credential: { token: string; nodeId: string } };
+    const exchange = (await exchangeRes.json()) as {
+      credential: { token: string; nodeId: string };
+    };
     return exchange.credential;
   }
 
@@ -246,8 +291,15 @@ describe('hub cold transfer / reopen-on-other-node', () => {
   ): Promise<void> {
     const res = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ nodeId, protocolVersion: '1.0', repoInventory: report }),
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        nodeId,
+        protocolVersion: '1.0',
+        repoInventory: report,
+      }),
     });
     expect(res.status).toBe(200);
   }
@@ -255,16 +307,27 @@ describe('hub cold transfer / reopen-on-other-node', () => {
   it('returns NODE_OFFLINE instead of pretending to migrate when target node has no live link', async () => {
     const { base } = await startHub();
     const { token, nodeId } = await pairNode(base);
-    await heartbeatRepoInventory(base, token, nodeId, repoInventoryReport(nodeId, '/srv/relay-ide'));
+    await heartbeatRepoInventory(
+      base,
+      token,
+      nodeId,
+      repoInventoryReport(nodeId, '/srv/relay-ide')
+    );
 
-    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
@@ -279,7 +342,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
       base,
       token,
       nodeId,
-      repoInventoryReport(nodeId, '/srv/other', { repoIdentity: 'github.com/example/other' })
+      repoInventoryReport(nodeId, '/srv/other', {
+        repoIdentity: 'github.com/example/other',
+      })
     );
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
@@ -287,14 +352,20 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
@@ -327,14 +398,20 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
@@ -369,10 +446,16 @@ describe('hub cold transfer / reopen-on-other-node', () => {
               unstagedCount: 1,
               untrackedCount: 0,
               conflictedCount: 0,
-              files: [{ path: 'server/hub-node-router.ts', status: 'modified' }],
+              files: [
+                { path: 'server/hub-node-router.ts', status: 'modified' },
+              ],
               truncated: false,
             },
-            divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+            divergence: {
+              upstreamRef: 'origin/nightly',
+              aheadCount: 2,
+              behindCount: 1,
+            },
           },
         ],
       })
@@ -383,14 +466,20 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
     const request = await nextJson(nodeWs);
     expect(request.payload).toMatchObject({
       repoPath: '/srv/relay-ide',
@@ -407,7 +496,13 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(nodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 
@@ -444,31 +539,48 @@ describe('hub cold transfer / reopen-on-other-node', () => {
               unstagedCount: 1,
               untrackedCount: 0,
               conflictedCount: 0,
-              files: [{ path: 'server/hub-node-router.ts', status: 'modified' }],
+              files: [
+                { path: 'server/hub-node-router.ts', status: 'modified' },
+              ],
               truncated: false,
             },
-            divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+            divergence: {
+              upstreamRef: 'origin/nightly',
+              aheadCount: 2,
+              behindCount: 1,
+            },
           },
         ],
       })
     );
 
     const { token: targetToken, nodeId: targetNodeId } = await pairNode(base);
-    await heartbeatRepoInventory(base, targetToken, targetNodeId, repoInventoryReport(targetNodeId, '/srv/relay-ide'));
+    await heartbeatRepoInventory(
+      base,
+      targetToken,
+      targetNodeId,
+      repoInventoryReport(targetNodeId, '/srv/relay-ide')
+    );
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${targetToken}` },
     });
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
     const request = await nextJson(nodeWs);
     expect(request.payload).toMatchObject({
       repoPath: '/srv/relay-ide',
@@ -485,7 +597,13 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(targetNodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 
@@ -505,27 +623,35 @@ describe('hub cold transfer / reopen-on-other-node', () => {
   it('starts a new target-node session from matching repo/worktree state on the success path', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);
-    await heartbeatRepoInventory(base, token, nodeId, repoInventoryReport(nodeId, '/srv/relay-ide'));
+    await heartbeatRepoInventory(
+      base,
+      token,
+      nodeId,
+      repoInventoryReport(nodeId, '/srv/relay-ide')
+    );
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: {
-          nodeId: 'local',
-          repoIdentity: 'github.com/donovan-yohan/relay-ide',
-          branchName: 'feature/a',
-          sessionId: 'source-session-1',
-        },
-        type: 'agent',
-        agent: 'claude',
-      }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            nodeId: 'local',
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+            sessionId: 'source-session-1',
+          },
+          type: 'agent',
+          agent: 'claude',
+        }),
+      }
+    );
 
     const request = await nextJson(nodeWs);
     expect(request).toMatchObject({
@@ -541,7 +667,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         continue: false,
       },
     });
-    expect(JSON.stringify(request.payload)).toContain('not a live tmux/PTY migration');
+    expect(JSON.stringify(request.payload)).toContain(
+      'not a live tmux/PTY migration'
+    );
     nodeWs.send(
       JSON.stringify({
         protocol: request.protocol,
@@ -551,7 +679,13 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(nodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 
@@ -591,34 +725,48 @@ describe('hub cold transfer / reopen-on-other-node', () => {
                 unstagedCount: 1,
                 untrackedCount: 0,
                 conflictedCount: 0,
-                files: [{ path: 'server/hub-node-router.ts', status: 'modified' }],
+                files: [
+                  { path: 'server/hub-node-router.ts', status: 'modified' },
+                ],
                 truncated: false,
               },
-              divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+              divergence: {
+                upstreamRef: 'origin/nightly',
+                aheadCount: 2,
+                behindCount: 1,
+              },
             },
           ],
         }),
     });
     const { token, nodeId: targetNodeId } = await pairNode(base);
-    await heartbeatRepoInventory(base, token, targetNodeId, repoInventoryReport(targetNodeId, '/srv/relay-ide'));
+    await heartbeatRepoInventory(
+      base,
+      token,
+      targetNodeId,
+      repoInventoryReport(targetNodeId, '/srv/relay-ide')
+    );
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: {
-          nodeId: localNodeId,
-          repoIdentity: 'github.com/donovan-yohan/relay-ide',
-          branchName: 'feature/a',
-        },
-        type: 'agent',
-      }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            nodeId: localNodeId,
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
     const request = await nextJson(nodeWs);
     expect(request.payload).toMatchObject({
       repoPath: '/srv/relay-ide',
@@ -635,7 +783,13 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(targetNodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 
@@ -664,7 +818,10 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     // keep the node online but do not heartbeat repo inventory into the registry
     const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ nodeId: targetNodeId, protocolVersion: '1.0' }),
     });
     expect(heartbeatRes.status).toBe(200);
@@ -676,14 +833,20 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({
-        source: { repoIdentity: 'github.com/donovan-yohan/relay-ide', branchName: 'feature/a' },
-        type: 'agent',
-      }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(targetNodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          source: {
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            branchName: 'feature/a',
+          },
+          type: 'agent',
+        }),
+      }
+    );
     const request = await nextJson(nodeWs);
     expect(request.payload).toMatchObject({
       repoPath: '/srv/relay-ide',
@@ -700,7 +863,13 @@ describe('hub cold transfer / reopen-on-other-node', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(targetNodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(targetNodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 

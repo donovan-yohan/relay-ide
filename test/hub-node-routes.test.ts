@@ -33,16 +33,36 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     capabilities: {
       tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'unknown',
+        message: 'unknown',
+      },
       browserAutomation: {
         id: 'browserAutomation',
         label: 'Browser automation',
         status: 'degraded',
         message: 'missing deps',
       },
-      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
-      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
-      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'ok',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'unavailable',
+        message: 'missing',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'ok',
+      },
       agents: {},
     },
     ...overrides,
@@ -50,7 +70,10 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
 }
 
 function nestedMalformedManifest(): unknown {
-  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<string, unknown>;
+  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<
+    string,
+    unknown
+  >;
   const serviceManager = candidate['serviceManager'] as Record<string, unknown>;
   serviceManager['kind'] = 'systemd';
   serviceManager['caveats'] = ['ok', { text: 'not a string' }];
@@ -58,19 +81,30 @@ function nestedMalformedManifest(): unknown {
 }
 
 function agentArrayManifest(): unknown {
-  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<string, unknown>;
+  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<
+    string,
+    unknown
+  >;
   const capabilities = candidate['capabilities'] as Record<string, unknown>;
   capabilities['agents'] = [];
   return candidate;
 }
 
 function tmpRegistry(now = () => new Date('2026-01-02T03:04:05.000Z')) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-routes-'));
-  const registry = createHubNodeRegistry({ storagePath: path.join(tmpDir, 'nodes.json'), now });
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-hub-node-routes-')
+  );
+  const registry = createHubNodeRegistry({
+    storagePath: path.join(tmpDir, 'nodes.json'),
+    now,
+  });
   return { tmpDir, registry };
 }
 
-function repoInventoryReport(nodeId: string, localPath: string): RepoInventoryReport {
+function repoInventoryReport(
+  nodeId: string,
+  localPath: string
+): RepoInventoryReport {
   const selectedRemote = {
     name: 'origin',
     url: 'git@github.com:donovan-yohan/relay-ide.git',
@@ -105,7 +139,11 @@ function repoInventoryReport(nodeId: string, localPath: string): RepoInventoryRe
           files: [{ path: 'server/repo-inventory.ts', status: 'modified' }],
           truncated: false,
         },
-        divergence: { upstreamRef: 'origin/nightly', aheadCount: 2, behindCount: 1 },
+        divergence: {
+          upstreamRef: 'origin/nightly',
+          aheadCount: 2,
+          behindCount: 1,
+        },
         worktrees: [
           {
             worktreeInstanceId: `${encodeURIComponent(nodeId)}:${encodeURIComponent(`${localPath}/.worktrees/a`)}`,
@@ -122,7 +160,8 @@ function repoInventoryReport(nodeId: string, localPath: string): RepoInventoryRe
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -158,7 +197,9 @@ describe('hub node routes and link', () => {
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
 
-    expect((await fetch(`${base}/hub/pair-tokens`, { method: 'POST' })).status).toBe(401);
+    expect(
+      (await fetch(`${base}/hub/pair-tokens`, { method: 'POST' })).status
+    ).toBe(401);
 
     const pairRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
@@ -181,14 +222,24 @@ describe('hub node routes and link', () => {
     };
     expect(pair.pairToken).toMatch(/^pair_/);
     expect(pair.hubUrl).toBe(base);
-    expect(pair.suggestedCommands.map((command) => command.id)).toContain('local-manual');
+    expect(pair.suggestedCommands.map((command) => command.id)).toContain(
+      'local-manual'
+    );
     expect(pair.suggestedCommands[0]!.command).toContain(pair.pairToken);
-    expect(pair.suggestedCommands[0]!.redactedCommand).not.toContain(pair.pairToken);
-    const manualCommand = pair.suggestedCommands.find((command) => command.id === 'local-manual');
+    expect(pair.suggestedCommands[0]!.redactedCommand).not.toContain(
+      pair.pairToken
+    );
+    const manualCommand = pair.suggestedCommands.find(
+      (command) => command.id === 'local-manual'
+    );
     expect(manualCommand?.label).toContain('pair-only');
     expect(manualCommand?.command).toContain('node connect');
-    expect(manualCommand?.caveats.join(' ')).toContain('sends one heartbeat, then exits');
-    const wslManualCommand = pair.suggestedCommands.find((command) => command.id === 'wsl-manual');
+    expect(manualCommand?.caveats.join(' ')).toContain(
+      'sends one heartbeat, then exits'
+    );
+    const wslManualCommand = pair.suggestedCommands.find(
+      (command) => command.id === 'wsl-manual'
+    );
     expect(wslManualCommand?.label).toContain('pair-only');
     expect(wslManualCommand?.command).toContain('node connect');
     expect(wslManualCommand?.caveats.join(' ')).not.toMatch(/foreground/i);
@@ -206,12 +257,12 @@ describe('hub node routes and link', () => {
     const defaultedModes = (await defaultedModesRes.json()) as {
       suggestedCommands: Array<{ id: string }>;
     };
-    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
-      'local-manual'
-    );
-    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
-      'macos-launchd'
-    );
+    expect(
+      defaultedModes.suggestedCommands.map((command) => command.id)
+    ).toContain('local-manual');
+    expect(
+      defaultedModes.suggestedCommands.map((command) => command.id)
+    ).toContain('macos-launchd');
 
     const forwardedHostRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
@@ -240,14 +291,17 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
-    const nestedMalformedExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        pairToken: pair.pairToken,
-        manifest: nestedMalformedManifest(),
-      }),
-    });
+    const nestedMalformedExchangeRes = await fetch(
+      `${base}/hub/pairing/exchange`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          pairToken: pair.pairToken,
+          manifest: nestedMalformedManifest(),
+        }),
+      }
+    );
     expect(nestedMalformedExchangeRes.status).toBe(400);
     expect(await nestedMalformedExchangeRes.json()).toMatchObject({
       error: { code: 'INVALID_REQUEST', retryable: false },
@@ -308,18 +362,21 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
-    const nestedMalformedHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${exchange.credential.token}`,
-      },
-      body: JSON.stringify({
-        nodeId: exchange.credential.nodeId,
-        protocolVersion: '1.0',
-        manifest: nestedMalformedManifest(),
-      }),
-    });
+    const nestedMalformedHeartbeatRes = await fetch(
+      `${base}/hub/node-heartbeat`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${exchange.credential.token}`,
+        },
+        body: JSON.stringify({
+          nodeId: exchange.credential.nodeId,
+          protocolVersion: '1.0',
+          manifest: nestedMalformedManifest(),
+        }),
+      }
+    );
     expect(nestedMalformedHeartbeatRes.status).toBe(400);
     expect(await nestedMalformedHeartbeatRes.json()).toMatchObject({
       error: { code: 'INVALID_REQUEST', retryable: false },
@@ -342,7 +399,9 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
-    const nodesRes = await fetch(`${base}/nodes`, { headers: { 'x-test-auth': 'yes' } });
+    const nodesRes = await fetch(`${base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
     expect(nodesRes.status).toBe(200);
     const nodesBody = await nodesRes.text();
     expect(nodesBody).toContain('0.1.1-test');
@@ -394,13 +453,24 @@ describe('hub node routes and link', () => {
     });
 
     const server = http.createServer(express());
-    setupWebSocket(server, new Set(), null, undefined, false, undefined, registry);
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      false,
+      undefined,
+      registry
+    );
     const port = await listen(server);
     cleanup.push(() => close(server));
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link?trace=test`, {
-      headers: { authorization: `Bearer ${exchanged.credential.token}` },
-    });
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/hub/node-link?trace=test`,
+      {
+        headers: { authorization: `Bearer ${exchanged.credential.token}` },
+      }
+    );
     cleanup.push(() => ws.close());
     await new Promise<void>((resolve, reject) => {
       ws.once('open', resolve);
@@ -409,7 +479,9 @@ describe('hub node routes and link', () => {
 
     now = new Date('2026-01-02T03:04:10.000Z');
     const ack = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.once('message', (data) =>
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      );
     });
     ws.send(
       JSON.stringify({
@@ -428,9 +500,13 @@ describe('hub node routes and link', () => {
       payload: { node: { hostname: 'linked-host', status: 'online' } },
     });
 
-    const malformedManifestError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
-    });
+    const malformedManifestError = new Promise<Record<string, unknown>>(
+      (resolve) => {
+        ws.once('message', (data) =>
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        );
+      }
+    );
     ws.send(
       JSON.stringify({
         protocol: 'relay-node-link',
@@ -448,9 +524,13 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
 
-    const agentArrayManifestError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
-    });
+    const agentArrayManifestError = new Promise<Record<string, unknown>>(
+      (resolve) => {
+        ws.once('message', (data) =>
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        );
+      }
+    );
     ws.send(
       JSON.stringify({
         protocol: 'relay-node-link',
@@ -469,7 +549,9 @@ describe('hub node routes and link', () => {
     });
 
     const skewError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.once('message', (data) =>
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      );
     });
     ws.send(
       JSON.stringify({
@@ -487,9 +569,13 @@ describe('hub node routes and link', () => {
       error: { code: 'VERSION_SKEW', retryable: false },
     });
 
-    const incompatibleError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
-    });
+    const incompatibleError = new Promise<Record<string, unknown>>(
+      (resolve) => {
+        ws.once('message', (data) =>
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        );
+      }
+    );
     ws.send(
       JSON.stringify({
         protocol: 'relay-node-link',
@@ -507,10 +593,14 @@ describe('hub node routes and link', () => {
     });
 
     const revokedError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.once('message', (data) =>
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      );
     });
     const closed = new Promise<{ code: number; reason: string }>((resolve) => {
-      ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+      ws.once('close', (code, reason) =>
+        resolve({ code, reason: reason.toString() })
+      );
     });
     registry.revokeNode(exchanged.node.nodeId);
     expect(await revokedError).toMatchObject({
@@ -533,7 +623,8 @@ describe('hub node routes and link', () => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
         },
-        collectLocalRepoInventory: async () => repoInventoryReport('local', '/Users/kyle/dev/relay-ide'),
+        collectLocalRepoInventory: async () =>
+          repoInventoryReport('local', '/Users/kyle/dev/relay-ide'),
       })
     );
     const server = http.createServer(app);
@@ -542,7 +633,10 @@ describe('hub node routes and link', () => {
     const base = `http://127.0.0.1:${port}`;
 
     const pairToken = registry.createPairToken({}).pairToken;
-    const exchanged = registry.exchangePairToken({ pairToken, manifest: manifest() });
+    const exchanged = registry.exchangePairToken({
+      pairToken,
+      manifest: manifest(),
+    });
     const heartbeat = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
       headers: {
@@ -552,7 +646,10 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({
         nodeId: exchanged.node.nodeId,
         protocolVersion: '1.0',
-        repoInventory: repoInventoryReport(exchanged.node.nodeId, '/srv/repos/relay-ide'),
+        repoInventory: repoInventoryReport(
+          exchanged.node.nodeId,
+          '/srv/repos/relay-ide'
+        ),
       }),
     });
     expect(heartbeat.status).toBe(200);
@@ -562,14 +659,18 @@ describe('hub node routes and link', () => {
     });
     expect(inventory.status).toBe(200);
     const payload = (await inventory.json()) as {
-      groups: Array<{ repoIdentity: string | null; instances: Array<{ nodeId: string; localPath: string }> }>;
+      groups: Array<{
+        repoIdentity: string | null;
+        instances: Array<{ nodeId: string; localPath: string }>;
+      }>;
     };
     expect(payload.groups).toHaveLength(1);
-    expect(payload.groups[0]).toMatchObject({ repoIdentity: 'github.com/donovan-yohan/relay-ide' });
-    expect(payload.groups[0]?.instances.map((instance) => instance.localPath).sort()).toEqual([
-      '/Users/kyle/dev/relay-ide',
-      '/srv/repos/relay-ide',
-    ]);
+    expect(payload.groups[0]).toMatchObject({
+      repoIdentity: 'github.com/donovan-yohan/relay-ide',
+    });
+    expect(
+      payload.groups[0]?.instances.map((instance) => instance.localPath).sort()
+    ).toEqual(['/Users/kyle/dev/relay-ide', '/srv/repos/relay-ide']);
   });
 
   it('rejects heartbeat repo inventory for a different node id', async () => {
@@ -580,7 +681,8 @@ describe('hub node routes and link', () => {
     app.use(
       createHubNodeRouter({
         registry,
-        requireAuth: (_req, res) => res.status(401).json({ error: 'Unauthorized' }),
+        requireAuth: (_req, res) =>
+          res.status(401).json({ error: 'Unauthorized' }),
       })
     );
     const server = http.createServer(app);
@@ -601,7 +703,10 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({
         nodeId: exchanged.node.nodeId,
         protocolVersion: '1.0',
-        repoInventory: repoInventoryReport('spoofed-node', '/srv/repos/relay-ide'),
+        repoInventory: repoInventoryReport(
+          'spoofed-node',
+          '/srv/repos/relay-ide'
+        ),
       }),
     });
 
@@ -622,13 +727,24 @@ describe('hub node routes and link', () => {
     });
 
     const server = http.createServer(express());
-    setupWebSocket(server, new Set(), null, undefined, false, undefined, registry);
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      false,
+      undefined,
+      registry
+    );
     const port = await listen(server);
     cleanup.push(() => close(server));
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link?trace=test`, {
-      headers: { authorization: `Bearer ${exchanged.credential.token}` },
-    });
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/hub/node-link?trace=test`,
+      {
+        headers: { authorization: `Bearer ${exchanged.credential.token}` },
+      }
+    );
     cleanup.push(() => ws.close());
     await new Promise<void>((resolve, reject) => {
       ws.once('open', resolve);
@@ -636,7 +752,9 @@ describe('hub node routes and link', () => {
     });
 
     const mismatchError = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.once('message', (data) =>
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      );
     });
     ws.send(
       JSON.stringify({
@@ -646,7 +764,12 @@ describe('hub node routes and link', () => {
         channel: 'control',
         type: 'control.heartbeat',
         timestamp: now.toISOString(),
-        payload: { repoInventory: repoInventoryReport('spoofed-node', '/srv/repos/relay-ide') },
+        payload: {
+          repoInventory: repoInventoryReport(
+            'spoofed-node',
+            '/srv/repos/relay-ide'
+          ),
+        },
       })
     );
 

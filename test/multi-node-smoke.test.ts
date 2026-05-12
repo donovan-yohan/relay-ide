@@ -21,7 +21,10 @@ import {
 
 const LOCAL_SESSION_ID = 'duplicate-local-session';
 
-function manifest(name: string, overrides: Partial<NodeManifest> = {}): NodeManifest {
+function manifest(
+  name: string,
+  overrides: Partial<NodeManifest> = {}
+): NodeManifest {
   return {
     schemaVersion: 1,
     platform: 'linux',
@@ -43,19 +46,49 @@ function manifest(name: string, overrides: Partial<NodeManifest> = {}): NodeMani
     capabilities: {
       tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'available', message: 'ok' },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'available',
+        message: 'ok',
+      },
       browserAutomation: {
         id: 'browserAutomation',
         label: 'Browser automation',
         status: 'degraded',
         message: 'browser deps are optional in smoke',
       },
-      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
-      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
-      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'ok',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'unavailable',
+        message: 'missing',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'ok',
+      },
       agents: {
-        claude: { id: 'claude', label: 'Claude', status: 'available', message: 'ok' },
-        codex: { id: 'codex', label: 'Codex', status: 'degraded', message: 'test double' },
+        claude: {
+          id: 'claude',
+          label: 'Claude',
+          status: 'available',
+          message: 'ok',
+        },
+        codex: {
+          id: 'codex',
+          label: 'Codex',
+          status: 'degraded',
+          message: 'test double',
+        },
       },
     },
     ...overrides,
@@ -93,7 +126,8 @@ function remoteSession(nodeId: string, hostname: string): SessionSummary {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('smoke hub did not bind a TCP port');
+  if (!address || typeof address === 'string')
+    throw new Error('smoke hub did not bind a TCP port');
   return address.port;
 }
 
@@ -143,11 +177,18 @@ class SimulatedRelayNode {
   }
 
   async nextEnvelope(): Promise<RelayNodeEnvelope> {
-    if (this.cursor < this.messages.length) return this.messages[this.cursor++]!;
-    return await new Promise<RelayNodeEnvelope>((resolve) => this.waiters.push(resolve));
+    if (this.cursor < this.messages.length)
+      return this.messages[this.cursor++]!;
+    return await new Promise<RelayNodeEnvelope>((resolve) =>
+      this.waiters.push(resolve)
+    );
   }
 
-  send(type: string, channel: RelayNodeEnvelope['channel'], extras: Partial<RelayNodeEnvelope> = {}): void {
+  send(
+    type: string,
+    channel: RelayNodeEnvelope['channel'],
+    extras: Partial<RelayNodeEnvelope> = {}
+  ): void {
     this.ws.send(
       JSON.stringify({
         protocol: RELAY_NODE_LINK_PROTOCOL,
@@ -162,7 +203,9 @@ class SimulatedRelayNode {
   }
 
   async hello(): Promise<RelayNodeEnvelope> {
-    this.send('control.hello', 'control', { payload: { manifest: manifest(this.hostname) } });
+    this.send('control.hello', 'control', {
+      payload: { manifest: manifest(this.hostname) },
+    });
     return await this.nextEnvelope();
   }
 
@@ -201,13 +244,18 @@ async function expectRelayError(
   code: string
 ): Promise<void> {
   expect(response.status, `expected relay error HTTP ${status}`).toBe(status);
-  await expect(readJson(response), `expected typed relay diagnostic ${code}`).resolves.toMatchObject({
+  await expect(
+    readJson(response),
+    `expected typed relay diagnostic ${code}`
+  ).resolves.toMatchObject({
     error: { code, retryable: expect.any(Boolean) },
   });
 }
 
 async function startSmokeHub(now: () => Date) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-multi-node-smoke-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-multi-node-smoke-')
+  );
   const registry = createHubNodeRegistry({
     storagePath: path.join(tmpDir, 'hub', 'nodes.json'),
     now,
@@ -259,15 +307,22 @@ async function pairAndConnectNode(
     headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
     body: JSON.stringify({ displayName: hostname }),
   });
-  expect(pairRes.status, `pair-token creation failed for ${hostname}`).toBe(201);
+  expect(pairRes.status, `pair-token creation failed for ${hostname}`).toBe(
+    201
+  );
   const pair = (await pairRes.json()) as { pairToken: string };
 
   const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest(hostname) }),
+    body: JSON.stringify({
+      pairToken: pair.pairToken,
+      manifest: manifest(hostname),
+    }),
   });
-  expect(exchangeRes.status, `pair-token exchange failed for ${hostname}`).toBe(201);
+  expect(exchangeRes.status, `pair-token exchange failed for ${hostname}`).toBe(
+    201
+  );
   const exchange = (await exchangeRes.json()) as {
     credential: { token: string; nodeId: string };
   };
@@ -297,22 +352,41 @@ describe('multi-node smoke harness', () => {
     cleanup.push(() => fs.rmSync(hub.tmpDir, { recursive: true, force: true }));
     cleanup.push(() => closeServer(hub.server));
 
-    const nodeA = await pairAndConnectNode(hub.base, hub.wsBase, 'smoke-node-a');
-    const nodeB = await pairAndConnectNode(hub.base, hub.wsBase, 'smoke-node-b');
+    const nodeA = await pairAndConnectNode(
+      hub.base,
+      hub.wsBase,
+      'smoke-node-a'
+    );
+    const nodeB = await pairAndConnectNode(
+      hub.base,
+      hub.wsBase,
+      'smoke-node-b'
+    );
     cleanup.push(() => nodeA.ws.close());
     cleanup.push(() => nodeB.ws.close());
 
-    await expect(nodeA.hello(), 'node A hello should produce a typed control ack').resolves.toMatchObject({
+    await expect(
+      nodeA.hello(),
+      'node A hello should produce a typed control ack'
+    ).resolves.toMatchObject({
       type: 'control.hello.result',
       payload: { node: { hostname: 'smoke-node-a', status: 'online' } },
     });
-    await expect(nodeB.hello(), 'node B hello should produce a typed control ack').resolves.toMatchObject({
+    await expect(
+      nodeB.hello(),
+      'node B hello should produce a typed control ack'
+    ).resolves.toMatchObject({
       type: 'control.hello.result',
       payload: { node: { hostname: 'smoke-node-b', status: 'online' } },
     });
 
-    const nodesRes = await fetch(`${hub.base}/nodes`, { headers: { 'x-test-auth': 'yes' } });
-    expect(nodesRes.status, 'hub /nodes should be reachable with user auth').toBe(200);
+    const nodesRes = await fetch(`${hub.base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(
+      nodesRes.status,
+      'hub /nodes should be reachable with user auth'
+    ).toBe(200);
     const nodesBody = (await nodesRes.json()) as { nodes: HubNodeSummary[] };
     expect(nodesBody.nodes.map((node) => node.nodeId).sort()).toEqual(
       [nodeA.nodeId, nodeB.nodeId].sort()
@@ -323,38 +397,66 @@ describe('multi-node smoke harness', () => {
           nodeId: nodeA.nodeId,
           status: 'online',
           capabilities: expect.objectContaining({
-            core: expect.objectContaining({ tmux: 'available', git: 'available' }),
-            agents: expect.objectContaining({ claude: 'available', codex: 'degraded' }),
+            core: expect.objectContaining({
+              tmux: 'available',
+              git: 'available',
+            }),
+            agents: expect.objectContaining({
+              claude: 'available',
+              codex: 'degraded',
+            }),
           }),
         }),
         expect.objectContaining({ nodeId: nodeB.nodeId, status: 'online' }),
       ])
     );
 
-    const createA = fetch(`${hub.base}/hub/nodes/${encodeURIComponent(nodeA.nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/nodes/smoke-node-a/relay-ide', type: 'terminal' }),
-    });
+    const createA = fetch(
+      `${hub.base}/hub/nodes/${encodeURIComponent(nodeA.nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          repoPath: '/nodes/smoke-node-a/relay-ide',
+          type: 'terminal',
+        }),
+      }
+    );
     const createARequest = await nodeA.nextEnvelope();
-    expect(createARequest).toMatchObject({ nodeId: nodeA.nodeId, type: 'sessions.create' });
+    expect(createARequest).toMatchObject({
+      nodeId: nodeA.nodeId,
+      type: 'sessions.create',
+    });
     nodeA.answerCreate(createARequest);
     const sessionA = (await (await createA).json()) as SessionSummary;
 
-    const createB = fetch(`${hub.base}/hub/nodes/${encodeURIComponent(nodeB.nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/nodes/smoke-node-b/relay-ide', type: 'terminal' }),
-    });
+    const createB = fetch(
+      `${hub.base}/hub/nodes/${encodeURIComponent(nodeB.nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          repoPath: '/nodes/smoke-node-b/relay-ide',
+          type: 'terminal',
+        }),
+      }
+    );
     const createBRequest = await nodeB.nextEnvelope();
-    expect(createBRequest).toMatchObject({ nodeId: nodeB.nodeId, type: 'sessions.create' });
+    expect(createBRequest).toMatchObject({
+      nodeId: nodeB.nodeId,
+      type: 'sessions.create',
+    });
     nodeB.answerCreate(createBRequest);
     const sessionB = (await (await createB).json()) as SessionSummary;
 
     expect(sessionA.id).toBe(LOCAL_SESSION_ID);
     expect(sessionB.id).toBe(LOCAL_SESSION_ID);
-    expect(sessionA.globalSessionId).toBe(`${nodeA.nodeId}:${LOCAL_SESSION_ID}`);
-    expect(sessionB.globalSessionId).toBe(`${nodeB.nodeId}:${LOCAL_SESSION_ID}`);
+    expect(sessionA.globalSessionId).toBe(
+      `${nodeA.nodeId}:${LOCAL_SESSION_ID}`
+    );
+    expect(sessionB.globalSessionId).toBe(
+      `${nodeB.nodeId}:${LOCAL_SESSION_ID}`
+    );
     expect(sessionA.globalSessionId).not.toBe(sessionB.globalSessionId);
     expect(sessionA.nodeId).toBe(nodeA.nodeId);
     expect(sessionB.nodeId).toBe(nodeB.nodeId);
@@ -363,12 +465,16 @@ describe('multi-node smoke harness', () => {
     cleanup.push(() => eventWs.close());
     await waitForOpen(eventWs);
     const events: Array<Record<string, unknown>> = [];
-    eventWs.on('message', (data) => events.push(JSON.parse(data.toString()) as Record<string, unknown>));
+    eventWs.on('message', (data) =>
+      events.push(JSON.parse(data.toString()) as Record<string, unknown>)
+    );
 
     nodeA.publishSessionState('running');
     nodeB.publishSessionState('idle');
     await expect
-      .poll(() => events.length, { message: 'expected two node-scoped events from duplicate local ids' })
+      .poll(() => events.length, {
+        message: 'expected two node-scoped events from duplicate local ids',
+      })
       .toBe(2);
     expect(events).toEqual([
       expect.objectContaining({
@@ -402,7 +508,9 @@ describe('multi-node smoke harness', () => {
     });
     await delay(25);
     expect(
-      nodeB.messages.slice(nodeBMessageCount).filter((message) => message.type === 'pty.attach'),
+      nodeB.messages
+        .slice(nodeBMessageCount)
+        .filter((message) => message.type === 'pty.attach'),
       'routed attach for node A must not leak to node B with the same local session id'
     ).toHaveLength(0);
 
@@ -418,16 +526,25 @@ describe('multi-node smoke harness', () => {
     currentTime = new Date('2026-01-02T03:05:36.000Z');
     nodeA.ws.close();
     await waitForClose(nodeA.ws);
-    const offlineNodesRes = await fetch(`${hub.base}/nodes`, { headers: { 'x-test-auth': 'yes' } });
-    const offlineNodes = (await offlineNodesRes.json()) as { nodes: HubNodeSummary[] };
-    expect(offlineNodes.nodes.find((node) => node.nodeId === nodeA.nodeId)?.status).toBe('offline');
+    const offlineNodesRes = await fetch(`${hub.base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    const offlineNodes = (await offlineNodesRes.json()) as {
+      nodes: HubNodeSummary[];
+    };
+    expect(
+      offlineNodes.nodes.find((node) => node.nodeId === nodeA.nodeId)?.status
+    ).toBe('offline');
 
     const offlineCreate = await fetch(
       `${hub.base}/hub/nodes/${encodeURIComponent(nodeA.nodeId)}/sessions`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-        body: JSON.stringify({ repoPath: '/nodes/smoke-node-a/relay-ide', type: 'terminal' }),
+        body: JSON.stringify({
+          repoPath: '/nodes/smoke-node-a/relay-ide',
+          type: 'terminal',
+        }),
       }
     );
     await expectRelayError(offlineCreate, 404, 'NODE_OFFLINE');
@@ -453,11 +570,17 @@ describe('multi-node smoke harness', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-        body: JSON.stringify({ repoPath: '/nodes/smoke-node-a/relay-ide', type: 'terminal' }),
+        body: JSON.stringify({
+          repoPath: '/nodes/smoke-node-a/relay-ide',
+          type: 'terminal',
+        }),
       }
     );
     const reconnectRequest = await reconnectedNodeA.nextEnvelope();
-    expect(reconnectRequest).toMatchObject({ nodeId: nodeA.nodeId, type: 'sessions.create' });
+    expect(reconnectRequest).toMatchObject({
+      nodeId: nodeA.nodeId,
+      type: 'sessions.create',
+    });
     reconnectedNodeA.answerCreate(reconnectRequest);
     expect((await reconnectCreate).status).toBe(201);
   });
@@ -477,7 +600,9 @@ describe('multi-node smoke harness', () => {
       localSessionId: 'terminal-1',
       globalSessionId: 'local:terminal-1',
     });
-    expect(local.fileEventScope({ workspacePath: '/src/relay-ide' })).toMatchObject({
+    expect(
+      local.fileEventScope({ workspacePath: '/src/relay-ide' })
+    ).toMatchObject({
       nodeId: 'local',
       repoInstanceId: `local:${encodeURIComponent('/src/relay-ide')}`,
     });

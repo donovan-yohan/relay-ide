@@ -2,6 +2,10 @@
 
 Operator guide for pairing, installing, updating, diagnosing, and unpairing Relay nodes that connect to a Federated Relay hub. Covers macOS launchd, Linux systemd, WSL2 caveats, manual foreground operation, token redaction, and node trust boundaries.
 
+Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
+
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are implemented here; steady-state routed sessions still require a future persistent node-side client that opens `/hub/node-link` with the stored node credential. This bootstrap slice does not start or maintain `/hub/node-link`.
+
 > This document is the runbook. For architecture and protocol details, see `docs/federated-relay.md`. For the generic Relay service install/uninstall (non-node), see `docs/references/deployment.md`.
 
 ## Prerequisites
@@ -12,15 +16,15 @@ Operator guide for pairing, installing, updating, diagnosing, and unpairing Rela
 
 ## Quick Reference
 
-| Task | Command |
-|------|---------|
-| Pair node (pair-only) | `relay-ide node connect --hub <url> --pair-token <token>` |
-| Pair + install service | `relay-ide node install --hub <url> --pair-token <token> --service <mode>` |
-| Check node status | `relay-ide node status` |
-| Read service logs | `relay-ide node logs` |
-| Diagnose hub reachability | `relay-ide node doctor --hub <url>` |
-| Update Relay + restart service | `relay-ide update` |
-| Unpair from hub | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
+| Task                           | Command                                                                                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Pair node (pair-only)          | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
+| Pair + install service         | `relay-ide node install --hub <url> --pair-token <token> --service <mode>`                               |
+| Check node status              | `relay-ide node status`                                                                                  |
+| Read service logs              | `relay-ide node logs`                                                                                    |
+| Diagnose hub reachability      | `relay-ide node doctor --hub <url>`                                                                      |
+| Update Relay + restart service | `relay-ide update`                                                                                       |
+| Unpair from hub                | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
 
 ## Pairing Lifecycle
 
@@ -51,14 +55,14 @@ relay-ide node install --hub https://hub.example.com --pair-token <token> --serv
 
 Supported `--service` values:
 
-| Value | Platform | Behavior |
-|-------|----------|----------|
-| `launchd` | macOS | Writes `~/Library/LaunchAgents/com.relay-ide.plist` and starts it |
-| `systemd-user` | Linux | Writes `~/.config/systemd/user/relay-ide.service` and enables it |
-| `wsl-systemd` | WSL2 with systemd | Same as `systemd-user` with WSL caveats |
-| `wsl-manual` | WSL2 without systemd | Pair-only; no background service |
-| `manual` | Any | Pair-only; no background service |
-| `auto` | Any | Detects platform and chooses the best supported mode |
+| Value          | Platform             | Behavior                                                          |
+| -------------- | -------------------- | ----------------------------------------------------------------- |
+| `launchd`      | macOS                | Writes `~/Library/LaunchAgents/com.relay-ide.plist` and starts it |
+| `systemd-user` | Linux                | Writes `~/.config/systemd/user/relay-ide.service` and enables it  |
+| `wsl-systemd`  | WSL2 with systemd    | Same as `systemd-user` with WSL caveats                           |
+| `wsl-manual`   | WSL2 without systemd | Pair-only; no background service                                  |
+| `manual`       | Any                  | Pair-only; no background service                                  |
+| `auto`         | Any                  | Detects platform and chooses the best supported mode              |
 
 > **Important:** Current bootstrap diagnostics pair credentials and install/start the generic Relay service only; they do **not** start or maintain the reverse WebSocket link `/hub/node-link`. Routed sessions still require a persistent node-side client that opens the reverse link.
 
@@ -189,6 +193,7 @@ relay-ide node status
 ```
 
 Outputs:
+
 - Hostname, platform, architecture
 - Relay version
 - Service manager kind and label
@@ -220,6 +225,7 @@ relay-ide update
 ```
 
 This:
+
 1. Reads the current `updateChannel` from config (`stable` or `nightly`)
 2. Runs `npm install -g relay-ide@<latest|nightly>`
 3. If a background service is detected, stops it, reinstalls with the new binary, and restarts it
@@ -242,6 +248,7 @@ curl -X DELETE https://hub.example.com/nodes/{nodeId} \
 ```
 
 Effects:
+
 - The node record is marked `revoked`
 - Active WebSocket links receive close code `4003` (`NODE_REVOKED`)
 - Pending RPCs and PTY streams are cleaned up
@@ -273,35 +280,37 @@ relay-ide node doctor --hub https://hub.example.com
 ```
 
 This prints:
+
 - Local capability manifest (tmux, git, agents, etc.)
 - Service manager detection result
 - Whether the hub `/version` endpoint is reachable
 
 ### Service logs by platform
 
-| Platform | Command |
-|----------|---------|
+| Platform      | Command                                                                        |
+| ------------- | ------------------------------------------------------------------------------ |
 | macOS launchd | `relay-ide node logs` or `log show --predicate 'subsystem == "com.relay-ide"'` |
-| Linux systemd | `journalctl --user -u relay-ide --no-pager -n 100` |
-| WSL systemd | Same as Linux; may need `wsl.exe -d <distro> -u <user>` |
-| Manual | No persistent logs; run `relay-ide node doctor` in the terminal |
+| Linux systemd | `journalctl --user -u relay-ide --no-pager -n 100`                             |
+| WSL systemd   | Same as Linux; may need `wsl.exe -d <distro> -u <user>`                        |
+| Manual        | No persistent logs; run `relay-ide node doctor` in the terminal                |
 
 ### Common bootstrap diagnostics
 
-| Code | Meaning | Recovery |
-|------|---------|----------|
-| `PAIR_TOKEN_INVALID` | Token malformed, consumed, or unknown | Generate a new token from the hub |
-| `PAIR_TOKEN_EXPIRED` | Token lifetime exceeded (default 10 min) | Generate a new token and retry quickly |
-| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd found | Use `--service manual` or fix the service manager |
-| `NODE_CONNECT_FAILED` | Node cannot reach hub URL | Check DNS, firewall, proxy, TLS |
-| `PROTOCOL_INCOMPATIBLE` | Hub/node protocol version mismatch | Update both hub and node to the same Relay version |
-| `NODE_STARTED_NO_HEARTBEAT` | Bootstrap finished but hub sees no heartbeat | Run `relay-ide node status` and `relay-ide node doctor` on the node |
+| Code                          | Meaning                                      | Recovery                                                            |
+| ----------------------------- | -------------------------------------------- | ------------------------------------------------------------------- |
+| `PAIR_TOKEN_INVALID`          | Token malformed, consumed, or unknown        | Generate a new token from the hub                                   |
+| `PAIR_TOKEN_EXPIRED`          | Token lifetime exceeded (default 10 min)     | Generate a new token and retry quickly                              |
+| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd found                     | Use `--service manual` or fix the service manager                   |
+| `NODE_CONNECT_FAILED`         | Node cannot reach hub URL                    | Check DNS, firewall, proxy, TLS                                     |
+| `PROTOCOL_INCOMPATIBLE`       | Hub/node protocol version mismatch           | Update both hub and node to the same Relay version                  |
+| `NODE_STARTED_NO_HEARTBEAT`   | Bootstrap finished but hub sees no heartbeat | Run `relay-ide node status` and `relay-ide node doctor` on the node |
 
 All diagnostic output redacts secrets before display. See Token Redaction below.
 
 ### Credential rejected after revocation
 
 If you see `NODE_CREDENTIAL_REJECTED`:
+
 1. Confirm the node was revoked from the hub (`GET /nodes` shows `revoked`)
 2. Delete `~/.config/relay-ide/node-credential.json`
 3. Generate a new pair token and re-pair
@@ -316,8 +325,8 @@ If you see `NODE_CREDENTIAL_REJECTED`:
 
 ### Trust level
 
-| Level | Description |
-|-------|-------------|
+| Level                   | Description                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `privileged-local-user` | Default for all paired nodes. The node can execute arbitrary shell commands, access local files, and run agent CLIs as the installing user. |
 
 This is a privileged trust boundary. Do not pair nodes you do not fully trust. There is no sandboxing or privilege separation beyond the OS user boundary.
@@ -333,25 +342,25 @@ This is a privileged trust boundary. Do not pair nodes you do not fully trust. T
 
 All CLI output, diagnostics, and bootstrap command generation redact sensitive tokens before display:
 
-| Pattern | Redacted form |
-|---------|---------------|
-| `--pair-token <value>` | `--pair-token pair_…redacted` |
-| `pair_...` tokens | `pair_…redacted` |
+| Pattern                                | Redacted form                     |
+| -------------------------------------- | --------------------------------- |
+| `--pair-token <value>`                 | `--pair-token pair_…redacted`     |
+| `pair_...` tokens                      | `pair_…redacted`                  |
 | `node_...._....secret_...` credentials | `node_…redacted.secret_…redacted` |
-| `secret_...` fragments | `secret_…redacted` |
-| `Authorization: Bearer <token>` | `Authorization: Bearer …redacted` |
-| `Bearer <token>` | `Bearer …redacted` |
+| `secret_...` fragments                 | `secret_…redacted`                |
+| `Authorization: Bearer <token>`        | `Authorization: Bearer …redacted` |
+| `Bearer <token>`                       | `Bearer …redacted`                |
 
 The redaction is applied by `redactBootstrapSecrets()` in `shared/bootstrap-diagnostics.ts`.
 
 ## Service File Locations
 
-| Platform | File |
-|----------|------|
-| macOS | `~/Library/LaunchAgents/com.relay-ide.plist` |
-| Linux systemd | `~/.config/systemd/user/relay-ide.service` |
-| Logs (macOS) | `~/.config/relay-ide/logs/stdout.log`, `stderr.log` |
-| Config + credential | `~/.config/relay-ide/` |
+| Platform            | File                                                |
+| ------------------- | --------------------------------------------------- |
+| macOS               | `~/Library/LaunchAgents/com.relay-ide.plist`        |
+| Linux systemd       | `~/.config/systemd/user/relay-ide.service`          |
+| Logs (macOS)        | `~/.config/relay-ide/logs/stdout.log`, `stderr.log` |
+| Config + credential | `~/.config/relay-ide/`                              |
 
 ## See Also
 

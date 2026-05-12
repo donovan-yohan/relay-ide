@@ -20,14 +20,14 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 
 ## Hub/Node/Client Terminology
 
-| Term | Definition |
-| --- | --- |
-| **Hub** | A `relay-ide` server configured to accept node registrations. May also host its own local sessions (the hub can act as its own node). |
-| **Node** | A Relay install on a machine that pairs with a hub and executes sessions locally. |
-| **Client UI** | The React 19 frontend running in a browser connected to the hub. |
-| **Repo identity** | Canonical repository identity derived from git remotes (e.g. `github.com/donovan-yohan/relay-ide`). Same repo cloned on different nodes shares one identity. |
-| **Repo instance** | A node-local checkout of a repo, identified by `(nodeId, repoPath)`. |
-| **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`. |
+| Term                  | Definition                                                                                                                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hub**               | A `relay-ide` server configured to accept node registrations. May also host its own local sessions (the hub can act as its own node).                                                                                                                 |
+| **Node**              | A Relay install on a machine that pairs with a hub and executes sessions locally.                                                                                                                                                                     |
+| **Client UI**         | The React 19 frontend running in a browser connected to the hub.                                                                                                                                                                                      |
+| **Repo identity**     | Canonical repository identity derived from git remotes (e.g. `github.com/donovan-yohan/relay-ide`). Same repo cloned on different nodes shares one identity.                                                                                          |
+| **Repo instance**     | A node-local checkout of a repo, identified by `(nodeId, repoPath)`.                                                                                                                                                                                  |
+| **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`.                                                                                                                                                                                    |
 | **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. |
 
 ## Reverse WebSocket Model
@@ -47,13 +47,13 @@ The node presents its persistent credential as a Bearer token during the HTTP up
 
 Once authenticated, the WebSocket carries multiplexed JSON envelopes:
 
-| Channel | Direction | Purpose |
-| --- | --- | --- |
-| `control` | Node → Hub | `hello` on connect, periodic `heartbeat` with manifest and optional repo inventory. Hub replies with `hello.result` / `heartbeat.ack`. |
-| `rpc` | Hub → Node / Node → Hub | Hub requests remote procedure calls (e.g. `sessions.create`) keyed by `requestId`. Node replies on the same `rpc` channel with the `requestId`. |
-| `events` | Node → Hub | Node-to-hub async events (e.g. telemetry, session lifecycle). |
-| `pty` | Bidirectional | Browser-to-node PTY byte relay. `pty.attach`, `pty.input`, `pty.resize` from hub; `pty.data`, `pty.exit`, `pty.error` from node. |
-| `preview` | (future) | Port-forward / preview URL tunneling. Not implemented in v1. |
+| Channel   | Direction               | Purpose                                                                                                                                         |
+| --------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control` | Node → Hub              | `hello` on connect, periodic `heartbeat` with manifest and optional repo inventory. Hub replies with `hello.result` / `heartbeat.ack`.          |
+| `rpc`     | Hub → Node / Node → Hub | Hub requests remote procedure calls (e.g. `sessions.create`) keyed by `requestId`. Node replies on the same `rpc` channel with the `requestId`. |
+| `events`  | Node → Hub              | Node-to-hub async events (e.g. telemetry, session lifecycle).                                                                                   |
+| `pty`     | Bidirectional           | Browser-to-node PTY byte relay. `pty.attach`, `pty.input`, `pty.resize` from hub; `pty.data`, `pty.exit`, `pty.error` from node.                |
+| `preview` | (future)                | Port-forward / preview URL tunneling. Not implemented in v1.                                                                                    |
 
 ### Envelope Format
 
@@ -163,6 +163,7 @@ Cookie: token={auth-cookie}
 ```
 
 Revoking a node:
+
 - Marks the node `revoked` in the registry
 - Notifies active WebSocket links (close code `4003`)
 - Clears pending RPCs and PTY streams
@@ -172,15 +173,15 @@ The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) wit
 
 ### Security Properties
 
-| Property | Implementation |
-| --- | --- |
-| Pair token storage (hub) | SHA256 hash only; raw token is never stored |
-| Node credential storage (hub) | SHA256 hash only; raw `token` is never stored |
+| Property                             | Implementation                                                    |
+| ------------------------------------ | ----------------------------------------------------------------- |
+| Pair token storage (hub)             | SHA256 hash only; raw token is never stored                       |
+| Node credential storage (hub)        | SHA256 hash only; raw `token` is never stored                     |
 | Node credential storage (node-local) | Raw token in `<configDir>/node-credential.json`; file mode `0600` |
-| Comparison | `crypto.timingSafeEqual` on hex buffers |
-| Pair token lifetime | Default 10 minutes; single-use; consumed on exchange |
-| Registry file | Written with `0600` mode; atomic write via temp+rename |
-| Revocation | Immediate; active links are killed; no grace period |
+| Comparison                           | `crypto.timingSafeEqual` on hex buffers                           |
+| Pair token lifetime                  | Default 10 minutes; single-use; consumed on exchange              |
+| Registry file                        | Written with `0600` mode; atomic write via temp+rename            |
+| Revocation                           | Immediate; active links are killed; no grace period               |
 
 ## Node Manifest and Capabilities
 
@@ -188,30 +189,30 @@ Nodes report a capability manifest during pairing and on every heartbeat. The ma
 
 ### Probed Capabilities
 
-| Capability | Meaning |
-| --- | --- |
-| `tmux` | Tmux is installed and available for session substrate |
-| `git` | Git CLI is available |
-| `clipboard` | Clipboard image set is available (`osascript` / `xclip`) |
-| `browserAutomation` | Playwright Chromium automation is available |
-| `githubCli` | `gh` CLI is available |
-| `tailscale` | `tailscale` CLI is available |
-| `ssh` | `ssh` client is available |
-| `agents` | Map of agent CLI IDs (e.g. `claude`, `codex`) to availability |
+| Capability          | Meaning                                                       |
+| ------------------- | ------------------------------------------------------------- |
+| `tmux`              | Tmux is installed and available for session substrate         |
+| `git`               | Git CLI is available                                          |
+| `clipboard`         | Clipboard image set is available (`osascript` / `xclip`)      |
+| `browserAutomation` | Playwright Chromium automation is available                   |
+| `githubCli`         | `gh` CLI is available                                         |
+| `tailscale`         | `tailscale` CLI is available                                  |
+| `ssh`               | `ssh` client is available                                     |
+| `agents`            | Map of agent CLI IDs (e.g. `claude`, `codex`) to availability |
 
 ### Service Manager
 
 The manifest also reports the detected service manager:
 
-| Kind | Platform |
-| --- | --- |
-| `launchd` | macOS |
-| `systemd-user` | Linux with systemd user manager |
+| Kind             | Platform                                                 |
+| ---------------- | -------------------------------------------------------- |
+| `launchd`        | macOS                                                    |
+| `systemd-user`   | Linux with systemd user manager                          |
 | `systemd-system` | Linux with systemd system manager (not used for install) |
-| `wsl-systemd` | WSL2 with systemd enabled |
-| `wsl-manual` | WSL2 without systemd |
-| `manual` | No supported service manager detected |
-| `unsupported` | Unknown / unhandled platform |
+| `wsl-systemd`    | WSL2 with systemd enabled                                |
+| `wsl-manual`     | WSL2 without systemd                                     |
+| `manual`         | No supported service manager detected                    |
+| `unsupported`    | Unknown / unhandled platform                             |
 
 ### WSL Detection
 
@@ -248,13 +249,13 @@ Preconditions checked by the hub:
 
 If any precondition fails, the hub returns a typed error with `retryable` guidance:
 
-| Error Code | Meaning | Retryable |
-| --- | --- | --- |
-| `NOT_FOUND` | Node is not paired | No |
-| `PROTOCOL_INCOMPATIBLE` | Major version mismatch | No |
-| `VERSION_SKEW` | Exact version mismatch (same major) | No |
-| `NODE_UNSUPPORTED` | Node cannot host tmux-backed sessions | No |
-| `NODE_OFFLINE` | Node has no live reverse link | Yes |
+| Error Code              | Meaning                               | Retryable |
+| ----------------------- | ------------------------------------- | --------- |
+| `NOT_FOUND`             | Node is not paired                    | No        |
+| `PROTOCOL_INCOMPATIBLE` | Major version mismatch                | No        |
+| `VERSION_SKEW`          | Exact version mismatch (same major)   | No        |
+| `NODE_UNSUPPORTED`      | Node cannot host tmux-backed sessions | No        |
+| `NODE_OFFLINE`          | Node has no live reverse link         | Yes       |
 
 On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session with:
 
@@ -301,31 +302,31 @@ Response groups repo instances by canonical identity, showing per-node paths, br
 
 ### Supported Service Modes
 
-| Mode | Description |
-| --- | --- |
-| `manual` | Pair credentials and exit. No background service. |
-| `launchd` | macOS user agent via `launchctl` |
-| `systemd-user` | Linux systemd `--user` unit |
-| `wsl-systemd` | WSL2 with systemd enabled |
-| `wsl-manual` | WSL2 fallback without systemd |
+| Mode           | Description                                       |
+| -------------- | ------------------------------------------------- |
+| `manual`       | Pair credentials and exit. No background service. |
+| `launchd`      | macOS user agent via `launchctl`                  |
+| `systemd-user` | Linux systemd `--user` unit                       |
+| `wsl-systemd`  | WSL2 with systemd enabled                         |
+| `wsl-manual`   | WSL2 fallback without systemd                     |
 
 ### Bootstrap Diagnostics
 
 The hub returns a diagnostics taxonomy covering the full bootstrap lifecycle:
 
-| Code | Stage | Meaning |
-| --- | --- | --- |
-| `BOOTSTRAP_UNREACHABLE` | reachability | Cannot SSH/Tailscale to target |
-| `BOOTSTRAP_REMOTE_SHELL_FAILED` | remote-shell | SSH connected but shell could not run bootstrap |
-| `BOOTSTRAP_INSTALL_FAILED` | install | `relay-ide` install failed on target |
-| `SERVICE_MANAGER_UNSUPPORTED` | service-detection | No supported service manager found |
-| `SERVICE_START_FAILED` | service-start | Service installed but did not stay running |
-| `PAIR_TOKEN_INVALID` | pair-token | Malformed, unknown, or already consumed |
-| `PAIR_TOKEN_EXPIRED` | pair-token | Token expired before exchange |
-| `NODE_CREDENTIAL_REJECTED` | node-auth | Credential was revoked or rejected |
-| `NODE_CONNECT_FAILED` | connect-back | Node cannot reach hub for heartbeat |
-| `PROTOCOL_INCOMPATIBLE` | protocol | Hub/node protocol versions incompatible |
-| `NODE_STARTED_NO_HEARTBEAT` | heartbeat | Bootstrap exited but no heartbeat observed |
+| Code                            | Stage             | Meaning                                         |
+| ------------------------------- | ----------------- | ----------------------------------------------- |
+| `BOOTSTRAP_UNREACHABLE`         | reachability      | Cannot SSH/Tailscale to target                  |
+| `BOOTSTRAP_REMOTE_SHELL_FAILED` | remote-shell      | SSH connected but shell could not run bootstrap |
+| `BOOTSTRAP_INSTALL_FAILED`      | install           | `relay-ide` install failed on target            |
+| `SERVICE_MANAGER_UNSUPPORTED`   | service-detection | No supported service manager found              |
+| `SERVICE_START_FAILED`          | service-start     | Service installed but did not stay running      |
+| `PAIR_TOKEN_INVALID`            | pair-token        | Malformed, unknown, or already consumed         |
+| `PAIR_TOKEN_EXPIRED`            | pair-token        | Token expired before exchange                   |
+| `NODE_CREDENTIAL_REJECTED`      | node-auth         | Credential was revoked or rejected              |
+| `NODE_CONNECT_FAILED`           | connect-back      | Node cannot reach hub for heartbeat             |
+| `PROTOCOL_INCOMPATIBLE`         | protocol          | Hub/node protocol versions incompatible         |
+| `NODE_STARTED_NO_HEARTBEAT`     | heartbeat         | Bootstrap exited but no heartbeat observed      |
 
 ### Diagnostics Commands
 
@@ -359,8 +360,8 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) before
 
 ### Trust Levels
 
-| Level | Description |
-| --- | --- |
+| Level                   | Description                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `privileged-local-user` | Default for all paired nodes. The node can execute arbitrary shell commands, access local files, and run agent CLIs as the installing user. |
 
 ### Transport Security
@@ -393,13 +394,13 @@ Use `relay-ide node status`, `relay-ide node logs`, and `relay-ide node doctor -
 
 > These ADRs are normative. Regenerate with `/adr:update` if the table drifts.
 
-| ADR | Topic | Decision |
-| --- | --- | --- |
-| ADR-009 | Hub/Node Federation | Relay hub accepts node registrations via reverse WebSocket; nodes own the PTY/tmux/data plane; hub owns routing and aggregation. |
-| ADR-010 | Node-Initiated Outbound Links | Nodes open outbound WebSocket to the hub to avoid NAT/firewall inbound issues. |
+| ADR     | Topic                           | Decision                                                                                                                              |
+| ------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR-009 | Hub/Node Federation             | Relay hub accepts node registrations via reverse WebSocket; nodes own the PTY/tmux/data plane; hub owns routing and aggregation.      |
+| ADR-010 | Node-Initiated Outbound Links   | Nodes open outbound WebSocket to the hub to avoid NAT/firewall inbound issues.                                                        |
 | ADR-012 | Pair-Token/Credential Lifecycle | One-time short-lived pair token → persistent revocable node credential. SHA256 storage, timing-safe comparison, immediate revocation. |
-| ADR-013 | Capability Manifest | Nodes self-report capability probes (tmux, git, agents, etc.). Hub gates session routing on capability state. |
-| ADR-014 | Repo Identity Aggregation | Repos are grouped by canonical git/GitHub remote identity across nodes; local paths remain node-specific. |
+| ADR-013 | Capability Manifest             | Nodes self-report capability probes (tmux, git, agents, etc.). Hub gates session routing on capability state.                         |
+| ADR-014 | Repo Identity Aggregation       | Repos are grouped by canonical git/GitHub remote identity across nodes; local paths remain node-specific.                             |
 
 ## Non-Goals (Explicitly Out of Scope)
 

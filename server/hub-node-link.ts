@@ -4,7 +4,10 @@ import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
-import { isRepoInventoryReport, type RepoInventoryReport } from '../shared/repo-inventory.js';
+import {
+  isRepoInventoryReport,
+  type RepoInventoryReport,
+} from '../shared/repo-inventory.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -82,7 +85,9 @@ function errorEnvelope(
   error: RelayNodeError
 ): RelayNodeEnvelope {
   return envelope(nodeId, 'control', 'control.error', {
-    ...(typeof request.requestId === 'string' ? { requestId: request.requestId } : {}),
+    ...(typeof request.requestId === 'string'
+      ? { requestId: request.requestId }
+      : {}),
     error,
   });
 }
@@ -122,13 +127,19 @@ function parseEnvelope(data: RawData): RelayNodeEnvelope | RelayNodeError {
     'pty',
     'preview',
   ];
-  if (!validChannels.includes(candidate.channel as RelayNodeEnvelope['channel'])) {
-    return invalidRequest(`unsupported relay-node-link channel: ${candidate.channel}`);
+  if (
+    !validChannels.includes(candidate.channel as RelayNodeEnvelope['channel'])
+  ) {
+    return invalidRequest(
+      `unsupported relay-node-link channel: ${candidate.channel}`
+    );
   }
   return candidate as RelayNodeEnvelope;
 }
 
-function manifestFromPayload(payload: unknown): NodeManifest | RelayNodeError | undefined {
+function manifestFromPayload(
+  payload: unknown
+): NodeManifest | RelayNodeError | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const manifest = (payload as Record<string, unknown>)['manifest'];
   if (manifest === undefined || manifest === null) return undefined;
@@ -136,11 +147,14 @@ function manifestFromPayload(payload: unknown): NodeManifest | RelayNodeError | 
   return manifest;
 }
 
-function repoInventoryFromPayload(payload: unknown): RepoInventoryReport | RelayNodeError | undefined {
+function repoInventoryFromPayload(
+  payload: unknown
+): RepoInventoryReport | RelayNodeError | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const repoInventory = (payload as Record<string, unknown>)['repoInventory'];
   if (repoInventory === undefined || repoInventory === null) return undefined;
-  if (!isRepoInventoryReport(repoInventory)) return invalidRequest('repoInventory is malformed');
+  if (!isRepoInventoryReport(repoInventory))
+    return invalidRequest('repoInventory is malformed');
   return repoInventory;
 }
 
@@ -192,7 +206,9 @@ export class HubNodeLinkManager {
   request(nodeId: string, type: string, payload: unknown): Promise<unknown> {
     const ws = this.links.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) {
-      throw new HubNodeLinkError(nodeOffline(`node ${nodeId} has no live reverse link`));
+      throw new HubNodeLinkError(
+        nodeOffline(`node ${nodeId} has no live reverse link`)
+      );
     }
     const requestId = crypto.randomUUID();
     return new Promise<unknown>((resolve, reject) => {
@@ -207,7 +223,13 @@ export class HubNodeLinkManager {
         );
       }, DEFAULT_RPC_TIMEOUT_MS);
       timer.unref?.();
-      this.pending.set(requestId, { nodeId, nodeWs: ws, resolve, reject, timer });
+      this.pending.set(requestId, {
+        nodeId,
+        nodeWs: ws,
+        resolve,
+        reject,
+        timer,
+      });
       sendJson(
         ws,
         envelope(nodeId, 'rpc', type, {
@@ -221,7 +243,9 @@ export class HubNodeLinkManager {
   attachPty(nodeId: string, sessionId: string, browserWs: WebSocket): void {
     const nodeWs = this.links.get(nodeId);
     if (!nodeWs || nodeWs.readyState !== nodeWs.OPEN) {
-      throw new HubNodeLinkError(nodeOffline(`node ${nodeId} has no live reverse link`));
+      throw new HubNodeLinkError(
+        nodeOffline(`node ${nodeId} has no live reverse link`)
+      );
     }
     const streamId = crypto.randomUUID();
     this.ptyStreams.set(streamId, { nodeId, nodeWs, sessionId, browserWs });
@@ -242,7 +266,8 @@ export class HubNodeLinkManager {
       try {
         const parsed = JSON.parse(text) as Record<string, unknown>;
         if (parsed['type'] === 'ping') {
-          if (browserWs.readyState === browserWs.OPEN) browserWs.send('{"type":"pong"}');
+          if (browserWs.readyState === browserWs.OPEN)
+            browserWs.send('{"type":"pong"}');
           return;
         }
         if (
@@ -276,7 +301,10 @@ export class HubNodeLinkManager {
       if (!stream) return;
       this.ptyStreams.delete(streamId);
       if (stream.nodeWs.readyState === stream.nodeWs.OPEN) {
-        sendJson(stream.nodeWs, envelope(nodeId, 'pty', 'pty.detach', { streamId }));
+        sendJson(
+          stream.nodeWs,
+          envelope(nodeId, 'pty', 'pty.detach', { streamId })
+        );
       }
     };
     browserWs.once('close', cleanup);
@@ -341,7 +369,8 @@ export class HubNodeLinkManager {
     if (typeof payload.type !== 'string') return;
     const data = { ...payload, nodeId: message.nodeId };
     delete data.type;
-    for (const handler of Array.from(this.eventHandlers)) handler(payload.type, data);
+    for (const handler of Array.from(this.eventHandlers))
+      handler(payload.type, data);
   }
 
   private unregisterNodeLink(nodeId: string, ws: WebSocket): void {
@@ -354,7 +383,9 @@ export class HubNodeLinkManager {
       if (pending.nodeId !== nodeId || pending.nodeWs !== ws) continue;
       clearTimeout(pending.timer);
       this.pending.delete(requestId);
-      pending.reject(new HubNodeLinkError(nodeOffline(`node ${nodeId} link closed`)));
+      pending.reject(
+        new HubNodeLinkError(nodeOffline(`node ${nodeId} link closed`))
+      );
     }
     for (const [streamId, stream] of Array.from(this.ptyStreams)) {
       if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;
@@ -382,11 +413,15 @@ export function handleHubNodeLink(
     if (nodeId !== authenticatedNodeId) return;
     sendJson(
       ws,
-      errorEnvelope(authenticatedNodeId, {}, {
-        code: 'NODE_REVOKED',
-        message: 'node credential was revoked',
-        retryable: false,
-      })
+      errorEnvelope(
+        authenticatedNodeId,
+        {},
+        {
+          code: 'NODE_REVOKED',
+          message: 'node credential was revoked',
+          retryable: false,
+        }
+      )
     );
     ws.close(4003, 'node revoked');
   });
@@ -421,13 +456,18 @@ export function handleHubNodeLink(
         errorEnvelope(
           authenticatedNodeId,
           parsed,
-          invalidRequest(`unsupported ${parsed.channel} message: ${parsed.type}`)
+          invalidRequest(
+            `unsupported ${parsed.channel} message: ${parsed.type}`
+          )
         )
       );
       return;
     }
 
-    if (parsed.type !== 'control.heartbeat' && parsed.type !== 'control.hello') {
+    if (
+      parsed.type !== 'control.heartbeat' &&
+      parsed.type !== 'control.hello'
+    ) {
       sendJson(
         ws,
         errorEnvelope(
@@ -442,16 +482,24 @@ export function handleHubNodeLink(
     try {
       const manifestResult = manifestFromPayload(parsed.payload);
       if (manifestResult && 'code' in manifestResult) {
-        sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, manifestResult));
+        sendJson(
+          ws,
+          errorEnvelope(authenticatedNodeId, parsed, manifestResult)
+        );
         return;
       }
       const manifest = manifestResult as NodeManifest | undefined;
       const repoInventoryResult = repoInventoryFromPayload(parsed.payload);
       if (repoInventoryResult && 'code' in repoInventoryResult) {
-        sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, repoInventoryResult));
+        sendJson(
+          ws,
+          errorEnvelope(authenticatedNodeId, parsed, repoInventoryResult)
+        );
         return;
       }
-      const repoInventory = repoInventoryResult as RepoInventoryReport | undefined;
+      const repoInventory = repoInventoryResult as
+        | RepoInventoryReport
+        | undefined;
       const node = registry.recordHeartbeat({
         nodeId: authenticatedNodeId,
         protocolVersion: parsed.protocolVersion,
@@ -467,12 +515,21 @@ export function handleHubNodeLink(
           parsed.type === 'control.hello'
             ? 'control.hello.result'
             : 'control.heartbeat.ack',
-        ...(typeof parsed.requestId === 'string' ? { requestId: parsed.requestId } : {}),
+        ...(typeof parsed.requestId === 'string'
+          ? { requestId: parsed.requestId }
+          : {}),
         timestamp: new Date().toISOString(),
         payload: { node },
       });
     } catch (error) {
-      sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, registry.errorBody(error).error));
+      sendJson(
+        ws,
+        errorEnvelope(
+          authenticatedNodeId,
+          parsed,
+          registry.errorBody(error).error
+        )
+      );
     }
   });
 }

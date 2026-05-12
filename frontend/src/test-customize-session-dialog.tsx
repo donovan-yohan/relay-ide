@@ -151,7 +151,8 @@ function inventory(): AggregatedRepoInventoryResponse {
             repoIdentityWarnings: [],
             worktrees: [
               {
-                worktreeInstanceId: 'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
+                worktreeInstanceId:
+                  'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
                 localPath: '/srv/relay-ide/.worktrees/feature',
                 branchName: 'feature/linux',
                 displayName: 'feature',
@@ -297,11 +298,16 @@ window.fetch = async (input, init) => {
   const url = new URL(String(input), window.location.origin);
   if (url.pathname === '/hub/repo-inventory') return jsonResponse(inventory());
   if (url.pathname === '/nodes') return jsonResponse({ nodes: nodes() });
-  if (url.pathname === '/config/defaultContinue') return jsonResponse({ defaultContinue: false });
-  if (url.pathname === '/config/defaultYolo') return jsonResponse({ defaultYolo: false });
-  if (url.pathname === '/config/defaultAgent') return jsonResponse({ defaultAgent: 'claude' });
-  if (url.pathname === '/config/defaultNotifications') return jsonResponse({ defaultNotifications: true });
-  if (url.pathname === '/config/claudeFullscreen') return jsonResponse({ claudeFullscreen: true });
+  if (url.pathname === '/config/defaultContinue')
+    return jsonResponse({ defaultContinue: false });
+  if (url.pathname === '/config/defaultYolo')
+    return jsonResponse({ defaultYolo: false });
+  if (url.pathname === '/config/defaultAgent')
+    return jsonResponse({ defaultAgent: 'claude' });
+  if (url.pathname === '/config/defaultNotifications')
+    return jsonResponse({ defaultNotifications: true });
+  if (url.pathname === '/config/claudeFullscreen')
+    return jsonResponse({ claudeFullscreen: true });
   if (url.pathname === '/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
     return jsonResponse({
@@ -341,7 +347,17 @@ window.fetch = async (input, init) => {
   if (url.pathname === '/sessions') return jsonResponse([]);
   if (url.pathname === '/git/worktrees') return jsonResponse([]);
   if (url.pathname === '/workspaces') {
-    return jsonResponse({ workspaces: [{ name: 'relay-ide', path: '/Users/kyle/relay-ide', isGitRepo: true, defaultBranch: 'nightly', currentBranch: 'nightly' }] });
+    return jsonResponse({
+      workspaces: [
+        {
+          name: 'relay-ide',
+          path: '/Users/kyle/relay-ide',
+          isGitRepo: true,
+          defaultBranch: 'nightly',
+          currentBranch: 'nightly',
+        },
+      ],
+    });
   }
   if (url.pathname === '/workspace-groups') return jsonResponse([]);
   return nativeFetch(input, init);
@@ -363,7 +379,10 @@ function Harness() {
         type="button"
         onClick={() => {
           scenario = 'multi';
-          void dialogRef.current?.open({ name: 'relay-ide', path: '/Users/kyle/relay-ide' });
+          void dialogRef.current?.open({
+            name: 'relay-ide',
+            path: '/Users/kyle/relay-ide',
+          });
         }}
       >
         open customize session
@@ -372,7 +391,10 @@ function Harness() {
         type="button"
         onClick={() => {
           scenario = 'single';
-          void dialogRef.current?.open({ name: 'relay-ide', path: '/Users/kyle/relay-ide' });
+          void dialogRef.current?.open({
+            name: 'relay-ide',
+            path: '/Users/kyle/relay-ide',
+          });
         }}
       >
         open single-node customize session
@@ -381,14 +403,20 @@ function Harness() {
         type="button"
         onClick={() => {
           scenario = 'single-disabled';
-          void dialogRef.current?.open({ name: 'relay-ide', path: '/Users/kyle/relay-ide' });
+          void dialogRef.current?.open({
+            name: 'relay-ide',
+            path: '/Users/kyle/relay-ide',
+          });
         }}
       >
         open single disabled-node customize session
       </button>
       <output data-testid="created-session">{createdSession}</output>
       <output data-testid="last-create-request">{lastCreateRequest}</output>
-      <CustomizeSessionDialog ref={dialogRef} onSessionCreated={setCreatedSession} />
+      <CustomizeSessionDialog
+        ref={dialogRef}
+        onSessionCreated={setCreatedSession}
+      />
     </div>
   );
 }
