@@ -2596,6 +2596,7 @@ async function main(): Promise<void> {
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
+        await hubNodeRegistry.flushPendingHeartbeatPersist();
         serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
@@ -2670,6 +2671,7 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
+    await hubNodeRegistry.flushPendingHeartbeatPersist();
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir, { reason: restartReason });

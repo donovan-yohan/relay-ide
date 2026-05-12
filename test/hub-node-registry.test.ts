@@ -201,6 +201,57 @@ describe('hub node registry', () => {
     }
   });
 
+  it('debounces heartbeat persistence and flushes the latest node state deterministically', async () => {
+    const storagePath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-registry-')),
+      'nodes.json'
+    );
+    let now = new Date('2026-01-02T03:04:05.000Z');
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath,
+        now: () => now,
+        heartbeatPersistDebounceMs: 60_000,
+      });
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const persistedBeforeHeartbeat = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+        nodes: Array<{ lastSeenAt: string; hostname: string }>;
+      };
+
+      now = new Date('2026-01-02T03:05:05.000Z');
+      registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest({ hostname: 'heartbeat-host', relayVersion: '10.0.0' }),
+      });
+
+      const persistedImmediatelyAfterHeartbeat = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+        nodes: Array<{ lastSeenAt: string; hostname: string; relayVersion: string }>;
+      };
+      expect(persistedImmediatelyAfterHeartbeat.nodes[0]).toMatchObject({
+        lastSeenAt: persistedBeforeHeartbeat.nodes[0]?.lastSeenAt,
+        hostname: 'test-host',
+        relayVersion: '9.9.9',
+      });
+
+      await registry.flushPendingHeartbeatPersist();
+
+      const persistedAfterFlush = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+        nodes: Array<{ lastSeenAt: string; hostname: string; relayVersion: string }>;
+      };
+      expect(persistedAfterFlush.nodes[0]).toMatchObject({
+        lastSeenAt: '2026-01-02T03:05:05.000Z',
+        hostname: 'heartbeat-host',
+        relayVersion: '10.0.0',
+      });
+    } finally {
+      fs.rmSync(path.dirname(storagePath), { recursive: true, force: true });
+    }
+  });
+
   it('returns typed errors for expired tokens, bad credentials, and incompatible protocol versions', () => {
     withTmpRegistry((registry) => {
       const pair = registry.createPairToken({ ttlMs: 1 });

@@ -70,6 +70,7 @@ export interface HubNodeRegistryOptions {
   now?: () => Date;
   staleMs?: number;
   offlineMs?: number;
+  heartbeatPersistDebounceMs?: number;
 }
 
 export const DEFAULT_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -77,6 +78,7 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   staleMs: 45 * 1000,
   offlineMs: 90 * 1000,
 } as const;
+export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
 
 class HubNodeRegistryError extends Error {
   readonly relayNodeError: RelayNodeError;
@@ -214,13 +216,19 @@ export class HubNodeRegistry {
   private now: () => Date;
   private readonly staleMs: number;
   private readonly offlineMs: number;
+  private readonly heartbeatPersistDebounceMs: number;
   private state: RegistryFile;
+  private heartbeatPersistTimer: NodeJS.Timeout | null = null;
+  private heartbeatPersistDirty = false;
+  private heartbeatPersistError: unknown = null;
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
     this.now = options.now ?? (() => new Date());
     this.staleMs = options.staleMs ?? DEFAULT_NODE_HEARTBEAT_TIMEOUTS.staleMs;
     this.offlineMs = options.offlineMs ?? DEFAULT_NODE_HEARTBEAT_TIMEOUTS.offlineMs;
+    this.heartbeatPersistDebounceMs =
+      options.heartbeatPersistDebounceMs ?? DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
     this.state = readRegistryFile(options.storagePath);
   }
 
@@ -339,8 +347,22 @@ export class HubNodeRegistry {
       node.relayVersion = input.manifest.relayVersion;
       node.capabilities = summarizeCapabilities(input.manifest);
     }
-    this.persist();
+    this.scheduleHeartbeatPersist();
     return publicNode(node, 'online');
+  }
+
+  async flushPendingHeartbeatPersist(): Promise<void> {
+    if (this.heartbeatPersistTimer) {
+      clearTimeout(this.heartbeatPersistTimer);
+      this.heartbeatPersistTimer = null;
+    }
+    this.flushHeartbeatPersistNow();
+
+    if (this.heartbeatPersistError) {
+      const error = this.heartbeatPersistError;
+      this.heartbeatPersistError = null;
+      throw error;
+    }
   }
 
   listNodes(): HubNodeSummary[] {
@@ -372,7 +394,43 @@ export class HubNodeRegistry {
   }
 
   private persist(): void {
+    this.cancelPendingHeartbeatPersist();
+    this.heartbeatPersistError = null;
     writeRegistryFile(this.storagePath, this.state);
+  }
+
+  private scheduleHeartbeatPersist(): void {
+    this.heartbeatPersistDirty = true;
+    if (this.heartbeatPersistTimer) return;
+    this.heartbeatPersistTimer = setTimeout(() => {
+      this.heartbeatPersistTimer = null;
+      try {
+        this.flushHeartbeatPersistNow();
+      } catch {
+        /* error is recorded for a later deterministic flush/retry */
+      }
+    }, this.heartbeatPersistDebounceMs);
+    this.heartbeatPersistTimer.unref?.();
+  }
+
+  private flushHeartbeatPersistNow(): void {
+    if (!this.heartbeatPersistDirty) return;
+    try {
+      writeRegistryFile(this.storagePath, this.state);
+      this.heartbeatPersistDirty = false;
+      this.heartbeatPersistError = null;
+    } catch (error) {
+      this.heartbeatPersistError = error;
+      throw error;
+    }
+  }
+
+  private cancelPendingHeartbeatPersist(): void {
+    if (this.heartbeatPersistTimer) {
+      clearTimeout(this.heartbeatPersistTimer);
+      this.heartbeatPersistTimer = null;
+    }
+    this.heartbeatPersistDirty = false;
   }
 }
 
