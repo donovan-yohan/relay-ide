@@ -4,7 +4,7 @@ Operator guide for pairing, installing, updating, diagnosing, and unpairing Rela
 
 Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
 
-Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are implemented here; steady-state routed sessions still require a future persistent node-side client that opens `/hub/node-link` with the stored node credential. This bootstrap slice does not start or maintain `/hub/node-link`.
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are handled by `relay-ide node connect` / `node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node connect`, `node install`) themselves do not open or maintain `/hub/node-link`.
 
 > This document is the runbook. For architecture and protocol details, see `docs/federated-relay.md`. For the generic Relay service install/uninstall (non-node), see `docs/references/deployment.md`.
 
@@ -64,7 +64,24 @@ Supported `--service` values:
 | `manual`       | Any                  | Pair-only; no background service                                  |
 | `auto`         | Any                  | Detects platform and chooses the best supported mode              |
 
-> **Important:** Current bootstrap diagnostics pair credentials and install/start the generic Relay service only; they do **not** start or maintain the reverse WebSocket link `/hub/node-link`. Routed sessions still require a persistent node-side client that opens the reverse link.
+> **Important:** Bootstrap diagnostics pair credentials and install/start the generic Relay service. They do **not** start the reverse WebSocket link `/hub/node-link` themselves. Use `relay-ide node link --hub <url>` to hold the persistent reverse link in the foreground (or run it from your platform service manager).
+
+### Persistent /hub/node-link
+
+```bash
+relay-ide node link --hub https://hub.example.com
+```
+
+Behavior:
+
+- Loads the credential at `~/.config/relay-ide/node-credential.json` (run `node connect` first).
+- Opens an authenticated WebSocket to `<hub>/hub/node-link` and sends `control.hello` with the local manifest and repo inventory.
+- Sends a `control.heartbeat` every 20s over the same link. Hub reports the node as `online` while the link is up.
+- Reconnects with jittered exponential backoff (starts at 1s, caps at 60s) on transient close or socket error.
+- Exits permanently when the hub returns `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`.
+- `SIGINT` / `SIGTERM` close the link cleanly.
+
+Node-side PTY and RPC handling are scaffolded but no-op in this slice; routed PTY/file/git RPC are follow-ups. Local Relay mode (no hub configured) still boots without attempting `/hub/node-link`.
 
 ### 3. Credential storage
 
