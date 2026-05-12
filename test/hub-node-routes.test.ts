@@ -166,9 +166,66 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({ displayName: 'Route Node' }),
     });
     expect(pairRes.status).toBe(201);
-    const pair = (await pairRes.json()) as { pairToken: string; expiresAt: string };
+    const pair = (await pairRes.json()) as {
+      pairToken: string;
+      expiresAt: string;
+      hubUrl: string;
+      suggestedCommands: Array<{
+        id: string;
+        label: string;
+        command: string;
+        redactedCommand: string;
+        caveats: string[];
+      }>;
+      diagnostics: Array<{ code: string }>;
+    };
     expect(pair.pairToken).toMatch(/^pair_/);
+    expect(pair.hubUrl).toBe(base);
+    expect(pair.suggestedCommands.map((command) => command.id)).toContain('local-manual');
+    expect(pair.suggestedCommands[0]!.command).toContain(pair.pairToken);
+    expect(pair.suggestedCommands[0]!.redactedCommand).not.toContain(pair.pairToken);
+    const manualCommand = pair.suggestedCommands.find((command) => command.id === 'local-manual');
+    expect(manualCommand?.label).toContain('pair-only');
+    expect(manualCommand?.command).toContain('node connect');
+    expect(manualCommand?.caveats.join(' ')).toContain('sends one heartbeat, then exits');
+    const wslManualCommand = pair.suggestedCommands.find((command) => command.id === 'wsl-manual');
+    expect(wslManualCommand?.label).toContain('pair-only');
+    expect(wslManualCommand?.command).toContain('node connect');
+    expect(wslManualCommand?.caveats.join(' ')).not.toMatch(/foreground/i);
+    expect(pair.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      'NODE_STARTED_NO_HEARTBEAT'
+    );
     expect(pair).not.toHaveProperty('bootstrapCommand');
+
+    const defaultedModesRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ serviceModes: ['bogus', 'also-bogus'] }),
+    });
+    expect(defaultedModesRes.status).toBe(201);
+    const defaultedModes = (await defaultedModesRes.json()) as {
+      suggestedCommands: Array<{ id: string }>;
+    };
+    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
+      'local-manual'
+    );
+    expect(defaultedModes.suggestedCommands.map((command) => command.id)).toContain(
+      'macos-launchd'
+    );
+
+    const forwardedHostRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'relay.example.com',
+      },
+      body: JSON.stringify({ displayName: 'Proxy Node' }),
+    });
+    expect(forwardedHostRes.status).toBe(201);
+    const forwardedHost = (await forwardedHostRes.json()) as { hubUrl: string };
+    expect(forwardedHost.hubUrl).toBe('https://relay.example.com');
 
     const malformedExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
