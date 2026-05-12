@@ -47,8 +47,10 @@ core; the core does not depend on them.
 
 - `server/hub-node-link.ts`, `server/node-link-client.ts`,
   `server/node-link-pty-host.ts`
-- `server/hub-node-registry.ts`, `server/hub-node-router.ts` (routing only;
-  no repo semantics)
+- `server/hub-node-registry.ts`
+- Routing-only surface of `server/hub-node-router.ts` (envelope dispatch,
+  node lookup, RPC method registration). See note below; this file is
+  currently mixed.
 - `server/node-manifest.ts` (capability probes for tmux, git binary
   availability, agent CLIs — *availability*, not repo state)
 - `shared/relay-node-protocol.ts`
@@ -58,13 +60,25 @@ core; the core does not depend on them.
 
 ### Feature layer (consumes core, does not bleed into it)
 
-- Repo inventory + aggregation: `server/repo-inventory.ts`,
-  `server/hub-node-router.ts` repo endpoints, divergence summaries.
+- Repo inventory + aggregation: `server/repo-inventory.ts`, the repo-aware
+  endpoints currently inside `server/hub-node-router.ts` (see note below),
+  divergence summaries.
 - Worktree management: `server/watcher.ts`, `bin/relay-ide.ts` worktree
   subcommand.
 - Agent framework registry, framework-specific spawn defaults.
 - Workspace groupings (#103) when shipped.
 - IDE-specific UI state under `frontend/`.
+
+### Mixed-responsibility module: `server/hub-node-router.ts`
+
+`server/hub-node-router.ts` currently combines two responsibilities: pure
+routing (core) and repo-aware HTTP endpoints (feature). This is intentional
+debt acknowledged by this ADR. The refactor that splits it lives in #425:
+the routing core stays in this module (or moves to a renamed
+`server/hub-router.ts`), and repo aggregation endpoints move into the repo
+feature module and are mounted by the hub composition root. Until then,
+PRs touching this file must be tagged with the responsibility they modify
+and must not deepen the coupling.
 
 ### Rules new code must follow
 

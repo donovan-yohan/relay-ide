@@ -93,7 +93,11 @@ request execution on behalf of another.
   - Add a protocol field naming a peer node in an envelope sent by a node.
   - Add a hub-side route that takes "actAsNodeId" or accepts a node
     credential as authorization for routing to a different node.
-  - Add node-side outbound calls to anything other than the hub URL.
+  - Add node-side outbound calls that target peer relay-nodes or
+    fleet-internal addresses (Tailscale peer endpoints, hub-mediated
+    cross-node URLs, etc.). Outbound calls to external services (agent
+    CLIs reaching their providers, Playwright fetching public URLs per
+    ADR-011, package registries, etc.) are not constrained by this ADR.
 - This invariant is referenced by #427 (security backbone) and #429 (CLI
   gateway). PRs in those epics must demonstrate compliance.
 - Re-evaluate this ADR only if a concrete operational need cannot be met by
