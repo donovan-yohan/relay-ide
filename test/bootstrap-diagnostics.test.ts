@@ -55,7 +55,7 @@ describe('bootstrap command generation and diagnostics', () => {
     expect(tailscale).not.toContain('tailscale ssh tail-host &&');
   });
 
-  it('keeps foreground connect commands free of service-manager flags', () => {
+  it('marks manual and WSL manual commands as pair-only connect commands', () => {
     const commands = generateBootstrapCommands({
       hubUrl: 'https://hub.example.com',
       pairToken: 'pair_secret-token-value',
@@ -65,7 +65,19 @@ describe('bootstrap command generation and diagnostics', () => {
     for (const command of commands) {
       expect(command.command).toContain('node connect');
       expect(command.command).not.toContain('--service');
+      expect(command.label).toMatch(/pair-only/);
+      expect(command.caveats.join(' ')).toContain('sends one heartbeat, then exits');
+      expect(command.caveats.join(' ')).not.toMatch(/foreground/i);
     }
+  });
+
+  it('does not advertise unsupported service managers as a foreground node lifecycle', () => {
+    const unsupported = BOOTSTRAP_DIAGNOSTICS.find(
+      (diagnostic) => diagnostic.code === 'SERVICE_MANAGER_UNSUPPORTED'
+    );
+
+    expect(unsupported?.hint).toContain('node connect only to pair credentials');
+    expect(unsupported?.hint).not.toMatch(/foreground/i);
   });
 
   it('redacts pair tokens, node credentials, and bearer headers from diagnostics text', () => {

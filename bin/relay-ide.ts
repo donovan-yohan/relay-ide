@@ -194,7 +194,9 @@ function nodeLogHints(kind: string): string[] {
       'sudo journalctl -u relay-ide --no-pager -n 100',
     ];
   }
-  return ['manual/foreground mode: inspect the terminal where relay-ide node connect is running'];
+  return [
+    'manual mode has no Relay-managed service logs; node connect only pairs credentials and exits',
+  ];
 }
 
 async function printNodeStatus(): Promise<void> {
@@ -335,7 +337,7 @@ if (command === 'node') {
       logger.info('SSH/Tailscale are bootstrap transports only; steady state uses reverse WebSocket.');
       await pairNode(nodeArgs);
       if (serviceMode === 'manual') {
-        logger.info('Manual service mode requested; leaving the paired node in foreground mode.');
+        logger.info('Manual service mode requested; paired credentials only. No foreground node process was started.');
         process.exit(0);
       }
       runServiceCommand(() => {

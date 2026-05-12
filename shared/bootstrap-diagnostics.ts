@@ -77,7 +77,7 @@ export const BOOTSTRAP_DIAGNOSTICS: BootstrapDiagnostic[] = [
     code: 'SERVICE_MANAGER_UNSUPPORTED',
     stage: 'service-detection',
     meaning: 'No supported launchd/systemd service path was found.',
-    hint: 'Use the foreground/manual command; WSL may require systemd to be explicitly enabled.',
+    hint: 'Use node connect only to pair credentials, then install a service-specific variant or your own supervisor; WSL may require systemd to be explicitly enabled.',
   },
   {
     code: 'SERVICE_START_FAILED',
@@ -132,11 +132,11 @@ const DEFAULT_SERVICE_MODES: BootstrapServiceMode[] = [
 ];
 
 const SERVICE_LABELS: Record<BootstrapServiceMode, { id: BootstrapCommandId; label: string }> = {
-  manual: { id: 'local-manual', label: 'Local/manual foreground node' },
+  manual: { id: 'local-manual', label: 'Local/manual pair-only node setup' },
   launchd: { id: 'macos-launchd', label: 'macOS launchd node service' },
   'systemd-user': { id: 'linux-systemd-user', label: 'Linux systemd --user node service' },
   'wsl-systemd': { id: 'wsl-systemd', label: 'WSL systemd-enabled node service' },
-  'wsl-manual': { id: 'wsl-manual', label: 'WSL manual foreground node' },
+  'wsl-manual': { id: 'wsl-manual', label: 'WSL manual pair-only node setup' },
 };
 
 function shellQuote(value: string): string {
@@ -177,10 +177,14 @@ function commandCaveats(service: BootstrapServiceMode): string[] {
     return ['Only works when WSL systemd and the user bus are enabled; WSL distro shutdown still stops the node.'];
   }
   if (service === 'wsl-manual') {
-    return ['Foreground-only WSL lifecycle; Relay does not install a Windows scheduled task in MVP.'];
+    return [
+      'Pair-only WSL fallback; node connect stores credentials and sends one heartbeat, then exits. Relay does not install a Windows scheduled task in MVP.',
+    ];
   }
   if (service === 'manual') {
-    return ['Foreground process; keep the shell alive or install a service-specific variant.'];
+    return [
+      'Pair-only fallback; node connect stores credentials and sends one heartbeat, then exits. Install a service-specific variant or supervisor for steady-state node traffic.',
+    ];
   }
   return [];
 }

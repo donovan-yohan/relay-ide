@@ -33,6 +33,8 @@ test('generateServiceFile for macos contains plist XML', () => {
   });
   expect(content).toMatch(/<!DOCTYPE plist/);
   expect(content).toMatch(/com\.relay-ide/);
+  expect(content).toContain('<string>com.relay-ide</string>');
+  expect(content).not.toContain('com.relay-ide.node');
   expect(content).toMatch(/RunAtLoad/);
   expect(content).toMatch(/KeepAlive/);
   expect(content).toMatch(/3456/);
@@ -88,14 +90,17 @@ test('isGlobalInstall returns false when running from repo checkout', () => {
 });
 
 test('detectServiceManager models macOS launchd explicitly', () => {
-  expect(
-    service.detectServiceManager({ platform: 'darwin', home: '/Users/test' })
-  ).toMatchObject({
+  const manager = service.detectServiceManager({ platform: 'darwin', home: '/Users/test' });
+
+  expect(manager).toMatchObject({
     kind: 'launchd',
     supported: true,
     installable: true,
     servicePath: '/Users/test/Library/LaunchAgents/com.relay-ide.plist',
+    unitName: 'com.relay-ide',
+    statusCommand: 'launchctl list com.relay-ide',
   });
+  expect(manager.unitName).not.toBe('com.relay-ide.node');
 });
 
 test('detectServiceManager reports systemd-user with linger caveat', () => {

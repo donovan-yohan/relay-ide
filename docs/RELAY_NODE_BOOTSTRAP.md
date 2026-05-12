@@ -6,8 +6,8 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 
 1. The hub creates a short-lived, one-time pair token with `POST /hub/pair-tokens`.
 2. The response includes the raw `pairToken` for copy actions and redacted `suggestedCommands[*].redactedCommand` for safe display/logging.
-3. A trusted target runs `relay-ide node connect` or `relay-ide node install` with the hub URL and pair token.
-4. The node exchanges the pair token at `/hub/pairing/exchange` for a persistent revocable node credential, stores it locally with `0600` permissions, and sends an initial heartbeat. `node install` then delegates service install/start to Relay's local service manager abstraction.
+3. A trusted target runs `relay-ide node connect` to pair credentials once, or `relay-ide node install` to pair credentials and install/start a Relay-managed service.
+4. The node exchanges the pair token at `/hub/pairing/exchange` for a persistent revocable node credential, stores it locally with `0600` permissions, and sends an initial heartbeat. `node connect` exits after this one-shot pairing/heartbeat. `node install` then delegates service install/start to Relay's local service manager abstraction.
 5. Steady-state node traffic connects back to the hub using the reverse WebSocket protocol. SSH/Tailscale are no longer in the request path.
 
 Tokens and credentials must be redacted in logs, issue comments, and diagnostics. Use redacted command copies when rendering status or writing logs.
@@ -39,9 +39,9 @@ Response fields:
 - `suggestedCommands`: command variants with `command` and `redactedCommand`.
 - `diagnostics`: bootstrap failure taxonomy and user-facing hints.
 
-## Local/manual
+## Local/manual pair-only setup
 
-macOS or Linux foreground:
+macOS or Linux one-shot pairing fallback:
 
 ```bash
 relay-ide node connect \
@@ -49,7 +49,7 @@ relay-ide node connect \
   --pair-token <token>
 ```
 
-This is the safest fallback for unsupported service managers and WSL manual lifecycle.
+This is the safest fallback for unsupported service managers when you only need to pair credentials. It is not a foreground node lifecycle: the command stores credentials, sends one initial heartbeat, then exits. Use a launchd/systemd install command or your own supervisor for steady-state reverse WebSocket traffic.
 
 ## macOS launchd
 
@@ -100,7 +100,7 @@ relay-ide node install \
   --service wsl-systemd
 ```
 
-Manual WSL:
+Manual WSL one-shot pairing fallback:
 
 ```bash
 relay-ide node connect \
@@ -108,7 +108,7 @@ relay-ide node connect \
   --pair-token <token>
 ```
 
-WSL limitations are explicit: distro shutdown stops foreground and WSL systemd services, and Relay does not install a Windows scheduled task in MVP.
+WSL limitations are explicit: distro shutdown stops WSL systemd services, `node connect` is only one-shot credential pairing, and Relay does not install a Windows scheduled task in MVP.
 
 ## SSH and Tailscale SSH
 
@@ -141,7 +141,7 @@ Tailscale is the private reachability/trust layer. Relay does not manage tailnet
 | `BOOTSTRAP_UNREACHABLE` | Cannot connect to host over SSH/Tailscale. |
 | `BOOTSTRAP_REMOTE_SHELL_FAILED` | SSH worked but the bootstrap script could not run. |
 | `BOOTSTRAP_INSTALL_FAILED` | Relay install/update failed on the target. |
-| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd/WSL service path; use foreground/manual. |
+| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd/WSL service path; use `node connect` only to pair credentials, then install your own supervisor or enable a supported service manager. |
 | `SERVICE_START_FAILED` | Service installed but did not start or stay running. |
 | `PAIR_TOKEN_INVALID` | Pair token is malformed, unknown, or already consumed. |
 | `PAIR_TOKEN_EXPIRED` | Pair token expired before exchange. |

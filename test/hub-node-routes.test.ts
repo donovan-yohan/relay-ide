@@ -170,7 +170,13 @@ describe('hub node routes and link', () => {
       pairToken: string;
       expiresAt: string;
       hubUrl: string;
-      suggestedCommands: Array<{ id: string; command: string; redactedCommand: string }>;
+      suggestedCommands: Array<{
+        id: string;
+        label: string;
+        command: string;
+        redactedCommand: string;
+        caveats: string[];
+      }>;
       diagnostics: Array<{ code: string }>;
     };
     expect(pair.pairToken).toMatch(/^pair_/);
@@ -178,6 +184,14 @@ describe('hub node routes and link', () => {
     expect(pair.suggestedCommands.map((command) => command.id)).toContain('local-manual');
     expect(pair.suggestedCommands[0]!.command).toContain(pair.pairToken);
     expect(pair.suggestedCommands[0]!.redactedCommand).not.toContain(pair.pairToken);
+    const manualCommand = pair.suggestedCommands.find((command) => command.id === 'local-manual');
+    expect(manualCommand?.label).toContain('pair-only');
+    expect(manualCommand?.command).toContain('node connect');
+    expect(manualCommand?.caveats.join(' ')).toContain('sends one heartbeat, then exits');
+    const wslManualCommand = pair.suggestedCommands.find((command) => command.id === 'wsl-manual');
+    expect(wslManualCommand?.label).toContain('pair-only');
+    expect(wslManualCommand?.command).toContain('node connect');
+    expect(wslManualCommand?.caveats.join(' ')).not.toMatch(/foreground/i);
     expect(pair.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
       'NODE_STARTED_NO_HEARTBEAT'
     );
