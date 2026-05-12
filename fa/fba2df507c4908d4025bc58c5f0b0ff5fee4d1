@@ -1,0 +1,25 @@
+test/adrs-docs.test.ts
+  s_0837e04cd7f585::t_803fb6dab39f51 1-41
+docs/ARCHITECTURE.md
+  s_0837e04cd7f585::t_18620f249845e6 238-258
+docs/adrs/ADR-015-core-primitives-domain-agnostic.md
+  s_0837e04cd7f585::t_2f15b51fb1daf8 1-109
+docs/adrs/ADR-016-node-to-node-isolation.md
+  s_0837e04cd7f585::t_714e6f6521fbec 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "fafba2df507c4908d4025bc58c5f0b0ff5fee4d1",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
