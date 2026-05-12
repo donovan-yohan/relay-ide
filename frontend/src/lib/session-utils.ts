@@ -3,8 +3,10 @@ import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 import { resolveSessionByKey } from './session-keys.js';
 import type { Repo, SessionSummary } from './types.js';
+import type { NodeId } from '../../../shared/identity.js';
 
 export interface CreateAgentSessionOptions {
+  nodeId?: NodeId | undefined;
   repoPath: string;
   worktreePath?: string | null | undefined;
   type?: 'agent' | 'terminal' | undefined;

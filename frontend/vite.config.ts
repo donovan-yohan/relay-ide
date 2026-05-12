@@ -32,6 +32,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-full-page-diff.html'
   );
+  buildInputs['test-customize-session-dialog'] = resolve(
+    import.meta.dirname,
+    'test-customize-session-dialog.html'
+  );
 }
 
 export default defineConfig({

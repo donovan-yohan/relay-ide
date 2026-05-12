@@ -50,3 +50,18 @@
   color: var(--text-muted);
   font-size: var(--font-size-sm);
 }
+
+.customize-session-environment-picker {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.customize-session-environment-copy {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
