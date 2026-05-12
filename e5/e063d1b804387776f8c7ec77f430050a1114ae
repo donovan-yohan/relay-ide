@@ -1,0 +1,31 @@
+server/node-link-client.ts
+  s_0837e04cd7f585::t_d7ca7ca50a4f9c 166-179,182-184,191-194,200,205
+  s_0837e04cd7f585::t_06e1605bbd25bb 343-345,347
+  s_0837e04cd7f585::t_8f8c546fee9e69 108
+  s_0837e04cd7f585::t_af6ff384bf42f9 274,277-287,292,312,315,330
+bin/relay-ide.ts
+  s_0837e04cd7f585::t_6ad70a073dd922 320-331
+  s_0837e04cd7f585::t_1175ba8a1186cb 374-397
+test/node-link-client.test.ts
+  s_0837e04cd7f585::t_982903ffd1532a 124,128,139-141,144
+docs/RELAY_NODE_BOOTSTRAP.md
+  s_0837e04cd7f585::t_589a7b4378fe69 7
+test/node-bootstrap-docs.test.ts
+  s_0837e04cd7f585::t_a249824892b284 37,39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "e5e063d1b804387776f8c7ec77f430050a1114ae",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
