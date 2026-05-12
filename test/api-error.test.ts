@@ -94,4 +94,36 @@ describe('frontend api errors', () => {
       body: JSON.stringify({ repoPath: '/repo', type: 'terminal' }),
     });
   });
+
+  it('preserves typed relay error bodies for remote session create failures', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'NODE_OFFLINE',
+                message: 'node node-a has no live reverse link',
+                retryable: true,
+              },
+            }),
+            {
+              status: 404,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(
+      createSession({ nodeId: 'node-a', repoPath: '/repo', type: 'terminal' })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 404,
+      code: 'NODE_OFFLINE',
+      message: 'node node-a has no live reverse link',
+      retryable: true,
+    });
+  });
 });

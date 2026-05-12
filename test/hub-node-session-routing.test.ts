@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import express from 'express';
@@ -8,10 +9,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
+import { createLocalRelayNode } from '../server/local-node.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { SessionSummary } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
-import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
+import {
+  RELAY_NODE_LINK_PROTOCOL,
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type RelayNodeEnvelope,
+} from '../shared/relay-node-protocol.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -77,6 +83,40 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
 async function nextJson(ws: WebSocket): Promise<RelayNodeEnvelope> {
   return await new Promise<RelayNodeEnvelope>((resolve) => {
     ws.once('message', (data) => resolve(JSON.parse(data.toString()) as RelayNodeEnvelope));
+  });
+}
+
+async function nextEvent(ws: WebSocket): Promise<Record<string, unknown>> {
+  return await new Promise<Record<string, unknown>>((resolve) => {
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+    );
+  });
+}
+
+async function rawUpgrade(port: number, pathName: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(
+        `GET ${pathName} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          'Connection: Upgrade\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'
+      );
+    });
+    let response = '';
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      reject(new Error('timed out waiting for raw upgrade response'));
+    });
+    socket.on('data', (chunk) => {
+      response += chunk.toString();
+      socket.destroy();
+      resolve(response);
+    });
+    socket.on('error', reject);
   });
 }
 
@@ -156,10 +196,24 @@ describe('hub-routed node session create and attach', () => {
       })
     );
     const server = http.createServer(app);
-    setupWebSocket(server, new Set(), null, undefined, true, undefined, registry, nodeLinks);
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      true,
+      createLocalRelayNode({ nodeId: 'hub-node' }),
+      registry,
+      nodeLinks
+    );
     const port = await listen(server);
     cleanup.push(() => close(server));
-    return { base: `http://127.0.0.1:${port}`, wsBase: `ws://127.0.0.1:${port}`, nodeLinks };
+    return {
+      base: `http://127.0.0.1:${port}`,
+      wsBase: `ws://127.0.0.1:${port}`,
+      port,
+      nodeLinks,
+    };
   }
 
   it('returns NODE_OFFLINE when a selected node has no live reverse link', async () => {
@@ -321,5 +375,53 @@ describe('hub-routed node session create and attach', () => {
       })
     );
     expect((await browserClose).code).toBe(1000);
+  });
+
+  it('broadcasts remote node session events with node-scoped identity', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const eventsWs = new WebSocket(`${wsBase}/ws/events`);
+    cleanup.push(() => eventsWs.close());
+    await waitForOpen(eventsWs);
+
+    const eventPromise = nextEvent(eventsWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId,
+        channel: 'events',
+        type: 'events.publish',
+        timestamp: new Date().toISOString(),
+        payload: {
+          type: 'session-activity-changed',
+          sessionId: 'remote-session-1',
+          timestamp: '2026-01-02T03:04:05.000Z',
+        },
+      })
+    );
+
+    await expect(eventPromise).resolves.toMatchObject({
+      type: 'session-activity-changed',
+      nodeId,
+      sessionId: 'remote-session-1',
+      localSessionId: 'remote-session-1',
+      globalSessionId: `${nodeId}:remote-session-1`,
+      timestamp: '2026-01-02T03:04:05.000Z',
+    });
+  });
+
+  it('rejects malformed routed PTY path escapes with a controlled 400', async () => {
+    const { port } = await startHub();
+
+    await expect(
+      rawUpgrade(port, '/nodes/%E0%A4%A/ws/sessions/remote-session-1')
+    ).resolves.toContain('HTTP/1.1 400 Bad Request');
   });
 });

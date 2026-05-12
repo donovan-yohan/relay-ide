@@ -50,15 +50,18 @@ export class ConflictError extends Error {
 export class HttpError extends Error {
   status: number;
   code: string | undefined;
+  retryable: boolean | undefined;
   constructor(
     status: number,
     message = httpErrorMessage(status),
-    code?: string | undefined
+    code?: string | undefined,
+    retryable?: boolean | undefined
   ) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
   }
 }
 
@@ -122,14 +125,29 @@ async function httpErrorFromResponse(
 ): Promise<HttpError> {
   try {
     const data = (await res.json()) as { error?: unknown; message?: unknown };
-    const code = typeof data.error === 'string' ? data.error : undefined;
+    const structuredError =
+      typeof data.error === 'object' && data.error !== null
+        ? (data.error as Record<string, unknown>)
+        : null;
+    const code =
+      typeof data.error === 'string'
+        ? data.error
+        : typeof structuredError?.['code'] === 'string'
+          ? structuredError['code']
+          : undefined;
+    const retryable =
+      typeof structuredError?.['retryable'] === 'boolean'
+        ? structuredError['retryable']
+        : undefined;
     const message =
       typeof data.message === 'string'
         ? data.message
+        : typeof structuredError?.['message'] === 'string'
+          ? structuredError['message']
         : typeof data.error === 'string'
           ? httpErrorMessage(res.status, data.error)
           : httpErrorMessage(res.status, fallback);
-    return new HttpError(res.status, message, code);
+    return new HttpError(res.status, message, code, retryable);
   } catch {
     return new HttpError(res.status, httpErrorMessage(res.status, fallback));
   }

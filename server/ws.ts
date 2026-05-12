@@ -19,6 +19,10 @@ import {
   handleHubNodeLink,
   type HubNodeLinkManager,
 } from './hub-node-link.js';
+import {
+  createNodeScopedFileEvent,
+  createNodeScopedSessionEvent,
+} from '../shared/node-boundary.js';
 
 const logger = createLogger('ws');
 
@@ -312,24 +316,34 @@ function setupWebSocket(
   ): Record<string, unknown> | undefined {
     if (!localNode) return data;
 
+    const input = data ?? {};
+    const nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : localNode.nodeId;
+    const environmentId =
+      typeof input['environmentId'] === 'string' ? input['environmentId'] : localNode.environmentId;
     const payload: Record<string, unknown> = {
-      ...(data ?? {}),
-      ...localNode.authority(),
+      ...input,
+      nodeId,
+      environmentId,
+      authority: 'local-node',
     };
-    const sessionId = payload['sessionId'];
+    const sessionId =
+      typeof payload['localSessionId'] === 'string'
+        ? payload['localSessionId']
+        : payload['sessionId'];
     if (typeof sessionId === 'string') {
-      Object.assign(payload, localNode.sessionEventScope(sessionId));
+      Object.assign(payload, createNodeScopedSessionEvent(sessionId, { nodeId, environmentId }));
     }
 
     const workspacePath = payload['workspacePath'];
     if (typeof workspacePath === 'string') {
-      const fileScopeInput = {
+      Object.assign(payload, createNodeScopedFileEvent({
         workspacePath,
         ...(typeof payload['worktreePath'] === 'string'
           ? { worktreePath: payload['worktreePath'] }
           : {}),
-      };
-      Object.assign(payload, localNode.fileEventScope(fileScopeInput));
+        nodeId,
+        environmentId,
+      }));
     }
 
     return payload;
@@ -369,6 +383,10 @@ function setupWebSocket(
     });
   }
 
+  nodeLinks?.onNodeEvent((type, data) => {
+    broadcastEvent(type, data);
+  });
+
   server.on('upgrade', (request, socket, head) => {
     const requestPath = request.url
       ? new URL(request.url, 'http://relay.local').pathname.replace(/\/$/, '')
@@ -396,8 +414,16 @@ function setupWebSocket(
       /^\/nodes\/([^/]+)\/ws\/sessions\/([^/]+)$/
     );
     if (routedPtyMatch) {
-      const nodeId = decodeURIComponent(routedPtyMatch[1]!);
-      const sessionId = decodeURIComponent(routedPtyMatch[2]!);
+      let nodeId: string;
+      let sessionId: string;
+      try {
+        nodeId = decodeURIComponent(routedPtyMatch[1]!);
+        sessionId = decodeURIComponent(routedPtyMatch[2]!);
+      } catch {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       if (!nodeLinks?.hasActiveNode(nodeId)) {
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
