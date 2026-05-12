@@ -2,9 +2,10 @@ import type * as http from 'node:http';
 import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import type { HubNodeRegistry } from './hub-node-registry.js';
-import type { NodeManifest } from '../shared/node-manifest.js';
+import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
   type RelayNodeEnvelope,
   type RelayNodeError,
@@ -39,7 +40,7 @@ function errorEnvelope(
 ): RelayNodeEnvelope {
   return {
     protocol: RELAY_NODE_LINK_PROTOCOL,
-    protocolVersion: '1.0',
+    protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
     nodeId,
     channel: 'control',
     type: 'control.error',
@@ -76,13 +77,12 @@ function parseEnvelope(data: RawData): RelayNodeEnvelope | RelayNodeError {
   return envelope as RelayNodeEnvelope;
 }
 
-function manifestFromPayload(payload: unknown): NodeManifest | undefined {
+function manifestFromPayload(payload: unknown): NodeManifest | RelayNodeError | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const manifest = (payload as Record<string, unknown>)['manifest'];
-  if (typeof manifest !== 'object' || manifest === null) return undefined;
-  const candidate = manifest as Partial<NodeManifest>;
-  if (candidate.schemaVersion !== 1 || typeof candidate.hostname !== 'string') return undefined;
-  return manifest as NodeManifest;
+  if (manifest === undefined || manifest === null) return undefined;
+  if (!isNodeManifest(manifest)) return invalidRequest('manifest is malformed');
+  return manifest;
 }
 
 function sendJson(ws: WebSocket, payload: RelayNodeEnvelope): void {
@@ -128,14 +128,19 @@ export function handleHubNodeLink(
     }
 
     try {
+      const manifestResult = manifestFromPayload(parsed.payload);
+      if (manifestResult && 'code' in manifestResult) {
+        sendJson(ws, errorEnvelope(authenticatedNodeId, parsed, manifestResult));
+        return;
+      }
       const node = registry.recordHeartbeat({
         nodeId: authenticatedNodeId,
         protocolVersion: parsed.protocolVersion,
-        ...(manifestFromPayload(parsed.payload) ? { manifest: manifestFromPayload(parsed.payload)! } : {}),
+        ...(manifestResult ? { manifest: manifestResult } : {}),
       });
       sendJson(ws, {
         protocol: RELAY_NODE_LINK_PROTOCOL,
-        protocolVersion: '1.0',
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
         nodeId: authenticatedNodeId,
         channel: 'control',
         type:

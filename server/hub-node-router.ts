@@ -1,7 +1,7 @@
 import * as express from 'express';
 import type { Request, Response } from 'express';
-import type { NodeManifest } from '../shared/node-manifest.js';
-import type { HubNodeRegistry } from './hub-node-registry.js';
+import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
+import { HubNodeRegistryError, type HubNodeRegistry } from './hub-node-registry.js';
 import type { RelayNodeError } from '../shared/relay-node-protocol.js';
 
 interface HubNodeRouterOptions {
@@ -50,12 +50,18 @@ function bodyRecord(req: Request): Record<string, unknown> {
     : {};
 }
 
-function manifestFromBody(body: Record<string, unknown>): NodeManifest | null {
+function manifestFromBody(body: Record<string, unknown>, required = false): NodeManifest | null {
   const manifest = body['manifest'];
-  if (typeof manifest !== 'object' || manifest === null) return null;
-  const candidate = manifest as Partial<NodeManifest>;
-  if (candidate.schemaVersion !== 1 || typeof candidate.hostname !== 'string') return null;
-  return manifest as NodeManifest;
+  if (manifest === undefined || manifest === null) {
+    if (required) {
+      throw new HubNodeRegistryError('INVALID_REQUEST', 'manifest is required');
+    }
+    return null;
+  }
+  if (!isNodeManifest(manifest)) {
+    throw new HubNodeRegistryError('INVALID_REQUEST', 'manifest is malformed');
+  }
+  return manifest;
 }
 
 function pairTtlMs(body: Record<string, unknown>): number | undefined {
@@ -87,18 +93,18 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
   router.post('/hub/pairing/exchange', (req, res) => {
     const body = bodyRecord(req);
     const pairToken = body['pairToken'];
-    const manifest = manifestFromBody(body);
-    if (typeof pairToken !== 'string' || !manifest) {
+    if (typeof pairToken !== 'string') {
       res.status(400).json({
         error: {
           code: 'INVALID_REQUEST',
-          message: 'pairToken and manifest are required',
+          message: 'pairToken is required',
           retryable: false,
         },
       });
       return;
     }
     try {
+      const manifest = manifestFromBody(body, true)!;
       const protocolVersion =
         typeof body['protocolVersion'] === 'string' ? body['protocolVersion'] : undefined;
       const displayName =
@@ -141,11 +147,12 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       return;
     }
     try {
+      const manifest = manifestFromBody(body);
       res.json({
         node: registry.recordHeartbeat({
           nodeId: authenticated.nodeId,
           protocolVersion,
-          ...(manifestFromBody(body) ? { manifest: manifestFromBody(body)! } : {}),
+          ...(manifest ? { manifest } : {}),
         }),
       });
     } catch (error) {

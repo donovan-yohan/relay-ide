@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { NodeCapabilityProbe, NodeManifest } from '../shared/node-manifest.js';
+import { createLogger } from './logger.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -12,6 +13,8 @@ import {
   type RelayNodeError,
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
+
+const logger = createLogger('hub-node-registry');
 
 interface StoredPairToken {
   tokenId: string;
@@ -49,7 +52,6 @@ export interface PairTokenResponse {
   tokenId: string;
   pairToken: string;
   expiresAt: string;
-  bootstrapCommand: string;
 }
 
 export interface PairExchangeInput {
@@ -108,13 +110,15 @@ function timingSafeEqualHex(a: string, b: string): boolean {
 }
 
 function assertCompatibleProtocol(protocolVersion: string): void {
-  const [major] = protocolVersion.split('.');
-  if (major !== '1') {
-    throw new HubNodeRegistryError(
-      'PROTOCOL_INCOMPATIBLE',
-      `relay-node-link protocol ${protocolVersion} is not compatible with hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
-    );
-  }
+  if (protocolVersion === RELAY_NODE_LINK_PROTOCOL_VERSION) return;
+  const [requestedMajor] = protocolVersion.split('.');
+  const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+  const code: RelayNodeErrorCode =
+    requestedMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE';
+  throw new HubNodeRegistryError(
+    code,
+    `relay-node-link protocol ${protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+  );
 }
 
 function countProbe(
@@ -166,15 +170,41 @@ function readRegistryFile(storagePath: string): RegistryFile {
   } catch (error) {
     const maybeNodeError = error as NodeJS.ErrnoException;
     if (maybeNodeError.code === 'ENOENT') return emptyRegistryFile();
+    if (error instanceof SyntaxError) {
+      quarantineCorruptRegistryFile(storagePath);
+      return emptyRegistryFile();
+    }
     throw error;
+  }
+}
+
+function quarantineCorruptRegistryFile(storagePath: string): void {
+  const quarantinePath = `${storagePath}.corrupt-${Date.now()}`;
+  try {
+    fs.renameSync(storagePath, quarantinePath);
+    logger.warn(
+      'hub node registry file is corrupt; quarantined file and starting with empty registry: %s',
+      quarantinePath
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      'hub node registry file is corrupt; could not quarantine file and starting with empty registry: %s',
+      message
+    );
   }
 }
 
 function writeRegistryFile(storagePath: string, registry: RegistryFile): void {
   fs.mkdirSync(path.dirname(storagePath), { recursive: true });
   const tmpPath = `${storagePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(tmpPath, storagePath);
+  try {
+    fs.writeFileSync(tmpPath, `${JSON.stringify(registry)}\n`, { mode: 0o600 });
+    fs.renameSync(tmpPath, storagePath);
+  } catch (error) {
+    fs.rmSync(tmpPath, { force: true });
+    throw error;
+  }
 }
 
 function statusForNode(
@@ -255,7 +285,6 @@ export class HubNodeRegistry {
       tokenId,
       pairToken,
       expiresAt: expiresAt.toISOString(),
-      bootstrapCommand: `relay-ide node connect --pair-token ${pairToken}`,
     };
   }
 

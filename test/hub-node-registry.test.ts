@@ -94,6 +94,7 @@ describe('hub node registry', () => {
       const pair = registry.createPairToken({ displayName: 'Dev Mac' });
       expect(pair.pairToken).toMatch(/^pair_/);
       expect(pair.expiresAt).toBe('2026-01-02T03:14:05.000Z');
+      expect(pair).not.toHaveProperty('bootstrapCommand');
 
       const exchanged = registry.exchangePairToken({
         pairToken: pair.pairToken,
@@ -158,6 +159,35 @@ describe('hub node registry', () => {
         hostname: 'persisted-host',
         status: 'online',
       });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantines corrupt registry JSON and starts with empty replacement state', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-node-registry-'));
+    const storagePath = path.join(tmpDir, 'nodes.json');
+    const leakedSecret = 'pair_secret-from-corrupt-file';
+    fs.writeFileSync(storagePath, `{ "pairTokens": ["${leakedSecret}"],`);
+
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath,
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+      });
+
+      expect(registry.listNodes()).toEqual([]);
+      expect(fs.existsSync(storagePath)).toBe(false);
+      const quarantined = fs.readdirSync(tmpDir).filter((name) => name.startsWith('nodes.json.corrupt-'));
+      expect(quarantined).toHaveLength(1);
+
+      registry.createPairToken({ displayName: 'replacement' });
+
+      const persisted = fs.readFileSync(storagePath, 'utf8');
+      const parsed = JSON.parse(persisted) as { pairTokens: unknown[]; nodes: unknown[] };
+      expect(parsed.pairTokens).toHaveLength(1);
+      expect(parsed.nodes).toEqual([]);
+      expect(persisted).not.toContain(leakedSecret);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -263,10 +293,19 @@ describe('hub node registry', () => {
       registry.setNowForTest(() => new Date('2026-01-02T03:04:07.000Z'));
       expect(registry.authenticateCredential('node_missing.bad')).toBeNull();
 
-      const fresh = registry.createPairToken({});
+      const minorSkew = registry.createPairToken({});
       expect(() =>
         registry.exchangePairToken({
-          pairToken: fresh.pairToken,
+          pairToken: minorSkew.pairToken,
+          manifest: manifest(),
+          protocolVersion: '1.1',
+        })
+      ).toThrow(/VERSION_SKEW/);
+
+      const incompatible = registry.createPairToken({});
+      expect(() =>
+        registry.exchangePairToken({
+          pairToken: incompatible.pairToken,
           manifest: manifest(),
           protocolVersion: '2.0',
         })

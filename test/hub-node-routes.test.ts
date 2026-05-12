@@ -103,6 +103,20 @@ describe('hub node routes and link', () => {
     expect(pairRes.status).toBe(201);
     const pair = (await pairRes.json()) as { pairToken: string; expiresAt: string };
     expect(pair.pairToken).toMatch(/^pair_/);
+    expect(pair).not.toHaveProperty('bootstrapCommand');
+
+    const malformedExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pairToken: pair.pairToken,
+        manifest: { schemaVersion: 1, hostname: 'partial' },
+      }),
+    });
+    expect(malformedExchangeRes.status).toBe(400);
+    expect(await malformedExchangeRes.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
 
     const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
@@ -129,6 +143,23 @@ describe('hub node routes and link', () => {
     });
     expect(heartbeatRes.status).toBe(200);
 
+    const malformedHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchange.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchange.credential.nodeId,
+        protocolVersion: '1.0',
+        manifest: { schemaVersion: 1, hostname: 'partial' },
+      }),
+    });
+    expect(malformedHeartbeatRes.status).toBe(400);
+    expect(await malformedHeartbeatRes.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+
     const nodesRes = await fetch(`${base}/nodes`, { headers: { 'x-test-auth': 'yes' } });
     expect(nodesRes.status).toBe(200);
     const nodesBody = await nodesRes.text();
@@ -151,7 +182,7 @@ describe('hub node routes and link', () => {
     const port = await listen(server);
     cleanup.push(() => close(server));
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link?trace=test`, {
       headers: { authorization: `Bearer ${exchanged.credential.token}` },
     });
     cleanup.push(() => ws.close());
@@ -181,7 +212,26 @@ describe('hub node routes and link', () => {
       payload: { node: { hostname: 'linked-host', status: 'online' } },
     });
 
-    const error = new Promise<Record<string, unknown>>((resolve) => {
+    const skewError = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    ws.send(
+      JSON.stringify({
+        protocol: 'relay-node-link',
+        protocolVersion: '1.1',
+        nodeId: exchanged.node.nodeId,
+        channel: 'control',
+        type: 'control.heartbeat',
+        timestamp: now.toISOString(),
+      })
+    );
+    expect(await skewError).toMatchObject({
+      channel: 'control',
+      type: 'control.error',
+      error: { code: 'VERSION_SKEW', retryable: false },
+    });
+
+    const incompatibleError = new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
     });
     ws.send(
@@ -194,7 +244,7 @@ describe('hub node routes and link', () => {
         timestamp: now.toISOString(),
       })
     );
-    expect(await error).toMatchObject({
+    expect(await incompatibleError).toMatchObject({
       channel: 'control',
       type: 'control.error',
       error: { code: 'PROTOCOL_INCOMPATIBLE', retryable: false },

@@ -365,7 +365,10 @@ function setupWebSocket(
   }
 
   server.on('upgrade', (request, socket, head) => {
-    if (request.url === '/hub/node-link') {
+    const requestPath = request.url
+      ? new URL(request.url, 'http://relay.local').pathname.replace(/\/$/, '')
+      : '';
+    if (requestPath === '/hub/node-link') {
       const authenticated = authenticateHubNodeLink(request, hubNodeRegistry);
       if (!authenticated || !hubNodeRegistry) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
