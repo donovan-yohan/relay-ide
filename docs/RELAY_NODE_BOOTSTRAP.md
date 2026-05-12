@@ -81,7 +81,7 @@ Behavior:
 - Exits permanently when the hub returns `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`.
 - `SIGINT` / `SIGTERM` close the link cleanly.
 
-Node-side PTY and RPC handling are scaffolded but no-op in this slice; routed PTY/file/git RPC are follow-ups. Local Relay mode (no hub configured) still boots without attempting `/hub/node-link`.
+`node link` also handles routed PTY traffic. When the hub calls `attachPty` for this node, it sends `pty.attach` over the link; the node spawns a real `node-pty` shell, forwards stdout/stderr as `pty.data` envelopes, and accepts inbound `pty.input` / `pty.resize` / `pty.detach`. Browser → hub → node-link → node PTY round-trips do not go through the local-mode PTY path. RPC method handlers (manifest refresh, repo listing) and file/git RPC remain follow-ups. Local Relay mode (no hub configured) still boots without attempting `/hub/node-link`.
 
 ### 3. Credential storage
 

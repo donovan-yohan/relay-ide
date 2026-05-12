@@ -157,7 +157,7 @@ Format:
 relay-ide node link --hub https://hub.example.com
 ```
 
-`node link` reads `node-credential.json`, opens the reverse WebSocket to `/hub/node-link`, sends `control.hello` with manifest + repo inventory, and then emits a `control.heartbeat` every 20s. The hub reports the node `online` while the link is up. The client reconnects with jittered exponential backoff (1s → 60s cap) on transient close, and exits permanently on `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`. Node-side PTY and RPC handlers are stubbed in this slice; routed PTY/file/git RPC arrive in follow-ups.
+`node link` reads `node-credential.json`, opens the reverse WebSocket to `/hub/node-link`, sends `control.hello` with manifest + repo inventory, and then emits a `control.heartbeat` every 20s. The hub reports the node `online` while the link is up. The client reconnects with jittered exponential backoff (1s → 60s cap) on transient close, and exits permanently on `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`. Routed PTY is handled end-to-end: hub `attachPty` → `pty.attach` over the reverse link → node-side `node-pty` spawn → `pty.data` / `pty.input` / `pty.resize` / `pty.detach` round-trip. Node-side RPC method handlers (manifest refresh, repo listing) and file/git RPC remain follow-ups.
 
 ### Revocation
 
