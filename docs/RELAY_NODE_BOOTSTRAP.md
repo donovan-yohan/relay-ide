@@ -1,5 +1,7 @@
 # Relay Node Bootstrap
 
+Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
+
 Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are implemented here; steady-state routed sessions still require a future persistent node-side client that opens `/hub/node-link` with the stored node credential. This bootstrap slice does not start or maintain `/hub/node-link`.
 
 ## Flow

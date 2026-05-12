@@ -100,7 +100,7 @@ React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 
 ### `bin/`
 
-`bin/relay-ide.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run.
+`bin/relay-ide.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `hub`, `node`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run. Hub/node roles intentionally share the single `relay-ide` npm binary; see `docs/RELAY_HUB_NODE_PACKAGING.md`.
 
 **Architecture Invariant:** CLI flags are passed to the server via environment variables (`RELAY_IDE_CONFIG`, `RELAY_IDE_PORT`, `RELAY_IDE_HOST`), not direct function calls.
 

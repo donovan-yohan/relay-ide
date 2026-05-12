@@ -30,6 +30,7 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Review         | `docs/REVIEW_GUIDANCE.md`       | Review agent config, question bank, escape log                   |
 | Deployment     | `docs/references/deployment.md` | Publishing + branching (nightly/master + tags)                   |
 | Self-hosting   | `docs/SELF_HOSTING.md`          | Build Relay with Relay using isolated dev config/ports/tmux      |
+| Hub/node pkg   | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands |
 | Node bootstrap | `docs/RELAY_NODE_BOOTSTRAP.md`  | Pair tokens, SSH/Tailscale bootstrap commands, diagnostics       |
 | Learnings      | `docs/LEARNINGS.md`             | Persistent cross-session learnings                               |
 | Project skills | `.chalk/skills/<name>/SKILL.md` | Repo-local skills (see §Skills)                                  |
