@@ -36,9 +36,9 @@ The steady-state transport is a **reverse WebSocket** opened by the node to the 
 
 ### Endpoint
 
-```
+```http
 GET /hub/node-link  (upgrade to WebSocket)
-Authorization: Bearer {nodeId}.{secret}
+Authorization: Bearer ***
 ```
 
 The node presents its persistent credential as a Bearer token during the HTTP upgrade. The hub verifies it against `HubNodeRegistry` using a timing-safe SHA256 comparison.
@@ -133,7 +133,7 @@ Both commands exchange the pair token, receive a persistent credential, and send
 
 The node writes its credential to:
 
-```
+```text
 ~/.config/relay-ide/node-credential.json   (mode 0600)
 ```
 
@@ -263,8 +263,8 @@ On success, the hub forwards the request as an RPC (`sessions.create`) over the 
 
 The browser opens:
 
-```
-GET /hub/node-link/pty/{sessionId}
+```http
+GET /nodes/{nodeId}/ws/sessions/{sessionId}
 ```
 
 This upgrades to a WebSocket. The hub proxies PTY I/O between the browser and the node's reverse-link `pty` channel. Resize events are sent as JSON (`{ type: 'resize', cols, rows }`) and forwarded to the node.
@@ -421,9 +421,9 @@ If the hub and node report incompatible protocol versions, upgrade both to the s
 | --- | --- | --- |
 | ADR-009 | Hub/Node Federation | Relay hub accepts node registrations via reverse WebSocket; nodes own the PTY/tmux/data plane; hub owns routing and aggregation. |
 | ADR-010 | Node-Initiated Outbound Links | Nodes open outbound WebSocket to the hub to avoid NAT/firewall inbound issues. |
-| ADR-011 | Pair-Token/Credential Lifecycle | One-time short-lived pair token → persistent revocable node credential. SHA256 storage, timing-safe comparison, immediate revocation. |
-| ADR-012 | Capability Manifest | Nodes self-report capability probes (tmux, git, agents, etc.). Hub gates session routing on capability state. |
-| ADR-013 | Repo Identity Aggregation | Repos are grouped by canonical git/GitHub remote identity across nodes; local paths remain node-specific. |
+| ADR-012 | Pair-Token/Credential Lifecycle | One-time short-lived pair token → persistent revocable node credential. SHA256 storage, timing-safe comparison, immediate revocation. |
+| ADR-013 | Capability Manifest | Nodes self-report capability probes (tmux, git, agents, etc.). Hub gates session routing on capability state. |
+| ADR-014 | Repo Identity Aggregation | Repos are grouped by canonical git/GitHub remote identity across nodes; local paths remain node-specific. |
 
 ## Non-Goals (Explicitly Out of Scope)
 
