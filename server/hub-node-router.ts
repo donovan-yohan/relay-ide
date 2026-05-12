@@ -11,7 +11,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
-import type { HubNodeLinkManager } from './hub-node-link.js';
+import { HubNodeLinkError, type HubNodeLinkManager } from './hub-node-link.js';
 import type { SessionSummary } from './types.js';
 import {
   createGlobalSessionId,
@@ -94,13 +94,19 @@ function isSessionSummary(value: unknown): value is SessionSummary {
 }
 
 function scopedNodeSession(nodeId: string, session: SessionSummary): SessionSummary {
+  const scoped: SessionSummary = { ...session };
+  delete scoped.nodeId;
+  delete scoped.globalSessionId;
+  delete scoped.repoInstanceId;
+  delete scoped.worktreeInstanceId;
+
   return {
-    ...session,
+    ...scoped,
     nodeId,
-    globalSessionId: createGlobalSessionId(nodeId, session.id),
-    ...(session.repoPath ? { repoInstanceId: createRepoInstanceId(nodeId, session.repoPath) } : {}),
-    ...(session.worktreePath
-      ? { worktreeInstanceId: createWorktreeInstanceId(nodeId, session.worktreePath) }
+    globalSessionId: createGlobalSessionId(nodeId, scoped.id),
+    ...(scoped.repoPath ? { repoInstanceId: createRepoInstanceId(nodeId, scoped.repoPath) } : {}),
+    ...(scoped.worktreePath
+      ? { worktreeInstanceId: createWorktreeInstanceId(nodeId, scoped.worktreePath) }
       : {}),
   };
 }
@@ -304,8 +310,11 @@ export function createHubNodeRouter(options: HubNodeRouterOptions): express.Rout
       const payload = await options.nodeLinks.request(nodeId, 'sessions.create', bodyRecord(req));
       res.status(201).json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
     } catch (error) {
-      const body = registry.errorBody(error);
-      res.status(errorStatus(body.error)).json(body);
+      if (error instanceof HubNodeLinkError) {
+        sendRelayError(res, error.relayNodeError);
+        return;
+      }
+      sendRegistryError(registry, res, error);
     }
   });
 

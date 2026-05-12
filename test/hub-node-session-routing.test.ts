@@ -301,6 +301,100 @@ describe('hub-routed node session create and attach', () => {
     });
   });
 
+  it('does not trust node-provided scoped identity fields when worktree scope is absent', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    const request = await nextJson(nodeWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: 'spoofed-node',
+            globalSessionId: 'spoofed-global-session',
+            repoInstanceId: 'spoofed-repo-instance',
+            worktreeInstanceId: 'stale-worktree-instance',
+            worktreePath: null,
+          },
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    const scoped = (await res.json()) as Record<string, unknown>;
+    expect(scoped).toMatchObject({
+      nodeId,
+      globalSessionId: `${nodeId}:remote-session-1`,
+      repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
+      worktreePath: null,
+    });
+    expect(scoped).not.toHaveProperty('worktreeInstanceId');
+  });
+
+  it('preserves typed node RPC errors when session creation fails on the node link', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    const request = await nextJson(nodeWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.error',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        error: {
+          code: 'NODE_OFFLINE',
+          message: 'remote node lost its tmux session host',
+          retryable: true,
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        code: 'NODE_OFFLINE',
+        message: 'remote node lost its tmux session host',
+        retryable: true,
+      },
+    });
+  });
+
   it('proxies browser PTY attach through the hub to the node-owned session', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);
