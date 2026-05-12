@@ -6,7 +6,7 @@ import {
   createHubNodeRegistry,
   DEFAULT_NODE_HEARTBEAT_TIMEOUTS,
 } from '../server/hub-node-registry.js';
-import type { NodeManifest } from '../shared/node-manifest.js';
+import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -88,7 +88,99 @@ function withTmpRegistry<T>(fn: (registry: ReturnType<typeof createHubNodeRegist
   }
 }
 
+function malformedManifest(mutator: (candidate: Record<string, unknown>) => void): unknown {
+  const candidate = JSON.parse(JSON.stringify(manifest())) as Record<string, unknown>;
+  mutator(candidate);
+  return candidate;
+}
+
 describe('hub node registry', () => {
+  it('rejects malformed nested node manifests at the shared runtime guard', () => {
+    const validWithOptionalStrings = manifest({
+      wsl: {
+        detected: true,
+        version: 2,
+        distroName: 'Ubuntu',
+        systemd: true,
+        message: 'wsl ready',
+      },
+      serviceManager: {
+        ...manifest().serviceManager,
+        servicePath: '/tmp/relay.plist',
+        unitName: 'relay.service',
+        statusCommand: 'systemctl --user status relay',
+        caveats: ['manual restart required'],
+      },
+      capabilities: {
+        ...manifest().capabilities,
+        tmux: {
+          ...manifest().capabilities.tmux,
+          path: '/usr/bin/tmux',
+          version: 'tmux 3.4',
+        },
+      },
+    });
+    expect(isNodeManifest(validWithOptionalStrings)).toBe(true);
+
+    const malformedCases: Array<[string, unknown]> = [
+      [
+        'capability path',
+        malformedManifest((candidate) => {
+          const capabilities = candidate['capabilities'] as Record<string, unknown>;
+          const tmux = capabilities['tmux'] as Record<string, unknown>;
+          tmux['path'] = 42;
+        }),
+      ],
+      [
+        'capability version',
+        malformedManifest((candidate) => {
+          const capabilities = candidate['capabilities'] as Record<string, unknown>;
+          const git = capabilities['git'] as Record<string, unknown>;
+          git['version'] = { text: 'git 2.0' };
+        }),
+      ],
+      [
+        'wsl version',
+        malformedManifest((candidate) => {
+          const wsl = candidate['wsl'] as Record<string, unknown>;
+          wsl['version'] = 3;
+        }),
+      ],
+      [
+        'wsl optional string',
+        malformedManifest((candidate) => {
+          const wsl = candidate['wsl'] as Record<string, unknown>;
+          wsl['distroName'] = false;
+        }),
+      ],
+      [
+        'service manager kind',
+        malformedManifest((candidate) => {
+          const serviceManager = candidate['serviceManager'] as Record<string, unknown>;
+          serviceManager['kind'] = 'launchctl';
+        }),
+      ],
+      [
+        'service manager optional string',
+        malformedManifest((candidate) => {
+          const serviceManager = candidate['serviceManager'] as Record<string, unknown>;
+          serviceManager['statusCommand'] = ['systemctl'];
+        }),
+      ],
+      [
+        'service manager caveats',
+        malformedManifest((candidate) => {
+          const serviceManager = candidate['serviceManager'] as Record<string, unknown>;
+          serviceManager['caveats'] = ['ok', 404];
+        }),
+      ],
+    ];
+
+    for (const [name, candidate] of malformedCases) {
+      expect(isNodeManifest(candidate), name).toBe(false);
+    }
+  });
+
   it('exchanges a one-time pair token for a durable credential without storing raw secret material', () => {
     withTmpRegistry((registry) => {
       const pair = registry.createPairToken({ displayName: 'Dev Mac' });
