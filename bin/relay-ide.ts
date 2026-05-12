@@ -16,6 +16,8 @@ import {
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config } from '../server/types.js';
+import { createNodeLinkClient } from '../server/node-link-client.js';
+import { collectLocalRepoInventory } from '../server/repo-inventory.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,6 +56,7 @@ Commands:
                                        Exchange a pair token and send one heartbeat
     install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
                                        Pair the node, then install/start the local Relay-managed service when requested/available
+    link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
@@ -305,6 +308,77 @@ function validateNodeServiceMode(manifest: NodeManifest, mode: RequestedNodeServ
   }
 }
 
+function loadNodeCredential(): { nodeId: string; token: string } {
+  const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
+  if (!fs.existsSync(credentialPath)) {
+    logger.error(
+      `NODE_LINK_FAILED: no node credential at ${credentialPath}. Run 'relay-ide node connect' first.`
+    );
+    process.exit(1);
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as {
+      nodeId?: string;
+      token?: string;
+    };
+    if (!parsed.nodeId || !parsed.token) {
+      logger.error(`NODE_LINK_FAILED: malformed credential at ${credentialPath}.`);
+      process.exit(1);
+    }
+    return { nodeId: parsed.nodeId, token: parsed.token };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(redactBootstrapSecrets(`NODE_LINK_FAILED: ${message}`));
+    process.exit(1);
+  }
+}
+
+async function runNodeLink(nodeArgs: string[]): Promise<void> {
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  if (!hubUrl) {
+    logger.error('Usage: relay-ide node link --hub <url>');
+    process.exit(1);
+  }
+  const credential = loadNodeCredential();
+  const configPath = resolveConfigPath();
+  let config: Config | undefined;
+  try {
+    config = loadConfig(configPath) as Config;
+  } catch {
+    config = undefined;
+  }
+  const client = createNodeLinkClient({
+    hubUrl,
+    credential,
+    getManifest: () => getNodeManifest(),
+    getRepoInventory: async () => {
+      if (!config) return undefined;
+      try {
+        return await collectLocalRepoInventory({
+          config,
+          configPath,
+          nodeId: credential.nodeId,
+        });
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  client.onStateChange((state) => {
+    logger.info(`node-link state: ${state}`);
+  });
+  const shutdown = (signal: string) => {
+    logger.info(`received ${signal}; closing node-link`);
+    void client.stop(`signal ${signal}`).then(() => process.exit(0));
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  client.start();
+  await new Promise<void>(() => {
+    /* hold foreground until signal */
+  });
+}
+
 type NodePairLifecycle = 'connect' | 'install';
 
 async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'connect'): Promise<void> {
@@ -430,6 +504,10 @@ if (command === 'node') {
     await runNodeDoctor(getNodeArg(nodeArgs, '--hub'));
     process.exit(0);
   }
+  if (subCommand === 'link') {
+    await runNodeLink(nodeArgs);
+    process.exit(0);
+  }
   if (subCommand === 'connect' || subCommand === 'install') {
     if (subCommand === 'install') {
       const serviceMode = parseNodeServiceMode(getNodeArg(nodeArgs, '--service') ?? 'auto');
@@ -455,7 +533,7 @@ if (command === 'node') {
       process.exit(0);
     }
   }
-  logger.error('Usage: relay-ide node <status|logs|doctor|connect|install>');
+  logger.error('Usage: relay-ide node <status|logs|doctor|connect|install|link>');
   process.exit(1);
 }
 

@@ -128,7 +128,7 @@ relay-ide node install \
 
 Both commands exchange the pair token, receive a persistent credential, and send an initial heartbeat. `node install` additionally writes a launchd plist or systemd user unit and starts the service.
 
-> Current bootstrap diagnostics pair credentials and install/start the generic Relay service only; this slice does not start or maintain `/hub/node-link`. Routed sessions still require a persistent node-side client that opens the reverse link.
+> Bootstrap diagnostics pair credentials and install/start the generic Relay service. The persistent `/hub/node-link` reverse WebSocket is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager.
 
 ### Step 3: Credential storage
 
@@ -153,7 +153,11 @@ Format:
 
 ### Step 4: Steady-state heartbeats
 
-A persistent node-side process reads `node-credential.json` and opens the reverse WebSocket to `/hub/node-link`, sending periodic `control.heartbeat` envelopes.
+```bash
+relay-ide node link --hub https://hub.example.com
+```
+
+`node link` reads `node-credential.json`, opens the reverse WebSocket to `/hub/node-link`, sends `control.hello` with manifest + repo inventory, and then emits a `control.heartbeat` every 20s. The hub reports the node `online` while the link is up. The client reconnects with jittered exponential backoff (1s → 60s cap) on transient close, and exits permanently on `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`. Node-side PTY and RPC handlers are stubbed in this slice; routed PTY/file/git RPC arrive in follow-ups.
 
 ### Revocation
 
