@@ -1,0 +1,21 @@
+docs/adrs/ADR-015-core-primitives-domain-agnostic.md
+  s_0837e04cd7f585::t_34f572792be695 50-53,63-65,72-81
+docs/adrs/ADR-016-node-to-node-isolation.md
+  s_0837e04cd7f585::t_f3c4cb24532908 96-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "64823bac1fea7a1f5cde436e50a2bd1173387f5e",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
