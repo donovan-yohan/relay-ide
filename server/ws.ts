@@ -13,6 +13,8 @@ import { verifyCookieToken } from './auth.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { LocalRelayNode } from './local-node.js';
+import type { HubNodeRegistry } from './hub-node-registry.js';
+import { authenticateHubNodeLink, handleHubNodeLink } from './hub-node-link.js';
 
 const logger = createLogger('ws');
 
@@ -276,7 +278,8 @@ function setupWebSocket(
   watcher: WorktreeWatcher | null,
   configPath?: string,
   noPinMode = false,
-  localNode?: LocalRelayNode
+  localNode?: LocalRelayNode,
+  hubNodeRegistry?: HubNodeRegistry
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -362,6 +365,22 @@ function setupWebSocket(
   }
 
   server.on('upgrade', (request, socket, head) => {
+    const requestPath = request.url
+      ? new URL(request.url, 'http://relay.local').pathname.replace(/\/$/, '')
+      : '';
+    if (requestPath === '/hub/node-link') {
+      const authenticated = authenticateHubNodeLink(request, hubNodeRegistry);
+      if (!authenticated || !hubNodeRegistry) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        handleHubNodeLink(ws, hubNodeRegistry, authenticated.node);
+      });
+      return;
+    }
+
     if (!isAuthenticated(request.headers.cookie)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();

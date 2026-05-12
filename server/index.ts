@@ -101,6 +101,8 @@ import {
   getFrameworkWebAvailability,
 } from './frameworks.js';
 import { getNodeManifest } from './node-manifest.js';
+import { createHubNodeRegistry } from './hub-node-registry.js';
+import { createHubNodeRouter } from './hub-node-router.js';
 import type {
   AgentType,
   AutomationSettings,
@@ -975,6 +977,22 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
+  const hubNodeRegistry = createHubNodeRegistry({
+    storagePath: path.join(configDir, 'hub-node-registry.json'),
+  });
+
+  async function flushHubNodeHeartbeatsBestEffort(context: string): Promise<void> {
+    try {
+      await hubNodeRegistry.flushPendingHeartbeatPersist();
+    } catch (err) {
+      logger.warn(
+        'Failed to flush pending hub node heartbeat state during %s; continuing lifecycle sequence: %s',
+        context,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
   await ensureTmuxAvailable();
 
   await initializePortAllocatorAndReconcile(
@@ -1050,6 +1068,8 @@ async function main(): Promise<void> {
     }
     next();
   };
+
+  app.use(createHubNodeRouter({ registry: hubNodeRegistry, requireAuth }));
 
   const webhookManagerRouter = createWebhookManagerRouter({
     configPath: CONFIG_PATH,
@@ -1140,7 +1160,8 @@ async function main(): Promise<void> {
     watcher,
     CONFIG_PATH,
     process.env.NO_PIN === '1',
-    localRelayNode
+    localRelayNode,
+    hubNodeRegistry
   );
 
   const browserScopedToken = generateScopedToken();
@@ -2588,6 +2609,7 @@ async function main(): Promise<void> {
       if (restarting) {
         stopEventBatching();
         stopTelemetry();
+        await flushHubNodeHeartbeatsBestEffort('update restart');
         serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
@@ -2662,6 +2684,7 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
+    await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.
     serializeAll(configDir, { reason: restartReason });
