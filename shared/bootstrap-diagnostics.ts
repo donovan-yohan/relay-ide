@@ -229,13 +229,11 @@ export function generateBootstrapCommands(input: BootstrapCommandInput): Bootstr
     commands.push(
       withRedaction({
         id: 'ssh-auto',
-        label: 'SSH bootstrap with service auto-detection',
+        label: 'SSH pairing/service bootstrap with auto-detection',
         transport: 'ssh',
         service: 'auto',
         command: remoteCommand('ssh', input.sshTarget, script),
-        caveats: [
-          'SSH is only used to install/start relay-node; steady-state traffic uses reverse WebSocket.',
-        ],
+        caveats: [NODE_LINK_NOT_STARTED_CAVEAT],
       })
     );
   }
@@ -243,12 +241,13 @@ export function generateBootstrapCommands(input: BootstrapCommandInput): Bootstr
     commands.push(
       withRedaction({
         id: 'tailscale-ssh-auto',
-        label: 'Tailscale SSH bootstrap with service auto-detection',
+        label: 'Tailscale SSH pairing/service bootstrap with auto-detection',
         transport: 'tailscale-ssh',
         service: 'auto',
         command: remoteCommand('tailscale ssh', input.tailscaleTarget, script),
         caveats: [
           'Tailscale is the private reachability/trust layer, not the Relay hub-node protocol.',
+          NODE_LINK_NOT_STARTED_CAVEAT,
         ],
       })
     );

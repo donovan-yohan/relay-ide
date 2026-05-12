@@ -71,17 +71,32 @@ describe('bootstrap command generation and diagnostics', () => {
     }
   });
 
-  it('does not advertise service install commands as active reverse-link bootstrap', () => {
+  it('does not advertise any install-like command as active reverse-link bootstrap', () => {
     const commands = generateBootstrapCommands({
       hubUrl: 'https://hub.example.com',
       pairToken: 'pair_secret-token-value',
+      sshTarget: 'dev@example.internal',
+      tailscaleTarget: 'dev@tail-host',
       serviceModes: ['launchd', 'systemd-user', 'wsl-systemd'],
-    });
+    }).filter((command) => command.command.includes('node install'));
+
+    expect(commands.map((command) => command.id)).toEqual([
+      'macos-launchd',
+      'linux-systemd-user',
+      'wsl-systemd',
+      'ssh-auto',
+      'tailscale-ssh-auto',
+    ]);
 
     for (const command of commands) {
+      const displayText = [command.label, ...command.caveats].join(' ');
       expect(command.command).toContain('node install');
-      expect(command.caveats.join(' ')).toContain('does not start or maintain /hub/node-link');
-      expect(command.caveats.join(' ')).not.toMatch(/node traffic is established/i);
+      expect(displayText).toContain('pair credentials');
+      expect(displayText).toContain('generic Relay service');
+      expect(displayText).toContain('does not start or maintain /hub/node-link');
+      expect(displayText).not.toMatch(/steady-state traffic uses reverse WebSocket/i);
+      expect(displayText).not.toMatch(/active reverse-link bootstrap/i);
+      expect(displayText).not.toMatch(/node traffic is established/i);
     }
   });
 
