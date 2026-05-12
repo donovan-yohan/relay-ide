@@ -97,16 +97,34 @@ function isStringOrNull(value: unknown): value is string | null {
   return typeof value === 'string' || value === null;
 }
 
+const REPO_IDENTITY_WARNINGS = new Set<RepoIdentityWarning>([
+  'missing-remotes',
+  'multiple-remotes',
+  'malformed-remote-url',
+  'fork-upstream-ambiguity',
+  'selected-non-origin-remote',
+]);
+
+function isRemoteProviderOrNull(value: unknown): value is ResolvedRemoteIdentity['provider'] {
+  return value === 'github' || value === 'git' || value === null;
+}
+
+function isRepoIdentityWarning(value: unknown): value is RepoIdentityWarning {
+  return typeof value === 'string' && REPO_IDENTITY_WARNINGS.has(value as RepoIdentityWarning);
+}
+
 function isResolvedRemoteIdentity(value: unknown): value is ResolvedRemoteIdentity {
   if (!isRecord(value)) return false;
   return (
     typeof value.name === 'string' &&
     typeof value.url === 'string' &&
     isStringOrNull(value.identity) &&
+    isRemoteProviderOrNull(value.provider) &&
     isStringOrNull(value.host) &&
     isStringOrNull(value.path) &&
     isStringOrNull(value.owner) &&
-    isStringOrNull(value.repoName)
+    isStringOrNull(value.repoName) &&
+    (value.warning === undefined || isRepoIdentityWarning(value.warning))
   );
 }
 
@@ -134,7 +152,7 @@ function isRepoInventoryRepoInstance(value: unknown): value is RepoInventoryRepo
     Array.isArray(value.remotes) &&
     value.remotes.every(isResolvedRemoteIdentity) &&
     Array.isArray(value.repoIdentityWarnings) &&
-    value.repoIdentityWarnings.every((warning) => typeof warning === 'string') &&
+    value.repoIdentityWarnings.every(isRepoIdentityWarning) &&
     Array.isArray(value.worktrees) &&
     value.worktrees.every(isRepoInventoryWorktreeInstance) &&
     typeof value.reportedAt === 'string'

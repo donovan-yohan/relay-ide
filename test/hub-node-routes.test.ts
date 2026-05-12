@@ -466,4 +466,90 @@ describe('hub node routes and link', () => {
       '/srv/repos/relay-ide',
     ]);
   });
+
+  it('rejects heartbeat repo inventory for a different node id', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        requireAuth: (_req, res) => res.status(401).json({ error: 'Unauthorized' }),
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const response = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchanged.credential.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        repoInventory: repoInventoryReport('spoofed-node', '/srv/repos/relay-ide'),
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+    expect(registry.listRepoInventoryReports()).toHaveLength(0);
+  });
+
+  it('rejects websocket heartbeat repo inventory for a different node id', async () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const { tmpDir, registry } = tmpRegistry(() => now);
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+
+    const server = http.createServer(express());
+    setupWebSocket(server, new Set(), null, undefined, false, undefined, registry);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link?trace=test`, {
+      headers: { authorization: `Bearer ${exchanged.credential.token}` },
+    });
+    cleanup.push(() => ws.close());
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+
+    const mismatchError = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    ws.send(
+      JSON.stringify({
+        protocol: 'relay-node-link',
+        protocolVersion: '1.0',
+        nodeId: exchanged.node.nodeId,
+        channel: 'control',
+        type: 'control.heartbeat',
+        timestamp: now.toISOString(),
+        payload: { repoInventory: repoInventoryReport('spoofed-node', '/srv/repos/relay-ide') },
+      })
+    );
+
+    expect(await mismatchError).toMatchObject({
+      channel: 'control',
+      type: 'control.error',
+      error: { code: 'INVALID_REQUEST', retryable: false },
+    });
+    expect(registry.listRepoInventoryReports()).toHaveLength(0);
+  });
 });

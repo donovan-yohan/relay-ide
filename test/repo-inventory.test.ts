@@ -197,4 +197,38 @@ describe('repo inventory aggregation', () => {
     expect(isRepoInventoryReport(valid)).toBe(true);
     expect(isRepoInventoryReport(invalid)).toBe(false);
   });
+
+  it('rejects remote identities with malformed provider or warning values', () => {
+    const validRepo = repo({ nodeId: 'macbook' });
+    const valid = {
+      nodeId: 'macbook',
+      generatedAt: '2026-05-12T00:00:00.000Z',
+      repos: [validRepo],
+    };
+    const invalidProvider = {
+      ...valid,
+      repos: [
+        {
+          ...validRepo,
+          selectedRemote: { ...validRepo.selectedRemote, provider: 'svn' },
+          remotes: [{ ...validRepo.remotes[0], provider: 'svn' }],
+        },
+      ],
+    };
+    const invalidWarning = {
+      ...valid,
+      repos: [
+        {
+          ...validRepo,
+          selectedRemote: { ...validRepo.selectedRemote, warning: 'surprise-warning' },
+          remotes: [{ ...validRepo.remotes[0], warning: 'surprise-warning' }],
+          repoIdentityWarnings: ['surprise-warning'],
+        },
+      ],
+    };
+
+    expect(isRepoInventoryReport(valid)).toBe(true);
+    expect(isRepoInventoryReport(invalidProvider)).toBe(false);
+    expect(isRepoInventoryReport(invalidWarning)).toBe(false);
+  });
 });

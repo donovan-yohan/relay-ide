@@ -425,6 +425,12 @@ export class HubNodeRegistry {
       node.capabilities = summarizeCapabilities(input.manifest);
     }
     if (input.repoInventory) {
+      if (input.repoInventory.nodeId !== input.nodeId) {
+        throw new HubNodeRegistryError(
+          'INVALID_REQUEST',
+          'repoInventory.nodeId must match authenticated nodeId'
+        );
+      }
       node.repoInventory = input.repoInventory;
     }
     this.scheduleHeartbeatPersist();
