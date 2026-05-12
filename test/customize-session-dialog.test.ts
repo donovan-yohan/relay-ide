@@ -335,4 +335,92 @@ describe('CustomizeSessionDialog environment picker model', () => {
     });
     expect(model.resolved.nodeId).toBe('local');
   });
+
+  it('keeps all same-node repo instance checkouts selectable', () => {
+    const repoInventory = inventory();
+    const relayGroup = repoInventory.groups[0]!;
+    relayGroup.instances.push({
+      repoInstanceId: 'local:%2FUsers%2Fkyle%2Frelay-ide-copy',
+      nodeId: 'local',
+      localPath: '/Users/kyle/relay-ide-copy',
+      name: 'relay-ide-copy',
+      isGitRepo: true,
+      defaultBranch: 'nightly',
+      currentBranch: 'feature/copy',
+      repoIdentity: 'github.com/donovan-yohan/relay-ide',
+      selectedRemote: null,
+      remotes: [],
+      repoIdentityWarnings: [],
+      worktrees: [
+        {
+          worktreeInstanceId:
+            'local:%2FUsers%2Fkyle%2Frelay-ide-copy%2F.worktrees%2Fcopy-feature',
+          localPath: '/Users/kyle/relay-ide-copy/.worktrees/copy-feature',
+          branchName: 'feature/copy-worktree',
+          displayName: 'copy-feature',
+        },
+      ],
+      reportedAt: '2026-05-12T00:00:00.000Z',
+    });
+
+    const model = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node(), node({ nodeId: 'linux', displayName: 'linux lab' })],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'local',
+      selectedCheckoutId:
+        'worktree:local:%2FUsers%2Fkyle%2Frelay-ide-copy%2F.worktrees%2Fcopy-feature',
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.nodeChoices.filter((choice) => choice.value === 'local')).toHaveLength(1);
+    expect(model.checkoutChoices.map((choice) => choice.label)).toEqual([
+      'default — /Users/kyle/relay-ide',
+      'feature/local — /Users/kyle/relay-ide/.worktrees/feature',
+      'default — /Users/kyle/relay-ide-copy',
+      'feature/copy-worktree — /Users/kyle/relay-ide-copy/.worktrees/copy-feature',
+    ]);
+    expect(model.resolved).toEqual({
+      nodeId: 'local',
+      repoPath: '/Users/kyle/relay-ide-copy',
+      worktreePath: '/Users/kyle/relay-ide-copy/.worktrees/copy-feature',
+    });
+  });
+
+  it.each(['degraded', 'unavailable', 'unknown'] as const)(
+    'disables nodes when tmux is %s',
+    (tmuxStatus) => {
+      const model = buildEnvironmentPickerModel({
+        inventory: inventory(),
+        nodes: [
+          node(),
+          node({
+            nodeId: 'linux',
+            displayName: 'linux lab',
+            capabilities: {
+              ...node().capabilities,
+              core: {
+                ...node().capabilities.core,
+                tmux: tmuxStatus,
+              },
+            },
+          }),
+        ],
+        selectedAgent: 'claude',
+        selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+        selectedNodeId: 'linux',
+        selectedCheckoutId: null,
+        fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+        fallbackWorktreePath: null,
+      });
+
+      expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+        disabled: true,
+        reason: `tmux ${tmuxStatus} on linux lab`,
+      });
+      expect(model.resolved.nodeId).toBe('local');
+    }
+  );
 });

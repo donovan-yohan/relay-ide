@@ -56,6 +56,10 @@ test.describe('CustomizeSessionDialog', () => {
     await expect(nodeOptions.filter({ hasText: 'no claude box' })).toContainText(
       'claude unavailable on no claude box'
     );
+    await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toBeDisabled();
+    await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toContainText(
+      'tmux unavailable on no tmux box'
+    );
   });
 
   test('keeps the single-node local path low-friction', async ({ page }) => {

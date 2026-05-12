@@ -122,8 +122,8 @@ function inventory(): AggregatedRepoInventoryResponse {
         identityDebug: {
           groupedBy: 'repoIdentity',
           repoIdentity: 'github.com/donovan-yohan/relay-ide',
-          instanceCount: 4,
-          nodeIds: ['local', 'linux', 'no-claude', 'offline'],
+          instanceCount: 5,
+          nodeIds: ['local', 'linux', 'no-claude', 'offline', 'no-tmux'],
         },
         instances: [
           {
@@ -193,6 +193,21 @@ function inventory(): AggregatedRepoInventoryResponse {
             worktrees: [],
             reportedAt: '2026-05-12T00:00:00.000Z',
           },
+          {
+            repoInstanceId: 'no-tmux:%2Fno-tmux%2Frelay-ide',
+            nodeId: 'no-tmux',
+            localPath: '/no-tmux/relay-ide',
+            name: 'relay-ide',
+            isGitRepo: true,
+            defaultBranch: 'nightly',
+            currentBranch: 'nightly',
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            selectedRemote: null,
+            remotes: [],
+            repoIdentityWarnings: [],
+            worktrees: [],
+            reportedAt: '2026-05-12T00:00:00.000Z',
+          },
         ],
       },
       {
@@ -236,6 +251,17 @@ function nodes(): HubNodeSummary[] {
     node(),
     node({ nodeId: 'linux', displayName: 'linux lab' }),
     node({ nodeId: 'offline', displayName: 'offline lab', status: 'offline' }),
+    node({
+      nodeId: 'no-tmux',
+      displayName: 'no tmux box',
+      capabilities: {
+        ...node().capabilities,
+        core: {
+          ...node().capabilities.core,
+          tmux: 'unavailable',
+        },
+      },
+    }),
     node({
       nodeId: 'no-claude',
       displayName: 'no claude box',

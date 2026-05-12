@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import TuiCheckbox from '../TuiCheckbox.js';
@@ -256,6 +256,8 @@ function nodeBlockReason(
   if (node.status === 'revoked') return 'node is revoked';
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
+  const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');
+  if (tmuxProblem) return `${tmuxProblem} on ${node.displayName}`;
   const agentProblem = capabilityProblem(
     node.capabilities.agents[selectedAgent],
     selectedAgent
@@ -275,12 +277,11 @@ function uniqueInstancesByNode(
 }
 
 function checkoutChoicesFor(
-  instance: RepoInventoryRepoInstance | undefined,
+  instances: RepoInventoryRepoInstance[],
   disabledReason: string | null
 ): EnvironmentCheckoutChoice[] {
-  if (!instance) return [];
   const disabled = disabledReason ? { disabled: true, reason: disabledReason } : {};
-  return [
+  return instances.flatMap((instance) => [
     {
       value: `${CHECKOUT_ROOT_PREFIX}${instance.repoInstanceId}`,
       label: `default — ${instance.localPath}`,
@@ -297,7 +298,7 @@ function checkoutChoicesFor(
       worktreePath: worktree.localPath,
       ...disabled,
     })),
-  ];
+  ]);
 }
 
 export function buildEnvironmentPickerModel(
@@ -330,10 +331,10 @@ export function buildEnvironmentPickerModel(
     ) ?? nodeChoices.find((choice) => !choice.disabled) ?? nodeChoices[0];
   const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
   const selectedNodeReason = selectedNodeChoice?.reason ?? null;
-  const selectedInstance = selectedGroup.instances.find(
+  const selectedNodeInstances = selectedGroup.instances.filter(
     (instance) => instance.nodeId === selectedNodeId
   );
-  const checkoutChoices = checkoutChoicesFor(selectedInstance, selectedNodeReason);
+  const checkoutChoices = checkoutChoicesFor(selectedNodeInstances, selectedNodeReason);
   const selectedCheckout =
     checkoutChoices.find(
       (choice) => choice.value === input.selectedCheckoutId && !choice.disabled
@@ -714,16 +715,30 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       });
     const frameworks = useConfigStore((state) => state.frameworks);
 
-    const environmentModel = buildEnvironmentPickerModel({
-      inventory,
-      nodes,
-      selectedAgent: form.selectedAgent,
-      selectedGroupId: environmentSelection.selectedGroupId,
-      selectedNodeId: environmentSelection.selectedNodeId,
-      selectedCheckoutId: environmentSelection.selectedCheckoutId,
-      fallbackWorkspace: { name: workspaceName, path: workspacePath },
-      fallbackWorktreePath: worktreePath,
-    });
+    const environmentModel = useMemo(
+      () =>
+        buildEnvironmentPickerModel({
+          inventory,
+          nodes,
+          selectedAgent: form.selectedAgent,
+          selectedGroupId: environmentSelection.selectedGroupId,
+          selectedNodeId: environmentSelection.selectedNodeId,
+          selectedCheckoutId: environmentSelection.selectedCheckoutId,
+          fallbackWorkspace: { name: workspaceName, path: workspacePath },
+          fallbackWorktreePath: worktreePath,
+        }),
+      [
+        inventory,
+        nodes,
+        form.selectedAgent,
+        environmentSelection.selectedGroupId,
+        environmentSelection.selectedNodeId,
+        environmentSelection.selectedCheckoutId,
+        workspaceName,
+        workspacePath,
+        worktreePath,
+      ]
+    );
 
     useImperativeHandle(ref, () => ({
       async open(
