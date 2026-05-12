@@ -56,7 +56,7 @@ async function waitForScrollbackContains(
   const session = sessions.get(sessionId) as PtySession | undefined;
   throw new Error(
     `Timed out waiting for scrollback to contain: ${needle}. Last scrollback: ${JSON.stringify(
-      session?.scrollback.join('').slice(-1000) ?? '<missing session>'
+      session?.scrollback?.join('').slice(-1000) ?? '<missing session>'
     )}`
   );
 }
@@ -68,15 +68,22 @@ async function waitForFileContains(
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (fs.existsSync(filePath)) {
+    try {
       const output = fs.readFileSync(filePath, 'utf-8');
       if (output.includes(needle)) return output;
+    } catch {
+      // File may not exist yet, or may be rewritten while polling.
     }
     await delay(50);
   }
-  const lastOutput = fs.existsSync(filePath)
-    ? fs.readFileSync(filePath, 'utf-8').slice(-1000)
-    : '<missing file>';
+  let lastOutput = '<missing file>';
+  try {
+    if (fs.existsSync(filePath)) {
+      lastOutput = fs.readFileSync(filePath, 'utf-8').slice(-1000);
+    }
+  } catch {
+    lastOutput = '<error reading file>';
+  }
   throw new Error(
     `Timed out waiting for ${filePath} to contain: ${needle}. Last contents: ${JSON.stringify(
       lastOutput
