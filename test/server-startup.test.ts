@@ -50,9 +50,16 @@ async function killAndWait(child: ChildProcess): Promise<void> {
   child.kill('SIGTERM');
   // Wait for the child to fully exit before cleaning up temp files.
   // Without this, SQLite WAL/SHM files may still be open, causing ENOTEMPTY.
-  await new Promise<void>((resolve) => {
-    child.on('exit', () => resolve());
-    setTimeout(resolve, 3000);
+  // Reject on timeout (not resolve) — a non-exiting server is a real bug and
+  // should fail the test loudly instead of racing with the rmSync in finally.
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Server did not exit within 3s of SIGTERM'));
+    }, 3000);
+    child.on('exit', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
   });
 }
 
