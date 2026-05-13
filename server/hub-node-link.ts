@@ -5,10 +5,6 @@ import type { RawData } from 'ws';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
-  isRepoInventoryReport,
-  type RepoInventoryReport,
-} from '../shared/repo-inventory.js';
-import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
@@ -147,15 +143,9 @@ function manifestFromPayload(
   return manifest;
 }
 
-function repoInventoryFromPayload(
-  payload: unknown
-): RepoInventoryReport | RelayNodeError | undefined {
+function extractInventoryPayload(payload: unknown): unknown {
   if (typeof payload !== 'object' || payload === null) return undefined;
-  const repoInventory = (payload as Record<string, unknown>)['repoInventory'];
-  if (repoInventory === undefined || repoInventory === null) return undefined;
-  if (!isRepoInventoryReport(repoInventory))
-    return invalidRequest('repoInventory is malformed');
-  return repoInventory;
+  return (payload as Record<string, unknown>)['repoInventory'];
 }
 
 function sendJson(ws: WebSocket, payload: RelayNodeEnvelope): void {
@@ -178,11 +168,39 @@ export class HubNodeLinkError extends Error {
   }
 }
 
+export type HubNodeLinkInventoryValidator = (
+  payload: unknown,
+  ctx: { nodeId: string }
+) => { ok: true; payload: unknown } | { ok: false; error: RelayNodeError };
+
+export interface HubNodeLinkManagerOptions {
+  inventoryValidator?: HubNodeLinkInventoryValidator;
+}
+
 export class HubNodeLinkManager {
   private readonly links = new Map<string, WebSocket>();
   private readonly pending = new Map<string, PendingRpc>();
   private readonly ptyStreams = new Map<string, BrowserPtyStream>();
   private readonly eventHandlers = new Set<NodeEventHandler>();
+  private readonly inventoryValidator?: HubNodeLinkInventoryValidator;
+
+  constructor(options: HubNodeLinkManagerOptions = {}) {
+    if (options.inventoryValidator) {
+      this.inventoryValidator = options.inventoryValidator;
+    }
+  }
+
+  validateInventoryPayload(
+    payload: unknown,
+    ctx: { nodeId: string }
+  ): { ok: true; payload: unknown } | { ok: false; error: RelayNodeError } {
+    // Safe-by-default: when no validator is wired, drop the payload
+    // rather than passing it through. Composition root wires the
+    // feature-layer validator in production; tests or misconfigured
+    // deployments get safe-empty.
+    if (!this.inventoryValidator) return { ok: true, payload: undefined };
+    return this.inventoryValidator(payload, ctx);
+  }
 
   registerNodeLink(nodeId: string, ws: WebSocket): void {
     const existing = this.links.get(nodeId);
@@ -397,8 +415,10 @@ export class HubNodeLinkManager {
   }
 }
 
-export function createHubNodeLinkManager(): HubNodeLinkManager {
-  return new HubNodeLinkManager();
+export function createHubNodeLinkManager(
+  options: HubNodeLinkManagerOptions = {}
+): HubNodeLinkManager {
+  return new HubNodeLinkManager(options);
 }
 
 export function handleHubNodeLink(
@@ -489,22 +509,31 @@ export function handleHubNodeLink(
         return;
       }
       const manifest = manifestResult as NodeManifest | undefined;
-      const repoInventoryResult = repoInventoryFromPayload(parsed.payload);
-      if (repoInventoryResult && 'code' in repoInventoryResult) {
+      const rawInventory = extractInventoryPayload(parsed.payload);
+      // Safe-by-default: when no validator is wired, drop any
+      // repoInventory payload rather than storing it unvalidated. This
+      // prevents nodeId spoofing or malformed payloads from reaching
+      // the registry on misconfigured deployments.
+      const inventoryValidation = nodeLinks
+        ? nodeLinks.validateInventoryPayload(rawInventory, {
+            nodeId: authenticatedNodeId,
+          })
+        : { ok: true as const, payload: undefined };
+      if (!inventoryValidation.ok) {
         sendJson(
           ws,
-          errorEnvelope(authenticatedNodeId, parsed, repoInventoryResult)
+          errorEnvelope(authenticatedNodeId, parsed, inventoryValidation.error)
         );
         return;
       }
-      const repoInventory = repoInventoryResult as
-        | RepoInventoryReport
-        | undefined;
+      const repoInventory = inventoryValidation.payload;
       const node = registry.recordHeartbeat({
         nodeId: authenticatedNodeId,
         protocolVersion: parsed.protocolVersion,
         ...(manifest ? { manifest } : {}),
-        ...(repoInventory ? { repoInventory } : {}),
+        ...(repoInventory !== undefined && repoInventory !== null
+          ? { repoInventory }
+          : {}),
       });
       sendJson(ws, {
         protocol: RELAY_NODE_LINK_PROTOCOL,

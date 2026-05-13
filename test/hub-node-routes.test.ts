@@ -7,6 +7,8 @@ import { WebSocket } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
+import { createHubNodeLinkManager } from '../server/hub-node-link.js';
+import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
@@ -714,7 +716,7 @@ describe('hub node routes and link', () => {
     expect(await response.json()).toMatchObject({
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
-    expect(registry.listRepoInventoryReports()).toHaveLength(0);
+    expect(registry.listInventoryPayloads()).toHaveLength(0);
   });
 
   it('rejects websocket heartbeat repo inventory for a different node id', async () => {
@@ -727,6 +729,10 @@ describe('hub node routes and link', () => {
     });
 
     const server = http.createServer(express());
+    const nodeLinks = createHubNodeLinkManager({
+      inventoryValidator:
+        createRepoInventoryFeature(registry).validateInventoryPayload,
+    });
     setupWebSocket(
       server,
       new Set(),
@@ -734,7 +740,8 @@ describe('hub node routes and link', () => {
       undefined,
       false,
       undefined,
-      registry
+      registry,
+      nodeLinks
     );
     const port = await listen(server);
     cleanup.push(() => close(server));
@@ -778,6 +785,6 @@ describe('hub node routes and link', () => {
       type: 'control.error',
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
-    expect(registry.listRepoInventoryReports()).toHaveLength(0);
+    expect(registry.listInventoryPayloads()).toHaveLength(0);
   });
 });

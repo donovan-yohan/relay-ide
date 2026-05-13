@@ -2,7 +2,6 @@ import { WebSocket, type RawData } from 'ws';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
-import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -33,7 +32,7 @@ export interface NodeLinkClientDeps {
   hubUrl: string;
   credential: NodeLinkCredential;
   getManifest: () => Promise<NodeManifest> | NodeManifest;
-  getRepoInventory?: () => Promise<RepoInventoryReport | undefined> | RepoInventoryReport | undefined;
+  getRepoInventory?: () => Promise<unknown> | unknown;
   heartbeatIntervalMs?: number;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
@@ -101,15 +100,21 @@ function defaultWebSocketFactory(
   url: string,
   options: { headers: Record<string, string> }
 ): NodeLinkWebSocketLike {
-  return new WebSocket(url, { headers: options.headers }) as unknown as NodeLinkWebSocketLike;
+  return new WebSocket(url, {
+    headers: options.headers,
+  }) as unknown as NodeLinkWebSocketLike;
 }
 
 export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
   const logger = deps.logger ?? createLogger('node-link');
-  const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs;
-  const initialReconnectDelayMs = deps.initialReconnectDelayMs ?? DEFAULTS.initialReconnectDelayMs;
-  const maxReconnectDelayMs = deps.maxReconnectDelayMs ?? DEFAULTS.maxReconnectDelayMs;
-  const reconnectJitterMs = deps.reconnectJitterMs ?? DEFAULTS.reconnectJitterMs;
+  const heartbeatIntervalMs =
+    deps.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs;
+  const initialReconnectDelayMs =
+    deps.initialReconnectDelayMs ?? DEFAULTS.initialReconnectDelayMs;
+  const maxReconnectDelayMs =
+    deps.maxReconnectDelayMs ?? DEFAULTS.maxReconnectDelayMs;
+  const reconnectJitterMs =
+    deps.reconnectJitterMs ?? DEFAULTS.reconnectJitterMs;
   const webSocketFactory = deps.webSocketFactory ?? defaultWebSocketFactory;
   const setTimer = deps.setTimeoutFn ?? setTimeout;
   const clearTimer = deps.clearTimeoutFn ?? clearTimeout;
@@ -164,7 +169,9 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     if (deps.getRepoInventory) {
       try {
         const repoInventory = await deps.getRepoInventory();
-        if (repoInventory) payload['repoInventory'] = repoInventory;
+        if (repoInventory !== undefined && repoInventory !== null) {
+          payload['repoInventory'] = repoInventory;
+        }
       } catch (error) {
         logger.warn(
           `repo inventory collection failed: ${error instanceof Error ? error.message : String(error)}`
@@ -195,7 +202,11 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     }
     void buildControlPayload()
       .then((payload) => {
-        if (stopped || ws !== inflightWs || inflightWs.readyState !== inflightWs.OPEN) {
+        if (
+          stopped ||
+          ws !== inflightWs ||
+          inflightWs.readyState !== inflightWs.OPEN
+        ) {
           return;
         }
         send(envelope('control', 'control.heartbeat', { payload }));
@@ -237,7 +248,9 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     setState('reconnecting');
     const delay = nextReconnectDelay();
     reconnectAttempt += 1;
-    logger.info(`reconnect in ${delay}ms (attempt ${reconnectAttempt}): ${reason}`);
+    logger.info(
+      `reconnect in ${delay}ms (attempt ${reconnectAttempt}): ${reason}`
+    );
     reconnectTimer = setTimer(() => {
       reconnectTimer = undefined;
       connect();
@@ -247,7 +260,10 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
 
   function handleEnvelope(env: RelayNodeEnvelope): void {
     if (env.channel === 'control') {
-      if (env.type === 'control.hello.result' || env.type === 'control.heartbeat.ack') {
+      if (
+        env.type === 'control.hello.result' ||
+        env.type === 'control.heartbeat.ack'
+      ) {
         reconnectAttempt = 0;
         return;
       }
