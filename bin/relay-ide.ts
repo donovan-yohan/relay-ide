@@ -99,6 +99,7 @@ function describeSourceCheckout(): string | undefined {
       cwd: repoRoot,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
     }).trim();
     let dirty = '';
     try {
@@ -109,6 +110,7 @@ function describeSourceCheckout(): string | undefined {
           cwd: repoRoot,
           encoding: 'utf-8',
           stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2000,
         }
       );
       if (status.trim()) dirty = '-dirty';

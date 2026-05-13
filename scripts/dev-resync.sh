@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Per-machine resync helper for the synced-git-checkout federated dev workflow.
-# Pulls the current branch, reinstalls, rebuilds, and refreshes the global
-# `relay-ide` symlink so subsequent CLI invocations run from this checkout.
-#
-# Usage:
-#   scripts/dev-resync.sh              # pull current branch, rebuild, npm link
-#   scripts/dev-resync.sh --no-pull    # skip git pull (already pulled)
-#   scripts/dev-resync.sh --no-link    # skip npm link (don't shadow global install)
-#
 # See docs/FEDERATED_DEV.md for the full workflow.
 
 set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Per-machine resync helper for the synced-git-checkout federated dev workflow.
+Pulls the current branch, reinstalls, rebuilds, and refreshes the global
+`relay-ide` symlink so subsequent CLI invocations run from this checkout.
+
+Usage:
+  scripts/dev-resync.sh              # pull current branch, rebuild, npm link
+  scripts/dev-resync.sh --no-pull    # skip git pull (already pulled)
+  scripts/dev-resync.sh --no-link    # skip npm link (don't shadow global install)
+  scripts/dev-resync.sh --help       # print this message
+USAGE
+}
 
 DO_PULL=1
 DO_LINK=1
@@ -19,11 +25,12 @@ for arg in "$@"; do
     --no-pull) DO_PULL=0 ;;
     --no-link) DO_LINK=0 ;;
     --help|-h)
-      sed -n '2,12p' "$0"
+      usage
       exit 0
       ;;
     *)
       echo "unknown flag: $arg" >&2
+      usage >&2
       exit 2
       ;;
   esac
