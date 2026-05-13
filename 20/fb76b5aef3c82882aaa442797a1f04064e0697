@@ -1,0 +1,27 @@
+shared/workspace.ts
+  s_b3a47fe202d97d::t_fbc74b3b4455ff 1-38
+shared/project.ts
+  ai_agent 48-49,52-53,56-57,60-61,97-100,104-106,108-110,112-115,118-119,124-127
+  s_b3a47fe202d97d::t_deae3a14ea4aa6 1-47,50-51,54-55,58-59,62-96,101-103,107,111,116-117,120-123,128-148
+test/view-spine-identity.test.ts
+  ai_agent 35-37,136-141
+  s_b3a47fe202d97d::t_23caadc5068c85 1-34,38-135,142-164
+shared/bench.ts
+  s_b3a47fe202d97d::t_da98c267ca6e46 1-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "20fb76b5aef3c82882aaa442797a1f04064e0697",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
