@@ -1,0 +1,66 @@
+frontend/src/components/WorkspaceLayout.tsx
+  s_a0e895c2caefce::t_baf05d171fa1d1 142
+  s_a0e895c2caefce::t_9366fdd0b7ab47 258
+  s_a0e895c2caefce::t_7f9b9a0a0e6c2d 91,102,113
+  s_a0e895c2caefce::t_d75cb03c6d6b9f 156,162
+frontend/src/components/TerminalNodePicker.css
+  s_a0e895c2caefce::t_13239aac8c2c7f 1-87
+docs/federated-relay.md
+  s_a0e895c2caefce::t_923f29373ab462 284-295
+frontend/src/components/WorkspaceArea.tsx
+  s_a0e895c2caefce::t_17f199ab6b31a5 3-4,6-7
+  s_a0e895c2caefce::t_95347b4a98b290 52
+  s_a0e895c2caefce::t_599f6cafc0301b 403-422,431,433
+  s_a0e895c2caefce::t_eeb6dcdb139aaf 9
+  s_a0e895c2caefce::t_b943526db80b00 32-33
+  s_a0e895c2caefce::t_8e84569b1b8ed0 5,10
+  s_a0e895c2caefce::t_987b278f11b753 507-510
+  s_a0e895c2caefce::t_3019f95cf23131 2
+  s_a0e895c2caefce::t_e17ea2081f1a5d 442
+  s_a0e895c2caefce::t_564794aaea0b35 435-441,443-461
+test/workspace-layout.test.ts
+  s_a0e895c2caefce::t_0a46043c2887cd 29-39
+  s_a0e895c2caefce::t_6d0accfbcfe5e9 70-102
+frontend/src/components/TerminalNodePicker.tsx
+  s_a0e895c2caefce::t_5de18554f34eb4 24,32
+  s_a0e895c2caefce::t_67c6d10da195e6 1-23,25-31,33-135
+frontend/src/components/WorkspaceTabBar.tsx
+  s_a0e895c2caefce::t_981e089425c9f8 144-145,154
+  s_a0e895c2caefce::t_6cad40d651cb2f 184-195
+  s_a0e895c2caefce::t_5f93a9c7c66619 97-108
+frontend/src/components/WorkspaceTabBar.css
+  s_a0e895c2caefce::t_a0b8035d50c715 136-185
+frontend/src/lib/workspace-summary.ts
+  s_a0e895c2caefce::t_4d766205de5f38 114,121,125-128,130-134
+  s_a0e895c2caefce::t_46554ce4e039bf 35-39,46-50,58-62,67-71
+  s_a0e895c2caefce::t_7cc6c3d6edd697 129
+  s_a0e895c2caefce::t_49efd596293387 1
+  s_a0e895c2caefce::t_d3e7422a667798 2
+docs/FRONTEND.md
+  s_a0e895c2caefce::t_16c39dcaf318fc 140
+frontend/src/components/WorkspacePane.tsx
+  s_a0e895c2caefce::t_0f19a8af0b71ff 167-169
+  s_a0e895c2caefce::t_87087375bf0f6b 108,117
+frontend/src/lib/workspace-layout.ts
+  s_a0e895c2caefce::t_031ba3a9042041 1,9-15
+test/workspace-summary.test.ts
+  s_a0e895c2caefce::t_73a4c9c28b01b0 173-222
+test/components/TerminalNodePicker.test.ts
+  s_a0e895c2caefce::t_a12fecb59e43ba 1-20,22-57,59-72,74-76,78-80,82-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "c1fc7869b409c07b459bd00893d57e37058eb17d",
+  "prompts": {},
+  "sessions": {
+    "s_a0e895c2caefce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25b32d3-42b5-4c89-9105-9a1da1f0a1c6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
