@@ -17,7 +17,8 @@
 - **Channel:** new `file` channel sibling to `pty`. Same envelope shape, distinct
   state machine, distinct verb namespace. The existing `rpc` channel stays
   request/response for short manifest probes.
-- **Framing:** `streamId`-keyed, same pattern as `pty`. `fs.open` → ordered
+- **Framing:** `streamId`-keyed, same pattern as `pty`. A verb-specific open
+  envelope (`type: fs.read | fs.list | fs.write | fs.tail`) → ordered
   `fs.chunk` payloads → terminal `fs.done` or `fs.error`. Default chunk 64 KiB,
   hard cap 256 KiB.
 - **Backpressure:** application-level credit window. Consumer issues `fs.ack`
@@ -95,8 +96,9 @@ Pros:
 - Clear separation of concerns. `rpc` stays a sync probe channel, `file` owns
   long-lived streams, `pty` keeps its terminal semantics. Each state machine is
   small and readable.
-- Verb namespace (`fs.open`, `fs.chunk`, `fs.done`, `fs.error`, …) lives in
-  one place and is easy to grep / audit.
+- Verb namespace (verb-specific opens — `fs.read`, `fs.list`, `fs.write`,
+  `fs.tail` — plus the shared frames `fs.chunk`, `fs.ack`, `fs.done`,
+  `fs.error`, `fs.cancel`) lives in one place and is easy to grep / audit.
 - Per-stream lifecycle (open → chunks → done / error / cancel) maps cleanly to
   WebSocket frames without overloading `requestId`.
 - Audit-log entries can key on channel name to apply the right schema (PTY
@@ -196,6 +198,17 @@ fit in one chunk.
 }
 ```
 
+**Ack (node → hub) — initial credit window:**
+
+```json
+{
+  "channel": "file",
+  "type": "fs.ack",
+  "streamId": "S1",
+  "payload": { "windowBytes": 1048576 }
+}
+```
+
 **Page (node → hub):**
 
 ```json
@@ -228,9 +241,10 @@ fit in one chunk.
 position, a path suffix, or a base64-encoded `readdir` offset — the only
 invariant is that re-issuing `fs.list` with the same cursor resumes the
 listing. `recursive: true` is supported but performs a single bounded BFS
-(default depth 8) and returns one entry per chunk frame in deterministic
-sort order (by relative path). `limit` is hub-side enforceable; the node
-caps it at 5000 per page regardless.
+(default depth 8) and returns multiple entries per chunk frame in
+deterministic sort order (by relative path) — same `entries[]` shape as
+the non-recursive case, just packed across more frames. `limit` is
+hub-side enforceable; the node caps it at 5000 per page regardless.
 
 ### 3.3 `fs.read(path, range?)` — chunked stream
 
@@ -257,6 +271,17 @@ frames vs the two of a single-shot response. Acceptable.
     "lastBytes": null, // mutually exclusive with offset+length
     "chunkSize": 65536
   }
+}
+```
+
+**Ack (node → hub) — initial credit window:**
+
+```json
+{
+  "channel": "file",
+  "type": "fs.ack",
+  "streamId": "S2",
+  "payload": { "windowBytes": 1048576 }
 }
 ```
 
@@ -320,9 +345,9 @@ each frame.
 
 `expectedSize` is advisory; the node uses it to pre-allocate or to reject
 oversize before the first chunk. `atomic: true` writes to
-`<dir>/.relay-<streamId>.tmp` and `fs.rename` on `fs.write.close` — the only
-write strategy for `create` and `truncate`. `append` never uses atomic
-because the existing file content is intentionally preserved.
+`<dir>/.relay-write-<streamId>.tmp` and `fs.rename` on `fs.write.close` —
+the only write strategy for `create` and `truncate`. `append` never uses
+atomic because the existing file content is intentionally preserved.
 
 **Ack (node → hub) — initial write window:**
 
@@ -399,6 +424,17 @@ stream open and push new bytes as they arrive. Survives file rotation
     "follow": true,
     "chunkSize": 65536
   }
+}
+```
+
+**Ack (node → hub) — initial credit window:**
+
+```json
+{
+  "channel": "file",
+  "type": "fs.ack",
+  "streamId": "S4",
+  "payload": { "windowBytes": 1048576 }
 }
 ```
 
@@ -519,8 +555,9 @@ slow. Backpressure is therefore mandatory for the `file` channel.
 
 ### Decision: credit window
 
-- **Initial window:** 1 MiB granted on `fs.open` ack. Configurable per-stream
-  via `payload.initialWindowBytes` on open.
+- **Initial window:** 1 MiB granted on the node's first `fs.ack` (sent in
+  response to the verb-specific open envelope). Configurable per-stream via
+  `payload.initialWindowBytes` on open.
 - **Replenishment:** consumer sends `fs.ack { creditBytes: N }` whenever it
   has drained ≥256 KiB. Hub forwards each `fs.ack` to the node.
 - **Node behavior:** maintains a per-stream `outstandingBytes` counter,
@@ -565,11 +602,11 @@ the consumer reassembles. This keeps the node simple.
 
 ### Write modes
 
-| Mode       | Behavior            | Atomic?                                          |
-| ---------- | ------------------- | ------------------------------------------------ | --- |
-| `create`   | Open with `O_CREAT  | O_EXCL`. Fails if path exists.                   | Yes |
-| `truncate` | Open with `O_CREAT  | O_TRUNC`. Wipes existing content on first chunk. | Yes |
-| `append`   | Open with `O_APPEND | O_CREAT`. Each chunk appends to current EOF.     | No  |
+| Mode       | Behavior                                                               | Atomic? |
+| ---------- | ---------------------------------------------------------------------- | ------- |
+| `create`   | Open with `O_CREAT \| O_EXCL`. Fails if path exists.                   | Yes     |
+| `truncate` | Open with `O_CREAT \| O_TRUNC`. Wipes existing content on first chunk. | Yes     |
+| `append`   | Open with `O_APPEND \| O_CREAT`. Each chunk appends to current EOF.    | No      |
 
 `atomic: true` (default for `create` and `truncate`) writes to
 `<dir>/.relay-write-<streamId>.tmp` and `fs.rename` on `fs.write.close`.
@@ -597,15 +634,26 @@ Every verb resolves its `path` argument as follows before any FS call:
 
 1. Reject if `path` contains a null byte.
 2. Reject if `path` is not absolute.
-3. `fs.realpath(path)` to resolve symlinks.
-4. Reject if the realpath is outside the union of:
+3. `path.resolve(path)` to normalise to an absolute, `..`-collapsed form.
+   Then `fs.realpath` the **nearest existing ancestor directory** (walk up
+   until a component exists), and join the remaining basename(s) back on.
+   This avoids `realpath` throwing on non-existent targets, which is the
+   normal case for `fs.write` in `create` mode and for `fs.stat` probing
+   existence. Symlinks in the ancestor chain are still followed; the leaf
+   (which doesn't exist yet) cannot itself be a symlink, so there's nothing
+   to resolve there.
+4. Reject if the resolved path is outside the union of:
    - The node's **paired roots** (configured at install / pair time).
    - The node's **configurable allowlist** (`~/.config/relay-ide/file-rpc-roots.json`).
 5. Reject if any path component is a `..` literal (defense in depth; step 3
-   already collapses them, but a buggy `realpath` should not be the only line).
-6. For `fs.write`, additionally reject if the realpath of the parent
-   directory is outside the allowlist (so a write through a symlink-trapped
-   parent is blocked).
+   already collapses them, but a buggy resolver should not be the only line).
+6. For `fs.write`, additionally `fs.realpath` the parent directory and
+   reject if **that** is outside the allowlist (so a write through a
+   symlink-trapped parent is blocked even if the leaf doesn't exist yet).
+7. For `fs.stat`, a missing leaf is **not** an error — the verb returns
+   `exists: false` after the scope check above passes. Same for `fs.write`
+   in `create` mode: a missing leaf is expected; only the parent directory
+   must resolve into the allowlist.
 
 Rejection is `error.code: 'UNAUTHORIZED', retryable: false`. The error
 message says "path outside allowed roots" — it does **not** echo the
@@ -698,15 +746,12 @@ returning `NODE_BUSY` immediately is preferable so the consumer can decide.
 
 ### Timeouts
 
-| Timeout     | Default | Behavior                                                                |
-| ----------- | ------- | ----------------------------------------------------------------------- |
-| Open ack    | 5 s     | Hub waits 5 s for node `fs.ack` after issuing open. Otherwise emits     |
-|             |         | `fs.error: INTERNAL, retryable: true` to the consumer and frees state.  |
-| Idle read   | 60 s    | Read stream with no chunk progress for 60 s is terminated. Tail streams |
-|             |         | are exempt (idle is normal for a quiet log).                            |
-| Idle write  | 30 s    | Write stream with no consumer chunk for 30 s is terminated and rolled   |
-|             |         | back (atomic mode unlinks temp file).                                   |
-| Tail follow | none    | Long-lived by design. Cancelled by `fs.cancel` or link close.           |
+| Timeout     | Default | Behavior                                                                                                                                                            |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open ack    | 5 s     | Hub waits 5 s for the node's first `fs.ack` after issuing the open envelope. Otherwise emits `fs.error: INTERNAL, retryable: true` to the consumer and frees state. |
+| Idle read   | 60 s    | Read stream with no chunk progress for 60 s is terminated. Tail streams are exempt (idle is normal for a quiet log).                                                |
+| Idle write  | 30 s    | Write stream with no consumer chunk for 30 s is terminated and rolled back (atomic mode unlinks temp file).                                                         |
+| Tail follow | none    | Long-lived by design. Cancelled by `fs.cancel` or link close.                                                                                                       |
 
 ### Disconnect handling
 
