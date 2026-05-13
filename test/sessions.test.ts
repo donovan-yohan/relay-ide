@@ -21,7 +21,7 @@ import {
 } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
-import type { PtySession, SessionSummary } from '../server/types.js';
+import type { PtySession } from '../server/types.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
@@ -1499,13 +1499,15 @@ describe('session persistence', () => {
     // not exited by the deadline. Restored sessions exit through a
     // dedicated branch in pty-handler.ts that flips status but does not
     // call fireSessionEnd, so polling is the cleanest signal here.
+    // Use sessions.get() inside the loop — O(1) map lookup, avoids the
+    // sessions.list() snapshot+sort cost on every iteration.
     const deadline = Date.now() + 15_000;
-    let found: SessionSummary | undefined;
     while (Date.now() < deadline) {
-      found = sessions.list().find((s) => s.id === 'restore-exit-test');
-      if (found?.status === 'disconnected') break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (sessions.get('restore-exit-test')?.status === 'disconnected') break;
+      await delay(25);
     }
+
+    const found = sessions.list().find((s) => s.id === 'restore-exit-test');
 
     expect(found).toBeTruthy();
     expect(found!.status).toBe('disconnected');
