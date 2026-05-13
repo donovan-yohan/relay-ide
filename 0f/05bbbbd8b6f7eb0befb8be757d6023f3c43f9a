@@ -1,0 +1,27 @@
+test/hub-node-session-routing.test.ts
+  s_6af8eee9d6c15d::t_cbb8d5972d1725 416,425-475,477-483
+  s_6af8eee9d6c15d::t_fe8d5cf36958ac 44-49,56-73,75-80,90-91,111-113,151-154,175-178,216-218,220-223,262-269,284-289,294-301,318-325,343-349,372-379,493-500,591-593,671-677,684-697
+server/hub-node-router.ts
+  s_6af8eee9d6c15d::t_7efcf017deebf8 96-106,111-112,115
+server/types.ts
+  s_6af8eee9d6c15d::t_0adaeddcb2c88b 331-344,347-350
+server/index.ts
+  s_6af8eee9d6c15d::t_11ad1ba8979095 1274-1276
+  s_6af8eee9d6c15d::t_9a00499caaf628 1331-1334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "0f05bbbbd8b6f7eb0befb8be757d6023f3c43f9a",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
