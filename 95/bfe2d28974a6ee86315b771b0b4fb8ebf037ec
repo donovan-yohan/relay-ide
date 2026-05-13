@@ -1,0 +1,21 @@
+scripts/dev-resync.sh
+  s_0837e04cd7f585::t_28838c6d121f86 7-20,28,33
+bin/relay-ide.ts
+  s_0837e04cd7f585::t_219423075e681b 102,113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "95bfe2d28974a6ee86315b771b0b4fb8ebf037ec",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
