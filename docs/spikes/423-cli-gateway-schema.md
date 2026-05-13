@@ -15,7 +15,7 @@
 
 The CLI gateway becomes the **integration plane**: any agent that can shell out can drive the fleet without speaking `relay-node-link` envelopes. The shape locked in here is the contract that survives multiple core protocol revisions.
 
-- **MVP verbs**: `v1 nodes list|manifest`, `v1 sessions list|create|attach|input|detach`, `v1 exec`, `v1 --list`. Eight verbs. Everything else is extension.
+- **MVP verbs**: `v1 nodes list|manifest`, `v1 sessions list|create|attach|input|detach`, `v1 exec`, `v1 --list`. Nine verbs. Everything else is extension.
 - **Envelope**: every `--json` invocation prints exactly one JSON object on stdout (`{ ok, data?, error? }`), except streaming verbs which print newline-delimited JSON (NDJSON) framed as `{ ok, event, data? }`. Errors reuse `RelayNodeError` from `shared/relay-node-protocol.ts`.
 - **Versioning**: explicit `v1` prefix is canonical; bare `relay-ide nodes list` resolves to the latest stable major. New majors ship in parallel; previous major stays callable for one full major-version window before removal.
 - **Schema source of truth**: Zod schemas in `shared/cli-schema/`, derived to JSON Schema (committed under `shared/cli-schema/generated/`) and consumed by TypeScript types, agent tool definitions (#430), and `--help` text. **No hand-written agent tool schemas anywhere.**
@@ -63,17 +63,17 @@ The reason for the `ext.<ns>` form: ADR-015 requires that repo/git/workspace ver
 
 All MVP verbs accept `--json` (machine output). Without `--json` they print a short human summary.
 
-| #   | Verb                 | Args / flags                                                                                         | Output                                                                                                                                  | Tier gated?                                                                 |
-| --- | -------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| 1   | `v1 nodes list`      | `[--hub <url>] [--status online\|stale\|offline\|revoked] [--json]`                                  | Array of `HubNodeSummary` (already defined in `shared/relay-node-protocol.ts`).                                                         | No                                                                          |
-| 2   | `v1 nodes manifest`  | `--id <nodeId> [--hub <url>] [--json]`                                                               | One `NodeCapabilityManifestSummary` plus the node's `relayVersion`, `protocolVersion`, `wsl`, `serviceManager`.                         | No                                                                          |
-| 3   | `v1 sessions list`   | `[--node <nodeId>] [--intent <intent>] [--status open\|closed] [--hub <url>] [--json]`               | Array of session descriptors `{id, nodeId, intent, scope, createdAt, expiresAt, status}`.                                               | No                                                                          |
-| 4   | `v1 sessions create` | `--node <nodeId> --intent <intent> --scope <json-or-@file> [--ttl <seconds>] [--hub <url>] [--json]` | One session descriptor. Returns a `confirmationRequired: true, confirmationUrl: …` shape when #427 gates trip.                          | **Yes** (when intent is destructive on tier ≥ `dev`)                        |
-| 5   | `v1 sessions attach` | `--id <sessionId> [--mode ndjson\|raw] [--hub <url>]`                                                | Streaming. See §7.                                                                                                                      | Inherited from `sessions create`                                            |
-| 6   | `v1 sessions input`  | `--id <sessionId> --data <string-or-@file> [--hub <url>] [--json]`                                   | `{ok: true, bytesWritten: <n>}` or error.                                                                                               | Inherited                                                                   |
-| 7   | `v1 sessions detach` | `--id <sessionId> [--revoke] [--hub <url>] [--json]`                                                 | `{ok: true, revoked: <bool>}` or error.                                                                                                 | No                                                                          |
-| 8   | `v1 exec`            | `--node <nodeId> --cmd <argv-json> [--cwd <path>] [--timeout <s>] [--hub <url>] [--json]`            | Final shape: `{ ok, exitCode, stdout, stderr, durationMs }`. For long output prefer `sessions create --intent arbitrary-exec` + attach. | **Yes** (always; arbitrary exec is always destructive-ish in #427's policy) |
-| 9   | `v1 --list`          | `[--json]`                                                                                           | Verb catalog. See §4.                                                                                                                   | No                                                                          |
+| #   | Verb                 | Args / flags                                                                                         | Output                                                                                                                                                  | Tier gated?                                              |
+| --- | -------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | `v1 nodes list`      | `[--hub <url>] [--status online\|stale\|offline\|revoked] [--json]`                                  | Array of `HubNodeSummary` (already defined in `shared/relay-node-protocol.ts`).                                                                         | No                                                       |
+| 2   | `v1 nodes manifest`  | `--id <nodeId> [--hub <url>] [--json]`                                                               | One `NodeCapabilityManifestSummary` plus the node's `relayVersion`, `protocolVersion`, `wsl`, `serviceManager`.                                         | No                                                       |
+| 3   | `v1 sessions list`   | `[--node <nodeId>] [--intent <intent>] [--status open\|closed] [--hub <url>] [--json]`               | Array of session descriptors `{id, nodeId, intent, scope, createdAt, expiresAt, status}`.                                                               | No                                                       |
+| 4   | `v1 sessions create` | `--node <nodeId> --intent <intent> --scope <json-or-@file> [--ttl <seconds>] [--hub <url>] [--json]` | One session descriptor. Returns a `status: "confirmation-required"` shape (with `challengeId`, `channel`, `expiresAt`) when #427 gates trip — see §3.1. | **Yes** (per §2.4 intent + trustLevel matrix)            |
+| 5   | `v1 sessions attach` | `--id <sessionId> [--mode ndjson\|raw] [--hub <url>]`                                                | Streaming. See §7.                                                                                                                                      | Inherited from `sessions create`                         |
+| 6   | `v1 sessions input`  | `--id <sessionId> --data <string-or-@file> [--hub <url>] [--json]`                                   | `data` shape: `{ bytesWritten: <n> }`.                                                                                                                  | Inherited                                                |
+| 7   | `v1 sessions detach` | `--id <sessionId> [--revoke] [--hub <url>] [--json]`                                                 | `data` shape: `{ revoked: <bool> }`.                                                                                                                    | No                                                       |
+| 8   | `v1 exec`            | `--node <nodeId> --cmd <argv-json> [--cwd <path>] [--timeout <s>] [--hub <url>] [--json]`            | `data` shape: `{ exitCode, stdout, stderr, durationMs }`. For long output prefer `sessions create --intent arbitrary-exec` + attach.                    | **Yes** (per §2.4; arbitrary exec is always destructive) |
+| 9   | `v1 --list`          | `[--json]`                                                                                           | Verb catalog. See §4.                                                                                                                                   | No                                                       |
 
 **Why these 9 and not more in MVP.**
 
@@ -108,14 +108,24 @@ These are scoped here so the contract has a place for them, but they live behind
 
 ### 2.4 Tier-gating summary
 
-A verb is **tier gated** if executing it on a node whose `trustLevel` ≥ `dev` (per #427) requires the two-token confirmation gate. The gate is implemented in the hub, not the CLI; the CLI's job is to surface the confirmation challenge on stdout and re-issue the command with the supplied token.
+A verb is **tier gated** if executing it requires the two-token confirmation gate (per #427). The gate is implemented in the hub, not the CLI; the CLI's job is to surface the confirmation challenge on stdout and re-issue the command with the supplied token. **This section is the single source of truth — all other references in the doc (verb table, examples, adapter behavior) defer here.**
 
-Tier-gated verbs:
+**Canonical policy: intent × trustLevel matrix.**
 
-- `v1 sessions create` when `intent ∈ {arbitrary-exec, file-write, interactive-shell on tier prod}`.
-- `v1 exec` always.
-- `v1 fs write` always.
-- `v1 ext.dispatch` always (delegates intent through to each underlying session creation, but the surface itself is treated as destructive).
+`v1 sessions create` is the only verb whose gating depends on intent. The matrix below is keyed by the session's `intent` (per #426) and the target node's `trustLevel` (per #427). `—` means non-gated; `gate` means confirmation-required.
+
+| Intent              | trustLevel `sandbox` | trustLevel `dev` | trustLevel `prod` |
+| ------------------- | -------------------- | ---------------- | ----------------- |
+| `read-only-inspect` | —                    | —                | —                 |
+| `interactive-shell` | —                    | **gate**         | **gate**          |
+| `file-write`        | —                    | **gate**         | **gate**          |
+| `arbitrary-exec`    | —                    | **gate**         | **gate**          |
+
+Tier-gated verbs (do not depend on intent — gated unconditionally):
+
+- `v1 exec` — always gated regardless of trustLevel. (Arbitrary exec is treated as destructive even on `sandbox` because the surface bypasses #426's intent declaration.)
+- `v1 fs write` — always gated.
+- `v1 ext.dispatch` — always gated. Each underlying per-node leg is itself a `sessions create`, so the matrix above also applies independently to each leg.
 
 Non-gated:
 
@@ -188,6 +198,7 @@ Rationale:
 {"ok":true,"event":"stream-open","streamId":"strm_01HZQ…","sessionId":"sess_…"}
 {"ok":true,"event":"data","streamId":"strm_01HZQ…","chunk":"hello\r\n","encoding":"utf-8"}
 {"ok":true,"event":"data","streamId":"strm_01HZQ…","chunk":"AAEC…","encoding":"base64"}
+{"ok":true,"event":"data-dropped","streamId":"strm_01HZQ…","droppedBytes":1024}
 {"ok":true,"event":"resize","streamId":"strm_01HZQ…","cols":120,"rows":40}
 {"ok":true,"event":"stream-close","streamId":"strm_01HZQ…","reason":"detached"}
 {"ok":false,"event":"error","streamId":"strm_01HZQ…","error":{"code":"NODE_OFFLINE","message":"…","retryable":true}}
@@ -196,8 +207,9 @@ Rationale:
 Rules:
 
 - `chunk` is utf-8 when the data is valid utf-8, base64 otherwise. The `encoding` discriminator is required. Choosing per-chunk (not per-stream) lets us avoid an upfront probe.
+- `data-dropped` events surface backpressure-driven FIFO trims (see §7.1); they do not terminate the stream and consumers should treat them as a non-fatal gap signal.
 - `error` events do not terminate the stream automatically. `stream-close` always terminates.
-- The stream is guaranteed to start with exactly one `stream-open` event and end with exactly one `stream-close` event. Anything between is data/resize/error.
+- The stream is guaranteed to start with exactly one `stream-open` event and end with exactly one `stream-close` event. Anything between is data/data-dropped/resize/error.
 
 **`--mode raw`** — after a single-line `stream-open` JSON event on stdout, the rest of stdout is raw PTY bytes. Used by terminal pass-through use cases (`relay-ide v1 sessions attach --id X --mode raw | cat -v`). `--mode raw` cannot be combined with `--json` (mutually exclusive). Errors during raw mode are written to stderr as one final NDJSON line, then the process exits non-zero.
 
@@ -209,14 +221,15 @@ Rules:
 
 ### 3.4 Exit codes
 
-| Code | Meaning                                                                  |
-| ---- | ------------------------------------------------------------------------ |
-| 0    | Success. For streaming verbs: stream closed cleanly.                     |
-| 1    | Generic CLI error (bad flags, schema validation failed before dispatch). |
-| 2    | Hub error (envelope returned `error`, mapped from `RelayNodeError`).     |
-| 3    | Stream closed due to remote error (NODE_OFFLINE, etc.).                  |
-| 4    | Confirmation required and not supplied / expired.                        |
-| 64   | Usage error (consistent with sysexits.h `EX_USAGE`).                     |
+| Code | Meaning                                                                                                         |
+| ---- | --------------------------------------------------------------------------------------------------------------- |
+| 0    | Success. For streaming verbs: stream closed cleanly.                                                            |
+| 2    | Hub error (envelope returned `error`, mapped from `RelayNodeError`).                                            |
+| 3    | Stream closed due to remote error (NODE_OFFLINE, etc.).                                                         |
+| 4    | Confirmation required and not supplied / expired.                                                               |
+| 64   | Usage error — bad flags, schema validation failed before dispatch, malformed arguments (sysexits.h `EX_USAGE`). |
+
+All usage / pre-dispatch validation failures map to `64`; the CLI does not emit exit `1` for this class so adapters can deterministically distinguish local validation errors from runtime hub errors.
 
 ---
 
@@ -323,7 +336,7 @@ shared/cli-schema/
 **Why Zod and not OpenAPI as source of truth:**
 
 - The CLI is not an HTTP surface. OpenAPI's HTTP-method/path framing doesn't fit; we'd be co-opting half its primitives.
-- Zod is already a transitive dep in the React frontend's TanStack Query layer (zod + zod-to-json-schema). No new top-level dependency in the runtime path of the CLI.
+- Zod is currently absent from `package.json` (no `zod` imports in the repo, no direct dependency declared). This spike proposes adding `zod` + `zod-to-json-schema` as direct dependencies under #429a; the rationale below still holds independent of any prior transitive presence.
 - Zod-to-JSON-Schema is well-tested and the output is mechanical.
 - Runtime validation of CLI input is **free** when Zod is the source. The CLI parses flags, hands the parsed bag to the verb's Zod schema, and rejects on parse error before any hub envelope is sent.
 
@@ -407,7 +420,7 @@ Any CLI output that would otherwise embed a credential or pair token must be pas
 - `v1 --list --json` output (none should contain secrets, but the redactor is run on the serialized output unconditionally).
 - `stream-open` event metadata in `sessions attach` NDJSON.
 
-The redactor's existing patterns cover pair tokens, secret tokens, node ids, and `Authorization: Bearer …` headers. New CLI-specific secret formats (e.g. confirmation tokens) need patterns added to the same redactor in the #427 implementation PR.
+The redactor's existing patterns cover pair tokens (`pair_…`), node credentials (`node_…secret_…`), bare `secret_…` tokens, and `Authorization: Bearer …` headers. Node IDs are **not** currently redacted — if CLI JSON should mask them, the redactor needs new patterns + tests (tracked as a follow-up; see §9 #429-redact1). New CLI-specific secret formats (e.g. confirmation tokens) need patterns added to the same redactor in the #427 implementation PR.
 
 ---
 
@@ -472,7 +485,7 @@ $ relay-ide v1 fs read --node node_build_… --path /srv/app/package.json --json
 // 4. Claude detaches.
 $ relay-ide v1 sessions detach --id sess_01HZQ… --revoke --json
 {"ok":true,"apiVersion":"v1","verb":"sessions.detach","requestId":"cli_01HZQ4…",
- "data":{"ok":true,"revoked":true}}
+ "data":{"revoked":true}}
 ```
 
 How this maps to envelopes:
@@ -491,7 +504,7 @@ $ relay-ide v1 sessions create \
     --intent interactive-shell \
     --scope '{"cwd":"/Users/me/code"}' \
     --json
-// Hub: node_laptop_ is trustLevel "dev". Interactive-shell on dev is tier-gated.
+// Hub: node_laptop_ is trustLevel "dev". Per §2.4 matrix, interactive-shell on dev is gated.
 {"ok":true,"apiVersion":"v1","verb":"sessions.create","requestId":"cli_01HZQ…",
  "data":{"status":"confirmation-required","challengeId":"cnf_01HZQ…",
          "channel":"hub-ui","expiresAt":"…"}}
@@ -531,7 +544,7 @@ These are the tickets the spike unblocks. Each is a single PR's worth of work; t
 
 1. **#429a: scaffold `shared/cli-schema/v1/` Zod registry + `npm run cli-schema:generate`** — write the envelope, error, and one canary verb (`v1 --list`), wire the generator, commit `generated/v1.json` + `generated/v1.d.ts`.
 2. **#429b: implement `v1 nodes list` and `v1 nodes manifest`** — read-only verbs, no tier gating, end-to-end through the existing registry. Smoke test against a fake hub.
-3. **#429c: implement `v1 sessions list|create|attach|input|detach`** — depends on #426 session intent envelopes being in `main`. Confirmation-gate stub returns `confirmation-required` for `arbitrary-exec` on `dev`+.
+3. **#429c: implement `v1 sessions list|create|attach|input|detach`** — depends on #426 session intent envelopes being in `main`. Confirmation-gate stub returns `confirmation-required` per the §2.4 intent × trustLevel matrix.
 4. **#429d: implement `v1 exec`** — wraps `sessions create --intent arbitrary-exec` + attach + final exit-code capture. Always tier-gated.
 5. **#429e: NDJSON + raw stream framing for `sessions attach`** — including stdin pump, backpressure, `data-dropped` events, exit-code mapping.
 6. **#429f: operator-credential flow (`relay-ide hub login` + `~/.config/relay-ide/cli-credential.json`)** — distinct from node credential; ADR-016 compliance test included.
@@ -541,6 +554,7 @@ These are the tickets the spike unblocks. Each is a single PR's worth of work; t
 10. **#429j: smoke test `test/cli-gateway/end-to-end.test.ts`** — pair fake node, create read-only session, read a file, detach. The acceptance test #429 lists.
 11. **#429k: `docs/CLI_GATEWAY.md`** — the operator/agent-author doc that #429's acceptance criteria require, with the verb catalog and link to the generated schema.
 12. **#429-ext1: feature-layer namespace plumbing** — after #425. Wires `v1 ext.<ns>` dispatch, but ships no verbs. Repo/dispatch verbs land in subsequent tickets owned by the feature layer.
+13. **#429-redact1: extend `redactBootstrapSecrets` to cover node IDs (and CLI confirmation tokens)** — adds patterns + tests in `shared/bootstrap-diagnostics.ts` so CLI JSON output can claim node-id redaction. Pre-req for §6.6 to hold in full.
 
 The first ten land before #430 (agent adapters) can start. #429k can ship in parallel with #429j.
 
