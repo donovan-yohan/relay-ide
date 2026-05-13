@@ -1,0 +1,22 @@
+test/hub-node-packaging.test.ts
+  s_0837e04cd7f585::t_c2d970c35114e2 166-167,169,184-185,187
+  ai_agent 215-216,218-221,234-236
+  s_0837e04cd7f585::t_b491a0b9766393 222-229
+  s_0837e04cd7f585::t_3d9c3539200fbf 189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "adcc92557331a867797dc80203e908446e91458a",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
