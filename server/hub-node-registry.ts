@@ -5,7 +5,6 @@ import type {
   NodeCapabilityProbe,
   NodeManifest,
 } from '../shared/node-manifest.js';
-import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import { createLogger } from './logger.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -44,7 +43,7 @@ interface StoredNodeRecord {
   relayVersion: string;
   protocolVersion: string;
   capabilities: NodeCapabilityManifestSummary;
-  repoInventory?: RepoInventoryReport;
+  repoInventory?: unknown;
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;
@@ -74,7 +73,12 @@ export interface HeartbeatInput {
   nodeId: string;
   protocolVersion: string;
   manifest?: NodeManifest;
-  repoInventory?: RepoInventoryReport;
+  repoInventory?: unknown;
+}
+
+export interface InventoryPayloadRecord {
+  nodeId: string;
+  payload: unknown;
 }
 
 export interface HubNodeRegistryOptions {
@@ -518,13 +522,7 @@ export class HubNodeRegistry {
       node.relayVersion = input.manifest.relayVersion;
       node.capabilities = summarizeCapabilities(input.manifest);
     }
-    if (input.repoInventory) {
-      if (input.repoInventory.nodeId !== input.nodeId) {
-        throw new HubNodeRegistryError(
-          'INVALID_REQUEST',
-          'repoInventory.nodeId must match authenticated nodeId'
-        );
-      }
+    if (input.repoInventory !== undefined && input.repoInventory !== null) {
       node.repoInventory = input.repoInventory;
     }
     this.scheduleHeartbeatPersist();
@@ -552,13 +550,16 @@ export class HubNodeRegistry {
     );
   }
 
-  listRepoInventoryReports(
+  listInventoryPayloads(
     options: { includeRevoked?: boolean } = {}
-  ): RepoInventoryReport[] {
+  ): InventoryPayloadRecord[] {
     return this.state.nodes
       .filter((node) => options.includeRevoked || !node.revokedAt)
-      .map((node) => node.repoInventory)
-      .filter((report): report is RepoInventoryReport => Boolean(report));
+      .filter(
+        (node) =>
+          node.repoInventory !== undefined && node.repoInventory !== null
+      )
+      .map((node) => ({ nodeId: node.nodeId, payload: node.repoInventory }));
   }
 
   revokeNode(nodeId: string): HubNodeSummary {

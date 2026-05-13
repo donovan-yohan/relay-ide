@@ -104,6 +104,7 @@ import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
+import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -982,9 +983,14 @@ async function main(): Promise<void> {
   const hubNodeRegistry = createHubNodeRegistry({
     storagePath: path.join(configDir, 'hub-node-registry.json'),
   });
-  const hubNodeLinks = createHubNodeLinkManager();
+  const repoInventoryFeature = createRepoInventoryFeature(hubNodeRegistry);
+  const hubNodeLinks = createHubNodeLinkManager({
+    inventoryValidator: repoInventoryFeature.validateInventoryPayload,
+  });
 
-  async function flushHubNodeHeartbeatsBestEffort(context: string): Promise<void> {
+  async function flushHubNodeHeartbeatsBestEffort(
+    context: string
+  ): Promise<void> {
     try {
       await hubNodeRegistry.flushPendingHeartbeatPersist();
     } catch (err) {
@@ -1077,8 +1083,12 @@ async function main(): Promise<void> {
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
       requireAuth,
+      repoInventoryFeature,
       collectLocalRepoInventory: () =>
-        collectLocalRepoInventory({ config: getConfig(), configPath: CONFIG_PATH }),
+        collectLocalRepoInventory({
+          config: getConfig(),
+          configPath: CONFIG_PATH,
+        }),
     })
   );
 

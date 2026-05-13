@@ -1,14 +1,12 @@
 import * as express from 'express';
 import type { Request, Response } from 'express';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
-import {
-  aggregateRepoInventoryReports,
-  isRepoInventoryReport,
-  type RepoInventoryDirtySummary,
-  type RepoInventoryDivergenceSummary,
-  type RepoInventoryRepoInstance,
-  type RepoInventoryReport,
-  type RepoInventoryWorktreeInstance,
+import type {
+  RepoInventoryDirtySummary,
+  RepoInventoryDivergenceSummary,
+  RepoInventoryRepoInstance,
+  RepoInventoryReport,
+  RepoInventoryWorktreeInstance,
 } from '../shared/repo-inventory.js';
 import {
   HubNodeRegistryError,
@@ -24,6 +22,10 @@ import {
   type BootstrapServiceMode,
 } from '../shared/bootstrap-diagnostics.js';
 import { HubNodeLinkError, type HubNodeLinkManager } from './hub-node-link.js';
+import {
+  createRepoInventoryFeature,
+  type RepoInventoryFeature,
+} from './features/repo-inventory.js';
 import type { SessionSummary } from './types.js';
 import {
   createGlobalSessionId,
@@ -34,6 +36,7 @@ import {
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
 }
@@ -492,18 +495,18 @@ function manifestFromBody(
   return manifest;
 }
 
-function repoInventoryFromBody(
-  body: Record<string, unknown>
-): RepoInventoryReport | null {
+function validateInventoryFromBody(
+  feature: RepoInventoryFeature,
+  body: Record<string, unknown>,
+  nodeId: string
+): unknown {
   const repoInventory = body['repoInventory'];
-  if (repoInventory === undefined || repoInventory === null) return null;
-  if (!isRepoInventoryReport(repoInventory)) {
-    throw new HubNodeRegistryError(
-      'INVALID_REQUEST',
-      'repoInventory is malformed'
-    );
+  if (repoInventory === undefined || repoInventory === null) return undefined;
+  const result = feature.validateInventoryPayload(repoInventory, { nodeId });
+  if (!result.ok) {
+    throw new HubNodeRegistryError(result.error.code, result.error.message);
   }
-  return repoInventory;
+  return result.payload;
 }
 
 function pairTtlMs(body: Record<string, unknown>): number | undefined {
@@ -568,6 +571,8 @@ export function createHubNodeRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
+  const repoInventoryFeature =
+    options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
 
   router.post('/hub/pair-tokens', requireAuth, (req, res) => {
     const body = bodyRecord(req);
@@ -668,13 +673,19 @@ export function createHubNodeRouter(
     }
     try {
       const manifest = manifestFromBody(body);
-      const repoInventory = repoInventoryFromBody(body);
+      const repoInventory = validateInventoryFromBody(
+        repoInventoryFeature,
+        body,
+        authenticated.node.nodeId
+      );
       res.json({
         node: registry.recordHeartbeat({
           nodeId: authenticated.node.nodeId,
           protocolVersion,
           ...(manifest ? { manifest } : {}),
-          ...(repoInventory ? { repoInventory } : {}),
+          ...(repoInventory !== undefined && repoInventory !== null
+            ? { repoInventory }
+            : {}),
         }),
       });
     } catch (error) {
@@ -688,11 +699,11 @@ export function createHubNodeRouter(
 
   router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
     try {
-      const reports = [...registry.listRepoInventoryReports()];
+      const reports = [...repoInventoryFeature.listInventoryReports()];
       if (options.collectLocalRepoInventory) {
         reports.push(await options.collectLocalRepoInventory());
       }
-      res.json(aggregateRepoInventoryReports(reports));
+      res.json(repoInventoryFeature.aggregateInventoryReports(reports));
     } catch (error) {
       sendRegistryError(registry, res, error);
     }
@@ -756,7 +767,7 @@ export function createHubNodeRouter(
 
       const body = bodyRecord(req);
       try {
-        const reports = [...registry.listRepoInventoryReports()];
+        const reports = [...repoInventoryFeature.listInventoryReports()];
         if (options.collectLocalRepoInventory) {
           reports.push(await options.collectLocalRepoInventory());
         }
