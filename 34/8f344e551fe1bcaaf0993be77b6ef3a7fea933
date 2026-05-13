@@ -1,0 +1,33 @@
+bin/relay-ide.ts
+  ai_agent 214-216,243-245,279-281,283-285,294-298,303-305,327-331,340-354,357-361,365-368,372-374,378-380,396-398,408-410,484-487,491-493,499-510,517-525,530-540,543-557,560-564,568-570,573-575,577-579,608-611,625-627,653-655,659-661,664-666,682-684,693,788,897-899
+  s_0837e04cd7f585::t_adb7c82221e4a7 87-88,92-121
+  s_0837e04cd7f585::t_74a72f54390446 5
+package.json
+  s_0837e04cd7f585::t_d4e9efdbb57604 26
+docs/FEDERATED_DEV.md
+  s_0837e04cd7f585::t_7d0971b99270d2 1-174
+AGENTS.md
+  s_0837e04cd7f585::t_452356f82c27b7 35
+scripts/dev-resync.sh
+  s_0837e04cd7f585::t_48675bad28cbbd 1-53
+test/federated-dev-docs.test.ts
+  s_0837e04cd7f585::t_0a3d4a1b7bbf04 1-18,22-47
+  s_0837e04cd7f585::t_84e9cb78323c05 19-20
+  s_0837e04cd7f585::t_dc3bc624687c9e 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "348f344e551fe1bcaaf0993be77b6ef3a7fea933",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
