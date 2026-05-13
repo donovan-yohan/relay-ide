@@ -1,0 +1,20 @@
+test/sessions.test.ts
+  s_6af8eee9d6c15d::t_e487a6520ab062 24
+  s_6af8eee9d6c15d::t_24817ff94463a5 1502-1503,1506-1507,1510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "28e5fc6611c3047e3e3c2ce88051d2ccaf585868",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
