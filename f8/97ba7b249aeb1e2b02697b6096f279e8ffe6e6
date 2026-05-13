@@ -1,0 +1,19 @@
+.husky/pre-push
+  s_6af8eee9d6c15d::t_93c6ef3472c133 23-28,30-31,33-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "f897ba7b249aeb1e2b02697b6096f279e8ffe6e6",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
