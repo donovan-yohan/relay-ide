@@ -13,6 +13,8 @@ import type { AggregatedRepoInventoryResponse } from '../shared/repo-inventory.j
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 
 function framework(id: string, installed = true): FrameworkInfo {
+  // Mirrors BUILTIN_FRAMEWORKS in server/types.ts. Claude web sessions are
+  // de-advertised pending end-to-end verification (issue #300).
   return {
     id,
     displayName: id,
@@ -22,9 +24,10 @@ function framework(id: string, installed = true): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      // Codex is intentionally absent — its web-session capability is
-      // de-advertised pending a full implementation (issue #301).
-      supportsWebSessions: ['claude', 'opencode', 'hermes'].includes(id),
+      // Claude + Codex are both intentionally absent — their web-session
+      // capabilities are de-advertised pending full implementations
+      // (issues #300 and #301).
+      supportsWebSessions: ['opencode', 'hermes'].includes(id),
     },
     eventSource: 'hooks',
     availability: installed
@@ -171,13 +174,9 @@ function inventory(): AggregatedRepoInventoryResponse {
 
 describe('CustomizeSessionDialog session mode options', () => {
   it('shows tui and web for agents with web-session adapters', () => {
-    const frameworks = [
-      framework('claude'),
-      framework('codex'),
-      framework('opencode'),
-    ];
+    const frameworks = [framework('opencode'), framework('hermes')];
 
-    expect(getSessionModeOptions(frameworks, 'claude')).toEqual([
+    expect(getSessionModeOptions(frameworks, 'opencode')).toEqual([
       { value: 'pty', label: 'tui' },
       { value: 'web', label: 'web' },
     ]);
@@ -193,6 +192,15 @@ describe('CustomizeSessionDialog session mode options', () => {
   // de-advertised until assistant text streaming is implemented.
   it('shows only tui for codex (web mode de-advertised, see #301)', () => {
     expect(getSessionModeOptions([framework('codex')], 'codex')).toEqual([
+      { value: 'pty', label: 'tui' },
+    ]);
+  });
+
+  // Regression guard for issue #300: Claude web sessions are de-advertised
+  // pending end-to-end verification. The session-mode dropdown must NOT
+  // surface a "web" option when Claude is selected.
+  it('shows only tui for claude (web de-advertised pending issue #300)', () => {
+    expect(getSessionModeOptions([framework('claude')], 'claude')).toEqual([
       { value: 'pty', label: 'tui' },
     ]);
   });

@@ -459,6 +459,27 @@ class StreamInputController {
   }
 }
 
+/**
+ * ClaudeProtocolAdapter — hook-backed spawned-CLI adapter for Claude Code.
+ *
+ * STATUS: De-advertised (issue #300).
+ *
+ * This adapter is currently NOT advertised as a web-session capability
+ * (see BUILTIN_FRAMEWORKS.claude.capabilities.supportsWebSessions=false in
+ * server/types.ts and the explicit availability gate in
+ * server/frameworks.ts#getFrameworkWebAvailability). The implementation
+ * spawns `claude` via the Anthropic Agent SDK and maps SDK events to v2
+ * ChatEvents, but it has NOT been verified end-to-end for production use.
+ *
+ * Re-enabling criteria (per issue #300):
+ *   1. Real protocol verification — no synthetic/forged event sources.
+ *   2. Assistant text streaming verified against live Claude output.
+ *   3. End-to-end round-trip test (prompt -> assistant text -> completion)
+ *      passing reliably in CI.
+ *
+ * The adapter code is intentionally retained so future implementation
+ * work has a starting point. Do not delete without coordination on #300.
+ */
 export class ClaudeProtocolAdapter extends BaseProtocolAdapterV2 {
   readonly agentType = 'claude';
   readonly runtimeOwnership = 'spawned' as const;

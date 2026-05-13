@@ -132,6 +132,16 @@ export async function getFrameworkClientInfoWithRuntime(
 export async function getFrameworkWebAvailability(
   framework: AgentFramework
 ): Promise<FrameworkWebAvailability> {
+  // Claude web sessions are de-advertised pending end-to-end verification.
+  // See issue #300. The hook-backed spawned-CLI adapter exists but has not
+  // been verified for real assistant text streaming or e2e round-trip.
+  if (framework.id === 'claude') {
+    return {
+      available: false,
+      reason:
+        'Claude web sessions are not yet verified end-to-end (see issue #300). Use the tui (PTY) mode instead.',
+    };
+  }
   if (framework.id !== 'hermes') {
     return { available: true };
   }

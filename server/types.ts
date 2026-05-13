@@ -81,7 +81,14 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
-      supportsWebSessions: true,
+      // De-advertised pending end-to-end verification of the Claude web
+      // session protocol. See issue #300. The ClaudeProtocolAdapter exists
+      // in server/protocol-adapters/claude-adapter.ts but has not been
+      // verified for real assistant text streaming and round-trip behavior.
+      // Re-enable only after: real protocol verification (no synthetic
+      // event sources), assistant text streaming, and an end-to-end
+      // round-trip test all pass.
+      supportsWebSessions: false,
     },
   },
   codex: {

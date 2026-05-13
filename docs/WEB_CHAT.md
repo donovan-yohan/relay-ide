@@ -181,14 +181,25 @@ All messages are JSON-serialized `ChatEvent` objects. The server sends a snapsho
 
 | Agent       | Adapter    | Native Protocol                           | Status                                   |
 | ----------- | ---------- | ----------------------------------------- | ---------------------------------------- |
-| Claude Code | `claude`   | `--output-format stream-json` + env hooks | ✅ Implemented                           |
+| Claude Code | `claude`   | `--output-format stream-json` + env hooks | ⚠️ De-advertised — see issue [#300][300] |
 | Codex       | `codex`    | Hook file callbacks                       | ⚠️ De-advertised — see issue [#301][301] |
 | OpenCode    | `opencode` | Relay plugin events                       | ✅ Implemented                           |
 | Hermes      | `hermes`   | Attached host gateway + SSE/REST          | ✅ Implemented                           |
 | Mock        | `mock`     | Programmable scenarios                    | ✅ Implemented                           |
 
+[300]: https://github.com/donovan-yohan/relay-ide/issues/300
 [301]: https://github.com/donovan-yohan/relay-ide/issues/301
 
+> **Claude web sessions (issue #300):** The `ClaudeProtocolAdapter` exists in
+> `server/protocol-adapters/claude-adapter.ts` but is not advertised as a
+> web-session capability and `POST /sessions` with `agent: 'claude', mode: 'web'`
+> returns a `400 agent_unavailable`. The current implementation is a
+> hook-backed spawned-CLI adapter that has not been verified end-to-end for
+> real assistant text streaming or round-trip behavior. Re-enabling requires
+> (1) real protocol verification with no synthetic event sources,
+> (2) assistant text streaming verified against live Claude output, and
+> (3) an end-to-end round-trip test passing reliably in CI.
+>
 > **Codex web mode status:** the Codex adapter maps lifecycle and tool events
 > but does not yet stream assistant text as `chat:text-delta`, so the browser
 > chat surface produces no visible response. The framework is therefore
