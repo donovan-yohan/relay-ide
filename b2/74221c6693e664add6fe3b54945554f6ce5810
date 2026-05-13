@@ -1,0 +1,28 @@
+test/framework-types.test.ts
+  s_b3a47fe202d97d::t_c249a45feebd17 53-57
+docs/WEB_CHAT.md
+  s_b3a47fe202d97d::t_a43dd5bf66c3d7 182,184-197
+server/protocol-adapters/codex-native-adapter.ts
+  s_b3a47fe202d97d::t_06b4ed1dcd86b0 30-52
+test/customize-session-dialog.test.ts
+  s_b3a47fe202d97d::t_7d71d159a4d73b 25-27
+  s_b3a47fe202d97d::t_76548b33465eba 193-200
+server/types.ts
+  s_b3a47fe202d97d::t_fe6f2b94a2ea94 101-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "b274221c6693e664add6fe3b54945554f6ce5810",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
