@@ -1,0 +1,26 @@
+server/hub-node-link.ts
+  s_6af8eee9d6c15d::t_7dbe725cc89b5f 513-516,521
+  s_6af8eee9d6c15d::t_7b0a24682af95a 197-201
+test/repo-inventory-feature.test.ts
+  s_6af8eee9d6c15d::t_0a17d39488239d 208-280
+  s_6af8eee9d6c15d::t_92647df1ae427f 5-7,9-10,19-35
+  s_6af8eee9d6c15d::t_47a64b3d94adaa 167-188
+server/features/repo-inventory.ts
+  s_6af8eee9d6c15d::t_f9e003d7cd1ad8 72,74-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "b003eb7346d93bfde14a26e18e8e13f9d9e379a2",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
