@@ -328,11 +328,26 @@ export interface SessionSummary {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  repoPath: string;
-  worktreePath: string | null;
+  /**
+   * Filesystem path of the repo this session is bound to. Optional so
+   * non-repo (node-only / raw-shell) routed sessions can flow through
+   * the same envelope without a synthetic placeholder. Repo-bound
+   * consumers must narrow before use. Local single-node session
+   * creation paths continue to set this for repo-bound sessions.
+   */
+  repoPath?: string;
+  /**
+   * Worktree path within the repo. `null` = session runs at the repo
+   * root (not in a worktree). `undefined` = session is not repo-bound at
+   * all.
+   */
+  worktreePath?: string | null;
   cwd: string;
   repoName: string;
-  branchName: string;
+  /**
+   * Branch name for repo-bound sessions. Omitted for non-repo sessions.
+   */
+  branchName?: string;
   displayName: string;
   createdAt: string;
   lastActivity: string;

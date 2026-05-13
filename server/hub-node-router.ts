@@ -93,16 +93,26 @@ function sendRelayError(res: Response, error: RelayNodeError): void {
 function isSessionSummary(value: unknown): value is SessionSummary {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionSummary>;
+  // repoPath / worktreePath / branchName are optional: a non-repo
+  // routed session (e.g. raw shell on a paired node) carries no repo
+  // binding. Validate them only when present.
+  const repoPathOk =
+    session.repoPath === undefined || typeof session.repoPath === 'string';
+  const worktreePathOk =
+    session.worktreePath === undefined ||
+    session.worktreePath === null ||
+    typeof session.worktreePath === 'string';
+  const branchNameOk =
+    session.branchName === undefined || typeof session.branchName === 'string';
   return (
     typeof session.id === 'string' &&
     (session.type === 'agent' || session.type === 'terminal') &&
     (session.mode === 'pty' || session.mode === 'web') &&
-    typeof session.repoPath === 'string' &&
-    (typeof session.worktreePath === 'string' ||
-      session.worktreePath === null) &&
+    repoPathOk &&
+    worktreePathOk &&
     typeof session.cwd === 'string' &&
     typeof session.repoName === 'string' &&
-    typeof session.branchName === 'string' &&
+    branchNameOk &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
