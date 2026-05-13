@@ -87,3 +87,35 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.label).toBe('m1');
   });
 });
+
+import { firstEnabledIndex } from '../../frontend/src/components/TerminalNodePicker.js';
+
+describe('TerminalNodePicker firstEnabledIndex', () => {
+  const local = buildChoices([])[0]!;
+  const onlineMac = buildChoices([
+    node({ nodeId: 'mac', displayName: 'mac', status: 'online' }),
+  ])[1]!;
+  const offlineWsl = buildChoices([
+    node({ nodeId: 'wsl', displayName: 'wsl', status: 'offline' }),
+  ])[1]!;
+
+  it('returns the first enabled index when stepping forward', () => {
+    expect(firstEnabledIndex([offlineWsl, local, onlineMac], 0, 1)).toBe(1);
+  });
+
+  it('returns the first enabled index when stepping backward', () => {
+    expect(firstEnabledIndex([offlineWsl, local, onlineMac], 2, -1)).toBe(2);
+    expect(firstEnabledIndex([offlineWsl, local, onlineMac], 1, -1)).toBe(1);
+    expect(firstEnabledIndex([offlineWsl, local], 1, -1)).toBe(1);
+  });
+
+  it('returns -1 when no choice is enabled in the direction', () => {
+    expect(firstEnabledIndex([offlineWsl], 0, 1)).toBe(-1);
+    expect(firstEnabledIndex([offlineWsl, offlineWsl], 0, 1)).toBe(-1);
+  });
+
+  it('handles out-of-range starts', () => {
+    expect(firstEnabledIndex([local, onlineMac], 5, 1)).toBe(-1);
+    expect(firstEnabledIndex([local, onlineMac], -1, 1)).toBe(-1);
+  });
+});

@@ -439,7 +439,7 @@ export function WorkspaceArea({
           const { session, error } = await createAgentSession({
             repoPath: workspacePath,
             type: 'terminal',
-            ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID ? { nodeId } : {}),
+            ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID && { nodeId }),
           });
           if (error && !(error instanceof ConflictError)) {
             workspaceLogger.error('failed to create terminal session', error);

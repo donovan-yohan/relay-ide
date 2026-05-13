@@ -43,8 +43,17 @@
   text-transform: lowercase;
 }
 
-.ws-node-picker__item:hover:not(:disabled) {
+.ws-node-picker__item:hover:not(:disabled),
+.ws-node-picker__item--focused:not(:disabled) {
   background: var(--bg-active, #161616);
+}
+
+.ws-node-picker__menu:focus {
+  outline: none;
+}
+
+.ws-node-picker__item--focused {
+  box-shadow: inset 0 0 0 1px var(--accent, #d97757);
 }
 
 .ws-node-picker__item:disabled {
