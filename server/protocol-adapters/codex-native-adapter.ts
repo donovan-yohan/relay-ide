@@ -27,6 +27,29 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('codex-native-adapter');
 
+// ── Web-session capability status ──────────────────────────────────────────
+//
+// The Codex framework is currently advertised with `supportsWebSessions: false`
+// in `server/types.ts`. The adapter maps lifecycle events (turn started/ended,
+// tool calls, command execution, file changes) and reasoning deltas, but the
+// browser chat surface never receives assistant text as `chat:text-delta`
+// events, so a user typing a prompt sees no response in web mode.
+//
+// Issue: https://github.com/donovan-yohan/relay-ide/issues/301
+//
+// To re-advertise web sessions, both criteria must be met:
+//   1. Assistant text streaming is mapped end-to-end:
+//      `item/agentMessage/delta` → `chat:text-delta` (with matching
+//      `chat:text-start` / `chat:text-end` lifecycle events) so the UI can
+//      render incremental assistant output the same way it does for Claude.
+//   2. An e2e round-trip test (test/protocol-adapters/codex-*.test.ts or
+//      test/web-session-*.test.ts) asserts: prompt submitted → text-delta
+//      stream observed → completion patch emitted.
+//
+// The adapter is intentionally retained — only the capability advertisement
+// is flipped — so future work can pick up from here instead of re-deriving
+// the JSON-RPC plumbing.
+
 // ── Capability set ─────────────────────────────────────────────────────────
 
 const CODEX_CAPABILITIES: AgentCapabilitySetV2 = {

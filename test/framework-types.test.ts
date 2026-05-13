@@ -50,6 +50,11 @@ test('codex framework has correct values', () => {
   expect(codex.capabilities.supportsContinue).toBe(true);
   expect(codex.capabilities.supportsYolo).toBe(true);
   expect(codex.capabilities.supportsTelemetry).toBe(false);
+  // Regression guard for issue #301: Codex web sessions don't yet stream
+  // assistant text deltas, so the capability is intentionally de-advertised.
+  // Flip back to true only after the streaming gap is closed AND an e2e
+  // round-trip test asserts prompt → chat:text-delta → completion.
+  expect(codex.capabilities.supportsWebSessions).toBe(false);
 });
 
 test('opencode framework has correct values', () => {
