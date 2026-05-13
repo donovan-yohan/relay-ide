@@ -1,0 +1,29 @@
+docs/spikes/424-file-rpc-streaming.md
+  s_0837e04cd7f585::t_51705653f4df2a 605,607-609
+  s_0837e04cd7f585::t_913baf3ed247d1 637-645,649-656
+  s_0837e04cd7f585::t_9fe24fa212b27c 277-287
+  s_0837e04cd7f585::t_4e01d12b9f54ef 348-350
+  s_0837e04cd7f585::t_8de37cd92c7d4e 430-440
+  s_0837e04cd7f585::t_d81208faff8bcd 558-560
+  s_0837e04cd7f585::t_45954fd339d311 201-211
+  s_0837e04cd7f585::t_0b85fd45a1712b 99-101
+  s_0837e04cd7f585::t_dd468923cd3621 244-247
+  s_0837e04cd7f585::t_44d1303cff0bcc 749
+  s_0837e04cd7f585::t_c9b1c13e7a8439 20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "a1499db55e879deb09ce90e2202f1f012766d991",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
