@@ -97,11 +97,33 @@ describe('FilePicker', () => {
     ) as HTMLInputElement | null;
     expect(input).toBeTruthy();
 
+    // Use React's native input-value setter so the input event is observed
+    // as a real user keystroke. Setting `.value` directly bypasses React's
+    // change tracker and the synthetic onChange never fires — which would
+    // make the test green even with a broken handler.
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )?.set;
+    expect(setter, 'native value setter must exist').toBeTruthy();
+
     await act(async () => {
-      input!.value = 'a.ts';
+      setter!.call(input, 'zzz-no-match');
       input!.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    expect(input!.value).toBe('a.ts');
+    // Wait past the 100ms debounce timer; wrap inside act so the
+    // post-timeout setDebouncedQuery state update flushes before assertion.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    // The empty-results branch only renders when debouncedQuery is non-empty
+    // AND the scored results are empty — so this asserts the full
+    // onChange → setQuery → debounce → setDebouncedQuery → scoring loop fired.
+    expect(container.textContent).toContain('no results for "zzz-no-match"');
   });
 });
