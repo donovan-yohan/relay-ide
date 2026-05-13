@@ -1,4 +1,12 @@
-import { describe, it, afterAll, afterEach, beforeAll, expect, vi } from 'vitest';
+import {
+  describe,
+  it,
+  afterAll,
+  afterEach,
+  beforeAll,
+  expect,
+  vi,
+} from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,7 +21,7 @@ import {
 } from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
-import type { PtySession } from '../server/types.js';
+import type { PtySession, SessionSummary } from '../server/types.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
@@ -700,11 +708,7 @@ describe('sessions', () => {
       ).resolves.toBeTruthy();
       expect(fs.existsSync(sentinelPath)).toBe(true);
     } finally {
-      await execTmux([
-        'kill-session',
-        '-t',
-        tmuxSessionName,
-      ]).catch(() => {});
+      await execTmux(['kill-session', '-t', tmuxSessionName]).catch(() => {});
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
   });
@@ -1167,10 +1171,7 @@ describe('session persistence', () => {
     const scrollbackDir = path.join(configDir, 'scrollback');
     fs.mkdirSync(scrollbackDir, { recursive: true });
     fs.writeFileSync(path.join(scrollbackDir, 'restore-ok.buf'), 'a output');
-    fs.writeFileSync(
-      path.join(scrollbackDir, 'restore-fails.buf'),
-      'b output'
-    );
+    fs.writeFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'b output');
 
     const restored = await restoreFromDisk(configDir);
 
@@ -1179,9 +1180,9 @@ describe('session persistence', () => {
     const failedOnlyPending = JSON.parse(
       fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
     );
-    expect(failedOnlyPending.sessions.map((s: { id: string }) => s.id)).toEqual([
-      'restore-fails',
-    ]);
+    expect(failedOnlyPending.sessions.map((s: { id: string }) => s.id)).toEqual(
+      ['restore-fails']
+    );
     expect(failedOnlyPending.timestamp).toBe(timestamp);
 
     serializeAll(configDir, { reason: 'dev-restart' });
@@ -1204,9 +1205,9 @@ describe('session persistence', () => {
     expect(failedRetry?.pendingSince).toBe(timestamp);
     expect(liveRetry?.pendingSince).toBe(retryPending.timestamp);
     expect(failedRetry?.hookToken).toBe('failed-token');
-    expect(fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')).toBe(
-      'b output'
-    );
+    expect(
+      fs.readFileSync(path.join(scrollbackDir, 'restore-fails.buf'), 'utf-8')
+    ).toBe('b output');
   });
 
   it('serializeAll keeps fresh live sessions restorable when old preserved failures age out', async () => {
@@ -1303,7 +1304,10 @@ describe('session persistence', () => {
     );
     const scrollbackDir = path.join(configDir, 'scrollback');
     fs.mkdirSync(scrollbackDir, { recursive: true });
-    fs.writeFileSync(path.join(scrollbackDir, 'stale-failure.buf'), 'old output');
+    fs.writeFileSync(
+      path.join(scrollbackDir, 'stale-failure.buf'),
+      'old output'
+    );
 
     const s = sessions.create({
       repoName: 'test-repo',
@@ -1319,9 +1323,9 @@ describe('session persistence', () => {
     const retryPending = JSON.parse(
       fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
     );
-    expect(retryPending.sessions.map((session: { id: string }) => session.id)).toEqual([
-      s.id,
-    ]);
+    expect(
+      retryPending.sessions.map((session: { id: string }) => session.id)
+    ).toEqual([s.id]);
     expect(fs.existsSync(path.join(scrollbackDir, 'stale-failure.buf'))).toBe(
       false
     );
@@ -1489,12 +1493,20 @@ describe('session persistence', () => {
 
     await restoreFromDisk(configDir);
 
-    // Wait for PTY to exit
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Poll for the restored session's PTY (/bin/false) to exit and the
+    // status to flip to 'disconnected'. Previously this used a fixed
+    // 500ms sleep which flaked under CPU contention because the PTY had
+    // not exited by the deadline. Restored sessions exit through a
+    // dedicated branch in pty-handler.ts that flips status but does not
+    // call fireSessionEnd, so polling is the cleanest signal here.
+    const deadline = Date.now() + 15_000;
+    let found: SessionSummary | undefined;
+    while (Date.now() < deadline) {
+      found = sessions.list().find((s) => s.id === 'restore-exit-test');
+      if (found?.status === 'disconnected') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
 
-    // Session should still be in the list with disconnected status
-    const list = sessions.list();
-    const found = list.find((s) => s.id === 'restore-exit-test');
     expect(found).toBeTruthy();
     expect(found!.status).toBe('disconnected');
   });
