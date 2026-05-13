@@ -1,0 +1,56 @@
+server/features/repo-inventory.ts
+  s_6af8eee9d6c15d::t_92b220b77dcbcc 1-82
+test/repo-inventory-feature.test.ts
+  s_6af8eee9d6c15d::t_ad52323004e07a 1-84,91-185
+  s_6af8eee9d6c15d::t_4fd7285df1a3b8 85-90
+server/hub-node-router.ts
+  s_6af8eee9d6c15d::t_01e9a6fcb78dc3 25-28
+  s_6af8eee9d6c15d::t_9dfc72c9cbf3ba 574-575
+  s_6af8eee9d6c15d::t_44b1241a3937c6 770
+  s_6af8eee9d6c15d::t_bad72605af8fc3 4-9
+  s_6af8eee9d6c15d::t_73cabcaf613bf8 702,706
+  s_6af8eee9d6c15d::t_a27f72b1702cdc 39
+  s_6af8eee9d6c15d::t_e66eea3fcf67cb 498-502,504-507,509
+  s_6af8eee9d6c15d::t_0ae3f1e4a1fc3b 676-680,686-688
+server/node-link-client.ts
+  s_6af8eee9d6c15d::t_4fd7285df1a3b8 103-105,110-117,205-209,251-253,263-266
+  s_6af8eee9d6c15d::t_5843024f309c26 172-174
+  s_6af8eee9d6c15d::t_10384215f9ae98 35
+test/hub-node-routes.test.ts
+  s_6af8eee9d6c15d::t_d798cb4430f900 732-735,743-744
+  s_6af8eee9d6c15d::t_b63788b2387aa9 10-11
+  s_6af8eee9d6c15d::t_9e13bb3a0df4d9 719,788
+server/hub-node-registry.ts
+  s_6af8eee9d6c15d::t_77f3733b18ad6f 553,555,558,561-562
+  s_6af8eee9d6c15d::t_fe77b0b92cae28 46
+  s_6af8eee9d6c15d::t_37e44dc0897d21 525
+  s_6af8eee9d6c15d::t_4fd7285df1a3b8 559-560
+  s_6af8eee9d6c15d::t_1e9aa66ffc1ed0 76-81
+server/index.ts
+  s_6af8eee9d6c15d::t_a76634bab56527 107
+  s_6af8eee9d6c15d::t_7d1ee63da86597 986-989
+  s_6af8eee9d6c15d::t_4fd7285df1a3b8 991-993,1088-1091
+  s_6af8eee9d6c15d::t_78248d70b1f695 1086
+server/hub-node-link.ts
+  s_6af8eee9d6c15d::t_4fd7285df1a3b8 174
+  s_6af8eee9d6c15d::t_029dd5335ac88a 171-173,175-179,185-199
+  s_6af8eee9d6c15d::t_b268bf582dffff 146,148
+  s_6af8eee9d6c15d::t_b37a3692badd93 414-417
+  s_6af8eee9d6c15d::t_0c3330c893250f 508-514,517,521,526-528
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "f9f3998f0bc603487fa199045f3b0fa85dfd8a10",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
