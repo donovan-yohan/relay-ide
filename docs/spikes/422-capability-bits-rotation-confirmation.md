@@ -16,7 +16,7 @@
 
 1. **Capability bits** stored on a hub-side ACL keyed by `(nodeId, version)`, with the **credential carrying only an opaque `aclRef`** (`acl_v{n}_{ulid}`). The credential is a pointer; the policy lives where it can be rotated atomically without touching the node.
 2. **Credential rotation** is a **hub-initiated, two-phase swap** delivered over the existing `/hub/node-link` reverse channel: hub issues the new credential as a `control.rotate-credential` envelope, node writes the new credential file atomically, node reconnects with the new token, hub revokes the old token only after the new link is established and acknowledged. Default 30-day rotation, configurable, manual rotation supported.
-3. **Two-token confirmation** uses the **hub UI on a second authenticated browser session** as the MVP channel — same protocol, separate device, no new dependencies. The token is a `confirm_*` opaque value with `{scope, ttl, single-use, hmac}` shape, issued by the hub, redeemed at session-create time (#426 envelope), validated against the hub's policy registry.
+3. **Two-token confirmation** uses the **hub UI on a distinct authenticated session** (different session ID; same-session approval is forbidden as a hard rule) as the MVP channel — same protocol, separate authorization boundary, no new dependencies. The token is a `confirm_*` opaque value with `{scope, params, ttl, single-use, hmac}` shape, issued by the hub, redeemed at session-create time (#426 envelope), validated against the hub's policy registry. Tokens are bound to **the specific operation parameters the approver saw** (exact command string, file path, ref name, byte hash) — not just the intent type — so a token approved for `ls -la /tmp` cannot be used to execute `rm -rf /`.
 
 This design respects ADR-016: confirmation tokens are issued and redeemed at the hub. Nodes never see, route, or validate confirmation tokens; they only see the resulting session grant. It respects ADR-015: capability bits and confirmation tokens are core security primitives. The mapping from a framework verb (e.g. "claude tool-use `Bash`") to a bit (e.g. `exec:arbitrary`) is feature-layer.
 
@@ -78,8 +78,8 @@ export interface RelayNodeCredential {
   token: string;
   issuedAt: string;
   // ─── new fields ────────────────────────────────────────────
-  aclRef: string; // e.g. "acl_v1_01HXYZ..." — opaque to node
-  aclVersion: number; // bumped on every ACL change for this node
+  aclRef: string; // e.g. "acl_v1_01HXYZ..." — opaque to node, the only authorization handle
+  aclVersion?: number; // ADVISORY ONLY. Informational counter for operator UIs and diagnostics. Hub never gates on this value.
   rotationPolicy?: {
     maxAgeMs: number; // 0 means "do not auto-rotate"
     rotateAfter: string; // ISO timestamp, hub-driven hint
@@ -87,7 +87,11 @@ export interface RelayNodeCredential {
 }
 ```
 
-The node persists the credential file with these fields but treats `aclRef` and `aclVersion` as opaque. The node does not parse or enforce on them; it carries them on heartbeat so the hub can detect skew (`aclVersion < server.aclVersion → force rotate`).
+The node persists the credential file with these fields but treats `aclRef` and `aclVersion` as opaque. The node does not parse, enforce, or branch on them.
+
+**`aclVersion` is advisory only.** The hub enforces the latest ACL by dereferencing `aclRef` against its own ACL store on every decision — it does not need the node to report a version number, and a missing/stale `aclVersion` on the node never blocks a decision. The field exists so operator UIs and diagnostics can display "node is holding `acl_v3`, current authoritative version is `acl_v5`" without re-fetching the ACL itself. Skew is observable but not authoritative; the authoritative state lives in the hub ACL store, and ACL changes do not require the node to be touched in order to take effect — they take effect on the next hub-side decision.
+
+Concretely: an operator toggling a bit re-versions the ACL entry hub-side. The next session-create or RPC for that node uses the new ACL immediately. Rotation of the credential itself is only required when the operator explicitly wants the node's persisted `aclRef` to point at a new ACL identifier (e.g. they want the node's local diagnostic to reflect the new policy version), or for the unrelated hygiene/compromise reasons in §3.1.
 
 #### Hub-side ACL store (new file: `<configDir>/hub-node-acl.json`, mode `0600`)
 
@@ -130,10 +134,10 @@ Add:
 
 ```ts
 aclRef: string;
-aclVersionApplied: number; // last version the node acknowledged via heartbeat
+aclVersionApplied?: number; // ADVISORY: last version the node reported on hello/rotation, for operator UIs only
 ```
 
-The registry persists which ACL the node has _acknowledged seeing_, separately from the current authoritative ACL. Drift between `currentAclRef` (in the ACL store) and `aclVersionApplied` (in the node record) is observable and is what drives the rotation prompt.
+The registry persists which ACL the node currently holds in its credential file (`aclRef`). The hub _always_ enforces against the latest ACL entry it has for the node, looked up by `nodeId` and the current `acl_v*` head — the credential's `aclRef` value is not consulted at decision time. `aclVersionApplied` is recorded purely so the hub UI can show "node is holding policy version N, current version is M"; drift surfaces a soft "rotate to refresh node-side policy hint" affordance but does not block decisions or force rotation. See finding #1 in the review log.
 
 ### 2.3 Verbs → bits
 
@@ -155,7 +159,7 @@ Mapping rule (per ADR-015): the relay core sees only the bit. The translation fr
 
 ### 2.4 Backward compatibility
 
-Existing credentials issued before this spike lacks `aclRef` / `aclVersion`. Two options were considered:
+Existing credentials issued before this spike lack `aclRef` / `aclVersion`. Two options were considered:
 
 | Option                                                                                                                                                                                                                                                                                                                                                                                                       | Verdict                                                                                             |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
@@ -170,12 +174,12 @@ The default-grant set is encoded in `server/hub-node-acl.ts` (new module) as `DE
 
 ### 3.1 Triggers
 
-| Trigger                 | Surface                                                                                                                                                                                 | Notes                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Operator manual**     | Hub UI: `Nodes → <node> → Rotate credential`. CLI: `relay-ide node rotate-credential <nodeId>` (run on the hub, not the node).                                                          | Operator-initiated; lands in audit log (#427).                                              |
-| **Scheduled**           | Hub-side scheduler. Default 30 days, settable per node in hub config. `rotationPolicy.maxAgeMs` on the credential is the hint to the node UI; the _authoritative_ schedule is hub-side. | Operator can set `maxAgeMs = 0` to disable per node.                                        |
-| **Policy-driven**       | Triggered when the ACL store changes for a node (e.g. an operator toggles a bit), the hub bumps `aclVersion` and rotates.                                                               | This keeps "the credential a node is holding" honest about which policy version is current. |
-| **Compromise response** | Operator clicks `Revoke + rotate` in hub UI. Old credential revoked immediately, no grace; node must re-pair (because revocation is final per ADR-012).                                 | Same code path as today's revoke; distinguished only by intent.                             |
+| Trigger                              | Surface                                                                                                                                                                                                                                                                                                                    | Notes                                                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Operator manual**                  | Hub UI: `Nodes → <node> → Rotate credential`. CLI: `relay-ide node rotate-credential <nodeId>` (run on the hub, not the node).                                                                                                                                                                                             | Operator-initiated; lands in audit log (#427).                                                                               |
+| **Scheduled**                        | Hub-side scheduler. Default 30 days, settable per node in hub config. `rotationPolicy.maxAgeMs` on the credential is the hint to the node UI; the _authoritative_ schedule is hub-side.                                                                                                                                    | Operator can set `maxAgeMs = 0` to disable per node.                                                                         |
+| **Policy-driven (optional refresh)** | When the ACL store changes for a node, the hub bumps the ACL version. No rotation is required for the change to take effect — the hub already enforces the new ACL on the next decision. Rotation here is an _optional_ housekeeping refresh so the node-side credential reflects the latest `aclVersion` for diagnostics. | Decoupled from policy enforcement (see §2.1, finding #1 in the review log). Rotation is no longer "mandatory on ACL change." |
+| **Compromise response**              | Operator clicks `Revoke + rotate` in hub UI. Old credential revoked immediately, no grace; node must re-pair (because revocation is final per ADR-012).                                                                                                                                                                    | Same code path as today's revoke; distinguished only by intent.                                                              |
 
 The CLI verb is _hub-side_, not node-side. The node never decides to rotate itself. ADR-016 says hub is the authorization plane, and that includes credential lifecycle.
 
@@ -270,16 +274,42 @@ If the node crashes mid-write, the rename is atomic: either the old file is inta
 
 ### 3.5 Race conditions
 
-| Race                                                                                                      | Resolution                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **In-flight RPC on the old link** when rotation envelope arrives.                                         | Node completes the in-flight RPC, sends the rotation-credential.ack, then closes the link. Hub holds the rotation in `DELIVERED` until the new link arrives; any RPC envelopes that arrive on the _old_ link in that window are rejected with `LINK_ROTATING`.                                                                                                        |
-| **Active PTY stream on the old link** when rotation envelope arrives.                                     | PTY stream survives the link close. From the browser's perspective, the hub buffers PTY bytes for up to 5 seconds while waiting for the node to reconnect, then resumes the stream on the new link. If the reconnect takes longer than 5s, the stream is closed with `LINK_LOST`. (This matches the existing reconnect semantics; rotation just makes it deliberate.) |
-| **Two concurrent operator rotate clicks.**                                                                | The second request gets `ROTATION_IN_PROGRESS` until the first reaches `STABLE` or aborts.                                                                                                                                                                                                                                                                            |
-| **Multiple live links** (a node has two `/hub/node-link` WebSockets open, e.g. during a flaky reconnect). | Today's behavior already kicks out the older link on a newer link arrival (code `1012`). Rotation uses this: the new link with the new credential supersedes the old one. The old credential is revoked only after the _new_ link authenticates.                                                                                                                      |
-| **Partial node-credential.json write.**                                                                   | Mitigated by atomic rename. See §3.4.                                                                                                                                                                                                                                                                                                                                 |
-| **Hub crashes between `ISSUING` and `DELIVERED`.**                                                        | On restart, the hub reads the registry, sees a credential in `ISSUING` state, and rolls it back: marks the new credential abandoned, leaves the old credential active. Operator sees `rotation-aborted-hub-restart`.                                                                                                                                                  |
-| **Node receives rotation envelope, writes file, but crashes before reconnecting with new credential.**    | New credential is on disk; old credential is still active in the hub (because hub is still in `DELIVERED`, not `PROVED`). On node restart, the node's `node link` command reads `node-credential.json` (which is now the new one), reconnects with the new token, hub observes it, moves to `PROVED`. ✅                                                              |
-| **Operator runs `node link` manually with a stale credential after rotation.**                            | Hub rejects with `UNAUTHORIZED`; operator must re-fetch credential or re-pair.                                                                                                                                                                                                                                                                                        |
+| Race                                                                                                      | Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **In-flight RPC on the old link** when rotation envelope arrives.                                         | Node completes the in-flight RPC, sends the rotation-credential.ack, then closes the link. Hub holds the rotation in `DELIVERED` until the new link arrives; any RPC envelopes that arrive on the _old_ link in that window are rejected with `LINK_ROTATING`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Active PTY stream on the old link** when rotation envelope arrives.                                     | _Current behavior (this spike, as shipped against the existing `HubNodeLinkManager`)_: when the reverse link closes, any attached browser PTY WebSocket is closed immediately with `LINK_LOST` and the browser must re-attach to the (still tmux-backed) session after reconnect. There is no hub-side buffer or replay. Rotation deliberately invokes this same close path. Buffer-and-resume across rotation is a desirable improvement but is **not** in this design — see follow-up ticket 12.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Two concurrent operator rotate clicks.**                                                                | The second request gets `ROTATION_IN_PROGRESS` until the first reaches `STABLE` or aborts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Multiple live links** (a node has two `/hub/node-link` WebSockets open, e.g. during a flaky reconnect). | Today's behavior already kicks out the older link on a newer link arrival (code `1012`). Rotation uses this: the new link with the new credential supersedes the old one. The old credential is revoked only after the _new_ link authenticates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Partial node-credential.json write.**                                                                   | Mitigated by atomic rename. See §3.4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Hub crashes in `ISSUING` (before envelope delivery confirmed).**                                        | On restart, the hub reads the rotation journal, sees a credential in `ISSUING` state with no delivery ack, and rolls it back: marks the new credential abandoned, leaves the old credential active and unrevoked. Operator sees `rotation-aborted-hub-restart` and can retry. Safe because the node has not yet been told to switch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Hub crashes in `DELIVERED` (after node ack'd write, before new link observed and `PROVED`).**           | Critical recovery case. The hub must **not** roll back here — the node may have already atomically committed the new credential to disk and discarded the old token. The state machine is persisted to the rotation journal (`<configDir>/hub-rotations.json`, atomic write, `0600`) on every transition. On restart, the hub reads the journal, finds the rotation in `DELIVERED`, and rehydrates a `DELIVERED` registry entry where _both_ old and new credentials remain accepted for authentication. When the node reconnects, the hub checks which credential it used: if `newCredentialId`, advance to `PROVED → STABLE` and revoke the old credential; if `oldCredentialId`, the node never wrote the new file (or wrote it and then rolled back), so the hub aborts forward and reverts to `STABLE` on the old credential and reaps the new one. Either way no auth failure occurs. The `DELIVERED` grace period has its own deadline (default 24 hours, configurable); past it the rotation is force-aborted and the operator must re-trigger. |
+| **Node receives rotation envelope, writes file, but crashes before reconnecting with new credential.**    | New credential is on disk; old credential remains accepted in the hub (the hub is in `DELIVERED` and accepts both credentials per the row above). On node restart, the node reads `node-credential.json` (now the new credential), reconnects with the new token, hub observes it, advances `DELIVERED → PROVED → STABLE`. ✅                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Operator runs `node link` manually with a stale credential after rotation.**                            | Hub rejects with `UNAUTHORIZED`; operator must re-fetch credential or re-pair.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+
+#### Rotation persistence and `DELIVERED`-survives-restart (recovery)
+
+The rotation state machine is durable, not in-memory. Every transition (`STABLE → ISSUING → DELIVERED → PROVED → STABLE`) is journaled to `<configDir>/hub-rotations.json` before the corresponding side effect (envelope send, credential revocation) is performed. The journal entry holds:
+
+```ts
+interface HubRotationJournalEntry {
+  nodeId: string;
+  state: 'ISSUING' | 'DELIVERED' | 'PROVED';
+  oldCredentialId: string;
+  newCredentialId: string;
+  newCredential: RelayNodeCredential; // hub keeps the full new credential so it can keep accepting it after restart
+  enteredStateAt: string;
+  deliveredDeadline?: string; // absolute deadline for completing DELIVERED → PROVED, default 24h after entering DELIVERED
+  reason: 'manual' | 'scheduled' | 'policy-refresh' | 'compromise';
+}
+```
+
+On hub start, the rotation journal is replayed before the registry begins accepting new node links:
+
+- **`ISSUING` entries** are rolled back. The node was not told to switch; the hub aborts forward, marks the rotation `aborted-hub-restart`, and reaps `newCredentialId` from the registry. Old credential remains the only active one.
+- **`DELIVERED` entries** are preserved. The hub rehydrates the registry into a "dual-accept" state where both `oldCredentialId` and `newCredentialId` are valid authentication keys for that node. The first reconnect resolves the rotation forward (if new token) or backward (if old token), as described in the race table above. This is the critical fix: rolling back `DELIVERED` on the hub side after the node has committed the new credential to disk would brick the next reconnect with `UNAUTHORIZED`. We do not do that. We accept a small dual-credential window on the hub side, bounded by `deliveredDeadline`.
+- **`PROVED` entries** complete: the hub revokes `oldCredentialId`, transitions to `STABLE`, and clears the journal entry. (A crash here means the old credential might still be in the registry as active; the replay finishes the revoke step idempotently.)
+
+This addresses the Gemini finding that the original §3.5 only covered `ISSUING` recovery and would have caused authentication failure if the hub crashed after `DELIVERED`.
 
 ### 3.6 Does rotation invalidate sessions?
 
@@ -290,11 +320,11 @@ Reasoning: under the session-intent model (#426), sessions are independently rev
 Two exceptions:
 
 1. **Compromise-response rotation** (operator clicks "Revoke + rotate"). Revocation already kills sessions per #426. Rotation is the second step.
-2. **ACL-change rotation**. If a bit was _removed_, the hub re-validates open sessions against the new ACL; sessions that no longer have all required bits are revoked. The browser sees a typed `SESSION_PERMISSION_REVOKED` error and is prompted to re-create.
+2. **ACL change** (independent of whether rotation also happens). If a bit was _removed_, the hub re-validates open sessions against the new ACL immediately — no rotation required, because the new ACL is already authoritative (see §2.1, finding #1). Sessions that no longer have all required bits are revoked; the browser sees a typed `SESSION_PERMISSION_REVOKED` error and is prompted to re-create. The optional credential-refresh rotation (§3.1, "Policy-driven (optional refresh)") is decoupled from this and is purely cosmetic.
 
 ### 3.7 Hub UI surface
 
-- `Nodes → <node>` page gets a `Rotate credential` button + a "Next rotation: in 14 days" label, plus a banner if `aclVersionApplied < currentAclVersion` ("Policy update pending — node will adopt next rotation").
+- `Nodes → <node>` page gets a `Rotate credential` button + a "Next rotation: in 14 days" label. If `aclVersionApplied < currentAclVersion`, the page shows an informational note ("Node-side policy hint is `acl_v3`; current authoritative policy is `acl_v5`. Policy is already in effect; rotate to refresh the node's local diagnostic.") — this is not a warning, because policy is already enforced; it is purely a "your diagnostics will look stale until next rotation" note.
 - Rotation in-flight shows a step indicator (`Issuing → Delivered → Proved → Stable`).
 - A rotation history table per node, 30-entry ring buffer.
 
@@ -323,16 +353,50 @@ interface ConfirmationToken {
     nodeId: string;
     intent: SessionIntent; // exactly one intent per token (#426 union)
     bits: CapabilityBit[]; // the high-tier bits being authorized
+    // ─── parameter binding (finding #3, anti approval-switching) ───
+    params: ConfirmationParams; // exact operation parameters (see below) — must match at redemption
+    paramsCanonical: string; // canonical JSON of `params`, used for hmac input
+    paramsHash: string; // SHA-256(paramsCanonical), surfaced in audit log
     sessionId?: string; // present when confirming an op on an existing session
   };
   issuedAt: string;
   expiresAt: string; // default issuedAt + 90 seconds
   singleUse: true; // always true; tokens are consumed on redemption
-  hmac: string; // HMAC-SHA256(hubSecret, canonicalized scope + tokenId)
+  hmac: string; // HMAC-SHA256(hubSecret, canonicalized scope including paramsCanonical + tokenId)
 }
+
+// Per-bit/per-intent parameter shape. The exact parameters that the approver SAW and APPROVED.
+// At redemption the requested operation's parameters must canonicalize to the same paramsCanonical.
+type ConfirmationParams =
+  | {
+      kind: 'pty:exec:arbitrary';
+      command: string;
+      cwd?: string;
+      env?: Record<string, string>;
+    }
+  | { kind: 'rpc:fs:write'; path: string; bytesSha256: string } // hash binds the actual bytes
+  | { kind: 'rpc:fs:delete'; path: string; recursive: boolean }
+  | {
+      kind: 'rpc:git:write';
+      verb: 'commit' | 'push' | 'checkout' | 'reset' | 'merge';
+      refSpec: string;
+    }
+  | {
+      kind: 'session:create:agent';
+      agent: string;
+      argv: string[];
+      cwd?: string;
+    }
+  | { kind: 'session:create:shell'; argv: string[]; cwd?: string };
 ```
 
-Storage: hub keeps the **hash** of `tokenId` plus the scope payload and `hmac` in an in-memory registry with a periodic disk persist (`<configDir>/hub-confirmation-tokens.json`, mode `0600`). Tokens expire fast (90s default) so the on-disk set stays small; expired tokens reaped on read.
+**Anti-approval-switching binding (finding #3).** A token approved for `ls -la /tmp` must not be reusable to execute `rm -rf /`. The fix is to bind the token to the exact operation parameters the human approved, not just the abstract intent type. At redemption time the hub re-canonicalizes the parameters of the operation it is about to execute and compares them byte-for-byte to `paramsCanonical` from the token (see §4.4 step 4); a mismatch returns `CONFIRMATION_PARAM_MISMATCH` and the token is _not_ consumed (so it can still be denied/expired, but cannot be drained by repeated mismatch attempts — a separate per-token failed-redeem counter caps this at 5 before the token is invalidated).
+
+Canonicalization rules: JCS-style (RFC 8785) — keys sorted, no whitespace, UTF-8 NFC, numbers in shortest decimal form. Anything that mutates the user-visible intent (command string, target path, ref name, recursive flag) is part of `params`. Anything purely cosmetic (display label, timing) is not. The approver UI in §4.6 surfaces every field of `params` verbatim so the operator approves what will actually run.
+
+For large payloads (`rpc:fs:write`), the bytes themselves are not in the token; their SHA-256 is. At redemption the hub recomputes the hash of the bytes the requester is delivering and compares.
+
+Storage: hub keeps the **hash** of `tokenId` plus the scope payload (including `paramsCanonical` and `paramsHash`) and `hmac` in an in-memory registry with a periodic disk persist (`<configDir>/hub-confirmation-tokens.json`, mode `0600`). Tokens expire fast (90s default) so the on-disk set stays small; expired tokens reaped on read.
 
 Replay protection: `singleUse: true` is enforced by deleting the token on first successful redemption inside a transaction. A second redemption attempt returns `CONFIRMATION_ALREADY_USED`.
 
@@ -340,7 +404,7 @@ TTL: 90 seconds is long enough for a human tap on a phone but short enough that 
 
 ### 4.3 Channel — MVP choice
 
-**Recommendation: a confirmation prompt rendered in the hub UI, displayed on any authenticated browser session except the one that initiated the request.**
+**Recommendation: a confirmation prompt rendered in the hub UI, displayed on any authenticated browser session whose session ID is distinct from the requester's session ID.** Same-session approval is forbidden — see §4.5 for the hard rule.
 
 The flow:
 
@@ -381,33 +445,61 @@ sequenceDiagram
     ApproverUI->>Hub: POST /hub/confirmations/{challengeId}/approve
     Hub-->>ApproverUI: 200 {confirmationTokenId, expiresAt}
     Hub-->>Caller: ws event confirmation:approved {challengeId, confirmationTokenId}
-    Caller->>Hub: POST /hub/nodes/{nodeId}/sessions {intent, ..., confirmationTokenId}
-    Hub->>Hub: redeem token (single-use), validate hmac, scope, ttl
+    Caller->>Hub: POST /hub/nodes/{nodeId}/sessions {intent, params, ..., confirmationTokenId}
+    Hub->>Hub: redeem token (single-use), validate hmac, scope, ttl,<br/>params canonical-match, distinct-session
     Hub->>Node: rpc sessions.create over reverse link
     Node-->>Hub: SessionSummary
     Hub-->>Caller: 200 Session
 ```
 
-Validation steps in `redeem(challengeId, tokenId)`:
+Validation steps in `redeem(challengeId, tokenId, operation)`:
 
 1. Token exists in the registry and is not expired.
-2. `tokenId` matches the stored hash (timing-safe).
-3. `hmac` recomputes from the canonicalized scope + tokenId.
-4. Token scope matches the redemption attempt: `peerIdentity`, `nodeId`, `intent`, and `bits` must all match exactly.
-5. Token has not already been redeemed (single-use). Atomically deleted on success.
+2. The SHA-256 of the presented `tokenId` matches the stored `tokenId` hash, compared with a timing-safe comparison.
+3. `hmac` recomputes from the canonicalized scope (including `paramsCanonical`) + tokenId.
+4. **Token scope matches the redemption attempt.** Each of these is checked and any mismatch is rejection:
+   - `peerIdentity` exact match.
+   - `nodeId` exact match.
+   - `intent` exact match (one intent per token).
+   - `bits` exact set match.
+   - `sessionId` exact match if either side has one.
+   - **`paramsCanonical` exact byte match against the canonicalized parameters of `operation`** (per the canonicalization rules in §4.2). For `pty:exec:arbitrary` this means the command string, cwd, and env must match exactly; substituting `rm -rf /` for the approved `ls -la /tmp` fails here. For `rpc:fs:write`, the SHA-256 of the bytes being written must match `params.bytesSha256` — substituting different bytes for the same path fails here. For `rpc:fs:delete` the path and `recursive` flag must match. For `rpc:git:write` the verb and refSpec must match.
+   - On `paramsCanonical` mismatch, the response is `CONFIRMATION_PARAM_MISMATCH` and the token is **not** consumed (so a legitimate retry with the correct params still works); a per-token failed-redeem counter increments and at 5 the token is invalidated and the audit event escalates.
+5. **Same-session approval is forbidden.** If the `peerIdentity` that initiated the request equals the `approverIdentity` recorded on the challenge, redemption fails with `CONFIRMATION_SAME_SESSION_FORBIDDEN`. See §4.5 — this is a hard rule, not a soft preference.
+6. Token has not already been redeemed (single-use). Atomically deleted on success.
 
-A failed redemption emits an audit event (per #427) with the reason code.
+A failed redemption emits an audit event (per #427) with the reason code, `paramsHash` (so audits can diff what was approved vs. what was attempted), and the failed-redeem counter value.
 
 ### 4.5 Offline / channel-unreachable fallback
 
 The confirmation channel can be unreachable in a few ways:
 
-| Failure                                            | Behavior                                                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Operator's second device is asleep / off-network.  | The challenge sits in `pending` for its TTL (default 5 minutes for the challenge itself, regardless of the 90s token TTL). Operator can approve from any future device that logs into the hub. If TTL elapses, challenge expires; requester gets `CONFIRMATION_TIMED_OUT` and must re-issue.                                                  |
-| Operator has only one device.                      | Approve from the same device. The hub UI permits same-device approval but logs it in the audit trail with a `same-device-approval` marker. This is weaker than two-device, but it preserves the explicit-consent property — the agent cannot self-approve, the human still must click. Tier-3 policy (#427) can disable same-device approval. |
-| Hub is unreachable.                                | Nothing works; no fallback needed. The hub is the single source of authority (ADR-016).                                                                                                                                                                                                                                                       |
-| Network partition between hub and approver-device. | Approver device shows stale UI; approval cannot reach hub. Same as the previous case — challenge expires, retry.                                                                                                                                                                                                                              |
+| Failure                                            | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Operator's second device is asleep / off-network.  | The challenge sits in `pending` for its TTL (default 5 minutes for the challenge itself, regardless of the 90s token TTL). Operator can approve from any future hub-authenticated session **other than the requesting one**. If TTL elapses, challenge expires; requester gets `CONFIRMATION_TIMED_OUT` and must re-issue.                                                                                                                                                                                                                                                        |
+| Operator has only one device.                      | **Same-session approval is forbidden.** The approving hub session ID must be distinct from the requesting hub session ID — this is a hard rule (see below), not a configurable softening. The operator either opens a second browser/tab/profile, logs into the hub in a private window, or uses a phone/another device on the network. The friction is the security property: a compromised browser session (XSS, malicious extension, hijacked agent in the page) cannot self-approve its own high-tier requests because it does not control any _other_ authenticated session. |
+| Hub is unreachable.                                | Nothing works; no fallback needed. The hub is the single source of authority (ADR-016).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Network partition between hub and approver-device. | Approver device shows stale UI; approval cannot reach hub. Same as the previous case — challenge expires, retry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+#### Hard rule: distinct-session approval (finding #4)
+
+The hub enforces the following at challenge-approval time and again at token-redemption time:
+
+```
+approverSessionId !== requesterSessionId
+```
+
+Both IDs are hub-issued opaque session identifiers (from the existing PIN-cookie authentication flow, ADR-004). The check is unconditional: same-device is allowed (a second browser tab in a private window has a distinct session ID), but same-session is not. An attempt by the requesting session to call `POST /hub/confirmations/{challengeId}/approve` returns `409 CONFIRMATION_SAME_SESSION_FORBIDDEN` and emits a security audit event with both IDs.
+
+**Why this is a hard rule, not configurable.** The whole point of two-token confirmation is to require a second authorization boundary. If the same session that emitted the suspicious tool-call can also approve it, the design provides no defense against the realistic threat models:
+
+- An XSS payload in the hub UI tab can drive both the request and the approval click.
+- A malicious browser extension with content-script access to the hub origin can do the same.
+- A compromised agent rendering in an embedded iframe can do the same.
+
+Allowing same-session approval — even gated behind a "tier-3 disables it" toggle — leaves the door open to deployments that opt into the weaker path and inherit those bypasses. The MVP is two-token, and two-token requires two sessions. The trade-off is real (single-device-single-browser users have more friction; a private-window login is the cheapest mitigation), and the trade-off is the point.
+
+A future hardware-key channel (§4.3 alternates) can satisfy this rule trivially: the WebAuthn ceremony itself constitutes a distinct authorization boundary, independent of any session ID. We leave the channel pluggable for exactly that path.
 
 Explicitly rejected fallbacks:
 
@@ -447,15 +539,15 @@ Notes:
 
 ### 5.1 Mitigated
 
-| Threat                                                             | How                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Compromised agent driving a paired node to do destructive ops.** | Capability bits force every destructive verb through an explicit `off` or `requiresConfirmation` gate. The agent cannot grant itself bits. Confirmation requires a human on a second authenticated surface.                                                                                                                 |
-| **Stolen credential file from a node.**                            | The thief gets a paired-node credential, not blanket access. The credential's effective surface is whatever bits are `on`. Destructive verbs are gated. Rotation reduces the window. Per #426, sessions are independent — the credential alone does not grant a usable session, and session creation goes through the gate. |
-| **Prompt injection.**                                              | Same shape as compromised agent: the agent emits a tool-call, the gateway translates it to a verb, the verb hits the gate, the operator sees a prompt with the actual command. The injection cannot suppress the prompt.                                                                                                    |
-| **Replay of a previously-approved high-tier operation.**           | `singleUse: true` + scope match (peer + node + intent + bits) + 90s TTL. A captured confirmation token is consumed on first use and cannot be re-redeemed.                                                                                                                                                                  |
-| **Cross-node lateral movement.**                                   | Per ADR-016 invariant 2, confirmation tokens cannot route via peer nodes. The token is issued and redeemed entirely at the hub. A compromised node cannot route a confirmation request through another node.                                                                                                                |
-| **Stale policy on a node.**                                        | Hub-side ACL is authoritative; `aclVersion` skew triggers a rotation. Node never holds stale policy as truth.                                                                                                                                                                                                               |
-| **Tampered envelope claiming a confirmation token.**               | Token format includes `hmac` validated by hub; redemption checks token-id existence in registry. Forged envelopes fail the registry lookup.                                                                                                                                                                                 |
+| Threat                                                             | How                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Compromised agent driving a paired node to do destructive ops.** | Capability bits force every destructive verb through an explicit `off` or `requiresConfirmation` gate. The agent cannot grant itself bits. Confirmation requires a human on a second authenticated surface.                                                                                                                     |
+| **Stolen credential file from a node.**                            | The thief gets a paired-node credential, not blanket access. The credential's effective surface is whatever bits are `on`. Destructive verbs are gated. Rotation reduces the window. Per #426, sessions are independent — the credential alone does not grant a usable session, and session creation goes through the gate.     |
+| **Prompt injection.**                                              | Same shape as compromised agent: the agent emits a tool-call, the gateway translates it to a verb, the verb hits the gate, the operator sees a prompt with the actual command. The injection cannot suppress the prompt.                                                                                                        |
+| **Replay of a previously-approved high-tier operation.**           | `singleUse: true` + scope match (peer + node + intent + bits) + 90s TTL. A captured confirmation token is consumed on first use and cannot be re-redeemed.                                                                                                                                                                      |
+| **Cross-node lateral movement.**                                   | Per ADR-016 invariant 2, confirmation tokens cannot route via peer nodes. The token is issued and redeemed entirely at the hub. A compromised node cannot route a confirmation request through another node.                                                                                                                    |
+| **Stale policy on a node.**                                        | Not possible. Hub-side ACL is the only authoritative store and the hub dereferences it on every decision. The node never holds policy as truth — `aclVersion` on the credential is advisory only (see §2.1, finding #1 in the review log). Policy changes take effect on the next decision without needing any node-side write. |
+| **Tampered envelope claiming a confirmation token.**               | Token format includes `hmac` validated by hub; redemption checks token-id existence in registry. Forged envelopes fail the registry lookup.                                                                                                                                                                                     |
 
 ### 5.2 Not mitigated (be honest)
 
@@ -507,7 +599,10 @@ These will be filed as sub-issues of #427 ("Security backbone") and form the exe
 11. **`docs(federated-relay): update Security Model section`**
     Document capability bits, rotation, confirmation. Replace the "every paired node is fully trusted" line with the tiered + bit-gated model. Reference this spike and the implementation PRs.
 
-The set covers the spike's three pillars. Tickets 1–6 deliver capability bits + confirmation; 7–9 deliver rotation; 10–11 cover policy sync and docs. None of them require pre-existing infrastructure beyond what is already in nightly plus the #426 envelope, which is being delivered in parallel.
+12. **`feat(hub-node-link): PTY buffer-and-resume across reverse-link reconnect`** _(follow-up, not blocking)_
+    The current `HubNodeLinkManager` closes any attached browser PTY WebSocket immediately when the reverse link drops, including during deliberate rotation. The session itself survives (tmux backs it) but the browser must re-attach. This ticket adds a short (~5s, tunable) hub-side byte buffer on the PTY edge and a `resume` semantics on re-attach so that across a rotation-driven link bounce the user does not see their stream tear down. Out of scope for the rotation spike itself; tracked as a UX improvement so rotation is unobtrusive. See §3.5 "active PTY stream" row.
+
+The set covers the spike's three pillars. Tickets 1–6 deliver capability bits + confirmation; 7–9 deliver rotation; 10–11 cover policy sync and docs; 12 is a follow-up UX improvement that makes rotation invisible to active PTY users.
 
 ---
 
@@ -515,14 +610,13 @@ The set covers the spike's three pillars. Tickets 1–6 deliver capability bits 
 
 - **ADR-015 (core domain-agnostic).** Capability bits, rotation, and confirmation are core security primitives. They operate on opaque `nodeId`, `peerIdentity`, `intent`, and `bits`. They do not reference repo identity, framework registry, or workspace concepts. Verb-to-bit translation (e.g. "Claude tool `Bash` maps to `pty:exec:arbitrary`") is feature-layer. The CLI gateway (#429) and agent adapters perform the translation; the core enforces the bit. ✅
 - **ADR-016 (no node-to-node).** Confirmation tokens are issued and redeemed at the hub. Nodes never receive, route, or validate confirmation tokens. Rotation envelopes target one node only via its own authenticated reverse link; nothing in the design lets node A request, deliver, or approve rotation or confirmation for node B. Hub-side fan-out for multi-node operations (e.g. "rotate everything") executes per-node legs independently with hub-level identity. ✅
-- **ADR-012 (pair-token/credential lifecycle).** Rotation extends the lifecycle with a new state machine but preserves the SHA256-hashed storage, timing-safe comparison, and immediate-revoke properties. Rotation is _additive_: revocation remains terminal. ✅
-- **ADR-013 (capability manifest).** Capability bits are a separate concept from the manifest's capability _probes_. Probes are about what a node _can_ do (does tmux exist?). Bits are about what a node is _allowed_ to do. The two are orthogonal and live in different files. ✅
+- **ADR-012/013 (pair-token/credential lifecycle; capability manifest).** ADR-012 and ADR-013 are not yet committed as files under `docs/adrs/` — the only ADR files in the repo today are ADR-015 and ADR-016. The invariants those decisions encode (SHA-256-hashed pair-token storage with timing-safe comparison, terminal revocation; capability-_probe_ manifest distinct from policy bits) currently live in `docs/federated-relay.md`. This design aligns with those invariants as summarized there: rotation extends the credential lifecycle with a new state machine while preserving hashed storage, timing-safe comparison, and immediate-revoke as terminal; and capability _bits_ (what a node is allowed to do) remain orthogonal to the manifest's capability _probes_ (what a node can do, e.g. does tmux exist), living in separate files (`hub-node-acl.json` vs. the node-side manifest). When ADR-012 and ADR-013 are backfilled to `docs/adrs/`, this section should be revisited to cite them directly. ✅
 
 ---
 
 ## 8. Open questions deferred to implementation
 
-- **Should `aclVersionApplied` flow on every heartbeat, or only on hello/rotation?** Lean toward hello + rotation to keep the heartbeat payload lean; revisit if drift detection lags.
+- **`aclVersionApplied` propagation: resolved.** Send only on hello and on rotation `ack`. Do **not** include in steady-state heartbeats. This aligns with finding #1 (the value is advisory; the hub does not need a live skew signal to make decisions), and keeps the heartbeat payload lean. The previous draft contradicted itself by claiming heartbeat-carries-aclVersion in §2.2 and "hello + rotation only" here; this is now the single answer.
 - **Where does the audit log live?** #427 epic decides. This spike emits structured audit events at every gate decision and at every rotation transition; the sink is TBD.
 - **Wire-format of `scope.bits` in the confirmation token.** Array vs bitmask. Array is more readable and the cardinality is small (~12 bits); start with array.
 - **Confirmation token issued to whom?** The _initiating_ requester (browser session, CLI gateway). Returned via the same `/ws/events` channel as the `confirmation:approved` event. The flow in §4.4 assumes browser-on-WS; CLI gateway and agent adapter cases will need their own callback contract — define in ticket 4.
