@@ -1,0 +1,20 @@
+vitest.config.ts
+  s_6af8eee9d6c15d::t_d783a6a2d15129 5-6
+  s_6af8eee9d6c15d::t_4b5315cce826a0 7-12,20-21,29,38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "2a99186a650ca1ac6da3fc38f4f2848033444b4b",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
