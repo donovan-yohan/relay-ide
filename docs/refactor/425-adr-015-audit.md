@@ -66,10 +66,10 @@ typed validation, persistence, and surfacing. **Filed as #425.1.**
 
 - `server/hub-node-router.ts:~689` — `GET /hub/repo-inventory` (and POST shape
   for inventory submission via heartbeat).
-- `server/hub-node-router.ts:~320-422,~701-805` — `POST /hub/nodes/:nodeId/
-sessions/reopen` cold-reopen flow depends on `RepoInventoryWorktreeInstance`,
-  `repoIdentity`, branch divergence/dirty state. Pure repo-feature logic
-  embedded in the core router.
+- `server/hub-node-router.ts:~320-422,~701-805` — `POST /hub/nodes/:nodeId/sessions/reopen`
+  cold-reopen flow depends on `RepoInventoryWorktreeInstance`, `repoIdentity`,
+  branch divergence/dirty state. Pure repo-feature logic embedded in the core
+  router.
 
 Remediation: extract repo endpoints into `server/features/repo-router.ts`
 (or similar). Mount from the composition root. Keep pure routing
@@ -157,14 +157,14 @@ re-introduces:
 
 ## Sub-issue map
 
-| Sub-issue                                                     | Group | Title                                                                          |
-| ------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------ |
-| [#432](https://github.com/donovan-yohan/relay-ide/issues/432) | A     | Remove repo-inventory type imports from core link/client/registry              |
-| [#433](https://github.com/donovan-yohan/relay-ide/issues/433) | B     | Extract repo HTTP endpoints out of `hub-node-router.ts` into a feature router  |
-| [#434](https://github.com/donovan-yohan/relay-ide/issues/434) | C     | Make `repoPath`/`worktreePath`/`branchName` optional on `SessionSummary`       |
-| [#435](https://github.com/donovan-yohan/relay-ide/issues/435) | D     | Move `worktreeCapabilityStatus` out of core registry summary                   |
-| [#436](https://github.com/donovan-yohan/relay-ide/issues/436) | E     | Move framework probing from `node-manifest.ts` into a framework feature module |
-| [#437](https://github.com/donovan-yohan/relay-ide/issues/437) | F     | Parameterize agent IDs in test fixtures; drop hardcoded framework assertions   |
+| Sub-issue | Group | Title                                                                          |
+| --------- | ----- | ------------------------------------------------------------------------------ |
+| #432      | A     | Remove repo-inventory type imports from core link/client/registry              |
+| #433      | B     | Extract repo HTTP endpoints out of `hub-node-router.ts` into a feature router  |
+| #434      | C     | Make `repoPath`/`worktreePath`/`branchName` optional on `SessionSummary`       |
+| #435      | D     | Move `worktreeCapabilityStatus` out of core registry summary                   |
+| #436      | E     | Move framework probing from `node-manifest.ts` into a framework feature module |
+| #437      | F     | Parameterize agent IDs in test fixtures; drop hardcoded framework assertions   |
 
 All six are filed as GitHub sub-issues of #425. Intra-group blockers:
 
