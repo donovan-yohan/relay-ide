@@ -1,0 +1,37 @@
+docs/spikes/422-capability-bits-rotation-confirmation.md
+  s_0837e04cd7f585::t_954dadb7088f80 549
+  s_0837e04cd7f585::t_cc06f0c1d688fe 455,458-471
+  s_0837e04cd7f585::t_dc710525107044 285-286
+  s_0837e04cd7f585::t_160042abfac532 280
+  s_0837e04cd7f585::t_eebd27a3975256 356-359,365,367-374,376-381,383-387,389-390,393-399
+  s_0837e04cd7f585::t_c096caed53ff4c 289-312
+  s_0837e04cd7f585::t_67aead53d521ef 81-82,90-94
+  s_0837e04cd7f585::t_127adf8ebbcef9 323
+  s_0837e04cd7f585::t_2c9b57e3609e8f 162
+  s_0837e04cd7f585::t_c15cc857b5047f 619
+  s_0837e04cd7f585::t_e4aacb42c5734f 613
+  s_0837e04cd7f585::t_64940f16e71f51 602-605
+  s_0837e04cd7f585::t_c0f10c0d7fe0e4 407
+  s_0837e04cd7f585::t_d87c10e31bf41e 181
+  s_0837e04cd7f585::t_afa63ff6ae4669 327
+  s_0837e04cd7f585::t_bce2b48e9a03b6 19
+  s_0837e04cd7f585::t_9e07ecf2045c76 137,140
+  s_0837e04cd7f585::t_a729c36f59d045 448-449
+  s_0837e04cd7f585::t_32fc13427789ba 480-502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "ef9edb5295fbd101ccda9fd7535f8b4cdc289242",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
