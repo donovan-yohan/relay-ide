@@ -1,0 +1,27 @@
+frontend/src/components/TerminalNodePicker.tsx
+  s_a0e895c2caefce::t_a22c276c6c45db 66-71,79,81-82,94-116,126-167,183-192,194-212,214-229
+  s_a0e895c2caefce::t_447e4924bc9ed3 1-8
+  s_a0e895c2caefce::t_2fd30d73cc8253 61-65
+test/components/TerminalNodePicker.test.ts
+  s_a0e895c2caefce::t_4321003ff2c24e 90-121
+frontend/src/components/WorkspaceArea.tsx
+  s_a0e895c2caefce::t_c265468e73f0b6 442
+frontend/src/components/TerminalNodePicker.css
+  s_a0e895c2caefce::t_52c0b68c7dde18 46-47,51-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "aabefe531011e47a429edfae1df4fd6f806f4ca6",
+  "prompts": {},
+  "sessions": {
+    "s_a0e895c2caefce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25b32d3-42b5-4c89-9105-9a1da1f0a1c6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
