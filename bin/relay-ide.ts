@@ -2,7 +2,7 @@
 /* eslint-disable no-console -- CLI entry point, user-facing stdout/stderr output */
 import path from 'node:path';
 import fs from 'node:fs';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as service from '../server/service.js';
@@ -84,8 +84,43 @@ if (args.includes('--version') || args.includes('-v')) {
   const pkg = JSON.parse(
     fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
   ) as { version: string };
-  console.log(pkg.version);
+  const sourceTag = describeSourceCheckout();
+  console.log(sourceTag ? `${pkg.version} (${sourceTag})` : pkg.version);
   process.exit(0);
+}
+
+function describeSourceCheckout(): string | undefined {
+  // dist/bin/relay-ide.js -> repo root is two levels up
+  const repoRoot = path.resolve(__dirname, '../..');
+  const gitDir = path.join(repoRoot, '.git');
+  if (!fs.existsSync(gitDir)) return undefined;
+  try {
+    const head = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    let dirty = '';
+    try {
+      const status = execFileSync(
+        'git',
+        ['status', '--porcelain', '--untracked-files=no'],
+        {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2000,
+        }
+      );
+      if (status.trim()) dirty = '-dirty';
+    } catch {
+      /* ignore */
+    }
+    return `source ${head}${dirty}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function getArg(flag: string): string | undefined {
@@ -178,7 +213,9 @@ if (command === 'manifest') {
   }
 
   const manifest = await getNodeManifest(config ? { config } : {});
-  console.log(JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2));
+  console.log(
+    JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2)
+  );
   process.exit(0);
 }
 
@@ -205,7 +242,9 @@ function serviceLogHints(kind: string, mode: 'hub' | 'node'): string[] {
     ];
   }
   if (mode === 'hub') {
-    return ['manual mode has no Relay-managed service logs; run relay-ide hub in the foreground'];
+    return [
+      'manual mode has no Relay-managed service logs; run relay-ide hub in the foreground',
+    ];
   }
   return [
     'manual mode has no Relay-managed service logs; node connect only pairs credentials and exits',
@@ -239,9 +278,13 @@ function printHubLogs(): void {
 async function printNodeStatus(): Promise<void> {
   const manifest = await getNodeManifest();
   const st = service.status();
-  logger.info(`Node host: ${manifest.hostname} (${manifest.platform}/${manifest.arch})`);
+  logger.info(
+    `Node host: ${manifest.hostname} (${manifest.platform}/${manifest.arch})`
+  );
   logger.info(`Relay version: ${manifest.relayVersion}`);
-  logger.info(`Service manager: ${manifest.serviceManager.label} (${manifest.serviceManager.kind})`);
+  logger.info(
+    `Service manager: ${manifest.serviceManager.label} (${manifest.serviceManager.kind})`
+  );
   logger.info(manifest.serviceManager.message);
   logger.info(`Local service installed: ${st.installed ? 'yes' : 'no'}`);
   logger.info(`Local service running: ${st.running ? 'yes' : 'no'}`);
@@ -250,13 +293,18 @@ async function printNodeStatus(): Promise<void> {
 
 async function printNodeLogs(): Promise<void> {
   const manifest = await getNodeManifest();
-  logger.info(`Log hints for ${manifest.serviceManager.label} (${manifest.serviceManager.kind}):`);
-  for (const hint of serviceLogHints(manifest.serviceManager.kind, 'node')) logger.info(hint);
+  logger.info(
+    `Log hints for ${manifest.serviceManager.label} (${manifest.serviceManager.kind}):`
+  );
+  for (const hint of serviceLogHints(manifest.serviceManager.kind, 'node'))
+    logger.info(hint);
 }
 
 async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
   const manifest = await getNodeManifest();
-  logger.info(`Local manifest: ${manifest.hostname} ${manifest.platform}/${manifest.arch}`);
+  logger.info(
+    `Local manifest: ${manifest.hostname} ${manifest.platform}/${manifest.arch}`
+  );
   logger.info(`Service manager: ${manifest.serviceManager.kind}`);
   if (!manifest.serviceManager.supported) {
     const diagnostic = BOOTSTRAP_DIAGNOSTICS.find(
@@ -278,7 +326,11 @@ async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
       (entry) => entry.code === 'NODE_CONNECT_FAILED'
     );
     const message = error instanceof Error ? error.message : String(error);
-    logger.error(redactBootstrapSecrets(`${diagnostic?.code}: ${diagnostic?.meaning} (${message})`));
+    logger.error(
+      redactBootstrapSecrets(
+        `${diagnostic?.code}: ${diagnostic?.meaning} (${message})`
+      )
+    );
     process.exit(1);
   }
 }
@@ -287,24 +339,47 @@ function nodeEndpoint(hubUrl: string, pathname: string): string {
   return new URL(pathname, hubUrl).toString();
 }
 
-type RequestedNodeServiceMode = 'auto' | 'manual' | 'launchd' | 'systemd-user' | 'wsl-systemd' | 'wsl-manual';
-const requestedNodeServiceModes: RequestedNodeServiceMode[] = ['auto', 'manual', 'launchd', 'systemd-user', 'wsl-systemd', 'wsl-manual'];
+type RequestedNodeServiceMode =
+  | 'auto'
+  | 'manual'
+  | 'launchd'
+  | 'systemd-user'
+  | 'wsl-systemd'
+  | 'wsl-manual';
+const requestedNodeServiceModes: RequestedNodeServiceMode[] = [
+  'auto',
+  'manual',
+  'launchd',
+  'systemd-user',
+  'wsl-systemd',
+  'wsl-manual',
+];
 
 function parseNodeServiceMode(value: string): RequestedNodeServiceMode {
-  if (requestedNodeServiceModes.includes(value as RequestedNodeServiceMode)) return value as RequestedNodeServiceMode;
-  logger.error(`Invalid --service ${value}. Expected one of: ${requestedNodeServiceModes.join(', ')}`);
+  if (requestedNodeServiceModes.includes(value as RequestedNodeServiceMode))
+    return value as RequestedNodeServiceMode;
+  logger.error(
+    `Invalid --service ${value}. Expected one of: ${requestedNodeServiceModes.join(', ')}`
+  );
   process.exit(1);
 }
 
-function validateNodeServiceMode(manifest: NodeManifest, mode: RequestedNodeServiceMode): void {
+function validateNodeServiceMode(
+  manifest: NodeManifest,
+  mode: RequestedNodeServiceMode
+): void {
   if (mode === 'auto' || mode === 'manual') return;
   if (mode === 'wsl-manual') {
     if (manifest.wsl.detected && manifest.wsl.version === 2) return;
-    logger.error('SERVICE_MANAGER_UNSUPPORTED: --service wsl-manual requires running relay-ide inside a WSL2 distro. Native Windows relay-node is unsupported.');
+    logger.error(
+      'SERVICE_MANAGER_UNSUPPORTED: --service wsl-manual requires running relay-ide inside a WSL2 distro. Native Windows relay-node is unsupported.'
+    );
     process.exit(1);
   }
   if (mode !== manifest.serviceManager.kind) {
-    logger.error(`SERVICE_MANAGER_UNSUPPORTED: --service ${mode} requested, but this node reports ${manifest.serviceManager.kind}. ${manifest.serviceManager.installHint}`);
+    logger.error(
+      `SERVICE_MANAGER_UNSUPPORTED: --service ${mode} requested, but this node reports ${manifest.serviceManager.kind}. ${manifest.serviceManager.installHint}`
+    );
     process.exit(1);
   }
 }
@@ -320,7 +395,9 @@ function loadNodeCredential(): { nodeId: string; token: string } {
   try {
     const raw = JSON.parse(fs.readFileSync(credentialPath, 'utf8')) as unknown;
     if (typeof raw !== 'object' || raw === null) {
-      logger.error(`NODE_LINK_FAILED: malformed credential at ${credentialPath}.`);
+      logger.error(
+        `NODE_LINK_FAILED: malformed credential at ${credentialPath}.`
+      );
       process.exit(1);
     }
     const parsed = raw as { nodeId?: unknown; token?: unknown };
@@ -330,7 +407,9 @@ function loadNodeCredential(): { nodeId: string; token: string } {
       typeof parsed.token !== 'string' ||
       !parsed.token
     ) {
-      logger.error(`NODE_LINK_FAILED: malformed credential at ${credentialPath}.`);
+      logger.error(
+        `NODE_LINK_FAILED: malformed credential at ${credentialPath}.`
+      );
       process.exit(1);
     }
     return { nodeId: parsed.nodeId, token: parsed.token };
@@ -404,67 +483,102 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
 
 type NodePairLifecycle = 'connect' | 'install';
 
-async function pairNode(nodeArgs: string[], lifecycle: NodePairLifecycle = 'connect'): Promise<void> {
+async function pairNode(
+  nodeArgs: string[],
+  lifecycle: NodePairLifecycle = 'connect'
+): Promise<void> {
   const hubUrl = getNodeArg(nodeArgs, '--hub');
   const pairToken = getNodeArg(nodeArgs, '--pair-token');
   if (!hubUrl || !pairToken) {
-    logger.error('Usage: relay-ide node connect --hub <url> --pair-token <token>');
+    logger.error(
+      'Usage: relay-ide node connect --hub <url> --pair-token <token>'
+    );
     process.exit(1);
   }
 
   try {
     const manifest = await getNodeManifest();
-    const exchangeRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/exchange'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        pairToken,
-        manifest,
-        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-      }),
-    });
+    const exchangeRes = await fetch(
+      nodeEndpoint(hubUrl, '/hub/pairing/exchange'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          pairToken,
+          manifest,
+          protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        }),
+      }
+    );
     const exchange = (await exchangeRes.json()) as {
       credential?: { token: string; nodeId: string };
       node?: { displayName: string };
       error?: { code: string; message: string };
     };
     if (!exchangeRes.ok || !exchange.credential) {
-      const code = exchange.error?.code === 'TOKEN_EXPIRED' ? 'PAIR_TOKEN_EXPIRED' : 'PAIR_TOKEN_INVALID';
-      logger.error(redactBootstrapSecrets(`${code}: ${exchange.error?.message ?? 'pairing failed'}`));
+      const code =
+        exchange.error?.code === 'TOKEN_EXPIRED'
+          ? 'PAIR_TOKEN_EXPIRED'
+          : 'PAIR_TOKEN_INVALID';
+      logger.error(
+        redactBootstrapSecrets(
+          `${code}: ${exchange.error?.message ?? 'pairing failed'}`
+        )
+      );
       process.exit(1);
     }
 
     fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
-    const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
-    fs.writeFileSync(credentialPath, `${JSON.stringify(exchange.credential, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    const credentialPath = path.join(
+      service.CONFIG_DIR,
+      'node-credential.json'
+    );
+    fs.writeFileSync(
+      credentialPath,
+      `${JSON.stringify(exchange.credential, null, 2)}\n`,
+      {
+        mode: 0o600,
+      }
+    );
     fs.chmodSync(credentialPath, 0o600);
 
-    const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${exchange.credential.token}`,
-      },
-      body: JSON.stringify({
-        nodeId: exchange.credential.nodeId,
-        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-        manifest,
-      }),
-    });
+    const heartbeatRes = await fetch(
+      nodeEndpoint(hubUrl, '/hub/node-heartbeat'),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${exchange.credential.token}`,
+        },
+        body: JSON.stringify({
+          nodeId: exchange.credential.nodeId,
+          protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+          manifest,
+        }),
+      }
+    );
     if (!heartbeatRes.ok) {
       const body = await heartbeatRes.text();
-      logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: heartbeat rejected: ${body}`));
+      logger.error(
+        redactBootstrapSecrets(
+          `NODE_CONNECT_FAILED: heartbeat rejected: ${body}`
+        )
+      );
       process.exit(1);
     }
 
-    logger.info(`Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`);
+    logger.info(
+      `Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`
+    );
     logger.info(`Credential saved to ${credentialPath}.`);
     if (lifecycle === 'install') {
-      logger.info('Sent initial heartbeat; node install is pairing plus local service setup only and does not start or maintain /hub/node-link.');
+      logger.info(
+        'Sent initial heartbeat; node install is pairing plus local service setup only and does not start or maintain /hub/node-link.'
+      );
     } else {
-      logger.info('Sent initial heartbeat; node connect is pair-only and exits without starting /hub/node-link.');
+      logger.info(
+        'Sent initial heartbeat; node connect is pair-only and exits without starting /hub/node-link.'
+      );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -493,7 +607,10 @@ if (command === 'hub') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
     runServiceCommand(printHubLogs);
-  } else if (hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))) {
+  } else if (
+    hubArgs.includes('--bg') &&
+    (!subCommand || subCommand.startsWith('-'))
+  ) {
     runServiceCommand(() => {
       process.env['RELAY_IDE_BACKGROUND'] = '1';
       service.install({
@@ -507,7 +624,9 @@ if (command === 'hub') {
     // Fall through to the default server startup path below. Keeping this as
     // an alias preserves bare `relay-ide` while making the runtime role explicit.
   } else {
-    logger.error('Usage: relay-ide hub [install|uninstall|status|logs] [--port <port>] [--host <host>] [--config <path>]');
+    logger.error(
+      'Usage: relay-ide hub [install|uninstall|status|logs] [--port <port>] [--host <host>] [--config <path>]'
+    );
     process.exit(1);
   }
 }
@@ -533,14 +652,20 @@ if (command === 'node') {
   }
   if (subCommand === 'connect' || subCommand === 'install') {
     if (subCommand === 'install') {
-      const serviceMode = parseNodeServiceMode(getNodeArg(nodeArgs, '--service') ?? 'auto');
+      const serviceMode = parseNodeServiceMode(
+        getNodeArg(nodeArgs, '--service') ?? 'auto'
+      );
       const manifest = await getNodeManifest();
       validateNodeServiceMode(manifest, serviceMode);
       logger.info(`Bootstrap service mode requested: ${serviceMode}`);
-      logger.info('SSH/Tailscale are bootstrap transports only; current bootstrap does not establish a persistent /hub/node-link.');
+      logger.info(
+        'SSH/Tailscale are bootstrap transports only; current bootstrap does not establish a persistent /hub/node-link.'
+      );
       await pairNode(nodeArgs, 'install');
       if (serviceMode === 'manual' || serviceMode === 'wsl-manual') {
-        logger.info('Manual service mode requested; paired credentials only. No foreground node process was started.');
+        logger.info(
+          'Manual service mode requested; paired credentials only. No foreground node process was started.'
+        );
         process.exit(0);
       }
       runServiceCommand(() => {
@@ -556,7 +681,9 @@ if (command === 'node') {
       process.exit(0);
     }
   }
-  logger.error('Usage: relay-ide node <status|logs|doctor|connect|install|link>');
+  logger.error(
+    'Usage: relay-ide node <status|logs|doctor|connect|install|link>'
+  );
   process.exit(1);
 }
 
@@ -565,9 +692,7 @@ if (command === 'worktree') {
   const subCommand = wtArgs[0];
 
   if (!subCommand) {
-    logger.error(
-      'Usage: relay-ide worktree <add|remove|list> [options]'
-    );
+    logger.error('Usage: relay-ide worktree <add|remove|list> [options]');
     process.exit(1);
   }
 
@@ -662,9 +787,7 @@ if (command === 'pin') {
 
   const configPath = resolveConfigPath();
   if (!fs.existsSync(configPath)) {
-    logger.error(
-      'No config file found. Run relay-ide first to create one.'
-    );
+    logger.error('No config file found. Run relay-ide first to create one.');
     process.exit(1);
   }
 
@@ -773,7 +896,9 @@ if (
       if (st.manager.statusCommand) {
         logger.info(`Status command: ${st.manager.statusCommand}`);
       }
-      logger.info(st.installed ? st.manager.uninstallHint : st.manager.installHint);
+      logger.info(
+        st.installed ? st.manager.uninstallHint : st.manager.installHint
+      );
       for (const caveat of st.manager.caveats) logger.info(caveat);
     });
   } else {

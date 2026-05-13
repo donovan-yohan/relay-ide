@@ -163,9 +163,10 @@ describe('hub/node packaging decision', () => {
     const uninstallIndex = hubSource.indexOf("subCommand === 'uninstall'");
     const statusIndex = hubSource.indexOf("subCommand === 'status'");
     const logsIndex = hubSource.indexOf("subCommand === 'logs'");
-    const bgFallbackIndex = hubSource.indexOf(
-      "hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))"
+    const bgFallbackMatch = hubSource.match(
+      /hubArgs\.includes\('--bg'\)\s*&&\s*\(!subCommand\s*\|\|\s*subCommand\.startsWith\('-'\)\)/
     );
+    const bgFallbackIndex = bgFallbackMatch?.index ?? -1;
 
     expect(installIndex).toBeGreaterThanOrEqual(0);
     expect(uninstallIndex).toBeGreaterThan(installIndex);
@@ -180,11 +181,12 @@ describe('hub/node packaging decision', () => {
     const hubEnd = cliSource.indexOf("if (command === 'node')", hubStart);
     const hubSource = cliSource.slice(hubStart, hubEnd);
 
-    const bgFallbackIndex = hubSource.indexOf(
-      "hubArgs.includes('--bg') && (!subCommand || subCommand.startsWith('-'))"
+    const bgFallbackMatch = hubSource.match(
+      /hubArgs\.includes\('--bg'\)\s*&&\s*\(!subCommand\s*\|\|\s*subCommand\.startsWith\('-'\)\)/
     );
+    const bgFallbackIndex = bgFallbackMatch?.index ?? -1;
     const foregroundHubIndex = hubSource.indexOf(
-      "!subCommand || subCommand.startsWith('-')",
+      "} else if (!subCommand || subCommand.startsWith('-')) {",
       bgFallbackIndex + 1
     );
     const usageIndex = hubSource.indexOf(
@@ -210,17 +212,29 @@ describe('hub/node packaging decision', () => {
 
   it('rejects unknown node install --service values before pairing or service install', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
-    const serviceModeDefinitionIndex = cliSource.indexOf('type RequestedNodeServiceMode');
-    const serviceModeParserIndex = cliSource.indexOf('function parseNodeServiceMode', serviceModeDefinitionIndex);
-    const serviceModeUsageIndex = cliSource.indexOf(
-      "const serviceMode = parseNodeServiceMode(getNodeArg(nodeArgs, '--service') ?? 'auto');",
-      serviceModeParserIndex
+    const serviceModeDefinitionIndex = cliSource.indexOf(
+      'type RequestedNodeServiceMode'
     );
+    const serviceModeParserIndex = cliSource.indexOf(
+      'function parseNodeServiceMode',
+      serviceModeDefinitionIndex
+    );
+    const serviceModeUsageMatch = cliSource
+      .slice(serviceModeParserIndex)
+      .match(
+        /const serviceMode = parseNodeServiceMode\(\s*getNodeArg\(nodeArgs,\s*'--service'\)\s*\?\?\s*'auto'\s*\);/
+      );
+    const serviceModeUsageIndex = serviceModeUsageMatch
+      ? serviceModeParserIndex + (serviceModeUsageMatch.index ?? 0)
+      : -1;
     const pairNodeIndex = cliSource.indexOf(
       "await pairNode(nodeArgs, 'install');",
       serviceModeUsageIndex
     );
-    const validationSource = cliSource.slice(serviceModeDefinitionIndex, pairNodeIndex);
+    const validationSource = cliSource.slice(
+      serviceModeDefinitionIndex,
+      pairNodeIndex
+    );
 
     expect(serviceModeDefinitionIndex).toBeGreaterThanOrEqual(0);
     expect(serviceModeParserIndex).toBeGreaterThan(serviceModeDefinitionIndex);

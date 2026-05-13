@@ -32,6 +32,7 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Self-hosting    | `docs/SELF_HOSTING.md`             | Build Relay with Relay using isolated dev config/ports/tmux                 |
 | Hub/node pkg    | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands    |
 | Node bootstrap  | `docs/RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
+| Federated dev   | `docs/FEDERATED_DEV.md`            | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
 | Federated Relay | `docs/federated-relay.md`          | Hub/node architecture, pairing, routing, ADRs                               |
 | Learnings       | `docs/LEARNINGS.md`                | Persistent cross-session learnings                                          |
 | Project skills  | `.chalk/skills/<name>/SKILL.md`    | Repo-local skills (see §Skills)                                             |
