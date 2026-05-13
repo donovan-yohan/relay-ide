@@ -69,9 +69,13 @@ export function createRepoInventoryFeature(
     listInventoryReports: (options) => {
       const payloads = registry.listInventoryPayloads(options);
       const reports: RepoInventoryReport[] = [];
-      for (const { payload } of payloads) {
+      for (const { nodeId, payload } of payloads) {
         const parsed = parseStoredInventory(payload);
-        if (parsed) reports.push(parsed);
+        // Defensive read-side check: drop a stored payload whose
+        // self-reported nodeId disagrees with the record it was stored
+        // against. Guards aggregation against corrupted on-disk state
+        // or any path that bypassed the heartbeat-time validator.
+        if (parsed && parsed.nodeId === nodeId) reports.push(parsed);
       }
       return reports;
     },

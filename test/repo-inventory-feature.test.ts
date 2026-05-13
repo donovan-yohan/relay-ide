@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import http from 'node:http';
+import { WebSocket } from 'ws';
+import express from 'express';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
+import { createHubNodeLinkManager } from '../server/hub-node-link.js';
+import { setupWebSocket } from '../server/ws.js';
 import {
   createRepoInventoryFeature,
   validateInventoryPayload,
@@ -10,6 +15,24 @@ import {
 } from '../server/features/repo-inventory.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
+
+function listen(server: http.Server): Promise<number> {
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (typeof address !== 'object' || address === null) {
+        throw new Error('listen did not return an address');
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function close(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+}
 
 function manifest(): NodeManifest {
   return {
@@ -141,6 +164,28 @@ describe('repo-inventory feature', () => {
     }
   });
 
+  it('feature listInventoryReports drops a stored payload whose self-reported nodeId disagrees with the record it was stored against', () => {
+    const { tmpDir, registry } = tmpRegistry();
+    try {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const feature = createRepoInventoryFeature(registry);
+      // Bypass the validator by writing a mismatched payload directly
+      // through recordHeartbeat (simulates corrupted on-disk state or a
+      // path that skipped feature-layer validation).
+      registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        repoInventory: report('different-node', '/srv/repos/relay-ide'),
+      });
+      expect(feature.listInventoryReports()).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('feature listInventoryReports skips malformed payloads silently', () => {
     const { tmpDir, registry } = tmpRegistry();
     try {
@@ -157,6 +202,79 @@ describe('repo-inventory feature', () => {
       expect(feature.listInventoryReports()).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('WS heartbeat path drops repoInventory when no validator is wired (safe-by-default)', async () => {
+    const cleanup: Array<() => Promise<void> | void> = [];
+    try {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'relay-repo-inv-feat-ws-')
+      );
+      cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+      const registry = createHubNodeRegistry({
+        storagePath: path.join(tmpDir, 'nodes.json'),
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+      });
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const server = http.createServer(express());
+      // Intentionally pass a link manager WITHOUT an inventoryValidator
+      // wired. Production composition root wires one; we want to prove
+      // the WS path refuses to persist an unvalidated payload.
+      const nodeLinks = createHubNodeLinkManager();
+      setupWebSocket(
+        server,
+        new Set(),
+        null,
+        undefined,
+        false,
+        undefined,
+        registry,
+        nodeLinks
+      );
+      const port = await listen(server);
+      cleanup.push(() => close(server));
+
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
+        headers: { authorization: `Bearer ${exchanged.credential.token}` },
+      });
+      cleanup.push(() => ws.close());
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+
+      const ack = new Promise<Record<string, unknown>>((resolve) => {
+        ws.once('message', (data) =>
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        );
+      });
+      ws.send(
+        JSON.stringify({
+          protocol: 'relay-node-link',
+          protocolVersion: '1.0',
+          nodeId: exchanged.node.nodeId,
+          channel: 'control',
+          type: 'control.heartbeat',
+          timestamp: '2026-01-02T03:04:10.000Z',
+          payload: {
+            repoInventory: report(
+              exchanged.node.nodeId,
+              '/srv/repos/relay-ide'
+            ),
+          },
+        })
+      );
+      const response = await ack;
+      expect(response.type).toBe('control.heartbeat.ack');
+      // Payload was accepted (heartbeat acked) but the registry must not
+      // hold any inventory because no validator was wired.
+      expect(registry.listInventoryPayloads()).toHaveLength(0);
+    } finally {
+      while (cleanup.length > 0) await cleanup.pop()?.();
     }
   });
 

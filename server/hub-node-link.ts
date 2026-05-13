@@ -194,7 +194,11 @@ export class HubNodeLinkManager {
     payload: unknown,
     ctx: { nodeId: string }
   ): { ok: true; payload: unknown } | { ok: false; error: RelayNodeError } {
-    if (!this.inventoryValidator) return { ok: true, payload };
+    // Safe-by-default: when no validator is wired, drop the payload
+    // rather than passing it through. Composition root wires the
+    // feature-layer validator in production; tests or misconfigured
+    // deployments get safe-empty.
+    if (!this.inventoryValidator) return { ok: true, payload: undefined };
     return this.inventoryValidator(payload, ctx);
   }
 
@@ -506,11 +510,15 @@ export function handleHubNodeLink(
       }
       const manifest = manifestResult as NodeManifest | undefined;
       const rawInventory = extractInventoryPayload(parsed.payload);
+      // Safe-by-default: when no validator is wired, drop any
+      // repoInventory payload rather than storing it unvalidated. This
+      // prevents nodeId spoofing or malformed payloads from reaching
+      // the registry on misconfigured deployments.
       const inventoryValidation = nodeLinks
         ? nodeLinks.validateInventoryPayload(rawInventory, {
             nodeId: authenticatedNodeId,
           })
-        : { ok: true as const, payload: rawInventory };
+        : { ok: true as const, payload: undefined };
       if (!inventoryValidation.ok) {
         sendJson(
           ws,
