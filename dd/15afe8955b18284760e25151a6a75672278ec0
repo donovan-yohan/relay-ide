@@ -1,0 +1,34 @@
+shared/workspace.ts
+  s_b3a47fe202d97d::t_4017399499328d 4-6,18
+shared/project.ts
+  s_b3a47fe202d97d::t_fcd8c73ff9cd5b 140-144
+  s_b3a47fe202d97d::t_d53195c17f58ca 25
+  s_b3a47fe202d97d::t_2d0bc94c7cf4e8 71-75
+  s_b3a47fe202d97d::t_d1092b594230e1 5-6
+shared/bench.ts
+  s_b3a47fe202d97d::t_23a66f00869b27 5
+  s_b3a47fe202d97d::t_2fa08a7bfdbf3e 38-41
+test/view-spine-identity.test.ts
+  s_b3a47fe202d97d::t_f04e478b72be91 141-142,144-145
+  s_b3a47fe202d97d::t_9bdbeee5cf1699 171-175
+  s_b3a47fe202d97d::t_376d8221d21c6e 69-74
+  s_b3a47fe202d97d::t_a1eb9b8ab1d92c 143
+shared/identity.ts
+  s_b3a47fe202d97d::t_931fd68702f5f2 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "dd15afe8955b18284760e25151a6a75672278ec0",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
