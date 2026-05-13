@@ -281,6 +281,18 @@ This upgrades to a WebSocket. The hub proxies PTY I/O between the browser and th
 
 Session lifecycle events (idle changes, file changes, session ended) are scoped by node ID so the hub can broadcast them to clients with the correct environment context. The `shared/node-boundary.ts` module handles creating node-scoped event payloads.
 
+### Cross-Node Terminal Panel (Lane A of #443)
+
+A single hub UI can host terminal tabs attached to multiple paired nodes:
+
+- `WorkspaceTab` (`frontend/src/lib/workspace-layout.ts`) session variant carries an optional `nodeId`. Hub-local sessions omit it; routed sessions populate it from `SessionSummary.nodeId`.
+- The `+` control in `WorkspaceTabBar` is rendered by `TerminalNodePicker`, which fetches `/nodes` via `fetchHubNodes()` and lists `this host` plus paired nodes. Only `online` nodes are selectable; `stale`/`offline`/`revoked` rows are disabled and surface the heartbeat status as the tooltip reason.
+- Selecting a node calls `createAgentSession({ type: 'terminal', nodeId })`, which routes through `POST /hub/nodes/{nodeId}/sessions` and returns a node-scoped `SessionSummary`. The layout reconciler picks the new session up; `sessionToWorkspaceTab` copies `session.nodeId` onto the tab.
+- The PTY socket (`frontend/src/lib/ws.ts`) reads `nodeId` from the session (or parses it from a global session id) and opens `/nodes/{nodeId}/ws/sessions/{localSessionId}` instead of the local `/ws/{sessionId}` route.
+- Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
+
+Reload-resume (tmux-backed `pty.attach`) and the two-node smoke harness remain follow-ups under sub-issues of #443.
+
 ## Repo Identity and Inventory
 
 ### Canonical Repo Identity

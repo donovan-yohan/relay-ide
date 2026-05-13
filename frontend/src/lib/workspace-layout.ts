@@ -1,3 +1,4 @@
+import type { NodeId } from '../../../shared/identity.js';
 import { fileTabKey, type FileTabType } from './stores/ui.js';
 
 export type WorkspaceTab =
@@ -5,6 +6,13 @@ export type WorkspaceTab =
       kind: 'session';
       sessionId: string;
       sessionType: 'agent' | 'terminal';
+      /**
+       * Execution node this session is attached to. Omitted for hub-local
+       * sessions. When set, the WS resolver routes via
+       * `/nodes/:nodeId/ws/sessions/:sessionId` and the tab chrome shows the
+       * node label + online indicator.
+       */
+      nodeId?: NodeId;
     }
   | {
       kind: 'file';

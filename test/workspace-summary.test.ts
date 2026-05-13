@@ -170,3 +170,53 @@ describe('summaryForTab — session kind', () => {
     expect(s.meta).toBeUndefined();
   });
 });
+
+describe('summaryForTab — nodeBadge', () => {
+  const remoteTab = (id: string, nodeId: string): WorkspaceTab => ({
+    kind: 'session',
+    sessionId: id,
+    sessionType: 'terminal',
+    nodeId,
+  });
+
+  it('returns nodeBadge when tab.nodeId is non-local and node is known', () => {
+    const s = summaryForTab(remoteTab('s1', 'wsl-host'), {
+      findNode: () => ({ label: 'WSL', status: 'online' }),
+    });
+    expect(s.nodeBadge).toEqual({ label: 'WSL', status: 'online' });
+  });
+
+  it('falls back to nodeId label when findNode has no entry', () => {
+    const s = summaryForTab(remoteTab('s1', 'wsl-host'), {});
+    expect(s.nodeBadge).toEqual({ label: 'wsl-host', status: 'unknown' });
+  });
+
+  it('omits nodeBadge for hub-local sessions', () => {
+    const s = summaryForTab(remoteTab('s1', 'local'), {
+      findNode: () => ({ label: 'this host', status: 'online' }),
+    });
+    expect(s.nodeBadge).toBeUndefined();
+  });
+
+  it('omits nodeBadge when tab has no nodeId and session has none', () => {
+    const s = summaryForTab(sessionTab('s1'), {
+      findSession: () => session({ id: 's1' }),
+    });
+    expect(s.nodeBadge).toBeUndefined();
+  });
+
+  it('reads nodeId from session when tab.nodeId is unset', () => {
+    const s = summaryForTab(sessionTab('s1', 'terminal'), {
+      findSession: () => session({ id: 's1', type: 'terminal', nodeId: 'mac' }),
+      findNode: () => ({ label: 'macbook', status: 'stale' }),
+    });
+    expect(s.nodeBadge).toEqual({ label: 'macbook', status: 'stale' });
+  });
+
+  it('marks offline nodes in the badge status', () => {
+    const s = summaryForTab(remoteTab('s1', 'wsl-host'), {
+      findNode: () => ({ label: 'WSL', status: 'offline' }),
+    });
+    expect(s.nodeBadge?.status).toBe('offline');
+  });
+});

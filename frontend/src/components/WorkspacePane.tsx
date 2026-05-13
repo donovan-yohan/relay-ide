@@ -105,6 +105,7 @@ export interface WorkspacePaneProps {
   isDragActive: boolean;
   summaryContext: SummaryContext;
   onAddTabRequest?: (paneId: string) => void;
+  renderAddControl?: (paneId: string) => React.ReactNode;
 }
 
 function WorkspacePaneImpl({
@@ -113,6 +114,7 @@ function WorkspacePaneImpl({
   isDragActive,
   summaryContext,
   onAddTabRequest,
+  renderAddControl,
 }: WorkspacePaneProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const selectTab = useWorkspaceLayoutStore((s) => s.selectTab);
@@ -161,6 +163,9 @@ function WorkspacePaneImpl({
         onCloseTab={handleClose}
         {...(onAddTabRequest
           ? { onAddTabRequest: () => onAddTabRequest(pane.id) }
+          : {})}
+        {...(renderAddControl
+          ? { renderAddControl: () => renderAddControl(pane.id) }
           : {})}
       />
       {activeTab && activeSummary && (

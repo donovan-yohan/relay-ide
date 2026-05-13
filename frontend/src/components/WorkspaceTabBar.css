@@ -133,6 +133,56 @@
   opacity: 0.85;
 }
 
+.ws-tab__node {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  margin-left: 2px;
+  font-size: 0.62rem;
+  color: var(--text-muted, #888);
+  border-left: 1px solid var(--border, #1a1a1a);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  max-width: 96px;
+  overflow: hidden;
+}
+
+.ws-tab__node-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  flex-shrink: 0;
+}
+
+.ws-tab__node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ws-tab__node-dot--online {
+  background: var(--status-success, #34d399);
+}
+.ws-tab__node-dot--stale {
+  background: var(--status-warning, #f59e0b);
+}
+.ws-tab__node-dot--offline,
+.ws-tab__node-dot--revoked {
+  background: var(--status-error, #ef4444);
+}
+.ws-tab__node-dot--unknown {
+  background: var(--text-muted, #555);
+}
+
+@media (max-width: 720px) {
+  .ws-tab__node {
+    display: none;
+  }
+}
+
 .ws-tab__dot {
   width: 6px;
   height: 6px;

@@ -26,6 +26,17 @@ const sessionTab = (
   sessionType: type,
 });
 
+const nodeSessionTab = (
+  id: string,
+  nodeId: string,
+  type: 'agent' | 'terminal' = 'terminal'
+): WorkspaceTab => ({
+  kind: 'session',
+  sessionId: id,
+  sessionType: type,
+  nodeId,
+});
+
 const fileTab = (
   path: string,
   type: 'code' | 'diff' | 'html' = 'code'
@@ -53,6 +64,39 @@ describe('workspaceTabId', () => {
 
   it('disambiguates code and diff for same path', () => {
     expect(tid(fileTab('a.ts', 'code'))).not.toBe(tid(fileTab('a.ts', 'diff')));
+  });
+});
+
+describe('session tab nodeId', () => {
+  it('preserves nodeId through addTabToPane', () => {
+    const tab = nodeSessionTab('s1', 'wsl');
+    const layout = createDefaultWorkspaceLayout([]);
+    const next = addTabToPane(layout, layout.id, tab);
+    const panes = listPanes(next);
+    const stored = panes[0]!.tabs.find((t) => tid(t) === tid(tab));
+    expect(stored).toBeDefined();
+    expect(stored && 'nodeId' in stored && stored.nodeId).toBe('wsl');
+  });
+
+  it('shares tabId across panes regardless of nodeId (sessionId is canonical key)', () => {
+    const tab = nodeSessionTab('s1', 'wsl');
+    expect(tid(tab)).toBe('session::s1');
+  });
+
+  it('moveTabToPane carries nodeId with the tab', () => {
+    const tab = nodeSessionTab('s1', 'mac');
+    const a = makePane([tab], { id: 'pa' });
+    const b = makePane([], { id: 'pb' });
+    const split: WorkspaceLayoutNode = {
+      type: 'split',
+      id: 'sp',
+      direction: 'horizontal',
+      children: [a, b],
+    };
+    const moved = moveTabToPane(split, tid(tab), 'pb');
+    const target = listPanes(moved).find((p) => p.id === 'pb')!;
+    const carried = target.tabs[0];
+    expect(carried && 'nodeId' in carried && carried.nodeId).toBe('mac');
   });
 });
 
