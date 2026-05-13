@@ -1,0 +1,20 @@
+docs/refactor/425-adr-015-audit.md
+  s_0837e04cd7f585::t_4b80018541bb26 69-72
+  s_0837e04cd7f585::t_90ad64680a8354 160-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "ad88f49971b5f6ae95b43ee53af831d132ae9b86",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
