@@ -1,0 +1,29 @@
+docs/spikes/423-cli-gateway-schema.md
+  s_0837e04cd7f585::t_81b9e385d2ba7f 547
+  s_0837e04cd7f585::t_88bc0ea2596118 557
+  s_0837e04cd7f585::t_72754a578aa433 488
+  s_0837e04cd7f585::t_0aa4b51c0b5ac7 423
+  s_0837e04cd7f585::t_12f6a8acac8132 507
+  s_0837e04cd7f585::t_663039b6f0bc58 224,226-232
+  s_0837e04cd7f585::t_c0affecc6961db 201
+  s_0837e04cd7f585::t_30f3d99cfadaa8 210,212
+  s_0837e04cd7f585::t_41b4ee12dcb253 339
+  s_0837e04cd7f585::t_8583bdbfccd670 18
+  s_0837e04cd7f585::t_b4b40f93aa4f85 111,113,115-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "2ee9a45d51231bcaf2d21addb001405131e85e1f",
+  "prompts": {},
+  "sessions": {
+    "s_0837e04cd7f585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a77a449-7f5e-4396-95e4-9af36f863001",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
