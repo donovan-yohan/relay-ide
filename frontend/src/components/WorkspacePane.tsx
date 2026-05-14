@@ -9,17 +9,11 @@ import {
   registerPaneBodyEl,
   useWorkspaceLayoutStore,
 } from '../lib/stores/workspace-layout-store.js';
-import { useSessionsStore } from '../lib/stores/sessions.js';
-import { killSession } from '../lib/api.js';
-import { resolveWorkspaceSessionCloseTarget } from '../lib/workspace-session-close.js';
-import { createLogger } from '../lib/logger.js';
 import {
   summaryForTab,
   type SummaryContext,
   type WorkspaceTabSummary,
 } from '../lib/workspace-summary.js';
-
-const logger = createLogger('workspace-pane');
 import { WorkspaceTabBar } from './WorkspaceTabBar.js';
 import { WorkspaceDropOverlay } from './WorkspaceDropOverlay.js';
 import './WorkspacePane.css';
@@ -135,23 +129,7 @@ function WorkspacePaneImpl({
     : null;
 
   const handleSelect = (tabId: WorkspaceTabId) => selectTab(pane.id, tabId);
-  const handleClose = async (tabId: WorkspaceTabId) => {
-    if (tabId.startsWith('session::')) {
-      const sessionId = tabId.slice('session::'.length);
-      try {
-        const closeTarget = resolveWorkspaceSessionCloseTarget(
-          pane.tabs,
-          tabId,
-          useSessionsStore.getState().sessions
-        );
-        if (closeTarget) {
-          await killSession(closeTarget.sessionId, closeTarget.nodeId);
-        }
-      } catch (err) {
-        logger.error('Failed to kill session', sessionId, err);
-      }
-      await useSessionsStore.getState().refreshAll();
-    }
+  const handleClose = (tabId: WorkspaceTabId) => {
     closeTab(tabId);
   };
 
