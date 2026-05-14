@@ -11,7 +11,7 @@ import {
 } from '../lib/stores/workspace-layout-store.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { killSession } from '../lib/api.js';
-import { resolveSessionByKey } from '../lib/session-keys.js';
+import { resolveWorkspaceSessionCloseTarget } from '../lib/workspace-session-close.js';
 import { createLogger } from '../lib/logger.js';
 import {
   summaryForTab,
@@ -139,11 +139,14 @@ function WorkspacePaneImpl({
     if (tabId.startsWith('session::')) {
       const sessionId = tabId.slice('session::'.length);
       try {
-        const session = resolveSessionByKey(
-          useSessionsStore.getState().sessions,
-          sessionId
+        const closeTarget = resolveWorkspaceSessionCloseTarget(
+          pane.tabs,
+          tabId,
+          useSessionsStore.getState().sessions
         );
-        await killSession(session?.id ?? sessionId, session?.nodeId);
+        if (closeTarget) {
+          await killSession(closeTarget.sessionId, closeTarget.nodeId);
+        }
       } catch (err) {
         logger.error('Failed to kill session', sessionId, err);
       }
