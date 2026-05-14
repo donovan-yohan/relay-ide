@@ -7,6 +7,7 @@ import { WebSocket } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
+import { createRepoFeatureRouter } from '../server/features/repo-router.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
@@ -618,15 +619,27 @@ describe('hub node routes and link', () => {
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
     const app = express();
     app.use(express.json());
+    const requireAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') next();
+      else res.status(401).json({ error: 'Unauthorized' });
+    };
+    const repoInventoryFeature = createRepoInventoryFeature(registry);
+    const collect = async () =>
+      repoInventoryReport('local', '/Users/kyle/dev/relay-ide');
     app.use(
       createHubNodeRouter({
         registry,
-        requireAuth: (req, res, next) => {
-          if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
-        },
-        collectLocalRepoInventory: async () =>
-          repoInventoryReport('local', '/Users/kyle/dev/relay-ide'),
+        requireAuth,
+        repoInventoryFeature,
+        collectLocalRepoInventory: collect,
+      })
+    );
+    app.use(
+      createRepoFeatureRouter({
+        registry,
+        requireAuth,
+        repoInventoryFeature,
+        collectLocalRepoInventory: collect,
       })
     );
     const server = http.createServer(app);
