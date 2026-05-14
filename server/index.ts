@@ -1271,8 +1271,9 @@ async function main(): Promise<void> {
     refWatcherNeedsRebuild = false;
     const entries = sessions
       .list()
-      .filter((s) => s.branchName)
-      .map((s) => ({ cwdPath: s.cwd, branch: s.branchName }));
+      .flatMap((s) =>
+        s.branchName ? [{ cwdPath: s.cwd, branch: s.branchName }] : []
+      );
     refWatcher.rebuild(entries).finally(() => {
       refWatcherRebuildPending = false;
       if (refWatcherNeedsRebuild) rebuildRefWatcher();
@@ -1327,10 +1328,10 @@ async function main(): Promise<void> {
       configPath: CONFIG_PATH,
       getConfig,
       getSessions: () =>
-        localRelayNode.sessions.list().map((s) => ({
-          id: s.id,
-          worktreePath: s.worktreePath ?? s.repoPath,
-        })),
+        localRelayNode.sessions.list().flatMap((s) => {
+          const worktreePath = s.worktreePath ?? s.repoPath;
+          return worktreePath ? [{ id: s.id, worktreePath }] : [];
+        }),
     })
   );
   app.use('/gh', requireAuth, createGhRouter());

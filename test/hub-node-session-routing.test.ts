@@ -41,18 +41,43 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     capabilities: {
       tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'unknown',
+        message: 'unknown',
+      },
       browserAutomation: {
         id: 'browserAutomation',
         label: 'Browser automation',
         status: 'degraded',
         message: 'missing deps',
       },
-      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
-      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
-      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'ok',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'unavailable',
+        message: 'missing',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'ok',
+      },
       agents: {
-        claude: { id: 'claude', label: 'Claude', status: 'available', message: 'ok' },
+        claude: {
+          id: 'claude',
+          label: 'Claude',
+          status: 'available',
+          message: 'ok',
+        },
       },
     },
     ...overrides,
@@ -62,7 +87,8 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -82,7 +108,9 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
 
 async function nextJson(ws: WebSocket): Promise<RelayNodeEnvelope> {
   return await new Promise<RelayNodeEnvelope>((resolve) => {
-    ws.once('message', (data) => resolve(JSON.parse(data.toString()) as RelayNodeEnvelope));
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as RelayNodeEnvelope)
+    );
   });
 }
 
@@ -120,7 +148,10 @@ async function rawUpgrade(port: number, pathName: string): Promise<string> {
   });
 }
 
-async function pairNode(base: string, nodeManifest = manifest()): Promise<{
+async function pairNode(
+  base: string,
+  nodeManifest = manifest()
+): Promise<{
   token: string;
   nodeId: string;
 }> {
@@ -141,7 +172,10 @@ async function pairNode(base: string, nodeManifest = manifest()): Promise<{
   const exchange = (await exchangeRes.json()) as {
     credential: { token: string; nodeId: string };
   };
-  return { token: exchange.credential.token, nodeId: exchange.credential.nodeId };
+  return {
+    token: exchange.credential.token,
+    nodeId: exchange.credential.nodeId,
+  };
 }
 
 function remoteSession(nodeId: string): SessionSummary {
@@ -179,9 +213,14 @@ describe('hub-routed node session create and attach', () => {
   });
 
   async function startHub(now = () => new Date('2026-01-02T03:04:05.000Z')) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-session-route-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-session-route-')
+    );
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-    const registry = createHubNodeRegistry({ storagePath: path.join(tmpDir, 'nodes.json'), now });
+    const registry = createHubNodeRegistry({
+      storagePath: path.join(tmpDir, 'nodes.json'),
+      now,
+    });
     const nodeLinks = createHubNodeLinkManager();
     const app = express();
     app.use(express.json());
@@ -220,11 +259,14 @@ describe('hub-routed node session create and attach', () => {
     const { base } = await startHub();
     const { nodeId } = await pairNode(base);
 
-    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
@@ -239,16 +281,24 @@ describe('hub-routed node session create and attach', () => {
       manifest({
         capabilities: {
           ...manifest().capabilities,
-          tmux: { id: 'tmux', label: 'tmux', status: 'unavailable', message: 'missing' },
+          tmux: {
+            id: 'tmux',
+            label: 'tmux',
+            status: 'unavailable',
+            message: 'missing',
+          },
         },
       })
     );
 
-    const res = await fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -265,11 +315,14 @@ describe('hub-routed node session create and attach', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     const request = await nextJson(nodeWs);
     expect(request).toMatchObject({
@@ -287,7 +340,13 @@ describe('hub-routed node session create and attach', () => {
         type: 'sessions.create.result',
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
-        payload: { session: { ...remoteSession(nodeId), nodeId: undefined, globalSessionId: undefined } },
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
+        },
       })
     );
 
@@ -310,11 +369,14 @@ describe('hub-routed node session create and attach', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     const request = await nextJson(nodeWs);
     nodeWs.send(
@@ -351,6 +413,92 @@ describe('hub-routed node session create and attach', () => {
     expect(scoped).not.toHaveProperty('worktreeInstanceId');
   });
 
+  it('routes a non-repo session (no repoPath/worktreePath/branchName) without inventing repoInstanceId or worktreeInstanceId', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ type: 'terminal' }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    // Per CodeRabbit review on PR #457: explicitly assert the hub
+    // forwards the create request to the node WITHOUT synthesising
+    // repo fields. This pins the contract that the node side gets the
+    // opaque payload as-sent and can decide for itself whether it's a
+    // repo-bound session.
+    expect(request.channel).toBe('rpc');
+    expect(request.type).toBe('sessions.create');
+    expect(request.payload).toEqual({ type: 'terminal' });
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'repoPath'
+    );
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'worktreePath'
+    );
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'branchName'
+    );
+
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session: {
+            id: 'non-repo-session-1',
+            type: 'terminal',
+            agent: 'claude',
+            mode: 'pty',
+            // No repoPath / worktreePath / branchName — non-repo session.
+            cwd: '/home/user',
+            repoName: '',
+            displayName: 'raw shell',
+            createdAt: '2026-01-02T03:04:05.000Z',
+            lastActivity: '2026-01-02T03:04:05.000Z',
+            idle: false,
+            customCommand: null,
+            useTmux: true,
+            tmuxSessionName: 'relay-non-repo-1',
+            status: 'active',
+            needsBranchRename: false,
+            agentState: 'idle',
+          },
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    const scoped = (await res.json()) as Record<string, unknown>;
+    expect(scoped).toMatchObject({
+      nodeId,
+      globalSessionId: `${nodeId}:non-repo-session-1`,
+      id: 'non-repo-session-1',
+      cwd: '/home/user',
+    });
+    expect(scoped).not.toHaveProperty('repoInstanceId');
+    expect(scoped).not.toHaveProperty('worktreeInstanceId');
+    expect(scoped).not.toHaveProperty('repoPath');
+    expect(scoped).not.toHaveProperty('worktreePath');
+    expect(scoped).not.toHaveProperty('branchName');
+  });
+
   it('preserves typed node RPC errors when session creation fails on the node link', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);
@@ -360,11 +508,14 @@ describe('hub-routed node session create and attach', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     const request = await nextJson(nodeWs);
     nodeWs.send(
@@ -455,7 +606,9 @@ describe('hub-routed node session create and attach', () => {
     });
 
     const browserClose = new Promise<CloseEvent>((resolve) => {
-      browserWs.once('close', (code, reason) => resolve({ code, reason } as unknown as CloseEvent));
+      browserWs.once('close', (code, reason) =>
+        resolve({ code, reason } as unknown as CloseEvent)
+      );
     });
     nodeWs.send(
       JSON.stringify({
@@ -533,21 +686,33 @@ describe('hub-routed node session create and attach', () => {
       payload: { sessionId: 'remote-session-1' },
     });
 
-    const browserClose = new Promise<{ code: number; reason: string }>((resolve) => {
-      browserWs.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
-    });
+    const browserClose = new Promise<{ code: number; reason: string }>(
+      (resolve) => {
+        browserWs.once('close', (code, reason) =>
+          resolve({ code, reason: reason.toString() })
+        );
+      }
+    );
     const replacementWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });
     cleanup.push(() => replacementWs.close());
     await waitForOpen(replacementWs);
 
-    await expect(Promise.race([
-      browserClose,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('browser PTY stream stayed open after replacement')), 250)
-      ),
-    ])).resolves.toMatchObject({ code: 1011, reason: 'node link closed' });
+    await expect(
+      Promise.race([
+        browserClose,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error('browser PTY stream stayed open after replacement')
+              ),
+            250
+          )
+        ),
+      ])
+    ).resolves.toMatchObject({ code: 1011, reason: 'node link closed' });
   });
 
   it('broadcasts remote node session events with node-scoped identity', async () => {
