@@ -26,7 +26,20 @@ fi
 # `npm test` (which uses the within-project parallel pool). Keeping
 # them in CI as the gate; skipping in pre-push avoids false negatives
 # that block clean code.
-PREPUSH_VITEST_EXCLUDES="--exclude test/git-divergence.test.ts --exclude test/git-watcher.test.ts --exclude test/workspace-divergence-api.test.ts"
+#
+# Many of these files are also listed in `vitest.config.ts` under
+# `SERIAL_SUBPROCESS_FILES`. Keep the two lists in sync when adding or
+# removing a subprocess-heavy test file.
+PREPUSH_EXCLUDE_FILES="
+test/git-divergence.test.ts
+test/git-watcher.test.ts
+test/workspace-divergence-api.test.ts
+"
+
+PREPUSH_VITEST_EXCLUDES=""
+for file in $PREPUSH_EXCLUDE_FILES; do
+  PREPUSH_VITEST_EXCLUDES="$PREPUSH_VITEST_EXCLUDES --exclude $file"
+done
 
 if [ "$IS_WORKTREE" = "yes" ]; then
   # Worktree: run only changed tests, exclude env-sensitive
