@@ -1,0 +1,19 @@
+server/frameworks.ts
+  s_b3a47fe202d97d::t_1ee718a61f4355 132-141,145,149-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "c19d71f5b0b71deaafe74dc447947d670186e46e",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
