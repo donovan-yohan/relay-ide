@@ -124,7 +124,11 @@
 }
 
 .ws-tab__meta {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted, #888);
   font-size: 0.62rem;
   border-left: 1px solid var(--border, #1a1a1a);
