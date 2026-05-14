@@ -1,0 +1,21 @@
+base.txt
+  ai_agent 1
+test/hub-node-session-routing.test.ts
+  s_6af8eee9d6c15d::t_4afa05d6047b0b 435-452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "9a06567cf61034d8cd362b227ffe43d7b63d0884",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
