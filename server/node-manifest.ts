@@ -5,11 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { Config } from './types.js';
-import {
-  getFrameworkClientInfoWithRuntime,
-  resolveExecutablePath,
-} from './frameworks.js';
+import { resolveExecutablePath } from './frameworks.js';
 import { detectServiceManager, detectWslInfo } from './service.js';
+import { decorateManifestWithFrameworks } from './features/frameworks.js';
 import type {
   NodeCapabilities,
   NodeCapabilityProbe,
@@ -141,75 +139,14 @@ function probeBrowserAutomation(): NodeCapabilityProbe {
   }
 }
 
-function frameworkProbeFromClientInfo(framework: {
-  id: string;
-  displayName: string;
-  availability?: { installed: boolean; path?: string; reason?: string };
-  webAvailability?: { available: boolean; reason?: string };
-}): NodeCapabilityProbe {
-  const availability = framework.availability;
-  if (!availability?.installed) {
-    return {
-      id: framework.id,
-      label: framework.displayName,
-      status: 'unavailable',
-      message:
-        availability?.reason ?? `${framework.displayName} is not installed.`,
-    };
-  }
-  if (framework.webAvailability && !framework.webAvailability.available) {
-    return {
-      id: framework.id,
-      label: framework.displayName,
-      status: 'degraded',
-      message:
-        framework.webAvailability.reason ??
-        'CLI is installed but web runtime probe failed.',
-      ...(availability.path ? { path: availability.path } : {}),
-    };
-  }
-  return {
-    id: framework.id,
-    label: framework.displayName,
-    status: 'available',
-    message: `${framework.displayName} CLI is available.`,
-    ...(availability.path ? { path: availability.path } : {}),
-  };
-}
-
-async function probeAgents(
-  config: Pick<Config, 'frameworks'> | undefined,
-  env: NodeJS.ProcessEnv
-): Promise<Record<string, NodeCapabilityProbe>> {
-  try {
-    const frameworks = await getFrameworkClientInfoWithRuntime(
-      config?.frameworks,
-      env
-    );
-    return Object.fromEntries(
-      frameworks.map((framework) => [
-        framework.id,
-        frameworkProbeFromClientInfo(framework),
-      ])
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      frameworks: {
-        id: 'frameworks',
-        label: 'Agent framework registry',
-        status: 'degraded',
-        message: `Agent framework probes failed non-fatally: ${message}`,
-      },
-    };
-  }
-}
-
-async function getNodeCapabilities(
-  config: Pick<Config, 'frameworks'> | undefined,
+function getNodeCapabilities(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform
-): Promise<NodeCapabilities> {
+): NodeCapabilities {
+  // Core probes only host-tool availability. Agent / framework probes
+  // live in `server/features/frameworks.ts` and are layered on top via
+  // `decorateManifestWithFrameworks`. Core never references framework
+  // ids directly — neither in code nor in this comment.
   return {
     tmux: probeCommand('tmux', 'tmux', 'tmux', env),
     git: probeCommand('git', 'Git', 'git', env),
@@ -218,11 +155,11 @@ async function getNodeCapabilities(
     githubCli: probeCommand('githubCli', 'GitHub CLI', 'gh', env),
     tailscale: probeCommand('tailscale', 'Tailscale CLI', 'tailscale', env),
     ssh: probeCommand('ssh', 'SSH client', 'ssh', env, { versionArgs: ['-V'] }),
-    agents: await probeAgents(config, env),
+    agents: {},
   };
 }
 
-async function getNodeManifest(
+async function getCoreNodeManifest(
   options: NodeManifestOptions = {}
 ): Promise<NodeManifest> {
   const env = options.env ?? process.env;
@@ -242,15 +179,34 @@ async function getNodeManifest(
     generatedAt: (options.now ?? new Date()).toISOString(),
     wsl,
     serviceManager,
-    capabilities: await getNodeCapabilities(options.config, env, platform),
+    capabilities: getNodeCapabilities(env, platform),
   };
 }
 
+/**
+ * Build a manifest with framework / agent probes applied. This is the
+ * back-compat entry point that pre-#436 callers used. Internally it
+ * builds a core manifest then layers the frameworks feature on top, so
+ * callers that don't need agent probing (or want to inject their own
+ * decoration order) can call `getCoreNodeManifest` + decorate
+ * themselves.
+ */
+async function getNodeManifest(
+  options: NodeManifestOptions = {}
+): Promise<NodeManifest> {
+  const env = options.env ?? process.env;
+  const manifest = await getCoreNodeManifest(options);
+  return decorateManifestWithFrameworks(manifest, {
+    config: options.config,
+    env,
+  });
+}
+
 export {
+  getCoreNodeManifest,
   getNodeManifest,
   getNodeCapabilities,
   probeCommand,
   probeClipboard,
   probeBrowserAutomation,
-  probeAgents,
 };
