@@ -19,13 +19,37 @@ if [ -z "$CHANGED_FILES" ]; then
   exit 0
 fi
 
+# Excluded from pre-push: subprocess-heavy files that race their own
+# `git` / `tmux` child-process timeouts under push-time CPU contention
+# (the push itself is uploading objects while vitest workers spawn).
+# Each of these files passes 1/1 in isolation and in CI's full
+# `npm test` (which uses the within-project parallel pool). Keeping
+# them in CI as the gate; skipping in pre-push avoids false negatives
+# that block clean code.
+#
+# Many of these files are also listed in `vitest.config.ts` under
+# `SERIAL_SUBPROCESS_FILES`. Keep the two lists in sync when adding or
+# removing a subprocess-heavy test file.
+PREPUSH_EXCLUDE_FILES="
+test/git-divergence.test.ts
+test/git-watcher.test.ts
+test/workspace-divergence-api.test.ts
+"
+
+PREPUSH_VITEST_EXCLUDES=""
+for file in $PREPUSH_EXCLUDE_FILES; do
+  PREPUSH_VITEST_EXCLUDES="$PREPUSH_VITEST_EXCLUDES --exclude $file"
+done
+
 if [ "$IS_WORKTREE" = "yes" ]; then
   # Worktree: run only changed tests, exclude env-sensitive
   # Single quotes required: prevents ! history expansion + preserves \[ for regex
   echo "relay-ide: worktree detected, running changed tests only"
-  npx vitest run --changed "$CHANGED_BASE" --testNamePattern '^(?!.*\[needs:git-init\])'
+  # shellcheck disable=SC2086 # word splitting intentional for --exclude flags
+  npx vitest run --changed "$CHANGED_BASE" $PREPUSH_VITEST_EXCLUDES --testNamePattern '^(?!.*\[needs:git-init\])'
 else
   # Main tree: run changed tests only
   # Full suite runs in CI (npm test) and locally (npm test)
-  npx vitest run --changed "$CHANGED_BASE"
+  # shellcheck disable=SC2086 # word splitting intentional for --exclude flags
+  npx vitest run --changed "$CHANGED_BASE" $PREPUSH_VITEST_EXCLUDES
 fi
