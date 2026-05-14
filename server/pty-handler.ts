@@ -29,6 +29,7 @@ import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import type { SessionLane } from '../shared/session-lane.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -383,6 +384,7 @@ export type CreatePtyParams = {
   tmuxDisplayName?: string | undefined;
   tmuxAttach?: boolean | undefined;
   sessionCustomCommand?: string | null | undefined;
+  sessionLane?: SessionLane | undefined;
   initialScrollback?: string[] | undefined;
   restored?: boolean | undefined;
   port?: number | undefined;

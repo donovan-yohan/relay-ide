@@ -37,6 +37,7 @@ import {
   parseGlobalSessionId,
   type NodeId,
 } from '../../../shared/identity.js';
+import type { SessionLane } from '../../../shared/session-lane.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -144,9 +145,9 @@ async function httpErrorFromResponse(
         ? data.message
         : typeof structuredError?.['message'] === 'string'
           ? structuredError['message']
-        : typeof data.error === 'string'
-          ? httpErrorMessage(res.status, data.error)
-          : httpErrorMessage(res.status, fallback);
+          : typeof data.error === 'string'
+            ? httpErrorMessage(res.status, data.error)
+            : httpErrorMessage(res.status, fallback);
     return new HttpError(res.status, message, code, retryable);
   } catch {
     return new HttpError(res.status, httpErrorMessage(res.status, fallback));
@@ -247,7 +248,12 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
       return Object.entries(value.sessions as Record<string, unknown>).flatMap(
         ([sessionId, raw]) => {
           if (!raw || typeof raw !== 'object') return [];
-          return [normalizeTelemetryMapEntry(sessionId, raw as Record<string, unknown>)];
+          return [
+            normalizeTelemetryMapEntry(
+              sessionId,
+              raw as Record<string, unknown>
+            ),
+          ];
         }
       );
     }
@@ -257,7 +263,9 @@ function normalizeTelemetrySessions(data: unknown): SessionTelemetry[] {
       return normalizeTelemetrySessions(value.data);
     return Object.entries(value).flatMap(([sessionId, raw]) => {
       if (!raw || typeof raw !== 'object') return [];
-      return [normalizeTelemetryMapEntry(sessionId, raw as Record<string, unknown>)];
+      return [
+        normalizeTelemetryMapEntry(sessionId, raw as Record<string, unknown>),
+      ];
     });
   }
   return [];
@@ -332,7 +340,9 @@ export async function fetchWorkspaces(): Promise<Repo[]> {
 }
 
 export async function fetchRepoInventory(): Promise<AggregatedRepoInventoryResponse> {
-  return json<AggregatedRepoInventoryResponse>(await fetch('/hub/repo-inventory'));
+  return json<AggregatedRepoInventoryResponse>(
+    await fetch('/hub/repo-inventory')
+  );
 }
 
 export async function addWorkspace(path: string): Promise<void> {
@@ -534,8 +544,9 @@ export async function enrichBranches(
 
 export async function createSession(body: {
   nodeId?: NodeId | undefined;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
+  cwd?: string | undefined;
   type?: 'agent' | 'terminal' | undefined;
   mode?: 'pty' | 'web' | undefined;
   continue?: boolean | undefined;
@@ -549,6 +560,7 @@ export async function createSession(body: {
   needsBranchRename?: boolean | undefined;
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
+  sessionLane?: SessionLane | undefined;
   ticketContext?: {
     ticketId: string;
     title: string;
@@ -583,7 +595,8 @@ export async function createSession(body: {
 
 export async function killSession(id: string): Promise<void> {
   const res = await fetch('/sessions/' + id, { method: 'DELETE' });
-  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to close session');
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to close session');
 }
 
 export async function renameSession(

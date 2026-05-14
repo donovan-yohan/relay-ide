@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -13,6 +14,11 @@ import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { createAgentSession } from '../../lib/session-utils.js';
 import { fetchHubNodes, fetchRepoInventory } from '../../lib/api.js';
+import {
+  cleanCwd,
+  defaultRemoteCwd,
+  rememberRemoteCwd,
+} from '../../lib/remote-node-cwd.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -29,6 +35,7 @@ import {
   DEFAULT_LOCAL_NODE_ID,
   type NodeId,
 } from '../../../../shared/identity.js';
+import type { SessionLane } from '../../../../shared/session-lane.js';
 import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
@@ -323,19 +330,29 @@ function checkoutChoicesFor(
   ]);
 }
 
-export function buildEnvironmentPickerModel(
+function environmentGroupsFor(
   input: EnvironmentPickerInput
-): EnvironmentPickerModel {
-  const groups = input.inventory?.groups.length
+): AggregatedRepoInventoryGroup[] {
+  return input.inventory?.groups.length
     ? input.inventory.groups
     : [fallbackGroupFor(input.fallbackWorkspace, input.fallbackWorktreePath)];
-  const selectedGroup =
+}
+
+function selectedEnvironmentGroup(
+  groups: AggregatedRepoInventoryGroup[],
+  input: EnvironmentPickerInput
+): AggregatedRepoInventoryGroup {
+  return (
     groups.find((group) => group.groupId === input.selectedGroupId) ??
     findGroupForPath(
       groups,
       input.fallbackWorktreePath ?? input.fallbackWorkspace.path
     ) ??
-    groups[0]!;
+    groups[0]!
+  );
+}
+
+function nodeMapFor(input: EnvironmentPickerInput): Map<NodeId, HubNodeSummary> {
   const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
   if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
     nodeById.set(
@@ -343,33 +360,62 @@ export function buildEnvironmentPickerModel(
       syntheticLocalNode(input.selectedAgent)
     );
   }
-  const nodeChoices = uniqueInstancesByNode(selectedGroup.instances).map(
-    (instance) => {
-      const node = nodeById.get(instance.nodeId) ?? null;
-      const reason = nodeBlockReason(node, input.selectedAgent);
-      return {
-        value: instance.nodeId,
-        label: node?.displayName ?? instance.nodeId,
+  return nodeById;
+}
+
+function nodeLabel(nodeId: NodeId, node: HubNodeSummary | null): string {
+  if (nodeId === DEFAULT_LOCAL_NODE_ID) return node?.displayName ?? 'local';
+  return node?.displayName ?? nodeId;
+}
+
+function nodeChoiceIdsFor(
+  selectedGroup: AggregatedRepoInventoryGroup,
+  nodes: HubNodeSummary[]
+): NodeId[] {
+  return [
+    ...uniqueInstancesByNode(selectedGroup.instances).map(
+      (instance) => instance.nodeId
+    ),
+    ...nodes.map((node) => node.nodeId),
+  ];
+}
+
+function nodeChoicesFor(
+  selectedGroup: AggregatedRepoInventoryGroup,
+  input: EnvironmentPickerInput,
+  nodeById: Map<NodeId, HubNodeSummary>
+): EnvironmentChoice[] {
+  const seenNodeChoices = new Set<NodeId>();
+  return nodeChoiceIdsFor(selectedGroup, input.nodes).flatMap((nodeId) => {
+    if (seenNodeChoices.has(nodeId)) return [];
+    seenNodeChoices.add(nodeId);
+    const node = nodeById.get(nodeId) ?? null;
+    const reason = nodeBlockReason(node, input.selectedAgent);
+    return [
+      {
+        value: nodeId,
+        label: nodeLabel(nodeId, node),
         ...(reason ? { disabled: true, reason } : {}),
-      };
-    }
-  );
-  const selectedNodeChoice =
-    nodeChoices.find(
-      (choice) => choice.value === input.selectedNodeId && !choice.disabled
-    ) ??
-    nodeChoices.find((choice) => !choice.disabled) ??
-    nodeChoices[0];
-  const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
-  const selectedNodeReason = selectedNodeChoice?.reason ?? null;
-  const selectedNodeInstances = selectedGroup.instances.filter(
-    (instance) => instance.nodeId === selectedNodeId
-  );
-  const checkoutChoices = checkoutChoicesFor(
-    selectedNodeInstances,
-    selectedNodeReason
-  );
-  const selectedCheckout =
+      },
+    ];
+  });
+}
+
+function selectedNodeChoiceFor(
+  nodeChoices: EnvironmentChoice[],
+  selectedNodeId: NodeId | null
+): EnvironmentChoice | undefined {
+  const explicit = nodeChoices.find((choice) => choice.value === selectedNodeId);
+  const firstEnabled = nodeChoices.find((choice) => !choice.disabled);
+  if (explicit && (!explicit.disabled || !firstEnabled)) return explicit;
+  return firstEnabled ?? explicit ?? nodeChoices[0];
+}
+
+function selectedCheckoutFor(
+  checkoutChoices: EnvironmentCheckoutChoice[],
+  input: EnvironmentPickerInput
+): EnvironmentCheckoutChoice | undefined {
+  return (
     checkoutChoices.find(
       (choice) => choice.value === input.selectedCheckoutId && !choice.disabled
     ) ??
@@ -384,25 +430,79 @@ export function buildEnvironmentPickerModel(
         choice.repoPath === input.fallbackWorkspace.path
     ) ??
     checkoutChoices.find((choice) => !choice.disabled) ??
-    checkoutChoices[0];
-  const resolved = selectedCheckout
-    ? {
-        nodeId: selectedCheckout.nodeId,
-        repoPath: selectedCheckout.repoPath,
-        worktreePath: selectedCheckout.worktreePath,
-      }
-    : {
-        nodeId: DEFAULT_LOCAL_NODE_ID,
-        repoPath: input.fallbackWorkspace.path,
-        worktreePath: input.fallbackWorktreePath,
-      };
+    checkoutChoices[0]
+  );
+}
+
+function resolveEnvironment(
+  selectedNodeId: NodeId,
+  selectedCheckout: EnvironmentCheckoutChoice | undefined,
+  input: EnvironmentPickerInput
+): EnvironmentPickerModel['resolved'] {
+  if (selectedNodeId !== DEFAULT_LOCAL_NODE_ID) {
+    return {
+      nodeId: selectedNodeId,
+      repoPath: selectedCheckout?.repoPath ?? '',
+      worktreePath: selectedCheckout?.worktreePath ?? null,
+    };
+  }
+  if (selectedCheckout) {
+    return {
+      nodeId: selectedCheckout.nodeId,
+      repoPath: selectedCheckout.repoPath,
+      worktreePath: selectedCheckout.worktreePath,
+    };
+  }
+  return {
+    nodeId: DEFAULT_LOCAL_NODE_ID,
+    repoPath: input.fallbackWorkspace.path,
+    worktreePath: input.fallbackWorktreePath,
+  };
+}
+
+function shouldShowEnvironmentPicker(
+  groups: AggregatedRepoInventoryGroup[],
+  nodeChoices: EnvironmentChoice[],
+  checkoutChoices: EnvironmentCheckoutChoice[],
+  selectedNodeReason: string | null
+): boolean {
+  return (
+    groups.length > 1 ||
+    nodeChoices.length > 1 ||
+    checkoutChoices.length > 1 ||
+    Boolean(selectedNodeReason)
+  );
+}
+
+export function buildEnvironmentPickerModel(
+  input: EnvironmentPickerInput
+): EnvironmentPickerModel {
+  const groups = environmentGroupsFor(input);
+  const selectedGroup = selectedEnvironmentGroup(groups, input);
+  const nodeById = nodeMapFor(input);
+  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById);
+  const selectedNodeChoice = selectedNodeChoiceFor(
+    nodeChoices,
+    input.selectedNodeId
+  );
+  const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
+  const selectedNodeReason = selectedNodeChoice?.reason ?? null;
+  const selectedNodeInstances = selectedGroup.instances.filter(
+    (instance) => instance.nodeId === selectedNodeId
+  );
+  const checkoutChoices = checkoutChoicesFor(
+    selectedNodeInstances,
+    selectedNodeReason
+  );
+  const selectedCheckout = selectedCheckoutFor(checkoutChoices, input);
 
   return {
-    showPicker:
-      groups.length > 1 ||
-      nodeChoices.length > 1 ||
-      checkoutChoices.length > 1 ||
-      Boolean(selectedNodeReason),
+    showPicker: shouldShowEnvironmentPicker(
+      groups,
+      nodeChoices,
+      checkoutChoices,
+      selectedNodeReason
+    ),
     repoChoices: groups.map((group) => ({
       value: group.groupId,
       label: labelForRepo(group),
@@ -413,7 +513,7 @@ export function buildEnvironmentPickerModel(
     selectedNodeId,
     selectedCheckoutId: selectedCheckout?.value ?? null,
     selectedNodeReason,
-    resolved,
+    resolved: resolveEnvironment(selectedNodeId, selectedCheckout, input),
   };
 }
 
@@ -437,24 +537,40 @@ function defaultForm(): FormState {
 
 async function createSessionFromForm(
   environment: EnvironmentPickerModel['resolved'],
-  form: FormState
+  form: FormState,
+  sessionLane: SessionLane,
+  remoteCwd?: string
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
+  const remoteNodeSelected = environment.nodeId !== DEFAULT_LOCAL_NODE_ID;
+  const sessionMode: SessionLaunchMode = remoteNodeSelected
+    ? 'pty'
+    : form.sessionMode;
   const { cols, rows } = estimateTerminalDimensions(
     useUiStore.getState().terminalFontSize
   );
-  return createAgentSession({
+  const baseOptions = {
     nodeId: environment.nodeId,
-    repoPath: environment.repoPath,
-    worktreePath: environment.worktreePath,
-    type: 'agent',
-    mode: form.sessionMode,
+    type: 'agent' as const,
+    mode: sessionMode,
     continue: form.continueExisting,
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
     agent: form.selectedAgent,
+    sessionLane,
     cols,
     rows,
+  };
+  if (remoteNodeSelected) {
+    return createAgentSession({
+      ...baseOptions,
+      cwd: cleanCwd(remoteCwd),
+    });
+  }
+  return createAgentSession({
+    ...baseOptions,
+    repoPath: environment.repoPath,
+    worktreePath: environment.worktreePath,
   });
 }
 
@@ -462,8 +578,11 @@ interface BodyProps {
   workspaceName: string;
   form: FormState;
   environmentModel: EnvironmentPickerModel;
+  selectedRemoteNode: HubNodeSummary | null;
+  remoteCwd: string;
   onFormChange: (patch: Partial<FormState>) => void;
   onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
+  onRemoteCwdChange: (cwd: string) => void;
 }
 
 interface EnvironmentSelection {
@@ -476,8 +595,11 @@ function CustomizeSessionBody({
   workspaceName,
   form,
   environmentModel,
+  selectedRemoteNode,
+  remoteCwd,
   onFormChange,
   onEnvironmentChange,
+  onRemoteCwdChange,
 }: BodyProps) {
   const frameworks = useConfigStore((state) => state.frameworks);
   const frameworkOptions =
@@ -499,10 +621,11 @@ function CustomizeSessionBody({
           } satisfies FrameworkInfo,
         ];
 
-  const modeOptions = getSessionModeOptions(
-    frameworkOptions,
-    form.selectedAgent
-  );
+  const remoteNodeSelected =
+    environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
+  const modeOptions = remoteNodeSelected
+    ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
+    : getSessionModeOptions(frameworkOptions, form.selectedAgent);
   const selectedFramework = frameworkOptions.find(
     (framework) => framework.id === form.selectedAgent
   );
@@ -512,13 +635,16 @@ function CustomizeSessionBody({
     selectedFramework &&
     form.sessionMode === 'web' &&
     !isFrameworkWebAvailable(selectedFramework);
+  const remoteNodeLabel =
+    selectedRemoteNode?.displayName ?? environmentModel.selectedNodeId;
+  const remoteHomeDir = cleanCwd(selectedRemoteNode?.homeDir);
 
   return (
     <div className="customize-session-body-fields">
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
       )}
-      {environmentModel.showPicker && (
+      {(environmentModel.showPicker || remoteNodeSelected) && (
         <section
           className="customize-session-environment-picker"
           aria-label="environment picker"
@@ -595,38 +721,62 @@ function CustomizeSessionBody({
               )}
             </div>
           )}
-          {environmentModel.checkoutChoices.length > 1 && (
+          {remoteNodeSelected && (
             <div className="customize-session-dialog-field">
               <label
                 className="customize-session-dialog-label"
-                htmlFor="cs-checkout"
+                htmlFor="cs-remote-cwd"
               >
-                node-local checkout
+                cwd on {remoteNodeLabel}
               </label>
-              <select
-                id="cs-checkout"
-                className="customize-session-dialog-select"
-                data-track="dialog.customize-session.checkout"
-                value={environmentModel.selectedCheckoutId ?? ''}
-                onChange={(e) =>
-                  onEnvironmentChange({
-                    selectedCheckoutId: e.currentTarget.value,
-                  })
-                }
-              >
-                {environmentModel.checkoutChoices.map((choice) => (
-                  <option
-                    key={choice.value}
-                    value={choice.value}
-                    disabled={choice.disabled}
-                  >
-                    {choice.label}
-                    {choice.reason ? ` — ${choice.reason}` : ''}
-                  </option>
-                ))}
-              </select>
+              <input
+                id="cs-remote-cwd"
+                type="text"
+                className="customize-session-dialog-input"
+                data-track="dialog.customize-session.remote-cwd"
+                placeholder={remoteHomeDir || 'absolute path on remote node'}
+                value={remoteCwd}
+                onChange={(e) => onRemoteCwdChange(e.currentTarget.value)}
+                autoComplete="off"
+              />
+              <div className="customize-session-field-note">
+                remote sessions start directly in this node-local directory.
+              </div>
             </div>
           )}
+          {!remoteNodeSelected &&
+            environmentModel.checkoutChoices.length > 1 && (
+              <div className="customize-session-dialog-field">
+                <label
+                  className="customize-session-dialog-label"
+                  htmlFor="cs-checkout"
+                >
+                  node-local checkout
+                </label>
+                <select
+                  id="cs-checkout"
+                  className="customize-session-dialog-select"
+                  data-track="dialog.customize-session.checkout"
+                  value={environmentModel.selectedCheckoutId ?? ''}
+                  onChange={(e) =>
+                    onEnvironmentChange({
+                      selectedCheckoutId: e.currentTarget.value,
+                    })
+                  }
+                >
+                  {environmentModel.checkoutChoices.map((choice) => (
+                    <option
+                      key={choice.value}
+                      value={choice.value}
+                      disabled={choice.disabled}
+                    >
+                      {choice.label}
+                      {choice.reason ? ` — ${choice.reason}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
         </section>
       )}
       <div className="customize-session-dialog-field">
@@ -746,6 +896,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [inventory, setInventory] =
       useState<AggregatedRepoInventoryResponse | null>(null);
     const [nodes, setNodes] = useState<HubNodeSummary[]>([]);
+    const [remoteCwd, setRemoteCwd] = useState('');
     const [environmentSelection, setEnvironmentSelection] =
       useState<EnvironmentSelection>({
         selectedGroupId: null,
@@ -779,6 +930,29 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       ]
     );
 
+    const remoteNodeSelected =
+      environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
+    const selectedRemoteNode = remoteNodeSelected
+      ? (nodes.find(
+          (node) => node.nodeId === environmentModel.selectedNodeId
+        ) ?? null)
+      : null;
+    const selectedRemoteHome = cleanCwd(selectedRemoteNode?.homeDir);
+
+    useEffect(() => {
+      if (!remoteNodeSelected) {
+        setRemoteCwd('');
+        return;
+      }
+      setRemoteCwd(
+        defaultRemoteCwd(selectedRemoteHome, environmentModel.selectedNodeId)
+      );
+    }, [
+      environmentModel.selectedNodeId,
+      remoteNodeSelected,
+      selectedRemoteHome,
+    ]);
+
     useImperativeHandle(ref, () => ({
       async open(
         workspace: { name: string; path: string },
@@ -790,6 +964,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setForm(defaultForm());
         setInventory(null);
         setNodes([]);
+        setRemoteCwd('');
         setEnvironmentSelection({
           selectedGroupId: null,
           selectedNodeId: null,
@@ -833,7 +1008,10 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       },
     }));
 
-    async function handleSubmit() {
+    async function handleSubmit(
+      remoteCwdOverride?: string,
+      rememberCwd = true
+    ) {
       if (!workspacePath || creating) return;
       const selectedFramework = frameworks.find(
         (framework) => framework.id === form.selectedAgent
@@ -856,13 +1034,31 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         );
         return;
       }
+      if (environmentModel.selectedNodeReason) {
+        setError(environmentModel.selectedNodeReason);
+        return;
+      }
+      const cwdForRemote = remoteNodeSelected
+        ? cleanCwd(remoteCwdOverride ?? remoteCwd)
+        : undefined;
+      if (remoteNodeSelected && !cwdForRemote) {
+        setError('cwd is required for remote node sessions');
+        return;
+      }
       setCreating(true);
       setError(null);
-      const { session, error: submitError } = await createSessionFromForm(
-        environmentModel.resolved,
-        form
-      );
+      const sessionLane: SessionLane = remoteNodeSelected
+        ? rememberCwd
+          ? 'remote-cwd'
+          : 'remote-home'
+        : 'local-repo';
       try {
+        const { session, error: submitError } = await createSessionFromForm(
+          environmentModel.resolved,
+          form,
+          sessionLane,
+          cwdForRemote
+        );
         if (submitError && !session) {
           setError(
             submitError instanceof Error
@@ -870,6 +1066,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
               : 'Failed to create session'
           );
           return;
+        }
+        if (remoteNodeSelected && cwdForRemote && rememberCwd) {
+          rememberRemoteCwd(environmentModel.selectedNodeId, cwdForRemote);
         }
         shellRef.current?.close();
         if (session?.id) onSessionCreated?.(session.id);
@@ -887,13 +1086,29 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         >
           Cancel
         </TuiButton>
+        {remoteNodeSelected && (
+          <TuiButton
+            variant="ghost"
+            data-track="dialog.customize-session.start-in-home"
+            onClick={() => void handleSubmit(selectedRemoteHome, false)}
+            disabled={
+              !workspacePath ||
+              !selectedRemoteHome ||
+              Boolean(environmentModel.selectedNodeReason) ||
+              creating
+            }
+          >
+            Start in Home
+          </TuiButton>
+        )}
         <TuiButton
           variant="primary"
           data-track="dialog.customize-session.create"
-          onClick={handleSubmit}
+          onClick={() => void handleSubmit()}
           disabled={
             !workspacePath ||
             Boolean(environmentModel.selectedNodeReason) ||
+            (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
             creating ||
             frameworks.some(
               (framework) =>
@@ -925,10 +1140,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           workspaceName={workspaceName}
           form={form}
           environmentModel={environmentModel}
+          selectedRemoteNode={selectedRemoteNode}
+          remoteCwd={remoteCwd}
           onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
           onEnvironmentChange={(patch) =>
             setEnvironmentSelection((selection) => ({ ...selection, ...patch }))
           }
+          onRemoteCwdChange={setRemoteCwd}
         />
       </DialogShell>
     );

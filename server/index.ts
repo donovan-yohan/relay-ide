@@ -119,6 +119,7 @@ import type {
   TicketContext,
   WorkspaceSettings,
 } from './types.js';
+import type { SessionLane } from '../shared/session-lane.js';
 import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
@@ -673,6 +674,7 @@ type AgentSessionParams = {
   branchRenamePrompt: string;
   computedInitialPrompt: string | undefined;
   claudeFullscreen: boolean;
+  sessionLane: SessionLane | undefined;
   /** Port env var names to inject for this worktree (from repo settings) */
   portVariables?: string[] | undefined;
 };
@@ -684,6 +686,7 @@ type TerminalSessionParams = {
   cwd: string;
   safeCols: number | undefined;
   safeRows: number | undefined;
+  sessionLane: SessionLane | undefined;
   portVariables?: string[] | undefined;
 };
 
@@ -705,6 +708,7 @@ function createTerminalSessionRecord(
     args: [],
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
+    ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
     portVariables: params.portVariables,
   });
 }
@@ -730,6 +734,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     claudeFullscreen: params.claudeFullscreen,
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
+    ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
     needsBranchRename: params.needsBranchRename,
     branchRenamePrompt: params.branchRenamePrompt,
     ...(params.computedInitialPrompt != null && {
@@ -2316,6 +2321,7 @@ async function main(): Promise<void> {
       initialPrompt,
       continue: explicitContinue,
       continuePolicy: explicitContinuePolicy,
+      sessionLane,
       ticketContext,
     } = req.body as {
       repoPath?: string;
@@ -2335,6 +2341,7 @@ async function main(): Promise<void> {
       initialPrompt?: string;
       continue?: boolean;
       continuePolicy?: ContinuePolicy;
+      sessionLane?: SessionLane;
       ticketContext?: {
         ticketId: string;
         title: string;
@@ -2391,6 +2398,7 @@ async function main(): Promise<void> {
           cwd,
           safeCols,
           safeRows,
+          sessionLane,
           portVariables,
         });
       } catch (err) {
@@ -2452,6 +2460,7 @@ async function main(): Promise<void> {
           displayName,
           port: startupConfig.port,
           configDir,
+          sessionLane,
         });
         gitWatcher.watch(session.cwd);
         res.status(201).json(session);
@@ -2515,6 +2524,7 @@ async function main(): Promise<void> {
         branchRenamePrompt: branchRenamePrompt ?? '',
         computedInitialPrompt,
         claudeFullscreen: freshConfig.claudeFullscreen,
+        sessionLane,
         portVariables,
       });
     } catch (err) {

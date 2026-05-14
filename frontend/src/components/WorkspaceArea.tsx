@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import { ConflictError, fetchHubNodes } from '../lib/api.js';
+import {
+  cleanCwd,
+  defaultRemoteCwd,
+  rememberRemoteCwd,
+} from '../lib/remote-node-cwd.js';
 import { createLogger } from '../lib/logger.js';
 import {
   createAgentSession,
@@ -11,6 +16,8 @@ import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import { TerminalNodePicker } from './TerminalNodePicker.js';
+import DialogShell, { type DialogShellHandle } from './dialogs/DialogShell.js';
+import TuiButton from './TuiButton.js';
 import type { OpenFileTab } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
@@ -229,6 +236,109 @@ function SessionContentMount({
   );
 }
 
+type RemoteTerminalLane = 'remote-cwd' | 'remote-home';
+
+interface PendingRemoteTerminal {
+  nodeId: string;
+  label: string;
+  homeDir?: string | undefined;
+}
+
+interface RemoteTerminalCwdDialogProps {
+  request: PendingRemoteTerminal | null;
+  creating: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (cwd: string, lane: RemoteTerminalLane) => void;
+}
+
+function RemoteTerminalCwdDialog({
+  request,
+  creating,
+  error,
+  onClose,
+  onSubmit,
+}: RemoteTerminalCwdDialogProps) {
+  const shellRef = useRef<DialogShellHandle>(null);
+  const [cwd, setCwd] = useState('');
+  const homeDir = cleanCwd(request?.homeDir);
+  const nodeLabel = request?.label ?? 'remote node';
+
+  useEffect(() => {
+    if (!request) {
+      shellRef.current?.close();
+      return;
+    }
+    setCwd(defaultRemoteCwd(homeDir, request.nodeId));
+    shellRef.current?.open();
+  }, [homeDir, request]);
+
+  const footer = (
+    <div className="ws-remote-terminal-footer">
+      <TuiButton variant="ghost" onClick={onClose} disabled={creating}>
+        cancel
+      </TuiButton>
+      <TuiButton
+        variant="ghost"
+        data-track="workspace.remote-terminal.start-home"
+        onClick={() => onSubmit(homeDir, 'remote-home')}
+        disabled={!homeDir || creating}
+      >
+        start in home
+      </TuiButton>
+      <TuiButton
+        variant="primary"
+        data-track="workspace.remote-terminal.create"
+        onClick={() => onSubmit(cwd, 'remote-cwd')}
+        disabled={!cleanCwd(cwd) || creating}
+      >
+        {creating ? 'starting...' : 'start terminal'}
+      </TuiButton>
+    </div>
+  );
+
+  return (
+    <DialogShell
+      ref={shellRef}
+      width="460px"
+      title="remote terminal cwd"
+      footer={footer}
+      onClose={onClose}
+    >
+      <div className="ws-remote-terminal-fields">
+        {error && (
+          <div className="ws-remote-terminal-error" role="alert">
+            {error}
+          </div>
+        )}
+        <div className="ws-remote-terminal-copy">
+          choose the node-local directory before creating a terminal on{' '}
+          {nodeLabel}.
+        </div>
+        <div className="ws-remote-terminal-field">
+          <label className="ws-remote-terminal-label" htmlFor="ws-remote-cwd">
+            cwd on {nodeLabel}
+          </label>
+          <input
+            id="ws-remote-cwd"
+            type="text"
+            className="ws-remote-terminal-input"
+            data-track="workspace.remote-terminal.cwd"
+            placeholder={homeDir || 'absolute path on remote node'}
+            value={cwd}
+            onChange={(event) => setCwd(event.currentTarget.value)}
+            autoComplete="off"
+          />
+          <div className="ws-remote-terminal-note">
+            remote terminals start directly in this directory. use start in home
+            to skip remembering a cwd.
+          </div>
+        </div>
+      </div>
+    </DialogShell>
+  );
+}
+
 // ── Main WorkspaceArea component ─────────────────────────────────────────────
 
 export interface WorkspaceAreaProps {
@@ -436,6 +546,63 @@ export function WorkspaceArea({
   }, [openFileTabs, sessions, nodeIndex]);
 
   const setActivePane = useWorkspaceLayoutStore((s) => s.setActivePane);
+  const [pendingRemoteTerminal, setPendingRemoteTerminal] =
+    useState<PendingRemoteTerminal | null>(null);
+  const [remoteTerminalCreating, setRemoteTerminalCreating] = useState(false);
+  const [remoteTerminalError, setRemoteTerminalError] = useState<string | null>(
+    null
+  );
+
+  const closeRemoteTerminalDialog = useCallback(() => {
+    if (remoteTerminalCreating) return;
+    setPendingRemoteTerminal(null);
+    setRemoteTerminalError(null);
+  }, [remoteTerminalCreating]);
+
+  const createRemoteTerminal = useCallback(
+    async (cwd: string, lane: RemoteTerminalLane) => {
+      if (!pendingRemoteTerminal || remoteTerminalCreating) return;
+      const remoteCwd = cleanCwd(cwd);
+      if (!remoteCwd) {
+        setRemoteTerminalError('cwd is required for remote terminal sessions');
+        return;
+      }
+      setRemoteTerminalCreating(true);
+      setRemoteTerminalError(null);
+      try {
+        const { session, error } = await createAgentSession({
+          type: 'terminal',
+          nodeId: pendingRemoteTerminal.nodeId,
+          cwd: remoteCwd,
+          sessionLane: lane,
+        });
+        if (error && !(error instanceof ConflictError)) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'failed to create terminal session';
+          workspaceLogger.error(
+            'failed to create remote terminal session',
+            error
+          );
+          setRemoteTerminalError(message);
+          useToastStore.getState().showToast(message);
+          return;
+        }
+        if (lane === 'remote-cwd') {
+          rememberRemoteCwd(pendingRemoteTerminal.nodeId, remoteCwd);
+        }
+        setPendingRemoteTerminal(null);
+        if (session?.id) {
+          useSessionsStore.getState().setActiveSessionId(session.id);
+        }
+      } finally {
+        setRemoteTerminalCreating(false);
+      }
+    },
+    [pendingRemoteTerminal, remoteTerminalCreating]
+  );
+
   const renderAddControl = useCallback(
     (paneId: string) => (
       <TerminalNodePicker
@@ -456,11 +623,24 @@ export function WorkspaceArea({
           // the pane whose `+` was used before the create call so the
           // layout reconciler routes the tab to the correct pane.
           setActivePane(paneId);
+          const isRemoteNode = nodeId !== DEFAULT_LOCAL_NODE_ID;
+          if (isRemoteNode) {
+            const node = hubNodes?.find(
+              (candidate) => candidate.nodeId === nodeId
+            );
+            setRemoteTerminalError(null);
+            setPendingRemoteTerminal({
+              nodeId,
+              label: node?.displayName || nodeId,
+              ...(node?.homeDir ? { homeDir: node.homeDir } : {}),
+            });
+            return;
+          }
           const { session, error } = await createAgentSession({
             repoPath: currentActiveWorkspace.path,
             worktreePath: currentWorktreePath,
             type: 'terminal',
-            ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID && { nodeId }),
+            sessionLane: 'local-repo',
           });
           if (error && !(error instanceof ConflictError)) {
             workspaceLogger.error('failed to create terminal session', error);
@@ -478,7 +658,7 @@ export function WorkspaceArea({
         }}
       />
     ),
-    [setActivePane]
+    [setActivePane, hubNodes]
   );
 
   const renderTab = useCallback(
@@ -530,6 +710,13 @@ export function WorkspaceArea({
         renderAddControl={renderAddControl}
       />
       <WorkspaceContentLayer renderTab={renderTab} />
+      <RemoteTerminalCwdDialog
+        request={pendingRemoteTerminal}
+        creating={remoteTerminalCreating}
+        error={remoteTerminalError}
+        onClose={closeRemoteTerminalDialog}
+        onSubmit={(cwd, lane) => void createRemoteTerminal(cwd, lane)}
+      />
     </div>
   );
 }

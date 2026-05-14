@@ -397,6 +397,101 @@ describe('CustomizeSessionDialog environment picker model', () => {
     expect(model.resolved.nodeId).toBe('local');
   });
 
+  it('includes a paired node without repo inventory as a remote target', () => {
+    const repoInventory = inventory();
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[1]!,
+        instances: [repoInventory.groups[1]!.instances[0]!],
+      },
+    ];
+
+    const model = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [
+        node(),
+        node({ nodeId: 'remote-free', displayName: 'remote free' }),
+      ],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/example/tools',
+      selectedNodeId: 'remote-free',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'tools', path: '/Users/kyle/tools' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.nodeChoices.map((choice) => choice.value)).toContain(
+      'remote-free'
+    );
+    expect(model.selectedNodeId).toBe('remote-free');
+    expect(model.selectedNodeReason).toBeNull();
+    expect(model.resolved).toEqual({
+      nodeId: 'remote-free',
+      repoPath: '',
+      worktreePath: null,
+    });
+  });
+
+  it('keeps a single remote-only inventory on the remote cwd lane', () => {
+    const repoInventory = inventory();
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[0]!,
+        identityDebug: {
+          ...repoInventory.groups[0]!.identityDebug,
+          instanceCount: 1,
+          nodeIds: ['linux'],
+        },
+        instances: [repoInventory.groups[0]!.instances[0]!],
+      },
+    ];
+
+    const model = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node({ nodeId: 'linux', displayName: 'linux lab' })],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: null,
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.selectedNodeId).toBe('linux');
+    expect(model.selectedNodeReason).toBeNull();
+    expect(model.resolved.nodeId).toBe('linux');
+  });
+
+  it('keeps an explicitly selected blocked remote node blocked when no enabled target exists', () => {
+    const repoInventory = inventory();
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[0]!,
+        identityDebug: {
+          ...repoInventory.groups[0]!.identityDebug,
+          instanceCount: 1,
+          nodeIds: ['linux'],
+        },
+        instances: [repoInventory.groups[0]!.instances[0]!],
+      },
+    ];
+
+    const model = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node({ nodeId: 'linux', displayName: 'linux lab', status: 'offline' })],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'linux',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.selectedNodeId).toBe('linux');
+    expect(model.selectedNodeReason).toBe('node is offline');
+    expect(model.resolved.nodeId).toBe('linux');
+  });
+
   it('keeps all same-node repo instance checkouts selectable', () => {
     const repoInventory = inventory();
     const relayGroup = repoInventory.groups[0]!;

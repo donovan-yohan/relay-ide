@@ -23,6 +23,7 @@ describe('node manifest', () => {
         platform: 'darwin',
         arch: 'arm64',
         hostname: 'relay-test-node',
+        homeDir: '/Users/tester',
         relayVersion: '9.9.9-test',
         now: new Date('2026-01-02T03:04:05.000Z'),
       });
@@ -32,6 +33,7 @@ describe('node manifest', () => {
         platform: 'darwin',
         arch: 'arm64',
         hostname: 'relay-test-node',
+        homeDir: '/Users/tester',
         relayVersion: '9.9.9-test',
         generatedAt: '2026-01-02T03:04:05.000Z',
         wsl: { detected: false, version: null, systemd: false },

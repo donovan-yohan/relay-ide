@@ -13,7 +13,12 @@ import './components/dialogs/DialogShell.css';
 import './components/dialogs/CustomizeSessionDialog.css';
 
 const nativeFetch = window.fetch.bind(window);
-let scenario: 'multi' | 'single' | 'single-disabled' = 'multi';
+let scenario:
+  | 'multi'
+  | 'multi-hermes'
+  | 'single'
+  | 'single-hermes'
+  | 'single-disabled' = 'multi';
 let lastCreateRequest = '';
 
 function framework(id: string): FrameworkInfo {
@@ -38,6 +43,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     nodeId: 'local',
     displayName: 'local mac',
     hostname: 'local.local',
+    homeDir: '/Users/kyle',
     platform: 'darwin',
     arch: 'arm64',
     relayVersion: '0.1.0',
@@ -67,7 +73,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         tailscale: 'available',
       },
       worktrees: 'available',
-      agents: { claude: 'available', codex: 'available' },
+      agents: { claude: 'available', codex: 'available', hermes: 'available' },
       serviceManager: 'launchd',
       wsl: false,
     },
@@ -80,7 +86,11 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
 }
 
 function inventory(): AggregatedRepoInventoryResponse {
-  if (scenario === 'single' || scenario === 'single-disabled') {
+  if (
+    scenario === 'single' ||
+    scenario === 'single-hermes' ||
+    scenario === 'single-disabled'
+  ) {
     return {
       generatedAt: '2026-05-12T00:00:00.000Z',
       reports: [],
@@ -259,10 +269,10 @@ function inventory(): AggregatedRepoInventoryResponse {
 
 function nodes(): HubNodeSummary[] {
   if (scenario === 'single-disabled') return [node({ status: 'offline' })];
-  if (scenario === 'single') return [node()];
+  if (scenario === 'single' || scenario === 'single-hermes') return [node()];
   return [
     node(),
-    node({ nodeId: 'linux', displayName: 'linux lab' }),
+    node({ nodeId: 'linux', displayName: 'linux lab', homeDir: '/home/linux' }),
     node({ nodeId: 'offline', displayName: 'offline lab', status: 'offline' }),
     node({
       nodeId: 'no-tmux',
@@ -303,17 +313,23 @@ window.fetch = async (input, init) => {
   if (url.pathname === '/config/defaultYolo')
     return jsonResponse({ defaultYolo: false });
   if (url.pathname === '/config/defaultAgent')
-    return jsonResponse({ defaultAgent: 'claude' });
+    return jsonResponse({
+      defaultAgent:
+        scenario === 'multi-hermes' || scenario === 'single-hermes'
+          ? 'hermes'
+          : 'claude',
+    });
   if (url.pathname === '/config/defaultNotifications')
     return jsonResponse({ defaultNotifications: true });
   if (url.pathname === '/config/claudeFullscreen')
     return jsonResponse({ claudeFullscreen: true });
   if (url.pathname === '/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
+    const body = JSON.parse(String(init.body ?? '{}')) as { agent?: string };
     return jsonResponse({
       id: 'local-session',
       type: 'agent',
-      agent: 'claude',
+      agent: body.agent ?? 'claude',
       repoName: 'relay-ide',
       repoPath: '/Users/kyle/relay-ide',
       worktreePath: null,
@@ -327,18 +343,18 @@ window.fetch = async (input, init) => {
   }
   if (url.pathname === '/hub/nodes/linux/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
+    const body = JSON.parse(String(init.body ?? '{}')) as {
+      agent?: string;
+      cwd?: string;
+    };
     return jsonResponse({
-      id: 'remote-session',
+      id: body.cwd === '/home/linux' ? 'remote-home-session' : 'remote-session',
       nodeId: 'linux',
       globalSessionId: 'linux:remote-session',
       type: 'agent',
-      agent: 'claude',
-      repoName: 'relay-ide',
-      repoPath: '/srv/relay-ide',
-      worktreePath: '/srv/relay-ide/.worktrees/feature',
-      cwd: '/srv/relay-ide/.worktrees/feature',
-      branchName: 'feature/linux',
-      displayName: 'feature/linux',
+      agent: body.agent ?? 'claude',
+      cwd: body.cwd ?? '/home/linux',
+      displayName: 'linux shell',
       createdAt: '2026-05-12T00:00:00.000Z',
       lastActivity: '2026-05-12T00:00:00.000Z',
       idle: false,
@@ -367,7 +383,7 @@ useConfigStore.setState({
   defaultAgent: 'claude',
   defaultContinue: false,
   defaultYolo: false,
-  frameworks: [framework('claude'), framework('codex')],
+  frameworks: [framework('claude'), framework('codex'), framework('hermes')],
 });
 
 function Harness() {
@@ -390,6 +406,18 @@ function Harness() {
       <button
         type="button"
         onClick={() => {
+          scenario = 'multi-hermes';
+          void dialogRef.current?.open({
+            name: 'relay-ide',
+            path: '/Users/kyle/relay-ide',
+          });
+        }}
+      >
+        open web-capable remote customize session
+      </button>
+      <button
+        type="button"
+        onClick={() => {
           scenario = 'single';
           void dialogRef.current?.open({
             name: 'relay-ide',
@@ -398,6 +426,18 @@ function Harness() {
         }}
       >
         open single-node customize session
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          scenario = 'single-hermes';
+          void dialogRef.current?.open({
+            name: 'relay-ide',
+            path: '/Users/kyle/relay-ide',
+          });
+        }}
+      >
+        open local web-capable customize session
       </button>
       <button
         type="button"

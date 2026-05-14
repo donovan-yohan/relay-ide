@@ -26,3 +26,52 @@
   font-size: 0.75rem;
   text-transform: lowercase;
 }
+
+.ws-remote-terminal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ws-remote-terminal-copy,
+.ws-remote-terminal-note {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.ws-remote-terminal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-remote-terminal-label {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.ws-remote-terminal-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-sizing: border-box;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  padding: 8px;
+  width: 100%;
+}
+
+.ws-remote-terminal-error {
+  border: 1px solid color-mix(in srgb, var(--status-error) 40%, transparent);
+  color: var(--status-error);
+  font-size: var(--font-size-sm);
+  padding: 8px;
+}
+
+.ws-remote-terminal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

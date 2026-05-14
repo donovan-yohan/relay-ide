@@ -12,6 +12,7 @@ import {
 } from './web-session-v2-state.js';
 import { upsertWebSessionNow } from './relay-state-db.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import type { SessionLane } from '../shared/session-lane.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -29,6 +30,7 @@ export interface CreateWebParams {
   configDir: string;
   permissionMode?: string;
   model?: string;
+  sessionLane?: SessionLane | undefined;
   workspaceId?: string;
   additionalDirs?: string[];
   runtimeOwnership?: 'spawned' | 'attached';

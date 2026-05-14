@@ -105,7 +105,11 @@ describe('node-link-rpc-host', () => {
     const { sent, ctx } = context();
 
     host.handle(
-      envelope('sessions.create', { type: 'terminal', cwd: '/home/user' }),
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/home/user',
+        sessionLane: 'remote-cwd',
+      }),
       ctx
     );
 
@@ -113,7 +117,11 @@ describe('node-link-rpc-host', () => {
     expect(
       (localRelayNode.sessions.create as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0]
-    ).toMatchObject({ type: 'terminal', cwd: '/home/user' });
+    ).toMatchObject({
+      type: 'terminal',
+      cwd: '/home/user',
+      sessionLane: 'remote-cwd',
+    });
     expect(sent).toHaveLength(1);
     const reply = sent[0]!;
     expect(reply.channel).toBe('rpc');
@@ -140,24 +148,50 @@ describe('node-link-rpc-host', () => {
     expect(sent[0]!.type).toBe('sessions.create.result');
   });
 
-  it('routes mode:"web" sessions through createWeb', async () => {
+  it('rejects incomplete mode:"web" remote session creates before dispatch', async () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
     const { sent, ctx } = context();
 
     host.handle(
-      envelope('sessions.create', { type: 'agent', mode: 'web' }),
+      envelope('sessions.create', {
+        type: 'agent',
+        mode: 'web',
+        agent: 'hermes',
+        cwd: '/home/user',
+      }),
       ctx
     );
 
-    // createWeb is async; flush microtasks.
+    // Keep the async flush so this fails if a future implementation
+    // reintroduces the createWeb dispatch path.
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(localRelayNode.sessions.createWeb).toHaveBeenCalledTimes(1);
+    expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+    expect(localRelayNode.sessions.createWeb).not.toHaveBeenCalled();
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.type).toBe('sessions.create.result');
-    const payload = sent[0]!.payload as { session: SessionSummary };
-    expect(payload.session.mode).toBe('web');
+    expect(sent[0]!.type).toBe('sessions.create.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('remote node web sessions are not supported');
+  });
+
+  it('rejects invalid session lane markers before dispatch', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', { type: 'terminal', sessionLane: 'banana' }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('payload.sessionLane');
   });
 
   it('responds with INVALID_REQUEST when payload is missing type', () => {

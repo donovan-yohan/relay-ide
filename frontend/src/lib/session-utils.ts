@@ -4,11 +4,13 @@ import { useUiStore } from './stores/ui.js';
 import { resolveSessionByKey } from './session-keys.js';
 import type { Repo, SessionSummary } from './types.js';
 import type { NodeId } from '../../../shared/identity.js';
+import type { SessionLane } from '../../../shared/session-lane.js';
 
 export interface CreateAgentSessionOptions {
   nodeId?: NodeId | undefined;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
+  cwd?: string | undefined;
   type?: 'agent' | 'terminal' | undefined;
   mode?: 'pty' | 'web' | undefined;
   continue?: boolean | undefined;
@@ -22,6 +24,7 @@ export interface CreateAgentSessionOptions {
   needsBranchRename?: boolean | undefined;
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
+  sessionLane?: SessionLane | undefined;
   ticketContext?: {
     ticketId: string;
     title: string;

@@ -3,7 +3,6 @@ import type { LocalRelayNode } from './local-node.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
-import type { CreateWebParams } from './web-session-handler.js';
 import type {
   NodeLinkChannelHandler,
   NodeLinkEnvelopeHandlerContext,
@@ -12,6 +11,7 @@ import type {
   RelayNodeEnvelope,
   RelayNodeError,
 } from '../shared/relay-node-protocol.js';
+import { isSessionLane, type SessionLane } from '../shared/session-lane.js';
 import type { SessionSummary } from './types.js';
 
 // Node-side RPC dispatcher. Hub initiates rpc/<type> requests over the
@@ -78,6 +78,7 @@ interface SessionsCreateInput {
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   continue?: boolean;
+  sessionLane?: SessionLane;
 }
 
 function parseSessionsCreateInput(
@@ -100,7 +101,7 @@ function parseSessionsCreateInput(
     );
   }
   const input: SessionsCreateInput = { type: typeRaw };
-  if (modeRaw) input.mode = modeRaw;
+  if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
   const agent = asString(record['agent']);
   if (agent !== undefined) input.agent = agent;
   const repoPath = asString(record['repoPath']);
@@ -139,6 +140,15 @@ function parseSessionsCreateInput(
     input.branchRenamePrompt = branchRenamePrompt;
   const continueFlag = asBoolean(record['continue']);
   if (continueFlag !== undefined) input.continue = continueFlag;
+  const sessionLane = record['sessionLane'];
+  if (sessionLane !== undefined) {
+    if (!isSessionLane(sessionLane)) {
+      return invalidRequest(
+        'sessions.create payload.sessionLane must be local-repo, remote-cwd, or remote-home when set'
+      );
+    }
+    input.sessionLane = sessionLane;
+  }
   return input;
 }
 
@@ -203,10 +213,11 @@ export function createNodeLinkRpcHost(
     }
     try {
       if (parsed.mode === 'web') {
-        const { session } = await localRelayNode.sessions.createWeb(
-          parsed as unknown as CreateWebParams
+        sendErrorEnvelope(
+          ctx,
+          envelope,
+          invalidRequest('remote node web sessions are not supported')
         );
-        sendResultEnvelope(ctx, envelope, { session });
         return;
       }
       const result = localRelayNode.sessions.create(
