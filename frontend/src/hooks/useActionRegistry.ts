@@ -91,10 +91,7 @@ import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
 import { createAgentSession } from '../lib/session-utils.js';
-import {
-  resolveSessionByKey,
-  scopedSessionKey,
-} from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
@@ -203,7 +200,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
               id
             );
             try {
-              await killSession(session?.id ?? id);
+              await killSession(session?.id ?? id, session?.nodeId);
             } catch (err) {
               logger.error('Failed to kill session', err);
             }
