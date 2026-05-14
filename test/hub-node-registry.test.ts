@@ -7,76 +7,23 @@ import {
   DEFAULT_NODE_HEARTBEAT_TIMEOUTS,
 } from '../server/hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
+import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
+
+// Test-local agent list. Specific ids are an INPUT to the fixture,
+// not a hardcoded global assumption baked into the core. Each test
+// asserts round-trip behavior on whatever it supplies here.
+const TEST_AGENTS = [
+  { id: 'claude', label: 'Claude', status: 'available' as const },
+  {
+    id: 'codex',
+    label: 'Codex',
+    status: 'unavailable' as const,
+    message: 'missing',
+  },
+];
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
-  return {
-    schemaVersion: 1,
-    platform: 'darwin',
-    arch: 'arm64',
-    hostname: 'test-host',
-    relayVersion: '9.9.9',
-    generatedAt: '2026-01-02T03:04:05.000Z',
-    wsl: { detected: false, version: null, systemd: false },
-    serviceManager: {
-      kind: 'launchd',
-      label: 'launchd',
-      supported: true,
-      installable: true,
-      installHint: 'install',
-      uninstallHint: 'uninstall',
-      message: 'ok',
-      caveats: [],
-    },
-    capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
-      git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: {
-        id: 'clipboard',
-        label: 'Clipboard',
-        status: 'degraded',
-        message: 'file fallback',
-      },
-      browserAutomation: {
-        id: 'browserAutomation',
-        label: 'Browser automation',
-        status: 'available',
-        message: 'ok',
-      },
-      githubCli: {
-        id: 'githubCli',
-        label: 'GitHub CLI',
-        status: 'unavailable',
-        message: 'missing',
-      },
-      tailscale: {
-        id: 'tailscale',
-        label: 'Tailscale CLI',
-        status: 'available',
-        message: 'ok',
-      },
-      ssh: {
-        id: 'ssh',
-        label: 'SSH client',
-        status: 'available',
-        message: 'ok',
-      },
-      agents: {
-        claude: {
-          id: 'claude',
-          label: 'Claude',
-          status: 'available',
-          message: 'ok',
-        },
-        codex: {
-          id: 'codex',
-          label: 'Codex',
-          status: 'unavailable',
-          message: 'missing',
-        },
-      },
-    },
-    ...overrides,
-  };
+  return buildManifestWithAgents({ agents: TEST_AGENTS, overrides });
 }
 
 function withTmpRegistry<T>(

@@ -41,9 +41,13 @@ describe('node manifest', () => {
           githubCli: { status: 'unavailable' },
         },
       });
-      expect(Object.keys(manifest.capabilities.agents)).toEqual(
-        expect.arrayContaining(['claude', 'codex', 'opencode', 'hermes'])
-      );
+      // Core manifest no longer hardcodes a specific framework set.
+      // Whichever framework registry is configured at runtime supplies
+      // the agent map; this test just asserts the shape is well-formed.
+      for (const [id, probe] of Object.entries(manifest.capabilities.agents)) {
+        expect(probe.id).toBe(id);
+        expect(probe.status).toMatch(/available|degraded|unavailable|unknown/);
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -95,9 +99,7 @@ describe('node manifest', () => {
       pathMode: 'windows-mount',
       windowsPath: '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide',
     });
-    expect(['wsl-systemd', 'wsl-manual']).toContain(
-      manifest.wsl.lifecycleMode
-    );
+    expect(['wsl-systemd', 'wsl-manual']).toContain(manifest.wsl.lifecycleMode);
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/not native Windows/i);
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/capability-gated/i);
     expect(['wsl-systemd', 'wsl-manual']).toContain(
