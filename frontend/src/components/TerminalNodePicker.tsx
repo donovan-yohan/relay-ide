@@ -35,6 +35,12 @@ export interface NodeChoice {
   status: 'this host' | HubNodeSummary['status'];
   disabled: boolean;
   disabledReason?: string;
+  /**
+   * #467: `true` when the node advertises a session-resume backend
+   * (tmux today, server-side canonical terminal in phase 2). Drives
+   * the "resumable" badge on the menu item.
+   */
+  resumable: boolean;
 }
 
 /**
@@ -52,6 +58,15 @@ function nodeBlockReason(node: HubNodeSummary): string | null {
   return null;
 }
 
+function isResumable(node: HubNodeSummary): boolean {
+  // Pre-#467 nodes do not publish `sessionResume`. Treat missing as
+  // 'none' (no resume) rather than guessing from tmux availability —
+  // the capability flag is the sole source of truth so frontend code
+  // never references tmux verbs.
+  const resume = node.capabilities.sessionResume ?? 'none';
+  return resume !== 'none';
+}
+
 export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
   const choices: NodeChoice[] = [
     {
@@ -59,6 +74,7 @@ export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
       label: 'this host',
       status: 'this host',
       disabled: false,
+      resumable: false,
     },
   ];
   for (const node of nodes) {
@@ -68,6 +84,7 @@ export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
       label: node.displayName || node.nodeId,
       status: node.status,
       disabled: reason !== null,
+      resumable: isResumable(node),
       ...(reason ? { disabledReason: reason } : {}),
     });
   }
@@ -271,6 +288,14 @@ export function TerminalNodePicker({
                     aria-hidden
                   />
                   <span className="ws-node-picker__label">{choice.label}</span>
+                  {choice.resumable && (
+                    <span
+                      className="ws-node-picker__resumable"
+                      title="reloads reattach to the same shell"
+                    >
+                      resumable
+                    </span>
+                  )}
                   {choice.status !== 'this host' && (
                     <span className="ws-node-picker__status">
                       {choice.status}

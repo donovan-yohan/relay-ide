@@ -202,7 +202,18 @@ Nodes report a capability manifest during pairing and on every heartbeat. The ma
 | `githubCli`         | `gh` CLI is available                                         |
 | `tailscale`         | `tailscale` CLI is available                                  |
 | `ssh`               | `ssh` client is available                                     |
+| `sessionResume`     | How the node persists PTYs across detach (#467)               |
 | `agents`            | Map of agent CLI IDs (e.g. `claude`, `codex`) to availability |
+
+`sessionResume` is one of:
+
+| Value                | Meaning                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `tmux`               | Node owns a tmux session per relay session; browser reload reattaches the same shell |
+| `canonical-emulator` | Reserved for #469 (server-side canonical terminal)                                   |
+| `none`               | Raw shell only — browser reload kills the shell                                      |
+
+The frontend reads `sessionResume` from `HubNodeSummary.capabilities.sessionResume` and renders a `resumable` badge on the terminal-node picker when the value is non-`none`. Hubs and clients **never** reference tmux verbs directly — the capability flag is the sole interface, so phase 2 can drop in `canonical-emulator` without touching browser code.
 
 ### Service Manager
 
@@ -291,7 +302,45 @@ A single hub UI can host terminal tabs attached to multiple paired nodes:
 - The PTY socket (`frontend/src/lib/ws.ts`) reads `nodeId` from the session (or parses it from a global session id) and opens `/nodes/{nodeId}/ws/sessions/{localSessionId}` instead of the local `/ws/{sessionId}` route.
 - Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
 
-Reload-resume (tmux-backed `pty.attach`) and the two-node smoke harness remain follow-ups under sub-issues of #443.
+Reload-resume is implemented as of #467: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node smoke harness remains a follow-up under sub-issues of #443.
+
+### SessionAttachment Boundary
+
+`server/session-attachment.ts` exports a stable `SessionAttachment` interface between `node-link-pty-host.ts` and the concrete backend that owns the PTY. The interface intentionally hides every implementation detail (tmux verbs, node-pty handles, socket paths) so phase 2 (#469, server-side canonical terminal state) can slot in beside, not under, the tmux feature.
+
+```ts
+interface SessionAttachment {
+  readonly sessionId: string;
+  readonly mode: 'tmux' | 'raw';
+  onData(handler: (bytes: Buffer) => void): Disposable;
+  onExit(
+    handler: (event: { exitCode: number; signal?: number }) => void
+  ): Disposable;
+  write(bytes: Buffer): void;
+  resize(cols: number, rows: number): void;
+  close(reason?: string): Promise<void>;
+  status(): 'attached' | 'detached' | 'closed';
+}
+```
+
+Backends ship with the package:
+
+| Factory                         | Mode   | When used                                                   |
+| ------------------------------- | ------ | ----------------------------------------------------------- |
+| `createTmuxAttachmentFactory()` | `tmux` | `sessionResume: 'tmux'`; reload reattaches to same shell    |
+| `createRawAttachmentFactory()`  | `raw`  | `sessionResume: 'none'` or `'canonical-emulator'` (phase 1) |
+| `createMockAttachmentFactory()` | `tmux` | Tests — replays scripted bytes, captures writes             |
+
+**Non-blocking constraints (#467, must hold for phase 2):**
+
+1. No tmux strings leak past `server/node-link-pty-host.ts`. Hub registry stores `relaySessionId` only; the node maps `relaySessionId → tmux target` internally.
+2. Frontend never references tmux verbs. The resumable badge reads `node.capabilities.sessionResume`.
+3. Wire format unchanged — opaque bytes over WS. No frontend assumes "this looks like tmux-wrapped VT100."
+4. Tests use `MockAttachment`. Pre-push CI does **not** spawn real tmux.
+5. `SessionAttachment` is exported from `server/`, not `features/tmux/`. Phase 2 lives beside, not under, tmux.
+6. Detach handling: on hub disconnect, tmux sessions are **not** killed. On node-link reconnect, hub re-issues `pty.attach` and the node reattaches to the same tmux session.
+
+The tmux config is baked in (`set -g status off`, `unbind-key -a`, `set -g mouse off`, `set -g escape-time 0`). Operators never see tmux UI — tmux is an attach-by-name primitive, not a multiplexer.
 
 ## Repo Identity and Inventory
 
