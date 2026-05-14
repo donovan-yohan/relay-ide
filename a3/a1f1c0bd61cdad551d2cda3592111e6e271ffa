@@ -1,0 +1,33 @@
+frontend/src/components/WorkspaceArea.tsx
+  s_a0e895c2caefce::t_9ba6189e83fada 6-9
+  s_a0e895c2caefce::t_4fe2147e0feaa1 438,440,443-458,460-461,481
+frontend/src/components/TerminalNodePicker.tsx
+  s_a0e895c2caefce::t_ca3a6589a68fb4 5,10,19-21,40-48,51-54,65,70-71
+  s_a0e895c2caefce::t_353771409a036d 96-98,100,103,114
+  s_a0e895c2caefce::t_ac6b74c74b2e9d 104-113,115-118
+  s_a0e895c2caefce::t_af283934f50258 231-286,290,300
+  s_a0e895c2caefce::t_ae3519c33012cb 147-172,175-176
+  s_a0e895c2caefce::t_0abe882f119d0b 49-50
+frontend/src/components/TerminalNodePicker.css
+  s_a0e895c2caefce::t_2e61639aafa9e3 9-11
+test/components/TerminalNodePicker.test.ts
+  s_a0e895c2caefce::t_ef3f1fef34e8a3 89-95,98-104,123-141
+  s_a0e895c2caefce::t_5c2acf7a6754f4 96-97,105-122
+  s_a0e895c2caefce::t_6d7927e1582340 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "a3a1f1c0bd61cdad551d2cda3592111e6e271ffa",
+  "prompts": {},
+  "sessions": {
+    "s_a0e895c2caefce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e25b32d3-42b5-4c89-9105-9a1da1f0a1c6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
