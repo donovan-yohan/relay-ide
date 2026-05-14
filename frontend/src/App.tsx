@@ -40,6 +40,7 @@ import {
   getMainWorkspaceSessions,
   getUtilityTerminalSessions,
 } from './lib/utility-terminals.js';
+import { deriveUtilityRailContext } from './lib/utility-rail-context.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
@@ -235,6 +236,7 @@ function useTerminalDerivedState() {
     () =>
       activeSession?.worktreePath ??
       activeSession?.repoPath ??
+      activeSession?.cwd ??
       activeRepoPath ??
       '',
     [activeRepoPath, activeSession]
@@ -311,6 +313,7 @@ function toggleUtilityRailForWorkspace(
 
 interface UtilityTerminalHandlerOptions {
   activeWorkspaceCwd: string;
+  utilityRailStateKey: string;
   activeWorkspace?: Repo | undefined;
   activeSession?: SessionSummary | undefined;
   addUtilityTerminal: (workspacePath: string, sessionId: string) => void;
@@ -322,6 +325,7 @@ interface UtilityTerminalHandlerOptions {
 
 function useUtilityTerminalHandlers({
   activeWorkspaceCwd,
+  utilityRailStateKey,
   activeWorkspace,
   activeSession,
   addUtilityTerminal,
@@ -331,8 +335,8 @@ function useUtilityTerminalHandlers({
   onSelectSession,
 }: UtilityTerminalHandlerOptions) {
   const handleCreateUtilityTerminal = useCallback(async () => {
-    if (!activeWorkspaceCwd) return;
-    const loadingKey = `utility-terminal:${activeWorkspaceCwd}`;
+    if (!activeWorkspaceCwd || !utilityRailStateKey) return;
+    const loadingKey = `utility-terminal:${utilityRailStateKey}`;
     if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
     useSessionsStore.getState().setLoading(loadingKey);
     try {
@@ -351,8 +355,8 @@ function useUtilityTerminalHandlers({
       });
       const isTerminalSession = session?.type === 'terminal';
       if (isTerminalSession) {
-        addUtilityTerminal(activeWorkspaceCwd, session.id);
-        selectUtilityTerminal(activeWorkspaceCwd, session.id);
+        addUtilityTerminal(utilityRailStateKey, session.id);
+        selectUtilityTerminal(utilityRailStateKey, session.id);
         if (!error) {
           useSessionsStore
             .getState()
@@ -383,23 +387,24 @@ function useUtilityTerminalHandlers({
     activeWorkspaceCwd,
     addUtilityTerminal,
     selectUtilityTerminal,
+    utilityRailStateKey,
   ]);
 
   const handleSelectUtilityTerminal = useCallback(
     (sessionId: string) => {
-      if (activeWorkspaceCwd)
-        selectUtilityTerminal(activeWorkspaceCwd, sessionId);
+      if (utilityRailStateKey)
+        selectUtilityTerminal(utilityRailStateKey, sessionId);
     },
-    [activeWorkspaceCwd, selectUtilityTerminal]
+    [selectUtilityTerminal, utilityRailStateKey]
   );
 
   const handleCloseUtilityTerminal = useCallback(
     async (sessionId: string) => {
-      if (!activeWorkspaceCwd) return;
+      if (!utilityRailStateKey) return;
       const previousRailState = useUiStore
         .getState()
-        .getUtilityRailState(activeWorkspaceCwd);
-      removeUtilityTerminal(activeWorkspaceCwd, sessionId);
+        .getUtilityRailState(utilityRailStateKey);
+      removeUtilityTerminal(utilityRailStateKey, sessionId);
       try {
         const session = resolveSessionByKey(
           useSessionsStore.getState().sessions,
@@ -411,10 +416,10 @@ function useUtilityTerminalHandlers({
         useUiStore.setState({
           utilityRailByWorkspace: {
             ...useUiStore.getState().utilityRailByWorkspace,
-            [activeWorkspaceCwd]: previousRailState,
+            [utilityRailStateKey]: previousRailState,
           },
         });
-        useUiStore.getState().saveUtilityRailState(activeWorkspaceCwd);
+        useUiStore.getState().saveUtilityRailState(utilityRailStateKey);
         useToastStore
           .getState()
           .showToast(
@@ -424,16 +429,16 @@ function useUtilityTerminalHandlers({
           );
       }
     },
-    [activeWorkspaceCwd, removeUtilityTerminal]
+    [removeUtilityTerminal, utilityRailStateKey]
   );
 
   const handlePromoteUtilityTerminal = useCallback(
     (sessionId: string) => {
-      if (!activeWorkspaceCwd) return;
-      promoteUtilityTerminal(activeWorkspaceCwd, sessionId);
+      if (!utilityRailStateKey) return;
+      promoteUtilityTerminal(utilityRailStateKey, sessionId);
       onSelectSession(sessionId);
     },
-    [activeWorkspaceCwd, onSelectSession, promoteUtilityTerminal]
+    [onSelectSession, promoteUtilityTerminal, utilityRailStateKey]
   );
 
   return {
@@ -512,9 +517,19 @@ function TerminalAreaContent({
     repos,
     sessions,
   } = useTerminalDerivedState();
+  const utilityRailContext = useMemo(
+    () =>
+      deriveUtilityRailContext({
+        activeRepoPath,
+        ...(activeWorkspace ? { activeWorkspace } : {}),
+        ...(activeSession ? { activeSession } : {}),
+      }),
+    [activeRepoPath, activeSession, activeWorkspace]
+  );
+  const utilityRailStateKey = utilityRailContext.stateKey;
   const utilityRailWorkspaceState = useUiStore((s) =>
-    activeWorkspaceCwd
-      ? s.utilityRailByWorkspace[activeWorkspaceCwd]
+    utilityRailStateKey
+      ? s.utilityRailByWorkspace[utilityRailStateKey]
       : undefined
   );
 
@@ -580,10 +595,26 @@ function TerminalAreaContent({
       const cwd =
         currentActiveSession?.worktreePath ??
         currentActiveSession?.repoPath ??
+        currentActiveSession?.cwd ??
         '';
       const relative = resolveTerminalFilePath(clickedPath, cwd);
       if (relative !== null) {
-        if (cwd) useUiStore.getState().openUtilityRailTab(cwd, 'files');
+        const currentActiveRepoPath = useUiStore.getState().activeRepoPath;
+        const currentWorkspace = currentActiveRepoPath
+          ? sessionsState.repos.find((repo) => repo.path === currentActiveRepoPath)
+          : undefined;
+        const currentRailContext = deriveUtilityRailContext({
+          activeRepoPath: currentActiveRepoPath,
+          ...(currentWorkspace ? { activeWorkspace: currentWorkspace } : {}),
+          ...(currentActiveSession
+            ? { activeSession: currentActiveSession }
+            : {}),
+        });
+        if (currentRailContext.stateKey) {
+          useUiStore
+            .getState()
+            .openUtilityRailTab(currentRailContext.stateKey, 'files');
+        }
         openFileTab(relative, false);
       }
     },
@@ -591,20 +622,20 @@ function TerminalAreaContent({
   );
 
   useEffect(() => {
-    if (activeWorkspaceCwd) hydrateUtilityRailState(activeWorkspaceCwd);
-  }, [activeWorkspaceCwd, hydrateUtilityRailState]);
+    if (utilityRailStateKey) hydrateUtilityRailState(utilityRailStateKey);
+  }, [hydrateUtilityRailState, utilityRailStateKey]);
 
   useEffect(() => {
-    if (!activeWorkspaceCwd) return;
+    if (!utilityRailStateKey) return;
     reconcileUtilityTerminals(
-      activeWorkspaceCwd,
+      utilityRailStateKey,
       new Set(
         allWorkspaceSessions
           .filter((session) => session.type === 'terminal')
           .map((session) => session.id)
       )
     );
-  }, [activeWorkspaceCwd, allWorkspaceSessions, reconcileUtilityTerminals]);
+  }, [allWorkspaceSessions, reconcileUtilityTerminals, utilityRailStateKey]);
 
   const utilityRailState =
     utilityRailWorkspaceState ?? DEFAULT_UTILITY_RAIL_STATE;
@@ -622,20 +653,20 @@ function TerminalAreaContent({
 
   const handleUtilityRailWidthChange = useCallback(
     (width: number) => {
-      if (!activeWorkspaceCwd || !utilityRailResizable) return;
-      setUtilityRailWidth(activeWorkspaceCwd, width - UTILITY_ICON_RAIL_WIDTH);
+      if (!utilityRailStateKey || !utilityRailResizable) return;
+      setUtilityRailWidth(utilityRailStateKey, width - UTILITY_ICON_RAIL_WIDTH);
     },
-    [activeWorkspaceCwd, setUtilityRailWidth, utilityRailResizable]
+    [setUtilityRailWidth, utilityRailResizable, utilityRailStateKey]
   );
 
   const handleUtilityRailResizeEnd = useCallback(() => {
-    if (activeWorkspaceCwd && utilityRailResizable)
-      saveUtilityRailState(activeWorkspaceCwd);
-  }, [activeWorkspaceCwd, saveUtilityRailState, utilityRailResizable]);
+    if (utilityRailStateKey && utilityRailResizable)
+      saveUtilityRailState(utilityRailStateKey);
+  }, [saveUtilityRailState, utilityRailResizable, utilityRailStateKey]);
 
   const handleToggleUtilityRail = useCallback(() => {
-    toggleUtilityRailForWorkspace(activeWorkspaceCwd, toggleUtilityRailVisible);
-  }, [activeWorkspaceCwd, toggleUtilityRailVisible]);
+    toggleUtilityRailForWorkspace(utilityRailStateKey, toggleUtilityRailVisible);
+  }, [toggleUtilityRailVisible, utilityRailStateKey]);
 
   const {
     handleCreateUtilityTerminal,
@@ -644,6 +675,7 @@ function TerminalAreaContent({
     handlePromoteUtilityTerminal,
   } = useUtilityTerminalHandlers({
     activeWorkspaceCwd,
+    utilityRailStateKey,
     ...(activeWorkspace ? { activeWorkspace } : {}),
     ...(activeSession ? { activeSession } : {}),
     addUtilityTerminal,
@@ -717,7 +749,7 @@ function TerminalAreaContent({
         <>
           <PrTopBar
             workspacePath={activeRepoPath ?? ''}
-            utilityRailWorkspacePath={activeWorkspaceCwd}
+            utilityRailWorkspacePath={utilityRailStateKey}
             branchName={activeSession?.branchName ?? ''}
             sessionId={activeSessionId}
             agentRunning={activeSession?.agentState === 'processing'}
@@ -770,7 +802,8 @@ function TerminalAreaContent({
             rightSidebar={
               <WorkspaceUtilityRail
                 fileTreeSidebarRef={fileTreeSidebarRef}
-                workspacePath={activeWorkspaceCwd}
+                workspacePath={utilityRailStateKey}
+                resourceContext={utilityRailContext}
                 railState={utilityRailState}
                 activeSession={activeSession}
                 workspaceSessions={mainWorkspaceSessions}
@@ -882,11 +915,13 @@ export default function App() {
     [activeSessionId, sessions]
   );
 
-  // Active workspace cwd — use worktreePath/repoPath (stable root), not cwd which can drift
+  // Active workspace cwd — prefer stable repo/worktree roots, falling back to cwd
+  // for free terminal tabs that are not bound to a repo.
   const activeWorkspaceCwd = useMemo(
     () =>
       activeSession?.worktreePath ??
       activeSession?.repoPath ??
+      activeSession?.cwd ??
       activeRepoPath ??
       '',
     [activeRepoPath, activeSession]

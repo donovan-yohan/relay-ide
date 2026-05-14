@@ -34,6 +34,7 @@ export interface FileTreeHandle {
 
 export interface FileTreeProps {
   workspacePath: string;
+  stateKey?: string;
   changedFilesData?: string[];
 }
 
@@ -67,11 +68,12 @@ function defaultBranchQueryKey(workspacePath: string) {
 }
 
 export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
-  function FileTree({ workspacePath }, ref) {
+  function FileTree({ workspacePath, stateKey }, ref) {
+    const workspaceStateKey = stateKey ?? workspacePath;
     const rightSidebarTab = useUiStore((s) => s.rightSidebarTab);
     const setRightSidebarTab = useUiStore((s) => s.setRightSidebarTab);
     const reviewState = useUiStore(
-      (s) => s.utilityRailByWorkspace[workspacePath]?.review
+      (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review
     );
     const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
     const globalFileDiffDefaultBranch = useUiStore(
@@ -109,7 +111,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         setFileDiffDefaultBranch(branch);
       }
       if ((!reviewDefaultBranch || reviewDefaultBranch === 'main') && branch !== reviewDefaultBranch) {
-        setReviewDefaultBranch(workspacePath, branch);
+        setReviewDefaultBranch(workspaceStateKey, branch);
       }
     }, [
       defaultBranchQuery.data,
@@ -117,7 +119,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
       reviewDefaultBranch,
       setFileDiffDefaultBranch,
       setReviewDefaultBranch,
-      workspacePath,
+      workspaceStateKey,
     ]);
 
     const query = useQuery<ChangedFilesResponse>({
@@ -259,7 +261,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
 
     const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
     const reviewFilePath = useUiStore(
-      (s) => s.utilityRailByWorkspace[workspacePath]?.review?.activeFilePath ?? null
+      (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review?.activeFilePath ?? null
     );
     const selectedPath = useMemo(() => {
       if (rightSidebarTab === 'changes') return reviewFilePath;
@@ -282,7 +284,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         }
         const isChanged = files.some((f) => f.path === node.path);
         if (isChanged) {
-          openReviewWorkspace(workspacePath, { filePath: node.path });
+          openReviewWorkspace(workspaceStateKey, { filePath: node.path });
         } else {
           openFileTab(node.path, false);
         }

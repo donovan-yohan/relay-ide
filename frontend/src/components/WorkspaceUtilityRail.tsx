@@ -7,6 +7,10 @@ import {
   UTILITY_ICON_RAIL_WIDTH,
 } from '../lib/stores/ui.js';
 import type { FileTreeHandle } from './FileTree/index.js';
+import type {
+  UtilityRailDisabledReason,
+  UtilityRailResourceContext,
+} from '../lib/utility-rail-context.js';
 import UtilityRailFilesPanel from './UtilityRailFilesPanel.js';
 import UtilityRailGitChangesPanel from './UtilityRailGitChangesPanel.js';
 import UtilityRailBranchPanel from './UtilityRailBranchPanel.js';
@@ -109,7 +113,13 @@ const TAB_META: Array<{
 ];
 
 export interface WorkspaceUtilityRailProps {
+  /** Key used for persisted rail UI state. */
   workspacePath: string;
+  /**
+   * Paths/capabilities used by resource-fetching panels. Defaults to
+   * workspacePath for local legacy behavior.
+   */
+  resourceContext?: UtilityRailResourceContext;
   railState: WorkspaceUtilityRailState;
   activeSession?: SessionSummary | undefined;
   workspaceSessions: SessionSummary[];
@@ -122,6 +132,54 @@ export interface WorkspaceUtilityRailProps {
   onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
   onCopyModeChange?: (active: boolean) => void;
   onFilePathClick?: (path: string) => void;
+}
+
+interface UtilityRailDisabledStateProps {
+  reason: UtilityRailDisabledReason;
+  displayWorkspacePath: string;
+}
+
+function disabledStateCopy(
+  reason: UtilityRailDisabledReason
+): { title: string; detail: string } {
+  switch (reason) {
+    case 'remote-files-unavailable':
+      return {
+        title: 'remote files unavailable',
+        detail: 'remote file browsing is disabled until remote file rpc lands.',
+      };
+    case 'remote-git-unavailable':
+      return {
+        title: 'remote git unavailable',
+        detail: 'git panels are disabled for remote tabs until remote file rpc lands.',
+      };
+    case 'no-git-context':
+      return {
+        title: 'no git context',
+        detail: 'git panels are available on repo and worktree tabs.',
+      };
+    case 'no-workspace-context':
+      return {
+        title: 'no workspace context',
+        detail: 'select a repo, worktree, or local folder tab first.',
+      };
+  }
+}
+
+function UtilityRailDisabledState({
+  reason,
+  displayWorkspacePath,
+}: UtilityRailDisabledStateProps) {
+  const copy = disabledStateCopy(reason);
+  return (
+    <div className="utility-empty" role="status">
+      <p>{copy.title}</p>
+      <span className="utility-muted">{copy.detail}</span>
+      {displayWorkspacePath ? (
+        <span className="utility-muted">{displayWorkspacePath}</span>
+      ) : null}
+    </div>
+  );
 }
 
 interface UtilityRailTerminalPanelProps {
@@ -293,6 +351,7 @@ export function utilityRailRenderedWidth(
 
 export function WorkspaceUtilityRail({
   workspacePath,
+  resourceContext,
   railState,
   activeSession,
   workspaceSessions,
@@ -312,6 +371,70 @@ export function WorkspaceUtilityRail({
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const fullPageDiff = useUiStore((s) => s.fullPageDiff);
   const selectedTab = railState.selectedRailTab;
+  const displayWorkspacePath =
+    resourceContext?.displayWorkspacePath ?? workspacePath;
+  const anchorLabel = resourceContext?.anchorLabel ?? displayWorkspacePath;
+  const fileWorkspacePath = resourceContext?.files.workspacePath ?? workspacePath;
+  const fileDisabledReason = resourceContext?.files.disabledReason ?? null;
+  const gitWorkspacePath = resourceContext?.git.workspacePath ?? workspacePath;
+  const gitDisabledReason = resourceContext?.git.disabledReason ?? null;
+  const repoBadge =
+    resourceContext?.repoBadge ?? (gitWorkspacePath ? 'repo' : null);
+
+  const renderFilesPanel = () => {
+    if (fileDisabledReason) {
+      return (
+        <UtilityRailDisabledState
+          reason={fileDisabledReason}
+          displayWorkspacePath={displayWorkspacePath}
+        />
+      );
+    }
+    return (
+      <UtilityRailFilesPanel
+        workspacePath={fileWorkspacePath}
+        stateKey={workspacePath}
+        {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
+      />
+    );
+  };
+
+  const renderGitPanel = (
+    panel: 'changes' | 'branch' | 'review'
+  ): React.ReactNode => {
+    if (gitDisabledReason) {
+      return (
+        <UtilityRailDisabledState
+          reason={gitDisabledReason}
+          displayWorkspacePath={displayWorkspacePath}
+        />
+      );
+    }
+    if (panel === 'changes') {
+      return (
+        <UtilityRailGitChangesPanel
+          workspacePath={gitWorkspacePath}
+          stateKey={workspacePath}
+        />
+      );
+    }
+    if (panel === 'branch') {
+      return (
+        <UtilityRailBranchPanel
+          workspacePath={gitWorkspacePath}
+          stateKey={workspacePath}
+        />
+      );
+    }
+    return (
+      <UtilityRailReviewPanel
+        workspacePath={gitWorkspacePath}
+        stateKey={workspacePath}
+        reviewState={railState.review}
+        active={selectedTab === 'review' && !fullPageDiff}
+      />
+    );
+  };
 
   const handleTabClick = useCallback(
     (tab: UtilityRailTab) => {
@@ -361,6 +484,12 @@ export function WorkspaceUtilityRail({
         .join(' ')}
     >
       <div className="utility-selected-pane">
+        <div className="utility-pane-context" title={displayWorkspacePath}>
+          <span>{anchorLabel}</span>
+          {repoBadge ? (
+            <span className="utility-repo-badge">[{repoBadge}]</span>
+          ) : null}
+        </div>
         <div className="utility-pane-body">
           <div
             id="utility-rail-panel-files"
@@ -370,10 +499,7 @@ export function WorkspaceUtilityRail({
             tabIndex={selectedTab === 'files' ? 0 : -1}
             hidden={selectedTab !== 'files'}
           >
-            <UtilityRailFilesPanel
-              workspacePath={workspacePath}
-              {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
-            />
+            {renderFilesPanel()}
           </div>
           <div
             id="utility-rail-panel-changes"
@@ -383,7 +509,7 @@ export function WorkspaceUtilityRail({
             tabIndex={selectedTab === 'changes' ? 0 : -1}
             hidden={selectedTab !== 'changes'}
           >
-            <UtilityRailGitChangesPanel workspacePath={workspacePath} />
+            {renderGitPanel('changes')}
           </div>
           <div
             id="utility-rail-panel-branch"
@@ -393,7 +519,7 @@ export function WorkspaceUtilityRail({
             tabIndex={selectedTab === 'branch' ? 0 : -1}
             hidden={selectedTab !== 'branch'}
           >
-            <UtilityRailBranchPanel workspacePath={workspacePath} />
+            {renderGitPanel('branch')}
           </div>
           <div
             id="utility-rail-panel-review"
@@ -403,11 +529,7 @@ export function WorkspaceUtilityRail({
             tabIndex={selectedTab === 'review' ? 0 : -1}
             hidden={selectedTab !== 'review'}
           >
-            <UtilityRailReviewPanel
-              workspacePath={workspacePath}
-              reviewState={railState.review}
-              active={selectedTab === 'review' && !fullPageDiff}
-            />
+            {renderGitPanel('review')}
           </div>
           <div
             id="utility-rail-panel-logs"

@@ -27,8 +27,30 @@
   font-size: var(--font-size-xs, 0.75rem);
 }
 
+.utility-pane-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border, #333);
+  white-space: nowrap;
+}
+
+.utility-pane-context span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.utility-repo-badge {
+  flex: none;
+  color: var(--accent, #d97757);
+}
+
 .utility-pane-body {
-  height: 100%;
+  height: calc(100% - 28px);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
