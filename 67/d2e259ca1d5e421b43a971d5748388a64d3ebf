@@ -1,0 +1,19 @@
+test/server-startup.test.ts
+  s_b3a47fe202d97d::t_cff986ba27aca4 2,7-65,72,81,89-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "67d2e259ca1d5e421b43a971d5748388a64d3ebf",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
