@@ -9,13 +9,16 @@ import type {
 } from '../../shared/node-manifest.js';
 
 // Framework / agent capability probing. Lives outside core because
-// "what counts as an agent framework" is feature-layer policy (Claude /
-// Codex / OpenCode / Hermes today; arbitrary IDs once #437 lands).
+// "what counts as an agent framework" is feature-layer policy
+// (arbitrary IDs once #437 lands; today the registry ships with a
+// default set).
 //
 // Core builds a manifest with `agents: {}`. This feature decorates the
 // manifest by populating the `agents` map after probing the configured
-// framework registry. Callers wire it in via the composition root or
-// via the back-compat helper `getNodeManifestWithFrameworks` below.
+// framework registry. Callers wire the decorator in via the
+// composition root, or use the back-compat helper `getNodeManifest`
+// exported from `server/node-manifest.ts` which calls
+// `decorateManifestWithFrameworks` below.
 
 function frameworkProbeFromClientInfo(
   framework: FrameworkClientInfo

@@ -145,8 +145,8 @@ function getNodeCapabilities(
 ): NodeCapabilities {
   // Core probes only host-tool availability. Agent / framework probes
   // live in `server/features/frameworks.ts` and are layered on top via
-  // `decorateManifestWithFrameworks`. Core never names Claude, Codex,
-  // OpenCode, Hermes, or any other framework id.
+  // `decorateManifestWithFrameworks`. Core never references framework
+  // ids directly — neither in code nor in this comment.
   return {
     tmux: probeCommand('tmux', 'tmux', 'tmux', env),
     git: probeCommand('git', 'Git', 'git', env),
