@@ -25,6 +25,7 @@ interface NodeManifestOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   hostname?: string;
+  homeDir?: string;
   relayVersion?: string;
   cwd?: string;
 }
@@ -180,6 +181,7 @@ async function getCoreNodeManifest(
     platform,
     arch: options.arch ?? os.arch(),
     hostname: options.hostname ?? os.hostname(),
+    homeDir: options.homeDir ?? os.homedir(),
     relayVersion: options.relayVersion ?? getRelayVersion(),
     generatedAt: (options.now ?? new Date()).toISOString(),
     wsl,

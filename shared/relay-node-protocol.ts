@@ -118,6 +118,7 @@ export interface HubNodeSummary {
   nodeId: string;
   displayName: string;
   hostname: string;
+  homeDir?: string;
   platform: string;
   arch: string;
   relayVersion: string;

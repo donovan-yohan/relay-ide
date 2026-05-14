@@ -91,6 +91,7 @@ export interface NodeManifest {
   platform: string;
   arch: string;
   hostname: string;
+  homeDir?: string;
   relayVersion: string;
   generatedAt: string;
   wsl: WslInfo;
@@ -250,6 +251,7 @@ export function isNodeManifest(value: unknown): value is NodeManifest {
     typeof value['platform'] !== 'string' ||
     typeof value['arch'] !== 'string' ||
     typeof value['hostname'] !== 'string' ||
+    !isOptionalString(value['homeDir']) ||
     typeof value['relayVersion'] !== 'string' ||
     typeof value['generatedAt'] !== 'string'
   ) {

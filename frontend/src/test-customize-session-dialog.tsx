@@ -38,6 +38,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     nodeId: 'local',
     displayName: 'local mac',
     hostname: 'local.local',
+    homeDir: '/Users/kyle',
     platform: 'darwin',
     arch: 'arm64',
     relayVersion: '0.1.0',
@@ -262,7 +263,7 @@ function nodes(): HubNodeSummary[] {
   if (scenario === 'single') return [node()];
   return [
     node(),
-    node({ nodeId: 'linux', displayName: 'linux lab' }),
+    node({ nodeId: 'linux', displayName: 'linux lab', homeDir: '/home/linux' }),
     node({ nodeId: 'offline', displayName: 'offline lab', status: 'offline' }),
     node({
       nodeId: 'no-tmux',
@@ -327,18 +328,15 @@ window.fetch = async (input, init) => {
   }
   if (url.pathname === '/hub/nodes/linux/sessions' && init?.method === 'POST') {
     lastCreateRequest = `${url.pathname} ${init.body ?? ''}`;
+    const body = JSON.parse(String(init.body ?? '{}')) as { cwd?: string };
     return jsonResponse({
-      id: 'remote-session',
+      id: body.cwd === '/home/linux' ? 'remote-home-session' : 'remote-session',
       nodeId: 'linux',
       globalSessionId: 'linux:remote-session',
       type: 'agent',
       agent: 'claude',
-      repoName: 'relay-ide',
-      repoPath: '/srv/relay-ide',
-      worktreePath: '/srv/relay-ide/.worktrees/feature',
-      cwd: '/srv/relay-ide/.worktrees/feature',
-      branchName: 'feature/linux',
-      displayName: 'feature/linux',
+      cwd: body.cwd ?? '/home/linux',
+      displayName: 'linux shell',
       createdAt: '2026-05-12T00:00:00.000Z',
       lastActivity: '2026-05-12T00:00:00.000Z',
       idle: false,

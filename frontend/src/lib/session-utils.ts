@@ -7,8 +7,9 @@ import type { NodeId } from '../../../shared/identity.js';
 
 export interface CreateAgentSessionOptions {
   nodeId?: NodeId | undefined;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
+  cwd?: string | undefined;
   type?: 'agent' | 'terminal' | undefined;
   mode?: 'pty' | 'web' | undefined;
   continue?: boolean | undefined;

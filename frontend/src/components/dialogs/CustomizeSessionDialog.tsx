@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -144,6 +145,40 @@ export interface EnvironmentPickerInput {
 
 const CHECKOUT_ROOT_PREFIX = 'repo:';
 const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
+const REMOTE_NODE_CWD_STORAGE_PREFIX = 'relay-ide.remote-node-cwd.';
+
+function cleanCwd(value: string | undefined): string {
+  return value?.trim() ?? '';
+}
+
+function remoteNodeCwdStorageKey(nodeId: NodeId): string {
+  return `${REMOTE_NODE_CWD_STORAGE_PREFIX}${nodeId}`;
+}
+
+function readRememberedRemoteCwd(nodeId: NodeId): string | null {
+  try {
+    const remembered = window.localStorage.getItem(
+      remoteNodeCwdStorageKey(nodeId)
+    );
+    return remembered?.trim() ? remembered : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberRemoteCwd(nodeId: NodeId, cwd: string): void {
+  const trimmed = cleanCwd(cwd);
+  if (!trimmed) return;
+  try {
+    window.localStorage.setItem(remoteNodeCwdStorageKey(nodeId), trimmed);
+  } catch {
+    // localStorage can be unavailable in private contexts; launching still works.
+  }
+}
+
+function defaultRemoteCwd(homeDir: string | undefined, nodeId: NodeId): string {
+  return readRememberedRemoteCwd(nodeId) ?? cleanCwd(homeDir);
+}
 
 function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
   return {
@@ -437,17 +472,16 @@ function defaultForm(): FormState {
 
 async function createSessionFromForm(
   environment: EnvironmentPickerModel['resolved'],
-  form: FormState
+  form: FormState,
+  remoteCwd?: string
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
   const { cols, rows } = estimateTerminalDimensions(
     useUiStore.getState().terminalFontSize
   );
-  return createAgentSession({
+  const baseOptions = {
     nodeId: environment.nodeId,
-    repoPath: environment.repoPath,
-    worktreePath: environment.worktreePath,
-    type: 'agent',
+    type: 'agent' as const,
     mode: form.sessionMode,
     continue: form.continueExisting,
     yolo: form.yoloMode,
@@ -455,6 +489,17 @@ async function createSessionFromForm(
     agent: form.selectedAgent,
     cols,
     rows,
+  };
+  if (environment.nodeId !== DEFAULT_LOCAL_NODE_ID) {
+    return createAgentSession({
+      ...baseOptions,
+      cwd: cleanCwd(remoteCwd),
+    });
+  }
+  return createAgentSession({
+    ...baseOptions,
+    repoPath: environment.repoPath,
+    worktreePath: environment.worktreePath,
   });
 }
 
@@ -462,8 +507,11 @@ interface BodyProps {
   workspaceName: string;
   form: FormState;
   environmentModel: EnvironmentPickerModel;
+  selectedRemoteNode: HubNodeSummary | null;
+  remoteCwd: string;
   onFormChange: (patch: Partial<FormState>) => void;
   onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
+  onRemoteCwdChange: (cwd: string) => void;
 }
 
 interface EnvironmentSelection {
@@ -476,8 +524,11 @@ function CustomizeSessionBody({
   workspaceName,
   form,
   environmentModel,
+  selectedRemoteNode,
+  remoteCwd,
   onFormChange,
   onEnvironmentChange,
+  onRemoteCwdChange,
 }: BodyProps) {
   const frameworks = useConfigStore((state) => state.frameworks);
   const frameworkOptions =
@@ -512,6 +563,11 @@ function CustomizeSessionBody({
     selectedFramework &&
     form.sessionMode === 'web' &&
     !isFrameworkWebAvailable(selectedFramework);
+  const remoteNodeSelected =
+    environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
+  const remoteNodeLabel =
+    selectedRemoteNode?.displayName ?? environmentModel.selectedNodeId;
+  const remoteHomeDir = cleanCwd(selectedRemoteNode?.homeDir);
 
   return (
     <div className="customize-session-body-fields">
@@ -595,38 +651,62 @@ function CustomizeSessionBody({
               )}
             </div>
           )}
-          {environmentModel.checkoutChoices.length > 1 && (
+          {remoteNodeSelected && (
             <div className="customize-session-dialog-field">
               <label
                 className="customize-session-dialog-label"
-                htmlFor="cs-checkout"
+                htmlFor="cs-remote-cwd"
               >
-                node-local checkout
+                cwd on {remoteNodeLabel}
               </label>
-              <select
-                id="cs-checkout"
-                className="customize-session-dialog-select"
-                data-track="dialog.customize-session.checkout"
-                value={environmentModel.selectedCheckoutId ?? ''}
-                onChange={(e) =>
-                  onEnvironmentChange({
-                    selectedCheckoutId: e.currentTarget.value,
-                  })
-                }
-              >
-                {environmentModel.checkoutChoices.map((choice) => (
-                  <option
-                    key={choice.value}
-                    value={choice.value}
-                    disabled={choice.disabled}
-                  >
-                    {choice.label}
-                    {choice.reason ? ` — ${choice.reason}` : ''}
-                  </option>
-                ))}
-              </select>
+              <input
+                id="cs-remote-cwd"
+                type="text"
+                className="customize-session-dialog-input"
+                data-track="dialog.customize-session.remote-cwd"
+                placeholder={remoteHomeDir || 'absolute path on remote node'}
+                value={remoteCwd}
+                onChange={(e) => onRemoteCwdChange(e.currentTarget.value)}
+                autoComplete="off"
+              />
+              <div className="customize-session-field-note">
+                remote sessions start directly in this node-local directory.
+              </div>
             </div>
           )}
+          {!remoteNodeSelected &&
+            environmentModel.checkoutChoices.length > 1 && (
+              <div className="customize-session-dialog-field">
+                <label
+                  className="customize-session-dialog-label"
+                  htmlFor="cs-checkout"
+                >
+                  node-local checkout
+                </label>
+                <select
+                  id="cs-checkout"
+                  className="customize-session-dialog-select"
+                  data-track="dialog.customize-session.checkout"
+                  value={environmentModel.selectedCheckoutId ?? ''}
+                  onChange={(e) =>
+                    onEnvironmentChange({
+                      selectedCheckoutId: e.currentTarget.value,
+                    })
+                  }
+                >
+                  {environmentModel.checkoutChoices.map((choice) => (
+                    <option
+                      key={choice.value}
+                      value={choice.value}
+                      disabled={choice.disabled}
+                    >
+                      {choice.label}
+                      {choice.reason ? ` — ${choice.reason}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
         </section>
       )}
       <div className="customize-session-dialog-field">
@@ -746,6 +826,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [inventory, setInventory] =
       useState<AggregatedRepoInventoryResponse | null>(null);
     const [nodes, setNodes] = useState<HubNodeSummary[]>([]);
+    const [remoteCwd, setRemoteCwd] = useState('');
     const [environmentSelection, setEnvironmentSelection] =
       useState<EnvironmentSelection>({
         selectedGroupId: null,
@@ -779,6 +860,29 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       ]
     );
 
+    const remoteNodeSelected =
+      environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
+    const selectedRemoteNode = remoteNodeSelected
+      ? (nodes.find(
+          (node) => node.nodeId === environmentModel.selectedNodeId
+        ) ?? null)
+      : null;
+    const selectedRemoteHome = cleanCwd(selectedRemoteNode?.homeDir);
+
+    useEffect(() => {
+      if (!remoteNodeSelected) {
+        setRemoteCwd('');
+        return;
+      }
+      setRemoteCwd(
+        defaultRemoteCwd(selectedRemoteHome, environmentModel.selectedNodeId)
+      );
+    }, [
+      environmentModel.selectedNodeId,
+      remoteNodeSelected,
+      selectedRemoteHome,
+    ]);
+
     useImperativeHandle(ref, () => ({
       async open(
         workspace: { name: string; path: string },
@@ -790,6 +894,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setForm(defaultForm());
         setInventory(null);
         setNodes([]);
+        setRemoteCwd('');
         setEnvironmentSelection({
           selectedGroupId: null,
           selectedNodeId: null,
@@ -833,7 +938,10 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       },
     }));
 
-    async function handleSubmit() {
+    async function handleSubmit(
+      remoteCwdOverride?: string,
+      rememberCwd = true
+    ) {
       if (!workspacePath || creating) return;
       const selectedFramework = frameworks.find(
         (framework) => framework.id === form.selectedAgent
@@ -856,11 +964,19 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         );
         return;
       }
+      const cwdForRemote = remoteNodeSelected
+        ? cleanCwd(remoteCwdOverride ?? remoteCwd)
+        : undefined;
+      if (remoteNodeSelected && !cwdForRemote) {
+        setError('cwd is required for remote node sessions');
+        return;
+      }
       setCreating(true);
       setError(null);
       const { session, error: submitError } = await createSessionFromForm(
         environmentModel.resolved,
-        form
+        form,
+        cwdForRemote
       );
       try {
         if (submitError && !session) {
@@ -870,6 +986,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
               : 'Failed to create session'
           );
           return;
+        }
+        if (remoteNodeSelected && cwdForRemote && rememberCwd) {
+          rememberRemoteCwd(environmentModel.selectedNodeId, cwdForRemote);
         }
         shellRef.current?.close();
         if (session?.id) onSessionCreated?.(session.id);
@@ -887,13 +1006,24 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         >
           Cancel
         </TuiButton>
+        {remoteNodeSelected && (
+          <TuiButton
+            variant="ghost"
+            data-track="dialog.customize-session.start-in-home"
+            onClick={() => void handleSubmit(selectedRemoteHome, false)}
+            disabled={!workspacePath || !selectedRemoteHome || creating}
+          >
+            Start in Home
+          </TuiButton>
+        )}
         <TuiButton
           variant="primary"
           data-track="dialog.customize-session.create"
-          onClick={handleSubmit}
+          onClick={() => void handleSubmit()}
           disabled={
             !workspacePath ||
             Boolean(environmentModel.selectedNodeReason) ||
+            (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
             creating ||
             frameworks.some(
               (framework) =>
@@ -925,10 +1055,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           workspaceName={workspaceName}
           form={form}
           environmentModel={environmentModel}
+          selectedRemoteNode={selectedRemoteNode}
+          remoteCwd={remoteCwd}
           onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
           onEnvironmentChange={(patch) =>
             setEnvironmentSelection((selection) => ({ ...selection, ...patch }))
           }
+          onRemoteCwdChange={setRemoteCwd}
         />
       </DialogShell>
     );

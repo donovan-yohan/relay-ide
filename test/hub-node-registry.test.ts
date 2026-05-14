@@ -176,7 +176,7 @@ describe('hub node registry', () => {
 
       const exchanged = registry.exchangePairToken({
         pairToken: pair.pairToken,
-        manifest: manifest(),
+        manifest: manifest({ homeDir: '/Users/dev' }),
         displayName: 'Dev Mac',
       });
 
@@ -191,6 +191,7 @@ describe('hub node registry', () => {
       expect(exchanged.node).toMatchObject({
         displayName: 'Dev Mac',
         hostname: 'test-host',
+        homeDir: '/Users/dev',
         platform: 'darwin',
         relayVersion: '9.9.9',
         protocolVersion: '1.0',

@@ -37,6 +37,7 @@ interface StoredNodeRecord {
   credentialHash: string;
   displayName: string;
   hostname: string;
+  homeDir?: string;
   platform: string;
   arch: string;
   relayVersion: string;
@@ -300,6 +301,7 @@ function publicNode(
     nodeId: node.nodeId,
     displayName: node.displayName,
     hostname: node.hostname,
+    ...(node.homeDir ? { homeDir: node.homeDir } : {}),
     platform: node.platform,
     arch: node.arch,
     relayVersion: node.relayVersion,
@@ -439,6 +441,7 @@ export class HubNodeRegistry {
         input.manifest
       ),
       hostname: input.manifest.hostname,
+      ...(input.manifest.homeDir ? { homeDir: input.manifest.homeDir } : {}),
       platform: input.manifest.platform,
       arch: input.manifest.arch,
       relayVersion: input.manifest.relayVersion,
@@ -518,6 +521,8 @@ export class HubNodeRegistry {
     node.protocolVersion = input.protocolVersion;
     if (input.manifest) {
       node.hostname = input.manifest.hostname;
+      if (input.manifest.homeDir) node.homeDir = input.manifest.homeDir;
+      else delete node.homeDir;
       node.platform = input.manifest.platform;
       node.arch = input.manifest.arch;
       node.relayVersion = input.manifest.relayVersion;
