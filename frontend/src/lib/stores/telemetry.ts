@@ -208,6 +208,7 @@ export const useTelemetryStore = create<TelemetryState>()((set, get) => ({
     const { sessionTelemetryById } = get();
     const sessionsByRepo = new Map<string, SessionSummary[]>();
     for (const session of sessions) {
+      if (!session.repoPath) continue;
       const bucket = sessionsByRepo.get(session.repoPath) ?? [];
       bucket.push(session);
       sessionsByRepo.set(session.repoPath, bucket);

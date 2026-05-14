@@ -71,7 +71,7 @@ export function useSessionHandlers({
         sessionId
       );
       if (session) {
-        useUiStore.getState().setActiveRepoPath(session.repoPath);
+        useUiStore.getState().setActiveRepoPath(session.repoPath ?? null);
       }
       useSessionsStore.getState().handleUserViewed(sessionId);
       useUiStore.getState().closeSidebar();
@@ -95,10 +95,12 @@ export function useSessionHandlers({
       useSessionsStore.getState().setActiveSessionId(id);
       const session = resolveSessionByKey(useSessionsStore.getState().sessions, id);
       if (session) {
-        useSessionsStore
-          .getState()
-          .rememberSessionForWorkspace(session.repoPath, id);
-        useUiStore.getState().setActiveRepoPath(session.repoPath);
+        if (session.repoPath) {
+          useSessionsStore
+            .getState()
+            .rememberSessionForWorkspace(session.repoPath, id);
+        }
+        useUiStore.getState().setActiveRepoPath(session.repoPath ?? null);
       }
       useSessionsStore.getState().handleUserViewed(id);
       useUiStore.getState().closeSidebar();
@@ -334,7 +336,7 @@ export function useSessionHandlers({
         const result = await launchWorkspaceSession(workspaceId);
         await useSessionsStore.getState().refreshAll();
         useSessionsStore.getState().setActiveSessionId(result.id);
-        useUiStore.getState().setActiveRepoPath(result.repoPath);
+        useUiStore.getState().setActiveRepoPath(result.repoPath ?? null);
         useUiStore.getState().setActiveWorkspaceId(workspaceId);
         useUiStore.getState().closeSidebar();
 
@@ -393,8 +395,8 @@ export function useSessionHandlers({
       let newWorktree = false;
 
       if (existingSession) {
-        worktreePath = existingSession.worktreePath;
-        branchName = existingSession.branchName;
+        worktreePath = existingSession.worktreePath ?? null;
+        branchName = existingSession.branchName ?? pr.headRefName;
       } else if (existingWorktree) {
         worktreePath = existingWorktree.path;
         branchName = existingWorktree.branchName;
@@ -462,8 +464,8 @@ export function useSessionHandlers({
         let newWorktree = false;
 
         if (existingSession) {
-          worktreePath = existingSession.worktreePath;
-          branchName = existingSession.branchName;
+          worktreePath = existingSession.worktreePath ?? null;
+          branchName = existingSession.branchName ?? pr.headRefName;
         } else if (existingWorktree) {
           worktreePath = existingWorktree.path;
           branchName = existingWorktree.branchName;
@@ -531,8 +533,8 @@ export function useSessionHandlers({
         let newWorktree = false;
 
         if (existingSession) {
-          worktreePath = existingSession.worktreePath;
-          resolvedBranch = existingSession.branchName;
+          worktreePath = existingSession.worktreePath ?? null;
+          resolvedBranch = existingSession.branchName ?? branchName;
         } else if (existingWorktree) {
           worktreePath = existingWorktree.path;
           resolvedBranch = existingWorktree.branchName;
@@ -589,7 +591,7 @@ export function useSessionHandlers({
     }
 
     // If worktree session, delete the worktree too
-    if (session.worktreePath !== null) {
+    if (session.worktreePath && session.repoPath) {
       try {
         await deleteWorktree(session.worktreePath, session.repoPath);
       } catch {

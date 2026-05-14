@@ -338,7 +338,8 @@ function SessionGroupRow({
                         onDeleteWorktree({
                           name: groupPath.split('/').pop() || '',
                           path: groupPath,
-                          repoName: rep.repoName,
+                          repoName:
+                            rep.repoName ?? repoPath.split('/').pop() ?? repoPath,
                           repoPath,
                           displayName: groupDisplayName(
                             groupPath,

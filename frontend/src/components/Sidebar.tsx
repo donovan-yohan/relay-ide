@@ -256,7 +256,7 @@ function buildGroupedByPath(
   const unsorted = new Map<string, typeof activeSessions>();
   unsorted.set(workspacePath, []);
   for (const s of activeSessions) {
-    const groupKey = s.worktreePath ?? s.repoPath;
+    const groupKey = s.worktreePath ?? s.repoPath ?? workspacePath;
     const existing = unsorted.get(groupKey);
     if (existing) existing.push(s);
     else unsorted.set(groupKey, [s]);
