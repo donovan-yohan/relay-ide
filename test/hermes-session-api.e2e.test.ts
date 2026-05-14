@@ -225,7 +225,11 @@ process.exit(0);
   }
 }, 20_000);
 
-test('POST /sessions honors web mode for claude protocol adapter sessions', async () => {
+// Regression guard for issue #300: Claude web sessions are de-advertised
+// pending end-to-end verification of the protocol adapter. A POST /sessions
+// request for `claude` in `mode: 'web'` must be rejected with a structured
+// `agent_unavailable` error and a message that references the gap.
+test('POST /sessions rejects claude web mode (de-advertised, issue #300)', async () => {
   const tmpDir = fs.mkdtempSync(
     path.join(os.tmpdir(), 'relay-claude-api-e2e-')
   );
@@ -251,15 +255,16 @@ setInterval(() => {}, 1000);
       }),
     });
 
-    expect(createRes.status).toBe(201);
-    const session = (await createRes.json()) as {
-      agent: string;
-      mode: string;
-      adapterType?: string;
+    expect(createRes.status).toBe(400);
+    expect(createRes.headers.get('content-type')).toContain('application/json');
+    const body = (await createRes.json()) as {
+      error?: string;
+      message?: string;
+      agent?: string;
     };
-    expect(session.agent).toBe('claude');
-    expect(session.mode).toBe('web');
-    expect(session.adapterType).toBe('claude');
+    expect(body.error).toBe('agent_unavailable');
+    expect(body.agent).toBe('claude');
+    expect(body.message ?? '').toMatch(/300|not yet verified|end-to-end/i);
   } finally {
     await stopRelayServer(server);
   }

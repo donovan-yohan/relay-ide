@@ -267,7 +267,10 @@ sleep 10
             supportsYolo: true,
             supportsTelemetry: true,
             supportsAttachedRuntime: true,
-            supportsWebSessions: true,
+            // Claude web sessions are de-advertised pending end-to-end
+            // verification (issue #300). This PTY test does not exercise
+            // web mode but mirrors BUILTIN_FRAMEWORKS for consistency.
+            supportsWebSessions: false,
           },
         },
       },
@@ -301,7 +304,7 @@ sleep 10
           "const fs=require('node:fs');",
           `const probePath=${JSON.stringify(probePath)};`,
           "const cfg=process.env.OPENCODE_CONFIG_CONTENT||'';",
-          "fs.writeFileSync(probePath,cfg);",
+          'fs.writeFileSync(probePath,cfg);',
           "console.log('OPENCODE_CONFIG_CONTENT='+cfg);",
           'setTimeout(()=>{},10000);',
         ].join(' '),

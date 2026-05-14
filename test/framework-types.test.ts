@@ -32,6 +32,15 @@ test('claude framework has correct values', () => {
   expect(claude.capabilities.supportsTelemetry).toBe(true);
 });
 
+// Regression guard: see issue #300. Claude web sessions are de-advertised
+// pending end-to-end verification of the protocol adapter. Do not flip this
+// to `true` without satisfying the criteria documented in
+// server/protocol-adapters/claude-adapter.ts.
+test('claude does NOT advertise web-session capability (issue #300)', () => {
+  const claude = BUILTIN_FRAMEWORKS['claude'];
+  expect(claude.capabilities.supportsWebSessions).toBe(false);
+});
+
 test('codex framework has correct values', () => {
   const codex = BUILTIN_FRAMEWORKS['codex'];
   expect(codex.id).toBe('codex');

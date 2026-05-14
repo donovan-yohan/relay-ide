@@ -129,9 +129,27 @@ export async function getFrameworkClientInfoWithRuntime(
   );
 }
 
+// Reasons surfaced when a framework's `supportsWebSessions` capability is
+// false. Keep entries here keyed by framework id; the fallback below covers
+// any framework that simply doesn't declare web support yet.
+const WEB_DEADVERTISE_REASONS: Record<string, string> = {
+  claude:
+    'Claude web sessions are not yet verified end-to-end (see issue #300). Use the tui (PTY) mode instead.',
+  codex:
+    'Codex web sessions do not yet stream chat responses (see issue #301). Use the tui (PTY) mode instead.',
+};
+
 export async function getFrameworkWebAvailability(
   framework: AgentFramework
 ): Promise<FrameworkWebAvailability> {
+  if (!framework.capabilities.supportsWebSessions) {
+    return {
+      available: false,
+      reason:
+        WEB_DEADVERTISE_REASONS[framework.id] ??
+        `${framework.displayName} web sessions are not currently available.`,
+    };
+  }
   if (framework.id !== 'hermes') {
     return { available: true };
   }
