@@ -247,6 +247,8 @@ export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
 // Session types — discriminated union on `mode`
 interface BaseSession {
   id: string;
+  /** Execution node that owns this live session. */
+  nodeId?: NodeId;
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;

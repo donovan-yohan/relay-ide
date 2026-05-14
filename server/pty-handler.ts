@@ -28,6 +28,7 @@ import { installOpenCodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -789,6 +790,7 @@ function buildSessionObject(
 
   return {
     id,
+    nodeId: DEFAULT_LOCAL_NODE_ID,
     type: type || 'agent',
     agent,
     mode: 'pty' as const,

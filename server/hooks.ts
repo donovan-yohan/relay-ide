@@ -432,6 +432,7 @@ export function createHooksRouter(deps: HookDeps): Router {
           ((targetSession, prompt) =>
             spawnBranchRename(targetSession, prompt, deps));
         renameRunner(session, promptText).catch((err) => {
+          session.needsBranchRename = true;
           logger.error('spawnBranchRename error:', err);
         });
       }

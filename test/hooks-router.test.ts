@@ -60,6 +60,7 @@ let sessions: Map<string, Session>;
 let broadcastCalls: Array<{ type: string; data?: Record<string, unknown> }>;
 let backendStateCalls: Session[];
 let branchRenameCalls: Array<{ sessionId: string; promptText: string }>;
+let branchRenameError: Error | null;
 let attentionCalls: Array<{
   sessionId: string;
   session: { displayName: string; type: string };
@@ -89,6 +90,7 @@ beforeAll(async () => {
       attentionCalls.push({ sessionId, session }),
     executeBranchRename: async (session, promptText) => {
       branchRenameCalls.push({ sessionId: session.id, promptText });
+      if (branchRenameError) throw branchRenameError;
     },
   });
 
@@ -109,6 +111,7 @@ beforeEach(() => {
   broadcastCalls.length = 0;
   backendStateCalls.length = 0;
   branchRenameCalls.length = 0;
+  branchRenameError = null;
   attentionCalls.length = 0;
 });
 
@@ -386,6 +389,30 @@ describe('POST /hooks/prompt-submit', () => {
     sessions.delete('prompt-002');
   });
 
+  it('restores needsBranchRename when injected rename runner rejects', async () => {
+    branchRenameError = new Error('rename failed');
+    const session = makeSession({
+      id: 'prompt-rename-failure',
+      hookToken: 'tok',
+      needsBranchRename: true,
+    });
+    sessions.set('prompt-rename-failure', session);
+
+    const res = await fetch(url('/prompt-submit', 'prompt-rename-failure', 'tok'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'add a feature' }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(session.needsBranchRename).toBe(true);
+    expect(branchRenameCalls).toEqual([
+      { sessionId: 'prompt-rename-failure', promptText: 'add a feature' },
+    ]);
+    sessions.delete('prompt-rename-failure');
+  });
+
   it('skips branch rename for non-repo/free tabs with no checkout binding', async () => {
     const session = makeSession({
       id: 'prompt-free-001',
@@ -436,7 +463,8 @@ describe('POST /hooks/prompt-submit', () => {
         `SELECT session_id, node_id, repo_path, worktree_path, branch_name, session_category, event_type
          FROM session_events WHERE session_id = ? AND event_type = 'user_prompt'`
       )
-      .get('prompt-free-analytics') as Record<string, unknown>;
+      .get('prompt-free-analytics') as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
     expect(row).toMatchObject({
       session_id: 'prompt-free-analytics',
       node_id: 'node-free-1',

@@ -11,6 +11,7 @@ import {
   createInitialAgentSessionV2,
 } from './web-session-v2-state.js';
 import { upsertWebSessionNow } from './relay-state-db.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -73,6 +74,7 @@ export async function createWebSession(
   const session: WebSession = {
     mode: 'web',
     id,
+    nodeId: DEFAULT_LOCAL_NODE_ID,
     type: 'agent',
     agent: params.agentType as AgentType,
     ...(params.repoPath ? { repoPath: params.repoPath } : {}),

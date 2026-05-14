@@ -48,6 +48,32 @@ describe('buildSidebarItems', () => {
     expect(item.displayState).not.toBe('inactive');
   });
 
+  it('free session with omitted repo fields gets a stable sidebar item', () => {
+    const {
+      repoName: _repoName,
+      repoPath: _repoPath,
+      worktreePath: _worktreePath,
+      branchName: _branchName,
+      ...session
+    } = makeSession({
+      id: 'free-session',
+      cwd: '/tmp/free-shell',
+      displayName: 'free shell',
+    });
+
+    const items = buildSidebarItems([session], [], [], []);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: 'session:free-session',
+      path: 'session:free-session',
+      repoPath: '/tmp/free-shell',
+      displayName: 'free shell',
+      branchName: '',
+      sessions: [session],
+    });
+  });
+
   it('inactive worktree (no sessions) produces SidebarItem with inactive state', () => {
     const worktree = makeWorktree({ path: '/repo/wt1', repoPath: '/repo' });
     const workspace = makeWorkspace({ path: '/repo' });

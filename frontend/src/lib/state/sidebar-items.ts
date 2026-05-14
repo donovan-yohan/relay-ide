@@ -7,6 +7,7 @@ import type {
 import type { BackendDisplayState, DisplayState } from './display-state.js';
 import { transitionDisplayState } from './display-state.js';
 import { sortByAttention } from './attention.js';
+import { scopedSessionKey } from '../session-keys.js';
 
 /**
  * Derive a BackendDisplayState from a session's agentState and idle flag.
@@ -140,6 +141,14 @@ function buildSidebarItem(
   };
 }
 
+function sessionGroupPath(session: SessionSummary): string {
+  return session.worktreePath ?? session.repoPath ?? `session:${scopedSessionKey(session)}`;
+}
+
+function sessionDisplayPath(session: SessionSummary, groupPath: string): string {
+  return session.repoPath ?? session.cwd ?? groupPath;
+}
+
 /**
  * Build the SidebarItems for a single workspace, appending them to `result`.
  * Returns the set of group paths that were handled so the caller can track orphans.
@@ -181,7 +190,7 @@ function buildItemsForWorkspace(
         kind,
         workspace.path,
         firstSession.displayName,
-        firstSession.branchName,
+        firstSession.branchName ?? '',
         mostRecentActivity(groupSessions),
         groupSessions,
         newBackendState,
@@ -254,13 +263,10 @@ export function buildSidebarItems(
   // Group sessions by their "group path" (worktreePath ?? repoPath)
   const sessionsByGroup = new Map<string, SessionSummary[]>();
   for (const session of sessions) {
-    const groupPath = session.worktreePath ?? session.repoPath;
-    const existing = sessionsByGroup.get(groupPath);
-    if (existing) {
-      existing.push(session);
-    } else {
-      sessionsByGroup.set(groupPath, [session]);
-    }
+    const groupPath = sessionGroupPath(session);
+    const groupSessions = sessionsByGroup.get(groupPath);
+    if (groupSessions) groupSessions.push(session);
+    else sessionsByGroup.set(groupPath, [session]);
   }
 
   // Track which group paths have been handled so we can detect orphan groups
@@ -293,9 +299,9 @@ export function buildSidebarItems(
       buildSidebarItem(
         groupPath,
         'worktree',
-        firstSession.repoPath,
+        sessionDisplayPath(firstSession, groupPath),
         firstSession.displayName,
-        firstSession.branchName,
+        firstSession.branchName ?? '',
         mostRecentActivity(groupSessions),
         groupSessions,
         newBackendState,

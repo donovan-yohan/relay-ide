@@ -1,5 +1,5 @@
 import type { SessionEvent } from './types.js';
-import type { NodeId } from '../shared/identity.js';
+import { DEFAULT_LOCAL_NODE_ID, type NodeId } from '../shared/identity.js';
 
 export type SessionCategory = 'repo' | 'worktree' | 'free';
 
@@ -52,7 +52,9 @@ export function buildSessionEvent(
 ): SessionEvent {
   const event: SessionEvent = {
     session_id: session.id,
-    ...(nonEmptyString(session.nodeId) ? { node_id: session.nodeId } : {}),
+    node_id: nonEmptyString(session.nodeId)
+      ? session.nodeId
+      : DEFAULT_LOCAL_NODE_ID,
     ...(nonEmptyString(session.repoPath) ? { repo_path: session.repoPath } : {}),
     ...(session.worktreePath === null
       ? { worktree_path: null }

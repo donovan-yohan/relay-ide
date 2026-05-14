@@ -23,6 +23,7 @@ import { formatShortcut } from '../lib/actions/shortcuts.js';
 import type { ActionContext, Action } from '../lib/actions/types.js';
 import { isMobileDevice, isMac } from '../lib/utils.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
+import { buildSessionPaletteResults } from '../lib/command-palette-session-results.js';
 import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -267,21 +268,8 @@ function buildResults(
       sublabel: ws.path,
       data: ws,
     });
-  for (const s of sessions
-    .filter(
-      (s) =>
-        s.displayName.toLowerCase().includes(q) ||
-        s.branchName.toLowerCase().includes(q) ||
-        s.repoName.toLowerCase().includes(q)
-    )
-    .slice(0, 5)) {
-    items.push({
-      type: 'session',
-      id: `sess-${s.id}`,
-      label: s.displayName || s.branchName || s.repoName,
-      sublabel: s.repoName,
-      data: s,
-    });
+  for (const result of buildSessionPaletteResults(q, sessions, 5)) {
+    items.push(result);
   }
   for (const pr of cachedPrs
     .filter(
