@@ -50,7 +50,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         shell: 'available',
         tmux: 'available',
         git: 'available',
-        worktrees: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
@@ -101,7 +100,8 @@ function inventory(): AggregatedRepoInventoryResponse {
             repoIdentityWarnings: [],
             worktrees: [
               {
-                worktreeInstanceId: 'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
+                worktreeInstanceId:
+                  'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
                 localPath: '/srv/relay-ide/.worktrees/feature',
                 branchName: 'feature/linux',
                 displayName: 'feature',
@@ -123,7 +123,8 @@ function inventory(): AggregatedRepoInventoryResponse {
             repoIdentityWarnings: [],
             worktrees: [
               {
-                worktreeInstanceId: 'local:%2FUsers%2Fkyle%2Frelay-ide%2F.worktrees%2Ffeature',
+                worktreeInstanceId:
+                  'local:%2FUsers%2Fkyle%2Frelay-ide%2F.worktrees%2Ffeature',
                 localPath: '/Users/kyle/relay-ide/.worktrees/feature',
                 branchName: 'feature/local',
                 displayName: 'feature',
@@ -299,7 +300,8 @@ describe('CustomizeSessionDialog environment picker model', () => {
       selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
-      selectedCheckoutId: 'worktree:linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
+      selectedCheckoutId:
+        'worktree:linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
       fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
       fallbackWorktreePath: null,
     });
@@ -339,7 +341,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+    expect(
+      model.nodeChoices.find((choice) => choice.value === 'linux')
+    ).toMatchObject({
       disabled: true,
       reason: 'node is offline',
     });
@@ -368,7 +372,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+    expect(
+      model.nodeChoices.find((choice) => choice.value === 'linux')
+    ).toMatchObject({
       disabled: true,
       reason: 'claude unavailable on linux lab',
     });
@@ -414,7 +420,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.filter((choice) => choice.value === 'local')).toHaveLength(1);
+    expect(
+      model.nodeChoices.filter((choice) => choice.value === 'local')
+    ).toHaveLength(1);
     expect(model.checkoutChoices.map((choice) => choice.label)).toEqual([
       'default — /Users/kyle/relay-ide',
       'feature/local — /Users/kyle/relay-ide/.worktrees/feature',
@@ -455,7 +463,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
         fallbackWorktreePath: null,
       });
 
-      expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+      expect(
+        model.nodeChoices.find((choice) => choice.value === 'linux')
+      ).toMatchObject({
         disabled: true,
         reason: `tmux ${tmuxStatus} on linux lab`,
       });

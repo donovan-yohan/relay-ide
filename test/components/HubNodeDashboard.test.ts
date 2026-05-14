@@ -23,7 +23,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         shell: 'available',
         tmux: 'available',
         git: 'available',
-        worktrees: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
@@ -57,8 +56,16 @@ describe('HubNodeDashboard', () => {
         expectedProtocolVersion: '1.0',
         nodes: [
           node({ displayName: 'ready mac' }),
-          node({ nodeId: 'stale', displayName: 'stale linux', status: 'stale' }),
-          node({ nodeId: 'offline', displayName: 'offline lab', status: 'offline' }),
+          node({
+            nodeId: 'stale',
+            displayName: 'stale linux',
+            status: 'stale',
+          }),
+          node({
+            nodeId: 'offline',
+            displayName: 'offline lab',
+            status: 'offline',
+          }),
           node({
             nodeId: 'degraded',
             displayName: 'thin client',
@@ -70,7 +77,6 @@ describe('HubNodeDashboard', () => {
                 ...node().capabilities.core,
                 tmux: 'degraded',
                 git: 'unavailable',
-                worktrees: 'unavailable',
               },
             },
           }),
@@ -87,7 +93,9 @@ describe('HubNodeDashboard', () => {
     expect(html).toContain('offline lab');
     expect(html).toContain('not attachable: node is offline');
     expect(html).toContain('thin client');
-    expect(html).toContain('work disabled: tmux degraded; git unavailable; worktrees unavailable');
+    expect(html).toContain(
+      'work disabled: tmux degraded; git unavailable; worktrees unavailable'
+    );
     expect(html).toContain('protocol 2.0 != hub 1.0');
     expect(html).toContain('shell');
     expect(html).toContain('tmux');

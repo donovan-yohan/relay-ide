@@ -69,7 +69,6 @@ export type HubNodeCoreCapability =
   | 'shell'
   | 'tmux'
   | 'git'
-  | 'worktrees'
   | 'browserAutomation'
   | 'clipboardImage'
   | 'ssh'
@@ -88,6 +87,15 @@ export interface NodeCapabilityManifestSummary {
     unknown: number;
   };
   core: Record<HubNodeCoreCapability, NodeCapabilityStatus>;
+  /**
+   * Repo-feature-layer capability. Optional on the wire so a node with
+   * no repo feature decorator wired in (or no repo capability at all)
+   * can publish a coherent core summary. Consumers should fall back to
+   * deriving from `core.git` when this is absent; the canonical worktree
+   * capability is just "is git usable here?" until the repo feature
+   * grows richer semantics.
+   */
+  worktrees?: NodeCapabilityStatus;
   agents: Record<string, NodeCapabilityStatus>;
   serviceManager: string;
   wsl: boolean;

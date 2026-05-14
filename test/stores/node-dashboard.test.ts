@@ -24,7 +24,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         shell: 'available',
         tmux: 'available',
         git: 'available',
-        worktrees: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
@@ -57,7 +56,9 @@ describe('hub node dashboard state', () => {
       lastSeenLabel: '30s ago',
       versionWarning: null,
     });
-    expect(row.capabilityHints.map((hint) => `${hint.label}:${hint.status}`)).toEqual([
+    expect(
+      row.capabilityHints.map((hint) => `${hint.label}:${hint.status}`)
+    ).toEqual([
       'shell:available',
       'tmux:available',
       'git:available',
@@ -74,13 +75,23 @@ describe('hub node dashboard state', () => {
   it('keeps stale and offline nodes visible but not attachable', () => {
     const rows = deriveHubNodeDashboardRows(
       [
-        node({ nodeId: 'node-stale', displayName: 'stale box', status: 'stale' }),
-        node({ nodeId: 'node-offline', displayName: 'offline box', status: 'offline' }),
+        node({
+          nodeId: 'node-stale',
+          displayName: 'stale box',
+          status: 'stale',
+        }),
+        node({
+          nodeId: 'node-offline',
+          displayName: 'offline box',
+          status: 'offline',
+        }),
       ],
       { now }
     );
 
-    expect(rows.map((row) => [row.displayName, row.attachable, row.disabledReason])).toEqual([
+    expect(
+      rows.map((row) => [row.displayName, row.attachable, row.disabledReason])
+    ).toEqual([
       ['stale box', false, 'not attachable: heartbeat is stale'],
       ['offline box', false, 'not attachable: node is offline'],
     ]);
@@ -97,7 +108,6 @@ describe('hub node dashboard state', () => {
               ...node().capabilities.core,
               tmux: 'degraded',
               git: 'unavailable',
-              worktrees: 'unavailable',
             },
           },
         }),
@@ -106,7 +116,9 @@ describe('hub node dashboard state', () => {
     );
 
     expect(row.attachable).toBe(false);
-    expect(row.disabledReason).toBe('work disabled: tmux degraded; git unavailable; worktrees unavailable');
+    expect(row.disabledReason).toBe(
+      'work disabled: tmux degraded; git unavailable; worktrees unavailable'
+    );
     expect(row.capabilityHints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: 'tmux', status: 'degraded' }),
@@ -142,6 +154,8 @@ describe('hub node dashboard state', () => {
       { now }
     );
 
-    expect(summary).toBe('1/3 nodes ready · 1 blocked by capabilities · 1 offline/stale');
+    expect(summary).toBe(
+      '1/3 nodes ready · 1 blocked by capabilities · 1 offline/stale'
+    );
   });
 });
