@@ -30,6 +30,7 @@ import {
   DEFAULT_LOCAL_NODE_ID,
   type NodeId,
 } from '../../../../shared/identity.js';
+import type { SessionLane } from '../../../../shared/session-lane.js';
 import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
@@ -473,6 +474,7 @@ function defaultForm(): FormState {
 async function createSessionFromForm(
   environment: EnvironmentPickerModel['resolved'],
   form: FormState,
+  sessionLane: SessionLane,
   remoteCwd?: string
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
@@ -487,6 +489,7 @@ async function createSessionFromForm(
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
     agent: form.selectedAgent,
+    sessionLane,
     cols,
     rows,
   };
@@ -973,9 +976,15 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       }
       setCreating(true);
       setError(null);
+      const sessionLane: SessionLane = remoteNodeSelected
+        ? rememberCwd
+          ? 'remote-cwd'
+          : 'remote-home'
+        : 'local-repo';
       const { session, error: submitError } = await createSessionFromForm(
         environmentModel.resolved,
         form,
+        sessionLane,
         cwdForRemote
       );
       try {

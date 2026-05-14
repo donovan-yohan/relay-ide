@@ -86,12 +86,44 @@ describe('frontend api errors', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await createSession({ nodeId: 'node-a', repoPath: '/repo', type: 'terminal' });
+    await createSession({
+      nodeId: 'node-a',
+      repoPath: '/repo',
+      type: 'terminal',
+      sessionLane: 'remote-cwd',
+    });
 
     expect(fetchMock).toHaveBeenCalledWith('/hub/nodes/node-a/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoPath: '/repo', type: 'terminal' }),
+      body: JSON.stringify({
+        repoPath: '/repo',
+        type: 'terminal',
+        sessionLane: 'remote-cwd',
+      }),
+    });
+  });
+
+  it('preserves local session lane markers in create payloads', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: 'local-session-1' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSession({ repoPath: '/repo', type: 'agent', sessionLane: 'local-repo' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoPath: '/repo',
+        type: 'agent',
+        sessionLane: 'local-repo',
+      }),
     });
   });
 

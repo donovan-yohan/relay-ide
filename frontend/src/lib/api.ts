@@ -37,6 +37,7 @@ import {
   parseGlobalSessionId,
   type NodeId,
 } from '../../../shared/identity.js';
+import type { SessionLane } from '../../../shared/session-lane.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -559,6 +560,7 @@ export async function createSession(body: {
   needsBranchRename?: boolean | undefined;
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
+  sessionLane?: SessionLane | undefined;
   ticketContext?: {
     ticketId: string;
     title: string;

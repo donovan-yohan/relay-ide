@@ -55,6 +55,7 @@ import {
 } from './analytics.js';
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
+import type { SessionLane } from '../shared/session-lane.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -116,6 +117,7 @@ export type CreateParams = Omit<CreatePtyParams, 'id' | 'callbacks'> & {
   initialPrompt?: string;
   workspaceId?: string;
   additionalDirs?: string[];
+  sessionLane?: SessionLane;
 };
 
 export type CreateResult = SessionSummary & { pid: number | undefined };
@@ -336,6 +338,7 @@ function create({
       type: rest.type ?? 'agent',
       workspace: rest.repoPath,
       mode: rest.command ? 'terminal' : 'agent',
+      ...(rest.sessionLane ? { sessionLane: rest.sessionLane } : {}),
     },
     session_id: id,
   });
@@ -1579,6 +1582,7 @@ async function createWeb(
       type: 'agent',
       workspace: params.repoPath,
       mode: 'web',
+      ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
     },
     session_id: result.session.id,
   });

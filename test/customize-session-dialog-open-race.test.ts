@@ -11,6 +11,7 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 const mocks = vi.hoisted(() => ({
   fetchRepoInventory: vi.fn(),
   fetchHubNodes: vi.fn(),
+  createAgentSession: vi.fn(),
   configState: {
     defaultContinue: false,
     defaultYolo: false,
@@ -41,13 +42,14 @@ vi.mock('../frontend/src/lib/stores/config.js', () => {
 });
 
 vi.mock('../frontend/src/lib/stores/ui.js', () => ({
+  DEFAULT_TERMINAL_FONT_SIZE: 14,
   useUiStore: {
     getState: () => ({ terminalFontSize: 14 }),
   },
 }));
 
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
-  createAgentSession: vi.fn(),
+  createAgentSession: mocks.createAgentSession,
 }));
 
 vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
@@ -86,6 +88,9 @@ vi.mock('../frontend/src/components/dialogs/DialogShell.js', async () => {
 const { default: CustomizeSessionDialog } =
   await import('../frontend/src/components/dialogs/CustomizeSessionDialog.js');
 
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -113,7 +118,7 @@ function framework(id: string): FrameworkInfo {
   };
 }
 
-function node(): HubNodeSummary {
+function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'local',
     displayName: 'local mac',
@@ -143,6 +148,7 @@ function node(): HubNodeSummary {
     pairedAt: '2026-05-12T00:00:00.000Z',
     lastSeenAt: '2026-05-12T00:00:00.000Z',
     credentialId: 'cred-local',
+    ...overrides,
   };
 }
 
@@ -184,6 +190,79 @@ function inventory(prefix: string): AggregatedRepoInventoryResponse {
   };
 }
 
+function remoteLaneInventory(): AggregatedRepoInventoryResponse {
+  const localInstance = {
+    repoInstanceId: 'local:%2Ftmp%2Fremote-lane',
+    nodeId: 'local',
+    localPath: '/tmp/remote-lane',
+    name: 'remote-lane',
+    isGitRepo: true,
+    defaultBranch: 'nightly',
+    currentBranch: 'nightly',
+    repoIdentity: 'github.com/example/remote-lane',
+    selectedRemote: null,
+    remotes: [],
+    repoIdentityWarnings: [],
+    worktrees: [],
+    reportedAt: '2026-05-12T00:00:00.000Z',
+  };
+  return {
+    generatedAt: '2026-05-12T00:00:00.000Z',
+    reports: [],
+    groups: [
+      {
+        groupId: 'github.com/example/remote-lane',
+        repoIdentity: 'github.com/example/remote-lane',
+        displayName: 'remote-lane',
+        selectedRemote: null,
+        remotes: [],
+        warnings: [],
+        identityDebug: {
+          groupedBy: 'repoIdentity',
+          repoIdentity: 'github.com/example/remote-lane',
+          instanceCount: 2,
+          nodeIds: ['local', 'remote'],
+        },
+        instances: [
+          localInstance,
+          {
+            ...localInstance,
+            repoInstanceId: 'remote:%2Fsrv%2Fremote-lane',
+            nodeId: 'remote',
+            localPath: '/srv/remote-lane',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function renderAndOpen(
+  workspace: { name: string; path: string },
+  inventoryResponse: AggregatedRepoInventoryResponse,
+  nodes: HubNodeSummary[]
+) {
+  mocks.configState.frameworks = [framework('claude')];
+  mocks.fetchRepoInventory.mockResolvedValue(inventoryResponse);
+  mocks.fetchHubNodes.mockResolvedValue(nodes);
+  mocks.configState.refreshConfig.mockResolvedValue(undefined);
+  mocks.createAgentSession.mockResolvedValue({ session: { id: 'sess-1' } });
+
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const ref = createRef<CustomizeSessionDialogHandle>();
+
+  await act(async () => {
+    root!.render(React.createElement(CustomizeSessionDialog, { ref }));
+  });
+  await act(async () => {
+    await ref.current!.open(workspace);
+  });
+  await flush();
+  return container;
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -192,9 +271,6 @@ async function flush() {
 }
 
 describe('CustomizeSessionDialog open races', () => {
-  let container: HTMLDivElement | null = null;
-  let root: Root | null = null;
-
   afterEach(() => {
     act(() => root?.unmount());
     container?.remove();
@@ -205,6 +281,89 @@ describe('CustomizeSessionDialog open races', () => {
     mocks.configState.defaultYolo = false;
     mocks.configState.defaultAgent = 'claude';
     mocks.configState.frameworks = [framework('claude')];
+  });
+
+  it('marks local repo launches with the local-repo lane', async () => {
+    const el = await renderAndOpen(
+      { name: 'local-one', path: '/tmp/local-one' },
+      inventory('local'),
+      [node()]
+    );
+
+    await act(async () => {
+      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodeId: 'local',
+        repoPath: '/tmp/local-one',
+        sessionLane: 'local-repo',
+      })
+    );
+  });
+
+  it('marks remote cwd launches with the remote-cwd lane', async () => {
+    const el = await renderAndOpen(
+      { name: 'remote-lane', path: '/tmp/remote-lane' },
+      remoteLaneInventory(),
+      [
+        node(),
+        node({ nodeId: 'remote', displayName: 'remote box', homeDir: '/home/relay' }),
+      ]
+    );
+
+    await act(async () => {
+      const select = el.querySelector('#cs-node') as HTMLSelectElement;
+      select.value = 'remote';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodeId: 'remote',
+        cwd: '/home/relay',
+        sessionLane: 'remote-cwd',
+      })
+    );
+  });
+
+  it('marks remote home launches with the remote-home lane', async () => {
+    const el = await renderAndOpen(
+      { name: 'remote-lane', path: '/tmp/remote-lane' },
+      remoteLaneInventory(),
+      [
+        node(),
+        node({ nodeId: 'remote', displayName: 'remote box', homeDir: '/home/relay' }),
+      ]
+    );
+
+    await act(async () => {
+      const select = el.querySelector('#cs-node') as HTMLSelectElement;
+      select.value = 'remote';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      (el.querySelector('[data-track="dialog.customize-session.start-in-home"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(mocks.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodeId: 'remote',
+        cwd: '/home/relay',
+        sessionLane: 'remote-home',
+      })
+    );
   });
 
   it('ignores stale inventory and config from an earlier overlapping open call', async () => {

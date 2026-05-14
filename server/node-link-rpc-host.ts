@@ -12,6 +12,7 @@ import type {
   RelayNodeEnvelope,
   RelayNodeError,
 } from '../shared/relay-node-protocol.js';
+import { isSessionLane, type SessionLane } from '../shared/session-lane.js';
 import type { SessionSummary } from './types.js';
 
 // Node-side RPC dispatcher. Hub initiates rpc/<type> requests over the
@@ -78,6 +79,7 @@ interface SessionsCreateInput {
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   continue?: boolean;
+  sessionLane?: SessionLane;
 }
 
 function parseSessionsCreateInput(
@@ -100,7 +102,7 @@ function parseSessionsCreateInput(
     );
   }
   const input: SessionsCreateInput = { type: typeRaw };
-  if (modeRaw) input.mode = modeRaw;
+  if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
   const agent = asString(record['agent']);
   if (agent !== undefined) input.agent = agent;
   const repoPath = asString(record['repoPath']);
@@ -139,6 +141,15 @@ function parseSessionsCreateInput(
     input.branchRenamePrompt = branchRenamePrompt;
   const continueFlag = asBoolean(record['continue']);
   if (continueFlag !== undefined) input.continue = continueFlag;
+  const sessionLane = record['sessionLane'];
+  if (sessionLane !== undefined) {
+    if (!isSessionLane(sessionLane)) {
+      return invalidRequest(
+        'sessions.create payload.sessionLane must be local-repo, remote-cwd, or remote-home when set'
+      );
+    }
+    input.sessionLane = sessionLane;
+  }
   return input;
 }
 

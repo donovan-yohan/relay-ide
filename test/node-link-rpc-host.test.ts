@@ -105,7 +105,11 @@ describe('node-link-rpc-host', () => {
     const { sent, ctx } = context();
 
     host.handle(
-      envelope('sessions.create', { type: 'terminal', cwd: '/home/user' }),
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/home/user',
+        sessionLane: 'remote-cwd',
+      }),
       ctx
     );
 
@@ -113,7 +117,11 @@ describe('node-link-rpc-host', () => {
     expect(
       (localRelayNode.sessions.create as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0]
-    ).toMatchObject({ type: 'terminal', cwd: '/home/user' });
+    ).toMatchObject({
+      type: 'terminal',
+      cwd: '/home/user',
+      sessionLane: 'remote-cwd',
+    });
     expect(sent).toHaveLength(1);
     const reply = sent[0]!;
     expect(reply.channel).toBe('rpc');
@@ -158,6 +166,24 @@ describe('node-link-rpc-host', () => {
     expect(sent[0]!.type).toBe('sessions.create.result');
     const payload = sent[0]!.payload as { session: SessionSummary };
     expect(payload.session.mode).toBe('web');
+  });
+
+  it('rejects invalid session lane markers before dispatch', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', { type: 'terminal', sessionLane: 'banana' }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('payload.sessionLane');
   });
 
   it('responds with INVALID_REQUEST when payload is missing type', () => {
