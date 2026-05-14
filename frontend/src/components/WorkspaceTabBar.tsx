@@ -94,6 +94,18 @@ function WorkspaceTabItem({
       </span>
       <span className="ws-tab__name">{summary.primary}</span>
       {summary.meta && <span className="ws-tab__meta">{summary.meta}</span>}
+      {summary.nodeBadge && (
+        <span
+          className={`ws-tab__node ws-tab__node--${summary.nodeBadge.status}`}
+          title={`node: ${summary.nodeBadge.label} (${summary.nodeBadge.status})`}
+        >
+          <span
+            className={`ws-tab__node-dot ws-tab__node-dot--${summary.nodeBadge.status}`}
+            aria-hidden
+          />
+          <span className="ws-tab__node-label">{summary.nodeBadge.label}</span>
+        </span>
+      )}
       {summary.dot && (
         <span
           className={`ws-tab__dot ws-tab__dot--${summary.dot}`}
@@ -129,6 +141,8 @@ export interface WorkspaceTabBarProps {
   onSelectTab: (tabId: WorkspaceTabId) => void;
   onCloseTab: (tabId: WorkspaceTabId) => void;
   onAddTabRequest?: () => void;
+  /** Optional render-prop for the add-tab control (e.g. a node picker). */
+  renderAddControl?: () => React.ReactNode;
 }
 
 export function WorkspaceTabBar({
@@ -137,6 +151,7 @@ export function WorkspaceTabBar({
   onSelectTab,
   onCloseTab,
   onAddTabRequest,
+  renderAddControl,
 }: WorkspaceTabBarProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: `tabbar:${pane.id}`,
@@ -166,16 +181,18 @@ export function WorkspaceTabBar({
           />
         );
       })}
-      {onAddTabRequest && (
-        <button
-          type="button"
-          className="ws-tabs__add"
-          aria-label="add tab"
-          onClick={onAddTabRequest}
-        >
-          +
-        </button>
-      )}
+      {renderAddControl
+        ? renderAddControl()
+        : onAddTabRequest && (
+            <button
+              type="button"
+              className="ws-tabs__add"
+              aria-label="add tab"
+              onClick={onAddTabRequest}
+            >
+              +
+            </button>
+          )}
       <span className="ws-tabs__spacer" aria-hidden />
     </div>
   );

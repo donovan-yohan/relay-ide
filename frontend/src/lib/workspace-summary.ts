@@ -1,3 +1,5 @@
+import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
+import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
 import type { AgentState, SessionSummary } from './types.js';
 import type { WorkspaceTab } from './workspace-layout.js';
 
@@ -30,12 +32,22 @@ export interface SummaryPill {
   label: string;
 }
 
+export interface NodeBadge {
+  label: string;
+  status: HubNodeStatus | 'unknown';
+}
+
 export interface WorkspaceTabSummary {
   icon: SummaryIcon;
   primary: string;
   meta?: string;
   pills: SummaryPill[];
   dot: SummaryDot;
+  /**
+   * Populated on session tabs that target a non-local execution node.
+   * Drives the cross-node label + heartbeat indicator in the tab chrome.
+   */
+  nodeBadge?: NodeBadge;
   breadcrumb?: {
     segments: string[];
     repoLabel?: string;
@@ -43,10 +55,20 @@ export interface WorkspaceTabSummary {
   };
 }
 
+export interface SummaryNodeInfo {
+  label: string;
+  status: HubNodeStatus;
+}
+
 export interface SummaryContext {
   findSession?: (id: string) => SessionSummary | undefined;
   isFileChanged?: (filePath: string) => boolean;
   fileLineCount?: (filePath: string) => number | undefined;
+  /**
+   * Lookup for cross-node session tabs. Returns the node's display label
+   * and current heartbeat status, or undefined when not yet known.
+   */
+  findNode?: (nodeId: string) => SummaryNodeInfo | undefined;
   repoLabel?: string;
   repoColor?: string;
 }
@@ -89,13 +111,27 @@ function summaryForSessionTab(
     (isTerminal ? 'terminal' : 'session');
   const dot = sessionDot(session?.agentState, session?.idle);
   const meta = sessionMeta(session, isTerminal);
+  const nodeBadge = nodeBadgeFor(tab.nodeId ?? session?.nodeId, ctx);
   return {
     icon,
     primary,
     pills: [],
     dot,
     ...(meta !== undefined ? { meta } : {}),
+    ...(nodeBadge ? { nodeBadge } : {}),
   };
+}
+
+function nodeBadgeFor(
+  nodeId: string | undefined,
+  ctx: SummaryContext
+): NodeBadge | undefined {
+  if (!nodeId || nodeId === DEFAULT_LOCAL_NODE_ID) return undefined;
+  const info = ctx.findNode?.(nodeId);
+  if (!info) {
+    return { label: nodeId, status: 'unknown' };
+  }
+  return { label: info.label, status: info.status };
 }
 
 function sessionIconFor(

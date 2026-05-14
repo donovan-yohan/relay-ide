@@ -88,6 +88,7 @@ interface RenderNodeProps {
   summaryContext: SummaryContext;
   splitSizes: Record<string, number[]>;
   onAddTabRequest?: (paneId: string) => void;
+  renderAddControl?: (paneId: string) => React.ReactNode;
   onSplitLayout: (splitId: string, sizes: number[]) => void;
 }
 
@@ -98,6 +99,7 @@ function RenderNode({
   summaryContext,
   splitSizes,
   onAddTabRequest,
+  renderAddControl,
   onSplitLayout,
 }: RenderNodeProps): React.ReactElement {
   if (node.type === 'pane') {
@@ -108,6 +110,7 @@ function RenderNode({
         isDragActive={isDragActive}
         summaryContext={summaryContext}
         {...(onAddTabRequest ? { onAddTabRequest } : {})}
+        {...(renderAddControl ? { renderAddControl } : {})}
       />
     );
   }
@@ -136,6 +139,7 @@ function RenderNode({
                 summaryContext={summaryContext}
                 splitSizes={splitSizes}
                 {...(onAddTabRequest ? { onAddTabRequest } : {})}
+                {...(renderAddControl ? { renderAddControl } : {})}
                 onSplitLayout={onSplitLayout}
               />
             </Panel>
@@ -149,11 +153,13 @@ function RenderNode({
 export interface WorkspaceLayoutProps {
   summaryContext: SummaryContext;
   onAddTabRequest?: (paneId: string) => void;
+  renderAddControl?: (paneId: string) => React.ReactNode;
 }
 
 export function WorkspaceLayout({
   summaryContext,
   onAddTabRequest,
+  renderAddControl,
 }: WorkspaceLayoutProps): React.ReactElement {
   const layout = useWorkspaceLayoutStore((s) => s.layout);
   const activePaneId = useWorkspaceLayoutStore((s) => s.activePaneId);
@@ -249,6 +255,7 @@ export function WorkspaceLayout({
           summaryContext={summaryContext}
           splitSizes={splitSizes}
           {...(onAddTabRequest ? { onAddTabRequest } : {})}
+          {...(renderAddControl ? { renderAddControl } : {})}
           onSplitLayout={onSplitLayout}
         />
       </DndContext>

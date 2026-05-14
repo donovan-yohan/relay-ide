@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
+import { ConflictError, fetchHubNodes } from '../lib/api.js';
+import { createLogger } from '../lib/logger.js';
+import {
+  createAgentSession,
+  getCurrentSessionContext,
+} from '../lib/session-utils.js';
+import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
+import { useToastStore } from '../lib/stores/toasts.js';
+import { TerminalNodePicker } from './TerminalNodePicker.js';
 import type { OpenFileTab } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
@@ -21,6 +32,8 @@ import { Terminal } from './Terminal.js';
 import { ChatView } from './chat/ChatView.js';
 import './WorkspaceArea.css';
 
+const workspaceLogger = createLogger('workspace-area');
+
 function uiTabToWorkspaceTab(tab: OpenFileTab): WorkspaceTab {
   return {
     kind: 'file',
@@ -39,6 +52,7 @@ function sessionToWorkspaceTab(session: SessionSummary): WorkspaceTab {
     kind: 'session',
     sessionId: scopedSessionKey(session),
     sessionType: session.type,
+    ...(session.nodeId ? { nodeId: session.nodeId } : {}),
   };
 }
 
@@ -389,6 +403,26 @@ export function WorkspaceArea({
     }
   }, [layout, activePaneId, setUiState, setActiveSessionId]);
 
+  const hubNodesQuery = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+  });
+  const hubNodes = hubNodesQuery.data;
+
+  const nodeIndex = useMemo<Map<string, SummaryNodeInfo>>(() => {
+    const map = new Map<string, SummaryNodeInfo>();
+    if (!hubNodes) return map;
+    for (const node of hubNodes) {
+      map.set(node.nodeId, {
+        label: node.displayName || node.nodeId,
+        status: node.status,
+      });
+    }
+    return map;
+  }, [hubNodes]);
+
   const summaryContext = useMemo<SummaryContext>(() => {
     const changed = new Set(
       openFileTabs.filter((t) => t.isChanged).map((t) => t.filePath)
@@ -397,8 +431,55 @@ export function WorkspaceArea({
     return {
       isFileChanged: (path) => changed.has(path),
       findSession,
+      findNode: (id) => nodeIndex.get(id),
     };
-  }, [openFileTabs, sessions]);
+  }, [openFileTabs, sessions, nodeIndex]);
+
+  const setActivePane = useWorkspaceLayoutStore((s) => s.setActivePane);
+  const renderAddControl = useCallback(
+    (paneId: string) => (
+      <TerminalNodePicker
+        onSelect={async (nodeId) => {
+          // Resolve repoPath + worktreePath from the live session context.
+          // workspacePath is the active worktree's cwd, which the
+          // `/sessions` route would reject as a repoPath; mirror the same
+          // split that handleQuickTerminal uses.
+          const { currentActiveWorkspace, currentWorktreePath } =
+            getCurrentSessionContext();
+          if (!currentActiveWorkspace) {
+            workspaceLogger.warn(
+              'no active workspace — cannot create terminal'
+            );
+            return;
+          }
+          // The new session lands in whichever pane is active; activate
+          // the pane whose `+` was used before the create call so the
+          // layout reconciler routes the tab to the correct pane.
+          setActivePane(paneId);
+          const { session, error } = await createAgentSession({
+            repoPath: currentActiveWorkspace.path,
+            worktreePath: currentWorktreePath,
+            type: 'terminal',
+            ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID && { nodeId }),
+          });
+          if (error && !(error instanceof ConflictError)) {
+            workspaceLogger.error('failed to create terminal session', error);
+            useToastStore
+              .getState()
+              .showToast(
+                error instanceof Error
+                  ? error.message
+                  : 'failed to create terminal session'
+              );
+          }
+          if (session?.id) {
+            useSessionsStore.getState().setActiveSessionId(session.id);
+          }
+        }}
+      />
+    ),
+    [setActivePane]
+  );
 
   const renderTab = useCallback(
     (tab: WorkspaceTab) => {
@@ -444,7 +525,10 @@ export function WorkspaceArea({
 
   return (
     <div className="ws-area">
-      <WorkspaceLayout summaryContext={summaryContext} />
+      <WorkspaceLayout
+        summaryContext={summaryContext}
+        renderAddControl={renderAddControl}
+      />
       <WorkspaceContentLayer renderTab={renderTab} />
     </div>
   );
