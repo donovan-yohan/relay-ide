@@ -1,6 +1,5 @@
 import { useCallback } from 'react';
 import type React from 'react';
-import { parseGlobalSessionId } from '../../../shared/identity.js';
 import { createLogger } from '../lib/logger.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
@@ -28,7 +27,10 @@ import {
   createAgentSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
-import { resolveSessionByKey } from '../lib/session-keys.js';
+import {
+  resolveSessionByKey,
+  resolveSessionCloseTarget,
+} from '../lib/session-keys.js';
 import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
@@ -819,15 +821,11 @@ export function useSessionHandlers({
   const handleCloseSession = useCallback(
     (sessionId: string, nodeId?: string) => {
       const state = useSessionsStore.getState();
-      const targetSession = resolveSessionByKey(state.sessions, sessionId);
-      let localSessionId = targetSession?.id ?? sessionId;
-      const targetNodeId = targetSession?.nodeId ?? nodeId;
-      if (!targetSession && targetNodeId) {
-        const parsed = parseGlobalSessionId(sessionId);
-        if (parsed?.nodeId === targetNodeId) {
-          localSessionId = parsed.localSessionId;
-        }
-      }
+      const {
+        session: targetSession,
+        sessionId: localSessionId,
+        nodeId: targetNodeId,
+      } = resolveSessionCloseTarget(state.sessions, sessionId, nodeId);
       // Kill session via API, then refresh
       void killSession(localSessionId, targetNodeId)
         .catch((error) => {
@@ -851,7 +849,9 @@ export function useSessionHandlers({
           ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
           : allWs;
         const remaining = sameDir.filter((s) => s !== targetSession);
-        useSessionsStore.getState().setActiveSessionId(remaining[0]?.id ?? null);
+        useSessionsStore
+          .getState()
+          .setActiveSessionId(remaining[0]?.id ?? null);
       }
     },
     []

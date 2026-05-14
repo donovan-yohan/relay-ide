@@ -217,6 +217,37 @@ describe('session lifecycle handlers', () => {
     );
   });
 
+  it('infers the owning node from a stale scoped active-session close', async () => {
+    const fetchMock = stubSuccessfulFetch();
+    useSessionsStore.setState({
+      sessions: [],
+      activeSessionId: 'node-a:remote-session-1',
+    });
+
+    let handlers: SessionHandlers | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(SessionHandlersHarness, {
+          onReady: (next) => {
+            handlers = next;
+          },
+        })
+      );
+    });
+
+    handlers!.handleCloseSession('node-a:remote-session-1');
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/hub/nodes/node-a/sessions/remote-session-1',
+      { method: 'DELETE' }
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/sessions/node-a%3Aremote-session-1',
+      expect.anything()
+    );
+  });
+
   it('keeps tab close for local sessions on the local sessions endpoint', async () => {
     const fetchMock = stubSuccessfulFetch();
     const local = makeSession({ id: 'local-session-1' });
@@ -306,6 +337,38 @@ describe('session lifecycle handlers', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/hub/nodes/node-a/sessions/palette-session-1',
       { method: 'DELETE' }
+    );
+    expect(refreshAll).toHaveBeenCalled();
+  });
+
+  it('routes stale command-palette kill for scoped active sessions through the owning node', async () => {
+    const fetchMock = stubSuccessfulFetch();
+    useSessionsStore.setState({
+      sessions: [],
+      activeSessionId: 'node-a:remote-session-1',
+    });
+
+    await act(async () => {
+      root!.render(React.createElement(ActionRegistryHarness));
+    });
+    await flushPromises();
+
+    const action = getAction('session.kill');
+    expect(action).toBeDefined();
+    await act(async () => {
+      await action!.handler({
+        view: 'session',
+        sessionId: 'node-a:remote-session-1',
+      });
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/hub/nodes/node-a/sessions/remote-session-1',
+      { method: 'DELETE' }
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/sessions/node-a%3Aremote-session-1',
+      expect.anything()
     );
     expect(refreshAll).toHaveBeenCalled();
   });

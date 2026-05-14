@@ -1,4 +1,7 @@
-import { createGlobalSessionId } from '../../../shared/identity.js';
+import {
+  createGlobalSessionId,
+  parseGlobalSessionId,
+} from '../../../shared/identity.js';
 import type { SessionSummary } from './types.js';
 
 type SessionIdentity = Pick<
@@ -39,6 +42,34 @@ export function resolveSessionByKey<T extends SessionIdentity>(
     legacyMatches.flatMap((session) => (session.nodeId ? [session.nodeId] : []))
   );
   return matchingNodes.size <= 1 ? legacyMatches[0] : undefined;
+}
+
+export interface SessionCloseTarget<T extends SessionIdentity> {
+  session: T | undefined;
+  sessionId: string;
+  nodeId?: string;
+}
+
+export function resolveSessionCloseTarget<T extends SessionIdentity>(
+  sessions: T[],
+  sessionKey: string,
+  nodeId?: string
+): SessionCloseTarget<T> {
+  const session = resolveSessionByKey(sessions, sessionKey);
+  let sessionId = session?.id ?? sessionKey;
+  let targetNodeId = session?.nodeId ?? nodeId;
+
+  if (!session) {
+    const parsed = parseGlobalSessionId(sessionKey);
+    if (parsed && (!targetNodeId || parsed.nodeId === targetNodeId)) {
+      sessionId = parsed.localSessionId;
+      targetNodeId = parsed.nodeId;
+    }
+  }
+
+  return targetNodeId
+    ? { session, sessionId, nodeId: targetNodeId }
+    : { session, sessionId };
 }
 
 export function resolveSessionKey(
