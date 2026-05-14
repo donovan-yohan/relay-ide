@@ -16,7 +16,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     trust: { state: 'trusted', level: 'standard', warning: '' },
     credentialState: 'active',
     version: {
-      state: 'match',
+      state: 'compatible',
       nodeProtocolVersion: '1.0',
       hubProtocolVersion: '1.0',
     },
@@ -85,6 +85,59 @@ describe('TerminalNodePicker buildChoices', () => {
   it('falls back to nodeId when displayName is empty', () => {
     const choices = buildChoices([node({ nodeId: 'm1', displayName: '' })]);
     expect(choices[1]?.label).toBe('m1');
+  });
+
+  it('disables nodes with version skew even when online', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'skew',
+        displayName: 'skew',
+        version: {
+          state: 'version-skew',
+          nodeProtocolVersion: '1.1',
+          hubProtocolVersion: '1.0',
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: true,
+      disabledReason: 'version skew',
+    });
+  });
+
+  it('disables nodes with incompatible protocol versions', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'incompat',
+        displayName: 'incompat',
+        version: {
+          state: 'incompatible',
+          nodeProtocolVersion: '2.0',
+          hubProtocolVersion: '1.0',
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: true,
+      disabledReason: 'protocol incompatible',
+    });
+  });
+
+  it('disables nodes without tmux capability even when online', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'thin',
+        displayName: 'thin',
+        capabilities: {
+          ...node().capabilities,
+          core: { ...node().capabilities.core, tmux: 'unavailable' },
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: true,
+      disabledReason: 'no tmux',
+    });
   });
 });
 

@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import { ConflictError, fetchHubNodes } from '../lib/api.js';
 import { createLogger } from '../lib/logger.js';
-import { createAgentSession } from '../lib/session-utils.js';
+import {
+  createAgentSession,
+  getCurrentSessionContext,
+} from '../lib/session-utils.js';
 import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import { fileTabKey, useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
@@ -432,12 +435,30 @@ export function WorkspaceArea({
     };
   }, [openFileTabs, sessions, nodeIndex]);
 
+  const setActivePane = useWorkspaceLayoutStore((s) => s.setActivePane);
   const renderAddControl = useCallback(
-    (_paneId: string) => (
+    (paneId: string) => (
       <TerminalNodePicker
         onSelect={async (nodeId) => {
+          // Resolve repoPath + worktreePath from the live session context.
+          // workspacePath is the active worktree's cwd, which the
+          // `/sessions` route would reject as a repoPath; mirror the same
+          // split that handleQuickTerminal uses.
+          const { currentActiveWorkspace, currentWorktreePath } =
+            getCurrentSessionContext();
+          if (!currentActiveWorkspace) {
+            workspaceLogger.warn(
+              'no active workspace — cannot create terminal'
+            );
+            return;
+          }
+          // The new session lands in whichever pane is active; activate
+          // the pane whose `+` was used before the create call so the
+          // layout reconciler routes the tab to the correct pane.
+          setActivePane(paneId);
           const { session, error } = await createAgentSession({
-            repoPath: workspacePath,
+            repoPath: currentActiveWorkspace.path,
+            worktreePath: currentWorktreePath,
             type: 'terminal',
             ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID && { nodeId }),
           });
@@ -457,7 +478,7 @@ export function WorkspaceArea({
         }}
       />
     ),
-    [workspacePath]
+    [setActivePane]
   );
 
   const renderTab = useCallback(

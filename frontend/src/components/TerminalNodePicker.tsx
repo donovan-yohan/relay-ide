@@ -2,22 +2,23 @@ import React, {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchHubNodes } from '../lib/api.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
-import useClickOutside from '../hooks/useClickOutside.js';
 import './TerminalNodePicker.css';
 
 export interface TerminalNodePickerProps {
   /**
-   * Invoked with the chosen nodeId. Pass DEFAULT_LOCAL_NODE_ID for "this host".
-   * Empty fires when picker has no remote nodes — the caller may default to
-   * hub-local without prompting.
+   * Called with the chosen nodeId — DEFAULT_LOCAL_NODE_ID for "this host",
+   * or a paired node's id for cross-node terminals. Only fires when the
+   * user selects an enabled (online + capability-ready) choice.
    */
   onSelect: (nodeId: string) => void;
   /** Label for the trigger button. */
@@ -36,6 +37,21 @@ export interface NodeChoice {
   disabledReason?: string;
 }
 
+/**
+ * Mirrors the hub-side preconditions documented in `docs/federated-relay.md`
+ * §Session Routing: a node must be online, version-matched to the hub, and
+ * advertise tmux capability. Anything else gets surfaced as a disabled
+ * choice with the failing precondition as the tooltip reason — the user
+ * never gets to click and then hit a typed error.
+ */
+function nodeBlockReason(node: HubNodeSummary): string | null {
+  if (node.status !== 'online') return node.status;
+  if (node.version.state === 'incompatible') return 'protocol incompatible';
+  if (node.version.state === 'version-skew') return 'version skew';
+  if (node.capabilities.core.tmux !== 'available') return 'no tmux';
+  return null;
+}
+
 export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
   const choices: NodeChoice[] = [
     {
@@ -46,13 +62,13 @@ export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
     },
   ];
   for (const node of nodes) {
-    const online = node.status === 'online';
+    const reason = nodeBlockReason(node);
     choices.push({
       nodeId: node.nodeId,
       label: node.displayName || node.nodeId,
       status: node.status,
-      disabled: !online,
-      ...(online ? {} : { disabledReason: node.status }),
+      disabled: reason !== null,
+      ...(reason ? { disabledReason: reason } : {}),
     });
   }
   return choices;
@@ -77,10 +93,29 @@ export function TerminalNodePicker({
 }: TerminalNodePickerProps): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
+    null
+  );
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const optionIdPrefix = useId();
-  useClickOutside(wrapperRef, () => setOpen(false), open);
+
+  // Click-outside: menu is portal-rendered, so we explicitly inspect both
+  // the trigger wrapper and the menu listbox to keep them as a single
+  // logical surface.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (wrapperRef.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [open]);
 
   const { data: nodes = [] } = useQuery({
     queryKey: ['hub-nodes'],
@@ -109,10 +144,36 @@ export function TerminalNodePicker({
     });
   }, [open, choices]);
 
+  // Position the portal-rendered menu under the trigger and keep it in sync
+  // with scroll/resize while open. Anchoring via fixed coords avoids the
+  // tab bar's `overflow: hidden` clipping that an in-flow absolute child
+  // would suffer from.
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPos(null);
+      return;
+    }
+    const update = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setMenuPos({
+        top: rect.bottom + 2,
+        right: window.innerWidth - rect.right,
+      });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open]);
+
   // Focus the listbox container so the keyboard handler receives ArrowUp/Down.
   useEffect(() => {
-    if (open) listRef.current?.focus();
-  }, [open]);
+    if (open && menuPos) listRef.current?.focus();
+  }, [open, menuPos]);
 
   useEffect(() => {
     if (!open) return;
@@ -167,9 +228,66 @@ export function TerminalNodePicker({
     }
   };
 
+  const menu =
+    open && menuPos
+      ? createPortal(
+          <div
+            ref={listRef}
+            role="listbox"
+            tabIndex={-1}
+            className="ws-node-picker__menu"
+            style={{ top: menuPos.top, right: menuPos.right }}
+            {...(focusedIndex >= 0
+              ? { 'aria-activedescendant': optionId(focusedIndex) }
+              : {})}
+            onKeyDown={handleListKeyDown}
+          >
+            <div className="ws-node-picker__hint">new terminal on…</div>
+            {choices.map((choice, i) => {
+              const isFocused = i === focusedIndex;
+              return (
+                <button
+                  key={choice.nodeId}
+                  id={optionId(i)}
+                  type="button"
+                  role="option"
+                  aria-selected={isFocused}
+                  aria-disabled={choice.disabled}
+                  disabled={choice.disabled}
+                  className={`ws-node-picker__item${isFocused ? ' ws-node-picker__item--focused' : ''}`}
+                  onClick={() => handleSelect(choice)}
+                  onMouseEnter={() => {
+                    if (!choice.disabled) setFocusedIndex(i);
+                  }}
+                  tabIndex={-1}
+                  {...(choice.disabledReason
+                    ? {
+                        title: `node ${choice.label} is ${choice.disabledReason}`,
+                      }
+                    : {})}
+                >
+                  <span
+                    className={`ws-node-picker__dot ws-node-picker__dot--${choice.status === 'this host' ? 'local' : choice.status}`}
+                    aria-hidden
+                  />
+                  <span className="ws-node-picker__label">{choice.label}</span>
+                  {choice.status !== 'this host' && (
+                    <span className="ws-node-picker__status">
+                      {choice.status}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>,
+          document.body
+        )
+      : null;
+
   return (
     <div ref={wrapperRef} className="ws-node-picker">
       <button
+        ref={triggerRef}
         type="button"
         className={triggerClassName ?? 'ws-tabs__add'}
         aria-haspopup="listbox"
@@ -179,56 +297,7 @@ export function TerminalNodePicker({
       >
         {triggerLabel}
       </button>
-      {open && (
-        <div
-          ref={listRef}
-          role="listbox"
-          tabIndex={-1}
-          className="ws-node-picker__menu"
-          aria-activedescendant={
-            focusedIndex >= 0 ? optionId(focusedIndex) : undefined
-          }
-          onKeyDown={handleListKeyDown}
-        >
-          <div className="ws-node-picker__hint">new terminal on…</div>
-          {choices.map((choice, i) => {
-            const isFocused = i === focusedIndex;
-            return (
-              <button
-                key={choice.nodeId}
-                id={optionId(i)}
-                type="button"
-                role="option"
-                aria-selected={isFocused}
-                aria-disabled={choice.disabled}
-                disabled={choice.disabled}
-                className={`ws-node-picker__item${isFocused ? ' ws-node-picker__item--focused' : ''}`}
-                onClick={() => handleSelect(choice)}
-                onMouseEnter={() => {
-                  if (!choice.disabled) setFocusedIndex(i);
-                }}
-                tabIndex={-1}
-                {...(choice.disabledReason
-                  ? {
-                      title: `node ${choice.label} is ${choice.disabledReason}`,
-                    }
-                  : {})}
-              >
-                <span
-                  className={`ws-node-picker__dot ws-node-picker__dot--${choice.status === 'this host' ? 'local' : choice.status}`}
-                  aria-hidden
-                />
-                <span className="ws-node-picker__label">{choice.label}</span>
-                {choice.status !== 'this host' && (
-                  <span className="ws-node-picker__status">
-                    {choice.status}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {menu}
     </div>
   );
 }

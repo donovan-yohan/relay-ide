@@ -6,12 +6,11 @@
 }
 
 .ws-node-picker__menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
+  /* Portal-rendered: top/right are set inline from the trigger rect so the
+     menu escapes the tab bar's overflow clipping. */
+  position: fixed;
   z-index: 50;
   min-width: 200px;
-  margin-top: 2px;
   background: var(--bg-elev, #111);
   border: 1px solid var(--border, #2a2a2a);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
