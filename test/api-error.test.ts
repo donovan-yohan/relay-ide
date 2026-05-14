@@ -80,7 +80,7 @@ describe('frontend api errors', () => {
     });
   });
 
-  it('posts selected remote node session creates to the hub route without leaking nodeId to the node payload', async () => {
+  it('posts selected remote cwd session creates to the hub route without local repo fields', async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify({ id: 'remote-session-1' }), {
@@ -92,7 +92,7 @@ describe('frontend api errors', () => {
 
     await createSession({
       nodeId: 'node-a',
-      repoPath: '/repo',
+      cwd: '/home/relay/project',
       type: 'terminal',
       sessionLane: 'remote-cwd',
     });
@@ -101,7 +101,7 @@ describe('frontend api errors', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        repoPath: '/repo',
+        cwd: '/home/relay/project',
         type: 'terminal',
         sessionLane: 'remote-cwd',
       }),
