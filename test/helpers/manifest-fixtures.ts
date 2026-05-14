@@ -75,7 +75,9 @@ function defaultCapabilities(
 /**
  * Build a NodeManifest fixture with the supplied agent list (defaults
  * to an empty list — explicit ids are the point of #437). `overrides`
- * shallow-merges over the produced manifest.
+ * shallow-merges at the manifest top level, with a one-level-deep
+ * merge for `capabilities` so a partial override (e.g. just `clipboard`)
+ * doesn't wipe the agents map or the other default probes.
  */
 export function buildManifestWithAgents(
   options: ManifestFixtureOptions = {}
@@ -101,5 +103,13 @@ export function buildManifestWithAgents(
     },
     capabilities: defaultCapabilities(agents),
   };
-  return { ...base, ...options.overrides };
+  const overrides = options.overrides ?? {};
+  return {
+    ...base,
+    ...overrides,
+    capabilities: {
+      ...base.capabilities,
+      ...(overrides.capabilities ?? {}),
+    },
+  };
 }

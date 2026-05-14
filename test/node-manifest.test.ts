@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getNodeManifest, probeCommand } from '../server/node-manifest.js';
+import type { NodeCapabilityStatus } from '../shared/relay-node-protocol.js';
 
 describe('node manifest', () => {
   it('reports platform, service manager, and degraded missing tool probes without throwing', async () => {
@@ -43,10 +44,20 @@ describe('node manifest', () => {
       });
       // Core manifest no longer hardcodes a specific framework set.
       // Whichever framework registry is configured at runtime supplies
-      // the agent map; this test just asserts the shape is well-formed.
-      for (const [id, probe] of Object.entries(manifest.capabilities.agents)) {
+      // the agent map; this test asserts the shape is well-formed and
+      // that the probe ran (at least one entry) without pinning to
+      // specific ids.
+      const agentEntries = Object.entries(manifest.capabilities.agents);
+      expect(agentEntries.length).toBeGreaterThan(0);
+      const allowedStatuses: NodeCapabilityStatus[] = [
+        'available',
+        'degraded',
+        'unavailable',
+        'unknown',
+      ];
+      for (const [id, probe] of agentEntries) {
         expect(probe.id).toBe(id);
-        expect(probe.status).toMatch(/available|degraded|unavailable|unknown/);
+        expect(allowedStatuses).toContain(probe.status);
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
