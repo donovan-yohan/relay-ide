@@ -104,6 +104,7 @@ import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
+import { aggregateRemoteSessions } from './hub-session-aggregator.js';
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { createRepoFeatureRouter } from './features/repo-router.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
@@ -1819,10 +1820,21 @@ async function main(): Promise<void> {
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
   app.get('/sessions', requireAuth, async (_req, res) => {
-    const allSessions = localRelayNode.sessions.list();
+    const [localSessions, remoteSessions] = await Promise.all([
+      Promise.resolve(localRelayNode.sessions.list()),
+      aggregateRemoteSessions({
+        registry: hubNodeRegistry,
+        nodeLinks: hubNodeLinks,
+        logger,
+      }),
+    ]);
+    const allSessions = [...localSessions, ...remoteSessions];
     const now = Date.now();
 
-    // Prune cache entries for sessions that no longer exist
+    // Prune cache entries for sessions that no longer exist. Branch
+    // refresh only runs against local sessions (they have a real cwd
+    // on this host); the routed-session subset is skipped below via
+    // the `nodeId === undefined` guard.
     const activeIds = new Set(allSessions.map((s) => s.id));
     for (const sessionId of branchRefreshCache.keys()) {
       if (!activeIds.has(sessionId)) branchRefreshCache.delete(sessionId);
@@ -1831,6 +1843,10 @@ async function main(): Promise<void> {
     await Promise.all(
       allSessions.map(async (s) => {
         if (s.type !== 'agent') return;
+        // Skip remote sessions: their cwd lives on the owning node and
+        // running `git` against it locally is meaningless. The owning
+        // node refreshes its own branchName on its own sessions.list.
+        if (s.nodeId !== undefined) return;
         if (!s.cwd) return;
         const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
         if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;

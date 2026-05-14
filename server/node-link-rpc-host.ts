@@ -18,9 +18,10 @@ import type { SessionSummary } from './types.js';
 // RelayNode, and sends back a `<type>.result` (or `<type>.error`)
 // envelope on the same `requestId`.
 //
-// First slice (#425.7): only `sessions.create` is wired. Other RPC
-// types fall through to an INVALID_REQUEST response so misrouted
-// envelopes don't silently hang the hub-side pending request.
+// Wired today: `sessions.create` (#425.7) and `sessions.list` (#465).
+// Other RPC types fall through to an INVALID_REQUEST response so
+// misrouted envelopes don't silently hang the hub-side pending
+// request.
 
 export interface NodeLinkRpcHostOptions {
   localRelayNode: LocalRelayNode;
@@ -217,6 +218,24 @@ export function createNodeLinkRpcHost(
     }
   }
 
+  function handleSessionsList(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): void {
+    try {
+      const raw = localRelayNode.sessions.list();
+      const sessions = raw.map((entry) =>
+        sessionSummaryFromCreateResult(entry)
+      );
+      sendResultEnvelope(ctx, envelope, { sessions });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`sessions.list failed: ${message}`);
+      sendErrorEnvelope(ctx, envelope, internalError(message));
+    }
+  }
+
   function handle(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -224,6 +243,10 @@ export function createNodeLinkRpcHost(
     if (envelope.channel !== 'rpc') return;
     if (envelope.type === 'sessions.create') {
       void handleSessionsCreate(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'sessions.list') {
+      handleSessionsList(envelope, ctx);
       return;
     }
     logger.warn(
