@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
 import type {
@@ -121,6 +122,22 @@ describe('node-link-rpc-host', () => {
     const replyPayload = reply.payload as { session: SessionSummary };
     expect(replyPayload.session.id).toBe('sess-1');
     expect(replyPayload.session).not.toHaveProperty('pid');
+  });
+
+  it('defaults missing cwd to os.homedir() so routed creates from the picker never spawn with undefined', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('sessions.create', { type: 'terminal' }), ctx);
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall.cwd).toBe(os.homedir());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.result');
   });
 
   it('routes mode:"web" sessions through createWeb', async () => {
