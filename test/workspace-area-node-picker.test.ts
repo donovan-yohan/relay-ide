@@ -59,10 +59,14 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => {
     closeFileTab: vi.fn(),
     sendToTargetSessionId: null,
   };
-  const useUiStore = (selector: (s: typeof state) => unknown) => selector(state);
+  const useUiStore = (selector: (s: typeof state) => unknown) =>
+    selector(state);
   useUiStore.getState = () => state;
   useUiStore.setState = vi.fn();
-  return { useUiStore, fileTabKey: (path: string, type?: string) => `${type ?? 'code'}:${path}` };
+  return {
+    useUiStore,
+    fileTabKey: (path: string, type?: string) => `${type ?? 'code'}:${path}`,
+  };
 });
 
 vi.mock('../frontend/src/lib/stores/sessions.js', () => {
@@ -98,8 +102,18 @@ vi.mock('../frontend/src/lib/stores/workspace-layout-store.js', () => {
 });
 
 vi.mock('../frontend/src/lib/workspace-layout.js', () => ({
-  listPanes: (layout: { type: string; id: string; tabs: unknown[]; activeTabId: string | null }) => [layout],
-  workspaceTabId: (tab: { kind: string; sessionId?: string; filePath?: string; tabType?: string }) =>
+  listPanes: (layout: {
+    type: string;
+    id: string;
+    tabs: unknown[];
+    activeTabId: string | null;
+  }) => [layout],
+  workspaceTabId: (tab: {
+    kind: string;
+    sessionId?: string;
+    filePath?: string;
+    tabType?: string;
+  }) =>
     tab.kind === 'session'
       ? `session::${tab.sessionId}`
       : `file::${tab.tabType ?? 'code'}:${tab.filePath}`,
@@ -124,15 +138,32 @@ vi.mock('../frontend/src/components/WorkspaceContentLayer.js', async () => {
 vi.mock('../frontend/src/components/TerminalNodePicker.js', async () => {
   const ReactModule = await import('react');
   return {
-    TerminalNodePicker: ({ onSelect }: { onSelect: (nodeId: string) => void }) =>
+    TerminalNodePicker: ({
+      onSelect,
+    }: {
+      onSelect: (nodeId: string) => void;
+    }) =>
       ReactModule.createElement(
-        'button',
-        {
-          type: 'button',
-          'data-track': 'workspace.add-terminal.remote',
-          onClick: () => onSelect('remote'),
-        },
-        'remote'
+        'div',
+        null,
+        ReactModule.createElement(
+          'button',
+          {
+            type: 'button',
+            'data-track': 'workspace.add-terminal.local',
+            onClick: () => onSelect('local'),
+          },
+          'local'
+        ),
+        ReactModule.createElement(
+          'button',
+          {
+            type: 'button',
+            'data-track': 'workspace.add-terminal.remote',
+            onClick: () => onSelect('remote'),
+          },
+          'remote'
+        )
       ),
   };
 });
@@ -152,9 +183,8 @@ vi.mock('../frontend/src/components/chat/ChatView.js', async () => {
   return { ChatView: () => ReactModule.createElement('div') };
 });
 
-const { WorkspaceArea } = await import(
-  '../frontend/src/components/WorkspaceArea.js'
-);
+const { WorkspaceArea } =
+  await import('../frontend/src/components/WorkspaceArea.js');
 
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
@@ -198,6 +228,15 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   };
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
@@ -218,13 +257,7 @@ afterEach(async () => {
 });
 
 describe('WorkspaceArea terminal node picker', () => {
-  it('creates remote terminals with cwd and session lane instead of repo fields', async () => {
-    mocks.hubNodes = [node()];
-    mocks.createAgentSession.mockResolvedValue({
-      session: { id: 'remote-session' },
-      error: null,
-    });
-
+  async function renderWorkspaceArea() {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -240,6 +273,16 @@ describe('WorkspaceArea terminal node picker', () => {
         })
       );
     });
+  }
+
+  it('opens remote cwd entry before creating remote terminal sessions', async () => {
+    mocks.hubNodes = [node()];
+    mocks.createAgentSession.mockResolvedValue({
+      session: { id: 'remote-session' },
+      error: null,
+    });
+
+    await renderWorkspaceArea();
 
     await act(async () => {
       (
@@ -250,14 +293,76 @@ describe('WorkspaceArea terminal node picker', () => {
     });
 
     expect(mocks.setActivePane).toHaveBeenCalledWith('pane-1');
+    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+
+    const cwdInput = container!.querySelector(
+      '[data-track="workspace.remote-terminal.cwd"]'
+    ) as HTMLInputElement;
+    expect(cwdInput).toBeTruthy();
+    expect(cwdInput.value).toBe('/home/relay');
+
+    await act(async () => {
+      setInputValue(cwdInput, '/srv/relay');
+    });
+
+    await act(async () => {
+      (
+        container!.querySelector(
+          '[data-track="workspace.remote-terminal.create"]'
+        ) as HTMLButtonElement
+      ).click();
+    });
+
+    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    expect(payload).toMatchObject({
+      type: 'terminal',
+      nodeId: 'remote',
+      cwd: '/srv/relay',
+      sessionLane: 'remote-cwd',
+    });
+    expect(payload).not.toHaveProperty('repoPath');
+    expect(payload).not.toHaveProperty('worktreePath');
+    expect(mocks.setActiveSessionId).toHaveBeenCalledWith('remote-session');
+  });
+
+  it('allows remote terminal starts in remote home without repo fields', async () => {
+    mocks.hubNodes = [node()];
+    mocks.createAgentSession.mockResolvedValue({
+      session: { id: 'remote-home-session' },
+      error: null,
+    });
+
+    await renderWorkspaceArea();
+
+    await act(async () => {
+      (
+        container!.querySelector(
+          '[data-track="workspace.add-terminal.remote"]'
+        ) as HTMLButtonElement
+      ).click();
+    });
+
+    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (
+        container!.querySelector(
+          '[data-track="workspace.remote-terminal.start-home"]'
+        ) as HTMLButtonElement
+      ).click();
+    });
+
     const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
     expect(payload).toMatchObject({
       type: 'terminal',
       nodeId: 'remote',
       cwd: '/home/relay',
-      sessionLane: 'remote-cwd',
+      sessionLane: 'remote-home',
     });
     expect(payload).not.toHaveProperty('repoPath');
     expect(payload).not.toHaveProperty('worktreePath');
+    expect(mocks.setActiveSessionId).toHaveBeenCalledWith(
+      'remote-home-session'
+    );
   });
 });
