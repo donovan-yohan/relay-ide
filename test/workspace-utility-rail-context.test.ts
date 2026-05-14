@@ -9,11 +9,23 @@ import type { WorkspaceUtilityRailState } from '../frontend/src/lib/stores/ui.js
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../frontend/src/components/UtilityRailFilesPanel.js', () => ({
-  default: ({ workspacePath, stateKey }: { workspacePath: string; stateKey?: string }) =>
+  default: ({
+    workspacePath,
+    stateKey,
+    gitWorkspacePath,
+    gitDisabledReason,
+  }: {
+    workspacePath: string;
+    stateKey?: string;
+    gitWorkspacePath?: string;
+    gitDisabledReason?: string | null;
+  }) =>
     React.createElement('div', {
       'data-testid': 'files-panel',
       'data-workspace-path': workspacePath,
       'data-state-key': stateKey ?? '',
+      'data-git-workspace-path': gitWorkspacePath ?? '',
+      'data-git-disabled-reason': gitDisabledReason ?? '',
     }),
 }));
 vi.mock('../frontend/src/components/UtilityRailGitChangesPanel.js', () => ({
@@ -170,5 +182,32 @@ describe('WorkspaceUtilityRail resource context guards', () => {
     expect(container.querySelector('[data-testid="branch-panel"]')).toBeNull();
     expect(container.textContent).toContain('no git context');
     expect(container.textContent).toContain('/tmp/free-folder');
+  });
+
+  it('mounts the local free files panel with git fetches disabled', async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(WorkspaceUtilityRail, {
+          workspacePath: '/tmp/free-folder',
+          resourceContext: {
+            displayWorkspacePath: '/tmp/free-folder',
+            anchorLabel: 'local · /tmp/free-folder',
+            repoBadge: null,
+            files: { workspacePath: '/tmp/free-folder', disabledReason: null },
+            git: { workspacePath: '', disabledReason: 'no-git-context' },
+          },
+          railState: railState('files'),
+          activeSession: session({ id: 'free-1', type: 'terminal', repoPath: undefined, cwd: '/tmp/free-folder' }),
+          workspaceSessions: [],
+        })
+      );
+    });
+
+    const files = container.querySelector('[data-testid="files-panel"]');
+    expect(files?.getAttribute('data-workspace-path')).toBe('/tmp/free-folder');
+    expect(files?.getAttribute('data-state-key')).toBe('/tmp/free-folder');
+    expect(files?.getAttribute('data-git-workspace-path')).toBe('');
+    expect(files?.getAttribute('data-git-disabled-reason')).toBe('no-git-context');
+    expect(container.textContent).not.toContain('HTTP 403');
   });
 });

@@ -353,17 +353,21 @@ export function utilityRailRenderedWidth(
 
 interface UtilityRailFilesPaneContentProps {
   workspacePath: string;
+  gitWorkspacePath: string;
   stateKey: string;
   displayWorkspacePath: string;
   disabledReason: UtilityRailDisabledReason | null;
-  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null> | undefined;
+  gitDisabledReason: UtilityRailDisabledReason | null;
+  fileTreeSidebarRef: React.RefObject<FileTreeHandle | null> | undefined;
 }
 
 function UtilityRailFilesPaneContent({
   workspacePath,
+  gitWorkspacePath,
   stateKey,
   displayWorkspacePath,
   disabledReason,
+  gitDisabledReason,
   fileTreeSidebarRef,
 }: UtilityRailFilesPaneContentProps) {
   if (disabledReason) {
@@ -378,6 +382,8 @@ function UtilityRailFilesPaneContent({
   return (
     <UtilityRailFilesPanel
       workspacePath={workspacePath}
+      gitWorkspacePath={gitWorkspacePath}
+      gitDisabledReason={gitDisabledReason}
       stateKey={stateKey}
       {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
     />
@@ -491,9 +497,11 @@ function UtilityRailPaneBody({
       content: (
         <UtilityRailFilesPaneContent
           workspacePath={fileWorkspacePath}
+          gitWorkspacePath={gitWorkspacePath}
           stateKey={workspacePath}
           displayWorkspacePath={displayWorkspacePath}
           disabledReason={fileDisabledReason}
+          gitDisabledReason={gitDisabledReason}
           fileTreeSidebarRef={fileTreeSidebarRef}
         />
       ),
