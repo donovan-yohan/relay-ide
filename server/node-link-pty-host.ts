@@ -1,13 +1,20 @@
-import pty from 'node-pty';
-import type { IPty } from 'node-pty';
+import { Buffer } from 'node:buffer';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
+import type {
+  SessionAttachment,
+  SessionAttachmentFactory,
+  SessionAttachmentMode,
+} from './session-attachment.js';
+import {
+  createRawAttachmentFactory,
+  createTmuxAttachmentFactory,
+} from './session-attachment.js';
+import type { NodeSessionResumeKind } from '../shared/node-manifest.js';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const DEFAULT_NAME = 'xterm-256color';
-const SCROLLBACK_BYTE_LIMIT = 256 * 1024;
 
 export interface NodeLinkPtyAttachInput {
   sessionId?: unknown;
@@ -20,11 +27,25 @@ export interface NodeLinkPtyAttachInput {
 }
 
 export interface NodeLinkPtyHostDeps {
-  spawn?: (command: string, args: string[], options: pty.IPtyForkOptions) => IPty;
+  /**
+   * #467: pluggable attachment backend. Defaults derived from
+   * `sessionResume`: 'tmux' -> TmuxAttachment, anything else -> raw.
+   * Tests inject `MockAttachmentFactory` directly to avoid spawning
+   * processes or tmux.
+   */
+  attachmentFactory?: SessionAttachmentFactory;
   defaultShell?: string;
   defaultCwd?: string;
   defaultEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
+  /**
+   * Resume capability the manifest advertises. Determines which
+   * factory is constructed when `attachmentFactory` is not supplied.
+   * Hosts without tmux (or with `sessionResume: 'none'`) fall back to
+   * a raw shell that dies on detach. 'canonical-emulator' is treated
+   * as 'raw' in phase 1; #469 will replace this dispatch.
+   */
+  sessionResume?: NodeSessionResumeKind;
 }
 
 export interface NodeLinkPtyHostContext {
@@ -38,14 +59,21 @@ export interface NodeLinkPtyHostContext {
 
 export interface NodeLinkPtyHost {
   handle(envelope: RelayNodeEnvelope, ctx: NodeLinkPtyHostContext): void;
-  closeAll(reason?: string): void;
+  closeAll(reason?: string): Promise<void>;
+  readonly mode: SessionAttachmentMode;
 }
 
 interface ActiveStream {
   streamId: string;
-  ptyProcess: IPty;
-  scrollback: string[];
-  scrollbackBytes: number;
+  sessionId: string;
+  attachment: SessionAttachment;
+  /**
+   * Context captured at attach time so traffic on this stream always
+   * flows back over the link that opened it, even when a hub
+   * reconnect overlaps and `handle()` swaps in a fresh context for
+   * later envelopes (gemini-code-assist, #472 review).
+   */
+  ctx: NodeLinkPtyHostContext;
   closing: boolean;
 }
 
@@ -99,112 +127,132 @@ export interface NodeLinkPtyHostOptions extends NodeLinkPtyHostDeps {
   nodeId: string;
 }
 
+function resolveFactory(opts: NodeLinkPtyHostDeps): SessionAttachmentFactory {
+  if (opts.attachmentFactory) return opts.attachmentFactory;
+  if (opts.sessionResume === 'tmux') return createTmuxAttachmentFactory();
+  return createRawAttachmentFactory();
+}
+
 export function createNodeLinkPtyHost(
   options: NodeLinkPtyHostOptions
 ): NodeLinkPtyHost {
   const logger = options.logger ?? createLogger('node-link-pty');
-  const spawn = options.spawn ?? pty.spawn;
+  const factory = resolveFactory(options);
   const defaultShell = options.defaultShell ?? defaultLoginShell();
   const defaultCwd = options.defaultCwd ?? process.cwd();
   const defaultEnv = options.defaultEnv ?? process.env;
   const streams = new Map<string, ActiveStream>();
-  let currentCtx: NodeLinkPtyHostContext | undefined;
+  // Pending attaches need a ctx too — they haven't joined `streams` yet
+  // but already need to be able to send pty.error if open() fails.
+  const opening = new Map<string, NodeLinkPtyHostContext>();
+  let closed = false;
 
-  function sendData(streamId: string, data: string): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.data', {
-        streamId,
-        payload: { data },
-      })
-    );
+  function send(
+    ctx: NodeLinkPtyHostContext,
+    type: string,
+    streamId: string,
+    extras: Partial<RelayNodeEnvelope> = {}
+  ): void {
+    ctx.send(ctx.buildEnvelope('pty', type, { streamId, ...extras }));
   }
 
-  function sendExit(streamId: string, exitCode: number, signal?: number): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.exit', {
-        streamId,
-        payload: { exitCode, signal: signal ?? null },
-      })
-    );
+  function sendData(stream: ActiveStream, data: string): void {
+    send(stream.ctx, 'pty.data', stream.streamId, { payload: { data } });
   }
 
-  function sendError(streamId: string, message: string, retryable: boolean): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.error', {
-        streamId,
-        error: { code: 'INTERNAL', message, retryable },
-      })
-    );
+  function sendExit(
+    ctx: NodeLinkPtyHostContext,
+    streamId: string,
+    exitCode: number,
+    signal?: number
+  ): void {
+    send(ctx, 'pty.exit', streamId, {
+      payload: { exitCode, signal: signal ?? null },
+    });
   }
 
-  function recordScrollback(stream: ActiveStream, chunk: string): void {
-    const chunkBytes = Buffer.byteLength(chunk, 'utf8');
-    stream.scrollback.push(chunk);
-    stream.scrollbackBytes += chunkBytes;
-    while (
-      stream.scrollbackBytes > SCROLLBACK_BYTE_LIMIT &&
-      stream.scrollback.length > 1
-    ) {
-      const dropped = stream.scrollback.shift();
-      stream.scrollbackBytes -= dropped
-        ? Buffer.byteLength(dropped, 'utf8')
-        : 0;
-    }
+  function sendError(
+    ctx: NodeLinkPtyHostContext,
+    streamId: string,
+    message: string,
+    retryable: boolean
+  ): void {
+    send(ctx, 'pty.error', streamId, {
+      error: { code: 'INTERNAL', message, retryable },
+    });
   }
 
-  function attach(streamId: string, input: NodeLinkPtyAttachInput): void {
-    if (streams.has(streamId)) {
+  async function attach(
+    ctx: NodeLinkPtyHostContext,
+    streamId: string,
+    input: NodeLinkPtyAttachInput
+  ): Promise<void> {
+    if (streams.has(streamId) || opening.has(streamId)) {
       logger.warn(`duplicate attach for streamId ${streamId}; ignoring`);
-      sendError(streamId, 'stream already attached', false);
+      sendError(ctx, streamId, 'stream already attached', false);
       return;
     }
-    const command = asString(input.command) ?? defaultShell;
-    const args = asStringArray(input.args) ?? [];
-    const cols = asPositiveInt(input.cols) ?? DEFAULT_COLS;
-    const rows = asPositiveInt(input.rows) ?? DEFAULT_ROWS;
-    const cwd = asString(input.cwd) ?? defaultCwd;
-    const env = sanitizeEnv(asEnv(input.env) ?? defaultEnv);
-
-    let ptyProcess: IPty;
+    opening.set(streamId, ctx);
     try {
-      ptyProcess = spawn(command, args, {
-        name: DEFAULT_NAME,
-        cols,
-        rows,
-        cwd,
-        env,
+      const sessionId = asString(input.sessionId) ?? `relay-stream-${streamId}`;
+      const command = asString(input.command) ?? defaultShell;
+      const args = asStringArray(input.args) ?? [];
+      const cols = asPositiveInt(input.cols) ?? DEFAULT_COLS;
+      const rows = asPositiveInt(input.rows) ?? DEFAULT_ROWS;
+      const cwd = asString(input.cwd) ?? defaultCwd;
+      const env = sanitizeEnv(asEnv(input.env) ?? defaultEnv);
+
+      let attachment: SessionAttachment;
+      try {
+        attachment = await factory.open({
+          sessionId,
+          command,
+          args,
+          cwd,
+          env,
+          cols,
+          rows,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`pty attach failed (${streamId}): ${message}`);
+        sendError(ctx, streamId, `pty attach failed: ${message}`, false);
+        return;
+      }
+
+      if (closed) {
+        // Detach-only close keeps the tmux session alive across the
+        // host's shutdown so a fresh link can resume it.
+        await attachment.close('host shutting down');
+        return;
+      }
+
+      const stream: ActiveStream = {
+        streamId,
+        sessionId,
+        attachment,
+        ctx,
+        closing: false,
+      };
+      streams.set(streamId, stream);
+
+      attachment.onData((chunk) => {
+        const live = streams.get(streamId);
+        if (!live || live.attachment !== attachment || live.closing) return;
+        // tmux owns scrollback for resumable sessions; raw sessions
+        // have no resume so any local buffer would be discarded
+        // anyway. Forward bytes straight through.
+        sendData(live, chunk.toString('utf8'));
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error(`pty spawn failed (${streamId}): ${message}`);
-      sendError(streamId, `pty spawn failed: ${message}`, false);
-      return;
+      attachment.onExit(({ exitCode, signal }) => {
+        const live = streams.get(streamId);
+        if (!live || live.attachment !== attachment) return;
+        streams.delete(streamId);
+        sendExit(live.ctx, streamId, exitCode ?? 0, signal);
+      });
+    } finally {
+      opening.delete(streamId);
     }
-
-    const stream: ActiveStream = {
-      streamId,
-      ptyProcess,
-      scrollback: [],
-      scrollbackBytes: 0,
-      closing: false,
-    };
-    streams.set(streamId, stream);
-
-    ptyProcess.onData((chunk) => {
-      const live = streams.get(streamId);
-      if (!live || live.ptyProcess !== ptyProcess || live.closing) return;
-      recordScrollback(live, chunk);
-      sendData(streamId, chunk);
-    });
-    ptyProcess.onExit(({ exitCode, signal }) => {
-      const live = streams.get(streamId);
-      if (!live || live.ptyProcess !== ptyProcess) return;
-      streams.delete(streamId);
-      sendExit(streamId, exitCode ?? 0, signal);
-    });
   }
 
   function input(streamId: string, data: unknown): void {
@@ -212,11 +260,11 @@ export function createNodeLinkPtyHost(
     if (!stream) return;
     if (typeof data !== 'string') return;
     try {
-      stream.ptyProcess.write(data);
+      stream.attachment.write(Buffer.from(data, 'utf8'));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`pty input failed (${streamId}): ${message}`);
-      sendError(streamId, `pty input failed: ${message}`, true);
+      sendError(stream.ctx, streamId, `pty input failed: ${message}`, true);
     }
   }
 
@@ -227,24 +275,24 @@ export function createNodeLinkPtyHost(
     const r = asPositiveInt(rows);
     if (!c || !r) return;
     try {
-      stream.ptyProcess.resize(c, r);
+      stream.attachment.resize(c, r);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`pty resize failed (${streamId}): ${message}`);
     }
   }
 
-  function detach(streamId: string): void {
+  async function detach(streamId: string): Promise<void> {
     const stream = streams.get(streamId);
     if (!stream) return;
     stream.closing = true;
     try {
-      stream.ptyProcess.kill();
+      await stream.attachment.close('detach');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`pty kill failed (${streamId}): ${message}`);
+      logger.warn(`pty detach failed (${streamId}): ${message}`);
       streams.delete(streamId);
-      sendExit(streamId, -1);
+      sendExit(stream.ctx, streamId, -1);
     }
   }
 
@@ -255,14 +303,14 @@ export function createNodeLinkPtyHost(
   }
 
   return {
+    mode: factory.mode,
     handle(envelope: RelayNodeEnvelope, ctx: NodeLinkPtyHostContext): void {
       if (envelope.channel !== 'pty') return;
       if (typeof envelope.streamId !== 'string') return;
-      currentCtx = ctx;
       const streamId = envelope.streamId;
       const payload = payloadRecord(envelope.payload);
       if (envelope.type === 'pty.attach') {
-        attach(streamId, payload as NodeLinkPtyAttachInput);
+        void attach(ctx, streamId, payload as NodeLinkPtyAttachInput);
         return;
       }
       if (envelope.type === 'pty.input') {
@@ -274,22 +322,21 @@ export function createNodeLinkPtyHost(
         return;
       }
       if (envelope.type === 'pty.detach') {
-        detach(streamId);
+        void detach(streamId);
         return;
       }
     },
-    closeAll(reason?: string): void {
-      for (const stream of Array.from(streams.values())) {
+    async closeAll(reason?: string): Promise<void> {
+      closed = true;
+      const active = Array.from(streams.values());
+      streams.clear();
+      for (const stream of active) {
         stream.closing = true;
-        if (reason) {
-          sendError(stream.streamId, reason, false);
-        }
+        if (reason) sendError(stream.ctx, stream.streamId, reason, false);
         try {
-          stream.ptyProcess.kill();
+          await stream.attachment.close(reason);
         } catch {
-          // onExit will not fire; force terminal envelope and drop the stream.
-          streams.delete(stream.streamId);
-          sendExit(stream.streamId, -1);
+          sendExit(stream.ctx, stream.streamId, -1);
         }
       }
     },

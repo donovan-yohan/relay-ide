@@ -93,3 +93,10 @@
   color: var(--text-muted, #888);
   font-size: 0.62rem;
 }
+
+.ws-node-picker__resumable {
+  color: var(--status-success, #34d399);
+  font-size: 0.62rem;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}

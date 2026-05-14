@@ -59,6 +59,16 @@ export interface NodeServiceManager {
   caveats: string[];
 }
 
+/**
+ * How the node persists a PTY across detach. Browsers reload, links
+ * flap; tmux-backed hosts can reattach to the same shell. Hosts without
+ * tmux advertise 'none' and the frontend hides the resumable badge.
+ *
+ * 'canonical-emulator' is reserved for #469 (server-side canonical
+ * terminal). Phase 1 (#467) emits only 'tmux' or 'none'.
+ */
+export type NodeSessionResumeKind = 'tmux' | 'canonical-emulator' | 'none';
+
 export interface NodeCapabilities {
   tmux: NodeCapabilityProbe;
   git: NodeCapabilityProbe;
@@ -67,6 +77,12 @@ export interface NodeCapabilities {
   githubCli: NodeCapabilityProbe;
   tailscale: NodeCapabilityProbe;
   ssh: NodeCapabilityProbe;
+  /**
+   * #467: optional on the wire so pre-#467 manifests still validate.
+   * The server probe always populates it; consumers should treat
+   * `undefined` as 'none'.
+   */
+  sessionResume?: NodeSessionResumeKind;
   agents: Record<string, NodeCapabilityProbe>;
 }
 
@@ -204,10 +220,22 @@ function isNodeServiceManager(value: unknown): value is NodeServiceManager {
   );
 }
 
+function isSessionResumeKind(value: unknown): value is NodeSessionResumeKind {
+  return value === 'tmux' || value === 'canonical-emulator' || value === 'none';
+}
+
 function isNodeCapabilities(value: unknown): value is NodeCapabilities {
   if (!isRecord(value)) return false;
   for (const key of requiredCapabilityKeys) {
     if (!isNodeCapabilityProbe(value[key])) return false;
+  }
+  // sessionResume was added in #467. Pre-#467 nodes did not publish it;
+  // accept the field's absence and treat as 'none' at the call site.
+  if (
+    value['sessionResume'] !== undefined &&
+    !isSessionResumeKind(value['sessionResume'])
+  ) {
+    return false;
   }
 
   const agents = value['agents'];

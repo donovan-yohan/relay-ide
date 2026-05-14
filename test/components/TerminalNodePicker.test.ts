@@ -35,6 +35,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       agents: { claude: 'available' },
       serviceManager: 'launchd',
       wsl: false,
+      sessionResume: 'tmux',
     },
     createdAt: '2026-01-02T03:00:00.000Z',
     pairedAt: '2026-01-02T03:00:00.000Z',
@@ -121,6 +122,46 @@ describe('TerminalNodePicker buildChoices', () => {
       disabled: true,
       disabledReason: 'protocol incompatible',
     });
+  });
+
+  it('marks nodes with sessionResume = tmux as resumable', () => {
+    const choices = buildChoices([
+      node({ nodeId: 'tmux', displayName: 'tmux', status: 'online' }),
+    ]);
+    expect(choices[1]?.resumable).toBe(true);
+    expect(choices[0]?.resumable).toBe(false);
+  });
+
+  it('marks sessionResume = none as not resumable', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'none',
+        displayName: 'none',
+        status: 'online',
+        capabilities: {
+          ...node().capabilities,
+          sessionResume: 'none',
+        },
+      }),
+    ]);
+    expect(choices[1]?.resumable).toBe(false);
+  });
+
+  it('treats missing sessionResume (pre-#467 nodes) as not resumable', () => {
+    const base = node();
+    const caps: typeof base.capabilities & {
+      sessionResume?: unknown;
+    } = { ...base.capabilities };
+    delete caps.sessionResume;
+    const choices = buildChoices([
+      {
+        ...base,
+        nodeId: 'legacy',
+        displayName: 'legacy',
+        capabilities: caps,
+      },
+    ]);
+    expect(choices[1]?.resumable).toBe(false);
   });
 
   it('disables nodes without tmux capability even when online', () => {

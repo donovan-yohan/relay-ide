@@ -74,6 +74,13 @@ export type HubNodeCoreCapability =
   | 'ssh'
   | 'tailscale';
 
+/**
+ * Mirrors `NodeSessionResumeKind` from `shared/node-manifest.ts` but
+ * lives on the hub-facing summary so frontend code can read it
+ * without depending on the full manifest type.
+ */
+export type HubNodeSessionResumeKind = 'tmux' | 'canonical-emulator' | 'none';
+
 export interface HubNodeConnectionSummary {
   route: 'reverse-link' | 'local' | 'unknown';
   status: string;
@@ -99,6 +106,12 @@ export interface NodeCapabilityManifestSummary {
   agents: Record<string, NodeCapabilityStatus>;
   serviceManager: string;
   wsl: boolean;
+  /**
+   * #467: how the node persists a PTY across detach. Optional on the
+   * wire — pre-#467 nodes do not publish it. Frontend treats absence
+   * as 'none'.
+   */
+  sessionResume?: HubNodeSessionResumeKind;
 }
 
 export interface HubNodeSummary {

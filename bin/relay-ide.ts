@@ -436,7 +436,14 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
   } catch {
     config = undefined;
   }
-  const ptyHost = createNodeLinkPtyHost({ nodeId: credential.nodeId });
+  // #467: ask the manifest probe which resume mode this host supports
+  // so the pty host can pick tmux vs raw without re-probing.
+  const initialManifest = await getNodeManifest();
+  const sessionResume = initialManifest.capabilities.sessionResume ?? 'none';
+  const ptyHost = createNodeLinkPtyHost({
+    nodeId: credential.nodeId,
+    sessionResume,
+  });
   const localRelayNode = createLocalRelayNode({ nodeId: credential.nodeId });
   const rpcHost = createNodeLinkRpcHost({ localRelayNode });
   const client = createNodeLinkClient({
@@ -463,10 +470,17 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     const finish = (exitCode: number): void => {
       if (exiting) return;
       exiting = true;
-      ptyHost.closeAll('node-link client stopping');
       const safetyTimer = setTimeout(() => process.exit(exitCode), 5_000);
       safetyTimer.unref?.();
-      void client.stop().then(() => {
+      // #467: ptyHost.closeAll is async — await it so attachment
+      // teardown (which may detach tmux clients) completes before the
+      // process exits, while keeping the 5s safety timer above as a
+      // hard cap. Default close() leaves tmux sessions alive so a
+      // reconnect can resume them.
+      void Promise.allSettled([
+        ptyHost.closeAll('node-link client stopping'),
+        client.stop(),
+      ]).then(() => {
         clearTimeout(safetyTimer);
         resolve();
         process.exit(exitCode);

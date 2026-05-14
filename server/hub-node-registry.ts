@@ -187,6 +187,11 @@ function summarizeCapabilities(
     agents,
     serviceManager: manifest.serviceManager.kind,
     wsl: manifest.wsl.detected,
+    // #467: pass through the resume kind so the frontend can show a
+    // resumable badge without re-deriving from tmux availability.
+    // Pre-#467 manifests omit this field; treat as 'none' on the read
+    // side via `?? 'none'`.
+    sessionResume: manifest.capabilities.sessionResume ?? 'none',
   };
 }
 
