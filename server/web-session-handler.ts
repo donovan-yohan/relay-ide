@@ -79,7 +79,7 @@ export async function createWebSession(
     ...(params.repoPath ? { worktreePath: params.worktreePath ?? null } : {}),
     cwd: params.cwd,
     ...(params.repoName ? { repoName: params.repoName } : {}),
-    ...(params.branchName ? { branchName: params.branchName } : {}),
+    ...(params.repoPath ? { branchName: params.branchName ?? '' } : {}),
     displayName: params.displayName,
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),

@@ -795,7 +795,7 @@ function buildSessionObject(
     ...(repoPath ? { repoPath } : {}),
     ...(repoPath ? { worktreePath: worktreePath ?? null } : {}),
     ...(repoName ? { repoName } : {}),
-    ...(branchName ? { branchName } : {}),
+    ...(repoPath ? { branchName: branchName ?? '' } : {}),
     displayName: displayName || repoName || path.basename(cwd) || '',
     pty: ptyProcess,
     createdAt,
@@ -1179,7 +1179,9 @@ export function createPtySession(
       ? { worktreePath: session.worktreePath }
       : {}),
     ...(session.repoName ? { repoName: session.repoName } : {}),
-    ...(session.branchName ? { branchName: session.branchName } : {}),
+    ...(session.branchName !== undefined
+      ? { branchName: session.branchName }
+      : {}),
     displayName: session.displayName,
     pid: ptyProcess.pid,
     createdAt,

@@ -413,7 +413,7 @@ function list(): SessionSummary[] {
             : {}),
           cwd: s.cwd,
           ...(s.repoName ? { repoName: s.repoName } : {}),
-          ...(s.branchName ? { branchName: s.branchName } : {}),
+          ...(s.branchName !== undefined ? { branchName: s.branchName } : {}),
           displayName: s.displayName,
           createdAt: s.createdAt,
           lastActivity: s.lastActivity,
@@ -750,7 +750,9 @@ function serializePtySession(
       : {}),
     cwd: session.cwd,
     ...(session.repoName ? { repoName: session.repoName } : {}),
-    ...(session.branchName ? { branchName: session.branchName } : {}),
+    ...(session.branchName !== undefined
+      ? { branchName: session.branchName }
+      : {}),
     displayName: session.displayName,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,

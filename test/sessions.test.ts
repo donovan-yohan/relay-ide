@@ -150,12 +150,14 @@ describe('sessions', () => {
     expect(result.globalSessionId).toBe(`local:${result.id}`);
     expect(result.repoInstanceId).toBeUndefined();
     expect(result.worktreeInstanceId).toBeUndefined();
+    expect(result).not.toHaveProperty('branchName');
 
     const listed = sessions.list().find((session) => session.id === result.id);
     expect(listed).toBeDefined();
     expect(listed?.globalSessionId).toBe(`local:${result.id}`);
     expect(listed?.repoInstanceId).toBeUndefined();
     expect(listed?.worktreeInstanceId).toBeUndefined();
+    expect(listed).not.toHaveProperty('branchName');
   });
 
   it('get returns session by id', () => {
@@ -375,7 +377,7 @@ describe('sessions', () => {
     expect(session!.cwd).toBe('/tmp/workspace/.worktrees/my-branch');
   });
 
-  it('omits branchName when branchName is not provided', () => {
+  it('branchName defaults to empty string when branchName is not provided', () => {
     const result = sessions.create({
       type: 'agent',
       repoName: 'test-repo',
@@ -387,13 +389,13 @@ describe('sessions', () => {
     });
     createdIds.push(result.id);
 
-    expect(result.branchName).toBeUndefined();
-    expect(result).not.toHaveProperty('branchName');
+    expect(result.branchName).toBe('');
+    expect(result).toHaveProperty('branchName');
 
     const listed = sessions.list().find((session) => session.id === result.id);
     expect(listed).toBeDefined();
-    expect(listed!.branchName).toBeUndefined();
-    expect(listed).not.toHaveProperty('branchName');
+    expect(listed!.branchName).toBe('');
+    expect(listed).toHaveProperty('branchName');
   });
 
   it('preserves explicit branchName for repo-bound sessions', () => {
