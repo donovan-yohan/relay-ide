@@ -189,6 +189,34 @@ describe('session lifecycle handlers', () => {
     expect(refreshAll).toHaveBeenCalled();
   });
 
+  it('uses caller-provided node identity when a remote close races a store refresh', async () => {
+    const fetchMock = stubSuccessfulFetch();
+    useSessionsStore.setState({ sessions: [], activeSessionId: null });
+
+    let handlers: SessionHandlers | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(SessionHandlersHarness, {
+          onReady: (next) => {
+            handlers = next;
+          },
+        })
+      );
+    });
+
+    handlers!.handleCloseSession('node-a:remote-session-1', 'node-a');
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/hub/nodes/node-a/sessions/remote-session-1',
+      { method: 'DELETE' }
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/sessions/remote-session-1',
+      expect.anything()
+    );
+  });
+
   it('keeps tab close for local sessions on the local sessions endpoint', async () => {
     const fetchMock = stubSuccessfulFetch();
     const local = makeSession({ id: 'local-session-1' });

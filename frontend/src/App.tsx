@@ -460,7 +460,7 @@ interface TerminalAreaContentProps {
   onOpenPrSession: (pr: PullRequest) => void;
   onArchive: () => Promise<void>;
   onSelectSession: (id: string) => void;
-  onCloseSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string, nodeId?: string) => void;
   onSessionCreated: (sessionId: string) => void;
 }
 
