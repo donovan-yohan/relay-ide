@@ -18,6 +18,8 @@ import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config } from '../server/types.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
 import { createNodeLinkPtyHost } from '../server/node-link-pty-host.js';
+import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
+import { createLocalRelayNode } from '../server/local-node.js';
 import { collectLocalRepoInventory } from '../server/repo-inventory.js';
 
 const execFileAsync = promisify(execFile);
@@ -435,6 +437,8 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     config = undefined;
   }
   const ptyHost = createNodeLinkPtyHost({ nodeId: credential.nodeId });
+  const localRelayNode = createLocalRelayNode({ nodeId: credential.nodeId });
+  const rpcHost = createNodeLinkRpcHost({ localRelayNode });
   const client = createNodeLinkClient({
     hubUrl,
     credential,
@@ -452,6 +456,7 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
       }
     },
     onPtyEnvelope: (envelope, ctx) => ptyHost.handle(envelope, ctx),
+    onRpcEnvelope: (envelope, ctx) => rpcHost.handle(envelope, ctx),
   });
   await new Promise<void>((resolve) => {
     let exiting = false;
