@@ -1,0 +1,20 @@
+server/frameworks.ts
+  s_b3a47fe202d97d::t_a04d5402d04326 146-148,151-152
+  s_b3a47fe202d97d::t_1ee718a61f4355 132-141,145,149-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "a79273b3622fd75a509a742e01a9866632e0dc3c",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}

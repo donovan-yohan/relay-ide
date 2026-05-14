@@ -1,0 +1,35 @@
+docs/WEB_CHAT.md
+  s_b3a47fe202d97d::t_73b71b21ba467f 193-201
+server/protocol-adapters/claude-adapter.ts
+  s_b3a47fe202d97d::t_7057c8cc8b0dfb 462-482
+test/pty-handler-multi-agent.test.ts
+  s_b3a47fe202d97d::t_af0b31884bbe04 270-273
+server/frameworks.ts
+  s_b3a47fe202d97d::t_a04d5402d04326 139-141,143-144
+server/types.ts
+  s_b3a47fe202d97d::t_114e51f56e4855 84-91
+test/customize-session-dialog.test.ts
+  s_b3a47fe202d97d::t_b882fc58828d7e 16-17
+  s_b3a47fe202d97d::t_8b0ebe5675e4df 177,179
+  s_b3a47fe202d97d::t_980f52e1028345 199-203
+test/framework-types.test.ts
+  s_b3a47fe202d97d::t_91d3d349d80033 35-43
+test/hermes-session-api.e2e.test.ts
+  s_b3a47fe202d97d::t_58d2802f969ce3 228-232,258-263,265-267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "21819dfa866e03002cd64a3d839efd8d30665d20",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
