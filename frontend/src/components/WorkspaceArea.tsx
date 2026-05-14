@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import { ConflictError, fetchHubNodes } from '../lib/api.js';
+import { defaultRemoteCwd } from '../lib/remote-node-cwd.js';
 import { createLogger } from '../lib/logger.js';
 import {
   createAgentSession,
@@ -456,12 +457,38 @@ export function WorkspaceArea({
           // the pane whose `+` was used before the create call so the
           // layout reconciler routes the tab to the correct pane.
           setActivePane(paneId);
-          const { session, error } = await createAgentSession({
-            repoPath: currentActiveWorkspace.path,
-            worktreePath: currentWorktreePath,
-            type: 'terminal',
-            ...(nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID && { nodeId }),
-          });
+          const isRemoteNode = nodeId !== DEFAULT_LOCAL_NODE_ID;
+          const remoteCwd = isRemoteNode
+            ? defaultRemoteCwd(
+                hubNodes?.find((node) => node.nodeId === nodeId)?.homeDir,
+                nodeId
+              )
+            : '';
+          if (isRemoteNode && !remoteCwd) {
+            workspaceLogger.warn(
+              'remote terminal node has no remembered cwd or homeDir',
+              { nodeId }
+            );
+            useToastStore
+              .getState()
+              .showToast('remote cwd is required for this node');
+            return;
+          }
+          const { session, error } = await createAgentSession(
+            isRemoteNode
+              ? {
+                  type: 'terminal',
+                  nodeId,
+                  cwd: remoteCwd,
+                  sessionLane: 'remote-cwd',
+                }
+              : {
+                  repoPath: currentActiveWorkspace.path,
+                  worktreePath: currentWorktreePath,
+                  type: 'terminal',
+                  sessionLane: 'local-repo',
+                }
+          );
           if (error && !(error instanceof ConflictError)) {
             workspaceLogger.error('failed to create terminal session', error);
             useToastStore
@@ -478,7 +505,7 @@ export function WorkspaceArea({
         }}
       />
     ),
-    [setActivePane]
+    [setActivePane, hubNodes]
   );
 
   const renderTab = useCallback(

@@ -14,6 +14,11 @@ import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { createAgentSession } from '../../lib/session-utils.js';
 import { fetchHubNodes, fetchRepoInventory } from '../../lib/api.js';
+import {
+  cleanCwd,
+  defaultRemoteCwd,
+  rememberRemoteCwd,
+} from '../../lib/remote-node-cwd.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -146,40 +151,6 @@ export interface EnvironmentPickerInput {
 
 const CHECKOUT_ROOT_PREFIX = 'repo:';
 const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
-const REMOTE_NODE_CWD_STORAGE_PREFIX = 'relay-ide.remote-node-cwd.';
-
-function cleanCwd(value: string | undefined): string {
-  return value?.trim() ?? '';
-}
-
-function remoteNodeCwdStorageKey(nodeId: NodeId): string {
-  return `${REMOTE_NODE_CWD_STORAGE_PREFIX}${nodeId}`;
-}
-
-function readRememberedRemoteCwd(nodeId: NodeId): string | null {
-  try {
-    const remembered = window.localStorage.getItem(
-      remoteNodeCwdStorageKey(nodeId)
-    );
-    return remembered?.trim() ? remembered : null;
-  } catch {
-    return null;
-  }
-}
-
-function rememberRemoteCwd(nodeId: NodeId, cwd: string): void {
-  const trimmed = cleanCwd(cwd);
-  if (!trimmed) return;
-  try {
-    window.localStorage.setItem(remoteNodeCwdStorageKey(nodeId), trimmed);
-  } catch {
-    // localStorage can be unavailable in private contexts; launching still works.
-  }
-}
-
-function defaultRemoteCwd(homeDir: string | undefined, nodeId: NodeId): string {
-  return readRememberedRemoteCwd(nodeId) ?? cleanCwd(homeDir);
-}
 
 function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
   return {
@@ -379,23 +350,38 @@ export function buildEnvironmentPickerModel(
       syntheticLocalNode(input.selectedAgent)
     );
   }
-  const nodeChoices = uniqueInstancesByNode(selectedGroup.instances).map(
-    (instance) => {
-      const node = nodeById.get(instance.nodeId) ?? null;
-      const reason = nodeBlockReason(node, input.selectedAgent);
-      return {
-        value: instance.nodeId,
-        label: node?.displayName ?? instance.nodeId,
+  const nodeChoiceIds = [
+    ...uniqueInstancesByNode(selectedGroup.instances).map(
+      (instance) => instance.nodeId
+    ),
+    ...input.nodes.map((node) => node.nodeId),
+  ];
+  const seenNodeChoices = new Set<NodeId>();
+  const nodeChoices = nodeChoiceIds.flatMap((nodeId) => {
+    if (seenNodeChoices.has(nodeId)) return [];
+    seenNodeChoices.add(nodeId);
+    const node = nodeById.get(nodeId) ?? null;
+    const reason = nodeBlockReason(node, input.selectedAgent);
+    return [
+      {
+        value: nodeId,
+        label:
+          nodeId === DEFAULT_LOCAL_NODE_ID
+            ? (node?.displayName ?? 'local')
+            : (node?.displayName ?? nodeId),
         ...(reason ? { disabled: true, reason } : {}),
-      };
-    }
+      },
+    ];
+  });
+  const explicitlySelectedNodeChoice = nodeChoices.find(
+    (choice) => choice.value === input.selectedNodeId
   );
+  const firstEnabledNodeChoice = nodeChoices.find((choice) => !choice.disabled);
   const selectedNodeChoice =
-    nodeChoices.find(
-      (choice) => choice.value === input.selectedNodeId && !choice.disabled
-    ) ??
-    nodeChoices.find((choice) => !choice.disabled) ??
-    nodeChoices[0];
+    explicitlySelectedNodeChoice &&
+    (!explicitlySelectedNodeChoice.disabled || !firstEnabledNodeChoice)
+      ? explicitlySelectedNodeChoice
+      : (firstEnabledNodeChoice ?? explicitlySelectedNodeChoice ?? nodeChoices[0]);
   const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
   const selectedNodeReason = selectedNodeChoice?.reason ?? null;
   const selectedNodeInstances = selectedGroup.instances.filter(
@@ -421,17 +407,24 @@ export function buildEnvironmentPickerModel(
     ) ??
     checkoutChoices.find((choice) => !choice.disabled) ??
     checkoutChoices[0];
-  const resolved = selectedCheckout
-    ? {
-        nodeId: selectedCheckout.nodeId,
-        repoPath: selectedCheckout.repoPath,
-        worktreePath: selectedCheckout.worktreePath,
-      }
-    : {
-        nodeId: DEFAULT_LOCAL_NODE_ID,
-        repoPath: input.fallbackWorkspace.path,
-        worktreePath: input.fallbackWorktreePath,
-      };
+  const resolved =
+    selectedNodeId !== DEFAULT_LOCAL_NODE_ID
+      ? {
+          nodeId: selectedNodeId,
+          repoPath: selectedCheckout?.repoPath ?? '',
+          worktreePath: selectedCheckout?.worktreePath ?? null,
+        }
+      : selectedCheckout
+        ? {
+            nodeId: selectedCheckout.nodeId,
+            repoPath: selectedCheckout.repoPath,
+            worktreePath: selectedCheckout.worktreePath,
+          }
+        : {
+            nodeId: DEFAULT_LOCAL_NODE_ID,
+            repoPath: input.fallbackWorkspace.path,
+            worktreePath: input.fallbackWorktreePath,
+          };
 
   return {
     showPicker:
@@ -577,7 +570,7 @@ function CustomizeSessionBody({
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
       )}
-      {environmentModel.showPicker && (
+      {(environmentModel.showPicker || remoteNodeSelected) && (
         <section
           className="customize-session-environment-picker"
           aria-label="environment picker"
@@ -967,6 +960,10 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         );
         return;
       }
+      if (environmentModel.selectedNodeReason) {
+        setError(environmentModel.selectedNodeReason);
+        return;
+      }
       const cwdForRemote = remoteNodeSelected
         ? cleanCwd(remoteCwdOverride ?? remoteCwd)
         : undefined;
@@ -981,13 +978,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           ? 'remote-cwd'
           : 'remote-home'
         : 'local-repo';
-      const { session, error: submitError } = await createSessionFromForm(
-        environmentModel.resolved,
-        form,
-        sessionLane,
-        cwdForRemote
-      );
       try {
+        const { session, error: submitError } = await createSessionFromForm(
+          environmentModel.resolved,
+          form,
+          sessionLane,
+          cwdForRemote
+        );
         if (submitError && !session) {
           setError(
             submitError instanceof Error
@@ -1020,7 +1017,12 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             variant="ghost"
             data-track="dialog.customize-session.start-in-home"
             onClick={() => void handleSubmit(selectedRemoteHome, false)}
-            disabled={!workspacePath || !selectedRemoteHome || creating}
+            disabled={
+              !workspacePath ||
+              !selectedRemoteHome ||
+              Boolean(environmentModel.selectedNodeReason) ||
+              creating
+            }
           >
             Start in Home
           </TuiButton>

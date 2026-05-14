@@ -237,6 +237,49 @@ function remoteLaneInventory(): AggregatedRepoInventoryResponse {
   };
 }
 
+function remoteOnlyInventory(): AggregatedRepoInventoryResponse {
+  const remoteInstance = {
+    repoInstanceId: 'remote:%2Fsrv%2Fremote-only',
+    nodeId: 'remote',
+    localPath: '/srv/remote-only',
+    name: 'remote-only',
+    isGitRepo: true,
+    defaultBranch: 'nightly',
+    currentBranch: 'nightly',
+    repoIdentity: 'github.com/example/remote-only',
+    selectedRemote: null,
+    remotes: [],
+    repoIdentityWarnings: [],
+    worktrees: [],
+    reportedAt: '2026-05-12T00:00:00.000Z',
+  };
+  return {
+    generatedAt: '2026-05-12T00:00:00.000Z',
+    reports: [],
+    groups: [
+      {
+        groupId: 'github.com/example/remote-only',
+        repoIdentity: 'github.com/example/remote-only',
+        displayName: 'remote-only',
+        selectedRemote: null,
+        remotes: [],
+        warnings: [],
+        identityDebug: {
+          groupedBy: 'repoIdentity',
+          repoIdentity: 'github.com/example/remote-only',
+          instanceCount: 1,
+          nodeIds: ['remote'],
+        },
+        instances: [remoteInstance],
+      },
+    ],
+  };
+}
+
+function localOnlyInventory(): AggregatedRepoInventoryResponse {
+  return inventory('local-only');
+}
+
 async function renderAndOpen(
   workspace: { name: string; path: string },
   inventoryResponse: AggregatedRepoInventoryResponse,
@@ -364,6 +407,109 @@ describe('CustomizeSessionDialog open races', () => {
         sessionLane: 'remote-home',
       })
     );
+  });
+
+  it('shows cwd and sends cwd-only payload for a single remote-only inventory', async () => {
+    const el = await renderAndOpen(
+      { name: 'remote-only', path: '/srv/remote-only' },
+      remoteOnlyInventory(),
+      [
+        node({
+          nodeId: 'remote',
+          displayName: 'remote box',
+          homeDir: '/home/relay',
+        }),
+      ]
+    );
+
+    const cwdInput = el.querySelector('#cs-remote-cwd') as HTMLInputElement;
+    expect(cwdInput).toBeTruthy();
+    expect(cwdInput.value).toBe('/home/relay');
+
+    await act(async () => {
+      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    expect(payload).toMatchObject({
+      nodeId: 'remote',
+      cwd: '/home/relay',
+      sessionLane: 'remote-cwd',
+    });
+    expect(payload).not.toHaveProperty('repoPath');
+    expect(payload).not.toHaveProperty('worktreePath');
+  });
+
+  it('lets a paired node without repo inventory use the remote cwd lane', async () => {
+    const el = await renderAndOpen(
+      { name: 'local-only-one', path: '/tmp/local-only-one' },
+      localOnlyInventory(),
+      [
+        node(),
+        node({
+          nodeId: 'remote',
+          displayName: 'remote box',
+          homeDir: '/home/relay',
+        }),
+      ]
+    );
+
+    await act(async () => {
+      const select = el.querySelector('#cs-node') as HTMLSelectElement;
+      select.value = 'remote';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const cwdInput = el.querySelector('#cs-remote-cwd') as HTMLInputElement;
+    expect(cwdInput).toBeTruthy();
+    expect(cwdInput.value).toBe('/home/relay');
+
+    await act(async () => {
+      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    expect(payload).toMatchObject({
+      nodeId: 'remote',
+      cwd: '/home/relay',
+      sessionLane: 'remote-cwd',
+    });
+    expect(payload).not.toHaveProperty('repoPath');
+    expect(payload).not.toHaveProperty('worktreePath');
+  });
+
+  it('disables Start in Home for a blocked selected remote node', async () => {
+    const el = await renderAndOpen(
+      { name: 'remote-only', path: '/srv/remote-only' },
+      remoteOnlyInventory(),
+      [
+        node({
+          nodeId: 'remote',
+          displayName: 'remote box',
+          status: 'offline',
+          homeDir: '/home/relay',
+        }),
+      ]
+    );
+
+    await flush();
+
+    const startInHome = el.querySelector(
+      '[data-track="dialog.customize-session.start-in-home"]'
+    ) as HTMLButtonElement;
+    expect(startInHome.disabled).toBe(true);
+
+    // Try the click path anyway to preserve the no-create regression assertion;
+    // happy-dom/browser disabled buttons do not dispatch onClick.
+    await act(async () => {
+      startInHome.click();
+    });
+    await flush();
+
+    expect(mocks.createAgentSession).not.toHaveBeenCalled();
   });
 
   it('ignores stale inventory and config from an earlier overlapping open call', async () => {
