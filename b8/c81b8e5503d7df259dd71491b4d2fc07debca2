@@ -1,0 +1,43 @@
+server/index.ts
+  s_6af8eee9d6c15d::t_914aa526ed1e44 1082-1086,1093-1102
+  s_6af8eee9d6c15d::t_7fb0ad6fa00967 108
+server/hub-node-router.ts
+  s_6af8eee9d6c15d::t_d5971779e06a4d 182
+  s_6af8eee9d6c15d::t_ed84dda3597b2a 74,83,92,96
+  s_6af8eee9d6c15d::t_68b945da07e901 207
+  s_6af8eee9d6c15d::t_f1d8129fc22147 466
+  s_6af8eee9d6c15d::t_4a851e2830420d 713-716
+  s_6af8eee9d6c15d::t_dd1342963ecc06 131
+  s_6af8eee9d6c15d::t_c2b0e62ee77eb1 192
+  s_6af8eee9d6c15d::t_37bd1ebe5adc4f 159
+  s_6af8eee9d6c15d::t_6e72e649b72de9 50-52
+  s_6af8eee9d6c15d::t_91a535fc6a2514 176
+  s_6af8eee9d6c15d::t_879bdbf89839db 337
+  s_6af8eee9d6c15d::t_d23a3d110b371d 53
+server/features/repo-router.ts
+  s_6af8eee9d6c15d::t_98dbfedbc96102 7
+  s_6af8eee9d6c15d::t_5855a39a131a50 1,3-6,8-166
+  s_6af8eee9d6c15d::t_fe0104692aeec5 2
+test/hub-node-routes.test.ts
+  s_6af8eee9d6c15d::t_f252e4d4dbd4dc 622-628,632-642
+  s_6af8eee9d6c15d::t_e11daf33418a07 10
+test/hub-node-cold-transfer.test.ts
+  s_6af8eee9d6c15d::t_9a7cbc13a5821d 10-11
+  s_6af8eee9d6c15d::t_b43002fd9be5db 237-241,246-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "b8c81b8e5503d7df259dd71491b4d2fc07debca2",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
