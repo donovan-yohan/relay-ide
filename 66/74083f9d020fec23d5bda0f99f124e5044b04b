@@ -1,0 +1,34 @@
+test/components/HubNodeDashboard.test.ts
+  s_6af8eee9d6c15d::t_9b2a16fe55164c 60-68,96-98
+frontend/src/lib/state/node-dashboard.ts
+  s_6af8eee9d6c15d::t_1d5f90fe12fef1 119-126,128
+  s_6af8eee9d6c15d::t_9b2a16fe55164c 53-55,59-61,76-79,100-102,127,141-145,199-202,205
+test/stores/node-dashboard.test.ts
+  s_6af8eee9d6c15d::t_9b2a16fe55164c 59-61,78-87,92-94,119-121,157-159
+shared/relay-node-protocol.ts
+  s_6af8eee9d6c15d::t_7f22f184aa317c 90-98
+server/hub-node-registry.ts
+  s_6af8eee9d6c15d::t_4e40e145dc1ddb 170-175
+test/customize-session-dialog.test.ts
+  s_6af8eee9d6c15d::t_9b2a16fe55164c 103-104,126-127,303-304,344-346,375-377,423-425,466-468
+frontend/src/test-customize-session-dialog.tsx
+  s_6af8eee9d6c15d::t_61a89513b45d60 69
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  s_6af8eee9d6c15d::t_5eb5973adbd425 181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "6674083f9d020fec23d5bda0f99f124e5044b04b",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
