@@ -18,34 +18,54 @@ import {
   type HubNodeSummary,
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
+import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
 
 const LOCAL_SESSION_ID = 'duplicate-local-session';
+
+// Test-local agent list. Specific ids are an INPUT to the fixture so
+// the smoke harness doesn't carry a hardcoded global assumption about
+// which frameworks the platform ships.
+const SMOKE_AGENTS = [
+  { id: 'claude', label: 'Claude', status: 'available' as const },
+  {
+    id: 'codex',
+    label: 'Codex',
+    status: 'degraded' as const,
+    message: 'test double',
+  },
+];
 
 function manifest(
   name: string,
   overrides: Partial<NodeManifest> = {}
 ): NodeManifest {
-  return {
-    schemaVersion: 1,
-    platform: 'linux',
-    arch: 'x64',
-    hostname: name,
-    relayVersion: '0.1.0-smoke',
-    generatedAt: '2026-01-02T03:04:05.000Z',
-    wsl: { detected: false, version: null, systemd: false },
-    serviceManager: {
-      kind: 'systemd-user',
-      label: 'systemd user',
-      supported: true,
-      installable: true,
-      installHint: 'install',
-      uninstallHint: 'uninstall',
-      message: 'ok',
-      caveats: [],
+  const base = buildManifestWithAgents({
+    agents: SMOKE_AGENTS,
+    overrides: {
+      platform: 'linux',
+      arch: 'x64',
+      hostname: name,
+      relayVersion: '0.1.0-smoke',
+      serviceManager: {
+        kind: 'systemd-user',
+        label: 'systemd user',
+        supported: true,
+        installable: true,
+        installHint: 'install',
+        uninstallHint: 'uninstall',
+        message: 'ok',
+        caveats: [],
+      },
     },
+  });
+  // The smoke harness needs a couple capability-status tweaks relative
+  // to the helper's defaults (clipboard available, browserAutomation
+  // degraded, tailscale unavailable, githubCli available). Apply them
+  // here so the harness intent stays self-contained.
+  return {
+    ...base,
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
-      git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
+      ...base.capabilities,
       clipboard: {
         id: 'clipboard',
         label: 'Clipboard',
@@ -69,26 +89,6 @@ function manifest(
         label: 'Tailscale CLI',
         status: 'unavailable',
         message: 'missing',
-      },
-      ssh: {
-        id: 'ssh',
-        label: 'SSH client',
-        status: 'available',
-        message: 'ok',
-      },
-      agents: {
-        claude: {
-          id: 'claude',
-          label: 'Claude',
-          status: 'available',
-          message: 'ok',
-        },
-        codex: {
-          id: 'codex',
-          label: 'Codex',
-          status: 'degraded',
-          message: 'test double',
-        },
       },
     },
     ...overrides,

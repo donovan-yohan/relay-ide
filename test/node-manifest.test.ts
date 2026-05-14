@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getNodeManifest, probeCommand } from '../server/node-manifest.js';
+import type { NodeCapabilityStatus } from '../shared/relay-node-protocol.js';
 
 describe('node manifest', () => {
   it('reports platform, service manager, and degraded missing tool probes without throwing', async () => {
@@ -41,9 +42,23 @@ describe('node manifest', () => {
           githubCli: { status: 'unavailable' },
         },
       });
-      expect(Object.keys(manifest.capabilities.agents)).toEqual(
-        expect.arrayContaining(['claude', 'codex', 'opencode', 'hermes'])
-      );
+      // Core manifest no longer hardcodes a specific framework set.
+      // Whichever framework registry is configured at runtime supplies
+      // the agent map; this test asserts the shape is well-formed and
+      // that the probe ran (at least one entry) without pinning to
+      // specific ids.
+      const agentEntries = Object.entries(manifest.capabilities.agents);
+      expect(agentEntries.length).toBeGreaterThan(0);
+      const allowedStatuses: NodeCapabilityStatus[] = [
+        'available',
+        'degraded',
+        'unavailable',
+        'unknown',
+      ];
+      for (const [id, probe] of agentEntries) {
+        expect(probe.id).toBe(id);
+        expect(allowedStatuses).toContain(probe.status);
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -95,9 +110,7 @@ describe('node manifest', () => {
       pathMode: 'windows-mount',
       windowsPath: '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\dev\\relay-ide',
     });
-    expect(['wsl-systemd', 'wsl-manual']).toContain(
-      manifest.wsl.lifecycleMode
-    );
+    expect(['wsl-systemd', 'wsl-manual']).toContain(manifest.wsl.lifecycleMode);
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/not native Windows/i);
     expect(manifest.wsl.caveats?.join(' ')).toMatch(/capability-gated/i);
     expect(['wsl-systemd', 'wsl-manual']).toContain(
