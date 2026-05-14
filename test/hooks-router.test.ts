@@ -4,8 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
 import http from 'node:http';
+import Database from 'better-sqlite3';
 import { createHooksRouter } from '../server/hooks.js';
-import { initAnalytics, closeAnalytics } from '../server/analytics.js';
+import {
+  initAnalytics,
+  closeAnalytics,
+  flushEventBuffer,
+  getDbPath,
+} from '../server/analytics.js';
 import type { Session } from '../server/types.js';
 
 function makeSession(overrides: Partial<Session> = {}): Session {
@@ -53,6 +59,8 @@ let port: number;
 let sessions: Map<string, Session>;
 let broadcastCalls: Array<{ type: string; data?: Record<string, unknown> }>;
 let backendStateCalls: Session[];
+let branchRenameCalls: Array<{ sessionId: string; promptText: string }>;
+let branchRenameError: Error | null;
 let attentionCalls: Array<{
   sessionId: string;
   session: { displayName: string; type: string };
@@ -69,6 +77,7 @@ beforeAll(async () => {
   sessions = new Map();
   broadcastCalls = [];
   backendStateCalls = [];
+  branchRenameCalls = [];
   attentionCalls = [];
 
   const app = express();
@@ -79,6 +88,10 @@ beforeAll(async () => {
     fireBackendStateIfChanged: (s) => backendStateCalls.push(s),
     notifySessionAttention: (sessionId, session) =>
       attentionCalls.push({ sessionId, session }),
+    executeBranchRename: async (session, promptText) => {
+      branchRenameCalls.push({ sessionId: session.id, promptText });
+      if (branchRenameError) throw branchRenameError;
+    },
   });
 
   app.use('/hooks', hooksRouter);
@@ -97,6 +110,8 @@ afterAll(() => {
 beforeEach(() => {
   broadcastCalls.length = 0;
   backendStateCalls.length = 0;
+  branchRenameCalls.length = 0;
+  branchRenameError = null;
   attentionCalls.length = 0;
 });
 
@@ -368,7 +383,99 @@ describe('POST /hooks/prompt-submit', () => {
 
     expect(res.status).toBe(200);
     expect(session.needsBranchRename).toBe(false);
+    expect(branchRenameCalls).toEqual([
+      { sessionId: 'prompt-002', promptText: 'add a feature' },
+    ]);
     sessions.delete('prompt-002');
+  });
+
+  it('restores needsBranchRename when injected rename runner rejects', async () => {
+    branchRenameError = new Error('rename failed');
+    const session = makeSession({
+      id: 'prompt-rename-failure',
+      hookToken: 'tok',
+      needsBranchRename: true,
+    });
+    sessions.set('prompt-rename-failure', session);
+
+    const res = await fetch(url('/prompt-submit', 'prompt-rename-failure', 'tok'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'add a feature' }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(session.needsBranchRename).toBe(true);
+    expect(branchRenameCalls).toEqual([
+      { sessionId: 'prompt-rename-failure', promptText: 'add a feature' },
+    ]);
+    sessions.delete('prompt-rename-failure');
+  });
+
+  it('skips branch rename for non-repo/free tabs with no checkout binding', async () => {
+    const session = makeSession({
+      id: 'prompt-free-001',
+      hookToken: 'tok',
+      repoPath: undefined as unknown as string,
+      worktreePath: undefined as unknown as null,
+      branchName: undefined as unknown as string,
+      repoName: undefined as unknown as string,
+      needsBranchRename: true,
+    });
+    sessions.set('prompt-free-001', session);
+
+    const res = await fetch(url('/prompt-submit', 'prompt-free-001', 'tok'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'free tab prompt' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(session.needsBranchRename).toBe(false);
+    expect(branchRenameCalls).toHaveLength(0);
+    sessions.delete('prompt-free-001');
+  });
+
+  it('records non-repo/free events with node attribution and null repo fields', async () => {
+    const session = makeSession({
+      id: 'prompt-free-analytics',
+      hookToken: 'tok',
+      repoPath: undefined as unknown as string,
+      worktreePath: undefined as unknown as null,
+      branchName: undefined as unknown as string,
+      repoName: undefined as unknown as string,
+      nodeId: 'node-free-1',
+    });
+    sessions.set('prompt-free-analytics', session);
+
+    const res = await fetch(url('/prompt-submit', 'prompt-free-analytics', 'tok'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'free analytics' }),
+    });
+    expect(res.status).toBe(200);
+
+    flushEventBuffer('prompt-free-analytics');
+    const db = new Database(getDbPath(tmpDir), { readonly: true });
+    const row = db
+      .prepare(
+        `SELECT session_id, node_id, repo_path, worktree_path, branch_name, session_category, event_type
+         FROM session_events WHERE session_id = ? AND event_type = 'user_prompt'`
+      )
+      .get('prompt-free-analytics') as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      session_id: 'prompt-free-analytics',
+      node_id: 'node-free-1',
+      repo_path: null,
+      worktree_path: null,
+      branch_name: null,
+      session_category: 'free',
+      event_type: 'user_prompt',
+    });
+    db.close();
+    sessions.delete('prompt-free-analytics');
   });
 
   it('leaves needsBranchRename=false untouched when already false', async () => {

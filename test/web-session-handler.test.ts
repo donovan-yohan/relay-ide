@@ -319,6 +319,41 @@ describe('createWebSession', () => {
     expect(session.id).toBe('custom-id');
   });
 
+  it('defaults repo-bound branchName to an empty string', async () => {
+    const { session } = await createWebSession(
+      {
+        agentType: 'mock',
+        cwd: '/repo',
+        repoPath: '/repo',
+        repoName: 'repo',
+        displayName: 'Test',
+        port: 3000,
+        configDir: '/config',
+      },
+      sessionsMap,
+      onBackendStateChanged
+    );
+
+    expect(session.branchName).toBe('');
+    expect(session).toHaveProperty('branchName');
+  });
+
+  it('omits branchName for non-repo web sessions', async () => {
+    const { session } = await createWebSession(
+      {
+        agentType: 'mock',
+        cwd: '/repo',
+        displayName: 'Test',
+        port: 3000,
+        configDir: '/config',
+      },
+      sessionsMap,
+      onBackendStateChanged
+    );
+
+    expect(session).not.toHaveProperty('branchName');
+  });
+
   it('updates agentState on turn lifecycle events', async () => {
     const { session } = await createWebSession(
       {

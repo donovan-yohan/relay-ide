@@ -64,7 +64,7 @@ function resolveAbsolutePathToRepoPath(value: string): string[] {
     if (
       sessionRoots.some((root) => root && pathIsAtOrUnder(absolutePath, root))
     ) {
-      paths.add(session.repoPath);
+      if (session.repoPath) paths.add(session.repoPath);
     }
   }
 

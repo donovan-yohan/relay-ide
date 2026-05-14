@@ -68,7 +68,7 @@ ON CONFLICT(id) DO UPDATE SET
 export interface WebSessionMeta {
   type: string;
   agent: string;
-  repoName: string;
+  repoName?: string;
   customCommand: string | null;
   runtimeOwnership: 'spawned' | 'attached';
   hookToken: string;
@@ -255,7 +255,7 @@ function writeUpsert(session: WebSession): void {
   const meta: WebSessionMeta = {
     type: session.type,
     agent: session.agent,
-    repoName: session.repoName,
+    ...(session.repoName ? { repoName: session.repoName } : {}),
     customCommand: session.customCommand ?? null,
     runtimeOwnership: session.runtimeOwnership,
     hookToken: session.hookToken,

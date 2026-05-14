@@ -255,7 +255,9 @@ function visibleRepoPaths(
   const paths = new Set<string>();
   for (const repo of state.repos) paths.add(repo.path);
   for (const wt of state.worktrees) paths.add(wt.repoPath);
-  for (const session of state.sessions) paths.add(session.repoPath);
+  for (const session of state.sessions) {
+    if (session.repoPath) paths.add(session.repoPath);
+  }
   return Array.from(paths);
 }
 
@@ -569,7 +571,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     if (!workspace) return directSessions;
     const repoSet = new Set(workspace.repos);
     const repoSessions = sessions.filter(
-      (s) => !s.workspaceId && repoSet.has(s.repoPath)
+      (s) => !s.workspaceId && !!s.repoPath && repoSet.has(s.repoPath)
     );
     return [...directSessions, ...repoSessions];
   },

@@ -64,7 +64,7 @@ test('initAnalytics creates rate_limit_snapshots table', () => {
   db.close();
 });
 
-test('initAnalytics creates schema_version table at version 3', () => {
+test('initAnalytics creates schema_version table at version 4', () => {
   initAnalytics(tmpDir);
   const db = new Database(getDbPath(tmpDir), { readonly: true });
   const tables = db
@@ -74,7 +74,7 @@ test('initAnalytics creates schema_version table at version 3', () => {
   const version = db.prepare('SELECT version FROM schema_version').get() as {
     version: number;
   };
-  expect(version.version).toBe(3);
+  expect(version.version).toBe(4);
   db.close();
 });
 

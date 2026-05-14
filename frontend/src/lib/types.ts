@@ -147,11 +147,11 @@ export interface SessionSummary {
   type: 'agent' | 'terminal';
   agent: AgentType;
   mode?: 'pty' | 'web' | undefined;
-  repoName: string;
-  repoPath: string;
-  worktreePath: string | null;
+  repoName?: string;
+  repoPath?: string;
+  worktreePath?: string | null;
   cwd: string;
-  branchName: string;
+  branchName?: string;
   displayName: string;
   createdAt: string;
   lastActivity: string;

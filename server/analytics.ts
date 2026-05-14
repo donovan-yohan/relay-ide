@@ -90,10 +90,20 @@ const SCHEMA_V3 = `
 ALTER TABLE rate_limit_snapshots ADD COLUMN windows TEXT;
 `;
 
+const SCHEMA_V4 = `
+ALTER TABLE session_events ADD COLUMN node_id TEXT;
+ALTER TABLE session_events ADD COLUMN worktree_path TEXT;
+ALTER TABLE session_events ADD COLUMN branch_name TEXT;
+ALTER TABLE session_events ADD COLUMN session_category TEXT;
+CREATE INDEX IF NOT EXISTS idx_sevents_node ON session_events(node_id);
+CREATE INDEX IF NOT EXISTS idx_sevents_category ON session_events(session_category);
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
+  { version: 4, sql: SCHEMA_V4 },
 ];
 
 const INSERT_SQL =
@@ -154,7 +164,10 @@ function ensureSessionStmts(): void {
   if (!db) return;
   if (!insertSessionEventStmt) {
     insertSessionEventStmt = db.prepare(
-      'INSERT INTO session_events (session_id, repo_path, event_type, event_data, timestamp) VALUES (?, ?, ?, ?, ?)'
+      `INSERT INTO session_events (
+        session_id, node_id, repo_path, worktree_path, branch_name,
+        session_category, event_type, event_data, timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
   }
   if (!insertRateLimitStmt) {
@@ -185,7 +198,11 @@ export function flushEventBuffer(sessionId?: string): void {
     for (const e of events) {
       stmt.run(
         e.session_id,
+        e.node_id ?? null,
         e.repo_path ?? null,
+        e.worktree_path ?? null,
+        e.branch_name ?? null,
+        e.session_category ?? null,
         e.event_type,
         e.event_data ? JSON.stringify(e.event_data) : null,
         e.timestamp

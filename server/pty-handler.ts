@@ -28,6 +28,7 @@ import { installOpenCodeRelayPlugin } from './opencode-relay.js';
 import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -366,7 +367,7 @@ export type CreatePtyParams = {
   type?: SessionType | undefined;
   agent?: AgentType | undefined;
   repoName?: string | undefined;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
   cwd: string;
   branchName?: string | undefined;
@@ -550,7 +551,7 @@ function injectPortEnvVars(
 }
 
 function buildPortInjectionParams(
-  repoPath: string,
+  repoPath: string | undefined,
   worktreePath: string | null,
   cwd: string,
   portVariables: string[] | undefined,
@@ -789,13 +790,14 @@ function buildSessionObject(
 
   return {
     id,
+    nodeId: DEFAULT_LOCAL_NODE_ID,
     type: type || 'agent',
     agent,
     mode: 'pty' as const,
-    repoPath: repoPath || '',
-    worktreePath: worktreePath ?? null,
-    repoName: repoName || '',
-    branchName: branchName || '',
+    ...(repoPath ? { repoPath } : {}),
+    ...(repoPath ? { worktreePath: worktreePath ?? null } : {}),
+    ...(repoName ? { repoName } : {}),
+    ...(repoPath ? { branchName: branchName ?? '' } : {}),
     displayName: displayName || repoName || path.basename(cwd) || '',
     pty: ptyProcess,
     createdAt,
@@ -1174,10 +1176,14 @@ export function createPtySession(
     type: session.type,
     agent: session.agent,
     mode: 'pty' as const,
-    repoPath: session.repoPath,
-    worktreePath: session.worktreePath,
-    repoName: session.repoName,
-    branchName: session.branchName,
+    ...(session.repoPath ? { repoPath: session.repoPath } : {}),
+    ...(session.worktreePath !== undefined
+      ? { worktreePath: session.worktreePath }
+      : {}),
+    ...(session.repoName ? { repoName: session.repoName } : {}),
+    ...(session.branchName !== undefined
+      ? { branchName: session.branchName }
+      : {}),
     displayName: session.displayName,
     pid: ptyProcess.pid,
     createdAt,

@@ -195,7 +195,7 @@ function resolveIssueIntent(
   // Use regex with word boundary to avoid false-positives (e.g., issue-12 matching issue-123)
   const issueBranchPattern = new RegExp(`issue-${issue.number}(?:-|$)`);
   const existingSession = sessions.find((s) =>
-    issueBranchPattern.test(s.branchName)
+    s.branchName ? issueBranchPattern.test(s.branchName) : false
   );
 
   if (existingSession) {
