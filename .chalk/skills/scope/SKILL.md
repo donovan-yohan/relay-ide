@@ -138,7 +138,7 @@ gh issue edit <NUMBER> --repo donovan-yohan/relay-ide --remove-label "refined" -
 3. Report success:
    - Issue number and title
    - Files in the plan
-   - "Promoted to todo -- ready for belayer intake"
+   - "Promoted to todo -- ready to claim"
 
 ### Path B: Conflicts found
 

@@ -564,7 +564,7 @@ Notes:
 
 ## 6. Follow-up implementation tickets
 
-These will be filed as sub-issues of #427 ("Security backbone") and form the executable plan that falls out of this spike. Each ticket is sized for a single belayer run.
+These will be filed as sub-issues of #427 ("Security backbone") and form the executable plan that falls out of this spike. Each ticket is sized for a single claim/worktree.
 
 1. **`feat(security): capability-bit ACL store + schema`**
    Add `server/hub-node-acl.ts` with `HubNodeAclEntry`, `CapabilityBit` enum, and the default-grant set. Persist to `<configDir>/hub-node-acl.json` (atomic write, `0600`). Migration: on first heartbeat after upgrade, mint `acl_v1` for nodes lacking `aclRef`. Tests cover schema, default-grant correctness, atomic write, migration.
