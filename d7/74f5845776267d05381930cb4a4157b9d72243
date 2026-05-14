@@ -1,0 +1,21 @@
+server/features/frameworks.ts
+  s_6af8eee9d6c15d::t_15f3eaf126059f 12-14,18-21
+server/node-manifest.ts
+  s_6af8eee9d6c15d::t_3b0709f237b383 148-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "d774f5845776267d05381930cb4a4157b9d72243",
+  "prompts": {},
+  "sessions": {
+    "s_6af8eee9d6c15d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a77c176e-54f1-4527-bf67-f94d0ff987fe",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
