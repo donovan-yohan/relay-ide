@@ -1,0 +1,23 @@
+frontend/src/components/FilePicker.tsx
+  s_b3a47fe202d97d::t_cfe0353cc03de5 426
+  s_b3a47fe202d97d::t_9dee479e4ca18c 473-475
+  s_b3a47fe202d97d::t_b630dd26dd837a 605
+test/components/FilePicker.test.ts
+  s_b3a47fe202d97d::t_387052b24d972c 1-25,27-43,45-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "6f0db491714cc501c29615c9d00179dc5d1f030c",
+  "prompts": {},
+  "sessions": {
+    "s_b3a47fe202d97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47fff9ea-5843-474d-8f2f-6a2165aba67a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
