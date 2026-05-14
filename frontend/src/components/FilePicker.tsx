@@ -423,6 +423,7 @@ export function FilePicker({
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { dragOffset, handleDragStart, handleDragMove, handleDragEnd } =
@@ -469,6 +470,9 @@ export function FilePicker({
       setQuery('');
       setDebouncedQuery('');
       setFocusedIndex(0);
+      // Move focus to the search input so printable keystrokes filter the list.
+      // Defer with rAF so the input is mounted/visible before focusing.
+      requestAnimationFrame(() => inputRef.current?.focus());
     }
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -598,6 +602,7 @@ export function FilePicker({
         <div className="file-picker-input-row">
           <span className="file-picker-prompt">&gt;</span>
           <input
+            ref={inputRef}
             className="tui-input"
             value={query}
             placeholder="search files..."
