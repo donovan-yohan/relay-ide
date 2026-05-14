@@ -104,7 +104,10 @@ import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
-import { aggregateRemoteSessions } from './hub-session-aggregator.js';
+import {
+  aggregateRemoteSessions,
+  isLocallyOwnedSession,
+} from './hub-session-aggregator.js';
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { createRepoFeatureRouter } from './features/repo-router.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
@@ -1843,10 +1846,9 @@ async function main(): Promise<void> {
     await Promise.all(
       allSessions.map(async (s) => {
         if (s.type !== 'agent') return;
-        // Skip remote sessions: their cwd lives on the owning node and
-        // running `git` against it locally is meaningless. The owning
-        // node refreshes its own branchName on its own sessions.list.
-        if (s.nodeId !== undefined) return;
+        // Skip remote (routed) sessions: their cwd lives on the owning
+        // node and running `git` against it locally is meaningless.
+        if (!isLocallyOwnedSession(s)) return;
         if (!s.cwd) return;
         const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
         if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;

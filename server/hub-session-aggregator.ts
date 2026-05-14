@@ -5,6 +5,24 @@ import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { SessionSummary } from './types.js';
 import { scopedNodeSession, isSessionSummary } from './hub-node-router.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+
+/**
+ * Returns true when a session is owned by this hub host (local node).
+ * Local sessions are always stamped with `DEFAULT_LOCAL_NODE_ID` by
+ * `withLocalIdentity()` in `server/sessions.ts`; the `undefined` arm
+ * is defensive in case a code path constructs a SessionSummary
+ * without going through that helper.
+ *
+ * Used by the `GET /sessions` branch-refresh loop to gate the
+ * `git rev-parse` shellout — running git against a remote node's
+ * cwd locally is meaningless.
+ */
+export function isLocallyOwnedSession(session: SessionSummary): boolean {
+  return (
+    session.nodeId === undefined || session.nodeId === DEFAULT_LOCAL_NODE_ID
+  );
+}
 
 // Per-node RPC timeout for sessions.list aggregation. Tighter than the
 // 10s HubNodeLinkManager default because GET /sessions is on the

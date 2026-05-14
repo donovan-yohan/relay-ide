@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aggregateRemoteSessions } from '../server/hub-session-aggregator.js';
+import {
+  aggregateRemoteSessions,
+  isLocallyOwnedSession,
+} from '../server/hub-session-aggregator.js';
 import { HubNodeLinkError } from '../server/hub-node-link.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
@@ -172,6 +176,24 @@ describe('aggregateRemoteSessions', () => {
     const result = await aggregateRemoteSessions({ registry, nodeLinks });
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe('s-good');
+  });
+
+  it('treats sessions with no nodeId as locally owned', () => {
+    const session = localSession('s1', '');
+    delete (session as { nodeId?: string }).nodeId;
+    expect(isLocallyOwnedSession(session)).toBe(true);
+  });
+
+  it('treats sessions stamped with DEFAULT_LOCAL_NODE_ID as locally owned', () => {
+    expect(
+      isLocallyOwnedSession(localSession('s1', DEFAULT_LOCAL_NODE_ID))
+    ).toBe(true);
+  });
+
+  it('treats sessions stamped with any remote nodeId as not locally owned', () => {
+    expect(isLocallyOwnedSession(localSession('s1', 'node-remote'))).toBe(
+      false
+    );
   });
 
   it('drops a slow node when the per-node timeout fires', async () => {
