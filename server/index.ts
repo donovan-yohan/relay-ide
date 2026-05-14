@@ -105,6 +105,7 @@ import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
+import { createRepoFeatureRouter } from './features/repo-router.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -1078,17 +1079,27 @@ async function main(): Promise<void> {
     next();
   };
 
+  const collectLocalInventory = () =>
+    collectLocalRepoInventory({
+      config: getConfig(),
+      configPath: CONFIG_PATH,
+    });
   app.use(
     createHubNodeRouter({
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
       requireAuth,
       repoInventoryFeature,
-      collectLocalRepoInventory: () =>
-        collectLocalRepoInventory({
-          config: getConfig(),
-          configPath: CONFIG_PATH,
-        }),
+      collectLocalRepoInventory: collectLocalInventory,
+    })
+  );
+  app.use(
+    createRepoFeatureRouter({
+      registry: hubNodeRegistry,
+      nodeLinks: hubNodeLinks,
+      requireAuth,
+      repoInventoryFeature,
+      collectLocalRepoInventory: collectLocalInventory,
     })
   );
 

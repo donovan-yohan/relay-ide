@@ -7,6 +7,8 @@ import { WebSocket } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
+import { createRepoFeatureRouter } from '../server/features/repo-router.js';
+import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { createLocalRelayNode } from '../server/local-node.js';
 import { setupWebSocket } from '../server/ws.js';
@@ -232,14 +234,26 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     const nodeLinks = createHubNodeLinkManager();
     const app = express();
     app.use(express.json());
+    const requireAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') next();
+      else res.status(401).json({ error: 'Unauthorized' });
+    };
+    const repoInventoryFeature = createRepoInventoryFeature(registry);
     app.use(
       createHubNodeRouter({
         registry,
         nodeLinks,
-        requireAuth: (req, res, next) => {
-          if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
-        },
+        requireAuth,
+        repoInventoryFeature,
+        collectLocalRepoInventory: options?.collectLocalRepoInventory,
+      })
+    );
+    app.use(
+      createRepoFeatureRouter({
+        registry,
+        nodeLinks,
+        requireAuth,
+        repoInventoryFeature,
         collectLocalRepoInventory: options?.collectLocalRepoInventory,
       })
     );

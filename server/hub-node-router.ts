@@ -47,7 +47,10 @@ function bearerToken(req: Request): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function errorStatus(error: RelayNodeError): number {
+// Shared utilities exported for the repo feature router (and any other
+// hub-side router that needs to surface relay-node-protocol errors
+// consistently). Pure functions — no router or registry state.
+export function errorStatus(error: RelayNodeError): number {
   switch (error.code) {
     case 'UNAUTHORIZED':
       return 401;
@@ -68,7 +71,7 @@ function errorStatus(error: RelayNodeError): number {
   }
 }
 
-function sendRegistryError(
+export function sendRegistryError(
   registry: HubNodeRegistry,
   res: Response,
   error: unknown
@@ -77,7 +80,7 @@ function sendRegistryError(
   res.status(errorStatus(body.error)).json(body);
 }
 
-function relayError(
+export function relayError(
   code: RelayNodeError['code'],
   message: string,
   retryable = false,
@@ -86,11 +89,11 @@ function relayError(
   return { code, message, retryable, ...(details ? { details } : {}) };
 }
 
-function sendRelayError(res: Response, error: RelayNodeError): void {
+export function sendRelayError(res: Response, error: RelayNodeError): void {
   res.status(errorStatus(error)).json({ error });
 }
 
-function isSessionSummary(value: unknown): value is SessionSummary {
+export function isSessionSummary(value: unknown): value is SessionSummary {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionSummary>;
   // repoPath / worktreePath / branchName are optional: a non-repo
@@ -125,7 +128,7 @@ function isSessionSummary(value: unknown): value is SessionSummary {
   );
 }
 
-function scopedNodeSession(
+export function scopedNodeSession(
   nodeId: string,
   session: SessionSummary
 ): SessionSummary {
@@ -153,7 +156,7 @@ function scopedNodeSession(
   };
 }
 
-function sessionFromPayload(payload: unknown): SessionSummary {
+export function sessionFromPayload(payload: unknown): SessionSummary {
   if (typeof payload !== 'object' || payload === null) {
     throw new HubNodeRegistryError(
       'INVALID_REQUEST',
@@ -170,13 +173,13 @@ function sessionFromPayload(payload: unknown): SessionSummary {
   return session;
 }
 
-function bodyRecord(req: Request): Record<string, unknown> {
+export function bodyRecord(req: Request): Record<string, unknown> {
   return typeof req.body === 'object' && req.body !== null
     ? (req.body as Record<string, unknown>)
     : {};
 }
 
-interface ColdReopenWarning {
+export interface ColdReopenWarning {
   code:
     | 'source-dirty-checkout'
     | 'source-diverged-checkout'
@@ -186,7 +189,7 @@ interface ColdReopenWarning {
   details?: Record<string, unknown>;
 }
 
-interface ColdReopenTarget {
+export interface ColdReopenTarget {
   repo: RepoInventoryRepoInstance;
   worktree: RepoInventoryWorktreeInstance | null;
   branchName: string | null;
@@ -201,7 +204,7 @@ function stringField(
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function recordField(
+export function recordField(
   record: Record<string, unknown>,
   key: string
 ): Record<string, unknown> {
@@ -331,7 +334,7 @@ function findSourceCheckout(
   return null;
 }
 
-function findColdReopenTarget(
+export function findColdReopenTarget(
   reports: RepoInventoryReport[],
   nodeId: string,
   body: Record<string, unknown>
@@ -460,7 +463,7 @@ function coldReopenPrompt(input: {
     : handoff;
 }
 
-function coldReopenSessionPayload(
+export function coldReopenSessionPayload(
   body: Record<string, unknown>,
   target: ColdReopenTarget
 ): Record<string, unknown> {
@@ -707,123 +710,10 @@ export function createHubNodeRouter(
     res.json({ nodes: registry.listNodes() });
   });
 
-  router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
-    try {
-      const reports = [...repoInventoryFeature.listInventoryReports()];
-      if (options.collectLocalRepoInventory) {
-        reports.push(await options.collectLocalRepoInventory());
-      }
-      res.json(repoInventoryFeature.aggregateInventoryReports(reports));
-    } catch (error) {
-      sendRegistryError(registry, res, error);
-    }
-  });
-
-  router.post(
-    '/hub/nodes/:nodeId/sessions/reopen',
-    requireAuth,
-    async (req, res) => {
-      const { nodeId } = req.params;
-      if (!nodeId) {
-        sendRelayError(
-          res,
-          relayError('INVALID_REQUEST', 'nodeId is required')
-        );
-        return;
-      }
-      const node = registry
-        .listNodes()
-        .find((candidate) => candidate.nodeId === nodeId);
-      if (!node || node.status === 'revoked') {
-        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
-        return;
-      }
-      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
-        const [nodeMajor] = node.protocolVersion.split('.');
-        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
-        sendRelayError(
-          res,
-          relayError(
-            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
-            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
-          )
-        );
-        return;
-      }
-      if (node.capabilities.core.tmux !== 'available') {
-        sendRelayError(
-          res,
-          relayError(
-            'NODE_UNSUPPORTED',
-            `node ${nodeId} cannot host tmux-backed PTY sessions`
-          )
-        );
-        return;
-      }
-      if (
-        node.status !== 'online' ||
-        !options.nodeLinks?.hasActiveNode(nodeId)
-      ) {
-        sendRelayError(
-          res,
-          relayError(
-            'NODE_OFFLINE',
-            `node ${nodeId} has no live reverse link`,
-            true
-          )
-        );
-        return;
-      }
-
-      const body = bodyRecord(req);
-      try {
-        const reports = [...repoInventoryFeature.listInventoryReports()];
-        if (options.collectLocalRepoInventory) {
-          reports.push(await options.collectLocalRepoInventory());
-        }
-        const target = findColdReopenTarget(reports, nodeId, body);
-        if ('code' in target) {
-          sendRelayError(res, target);
-          return;
-        }
-
-        const sessionPayload = coldReopenSessionPayload(body, target);
-        const payload = await options.nodeLinks.request(
-          nodeId,
-          'sessions.create',
-          sessionPayload
-        );
-        const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
-        res.status(201).json({
-          session,
-          transfer: {
-            mode: 'cold-reopen',
-            livePtyMigrated: false,
-            message:
-              'cold reopen started a new session from git/worktree state; it did not migrate live tmux/PTY process state',
-            source: recordField(body, 'source'),
-            target: {
-              nodeId,
-              repoPath: target.repo.localPath,
-              worktreePath: target.worktree?.localPath ?? null,
-              branchName: target.branchName,
-              repoInstanceId: target.repo.repoInstanceId,
-              ...(target.worktree
-                ? { worktreeInstanceId: target.worktree.worktreeInstanceId }
-                : {}),
-            },
-            warnings: target.warnings,
-          },
-        });
-      } catch (error) {
-        if (error instanceof HubNodeLinkError) {
-          sendRelayError(res, error.relayNodeError);
-          return;
-        }
-        sendRegistryError(registry, res, error);
-      }
-    }
-  );
+  // Repo-feature endpoints (GET /hub/repo-inventory + POST
+  // /hub/nodes/:nodeId/sessions/reopen) used to live here. Per #425.2 /
+  // #433 they moved to `server/features/repo-router.ts`. Composition
+  // root mounts both routers.
 
   router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
     const { nodeId } = req.params;
