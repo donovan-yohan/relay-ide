@@ -22,9 +22,9 @@ function framework(id: string, installed = true): FrameworkInfo {
       supportsYolo: true,
       supportsHooks: true,
       supportsTelemetry: false,
-      supportsWebSessions: ['claude', 'codex', 'opencode', 'hermes'].includes(
-        id
-      ),
+      // Codex is intentionally absent — its web-session capability is
+      // de-advertised pending a full implementation (issue #301).
+      supportsWebSessions: ['claude', 'opencode', 'hermes'].includes(id),
     },
     eventSource: 'hooks',
     availability: installed
@@ -101,7 +101,8 @@ function inventory(): AggregatedRepoInventoryResponse {
             repoIdentityWarnings: [],
             worktrees: [
               {
-                worktreeInstanceId: 'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
+                worktreeInstanceId:
+                  'linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
                 localPath: '/srv/relay-ide/.worktrees/feature',
                 branchName: 'feature/linux',
                 displayName: 'feature',
@@ -123,7 +124,8 @@ function inventory(): AggregatedRepoInventoryResponse {
             repoIdentityWarnings: [],
             worktrees: [
               {
-                worktreeInstanceId: 'local:%2FUsers%2Fkyle%2Frelay-ide%2F.worktrees%2Ffeature',
+                worktreeInstanceId:
+                  'local:%2FUsers%2Fkyle%2Frelay-ide%2F.worktrees%2Ffeature',
                 localPath: '/Users/kyle/relay-ide/.worktrees/feature',
                 branchName: 'feature/local',
                 displayName: 'feature',
@@ -184,6 +186,14 @@ describe('CustomizeSessionDialog session mode options', () => {
 
   it('shows only tui for agents without web-session adapters', () => {
     expect(getSessionModeOptions([framework('custom')], 'custom')).toEqual([
+      { value: 'pty', label: 'tui' },
+    ]);
+  });
+
+  // Regression guard for issue #301: Codex's web mode is intentionally
+  // de-advertised until assistant text streaming is implemented.
+  it('shows only tui for codex (web mode de-advertised, see #301)', () => {
+    expect(getSessionModeOptions([framework('codex')], 'codex')).toEqual([
       { value: 'pty', label: 'tui' },
     ]);
   });
@@ -299,7 +309,8 @@ describe('CustomizeSessionDialog environment picker model', () => {
       selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
-      selectedCheckoutId: 'worktree:linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
+      selectedCheckoutId:
+        'worktree:linux:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature',
       fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
       fallbackWorktreePath: null,
     });
@@ -339,7 +350,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+    expect(
+      model.nodeChoices.find((choice) => choice.value === 'linux')
+    ).toMatchObject({
       disabled: true,
       reason: 'node is offline',
     });
@@ -368,7 +381,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+    expect(
+      model.nodeChoices.find((choice) => choice.value === 'linux')
+    ).toMatchObject({
       disabled: true,
       reason: 'claude unavailable on linux lab',
     });
@@ -414,7 +429,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(model.nodeChoices.filter((choice) => choice.value === 'local')).toHaveLength(1);
+    expect(
+      model.nodeChoices.filter((choice) => choice.value === 'local')
+    ).toHaveLength(1);
     expect(model.checkoutChoices.map((choice) => choice.label)).toEqual([
       'default — /Users/kyle/relay-ide',
       'feature/local — /Users/kyle/relay-ide/.worktrees/feature',
@@ -455,7 +472,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
         fallbackWorktreePath: null,
       });
 
-      expect(model.nodeChoices.find((choice) => choice.value === 'linux')).toMatchObject({
+      expect(
+        model.nodeChoices.find((choice) => choice.value === 'linux')
+      ).toMatchObject({
         disabled: true,
         reason: `tmux ${tmuxStatus} on linux lab`,
       });

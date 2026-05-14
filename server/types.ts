@@ -98,7 +98,13 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
-      supportsWebSessions: true,
+      // De-advertised pending full web-session implementation. See issue #301:
+      // the Codex protocol adapter maps lifecycle/tool events but does not
+      // stream assistant text deltas as `chat:text-delta`, so the web mode
+      // appeared installed but produced no chat output. Flip back to true
+      // only after (1) assistant text streaming is mapped end-to-end and
+      // (2) an e2e round-trip test covers prompt → text-delta → completion.
+      supportsWebSessions: false,
     },
   },
   opencode: {

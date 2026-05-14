@@ -179,13 +179,22 @@ All messages are JSON-serialized `ChatEvent` objects. The server sends a snapsho
 
 ## Multi-Agent Integration Matrix
 
-| Agent       | Adapter    | Native Protocol                           | Status         |
-| ----------- | ---------- | ----------------------------------------- | -------------- |
-| Claude Code | `claude`   | `--output-format stream-json` + env hooks | ✅ Implemented |
-| Codex       | `codex`    | Hook file callbacks                       | ✅ Implemented |
-| OpenCode    | `opencode` | Relay plugin events                       | ✅ Implemented |
-| Hermes      | `hermes`   | Attached host gateway + SSE/REST          | ✅ Implemented |
-| Mock        | `mock`     | Programmable scenarios                    | ✅ Implemented |
+| Agent       | Adapter    | Native Protocol                           | Status                                   |
+| ----------- | ---------- | ----------------------------------------- | ---------------------------------------- |
+| Claude Code | `claude`   | `--output-format stream-json` + env hooks | ✅ Implemented                           |
+| Codex       | `codex`    | Hook file callbacks                       | ⚠️ De-advertised — see issue [#301][301] |
+| OpenCode    | `opencode` | Relay plugin events                       | ✅ Implemented                           |
+| Hermes      | `hermes`   | Attached host gateway + SSE/REST          | ✅ Implemented                           |
+| Mock        | `mock`     | Programmable scenarios                    | ✅ Implemented                           |
+
+[301]: https://github.com/donovan-yohan/relay-ide/issues/301
+
+> **Codex web mode status:** the Codex adapter maps lifecycle and tool events
+> but does not yet stream assistant text as `chat:text-delta`, so the browser
+> chat surface produces no visible response. The framework is therefore
+> registered with `supportsWebSessions: false` and the Customize Session
+> dialog only offers `tui` mode for Codex. The adapter and protocol plumbing
+> are retained for the eventual implementation tracked in issue #301.
 
 ## Creating a New Protocol Adapter
 
