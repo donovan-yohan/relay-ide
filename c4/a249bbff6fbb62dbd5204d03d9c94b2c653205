@@ -1,0 +1,31 @@
+bin/relay-ide.ts
+  s_52a22eb2d261df::t_f8c14b104299db 475-483
+test/session-attachment.test.ts
+  s_52a22eb2d261df::t_335c9e7c1ddbb9 8
+  s_52a22eb2d261df::t_fbeae13d926038 168-219
+  s_52a22eb2d261df::t_043736475ece47 258,274-277
+docs/federated-relay.md
+  s_52a22eb2d261df::t_9ab87fec6978ec 345-350
+server/node-link-pty-host.ts
+  s_52a22eb2d261df::t_ccfb53f491cb7d 70-76,145-147,150-156,159-171,175,180-182,186,192,195,219,224-225,234,242-245,251,267,295,313,335,339
+frontend/src/components/TerminalNodePicker.tsx
+  s_52a22eb2d261df::t_b803e952200175 52-58
+server/session-attachment.ts
+  s_52a22eb2d261df::t_d4cab8ca903c94 7-8,12-13,40-49,59-66,87-90,130,138,187-198,201-206,213-217,225-227,232-233,241-253,263-265,274,284,292-301,303-330,333,335-337,342-348,350-362,371,395-406,430-433,447-449,455-460,469-474,489-490,503-507,517-521
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "c4a249bbff6fbb62dbd5204d03d9c94b2c653205",
+  "prompts": {},
+  "sessions": {
+    "s_52a22eb2d261df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f8ef93e-4923-4b7e-b84e-2843c0253283",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
