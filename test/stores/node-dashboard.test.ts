@@ -128,6 +128,54 @@ describe('hub node dashboard state', () => {
     );
   });
 
+  it('honors an explicit capabilities.worktrees override (future repo feature contract)', () => {
+    // When a repo feature decorator publishes capabilities.worktrees,
+    // that value wins over the core.git fallback. Verify the precedence
+    // by pinning git=available but worktrees=degraded — derived would
+    // be 'available', explicit override should produce 'degraded'.
+    const [row] = deriveHubNodeDashboardRows(
+      [
+        node({
+          capabilities: {
+            ...node().capabilities,
+            worktrees: 'degraded',
+          },
+        }),
+      ],
+      { now }
+    );
+
+    expect(row.capabilityHints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'git', status: 'available' }),
+        expect.objectContaining({ label: 'worktrees', status: 'degraded' }),
+      ])
+    );
+  });
+
+  it('falls back to deriving worktrees status from core.git when no explicit override is set', () => {
+    // Inverse of the above — explicit absence on a node where core.git
+    // is 'degraded' should produce a 'degraded' worktrees hint.
+    const [row] = deriveHubNodeDashboardRows(
+      [
+        node({
+          capabilities: {
+            ...node().capabilities,
+            core: { ...node().capabilities.core, git: 'degraded' },
+          },
+        }),
+      ],
+      { now }
+    );
+
+    expect(row.capabilityHints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'git', status: 'degraded' }),
+        expect.objectContaining({ label: 'worktrees', status: 'degraded' }),
+      ])
+    );
+  });
+
   it('surfaces protocol version warnings separately from availability', () => {
     const [row] = deriveHubNodeDashboardRows(
       [node({ protocolVersion: '1.1', relayVersion: '9.9.0' })],
