@@ -5,6 +5,7 @@ import {
   createMockAttachmentFactory,
   createRawAttachmentFactory,
   createTmuxAttachmentFactory,
+  SESSION_ATTACHMENT_KILL_REASON,
 } from '../server/session-attachment.js';
 
 type DataHandler = (chunk: string) => void;
@@ -164,6 +165,58 @@ describe('SessionAttachment — tmux factory', () => {
     expect(attachArgs).toContain('relay-has_colon_and_space_dot');
   });
 
+  it('default close() does not kill the tmux session (resume keeps state)', async () => {
+    const killCalls: string[] = [];
+    const factory = createTmuxAttachmentFactory({
+      tmuxPath: '/fake/tmux',
+      socketName: 'relay-test',
+      configDir: '/tmp/relay-tmux-test',
+      ensureSession: async () => undefined,
+      killSession: async ({ target }) => {
+        killCalls.push(target);
+      },
+      spawn: (_cmd, _args, options) =>
+        new FakePty(options.cols ?? 80, options.rows ?? 24) as unknown as IPty,
+    });
+    const attachment = await factory.open({
+      sessionId: 'persist',
+      command: 'bash',
+      args: [],
+      cwd: '/tmp',
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+    await attachment.close('detach');
+    expect(killCalls).toEqual([]);
+  });
+
+  it('close(SESSION_ATTACHMENT_KILL_REASON) destroys the tmux session', async () => {
+    const killCalls: string[] = [];
+    const factory = createTmuxAttachmentFactory({
+      tmuxPath: '/fake/tmux',
+      socketName: 'relay-test',
+      configDir: '/tmp/relay-tmux-test',
+      ensureSession: async () => undefined,
+      killSession: async ({ target }) => {
+        killCalls.push(target);
+      },
+      spawn: (_cmd, _args, options) =>
+        new FakePty(options.cols ?? 80, options.rows ?? 24) as unknown as IPty,
+    });
+    const attachment = await factory.open({
+      sessionId: 'doomed',
+      command: 'bash',
+      args: [],
+      cwd: '/tmp',
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+    await attachment.close(SESSION_ATTACHMENT_KILL_REASON);
+    expect(killCalls).toEqual(['relay-doomed']);
+  });
+
   it('reattaching to the same sessionId reuses the existing tmux session', async () => {
     const calls: string[] = [];
     const factory = createTmuxAttachmentFactory({
@@ -202,7 +255,7 @@ describe('SessionAttachment — tmux factory', () => {
 });
 
 describe('SessionAttachment — mock factory', () => {
-  it('records writes and resizes, replays scripted data', async () => {
+  it('records writes and resizes, replays scripted data buffered until listener registers', async () => {
     const factory = createMockAttachmentFactory({
       data: ['boot-banner\n'],
     });
@@ -218,7 +271,10 @@ describe('SessionAttachment — mock factory', () => {
     });
     attachment.onData((bytes) => received.push(bytes));
     factory.emit('after-listener');
-    expect(received.map((b) => b.toString('utf8'))).toEqual(['after-listener']);
+    expect(received.map((b) => b.toString('utf8'))).toEqual([
+      'boot-banner\n',
+      'after-listener',
+    ]);
 
     attachment.write(Buffer.from('input', 'utf8'));
     attachment.resize(120, 40);

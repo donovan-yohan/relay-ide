@@ -49,6 +49,13 @@ export interface NodeChoice {
  * advertise tmux capability. Anything else gets surfaced as a disabled
  * choice with the failing precondition as the tooltip reason — the user
  * never gets to click and then hit a typed error.
+ *
+ * #467 note: nodes advertising `sessionResume: 'none'` ship a working
+ * raw-shell attachment backend, but the hub's `sessions.create`
+ * preconditions still require tmux. The picker enforces the same
+ * gate (`no tmux`) so users don't get a typed error after clicking.
+ * Phase 2 will loosen this once non-resumable nodes have a routing
+ * story.
  */
 function nodeBlockReason(node: HubNodeSummary): string | null {
   if (node.status !== 'online') return node.status;

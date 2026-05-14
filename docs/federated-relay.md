@@ -342,6 +342,12 @@ Backends ship with the package:
 
 The tmux config is baked in (`set -g status off`, `unbind-key -a`, `set -g mouse off`, `set -g escape-time 0`). Operators never see tmux UI — tmux is an attach-by-name primitive, not a multiplexer.
 
+The tmux config file lives under `$XDG_CONFIG_HOME/relay-ide/tmux/relay.tmux.conf` (defaults to `~/.config/relay-ide/tmux/...`) with mode `0700` on the directory and `0600` on the file — `os.tmpdir()` is shared between local UIDs and tmux configs can `run-shell` arbitrary commands, so it is not used.
+
+**Session lifecycle:** `attachment.close()` with no reason — or any reason other than `SESSION_ATTACHMENT_KILL_REASON` — terminates only the local attach client. The tmux session keeps running and is the resume target for the next attach. Explicitly destroying a session (kill-session) requires passing the `SESSION_ATTACHMENT_KILL_REASON` sentinel; the hub uses this when the operator explicitly closes a tab, distinct from a transient browser reload.
+
+**Raw fallback scope:** `sessionResume: 'none'` ships a working raw shell, but the v1 hub session-routing preconditions (see [Session Routing](#session-routing)) still require `core.tmux === 'available'`. The terminal picker enforces the same gate; non-tmux nodes appear disabled with reason `no tmux`. Raw shells are wired so phase 2 can drop the gate without re-doing the attachment layer.
+
 ## Repo Identity and Inventory
 
 ### Canonical Repo Identity

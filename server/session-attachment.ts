@@ -4,9 +4,12 @@ import { Buffer } from 'node:buffer';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Stable wire interface between `node-link-pty-host.ts` and concrete
@@ -34,6 +37,16 @@ export interface SessionAttachmentDisposable {
   dispose(): void;
 }
 
+/**
+ * Magic `close()` reason that tells the tmux backend to destroy the
+ * persistent session, not just the local attach client. `node-link-pty-
+ * host` passes this on `closeAll('host shutting down')`-style paths
+ * where the caller has decided the session is no longer wanted; normal
+ * detach uses any other reason (or `undefined`) to keep the tmux
+ * session alive for the next attach.
+ */
+export const SESSION_ATTACHMENT_KILL_REASON = '__relay_kill_session__';
+
 export interface SessionAttachment {
   readonly sessionId: string;
   readonly mode: SessionAttachmentMode;
@@ -43,6 +56,14 @@ export interface SessionAttachment {
   ): SessionAttachmentDisposable;
   write(bytes: Buffer): void;
   resize(cols: number, rows: number): void;
+  /**
+   * Default: detach the local client only (tmux backend keeps the
+   * persistent session alive for the next attach).
+   *
+   * Pass `SESSION_ATTACHMENT_KILL_REASON` to fully destroy the
+   * persistent session — used when the caller has explicit intent to
+   * end the session, not just disconnect a browser.
+   */
   close(reason?: string): Promise<void>;
   status(): SessionAttachmentStatus;
 }
@@ -63,7 +84,10 @@ const DEFAULT_TERM = 'xterm-256color';
 function wrapPty(
   sessionId: string,
   mode: SessionAttachmentMode,
-  process: IPty
+  process: IPty,
+  hooks: {
+    onClose?: (reason: string | undefined) => Promise<void> | void;
+  } = {}
 ): SessionAttachment {
   let state: SessionAttachmentStatus = 'attached';
   process.onExit(() => {
@@ -103,7 +127,7 @@ function wrapPty(
         // Resize on a dying pty can throw; treat as a no-op.
       }
     },
-    async close() {
+    async close(reason) {
       if (state === 'closed') return;
       state = 'closed';
       try {
@@ -111,6 +135,7 @@ function wrapPty(
       } catch {
         // already gone
       }
+      if (hooks.onClose) await hooks.onClose(reason);
     },
     status() {
       return state;
@@ -159,17 +184,37 @@ const TMUX_CONF_BODY = [
   'set-option -g destroy-unattached off',
 ].join('\n');
 
+function defaultUserConfigDir(): string {
+  // XDG-style location under the user's HOME, never world-readable.
+  // os.tmpdir() is shared by every uid on the box (Copilot review,
+  // #472) — a malicious local user could pre-create the directory
+  // with permissive perms and race the conf write, and tmux configs
+  // can shell out via `run-shell`.
+  const xdg = process.env['XDG_CONFIG_HOME'];
+  const base =
+    xdg && xdg.startsWith('/') ? xdg : path.join(os.homedir(), '.config');
+  return path.join(base, 'relay-ide', 'tmux');
+}
+
 function writeTmuxConfig(dir: string): string {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Tighten perms even if the directory pre-existed with a wider mode.
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // Best-effort: chmod may fail on weird filesystems (e.g. SMB).
+  }
   const file = path.join(dir, 'relay.tmux.conf');
   fs.writeFileSync(file, `${TMUX_CONF_BODY}\n`, { mode: 0o600 });
   return file;
 }
 
 function sanitizeTmuxName(sessionId: string): string {
-  // tmux session names cannot contain ':' or '.'. Whitespace also
-  // breaks `-t target` parsing.
-  return `relay-${sessionId.replace(/[:.\s]/g, '_')}`;
+  // Whitelist alphanumeric + underscore + hyphen. Tmux session names
+  // also reject ':' and '.' but other characters ([, ], whitespace,
+  // shell metacharacters) cause downstream parsing/quoting bugs that
+  // are not worth defending against case-by-case.
+  return `relay-${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 }
 
 export interface TmuxAttachmentFactoryDeps {
@@ -177,14 +222,15 @@ export interface TmuxAttachmentFactoryDeps {
   tmuxPath?: string;
   socketName?: string;
   /**
-   * Directory for the baked-in tmux.conf. Tests can override to a
-   * scratch dir.
+   * Directory for the baked-in tmux.conf. Defaults to
+   * `$XDG_CONFIG_HOME/relay-ide/tmux` (or `~/.config/relay-ide/tmux`).
+   * Tests can override to a scratch dir.
    */
   configDir?: string;
   logger?: Logger;
   /**
-   * Hook to ensure the tmux session exists. Defaults to spawnSync of
-   * `tmux new-session`. Tests can stub this without invoking real tmux.
+   * Hook to ensure the tmux session exists. Defaults to async execFile
+   * against `tmux`. Tests can stub this without invoking real tmux.
    */
   ensureSession?: (params: {
     tmuxPath: string;
@@ -192,7 +238,19 @@ export interface TmuxAttachmentFactoryDeps {
     configPath: string;
     target: string;
     options: SessionAttachmentSpawnOptions;
-  }) => void;
+  }) => Promise<void> | void;
+  /**
+   * Hook to kill a tmux session when `close()` is invoked with
+   * `SESSION_ATTACHMENT_KILL_REASON`. Defaults to async execFile of
+   * `tmux kill-session -t <target>`. Tests can stub this.
+   */
+  killSession?: (params: {
+    tmuxPath: string;
+    socketName: string;
+    configPath: string;
+    target: string;
+    env: NodeJS.ProcessEnv;
+  }) => Promise<void> | void;
 }
 
 /**
@@ -202,8 +260,9 @@ export interface TmuxAttachmentFactoryDeps {
  *                    then `attach-session -t <target>` over node-pty
  *   second attach -> session already exists, just `attach-session`
  *
- * `close()` kills the local attach client. The tmux session persists
- * for the next attach.
+ * `close()` kills the local attach client; the tmux session persists
+ * for the next attach. To fully destroy the persistent session pass
+ * `SESSION_ATTACHMENT_KILL_REASON` as the reason.
  */
 export function createTmuxAttachmentFactory(
   deps: TmuxAttachmentFactoryDeps = {}
@@ -212,7 +271,7 @@ export function createTmuxAttachmentFactory(
   const spawn = deps.spawn ?? (pty.spawn as unknown as PtySpawn);
   const tmuxPath = deps.tmuxPath ?? 'tmux';
   const socketName = deps.socketName ?? 'relay';
-  const configDir = deps.configDir ?? path.join(os.tmpdir(), 'relay-tmux');
+  const configDir = deps.configDir ?? defaultUserConfigDir();
   let configPath: string | undefined;
 
   function ensureConfig(): string {
@@ -222,7 +281,7 @@ export function createTmuxAttachmentFactory(
 
   const ensureSession =
     deps.ensureSession ??
-    (({
+    (async ({
       tmuxPath: bin,
       socketName: socket,
       configPath: cfg,
@@ -230,53 +289,74 @@ export function createTmuxAttachmentFactory(
       options,
     }) => {
       const env = options.env;
-      const has = spawnSync(
-        bin,
-        ['-L', socket, '-f', cfg, 'has-session', '-t', target],
-        { env, encoding: 'utf8', timeout: 2_000 }
-      );
-      if (has.status === 0) return;
+      try {
+        await execFileAsync(
+          bin,
+          ['-L', socket, '-f', cfg, 'has-session', '-t', target],
+          { env, timeout: 2_000 }
+        );
+        return;
+      } catch {
+        // not present — fall through to new-session
+      }
 
-      const result = spawnSync(
-        bin,
-        [
-          '-L',
-          socket,
-          '-f',
-          cfg,
-          'new-session',
-          '-d',
-          '-s',
-          target,
-          '-x',
-          String(options.cols),
-          '-y',
-          String(options.rows),
-          options.command,
-          ...options.args,
-        ],
-        {
-          cwd: options.cwd,
-          env,
-          encoding: 'utf8',
-          timeout: 5_000,
-        }
-      );
-      if (result.status !== 0) {
-        const message =
-          `${result.stderr || result.stdout || 'unknown error'}`.trim();
-        // Race: another caller created the session between has-session
-        // and new-session. Accept if it exists now.
-        if (!message.includes('duplicate session')) {
-          const recheck = spawnSync(
+      try {
+        await execFileAsync(
+          bin,
+          [
+            '-L',
+            socket,
+            '-f',
+            cfg,
+            'new-session',
+            '-d',
+            '-s',
+            target,
+            '-x',
+            String(options.cols),
+            '-y',
+            String(options.rows),
+            options.command,
+            ...options.args,
+          ],
+          { cwd: options.cwd, env, timeout: 5_000 }
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Race: another caller may have created the session between
+        // has-session and new-session.
+        if (message.includes('duplicate session')) return;
+        try {
+          await execFileAsync(
             bin,
             ['-L', socket, '-f', cfg, 'has-session', '-t', target],
-            { env, encoding: 'utf8', timeout: 2_000 }
+            { env, timeout: 2_000 }
           );
-          if (recheck.status !== 0) {
-            throw new Error(`tmux new-session failed: ${message}`);
-          }
+          return;
+        } catch {
+          throw new Error(`tmux new-session failed: ${message}`);
         }
+      }
+    });
+
+  const killSession =
+    deps.killSession ??
+    (async ({
+      tmuxPath: bin,
+      socketName: socket,
+      configPath: cfg,
+      target,
+      env,
+    }) => {
+      try {
+        await execFileAsync(
+          bin,
+          ['-L', socket, '-f', cfg, 'kill-session', '-t', target],
+          { env, timeout: 2_000 }
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn?.(`tmux kill-session failed for ${target}: ${message}`);
       }
     });
 
@@ -288,7 +368,7 @@ export function createTmuxAttachmentFactory(
       logger.debug?.(
         `tmux attach for session ${options.sessionId} -> ${target}`
       );
-      ensureSession({
+      await ensureSession({
         tmuxPath,
         socketName,
         configPath: cfg,
@@ -312,7 +392,18 @@ export function createTmuxAttachmentFactory(
         cwd: options.cwd,
         env: options.env,
       });
-      return wrapPty(options.sessionId, 'tmux', proc);
+      return wrapPty(options.sessionId, 'tmux', proc, {
+        onClose: async (reason) => {
+          if (reason !== SESSION_ATTACHMENT_KILL_REASON) return;
+          await killSession({
+            tmuxPath,
+            socketName,
+            configPath: cfg,
+            target,
+            env: options.env,
+          });
+        },
+      });
     },
   };
 }
@@ -336,7 +427,10 @@ export interface MockAttachmentFactory
 
 /**
  * Test attachment factory. Replays scripted bytes, captures every
- * write/resize/close. Never spawns a real process or tmux.
+ * write/resize/close. Never spawns a real process or tmux. Scripted
+ * data is buffered until the first onData listener registers so the
+ * common "await open() then attachment.onData(...)" pattern observes
+ * the replay (Copilot review, #472).
  */
 export function createMockAttachmentFactory(
   initial: {
@@ -350,12 +444,20 @@ export function createMockAttachmentFactory(
   const records: MockAttachmentRecord[] = [];
   const dataHandlers: DataHandler[][] = [];
   const exitHandlers: ExitHandler[][] = [];
+  const pendingData: Buffer[][] = [];
+  const pendingExit: Array<{ exitCode: number; signal?: number } | undefined> =
+    [];
 
   function emit(bytes: Buffer | string, index?: number): void {
     const target = index ?? dataHandlers.length - 1;
     if (target < 0) return;
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes, 'utf8');
-    for (const handler of (dataHandlers[target] ?? []).slice()) handler(buf);
+    const handlers = dataHandlers[target] ?? [];
+    if (handlers.length === 0) {
+      (pendingData[target] ??= []).push(buf);
+      return;
+    }
+    for (const handler of handlers.slice()) handler(buf);
   }
 
   function exit(
@@ -364,7 +466,12 @@ export function createMockAttachmentFactory(
   ): void {
     const target = index ?? exitHandlers.length - 1;
     if (target < 0) return;
-    for (const handler of (exitHandlers[target] ?? []).slice()) handler(event);
+    const handlers = exitHandlers[target] ?? [];
+    if (handlers.length === 0) {
+      pendingExit[target] = event;
+      return;
+    }
+    for (const handler of handlers.slice()) handler(event);
   }
 
   return {
@@ -379,6 +486,8 @@ export function createMockAttachmentFactory(
       const exits: ExitHandler[] = [];
       dataHandlers.push(data);
       exitHandlers.push(exits);
+      pendingData.push([]);
+      pendingExit.push(undefined);
       const record: MockAttachmentRecord = {
         written: [],
         resizes: [],
@@ -391,6 +500,11 @@ export function createMockAttachmentFactory(
         mode: 'tmux',
         onData(handler) {
           data.push(handler);
+          const buffered = pendingData[idx] ?? [];
+          if (buffered.length > 0) {
+            pendingData[idx] = [];
+            for (const chunk of buffered) handler(chunk);
+          }
           return {
             dispose: () => {
               const at = data.indexOf(handler);
@@ -400,6 +514,11 @@ export function createMockAttachmentFactory(
         },
         onExit(handler) {
           exits.push(handler);
+          const pending = pendingExit[idx];
+          if (pending) {
+            pendingExit[idx] = undefined;
+            handler(pending);
+          }
           return {
             dispose: () => {
               const at = exits.indexOf(handler);

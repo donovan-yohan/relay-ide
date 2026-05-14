@@ -470,10 +470,17 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     const finish = (exitCode: number): void => {
       if (exiting) return;
       exiting = true;
-      ptyHost.closeAll('node-link client stopping');
       const safetyTimer = setTimeout(() => process.exit(exitCode), 5_000);
       safetyTimer.unref?.();
-      void client.stop().then(() => {
+      // #467: ptyHost.closeAll is async — await it so attachment
+      // teardown (which may detach tmux clients) completes before the
+      // process exits, while keeping the 5s safety timer above as a
+      // hard cap. Default close() leaves tmux sessions alive so a
+      // reconnect can resume them.
+      void Promise.allSettled([
+        ptyHost.closeAll('node-link client stopping'),
+        client.stop(),
+      ]).then(() => {
         clearTimeout(safetyTimer);
         resolve();
         process.exit(exitCode);

@@ -15,7 +15,6 @@ import type { NodeSessionResumeKind } from '../shared/node-manifest.js';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const SCROLLBACK_BYTE_LIMIT = 256 * 1024;
 
 export interface NodeLinkPtyAttachInput {
   sessionId?: unknown;
@@ -68,8 +67,13 @@ interface ActiveStream {
   streamId: string;
   sessionId: string;
   attachment: SessionAttachment;
-  scrollback: Buffer[];
-  scrollbackBytes: number;
+  /**
+   * Context captured at attach time so traffic on this stream always
+   * flows back over the link that opened it, even when a hub
+   * reconnect overlaps and `handle()` swaps in a fresh context for
+   * later envelopes (gemini-code-assist, #472 review).
+   */
+  ctx: NodeLinkPtyHostContext;
   closing: boolean;
 }
 
@@ -138,66 +142,57 @@ export function createNodeLinkPtyHost(
   const defaultCwd = options.defaultCwd ?? process.cwd();
   const defaultEnv = options.defaultEnv ?? process.env;
   const streams = new Map<string, ActiveStream>();
-  const opening = new Set<string>();
-  let currentCtx: NodeLinkPtyHostContext | undefined;
+  // Pending attaches need a ctx too — they haven't joined `streams` yet
+  // but already need to be able to send pty.error if open() fails.
+  const opening = new Map<string, NodeLinkPtyHostContext>();
   let closed = false;
 
-  function sendData(streamId: string, data: string): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.data', {
-        streamId,
-        payload: { data },
-      })
-    );
+  function send(
+    ctx: NodeLinkPtyHostContext,
+    type: string,
+    streamId: string,
+    extras: Partial<RelayNodeEnvelope> = {}
+  ): void {
+    ctx.send(ctx.buildEnvelope('pty', type, { streamId, ...extras }));
   }
 
-  function sendExit(streamId: string, exitCode: number, signal?: number): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.exit', {
-        streamId,
-        payload: { exitCode, signal: signal ?? null },
-      })
-    );
+  function sendData(stream: ActiveStream, data: string): void {
+    send(stream.ctx, 'pty.data', stream.streamId, { payload: { data } });
+  }
+
+  function sendExit(
+    ctx: NodeLinkPtyHostContext,
+    streamId: string,
+    exitCode: number,
+    signal?: number
+  ): void {
+    send(ctx, 'pty.exit', streamId, {
+      payload: { exitCode, signal: signal ?? null },
+    });
   }
 
   function sendError(
+    ctx: NodeLinkPtyHostContext,
     streamId: string,
     message: string,
     retryable: boolean
   ): void {
-    if (!currentCtx) return;
-    currentCtx.send(
-      currentCtx.buildEnvelope('pty', 'pty.error', {
-        streamId,
-        error: { code: 'INTERNAL', message, retryable },
-      })
-    );
-  }
-
-  function recordScrollback(stream: ActiveStream, chunk: Buffer): void {
-    stream.scrollback.push(chunk);
-    stream.scrollbackBytes += chunk.byteLength;
-    while (
-      stream.scrollbackBytes > SCROLLBACK_BYTE_LIMIT &&
-      stream.scrollback.length > 1
-    ) {
-      const dropped = stream.scrollback.shift();
-      stream.scrollbackBytes -= dropped?.byteLength ?? 0;
-    }
+    send(ctx, 'pty.error', streamId, {
+      error: { code: 'INTERNAL', message, retryable },
+    });
   }
 
   async function attach(
+    ctx: NodeLinkPtyHostContext,
     streamId: string,
     input: NodeLinkPtyAttachInput
   ): Promise<void> {
     if (streams.has(streamId) || opening.has(streamId)) {
       logger.warn(`duplicate attach for streamId ${streamId}; ignoring`);
-      sendError(streamId, 'stream already attached', false);
+      sendError(ctx, streamId, 'stream already attached', false);
       return;
     }
-    opening.add(streamId);
+    opening.set(streamId, ctx);
     try {
       const sessionId = asString(input.sessionId) ?? `relay-stream-${streamId}`;
       const command = asString(input.command) ?? defaultShell;
@@ -221,11 +216,13 @@ export function createNodeLinkPtyHost(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error(`pty attach failed (${streamId}): ${message}`);
-        sendError(streamId, `pty attach failed: ${message}`, false);
+        sendError(ctx, streamId, `pty attach failed: ${message}`, false);
         return;
       }
 
       if (closed) {
+        // Detach-only close keeps the tmux session alive across the
+        // host's shutdown so a fresh link can resume it.
         await attachment.close('host shutting down');
         return;
       }
@@ -234,8 +231,7 @@ export function createNodeLinkPtyHost(
         streamId,
         sessionId,
         attachment,
-        scrollback: [],
-        scrollbackBytes: 0,
+        ctx,
         closing: false,
       };
       streams.set(streamId, stream);
@@ -243,14 +239,16 @@ export function createNodeLinkPtyHost(
       attachment.onData((chunk) => {
         const live = streams.get(streamId);
         if (!live || live.attachment !== attachment || live.closing) return;
-        recordScrollback(live, chunk);
-        sendData(streamId, chunk.toString('utf8'));
+        // tmux owns scrollback for resumable sessions; raw sessions
+        // have no resume so any local buffer would be discarded
+        // anyway. Forward bytes straight through.
+        sendData(live, chunk.toString('utf8'));
       });
       attachment.onExit(({ exitCode, signal }) => {
         const live = streams.get(streamId);
         if (!live || live.attachment !== attachment) return;
         streams.delete(streamId);
-        sendExit(streamId, exitCode ?? 0, signal);
+        sendExit(live.ctx, streamId, exitCode ?? 0, signal);
       });
     } finally {
       opening.delete(streamId);
@@ -266,7 +264,7 @@ export function createNodeLinkPtyHost(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`pty input failed (${streamId}): ${message}`);
-      sendError(streamId, `pty input failed: ${message}`, true);
+      sendError(stream.ctx, streamId, `pty input failed: ${message}`, true);
     }
   }
 
@@ -294,7 +292,7 @@ export function createNodeLinkPtyHost(
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`pty detach failed (${streamId}): ${message}`);
       streams.delete(streamId);
-      sendExit(streamId, -1);
+      sendExit(stream.ctx, streamId, -1);
     }
   }
 
@@ -309,11 +307,10 @@ export function createNodeLinkPtyHost(
     handle(envelope: RelayNodeEnvelope, ctx: NodeLinkPtyHostContext): void {
       if (envelope.channel !== 'pty') return;
       if (typeof envelope.streamId !== 'string') return;
-      currentCtx = ctx;
       const streamId = envelope.streamId;
       const payload = payloadRecord(envelope.payload);
       if (envelope.type === 'pty.attach') {
-        void attach(streamId, payload as NodeLinkPtyAttachInput);
+        void attach(ctx, streamId, payload as NodeLinkPtyAttachInput);
         return;
       }
       if (envelope.type === 'pty.input') {
@@ -335,11 +332,11 @@ export function createNodeLinkPtyHost(
       streams.clear();
       for (const stream of active) {
         stream.closing = true;
-        if (reason) sendError(stream.streamId, reason, false);
+        if (reason) sendError(stream.ctx, stream.streamId, reason, false);
         try {
           await stream.attachment.close(reason);
         } catch {
-          sendExit(stream.streamId, -1);
+          sendExit(stream.ctx, stream.streamId, -1);
         }
       }
     },
