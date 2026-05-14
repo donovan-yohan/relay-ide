@@ -1,0 +1,28 @@
+server/index.ts
+  s_e3356f8e9db726::t_10c31e7a40b681 1823-1831,1834-1837
+  s_e3356f8e9db726::t_8f338624abbd60 107
+  s_e3356f8e9db726::t_c22156f4b3a366 1846-1849
+test/hub-session-aggregator.test.ts
+  s_e3356f8e9db726::t_b5f2e09d4904d0 1-197
+server/node-link-rpc-host.ts
+  s_e3356f8e9db726::t_19f9f6936e8ed8 21-24
+  s_e3356f8e9db726::t_f77e2b754d5def 221-238,248-249
+server/hub-session-aggregator.ts
+  s_e3356f8e9db726::t_1d4072186509f5 1-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "60f01f57de80de32ba7091283986ec249e972831",
+  "prompts": {},
+  "sessions": {
+    "s_e3356f8e9db726": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d30e088-baea-4e5f-a613-9935fa216040",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
