@@ -330,19 +330,29 @@ function checkoutChoicesFor(
   ]);
 }
 
-export function buildEnvironmentPickerModel(
+function environmentGroupsFor(
   input: EnvironmentPickerInput
-): EnvironmentPickerModel {
-  const groups = input.inventory?.groups.length
+): AggregatedRepoInventoryGroup[] {
+  return input.inventory?.groups.length
     ? input.inventory.groups
     : [fallbackGroupFor(input.fallbackWorkspace, input.fallbackWorktreePath)];
-  const selectedGroup =
+}
+
+function selectedEnvironmentGroup(
+  groups: AggregatedRepoInventoryGroup[],
+  input: EnvironmentPickerInput
+): AggregatedRepoInventoryGroup {
+  return (
     groups.find((group) => group.groupId === input.selectedGroupId) ??
     findGroupForPath(
       groups,
       input.fallbackWorktreePath ?? input.fallbackWorkspace.path
     ) ??
-    groups[0]!;
+    groups[0]!
+  );
+}
+
+function nodeMapFor(input: EnvironmentPickerInput): Map<NodeId, HubNodeSummary> {
   const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
   if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
     nodeById.set(
@@ -350,14 +360,33 @@ export function buildEnvironmentPickerModel(
       syntheticLocalNode(input.selectedAgent)
     );
   }
-  const nodeChoiceIds = [
+  return nodeById;
+}
+
+function nodeLabel(nodeId: NodeId, node: HubNodeSummary | null): string {
+  if (nodeId === DEFAULT_LOCAL_NODE_ID) return node?.displayName ?? 'local';
+  return node?.displayName ?? nodeId;
+}
+
+function nodeChoiceIdsFor(
+  selectedGroup: AggregatedRepoInventoryGroup,
+  nodes: HubNodeSummary[]
+): NodeId[] {
+  return [
     ...uniqueInstancesByNode(selectedGroup.instances).map(
       (instance) => instance.nodeId
     ),
-    ...input.nodes.map((node) => node.nodeId),
+    ...nodes.map((node) => node.nodeId),
   ];
+}
+
+function nodeChoicesFor(
+  selectedGroup: AggregatedRepoInventoryGroup,
+  input: EnvironmentPickerInput,
+  nodeById: Map<NodeId, HubNodeSummary>
+): EnvironmentChoice[] {
   const seenNodeChoices = new Set<NodeId>();
-  const nodeChoices = nodeChoiceIds.flatMap((nodeId) => {
+  return nodeChoiceIdsFor(selectedGroup, input.nodes).flatMap((nodeId) => {
     if (seenNodeChoices.has(nodeId)) return [];
     seenNodeChoices.add(nodeId);
     const node = nodeById.get(nodeId) ?? null;
@@ -365,33 +394,28 @@ export function buildEnvironmentPickerModel(
     return [
       {
         value: nodeId,
-        label:
-          nodeId === DEFAULT_LOCAL_NODE_ID
-            ? (node?.displayName ?? 'local')
-            : (node?.displayName ?? nodeId),
+        label: nodeLabel(nodeId, node),
         ...(reason ? { disabled: true, reason } : {}),
       },
     ];
   });
-  const explicitlySelectedNodeChoice = nodeChoices.find(
-    (choice) => choice.value === input.selectedNodeId
-  );
-  const firstEnabledNodeChoice = nodeChoices.find((choice) => !choice.disabled);
-  const selectedNodeChoice =
-    explicitlySelectedNodeChoice &&
-    (!explicitlySelectedNodeChoice.disabled || !firstEnabledNodeChoice)
-      ? explicitlySelectedNodeChoice
-      : (firstEnabledNodeChoice ?? explicitlySelectedNodeChoice ?? nodeChoices[0]);
-  const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
-  const selectedNodeReason = selectedNodeChoice?.reason ?? null;
-  const selectedNodeInstances = selectedGroup.instances.filter(
-    (instance) => instance.nodeId === selectedNodeId
-  );
-  const checkoutChoices = checkoutChoicesFor(
-    selectedNodeInstances,
-    selectedNodeReason
-  );
-  const selectedCheckout =
+}
+
+function selectedNodeChoiceFor(
+  nodeChoices: EnvironmentChoice[],
+  selectedNodeId: NodeId | null
+): EnvironmentChoice | undefined {
+  const explicit = nodeChoices.find((choice) => choice.value === selectedNodeId);
+  const firstEnabled = nodeChoices.find((choice) => !choice.disabled);
+  if (explicit && (!explicit.disabled || !firstEnabled)) return explicit;
+  return firstEnabled ?? explicit ?? nodeChoices[0];
+}
+
+function selectedCheckoutFor(
+  checkoutChoices: EnvironmentCheckoutChoice[],
+  input: EnvironmentPickerInput
+): EnvironmentCheckoutChoice | undefined {
+  return (
     checkoutChoices.find(
       (choice) => choice.value === input.selectedCheckoutId && !choice.disabled
     ) ??
@@ -406,32 +430,79 @@ export function buildEnvironmentPickerModel(
         choice.repoPath === input.fallbackWorkspace.path
     ) ??
     checkoutChoices.find((choice) => !choice.disabled) ??
-    checkoutChoices[0];
-  const resolved =
-    selectedNodeId !== DEFAULT_LOCAL_NODE_ID
-      ? {
-          nodeId: selectedNodeId,
-          repoPath: selectedCheckout?.repoPath ?? '',
-          worktreePath: selectedCheckout?.worktreePath ?? null,
-        }
-      : selectedCheckout
-        ? {
-            nodeId: selectedCheckout.nodeId,
-            repoPath: selectedCheckout.repoPath,
-            worktreePath: selectedCheckout.worktreePath,
-          }
-        : {
-            nodeId: DEFAULT_LOCAL_NODE_ID,
-            repoPath: input.fallbackWorkspace.path,
-            worktreePath: input.fallbackWorktreePath,
-          };
+    checkoutChoices[0]
+  );
+}
+
+function resolveEnvironment(
+  selectedNodeId: NodeId,
+  selectedCheckout: EnvironmentCheckoutChoice | undefined,
+  input: EnvironmentPickerInput
+): EnvironmentPickerModel['resolved'] {
+  if (selectedNodeId !== DEFAULT_LOCAL_NODE_ID) {
+    return {
+      nodeId: selectedNodeId,
+      repoPath: selectedCheckout?.repoPath ?? '',
+      worktreePath: selectedCheckout?.worktreePath ?? null,
+    };
+  }
+  if (selectedCheckout) {
+    return {
+      nodeId: selectedCheckout.nodeId,
+      repoPath: selectedCheckout.repoPath,
+      worktreePath: selectedCheckout.worktreePath,
+    };
+  }
+  return {
+    nodeId: DEFAULT_LOCAL_NODE_ID,
+    repoPath: input.fallbackWorkspace.path,
+    worktreePath: input.fallbackWorktreePath,
+  };
+}
+
+function shouldShowEnvironmentPicker(
+  groups: AggregatedRepoInventoryGroup[],
+  nodeChoices: EnvironmentChoice[],
+  checkoutChoices: EnvironmentCheckoutChoice[],
+  selectedNodeReason: string | null
+): boolean {
+  return (
+    groups.length > 1 ||
+    nodeChoices.length > 1 ||
+    checkoutChoices.length > 1 ||
+    Boolean(selectedNodeReason)
+  );
+}
+
+export function buildEnvironmentPickerModel(
+  input: EnvironmentPickerInput
+): EnvironmentPickerModel {
+  const groups = environmentGroupsFor(input);
+  const selectedGroup = selectedEnvironmentGroup(groups, input);
+  const nodeById = nodeMapFor(input);
+  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById);
+  const selectedNodeChoice = selectedNodeChoiceFor(
+    nodeChoices,
+    input.selectedNodeId
+  );
+  const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
+  const selectedNodeReason = selectedNodeChoice?.reason ?? null;
+  const selectedNodeInstances = selectedGroup.instances.filter(
+    (instance) => instance.nodeId === selectedNodeId
+  );
+  const checkoutChoices = checkoutChoicesFor(
+    selectedNodeInstances,
+    selectedNodeReason
+  );
+  const selectedCheckout = selectedCheckoutFor(checkoutChoices, input);
 
   return {
-    showPicker:
-      groups.length > 1 ||
-      nodeChoices.length > 1 ||
-      checkoutChoices.length > 1 ||
-      Boolean(selectedNodeReason),
+    showPicker: shouldShowEnvironmentPicker(
+      groups,
+      nodeChoices,
+      checkoutChoices,
+      selectedNodeReason
+    ),
     repoChoices: groups.map((group) => ({
       value: group.groupId,
       label: labelForRepo(group),
@@ -442,7 +513,7 @@ export function buildEnvironmentPickerModel(
     selectedNodeId,
     selectedCheckoutId: selectedCheckout?.value ?? null,
     selectedNodeReason,
-    resolved,
+    resolved: resolveEnvironment(selectedNodeId, selectedCheckout, input),
   };
 }
 
