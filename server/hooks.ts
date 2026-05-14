@@ -12,6 +12,10 @@ import { stripAnsi, cleanEnv } from './utils.js';
 import { phraseToBranchName } from './git.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
+import {
+  buildSessionEvent,
+  hasConcreteRepoBinding,
+} from './session-attribution.js';
 import { forwardHookEvent } from './telemetry.js';
 import { createLogger } from './logger.js';
 
@@ -49,6 +53,7 @@ export interface HookDeps {
     session: { displayName: string; type: string }
   ) => void;
   configPath?: string;
+  executeBranchRename?: (session: Session, promptText: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +73,7 @@ function scheduleBranchCheck(
   deps: HookDeps,
   delayMs = BRANCH_CHECK_DEBOUNCE_MS
 ): void {
-  if (!session.cwd) return;
+  if (!hasConcreteRepoBinding(session)) return;
   const existing = branchCheckTimers.get(session.id);
   if (existing) clearTimeout(existing);
 
@@ -194,13 +199,13 @@ function createAgentEventHandler(deps: HookDeps) {
     }
 
     // Record the event for analytics
-    recordSessionEvent({
-      session_id: sessionId,
-      repo_path: session.repoPath,
-      event_type: eventType,
-      ...(data !== undefined && { event_data: data }),
-      timestamp: timestamp || new Date().toISOString(),
-    });
+    recordSessionEvent(
+      buildSessionEvent(session, {
+        eventType,
+        ...(data !== undefined && { eventData: data }),
+        timestamp: timestamp || new Date().toISOString(),
+      })
+    );
 
     // Forward to telemetry adapter (e.g. Codex adapter uses this for transcript_path)
     if (data) {
@@ -374,12 +379,7 @@ export function createHooksRouter(deps: HookDeps): Router {
     const session = (req as unknown as Record<string, unknown>)
       ._hookSession as Session;
     setAgentState(session, 'idle', deps);
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'agent_stop',
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(buildSessionEvent(session, { eventType: 'agent_stop' }));
     res.json({ ok: true });
   });
 
@@ -405,13 +405,12 @@ export function createHooksRouter(deps: HookDeps): Router {
       });
     }
 
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'notification',
-      event_data: { notificationType: type as string },
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(
+      buildSessionEvent(session, {
+        eventType: 'notification',
+        eventData: { notificationType: type as string },
+      })
+    );
     res.json({ ok: true });
   });
 
@@ -421,20 +420,21 @@ export function createHooksRouter(deps: HookDeps): Router {
       ._hookSession as Session;
     setAgentState(session, 'processing', deps);
 
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'user_prompt',
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(buildSessionEvent(session, { eventType: 'user_prompt' }));
 
     if (session.needsBranchRename === true) {
       session.needsBranchRename = false;
-      const promptText: string =
-        typeof req.body?.prompt === 'string' ? req.body.prompt : '';
-      spawnBranchRename(session, promptText, deps).catch((err) => {
-        logger.error('spawnBranchRename error:', err);
-      });
+      if (hasConcreteRepoBinding(session)) {
+        const promptText: string =
+          typeof req.body?.prompt === 'string' ? req.body.prompt : '';
+        const renameRunner =
+          deps.executeBranchRename ??
+          ((targetSession, prompt) =>
+            spawnBranchRename(targetSession, prompt, deps));
+        renameRunner(session, promptText).catch((err) => {
+          logger.error('spawnBranchRename error:', err);
+        });
+      }
     }
 
     res.json({ ok: true });
@@ -444,12 +444,7 @@ export function createHooksRouter(deps: HookDeps): Router {
   router.post('/session-end', (req: Request, res: Response) => {
     const session = (req as unknown as Record<string, unknown>)
       ._hookSession as Session;
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'session_end',
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(buildSessionEvent(session, { eventType: 'session_end' }));
     // Acknowledge hook — PTY onExit owns actual cleanup and cleanedUp flag
     res.json({ ok: true });
   });
@@ -465,13 +460,12 @@ export function createHooksRouter(deps: HookDeps): Router {
     session.currentActivity =
       detail !== undefined ? { tool: toolName, detail } : { tool: toolName };
     deps.broadcastEvent('session-activity-changed', { sessionId: session.id });
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'tool_use',
-      event_data: { tool: toolName, target: detail },
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(
+      buildSessionEvent(session, {
+        eventType: 'tool_use',
+        eventData: { tool: toolName, target: detail },
+      })
+    );
     res.json({ ok: true });
   });
 
@@ -487,12 +481,7 @@ export function createHooksRouter(deps: HookDeps): Router {
     if (session.agentState === AGENT_STATE_PERMISSION_PROMPT) {
       setAgentState(session, 'processing', deps);
     }
-    recordSessionEvent({
-      session_id: session.id,
-      repo_path: session.repoPath,
-      event_type: 'tool_complete',
-      timestamp: new Date().toISOString(),
-    });
+    recordSessionEvent(buildSessionEvent(session, { eventType: 'tool_complete' }));
     // Debounced branch check — catches git checkout/switch during tool execution
     scheduleBranchCheck(session, deps);
     res.json({ ok: true });

@@ -19,10 +19,10 @@ export interface CreateWebParams {
   id?: string;
   agentType: string;
   cwd: string;
-  repoPath: string;
-  repoName: string;
+  repoPath?: string | undefined;
+  repoName?: string | undefined;
   worktreePath?: string | null;
-  branchName: string;
+  branchName?: string | undefined;
   displayName: string;
   port: number;
   configDir: string;
@@ -75,11 +75,11 @@ export async function createWebSession(
     id,
     type: 'agent',
     agent: params.agentType as AgentType,
-    repoPath: params.repoPath,
-    worktreePath: params.worktreePath ?? null,
+    ...(params.repoPath ? { repoPath: params.repoPath } : {}),
+    ...(params.repoPath ? { worktreePath: params.worktreePath ?? null } : {}),
     cwd: params.cwd,
-    repoName: params.repoName,
-    branchName: params.branchName,
+    ...(params.repoName ? { repoName: params.repoName } : {}),
+    ...(params.branchName ? { branchName: params.branchName } : {}),
     displayName: params.displayName,
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),

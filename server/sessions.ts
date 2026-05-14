@@ -53,6 +53,7 @@ import {
   recordSessionEvent,
   upsertSessionRollup,
 } from './analytics.js';
+import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -63,11 +64,11 @@ interface SerializedPtySession {
   id: string;
   type: SessionType;
   agent: AgentType;
-  repoPath: string;
-  worktreePath: string | null;
+  repoPath?: string;
+  worktreePath?: string | null;
   cwd: string;
-  repoName: string;
-  branchName: string;
+  repoName?: string;
+  branchName?: string;
   displayName: string;
   createdAt: string;
   lastActivity: string;
@@ -355,16 +356,11 @@ function create({
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   // Record session start for analytics
-  recordSessionEvent({
-    session_id: id,
-    repo_path: ptySession.repoPath,
-    event_type: 'session_start',
-    timestamp: new Date().toISOString(),
-  });
+  recordSessionEvent(buildSessionEvent(ptySession, { eventType: 'session_start' }));
   upsertSessionRollup({
     sessionId: id,
-    repoPath: ptySession.repoPath,
-    repoName: ptySession.repoName,
+    ...(ptySession.repoPath ? { repoPath: ptySession.repoPath } : {}),
+    ...(ptySession.repoName ? { repoName: ptySession.repoName } : {}),
     agentType: agent,
     startedAt: new Date().toISOString(),
   });
@@ -411,11 +407,13 @@ function list(): SessionSummary[] {
           type: s.type,
           agent: s.agent,
           mode: s.mode,
-          repoPath: s.repoPath,
-          worktreePath: s.worktreePath,
+          ...(s.repoPath ? { repoPath: s.repoPath } : {}),
+          ...(s.worktreePath !== undefined
+            ? { worktreePath: s.worktreePath }
+            : {}),
           cwd: s.cwd,
-          repoName: s.repoName,
-          branchName: s.branchName,
+          ...(s.repoName ? { repoName: s.repoName } : {}),
+          ...(s.branchName ? { branchName: s.branchName } : {}),
           displayName: s.displayName,
           createdAt: s.createdAt,
           lastActivity: s.lastActivity,
@@ -746,11 +744,13 @@ function serializePtySession(
     id: session.id,
     type: session.type,
     agent: session.agent,
-    repoPath: session.repoPath,
-    worktreePath: session.worktreePath,
+    ...(session.repoPath ? { repoPath: session.repoPath } : {}),
+    ...(session.worktreePath !== undefined
+      ? { worktreePath: session.worktreePath }
+      : {}),
     cwd: session.cwd,
-    repoName: session.repoName,
-    branchName: session.branchName,
+    ...(session.repoName ? { repoName: session.repoName } : {}),
+    ...(session.branchName ? { branchName: session.branchName } : {}),
     displayName: session.displayName,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,

@@ -107,6 +107,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof session.worktreePath === 'string';
   const branchNameOk =
     session.branchName === undefined || typeof session.branchName === 'string';
+  const repoNameOk =
+    session.repoName === undefined || typeof session.repoName === 'string';
   return (
     typeof session.id === 'string' &&
     (session.type === 'agent' || session.type === 'terminal') &&
@@ -114,7 +116,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     repoPathOk &&
     worktreePathOk &&
     typeof session.cwd === 'string' &&
-    typeof session.repoName === 'string' &&
+    repoNameOk &&
     branchNameOk &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&

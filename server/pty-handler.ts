@@ -366,7 +366,7 @@ export type CreatePtyParams = {
   type?: SessionType | undefined;
   agent?: AgentType | undefined;
   repoName?: string | undefined;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
   cwd: string;
   branchName?: string | undefined;
@@ -550,7 +550,7 @@ function injectPortEnvVars(
 }
 
 function buildPortInjectionParams(
-  repoPath: string,
+  repoPath: string | undefined,
   worktreePath: string | null,
   cwd: string,
   portVariables: string[] | undefined,
@@ -792,10 +792,10 @@ function buildSessionObject(
     type: type || 'agent',
     agent,
     mode: 'pty' as const,
-    repoPath: repoPath || '',
-    worktreePath: worktreePath ?? null,
-    repoName: repoName || '',
-    branchName: branchName || '',
+    ...(repoPath ? { repoPath } : {}),
+    ...(repoPath ? { worktreePath: worktreePath ?? null } : {}),
+    ...(repoName ? { repoName } : {}),
+    ...(branchName ? { branchName } : {}),
     displayName: displayName || repoName || path.basename(cwd) || '',
     pty: ptyProcess,
     createdAt,
@@ -1174,10 +1174,12 @@ export function createPtySession(
     type: session.type,
     agent: session.agent,
     mode: 'pty' as const,
-    repoPath: session.repoPath,
-    worktreePath: session.worktreePath,
-    repoName: session.repoName,
-    branchName: session.branchName,
+    ...(session.repoPath ? { repoPath: session.repoPath } : {}),
+    ...(session.worktreePath !== undefined
+      ? { worktreePath: session.worktreePath }
+      : {}),
+    ...(session.repoName ? { repoName: session.repoName } : {}),
+    ...(session.branchName ? { branchName: session.branchName } : {}),
     displayName: session.displayName,
     pid: ptyProcess.pid,
     createdAt,

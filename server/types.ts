@@ -250,11 +250,21 @@ interface BaseSession {
   type: SessionType;
   agent: AgentType;
   mode: SessionMode;
-  repoPath: string;
-  worktreePath: string | null;
+  /**
+   * Filesystem path of the repo this session is bound to. Omitted for
+   * node-only/raw-shell sessions that are not associated with a checkout.
+   */
+  repoPath?: string;
+  /**
+   * Worktree path within the repo. `null` = repo-root session;
+   * `undefined` = no repo binding at all.
+   */
+  worktreePath?: string | null;
   cwd: string;
-  repoName: string;
-  branchName: string;
+  /** Human-readable repo name for repo-bound sessions. */
+  repoName?: string;
+  /** Branch name for repo-bound sessions. */
+  branchName?: string;
   displayName: string;
   createdAt: string;
   lastActivity: string;
@@ -356,7 +366,11 @@ export interface SessionSummary {
    */
   worktreePath?: string | null;
   cwd: string;
-  repoName: string;
+  /**
+   * Human-readable repo name for repo-bound sessions. Omitted for non-repo
+   * sessions that have no checkout binding.
+   */
+  repoName?: string;
   /**
    * Branch name for repo-bound sessions. Omitted for non-repo sessions.
    */
@@ -913,9 +927,15 @@ export interface BranchDivergenceSummary {
 
 // ── Session Analytics ──
 
+export type SessionEventCategory = 'repo' | 'worktree' | 'free';
+
 export interface SessionEvent {
   session_id: string;
+  node_id?: string;
   repo_path?: string;
+  worktree_path?: string | null;
+  branch_name?: string;
+  session_category?: SessionEventCategory;
   event_type: string;
   event_data?: Record<string, unknown>;
   timestamp: string;
