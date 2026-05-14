@@ -432,6 +432,24 @@ describe('hub-routed node session create and attach', () => {
     );
 
     const request = await nextJson(nodeWs);
+    // Per CodeRabbit review on PR #457: explicitly assert the hub
+    // forwards the create request to the node WITHOUT synthesising
+    // repo fields. This pins the contract that the node side gets the
+    // opaque payload as-sent and can decide for itself whether it's a
+    // repo-bound session.
+    expect(request.channel).toBe('rpc');
+    expect(request.type).toBe('sessions.create');
+    expect(request.payload).toEqual({ type: 'terminal' });
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'repoPath'
+    );
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'worktreePath'
+    );
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty(
+      'branchName'
+    );
+
     nodeWs.send(
       JSON.stringify({
         protocol: request.protocol,
