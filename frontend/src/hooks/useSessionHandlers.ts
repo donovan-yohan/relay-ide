@@ -27,7 +27,10 @@ import {
   createAgentSession,
   getCurrentSessionContext,
 } from '../lib/session-utils.js';
-import { resolveSessionByKey } from '../lib/session-keys.js';
+import {
+  resolveSessionByKey,
+  resolveSessionCloseTarget,
+} from '../lib/session-keys.js';
 import type { SessionIntent, PickerItem } from '../lib/session-intent.js';
 import { issueToBranchName } from '../lib/session-intent.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
@@ -93,7 +96,10 @@ export function useSessionHandlers({
     (id: string) => {
       setAnalyticsView(null);
       useSessionsStore.getState().setActiveSessionId(id);
-      const session = resolveSessionByKey(useSessionsStore.getState().sessions, id);
+      const session = resolveSessionByKey(
+        useSessionsStore.getState().sessions,
+        id
+      );
       if (session) {
         if (session.repoPath) {
           useSessionsStore
@@ -585,7 +591,7 @@ export function useSessionHandlers({
     // Kill the session. Archive still proceeds to worktree cleanup if the
     // session was already gone or the backend close fails.
     try {
-      await killSession(session.id);
+      await killSession(session.id, session.nodeId);
     } catch (error) {
       logger.warn('Failed to close session before archive:', error);
     }
@@ -747,20 +753,17 @@ export function useSessionHandlers({
     [deleteWorktreeDialogRef]
   );
 
-  const handleNewSessionCreated = useCallback(
-    (sessionId: string) => {
-      useSessionsStore.getState().setActiveSessionId(sessionId);
-      useSessionsStore
-        .getState()
-        .initSessionNotification(
-          sessionId,
-          useConfigStore.getState().defaultNotifications
-        );
-      useUiStore.getState().closeSidebar();
-      focusActiveTerminalSoon();
-    },
-    []
-  );
+  const handleNewSessionCreated = useCallback((sessionId: string) => {
+    useSessionsStore.getState().setActiveSessionId(sessionId);
+    useSessionsStore
+      .getState()
+      .initSessionNotification(
+        sessionId,
+        useConfigStore.getState().defaultNotifications
+      );
+    useUiStore.getState().closeSidebar();
+    focusActiveTerminalSoon();
+  }, []);
 
   const handleResumeWorktree = useCallback(async (wt: WorktreeInfo) => {
     const loadingKey = wt.path;
@@ -815,33 +818,44 @@ export function useSessionHandlers({
     }
   }, []);
 
-  const handleCloseSession = useCallback((sessionId: string) => {
-    const state = useSessionsStore.getState();
-    const targetSession = resolveSessionByKey(state.sessions, sessionId);
-    const localSessionId = targetSession?.id ?? sessionId;
-    // Kill session via API, then refresh
-    fetch(`/sessions/${localSessionId}`, { method: 'DELETE' }).then(() =>
-      useSessionsStore.getState().refreshAll()
-    );
-    const currentActiveSessionId = state.activeSessionId;
-    const isClosingActive =
-      currentActiveSessionId !== null &&
-      targetSession !== undefined &&
-      resolveSessionByKey(state.sessions, currentActiveSessionId) === targetSession;
-    if (isClosingActive) {
-      // Select next available session in this workspace
-      const currentActiveSession = targetSession;
-      const currentRepoPath = useUiStore.getState().activeRepoPath;
-      const allWs = currentRepoPath
-        ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
-        : [];
-      const sameDir = currentActiveSession
-        ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
-        : allWs;
-      const remaining = sameDir.filter((s) => s !== targetSession);
-      useSessionsStore.getState().setActiveSessionId(remaining[0]?.id ?? null);
-    }
-  }, []);
+  const handleCloseSession = useCallback(
+    (sessionId: string, nodeId?: string) => {
+      const state = useSessionsStore.getState();
+      const {
+        session: targetSession,
+        sessionId: localSessionId,
+        nodeId: targetNodeId,
+      } = resolveSessionCloseTarget(state.sessions, sessionId, nodeId);
+      // Kill session via API, then refresh
+      void killSession(localSessionId, targetNodeId)
+        .catch((error) => {
+          logger.error('Failed to close session:', error);
+        })
+        .finally(() => useSessionsStore.getState().refreshAll());
+      const currentActiveSessionId = state.activeSessionId;
+      const isClosingActive =
+        currentActiveSessionId !== null &&
+        targetSession !== undefined &&
+        resolveSessionByKey(state.sessions, currentActiveSessionId) ===
+          targetSession;
+      if (isClosingActive) {
+        // Select next available session in this workspace
+        const currentActiveSession = targetSession;
+        const currentRepoPath = useUiStore.getState().activeRepoPath;
+        const allWs = currentRepoPath
+          ? useSessionsStore.getState().getSessionsForRepo(currentRepoPath)
+          : [];
+        const sameDir = currentActiveSession
+          ? allWs.filter((s) => s.cwd === currentActiveSession.cwd)
+          : allWs;
+        const remaining = sameDir.filter((s) => s !== targetSession);
+        useSessionsStore
+          .getState()
+          .setActiveSessionId(remaining[0]?.id ?? null);
+      }
+    },
+    []
+  );
 
   return {
     navigateToDashboard,

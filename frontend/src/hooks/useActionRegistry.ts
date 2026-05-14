@@ -93,6 +93,7 @@ import type { Repo } from '../lib/types.js';
 import { createAgentSession } from '../lib/session-utils.js';
 import {
   resolveSessionByKey,
+  resolveSessionCloseTarget,
   scopedSessionKey,
 } from '../lib/session-keys.js';
 import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
@@ -198,12 +199,12 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         handler: async () => {
           const id = useSessionsStore.getState().activeSessionId;
           if (id) {
-            const session = resolveSessionByKey(
+            const { sessionId, nodeId } = resolveSessionCloseTarget(
               useSessionsStore.getState().sessions,
               id
             );
             try {
-              await killSession(session?.id ?? id);
+              await killSession(sessionId, nodeId);
             } catch (err) {
               logger.error('Failed to kill session', err);
             }

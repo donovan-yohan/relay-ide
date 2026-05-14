@@ -19,7 +19,8 @@ import type { SessionSummary } from './types.js';
 // RelayNode, and sends back a `<type>.result` (or `<type>.error`)
 // envelope on the same `requestId`.
 //
-// Wired today: `sessions.create` (#425.7) and `sessions.list` (#465).
+// Wired today: `sessions.create` (#425.7), `sessions.list` (#465),
+// and `sessions.kill` (#478).
 // Other RPC types fall through to an INVALID_REQUEST response so
 // misrouted envelopes don't silently hang the hub-side pending
 // request.
@@ -160,6 +161,25 @@ function internalError(message: string): RelayNodeError {
   return { code: 'INTERNAL', message, retryable: true };
 }
 
+function notFound(message: string): RelayNodeError {
+  return { code: 'NOT_FOUND', message, retryable: false };
+}
+
+function parseSessionIdPayload(
+  rpcName: string,
+  raw: unknown
+): string | RelayNodeError {
+  const record = asRecord(raw);
+  if (!record) {
+    return invalidRequest(`${rpcName} payload must be an object`);
+  }
+  const id = asString(record['id']);
+  if (!id) {
+    return invalidRequest(`${rpcName} payload.id must be a non-empty string`);
+  }
+  return id;
+}
+
 function sessionSummaryFromCreateResult(value: unknown): SessionSummary {
   // CreateResult is SessionSummary & { pid }. Strip pid before sending
   // across the wire; hub-side isSessionSummary validator doesn't expect
@@ -252,6 +272,32 @@ export function createNodeLinkRpcHost(
     }
   }
 
+  function handleSessionsKill(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): void {
+    const id = parseSessionIdPayload('sessions.kill', envelope.payload);
+    if (typeof id !== 'string') {
+      sendErrorEnvelope(ctx, envelope, id);
+      return;
+    }
+    try {
+      localRelayNode.sessions.kill(id);
+      sendResultEnvelope(ctx, envelope, { ok: true });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`sessions.kill failed: ${message}`);
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        message.toLowerCase().includes('not found')
+          ? notFound(message)
+          : internalError(message)
+      );
+    }
+  }
+
   function handle(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -263,6 +309,10 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'sessions.list') {
       handleSessionsList(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'sessions.kill') {
+      handleSessionsKill(envelope, ctx);
       return;
     }
     logger.warn(

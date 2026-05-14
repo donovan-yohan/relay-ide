@@ -34,10 +34,7 @@ import {
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
-import {
-  resolveSessionByKey,
-  scopedSessionKey,
-} from './lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from './lib/session-keys.js';
 import { killSession } from './lib/api.js';
 import {
   getMainWorkspaceSessions,
@@ -193,7 +190,9 @@ function useTerminalDerivedState() {
 
   const activeSession = useMemo(
     () =>
-      activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : undefined,
+      activeSessionId
+        ? resolveSessionByKey(sessions, activeSessionId)
+        : undefined,
     [activeSessionId, sessions]
   );
 
@@ -233,7 +232,11 @@ function useTerminalDerivedState() {
   );
 
   const activeWorkspaceCwd = useMemo(
-    () => activeSession?.worktreePath ?? activeSession?.repoPath ?? activeRepoPath ?? '',
+    () =>
+      activeSession?.worktreePath ??
+      activeSession?.repoPath ??
+      activeRepoPath ??
+      '',
     [activeRepoPath, activeSession]
   );
 
@@ -291,9 +294,7 @@ function AnalyticsViewContent() {
 
 const EMPTY_UTILITY_TERMINAL_IDS: string[] = [];
 
-function getUtilityTerminalIds(
-  railState: WorkspaceUtilityRailState
-): string[] {
+function getUtilityTerminalIds(railState: WorkspaceUtilityRailState): string[] {
   return railState.utilityTerminalIds ?? EMPTY_UTILITY_TERMINAL_IDS;
 }
 
@@ -386,7 +387,8 @@ function useUtilityTerminalHandlers({
 
   const handleSelectUtilityTerminal = useCallback(
     (sessionId: string) => {
-      if (activeWorkspaceCwd) selectUtilityTerminal(activeWorkspaceCwd, sessionId);
+      if (activeWorkspaceCwd)
+        selectUtilityTerminal(activeWorkspaceCwd, sessionId);
     },
     [activeWorkspaceCwd, selectUtilityTerminal]
   );
@@ -399,7 +401,11 @@ function useUtilityTerminalHandlers({
         .getUtilityRailState(activeWorkspaceCwd);
       removeUtilityTerminal(activeWorkspaceCwd, sessionId);
       try {
-        await killSession(sessionId);
+        const session = resolveSessionByKey(
+          useSessionsStore.getState().sessions,
+          sessionId
+        );
+        await killSession(session?.id ?? sessionId, session?.nodeId);
         await useSessionsStore.getState().refreshAll();
       } catch (error) {
         useUiStore.setState({
@@ -454,7 +460,7 @@ interface TerminalAreaContentProps {
   onOpenPrSession: (pr: PullRequest) => void;
   onArchive: () => Promise<void>;
   onSelectSession: (id: string) => void;
-  onCloseSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string, nodeId?: string) => void;
   onSessionCreated: (sessionId: string) => void;
 }
 
@@ -543,7 +549,10 @@ function TerminalAreaContent({
   const handleCopyModeChange = useCallback((active: boolean) => {
     setCopyModeActive(active);
   }, []);
-  const getToolbarTerminalHandle = useCallback(() => getActiveTerminalHandle(), []);
+  const getToolbarTerminalHandle = useCallback(
+    () => getActiveTerminalHandle(),
+    []
+  );
 
   const handleExitCopyMode = useCallback(() => {
     getToolbarTerminalHandle()?.exitCopyMode();
@@ -867,13 +876,19 @@ export default function App() {
   // activeSession and activeWorkspaceCwd are needed for FilePicker
   const activeSession = useMemo(
     () =>
-      activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : undefined,
+      activeSessionId
+        ? resolveSessionByKey(sessions, activeSessionId)
+        : undefined,
     [activeSessionId, sessions]
   );
 
   // Active workspace cwd — use worktreePath/repoPath (stable root), not cwd which can drift
   const activeWorkspaceCwd = useMemo(
-    () => activeSession?.worktreePath ?? activeSession?.repoPath ?? activeRepoPath ?? '',
+    () =>
+      activeSession?.worktreePath ??
+      activeSession?.repoPath ??
+      activeRepoPath ??
+      '',
     [activeRepoPath, activeSession]
   );
 
@@ -1109,7 +1124,10 @@ export default function App() {
       navRefreshMounted.current = true;
       return;
     }
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState !== 'visible'
+    ) {
       return;
     }
 

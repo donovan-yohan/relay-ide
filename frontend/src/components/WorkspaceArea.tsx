@@ -30,6 +30,7 @@ import { useWorkspaceLayoutStore } from '../lib/stores/workspace-layout-store.js
 import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
+import { resolveWorkspaceSessionCloseTarget } from '../lib/workspace-session-close.js';
 import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import { useFileContent } from '../hooks/useFileContent.js';
@@ -69,7 +70,8 @@ function sessionTabId(session: SessionSummary): string {
 
 function propagateLayoutSideRemoval(
   id: string,
-  onCloseSession: (sessionId: string) => void
+  removedTab: WorkspaceTab | undefined,
+  onCloseSession: (sessionId: string, nodeId?: string) => void
 ): void {
   if (id.startsWith('file::')) {
     const ftKey = id.slice('file::'.length);
@@ -82,7 +84,12 @@ function propagateLayoutSideRemoval(
   }
 
   if (id.startsWith('session::')) {
-    onCloseSession(id.slice('session::'.length));
+    const closeTarget = resolveWorkspaceSessionCloseTarget(
+      removedTab ? [removedTab] : [],
+      id,
+      useSessionsStore.getState().sessions
+    );
+    if (closeTarget) onCloseSession(closeTarget.sessionId, closeTarget.nodeId);
   }
 }
 
@@ -348,7 +355,7 @@ export interface WorkspaceAreaProps {
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onCopyModeChange: (active: boolean) => void;
   onFilePathClick: (path: string) => void;
-  onCloseSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string, nodeId?: string) => void;
   renderDiff?: FileTabContentProps['renderDiff'];
   renderCode?: FileTabContentProps['renderCode'];
 }
@@ -397,23 +404,34 @@ export function WorkspaceArea({
   // layout get added to the active pane. No long-lived suppression set —
   // the per-cycle `removedThisCycle` set is rebuilt from prev vs current.
   const prevLayoutTabIdsRef = useRef<Set<string>>(new Set());
+  const prevLayoutTabsRef = useRef<Map<string, WorkspaceTab>>(new Map());
   useEffect(() => {
     if (!initializedRef.current) return;
 
     const wsIds = new Set<string>();
+    const wsTabs = new Map<string, WorkspaceTab>();
     for (const pane of listPanes(layout)) {
-      for (const t of pane.tabs) wsIds.add(workspaceTabId(t));
+      for (const t of pane.tabs) {
+        const id = workspaceTabId(t);
+        wsIds.add(id);
+        wsTabs.set(id, t);
+      }
     }
     const prev = prevLayoutTabIdsRef.current;
+    const prevTabs = prevLayoutTabsRef.current;
     const removedFromLayout = new Set<string>();
     for (const id of prev) {
       if (!wsIds.has(id)) removedFromLayout.add(id);
     }
     prevLayoutTabIdsRef.current = wsIds;
+    prevLayoutTabsRef.current = wsTabs;
 
     // Propagate layout-side removals (workspace × button) to the owning store.
+    // Use the previous tab object so remote session removals still retain
+    // nodeId/local-session fallback data after refreshAll drops them from
+    // useSessionsStore.
     for (const id of removedFromLayout) {
-      propagateLayoutSideRemoval(id, onCloseSession);
+      propagateLayoutSideRemoval(id, prevTabs.get(id), onCloseSession);
     }
 
     // Re-read after potential ui mutation above.

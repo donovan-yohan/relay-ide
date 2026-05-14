@@ -782,6 +782,74 @@ export function createHubNodeRouter(
     }
   });
 
+  router.delete(
+    '/hub/nodes/:nodeId/sessions/:sessionId',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId, sessionId } = req.params;
+      if (!nodeId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
+        return;
+      }
+      if (!sessionId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
+        return;
+      }
+      const node = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+        const [nodeMajor] = node.protocolVersion.split('.');
+        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+        sendRelayError(
+          res,
+          relayError(
+            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+          )
+        );
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      try {
+        await options.nodeLinks.request(nodeId, 'sessions.kill', {
+          id: sessionId,
+        });
+        res.json({ ok: true });
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
   router.delete('/nodes/:nodeId', requireAuth, (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {

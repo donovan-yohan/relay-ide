@@ -288,6 +288,16 @@ GET /nodes/{nodeId}/ws/sessions/{sessionId}
 
 This upgrades to a WebSocket. The hub proxies PTY I/O between the browser and the node's reverse-link `pty` channel. Resize events are sent as JSON (`{ type: 'resize', cols, rows }`) and forwarded to the node.
 
+### Closing a remote session
+
+Remote tab close/delete uses the hub route:
+
+```http
+DELETE /hub/nodes/{nodeId}/sessions/{sessionId}
+```
+
+The hub forwards that request over the selected node's reverse WebSocket as the `sessions.kill` RPC. The `{sessionId}` is the node-local session id paired with the `{nodeId}` path segment; hub-local sessions still close through `DELETE /sessions/{id}`. After the node-side kill completes, aggregated `GET /sessions` results should no longer include the closed remote session.
+
 ### Node-Scoped Events
 
 Session lifecycle events (idle changes, file changes, session ended) are scoped by node ID so the hub can broadcast them to clients with the correct environment context. The `shared/node-boundary.ts` module handles creating node-scoped event payloads.
