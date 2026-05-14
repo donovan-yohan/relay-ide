@@ -50,11 +50,15 @@ function formatRelativeTime(iso: string, now: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function fallbackStatus(status: NodeCapabilityStatus | undefined): NodeCapabilityStatus {
+function fallbackStatus(
+  status: NodeCapabilityStatus | undefined
+): NodeCapabilityStatus {
   return status ?? 'unknown';
 }
 
-function aggregateAgentStatus(agents: Record<string, NodeCapabilityStatus>): NodeCapabilityStatus {
+function aggregateAgentStatus(
+  agents: Record<string, NodeCapabilityStatus>
+): NodeCapabilityStatus {
   const statuses = Object.values(agents);
   if (statuses.length === 0) return 'unknown';
   if (statuses.includes('available')) return 'available';
@@ -69,7 +73,10 @@ function serviceManagerStatus(kind: string): NodeCapabilityStatus {
   return kind ? 'available' : 'unknown';
 }
 
-function blockerLabel(label: string, status: NodeCapabilityStatus): string | null {
+function blockerLabel(
+  label: string,
+  status: NodeCapabilityStatus
+): string | null {
   if (status === 'available') return null;
   return `${label} ${status}`;
 }
@@ -90,7 +97,9 @@ function disabledReason(
     return blocker ? [blocker] : [];
   });
 
-  const agentHint = capabilityHints.find((candidate) => candidate.key === 'agents');
+  const agentHint = capabilityHints.find(
+    (candidate) => candidate.key === 'agents'
+  );
   if (agentHint && agentHint.status !== 'available') {
     const blocker = blockerLabel(agentHint.label, agentHint.status);
     if (blocker) blockers.push(blocker);
@@ -107,7 +116,16 @@ function capabilityHints(node: HubNodeSummary): HubNodeCapabilityHint[] {
     { key: 'shell', label: 'shell', status: fallbackStatus(core?.shell) },
     { key: 'tmux', label: 'tmux', status: fallbackStatus(core?.tmux) },
     { key: 'git', label: 'git', status: fallbackStatus(core?.git) },
-    { key: 'worktrees', label: 'worktrees', status: fallbackStatus(core?.worktrees) },
+    {
+      key: 'worktrees',
+      label: 'worktrees',
+      // Worktrees is a repo-feature-layer capability. Per #435 it is no
+      // longer carried on the core summary. Until a repo feature
+      // decorator publishes it explicitly on `capabilities.worktrees`,
+      // derive from `core.git` — historically the worktree capability
+      // mirrored git availability and that's still the closest signal.
+      status: fallbackStatus(node.capabilities.worktrees ?? core?.git),
+    },
     { key: 'agents', label: 'agents', status: agents },
     {
       key: 'browserAutomation',
@@ -120,7 +138,11 @@ function capabilityHints(node: HubNodeSummary): HubNodeCapabilityHint[] {
       status: fallbackStatus(core?.clipboardImage),
     },
     { key: 'ssh', label: 'ssh', status: fallbackStatus(core?.ssh) },
-    { key: 'tailscale', label: 'tailscale', status: fallbackStatus(core?.tailscale) },
+    {
+      key: 'tailscale',
+      label: 'tailscale',
+      status: fallbackStatus(core?.tailscale),
+    },
     {
       key: 'serviceManager',
       label: 'service',
@@ -174,12 +196,13 @@ export function hubNodeDashboardSummary(
   const rows = deriveHubNodeDashboardRows(nodes, options);
   const ready = rows.filter((row) => row.attachable).length;
   const offlineOrStale = rows.filter(
-    (row) => row.status === 'offline' || row.status === 'stale' || row.status === 'revoked'
+    (row) =>
+      row.status === 'offline' ||
+      row.status === 'stale' ||
+      row.status === 'revoked'
   ).length;
   const blockedByCapabilities = rows.filter(
-    (row) =>
-      !row.attachable &&
-      row.disabledReason?.startsWith('work disabled:')
+    (row) => !row.attachable && row.disabledReason?.startsWith('work disabled:')
   ).length;
 
   return `${ready}/${rows.length} nodes ready · ${blockedByCapabilities} blocked by capabilities · ${offlineOrStale} offline/stale`;

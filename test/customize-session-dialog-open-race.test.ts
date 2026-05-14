@@ -130,7 +130,6 @@ function node(): HubNodeSummary {
         shell: 'available',
         tmux: 'available',
         git: 'available',
-        worktrees: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',

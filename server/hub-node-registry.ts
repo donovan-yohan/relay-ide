@@ -13,7 +13,6 @@ import {
   type HubNodeSummary,
   type HubNodeVersionState,
   type NodeCapabilityManifestSummary,
-  type NodeCapabilityStatus,
   type RelayNodeCredential,
   type RelayNodeError,
   type RelayNodeErrorCode,
@@ -168,13 +167,18 @@ function summarizeCapabilities(
     countProbe(totals, probe);
   }
 
+  // `worktrees` is intentionally NOT populated here. It is a
+  // repo-feature-layer capability and belongs in a repo feature
+  // decorator that composition root may layer on top of this core
+  // summary. Consumers that need a worktree-availability hint should
+  // fall back to deriving from `core.git` (the canonical worktree
+  // capability today is just "is git usable here?").
   return {
     totals,
     core: {
       shell: 'available',
       tmux: manifest.capabilities.tmux.status,
       git: manifest.capabilities.git.status,
-      worktrees: worktreeCapabilityStatus(manifest.capabilities.git.status),
       browserAutomation: manifest.capabilities.browserAutomation.status,
       clipboardImage: manifest.capabilities.clipboard.status,
       ssh: manifest.capabilities.ssh.status,
@@ -184,13 +188,6 @@ function summarizeCapabilities(
     serviceManager: manifest.serviceManager.kind,
     wsl: manifest.wsl.detected,
   };
-}
-
-function worktreeCapabilityStatus(
-  gitStatus: NodeCapabilityStatus
-): NodeCapabilityStatus {
-  if (gitStatus === 'available') return 'available';
-  return gitStatus;
 }
 
 function nodeDisplayName(
@@ -275,7 +272,6 @@ function normalizeCapabilitySummary(
       shell: UNKNOWN_CAPABILITY_STATUS,
       tmux: UNKNOWN_CAPABILITY_STATUS,
       git: UNKNOWN_CAPABILITY_STATUS,
-      worktrees: UNKNOWN_CAPABILITY_STATUS,
       browserAutomation: UNKNOWN_CAPABILITY_STATUS,
       clipboardImage: UNKNOWN_CAPABILITY_STATUS,
       ssh: UNKNOWN_CAPABILITY_STATUS,

@@ -50,7 +50,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         shell: 'available',
         tmux: 'available',
         git: 'available',
-        worktrees: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
