@@ -194,6 +194,55 @@ describe('node-link-rpc-host', () => {
     expect(err.message).toContain('payload.sessionLane');
   });
 
+  it('dispatches sessions.kill to localRelayNode', () => {
+    const localRelayNode = fakeLocalNode({ kill: vi.fn() });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('sessions.kill', { id: 'sess-1' }), ctx);
+
+    expect(localRelayNode.sessions.kill).toHaveBeenCalledWith('sess-1');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      channel: 'rpc',
+      type: 'sessions.kill.result',
+      requestId: 'req-1',
+      payload: { ok: true },
+    });
+  });
+
+  it('responds with INVALID_REQUEST when sessions.kill payload is missing id', () => {
+    const localRelayNode = fakeLocalNode({ kill: vi.fn() });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('sessions.kill', {}), ctx);
+
+    expect(localRelayNode.sessions.kill).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.kill.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+  });
+
+  it('responds with NOT_FOUND when sessions.kill cannot find the session', () => {
+    const localRelayNode = fakeLocalNode({
+      kill: (() => {
+        throw new Error('Session not found: sess-missing');
+      }) as never,
+    });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('sessions.kill', { id: 'sess-missing' }), ctx);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.kill.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('NOT_FOUND');
+    expect(err.retryable).toBe(false);
+  });
+
   it('responds with INVALID_REQUEST when payload is missing type', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });

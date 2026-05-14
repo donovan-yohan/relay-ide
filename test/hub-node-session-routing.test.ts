@@ -360,6 +360,66 @@ describe('hub-routed node session create and attach', () => {
     });
   });
 
+  it('routes remote session delete to the selected connected node', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const deletePromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1`,
+      {
+        method: 'DELETE',
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'sessions.kill',
+      payload: { id: 'remote-session-1' },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.kill.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: { ok: true },
+      })
+    );
+
+    const res = await deletePromise;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('returns NODE_OFFLINE when deleting a remote session on a node with no live reverse link', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1`,
+      {
+        method: 'DELETE',
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'NODE_OFFLINE', retryable: true },
+    });
+  });
+
   it('does not trust node-provided scoped identity fields when worktree scope is absent', async () => {
     const { base, wsBase } = await startHub();
     const { token, nodeId } = await pairNode(base);

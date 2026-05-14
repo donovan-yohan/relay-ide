@@ -593,8 +593,15 @@ export async function createSession(body: {
   return json<SessionSummary>(res);
 }
 
-export async function killSession(id: string): Promise<void> {
-  const res = await fetch('/sessions/' + id, { method: 'DELETE' });
+export async function killSession(
+  id: string,
+  nodeId?: NodeId | string
+): Promise<void> {
+  const sessionPath =
+    nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions/${encodeURIComponent(id)}`
+      : `/sessions/${encodeURIComponent(id)}`;
+  const res = await fetch(sessionPath, { method: 'DELETE' });
   if (!res.ok)
     throw await httpErrorFromResponse(res, 'Failed to close session');
 }

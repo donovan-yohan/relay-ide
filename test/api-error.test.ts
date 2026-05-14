@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createSession, HttpError } from '../frontend/src/lib/api.js';
+import {
+  createSession,
+  HttpError,
+  killSession,
+} from '../frontend/src/lib/api.js';
 
 describe('frontend api errors', () => {
   afterEach(() => {
@@ -124,6 +128,41 @@ describe('frontend api errors', () => {
         type: 'agent',
         sessionLane: 'local-repo',
       }),
+    });
+  });
+
+  it('deletes selected remote node sessions through the hub route', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await killSession('remote-session-1', 'node-a');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/hub/nodes/node-a/sessions/remote-session-1',
+      { method: 'DELETE' }
+    );
+  });
+
+  it('keeps local session delete on the local sessions route', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await killSession('local-session-1');
+
+    expect(fetchMock).toHaveBeenCalledWith('/sessions/local-session-1', {
+      method: 'DELETE',
     });
   });
 
