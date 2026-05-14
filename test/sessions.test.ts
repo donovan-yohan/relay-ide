@@ -375,7 +375,7 @@ describe('sessions', () => {
     expect(session!.cwd).toBe('/tmp/workspace/.worktrees/my-branch');
   });
 
-  it('branchName defaults to empty string when branchName is not provided', () => {
+  it('omits branchName when branchName is not provided', () => {
     const result = sessions.create({
       type: 'agent',
       repoName: 'test-repo',
@@ -386,7 +386,38 @@ describe('sessions', () => {
       args: ['hello'],
     });
     createdIds.push(result.id);
-    expect(result.branchName).toBe('');
+
+    expect(result.branchName).toBeUndefined();
+    expect(result).not.toHaveProperty('branchName');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed!.branchName).toBeUndefined();
+    expect(listed).not.toHaveProperty('branchName');
+  });
+
+  it('preserves explicit branchName for repo-bound sessions', () => {
+    const result = sessions.create({
+      type: 'agent',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: '/tmp/workspace/.worktrees/feature-branch',
+      cwd: '/tmp/workspace/.worktrees/feature-branch',
+      branchName: 'feature/branch',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(result.id);
+
+    expect(result.branchName).toBe('feature/branch');
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toBeDefined();
+    expect(listed!.branchName).toBe('feature/branch');
+
+    const stored = sessions.get(result.id);
+    expect(stored).toBeDefined();
+    expect(stored!.branchName).toBe('feature/branch');
   });
 
   it('resolveTmuxSpawn returns correct tmux command and args', () => {
