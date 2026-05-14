@@ -1,0 +1,52 @@
+shared/relay-node-protocol.ts
+  s_52a22eb2d261df::t_a582b471c9e1c4 77-83
+  s_52a22eb2d261df::t_f41e1bfd041e56 109-114
+shared/node-manifest.ts
+  s_52a22eb2d261df::t_a7daab401a0032 223-226,232-238
+  s_52a22eb2d261df::t_ee25b79e6745e9 62-71
+  s_52a22eb2d261df::t_6a0fb619299f03 80-85
+test/node-link-pty-host.test.ts
+  s_52a22eb2d261df::t_fe04174f3b29d1 13-16,40-55,57,59,62,77-78,80-84,93-95,104,106-109,113,115,118,121-127,133,137-141,145-152,155,157,160,163-166,175-176,180-195,244-250,286,309,312,383,386,388,399,402-404
+test/components/TerminalNodePicker.test.ts
+  s_52a22eb2d261df::t_820462e059e952 127-166
+  s_52a22eb2d261df::t_b2a809052c9d08 38
+docs/federated-relay.md
+  s_52a22eb2d261df::t_b3d8bc2fd7b10b 305-328,330-343
+  s_52a22eb2d261df::t_3bd0420004ac51 205,208-210,212-216
+frontend/src/components/TerminalNodePicker.css
+  s_52a22eb2d261df::t_93307ebe2ac199 96-102
+server/hub-node-registry.ts
+  s_52a22eb2d261df::t_cb20a6595faa68 190-194
+server/node-manifest.ts
+  s_52a22eb2d261df::t_8d3bf26128e981 150,152,159-162
+server/node-link-pty-host.ts
+  s_52a22eb2d261df::t_350f4989833241 1,5-14,31-37,42-49,63-64,69-71,126-131,136,141,143,165-169,179,181,187,191-195,200,202-226,228-231,233-257,265,280,287,292,295,308,316,328,332-336,338,340
+server/session-attachment.ts
+  s_52a22eb2d261df::t_85109b69e0575d 1-3,5-6,8-10,19-30,35-39,41-42,44-60,62,64-65,67-79,81-83,89,91-102,104-118,124-126,129-130,132-136,139-143,145-146,173-174,176-178,184-185,188,196-198,200,207-208,210-214,223-224,240-243,245,247-259,261-264,275,279-285,298,307,310-314,316-323,325-326,328-329,347-348,351-371,376,432-435
+  s_52a22eb2d261df::t_111cd419452c51 84-88
+  s_52a22eb2d261df::t_730bc4275841d6 4,7,11-18,31-34,40,43,61,63,66,80,90,103,119-123,127-128,131,137-138,144,147-172,175,179-183,186-187,189-195,199,201-206,209,215-222,225-229,231-239,244,246,260,265-274,276-278,286-297,299-306,308-309,315,324,327,330-346,349-350,372-375,377-431
+bin/relay-ide.ts
+  s_52a22eb2d261df::t_48393b29994501 439-446
+test/session-attachment.test.ts
+  s_52a22eb2d261df::t_336a71c701c5bc 1-253
+frontend/src/components/TerminalNodePicker.tsx
+  s_52a22eb2d261df::t_8799d3860268ad 291-298
+  s_52a22eb2d261df::t_989e921ab90732 61-69,77,87
+  s_52a22eb2d261df::t_1e03082ec30046 38-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "0b9e55cfb79ee7f1e749e9a411ec8aa9b104e4bf",
+  "prompts": {},
+  "sessions": {
+    "s_52a22eb2d261df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f8ef93e-4923-4b7e-b84e-2843c0253283",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
