@@ -1,0 +1,24 @@
+docs/spikes/422-capability-bits-rotation-confirmation.md
+  s_e3356f8e9db726::t_72f15a567e4432 567
+AGENTS.md
+  s_e3356f8e9db726::t_64f343b0e17c6f 80
+  s_e3356f8e9db726::t_9ccfc0be0184ab 52
+.chalk/skills/scope/SKILL.md
+  s_e3356f8e9db726::t_7849e4991afcd9 141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "592726342d893e41b743f90f3a047875aa8015cd",
+  "prompts": {},
+  "sessions": {
+    "s_e3356f8e9db726": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d30e088-baea-4e5f-a613-9935fa216040",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Relay Test <relay@example.test>"
+    }
+  }
+}
