@@ -1061,14 +1061,20 @@ async function restoreWebSessionFromDb(
   // Restore persisted adapter runtime settings so the reconnected session
   // matches what was originally running rather than reverting to defaults.
   const persistedConfig = row.agentSessionV2.config;
+  const restoredRepoPath =
+    row.repoPath !== null && row.repoPath.length > 0 ? row.repoPath : undefined;
   const createParams: CreateWebParams = {
     id: row.id,
     agentType: row.meta.adapterType,
     cwd: row.cwd,
-    repoPath: row.repoPath ?? row.cwd,
-    repoName: row.meta.repoName,
-    worktreePath: row.worktreePath,
-    branchName: row.branchName ?? '',
+    ...(restoredRepoPath !== undefined
+      ? {
+          repoPath: restoredRepoPath,
+          ...(row.meta.repoName ? { repoName: row.meta.repoName } : {}),
+          worktreePath: row.worktreePath,
+          branchName: row.branchName ?? '',
+        }
+      : {}),
     displayName: row.displayName ?? '',
     port: defaultPort ?? 3456,
     configDir: defaultConfigDir ?? '',

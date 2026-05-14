@@ -18,6 +18,7 @@ import type {
   AdapterStatus,
   ProtocolAdapterV2,
 } from '../server/protocol-adapter-v2.js';
+import { getSessionCategory } from '../server/session-attribution.js';
 
 const capabilities: AgentCapabilitySetV2 = {
   text: true,
@@ -190,6 +191,65 @@ describe('web session restore failure recovery', () => {
         )
       )
     ).toBe(true);
+    expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
+  });
+
+  it('restores persisted free web sessions without synthesizing repo bindings', async () => {
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-free',
+        vendor: 'claude',
+        vendorSessionId: 'stored-free-provider-session',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'free web restart session',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-free',
+          provider: 'claude',
+          cwd: configDir,
+          capabilities,
+          providerSession: { claudeSessionId: 'stored-free-provider-session' },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'claude',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'free-restored-hook-token',
+          adapterType: 'claude',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+
+    const restored = await sessions.restoreFromDisk(configDir);
+
+    expect(restored).toBe(1);
+    expect(resumeSession).toHaveBeenCalledWith('stored-free-provider-session');
+
+    const session = sessions.get('web-restore-free');
+    expect(session).toBeTruthy();
+    expect(session).not.toHaveProperty('repoPath');
+    expect(session).not.toHaveProperty('worktreePath');
+    expect(session).not.toHaveProperty('repoName');
+    expect(session).not.toHaveProperty('branchName');
+    expect(getSessionCategory(session!)).toBe('free');
+
+    const summary = sessions.list().find((s) => s.id === 'web-restore-free');
+    expect(summary).toBeDefined();
+    expect(summary).not.toHaveProperty('repoPath');
+    expect(summary).not.toHaveProperty('branchName');
+    expect(summary).not.toHaveProperty('repoInstanceId');
+    expect(summary).not.toHaveProperty('worktreeInstanceId');
+    expect(summary).toMatchObject({ mode: 'web', cwd: configDir });
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
   });
 });
