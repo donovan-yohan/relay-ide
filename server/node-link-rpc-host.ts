@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import type { LocalRelayNode } from './local-node.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
@@ -106,8 +107,12 @@ function parseSessionsCreateInput(
   if (repoPath !== undefined) input.repoPath = repoPath;
   const worktreePath = asNullableString(record['worktreePath']);
   if (worktreePath !== undefined) input.worktreePath = worktreePath;
-  const cwd = asString(record['cwd']);
-  if (cwd !== undefined) input.cwd = cwd;
+  // #474: routed creates from a remote browser often arrive without
+  // cwd because the frontend create-tab modal still assumes the hub's
+  // local repo state. Until #473's modal split lands, default to the
+  // node host's home directory so spawn() never receives undefined.
+  const cwd = asString(record['cwd']) ?? os.homedir();
+  input.cwd = cwd;
   const command = asString(record['command']);
   if (command !== undefined) input.command = command;
   const args = asStringArray(record['args']);
