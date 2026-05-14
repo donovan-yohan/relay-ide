@@ -3,7 +3,6 @@ import type { LocalRelayNode } from './local-node.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
-import type { CreateWebParams } from './web-session-handler.js';
 import type {
   NodeLinkChannelHandler,
   NodeLinkEnvelopeHandlerContext,
@@ -214,10 +213,11 @@ export function createNodeLinkRpcHost(
     }
     try {
       if (parsed.mode === 'web') {
-        const { session } = await localRelayNode.sessions.createWeb(
-          parsed as unknown as CreateWebParams
+        sendErrorEnvelope(
+          ctx,
+          envelope,
+          invalidRequest('remote node web sessions are not supported')
         );
-        sendResultEnvelope(ctx, envelope, { session });
         return;
       }
       const result = localRelayNode.sessions.create(

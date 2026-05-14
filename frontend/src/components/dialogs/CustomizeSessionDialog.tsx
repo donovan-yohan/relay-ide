@@ -542,13 +542,17 @@ async function createSessionFromForm(
   remoteCwd?: string
 ) {
   const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
+  const remoteNodeSelected = environment.nodeId !== DEFAULT_LOCAL_NODE_ID;
+  const sessionMode: SessionLaunchMode = remoteNodeSelected
+    ? 'pty'
+    : form.sessionMode;
   const { cols, rows } = estimateTerminalDimensions(
     useUiStore.getState().terminalFontSize
   );
   const baseOptions = {
     nodeId: environment.nodeId,
     type: 'agent' as const,
-    mode: form.sessionMode,
+    mode: sessionMode,
     continue: form.continueExisting,
     yolo: form.yoloMode,
     claudeArgs: claudeArgs.length > 0 ? claudeArgs : undefined,
@@ -557,7 +561,7 @@ async function createSessionFromForm(
     cols,
     rows,
   };
-  if (environment.nodeId !== DEFAULT_LOCAL_NODE_ID) {
+  if (remoteNodeSelected) {
     return createAgentSession({
       ...baseOptions,
       cwd: cleanCwd(remoteCwd),
@@ -617,10 +621,11 @@ function CustomizeSessionBody({
           } satisfies FrameworkInfo,
         ];
 
-  const modeOptions = getSessionModeOptions(
-    frameworkOptions,
-    form.selectedAgent
-  );
+  const remoteNodeSelected =
+    environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
+  const modeOptions = remoteNodeSelected
+    ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
+    : getSessionModeOptions(frameworkOptions, form.selectedAgent);
   const selectedFramework = frameworkOptions.find(
     (framework) => framework.id === form.selectedAgent
   );
@@ -630,8 +635,6 @@ function CustomizeSessionBody({
     selectedFramework &&
     form.sessionMode === 'web' &&
     !isFrameworkWebAvailable(selectedFramework);
-  const remoteNodeSelected =
-    environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
   const remoteNodeLabel =
     selectedRemoteNode?.displayName ?? environmentModel.selectedNodeId;
   const remoteHomeDir = cleanCwd(selectedRemoteNode?.homeDir);

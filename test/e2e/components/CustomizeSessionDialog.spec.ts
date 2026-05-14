@@ -40,6 +40,28 @@ test.describe('CustomizeSessionDialog', () => {
     );
   });
 
+  test('local web-capable default agents keep web session payloads', async ({
+    page,
+  }) => {
+    await page.getByText('open local web-capable customize session').click();
+    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('interface')).toHaveValue('web');
+    await page.getByRole('button', { name: 'Start Session' }).click();
+
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '/sessions'
+    );
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '"agent":"hermes"'
+    );
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '"mode":"web"'
+    );
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '"repoPath":"/Users/kyle/relay-ide"'
+    );
+  });
+
   test('remote-node lane uses free-text cwd and omits repo fields', async ({
     page,
   }) => {
@@ -66,6 +88,33 @@ test.describe('CustomizeSessionDialog', () => {
     );
     await expect(page.getByTestId('last-create-request')).not.toContainText(
       'worktreePath'
+    );
+  });
+
+  test('remote-node lane coerces web-capable default agents to pty payloads', async ({
+    page,
+  }) => {
+    await page.getByText('open web-capable remote customize session').click();
+    await page.getByLabel('execution node').selectOption('linux');
+    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('interface')).toHaveCount(0);
+    await page.getByLabel('cwd on linux lab').fill('/srv/hermes-cwd');
+    await page.getByRole('button', { name: 'Start Session' }).click();
+
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '/hub/nodes/linux/sessions'
+    );
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '"agent":"hermes"'
+    );
+    await expect(page.getByTestId('last-create-request')).toContainText(
+      '"mode":"pty"'
+    );
+    await expect(page.getByTestId('last-create-request')).not.toContainText(
+      '"mode":"web"'
+    );
+    await expect(page.getByTestId('last-create-request')).not.toContainText(
+      'repoPath'
     );
   });
 
