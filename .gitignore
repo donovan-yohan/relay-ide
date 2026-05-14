@@ -57,10 +57,6 @@ playwright-report/
 .omx/
 .env
 
-# belayer — per-run state (.belayer/ contains runs/ and worktrees/; hermes_bridge is in runtime dir)
-/.belayer/runs/
-/.belayer/worktrees/
-
 # chalkbag — generated artifacts
 /.agents/
 /.claude/

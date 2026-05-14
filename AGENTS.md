@@ -49,7 +49,7 @@ Repo-local skills live under `.chalk/skills/`. Projected to `.claude/skills/` (g
 - `/scope` → `.chalk/skills/scope/SKILL.md` — issue scoping and brainstorming guardrails
 - `/ticket` → `.chalk/skills/ticket/SKILL.md` — GitHub Issue creation + sub-issue / blocker graphql
 
-See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined → todo → in-progress).
+Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) → `in-progress` (claimed). Use explicit worktrees under `.worktrees/<issue-slug>` when claiming work.
 
 ## Key Patterns
 
@@ -77,7 +77,7 @@ See `.belayer/README.md` for the issue-workflow pipeline (backlog → refined �
 GitHub Issues on `donovan-yohan/relay-ide`. Every issue needs:
 
 - Type: `bug` | `feature` | `improvement` | `spike`
-- State: `backlog` (rough) → `refined` (scoped, awaiting plan) → `todo` (planned, belayer-ready) → `in-progress` (belayer claimed). See `.belayer/README.md`.
+- State: `backlog` (rough) → `refined` (scoped, awaiting plan) → `todo` (planned, ready to claim) → `in-progress` (claimed, worktree open under `.worktrees/<issue-slug>`).
 - Priority: `p1-urgent` | `p2-high` | `p3-normal` | `p4-low`
 - Project (when applicable): `project:sidebar-nav`, `project:code-file-tools`, `project:verification-testing`, `project:command-center`, `project:agent-platform`, `project:true-workspaces`
 - `epic` label on parents
