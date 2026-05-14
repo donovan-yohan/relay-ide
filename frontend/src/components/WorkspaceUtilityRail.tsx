@@ -124,7 +124,7 @@ export interface WorkspaceUtilityRailProps {
   activeSession?: SessionSummary | undefined;
   workspaceSessions: SessionSummary[];
   utilityTerminalSessions?: SessionSummary[];
-  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null>;
+  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null> | undefined;
   onCreateUtilityTerminal?: () => void | Promise<void>;
   onSelectUtilityTerminal?: (sessionId: string) => void;
   onCloseUtilityTerminal?: (sessionId: string) => void | Promise<void>;
@@ -186,13 +186,15 @@ interface UtilityRailTerminalPanelProps {
   workspacePath: string;
   railState: WorkspaceUtilityRailState;
   sessions: SessionSummary[];
-  onCreateUtilityTerminal?: () => void | Promise<void>;
-  onSelectUtilityTerminal?: (sessionId: string) => void;
-  onCloseUtilityTerminal?: (sessionId: string) => void | Promise<void>;
-  onPromoteUtilityTerminal?: (sessionId: string) => void;
-  onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
-  onCopyModeChange?: (active: boolean) => void;
-  onFilePathClick?: (path: string) => void;
+  onCreateUtilityTerminal?: (() => void | Promise<void>) | undefined;
+  onSelectUtilityTerminal?: ((sessionId: string) => void) | undefined;
+  onCloseUtilityTerminal?: ((sessionId: string) => void | Promise<void>) | undefined;
+  onPromoteUtilityTerminal?: ((sessionId: string) => void) | undefined;
+  onImageUpload?:
+    | ((text: string, showInsert: boolean, path?: string) => void)
+    | undefined;
+  onCopyModeChange?: ((active: boolean) => void) | undefined;
+  onFilePathClick?: ((path: string) => void) | undefined;
 }
 
 function UtilityRailTerminalPanel({
@@ -349,6 +351,247 @@ export function utilityRailRenderedWidth(
   return UTILITY_ICON_RAIL_WIDTH + (state.selectedRailTab ? state.width : 0);
 }
 
+interface UtilityRailFilesPaneContentProps {
+  workspacePath: string;
+  stateKey: string;
+  displayWorkspacePath: string;
+  disabledReason: UtilityRailDisabledReason | null;
+  fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null> | undefined;
+}
+
+function UtilityRailFilesPaneContent({
+  workspacePath,
+  stateKey,
+  displayWorkspacePath,
+  disabledReason,
+  fileTreeSidebarRef,
+}: UtilityRailFilesPaneContentProps) {
+  if (disabledReason) {
+    return (
+      <UtilityRailDisabledState
+        reason={disabledReason}
+        displayWorkspacePath={displayWorkspacePath}
+      />
+    );
+  }
+
+  return (
+    <UtilityRailFilesPanel
+      workspacePath={workspacePath}
+      stateKey={stateKey}
+      {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
+    />
+  );
+}
+
+interface UtilityRailGitPaneContentProps {
+  panel: 'changes' | 'branch' | 'review';
+  workspacePath: string;
+  stateKey: string;
+  displayWorkspacePath: string;
+  disabledReason: UtilityRailDisabledReason | null;
+  reviewState: WorkspaceUtilityRailState['review'];
+  active: boolean;
+}
+
+function UtilityRailGitPaneContent({
+  panel,
+  workspacePath,
+  stateKey,
+  displayWorkspacePath,
+  disabledReason,
+  reviewState,
+  active,
+}: UtilityRailGitPaneContentProps): React.ReactNode {
+  if (disabledReason) {
+    return (
+      <UtilityRailDisabledState
+        reason={disabledReason}
+        displayWorkspacePath={displayWorkspacePath}
+      />
+    );
+  }
+
+  switch (panel) {
+    case 'changes':
+      return (
+        <UtilityRailGitChangesPanel
+          workspacePath={workspacePath}
+          stateKey={stateKey}
+        />
+      );
+    case 'branch':
+      return (
+        <UtilityRailBranchPanel workspacePath={workspacePath} stateKey={stateKey} />
+      );
+    case 'review':
+      return (
+        <UtilityRailReviewPanel
+          workspacePath={workspacePath}
+          stateKey={stateKey}
+          reviewState={reviewState}
+          active={active}
+        />
+      );
+  }
+}
+
+interface UtilityRailPaneBodyProps {
+  selectedTab: UtilityRailTab | null;
+  workspacePath: string;
+  fileWorkspacePath: string;
+  gitWorkspacePath: string;
+  displayWorkspacePath: string;
+  fileDisabledReason: UtilityRailDisabledReason | null;
+  gitDisabledReason: UtilityRailDisabledReason | null;
+  railState: WorkspaceUtilityRailState;
+  activeSession: SessionSummary | undefined;
+  workspaceSessions: SessionSummary[];
+  utilityTerminalSessions: SessionSummary[];
+  fullPageDiff: boolean;
+  fileTreeSidebarRef: React.RefObject<FileTreeHandle | null> | undefined;
+  onCreateUtilityTerminal: (() => void | Promise<void>) | undefined;
+  onSelectUtilityTerminal: ((sessionId: string) => void) | undefined;
+  onCloseUtilityTerminal:
+    | ((sessionId: string) => void | Promise<void>)
+    | undefined;
+  onPromoteUtilityTerminal: ((sessionId: string) => void) | undefined;
+  onImageUpload:
+    | ((text: string, showInsert: boolean, path?: string) => void)
+    | undefined;
+  onCopyModeChange: ((active: boolean) => void) | undefined;
+  onFilePathClick: ((path: string) => void) | undefined;
+}
+
+function UtilityRailPaneBody({
+  selectedTab,
+  workspacePath,
+  fileWorkspacePath,
+  gitWorkspacePath,
+  displayWorkspacePath,
+  fileDisabledReason,
+  gitDisabledReason,
+  railState,
+  activeSession,
+  workspaceSessions,
+  utilityTerminalSessions,
+  fullPageDiff,
+  fileTreeSidebarRef,
+  onCreateUtilityTerminal,
+  onSelectUtilityTerminal,
+  onCloseUtilityTerminal,
+  onPromoteUtilityTerminal,
+  onImageUpload,
+  onCopyModeChange,
+  onFilePathClick,
+}: UtilityRailPaneBodyProps) {
+  const panels: Array<{ id: UtilityRailTab; content: React.ReactNode }> = [
+    {
+      id: 'files',
+      content: (
+        <UtilityRailFilesPaneContent
+          workspacePath={fileWorkspacePath}
+          stateKey={workspacePath}
+          displayWorkspacePath={displayWorkspacePath}
+          disabledReason={fileDisabledReason}
+          fileTreeSidebarRef={fileTreeSidebarRef}
+        />
+      ),
+    },
+    {
+      id: 'changes',
+      content: (
+        <UtilityRailGitPaneContent
+          panel="changes"
+          workspacePath={gitWorkspacePath}
+          stateKey={workspacePath}
+          displayWorkspacePath={displayWorkspacePath}
+          disabledReason={gitDisabledReason}
+          reviewState={railState.review}
+          active={selectedTab === 'review' && !fullPageDiff}
+        />
+      ),
+    },
+    {
+      id: 'branch',
+      content: (
+        <UtilityRailGitPaneContent
+          panel="branch"
+          workspacePath={gitWorkspacePath}
+          stateKey={workspacePath}
+          displayWorkspacePath={displayWorkspacePath}
+          disabledReason={gitDisabledReason}
+          reviewState={railState.review}
+          active={selectedTab === 'review' && !fullPageDiff}
+        />
+      ),
+    },
+    {
+      id: 'review',
+      content: (
+        <UtilityRailGitPaneContent
+          panel="review"
+          workspacePath={gitWorkspacePath}
+          stateKey={workspacePath}
+          displayWorkspacePath={displayWorkspacePath}
+          disabledReason={gitDisabledReason}
+          reviewState={railState.review}
+          active={selectedTab === 'review' && !fullPageDiff}
+        />
+      ),
+    },
+    {
+      id: 'logs',
+      content: <UtilityRailLogsPanel activeSession={activeSession} />,
+    },
+    {
+      id: 'stats',
+      content: (
+        <UtilityRailStatsPanel
+          activeSession={activeSession}
+          workspaceSessions={workspaceSessions}
+        />
+      ),
+    },
+    {
+      id: 'terminal',
+      content:
+        selectedTab === 'terminal' ? (
+          <UtilityRailTerminalPanel
+            workspacePath={workspacePath}
+            railState={railState}
+            sessions={utilityTerminalSessions}
+            onCreateUtilityTerminal={onCreateUtilityTerminal}
+            onSelectUtilityTerminal={onSelectUtilityTerminal}
+            onCloseUtilityTerminal={onCloseUtilityTerminal}
+            onPromoteUtilityTerminal={onPromoteUtilityTerminal}
+            onImageUpload={onImageUpload}
+            onCopyModeChange={onCopyModeChange}
+            onFilePathClick={onFilePathClick}
+          />
+        ) : null,
+    },
+  ];
+
+  return (
+    <div className="utility-pane-body">
+      {panels.map((panel) => (
+        <div
+          key={panel.id}
+          id={`utility-rail-panel-${panel.id}`}
+          className="utility-pane-panel"
+          role="tabpanel"
+          aria-labelledby={`utility-rail-tab-${panel.id}`}
+          tabIndex={selectedTab === panel.id ? 0 : -1}
+          hidden={selectedTab !== panel.id}
+        >
+          {panel.content}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function WorkspaceUtilityRail({
   workspacePath,
   resourceContext,
@@ -380,61 +623,6 @@ export function WorkspaceUtilityRail({
   const gitDisabledReason = resourceContext?.git.disabledReason ?? null;
   const repoBadge =
     resourceContext?.repoBadge ?? (gitWorkspacePath ? 'repo' : null);
-
-  const renderFilesPanel = () => {
-    if (fileDisabledReason) {
-      return (
-        <UtilityRailDisabledState
-          reason={fileDisabledReason}
-          displayWorkspacePath={displayWorkspacePath}
-        />
-      );
-    }
-    return (
-      <UtilityRailFilesPanel
-        workspacePath={fileWorkspacePath}
-        stateKey={workspacePath}
-        {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
-      />
-    );
-  };
-
-  const renderGitPanel = (
-    panel: 'changes' | 'branch' | 'review'
-  ): React.ReactNode => {
-    if (gitDisabledReason) {
-      return (
-        <UtilityRailDisabledState
-          reason={gitDisabledReason}
-          displayWorkspacePath={displayWorkspacePath}
-        />
-      );
-    }
-    if (panel === 'changes') {
-      return (
-        <UtilityRailGitChangesPanel
-          workspacePath={gitWorkspacePath}
-          stateKey={workspacePath}
-        />
-      );
-    }
-    if (panel === 'branch') {
-      return (
-        <UtilityRailBranchPanel
-          workspacePath={gitWorkspacePath}
-          stateKey={workspacePath}
-        />
-      );
-    }
-    return (
-      <UtilityRailReviewPanel
-        workspacePath={gitWorkspacePath}
-        stateKey={workspacePath}
-        reviewState={railState.review}
-        active={selectedTab === 'review' && !fullPageDiff}
-      />
-    );
-  };
 
   const handleTabClick = useCallback(
     (tab: UtilityRailTab) => {
@@ -490,100 +678,28 @@ export function WorkspaceUtilityRail({
             <span className="utility-repo-badge">[{repoBadge}]</span>
           ) : null}
         </div>
-        <div className="utility-pane-body">
-          <div
-            id="utility-rail-panel-files"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-files"
-            tabIndex={selectedTab === 'files' ? 0 : -1}
-            hidden={selectedTab !== 'files'}
-          >
-            {renderFilesPanel()}
-          </div>
-          <div
-            id="utility-rail-panel-changes"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-changes"
-            tabIndex={selectedTab === 'changes' ? 0 : -1}
-            hidden={selectedTab !== 'changes'}
-          >
-            {renderGitPanel('changes')}
-          </div>
-          <div
-            id="utility-rail-panel-branch"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-branch"
-            tabIndex={selectedTab === 'branch' ? 0 : -1}
-            hidden={selectedTab !== 'branch'}
-          >
-            {renderGitPanel('branch')}
-          </div>
-          <div
-            id="utility-rail-panel-review"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-review"
-            tabIndex={selectedTab === 'review' ? 0 : -1}
-            hidden={selectedTab !== 'review'}
-          >
-            {renderGitPanel('review')}
-          </div>
-          <div
-            id="utility-rail-panel-logs"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-logs"
-            tabIndex={selectedTab === 'logs' ? 0 : -1}
-            hidden={selectedTab !== 'logs'}
-          >
-            <UtilityRailLogsPanel activeSession={activeSession} />
-          </div>
-          <div
-            id="utility-rail-panel-stats"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-stats"
-            tabIndex={selectedTab === 'stats' ? 0 : -1}
-            hidden={selectedTab !== 'stats'}
-          >
-            <UtilityRailStatsPanel
-              activeSession={activeSession}
-              workspaceSessions={workspaceSessions}
-            />
-          </div>
-          <div
-            id="utility-rail-panel-terminal"
-            className="utility-pane-panel"
-            role="tabpanel"
-            aria-labelledby="utility-rail-tab-terminal"
-            tabIndex={selectedTab === 'terminal' ? 0 : -1}
-            hidden={selectedTab !== 'terminal'}
-          >
-            {selectedTab === 'terminal' && (
-              <UtilityRailTerminalPanel
-                workspacePath={workspacePath}
-                railState={railState}
-                sessions={utilityTerminalSessions}
-                {...(onCreateUtilityTerminal
-                  ? { onCreateUtilityTerminal }
-                  : {})}
-                {...(onSelectUtilityTerminal
-                  ? { onSelectUtilityTerminal }
-                  : {})}
-                {...(onCloseUtilityTerminal ? { onCloseUtilityTerminal } : {})}
-                {...(onPromoteUtilityTerminal
-                  ? { onPromoteUtilityTerminal }
-                  : {})}
-                {...(onImageUpload ? { onImageUpload } : {})}
-                {...(onCopyModeChange ? { onCopyModeChange } : {})}
-                {...(onFilePathClick ? { onFilePathClick } : {})}
-              />
-            )}
-          </div>
-        </div>
+        <UtilityRailPaneBody
+          selectedTab={selectedTab}
+          workspacePath={workspacePath}
+          fileWorkspacePath={fileWorkspacePath}
+          gitWorkspacePath={gitWorkspacePath}
+          displayWorkspacePath={displayWorkspacePath}
+          fileDisabledReason={fileDisabledReason}
+          gitDisabledReason={gitDisabledReason}
+          railState={railState}
+          activeSession={activeSession}
+          workspaceSessions={workspaceSessions}
+          utilityTerminalSessions={utilityTerminalSessions}
+          fullPageDiff={fullPageDiff !== null}
+          fileTreeSidebarRef={fileTreeSidebarRef}
+          onCreateUtilityTerminal={onCreateUtilityTerminal}
+          onSelectUtilityTerminal={onSelectUtilityTerminal}
+          onCloseUtilityTerminal={onCloseUtilityTerminal}
+          onPromoteUtilityTerminal={onPromoteUtilityTerminal}
+          onImageUpload={onImageUpload}
+          onCopyModeChange={onCopyModeChange}
+          onFilePathClick={onFilePathClick}
+        />
       </div>
       <div
         className="utility-icon-rail"

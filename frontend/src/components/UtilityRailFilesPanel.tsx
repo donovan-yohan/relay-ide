@@ -13,11 +13,13 @@ export function UtilityRailFilesPanel({
   stateKey,
   fileTreeSidebarRef,
 }: UtilityRailFilesPanelProps) {
+  const stateKeyProps = stateKey === undefined ? {} : { stateKey };
+
   return (
     <FileTree
       ref={fileTreeSidebarRef}
       workspacePath={workspacePath}
-      stateKey={stateKey}
+      {...stateKeyProps}
     />
   );
 }
