@@ -1,100 +1,121 @@
 # relay-ide
 
-Control Claude Code from your phone or any browser — manage multiple terminal sessions across repos and worktrees with a mobile-friendly web UI.
+Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser. A Relay hub hosts the web UI; local or remote nodes provide shells, agent CLIs, repo inventory, and tmux-backed session execution. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
+
+## Current model
+
+Relay's current direction uses this IA vocabulary:
+
+- View — a UI mode or surface.
+- Workspace — a saved grouping/config layer for related projects, repos, defaults, and visual organization. It is not synonymous with one repo.
+- Project — product/work scope, usually represented by issue/PR/docs context.
+- Instance — a concrete local or remote node/repo/worktree occurrence.
+- Bench — an arrangement of working surfaces.
+- Tab — the leaf working surface: terminal, agent session, file/diff/html surface, PR view, or other active context.
+
+The shipped app is mid-migration toward that vocabulary. Existing repo/worktree flows still matter; new docs and UI copy should describe them as optional context carried by a tab/session.
 
 ## Prerequisites
 
-| Dependency                                                            | Why                                                                              |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| **[Node.js 24+](https://nodejs.org/)**                                | Runtime for the server                                                           |
-| **[tmux](https://github.com/tmux/tmux/wiki)**                         | Required server-side PTY/session substrate for all interactive sessions          |
-| **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** | Default coding agent — must be in your `PATH`                                    |
-| **[Codex CLI](https://github.com/openai/codex)**                      | _Optional_ — alternative coding agent. Install if you want to use Codex sessions |
-| **[GitHub CLI (`gh`)](https://cli.github.com/)**                      | _Optional_ — required for the **PRs tab**. Run `gh auth login` after installing. |
+| Dependency                                             | Why                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                            |
+| [tmux](https://github.com/tmux/tmux/wiki)              | Required PTY/session substrate for interactive terminals and agents |
+| Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured agent frameworks from the node `PATH`     |
+| [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional; used by PR/CI surfaces when available                     |
+| [Tailscale](https://tailscale.com/)                    | Optional but recommended for private phone/tablet access            |
 
-## Getting Started
+## Install and run
 
-### 1. Install
+Install the published package:
 
 ```bash
 npm install -g relay-ide
 ```
 
-### 2. Start the server
-
-```bash
-relay-ide --bg
-```
-
-This installs a persistent background service (launchd on macOS, systemd on Linux) that starts on login and restarts on crash. See [Background Service](#background-service) for more options.
-
-Or run in the foreground:
+Start the hub in the foreground:
 
 ```bash
 relay-ide
 ```
 
-### 3. Set your PIN
+Or install/start the background service:
 
-Open `http://localhost:3456` in your browser. On first visit you'll be prompted to create a PIN that protects access to your Claude sessions.
-
-If you started the server in the foreground, you can set the PIN in the terminal instead.
-
-### 4. Add your project directories
-
-Click **Settings** in the app to add root directories — these are parent folders that contain your git repos (scanned one level deep).
-
-You can also edit `~/.config/relay-ide/config.json` directly:
-
-```json
-{
-  "rootDirs": ["/home/you/projects", "/home/you/work"]
-}
+```bash
+relay-ide --bg
+# equivalent long form:
+relay-ide hub install
 ```
 
-### 5. Access from your phone
+Open `http://localhost:3456`. On first visit, Relay prompts for a PIN. If you run the server in the foreground, you can also set/reset the PIN from an interactive terminal:
 
-Relay IDE binds to `0.0.0.0` by default, but you should **not** expose it to the public internet. Use [Tailscale](https://tailscale.com/) for a private encrypted connection between your devices — see [Remote Access](#remote-access) below.
-
-## Remote Access
-
-The recommended way to access Relay IDE from another device (phone, tablet, laptop) is [Tailscale](https://tailscale.com/), which creates a private encrypted network using WireGuard.
-
-1. **Install Tailscale** on your computer and on your phone/tablet
-   - macOS: `brew install tailscale` or download from [tailscale.com/download](https://tailscale.com/download)
-   - Linux: follow the [install guide](https://tailscale.com/download/linux)
-   - iOS/Android: install the Tailscale app from your app store
-
-2. **Sign in** to the same Tailscale account on both devices
-
-3. **Find your computer's Tailscale IP** — run `tailscale ip` or check the admin console (looks like `100.x.y.z`)
-
-4. **Open the app** on your phone at `http://100.x.y.z:3456`
-
-Your traffic is encrypted end-to-end, no ports are exposed to the internet, and only devices on your Tailscale network can reach the server.
-
-> **Alternatives:** [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [ngrok](https://ngrok.com/) also work, but they expose your server to the public internet and rely on the PIN as your only defense.
-
-## Platform Support
-
-Tested on **macOS** and **Linux**. Windows is not currently tested — file watching and PTY spawning may behave differently.
-
-## CLI Usage
-
+```bash
+relay-ide pin reset
 ```
+
+Do not expose Relay directly to the public internet. For phone/tablet use, prefer Tailscale and open `http://<tailscale-ip>:3456` from another device on the same tailnet.
+
+## Source development
+
+From a source checkout:
+
+```bash
+npm install
+npm run dev
+```
+
+`npm run dev` builds the TypeScript backend once, starts the backend in no-PIN dev mode on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open the Vite URL for frontend HMR; Vite proxies REST and WebSocket traffic to the real backend.
+
+Useful split commands:
+
+```bash
+npm run dev:backend
+npm run dev:vite
+```
+
+When developing Relay from inside an already-running Relay instance, use the self-hosting wrapper so the child instance gets isolated config, ports, and tmux names:
+
+```bash
+npm run dev:self
+```
+
+See `docs/SELF_HOSTING.md` for the self-hosting workflow.
+
+## CLI usage
+
+The source-of-truth help lives in `bin/relay-ide.ts` and the built binary. Current command shape:
+
+```text
 Usage: relay-ide [options]
        relay-ide <command>
 
 Commands:
   dev [--self-host]  Run backend + Vite frontend with HMR (source checkout)
-  update             Update to the latest version from npm
-  install            Install as a background service (survives reboot)
-  uninstall          Stop and remove the background service
-  status             Show whether the service is running
+  update             Update this single relay-ide package from npm
+  hub                Run the Relay hub web server (same as bare relay-ide)
+    install                           Install/start the hub background service
+    uninstall                         Stop and remove the hub background service
+    status                            Show hub service status
+    logs                              Print platform log commands for the hub service
+  install            Back-compat alias for relay-ide hub install
+  uninstall          Back-compat alias for relay-ide hub uninstall
+  status             Back-compat alias for relay-ide hub status
+  manifest           Print local node capability manifest as JSON
+  node               Manage relay-node pairing and diagnostics
+    status                             Show local node/service status
+    logs                               Print platform log commands
+    doctor --hub <url>                 Check hub reachability and local node capability
+    connect --hub <url> --pair-token <token>
+                                       Exchange a pair token and send one heartbeat
+    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
+                                       Pair the node, then install/start the local Relay-managed service when requested/available
+    link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
     remove <path>                      Forward to git worktree remove
     list                               Forward to git worktree list
+  browser            Open an HTML file in the remote viewer
+    <path>             Path to HTML file
   pin                Manage authentication PIN
     reset              Reset the PIN (interactive, requires TTY)
 
@@ -103,196 +124,144 @@ Options:
   --port <port>      Override server port (default: 3456)
   --host <host>      Override bind address (default: 0.0.0.0)
   --config <path>    Path to config.json (default: ~/.config/relay-ide/config.json)
+  --compact          With 'manifest': print compact JSON
+  --debug-log        Enable SDK event debug logging to ~/.config/relay-ide/debug/
   --yolo             With 'worktree add': pass --dangerously-skip-permissions to Claude
   --version, -v      Show version
   --help, -h         Show this help
 ```
 
-## Background Service
-
-Run as a persistent service that starts on login and restarts on crash:
-
-```bash
-relay-ide --bg
-```
-
-Or with custom options:
-
-```bash
-relay-ide install --port 4000
-```
-
-Manage the service:
-
-```bash
-relay-ide status      # Check if running
-relay-ide uninstall   # Stop and remove
-```
-
-- **macOS**: Uses launchd (`~/Library/LaunchAgents/`)
-- **Linux**: Uses systemd user units (`~/.config/systemd/user/`)
-- **Logs (macOS)**: `~/.config/relay-ide/logs/`
-- **Logs (Linux)**: `journalctl --user -u relay-ide -f`
-
 ## Configuration
 
-Config is stored at `~/.config/relay-ide/config.json` (created on first run).
+Global config is stored at `~/.config/relay-ide/config.json`. Source dev defaults to a local dev config where the dev scripts set it explicitly.
 
-When running from source, it uses `./config.json` in the project root instead.
+Common fields:
 
-| Field           | Default   | Description                                                    |
-| --------------- | --------- | -------------------------------------------------------------- |
-| `host`          | `0.0.0.0` | Bind address                                                   |
-| `port`          | `3456`    | Server port                                                    |
-| `cookieTTL`     | `24h`     | Auth cookie lifetime (e.g. `30m`, `12h`, `7d`)                 |
-| `rootDirs`      | `[]`      | Directories containing your git repos (scanned one level deep) |
-| `claudeCommand` | `claude`  | Path to the Claude Code CLI binary                             |
-| `claudeArgs`    | `[]`      | Extra arguments passed to every session                        |
-| `defaultAgent`  | `claude`  | Default coding agent CLI (`claude` or `codex`)                 |
+| Field              | Meaning                                                                  |
+| ------------------ | ------------------------------------------------------------------------ |
+| `host`, `port`     | Hub bind address and port                                                |
+| `cookieTTL`        | Auth cookie lifetime                                                     |
+| `pinHash`          | PIN verifier, created by the app or `relay-ide pin reset`                |
+| `repos`            | Explicit repo paths known to the local node                              |
+| `rootDirs`         | Parent directories scanned for repos                                     |
+| `workspaces`       | Saved workspace groupings: name, repo membership, order, color, settings |
+| `defaultFramework` | Default agent framework id, for example `claude`, `codex`, `opencode`    |
+| `frameworks`       | Built-in framework overrides or custom framework definitions             |
+| `claudeArgs`       | Back-compat/default extra args still used by Claude-oriented flows       |
+| `updateChannel`    | `stable` or `nightly` self-update channel                                |
+| `github`           | Optional GitHub integration settings                                     |
 
-Root directories can also be managed from the **Settings** button in the app.
+## Hub/node mode
 
-## Source development with Vite HMR
-
-From a source checkout, run:
-
-```bash
-npm run dev
-```
-
-This builds the TypeScript backend once, starts the real Relay backend in no-PIN dev mode on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open `http://127.0.0.1:5173`; frontend TSX/CSS changes hot-update through Vite without rebuilding `dist/frontend`. The backend remains the real Express/WebSocket server, and Vite proxies relative REST requests plus `/ws/events` and `/ws/:sessionId` upgrades to the backend, so frontend code keeps using relative URLs.
-
-When developing Relay from inside an already-running Relay instance, use `npm run dev:self` instead. It keeps the child instance on isolated config, allocator-chosen ports, and the `relay-self-` tmux prefix. See [Self-hosting Relay IDE](docs/SELF_HOSTING.md).
-
-Useful overrides:
-
-| Environment variable          | Default                   | Description                                      |
-| ----------------------------- | ------------------------- | ------------------------------------------------ |
-| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                    | Backend port used by `npm run dev` and the proxy |
-| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`               | Backend bind host                                |
-| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<port>` | Explicit Vite proxy target                       |
-| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                    | Vite dev-server port                             |
-| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`               | Vite bind host                                   |
-| `RELAY_IDE_CONFIG`            | `./config.dev.json`       | Dev-mode config path                             |
-
-For split terminals, `npm run dev:backend` starts only the backend and `npm run dev:vite` starts only Vite with the same proxy defaults.
-
-### PIN Management
-
-The PIN hash is stored in config under `pinHash`.
-
-**Reset via CLI** (recommended):
+Bare `relay-ide` and `relay-ide hub` run the hub web server. A node can pair with a hub, report its local capability manifest, and hold a reverse `/hub/node-link` WebSocket for routed work:
 
 ```bash
-relay-ide pin reset
+relay-ide manifest
+relay-ide node doctor --hub http://hub.example:3456
+relay-ide node connect --hub http://hub.example:3456 --pair-token <token>
+relay-ide node link --hub http://hub.example:3456
 ```
 
-This requires an interactive terminal. You'll be asked to verify your current PIN (if set), then enter a new one.
-
-**Reset manually:**
-
-1. Delete the `pinHash` field from `~/.config/relay-ide/config.json`
-2. Restart the server (`relay-ide uninstall && relay-ide --bg`)
-3. Open the web UI and set a new PIN
+`relay-ide node install` pairs the node and installs/starts a Relay-managed service when the selected service mode supports it. Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
 
 ## Features
 
-### Session Management
+### Agent and terminal sessions
 
-- **Multi-agent support** — choose between Claude Code and Codex as the coding agent per session, with a configurable default in Settings
-- **Repo sessions** — click any idle repo to instantly open Claude with `--continue` (no dialog), or start fresh from the new-session dialog
-- **Branch-aware worktrees** — create worktrees from new or existing branches with a type-to-search branch picker
-- **Worktree isolation** — each worktree session runs in its own git worktree under `.worktrees/`
-- **Tmux-backed sessions** — every interactive agent or terminal session runs inside tmux on the server; xterm.js remains the browser renderer
-- **Resume sessions** — click inactive worktrees to reconnect to the surviving tmux session, falling back to agent continue args only if the tmux session is gone
-- **Persistent session names** — display names, branch names, and timestamps survive server restarts
-- **Scrollback buffer** — reconnect to a session and see prior output
-- **Yolo mode** — skip permission prompts with `--dangerously-skip-permissions` (per-session pill button)
-- **Worktree cleanup** — delete inactive worktrees via the trash pill button (removes worktree, prunes refs, deletes branch)
+- Launch tmux-backed agent or terminal sessions from the browser.
+- Built-in framework definitions exist for Claude Code, Codex, OpenCode, and Hermes; config can override or add frameworks.
+- Session rows carry agent type, cwd/repo/worktree context when available, state, scrollback, and reconnect behavior.
+- `worktree add` remains a repo helper and currently launches Claude for the legacy fast path.
 
-### Pull Requests
+### Repo and worktree context
 
-- **Pull requests tab** — view your open PRs (authored and review-requested) via `gh` CLI, organized in collapsible per-repo groups with count badges, Author/Reviewer filter, and one-click session creation from any PR branch
+- Relay can scan configured roots and explicit repos.
+- Git worktree management wraps `git worktree` for add/remove/list flows.
+- Repo identity and worktree inventory are a feature layer on top of the hub/node core; local paths are node-specific.
+- Workspace groups organize repos/defaults/settings, but a Workspace is not the same thing as a repo.
 
-### GitHub Webhooks (real-time PR / CI updates)
+### Pull requests and integrations
 
-By default the app polls GitHub every 30 seconds for PR and CI status. Connect a webhook for instant updates instead:
+- PR surfaces use `gh` and/or GitHub integration state where configured.
+- GitHub webhooks can be managed through the app when OAuth/webhook config is available.
+- Jira integration fields exist for org-dashboard/ticket mapping, but exact behavior should be verified against current integration docs/code before making product claims.
 
-1. **Connect GitHub** — open **Settings → Integrations → GitHub** and authorise the OAuth App. This requests the `repo` and `admin:repo_hook` scopes so the app can manage webhooks on your behalf.
-2. **Set up webhooks** — open **Settings → Integrations → Webhooks**. Click **Setup Webhook** next to any repo. The app creates a GitHub webhook pointing at a [smee.io](https://smee.io/) proxy channel and starts a local smee client to relay events.
-3. **Verify** — the webhook panel shows a health indicator (last event timestamp). Once connected, polling stops for that repo and updates arrive in real time.
+### UI surfaces
 
-> No public server is required. The smee.io proxy forwards GitHub webhook payloads to your local instance over a persistent SSE connection.
+- Browser terminal rendering uses xterm.js; tmux owns process/session durability on the node.
+- The frontend is React 19 with Zustand and TanStack Query.
+- Vite HMR is available in source dev; package/runtime mode serves `dist/frontend`, so frontend source edits need `npm run build` before `npm start` reflects them.
 
-### UI
+## Background service
 
-- **Tabbed sidebar** — switch between Repos, Worktrees, and PRs views with shared filters and item counts
-- **Sidebar filters** — filter by root directory, repo, or text search
-- **Inline actions** — pill buttons on session cards for rename, YOLO, worktree creation, and delete (hover on desktop, long-press on mobile)
-- **Resizable sidebar** — drag the sidebar edge to resize; collapse/expand with a button (persisted to localStorage)
-- **Responsive layout** — works on desktop and mobile with slide-out sidebar
-- **Touch toolbar** — mobile-friendly buttons for special keys (hidden on desktop)
-- **Clipboard image paste** — paste screenshots directly into remote terminal sessions (macOS clipboard + xclip on Linux)
+Install/start:
 
-### Settings
-
-- **Full-screen Settings dialog** — redesigned as a scrollable full-screen modal with a table-of-contents drawer for quick section navigation
-- **GitHub integration** — connect via OAuth App (Device Flow) for PR data, CI status, and webhook management
-- **Webhook management** — self-service webhook CRUD per repo with smee.io proxy, health state, and auto-provision backfill
-- **Jira integration** — connect Jira and configure project mappings for the org dashboard tickets panel
-
-### Operations
-
-- **PIN-protected access** with rate limiting
-- **Real-time updates** — worktree changes on disk are pushed to the browser instantly via WebSocket
-- **Webhook status** — `/workspaces` reports whether each repo is using live webhooks, manual refresh, limited access, or an error state, plus the latest webhook receipt timestamp when available
-- **Update notifications** — toast notification when a new version is available, with one-click update
-- **CLI self-update** — `relay-ide update` to update from npm
-
-## Terminal Renderer And Session Substrate
-
-relay-ide uses xterm.js as the browser terminal renderer and tmux as the required server-side PTY/session substrate. xterm.js owns display, input capture, fit/resize, and renderer fallback in the browser. tmux owns the durable process tree on the host, including session survival across browser disconnects, server restarts, and workspace tab changes.
-
-The browser never talks to tmux directly. The server attaches `node-pty` to tmux, relays I/O over WebSocket, and lets xterm.js render the resulting terminal stream.
-
-relay-ide uses a [fork of xterm.js](https://github.com/donovan-yohan/xterm.js) instead of the official npm package. the fork adds the experimental WebGPU renderer ([xtermjs/xterm.js#5666](https://github.com/xtermjs/xterm.js/pull/5666)) and gives us the ability to patch terminal behavior for our use case.
-
-the fork stays as close to upstream as possible. you can verify the exact differences from upstream and reproduce the build artifacts yourself — see the fork's [FORK.md](https://github.com/donovan-yohan/xterm.js/blob/master/FORK.md) for details.
-
-the dependency in `package.json` is pinned to a specific commit hash so every install is deterministic and auditable.
-
-## Architecture
-
-TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) compiled to `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
-
+```bash
+relay-ide --bg
+# or
+relay-ide hub install
 ```
+
+Manage:
+
+```bash
+relay-ide hub status
+relay-ide hub logs
+relay-ide hub uninstall
+```
+
+Back-compat aliases still work:
+
+```bash
+relay-ide status
+relay-ide uninstall
+```
+
+macOS uses launchd. Linux uses user-level systemd where available.
+
+## Remote access
+
+Recommended path:
+
+1. Install Tailscale on the hub machine and the client device.
+2. Sign into the same tailnet.
+3. Run `tailscale ip` on the hub machine.
+4. Open `http://<tailscale-ip>:3456` from the phone/tablet/laptop.
+
+Cloudflare Tunnel and ngrok can work, but they place the hub behind a public ingress; use them only when you understand the exposure and PIN limitations.
+
+## Documentation
+
+Start with `docs/README.md`. It separates current source-of-truth docs from historical plans/spikes so stale implementation plans do not look like shipped behavior.
+
+## Architecture snapshot
+
+```text
 relay-ide/
-├── bin/
-│   └── relay-ide.ts  # CLI entry point
-├── server/
-│   ├── index.ts        # Express server, REST API routes
-│   ├── sessions.ts     # tmux-backed PTY session manager (node-pty)
-│   ├── ws.ts           # WebSocket relay (PTY ↔ browser)
-│   ├── watcher.ts      # File watcher for .worktrees/ changes
-│   ├── auth.ts         # PIN hashing, verification, rate limiting
-│   ├── config.ts       # Config loading/saving, worktree metadata
-│   ├── clipboard.ts    # System clipboard operations (image paste)
-│   ├── service.ts      # Background service management (launchd/systemd)
-│   └── types.ts        # Shared TypeScript interfaces
-├── frontend/
-│   └── src/
-│       ├── components/  # React components (Sidebar, Terminal, WorkspaceArea, etc.)
-│       ├── lib/state/   # Pure UI state modules
-│       ├── lib/api.ts   # REST API client
-│       ├── lib/ws.ts    # WebSocket connection management
-│       ├── lib/types.ts # Frontend TypeScript interfaces
-│       ├── lib/utils.ts # Shared utilities (path display, time formatting, device detection)
-│       └── hooks/       # React hooks for app behavior
-├── test/               # Unit/integration tests (Vitest)
-├── dist/               # Compiled output (gitignored)
-├── config.example.json
+├── bin/                 CLI entry point
+├── server/              Express hub, services, sessions, PTY, node-link, integrations
+├── shared/              Shared protocol/types for frontend, server, and node surfaces
+├── frontend/src/        React UI, state, hooks, API/WebSocket clients
+├── docs/                Current docs plus historical plans/spikes
+├── test/                Vitest tests
+├── scripts/             Build/dev/postinstall helper scripts
+├── dist/                Compiled output (gitignored)
 └── package.json
 ```
+
+## Tests and quality gates
+
+```bash
+npm test
+npm run check
+npm run build
+```
+
+Use targeted Vitest files for narrow changes when possible; run the broader gates before PR handoff when the change can affect build, types, lint, or runtime packaging.
+
+## Platform support
+
+Relay is tested on macOS and Linux. Windows is not currently tested; file watching, service management, and PTY spawning may behave differently.
 
 ## License
 
