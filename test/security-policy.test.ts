@@ -3,6 +3,7 @@ import {
   applyTrustTierOverlay,
   createLegacyDefaultNodeAcl,
   isRelayCapabilityBit,
+  normalizeNodeAcl,
   resolveAclCapability,
   type RelayNodeAcl,
 } from '../shared/security-policy.js';
@@ -68,5 +69,38 @@ describe('security policy schema', () => {
       known: false,
       decision: 'deny',
     });
+  });
+
+  it('pins normalized ACL identity to the owning registry node fallback', () => {
+    const normalized = normalizeNodeAcl(
+      {
+        schemaVersion: 1,
+        policyVersion: '1.0',
+        ref: 'acl:stored-node:1.0',
+        peer: {
+          kind: 'node',
+          nodeId: 'stored-node',
+          credentialId: 'stored-credential',
+          displayName: 'Stored Node',
+        },
+        node: { nodeId: 'stored-node', trustTier: 'dev' },
+        grants: { allowed: ['session:read'], requiresConfirmation: [] },
+        scope: { kind: 'node' },
+        lifecycle: {
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      {
+        nodeId: 'trusted-node',
+        credentialId: 'trusted-credential',
+        displayName: 'Trusted Node',
+        createdAt: '2026-01-02T03:04:05.000Z',
+      }
+    );
+
+    expect(normalized.peer.nodeId).toBe('trusted-node');
+    expect(normalized.node.nodeId).toBe('trusted-node');
+    expect(normalized.peer.credentialId).toBe('trusted-credential');
   });
 });

@@ -245,15 +245,15 @@ describe('hub node registry', () => {
       expect(parsed.nodes[0]?.acl?.grants?.allowed).toEqual(
         expect.arrayContaining(['session:read', 'rpc:fs:read'])
       );
-      expect(parsed.nodes[0]?.acl?.grants?.allowed).not.toEqual(
-        expect.arrayContaining([
-          'rpc:fs:write',
-          'rpc:fs:delete',
-          'rpc:git:write',
-          'pty:exec:arbitrary',
-          'preview:port-forward',
-        ])
-      );
+      for (const forbidden of [
+        'rpc:fs:write',
+        'rpc:fs:delete',
+        'rpc:git:write',
+        'pty:exec:arbitrary',
+        'preview:port-forward',
+      ]) {
+        expect(parsed.nodes[0]?.acl?.grants?.allowed).not.toContain(forbidden);
+      }
     });
   });
 
@@ -328,6 +328,74 @@ describe('hub node registry', () => {
               pairedAt: '2026-01-01T00:00:00.000Z',
               lastSeenAt: '2026-01-01T00:00:00.000Z',
             },
+            {
+              nodeId: 'node_null_acl',
+              credentialId: 'cred_null_acl',
+              credentialHash: '1'.repeat(64),
+              displayName: 'Null ACL node',
+              hostname: 'null-acl-host',
+              platform: 'darwin',
+              arch: 'arm64',
+              relayVersion: '0.1.0',
+              protocolVersion: '1.0',
+              capabilities: {
+                totals: {
+                  available: 0,
+                  degraded: 0,
+                  unavailable: 0,
+                  unknown: 0,
+                },
+                agents: {},
+                serviceManager: 'manual',
+                wsl: false,
+              },
+              acl: null,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              pairedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              nodeId: 'node_drifted_acl',
+              credentialId: 'cred_drifted_acl',
+              credentialHash: '2'.repeat(64),
+              displayName: 'Drifted ACL node',
+              hostname: 'drifted-acl-host',
+              platform: 'darwin',
+              arch: 'arm64',
+              relayVersion: '0.1.0',
+              protocolVersion: '1.0',
+              capabilities: {
+                totals: {
+                  available: 0,
+                  degraded: 0,
+                  unavailable: 0,
+                  unknown: 0,
+                },
+                agents: {},
+                serviceManager: 'manual',
+                wsl: false,
+              },
+              acl: {
+                schemaVersion: 1,
+                policyVersion: '1.0',
+                ref: 'acl:other-node:1.0',
+                peer: {
+                  kind: 'node',
+                  nodeId: 'other-node',
+                  credentialId: 'other-credential',
+                },
+                node: { nodeId: 'other-node', trustTier: 'dev' },
+                grants: { allowed: ['session:read'], requiresConfirmation: [] },
+                scope: { kind: 'node' },
+                lifecycle: {
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+              },
+              createdAt: '2026-01-01T00:00:00.000Z',
+              pairedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: '2026-01-01T00:00:00.000Z',
+            },
           ],
         })
       );
@@ -355,20 +423,34 @@ describe('hub node registry', () => {
           requiresConfirmation: [],
         },
       });
-      expect(node?.trust.policy.allowed).not.toEqual(
-        expect.arrayContaining([
-          'rpc:fs:write',
-          'rpc:fs:delete',
-          'rpc:git:write',
-          'pty:exec:arbitrary',
-          'preview:port-forward',
-        ])
-      );
+      for (const forbidden of [
+        'rpc:fs:write',
+        'rpc:fs:delete',
+        'rpc:git:write',
+        'pty:exec:arbitrary',
+        'preview:port-forward',
+      ]) {
+        expect(node?.trust.policy.allowed).not.toContain(forbidden);
+      }
 
       const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
-        nodes: Array<{ acl?: unknown }>;
+        nodes: Array<{
+          nodeId: string;
+          credentialId: string;
+          acl?: {
+            peer?: { nodeId?: string; credentialId?: string };
+            node?: { nodeId?: string };
+          };
+        }>;
       };
-      expect(migrated.nodes[0]?.acl).toBeDefined();
+      for (const migratedNode of migrated.nodes) {
+        expect(migratedNode.acl).toBeDefined();
+        expect(migratedNode.acl?.peer?.nodeId).toBe(migratedNode.nodeId);
+        expect(migratedNode.acl?.node?.nodeId).toBe(migratedNode.nodeId);
+        expect(migratedNode.acl?.peer?.credentialId).toBe(
+          migratedNode.credentialId
+        );
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -402,9 +484,7 @@ describe('hub node registry', () => {
       expect(node?.trust.policy.allowed).toEqual(
         expect.arrayContaining(['rpc:git:read'])
       );
-      expect(node?.trust.policy.allowed).not.toEqual(
-        expect.arrayContaining(['rpc:git:write'])
-      );
+      expect(node?.trust.policy.allowed).not.toContain('rpc:git:write');
     });
   });
 

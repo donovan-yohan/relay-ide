@@ -18,7 +18,10 @@ import {
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
 import {
+  RELAY_SECURITY_POLICY_VERSION,
   createLegacyDefaultNodeAcl,
+  isRelayCapabilityBit,
+  isRelayTrustTier,
   normalizeNodeAcl,
   summarizeAcl,
   type RelayNodeAcl,
@@ -230,8 +233,44 @@ function ensureNodeAcl(node: StoredNodeRecord): RelayNodeAcl {
   return node.acl;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKnownCapabilityBits(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => isRelayCapabilityBit(item));
+}
+
+function nodeNeedsAclMigration(node: StoredNodeRecord): boolean {
+  const acl = node.acl as unknown;
+  if (!isRecord(acl)) return true;
+
+  const peer = acl['peer'];
+  const aclNode = acl['node'];
+  const grants = acl['grants'];
+  const lifecycle = acl['lifecycle'];
+
+  if (acl['schemaVersion'] !== 1) return true;
+  if (acl['policyVersion'] !== RELAY_SECURITY_POLICY_VERSION) return true;
+  if (typeof acl['ref'] !== 'string') return true;
+  if (!isRecord(peer) || peer['kind'] !== 'node') return true;
+  if (peer['nodeId'] !== node.nodeId) return true;
+  if (node.credentialId && peer['credentialId'] !== node.credentialId) {
+    return true;
+  }
+  if (!isRecord(aclNode) || aclNode['nodeId'] !== node.nodeId) return true;
+  if (!isRelayTrustTier(aclNode['trustTier'])) return true;
+  if (!isRecord(grants)) return true;
+  if (!hasOnlyKnownCapabilityBits(grants['allowed'])) return true;
+  if (!hasOnlyKnownCapabilityBits(grants['requiresConfirmation'])) return true;
+  if (!isRecord(lifecycle)) return true;
+  if (typeof lifecycle['createdAt'] !== 'string') return true;
+  if (typeof lifecycle['updatedAt'] !== 'string') return true;
+  return false;
+}
+
 function registryNeedsAclMigration(registry: RegistryFile): boolean {
-  return registry.nodes.some((node) => node.acl === undefined);
+  return registry.nodes.some((node) => nodeNeedsAclMigration(node));
 }
 
 function readRegistryFile(storagePath: string): RegistryFile {

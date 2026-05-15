@@ -260,7 +260,6 @@ function normalizeScope(value: unknown): RelayPolicyScope {
   };
 }
 
-// eslint-disable-next-line complexity -- ACL migration normalizes untrusted legacy JSON at the registry boundary.
 export function normalizeNodeAcl(
   value: unknown,
   fallback: {
@@ -318,13 +317,8 @@ export function normalizeNodeAcl(
         : `acl:${fallback.nodeId}:${RELAY_SECURITY_POLICY_VERSION}`,
     peer: {
       kind: 'node',
-      nodeId:
-        typeof peer['nodeId'] === 'string' ? peer['nodeId'] : fallback.nodeId,
-      ...(typeof peer['credentialId'] === 'string'
-        ? { credentialId: peer['credentialId'] }
-        : fallback.credentialId
-          ? { credentialId: fallback.credentialId }
-          : {}),
+      nodeId: fallback.nodeId,
+      ...(fallback.credentialId ? { credentialId: fallback.credentialId } : {}),
       ...(typeof peer['displayName'] === 'string'
         ? { displayName: peer['displayName'] }
         : fallback.displayName
@@ -332,8 +326,7 @@ export function normalizeNodeAcl(
           : {}),
     },
     node: {
-      nodeId:
-        typeof node['nodeId'] === 'string' ? node['nodeId'] : fallback.nodeId,
+      nodeId: fallback.nodeId,
       trustTier,
     },
     grants: {
