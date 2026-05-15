@@ -408,8 +408,9 @@ describe('hub node routes and link', () => {
     expect(nodesRes.status).toBe(200);
     const nodesBody = await nodesRes.text();
     expect(nodesBody).toContain('0.1.1-test');
-    expect(nodesBody).toContain('privileged-local-user');
-    expect(nodesBody).toContain('local OS user');
+    expect(nodesBody).toContain('"tier":"dev"');
+    expect(nodesBody).toContain('"policyVersion":"1.0"');
+    expect(nodesBody).toContain('blast radius');
     expect(nodesBody).not.toContain(pair.pairToken);
     expect(nodesBody).not.toContain(exchange.credential.token);
 
@@ -423,7 +424,7 @@ describe('hub node routes and link', () => {
         nodeId: exchange.node.nodeId,
         status: 'revoked',
         credentialState: 'revoked',
-        trust: { state: 'revoked', level: 'privileged-local-user' },
+        trust: { state: 'revoked', level: 'dev', tier: 'dev' },
       },
     });
 
