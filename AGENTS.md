@@ -35,6 +35,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Review          | `docs/REVIEW_GUIDANCE.md`          | Review agent config, question bank, escape log                              |
 | Deployment      | `docs/references/deployment.md`    | Publishing + branching (nightly/master + tags)                              |
 | Self-hosting    | `docs/SELF_HOSTING.md`             | Build Relay with Relay using isolated dev config/ports/tmux                 |
+| Security policy | `docs/SECURITY_POLICY.md`          | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary |
 | Hub/node pkg    | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands    |
 | Node bootstrap  | `docs/RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
 | Federated dev   | `docs/FEDERATED_DEV.md`            | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |

@@ -17,6 +17,15 @@ import {
   type RelayNodeError,
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
+import {
+  RELAY_SECURITY_POLICY_VERSION,
+  createLegacyDefaultNodeAcl,
+  isRelayCapabilityBit,
+  isRelayTrustTier,
+  normalizeNodeAcl,
+  summarizeAcl,
+  type RelayNodeAcl,
+} from '../shared/security-policy.js';
 
 const logger = createLogger('hub-node-registry');
 const REVERSE_LINK_ROUTE = 'reverse-link' as const;
@@ -43,6 +52,7 @@ interface StoredNodeRecord {
   relayVersion: string;
   protocolVersion: string;
   capabilities: NodeCapabilityManifestSummary;
+  acl?: RelayNodeAcl;
   repoInventory?: unknown;
   createdAt: string;
   pairedAt: string;
@@ -96,7 +106,7 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
 const PRIVILEGED_NODE_WARNING =
-  'A paired Relay node is trusted to act as the local OS user on that machine.';
+  'A paired Relay node runs with that machine\'s local OS-user blast radius; hub ACL policy grants individual capability bits.';
 
 export type CredentialAuthResult =
   | { ok: true; node: HubNodeSummary }
@@ -204,6 +214,65 @@ function nodeDisplayName(
   return trimmed || manifest.hostname;
 }
 
+function fallbackAclInput(node: StoredNodeRecord): {
+  nodeId: string;
+  credentialId?: string;
+  displayName?: string;
+  createdAt: string;
+} {
+  return {
+    nodeId: node.nodeId,
+    credentialId: node.credentialId,
+    displayName: node.displayName,
+    createdAt: node.pairedAt || node.createdAt,
+  };
+}
+
+function ensureNodeAcl(node: StoredNodeRecord): RelayNodeAcl {
+  node.acl = normalizeNodeAcl(node.acl, fallbackAclInput(node));
+  return node.acl;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKnownCapabilityBits(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => isRelayCapabilityBit(item));
+}
+
+function nodeNeedsAclMigration(node: StoredNodeRecord): boolean {
+  const acl = node.acl as unknown;
+  if (!isRecord(acl)) return true;
+
+  const peer = acl['peer'];
+  const aclNode = acl['node'];
+  const grants = acl['grants'];
+  const lifecycle = acl['lifecycle'];
+
+  if (acl['schemaVersion'] !== 1) return true;
+  if (acl['policyVersion'] !== RELAY_SECURITY_POLICY_VERSION) return true;
+  if (typeof acl['ref'] !== 'string') return true;
+  if (!isRecord(peer) || peer['kind'] !== 'node') return true;
+  if (peer['nodeId'] !== node.nodeId) return true;
+  if (node.credentialId && peer['credentialId'] !== node.credentialId) {
+    return true;
+  }
+  if (!isRecord(aclNode) || aclNode['nodeId'] !== node.nodeId) return true;
+  if (!isRelayTrustTier(aclNode['trustTier'])) return true;
+  if (!isRecord(grants)) return true;
+  if (!hasOnlyKnownCapabilityBits(grants['allowed'])) return true;
+  if (!hasOnlyKnownCapabilityBits(grants['requiresConfirmation'])) return true;
+  if (!isRecord(lifecycle)) return true;
+  if (typeof lifecycle['createdAt'] !== 'string') return true;
+  if (typeof lifecycle['updatedAt'] !== 'string') return true;
+  return false;
+}
+
+function registryNeedsAclMigration(registry: RegistryFile): boolean {
+  return registry.nodes.some((node) => nodeNeedsAclMigration(node));
+}
+
 function readRegistryFile(storagePath: string): RegistryFile {
   try {
     const parsed = JSON.parse(
@@ -297,6 +366,8 @@ function publicNode(
   node: StoredNodeRecord,
   status: HubNodeStatus
 ): HubNodeSummary {
+  const acl = ensureNodeAcl(node);
+  const aclSummary = summarizeAcl(acl);
   return {
     nodeId: node.nodeId,
     displayName: node.displayName,
@@ -309,9 +380,11 @@ function publicNode(
     status,
     connection: connectionSummary(status),
     trust: {
-      state: node.revokedAt ? 'revoked' : 'trusted',
-      level: 'privileged-local-user',
+      state: node.revokedAt ? 'revoked' : 'active',
+      level: aclSummary.trustTier,
+      tier: aclSummary.trustTier,
       warning: PRIVILEGED_NODE_WARNING,
+      policy: aclSummary,
     },
     credentialState: node.revokedAt ? 'revoked' : 'active',
     version: {
@@ -361,6 +434,9 @@ export class HubNodeRegistry {
       options.heartbeatPersistDebounceMs ??
       DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
     this.state = readRegistryFile(options.storagePath);
+    const needsAclMigration = registryNeedsAclMigration(this.state);
+    for (const node of this.state.nodes) ensureNodeAcl(node);
+    if (needsAclMigration) writeRegistryFile(this.storagePath, this.state);
   }
 
   setNowForTest(now: () => Date): void {
@@ -447,6 +523,15 @@ export class HubNodeRegistry {
       relayVersion: input.manifest.relayVersion,
       protocolVersion,
       capabilities: summarizeCapabilities(input.manifest),
+      acl: createLegacyDefaultNodeAcl({
+        nodeId,
+        credentialId,
+        displayName: nodeDisplayName(
+          input.displayName ?? pairToken.displayName,
+          input.manifest
+        ),
+        createdAt: timestamp,
+      }),
       createdAt: timestamp,
       pairedAt: timestamp,
       lastSeenAt: timestamp,

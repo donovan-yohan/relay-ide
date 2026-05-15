@@ -33,7 +33,7 @@ Planned/deferred:
 
 - #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) is not implemented in source; current mentions live in spikes/design docs.
 - #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
-- #427 full trust tiers, two-token confirmation, and audit-log sink are not implemented. Current security model is explicit pairing + revocable node credential + private-infra trust.
+- #427 policy schema/default ACLs are implemented; policy evaluator gates, two-token confirmation, audit sink, and credential rotation are not implemented.
 - #444 six-layer IA is product direction, not the persisted backend model in this doc.
 
 ## Hub/Node/Client Terminology
@@ -483,14 +483,20 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) before
 ### Assumptions
 
 - The hub runs on **private infrastructure**: Tailscale, private mesh, or a host-restricted network.
-- There is **no multi-tenant SaaS** model. Every paired node is fully trusted.
-- A paired node acts as the **local OS user** on that machine. This is a privileged trust boundary.
+- There is **no multi-tenant SaaS** model; every node still requires explicit pairing and a revocable credential.
+- A paired node acts as the **local OS user** on that machine, so the blast radius is the node user's file/process/network access. The hub ACL limits which Relay protocol surfaces are routed; it is not OS sandboxing.
 
-### Trust Levels
+### Trust Tiers and ACL Policy
 
-| Level                   | Description                                                                                                                                 |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `privileged-local-user` | Default for all paired nodes. The node can execute arbitrary shell commands, access local files, and run agent CLIs as the installing user. |
+Trust tiers describe blast radius, not vague safety:
+
+| Tier | Blast radius |
+| ---- | ------------ |
+| `sandbox` | Experimental/constrained node. Keep grants narrow. |
+| `dev` | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
+| `prod` | Sensitive node. High-risk allowed bits may be elevated to confirmation-required, never silently widened. |
+
+The hub owns ACL policy. Node manifests report availability/probe data only — e.g. `git` availability says whether the node can run git, not whether `rpc:git:write` is granted. Legacy paired nodes are migrated to a default `dev` ACL with session/read bits on and file write/delete, git write, arbitrary exec, and preview/port-forward off unless explicitly granted. See `docs/SECURITY_POLICY.md` and `shared/security-policy.ts`.
 
 ### Transport Security
 

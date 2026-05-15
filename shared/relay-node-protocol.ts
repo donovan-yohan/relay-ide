@@ -1,3 +1,5 @@
+import type { RelayAclSummary, RelayTrustTier } from './security-policy.js';
+
 export const RELAY_NODE_LINK_PROTOCOL = 'relay-node-link' as const;
 export const RELAY_NODE_LINK_PROTOCOL_VERSION = '1.0' as const;
 
@@ -52,8 +54,8 @@ export interface RelayNodeCredential {
 
 export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
 export type HubNodeCredentialState = 'active' | 'revoked';
-export type HubNodeTrustState = 'trusted' | 'revoked';
-export type HubNodeTrustLevel = 'privileged-local-user';
+export type HubNodeTrustState = 'active' | 'trusted' | 'paired' | 'revoked';
+export type HubNodeTrustLevel = RelayTrustTier | 'privileged-local-user' | 'standard';
 export type HubNodeVersionState =
   | 'compatible'
   | 'version-skew'
@@ -128,7 +130,9 @@ export interface HubNodeSummary {
   trust: {
     state: HubNodeTrustState;
     level: HubNodeTrustLevel;
-    warning: string;
+    tier?: RelayTrustTier;
+    warning?: string;
+    policy?: RelayAclSummary;
   };
   credentialState: HubNodeCredentialState;
   version: {

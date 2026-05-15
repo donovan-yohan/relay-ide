@@ -197,9 +197,22 @@ describe('hub node registry', () => {
         protocolVersion: '1.0',
         status: 'online',
         trust: {
-          state: 'trusted',
-          level: 'privileged-local-user',
-          warning: expect.stringContaining('local OS user'),
+          state: 'active',
+          level: 'dev',
+          tier: 'dev',
+          warning: expect.stringContaining('blast radius'),
+          policy: {
+            policyVersion: '1.0',
+            trustTier: 'dev',
+            allowed: expect.arrayContaining([
+              'session:create:terminal',
+              'session:create:agent',
+              'session:attach',
+              'rpc:fs:read',
+              'rpc:git:read',
+            ]),
+            requiresConfirmation: [],
+          },
         },
         credentialState: 'active',
         version: {
@@ -226,6 +239,21 @@ describe('hub node registry', () => {
       expect(persisted).not.toContain(
         exchanged.credential.token.split('.')[1]!
       );
+      const parsed = JSON.parse(persisted) as {
+        nodes: Array<{ acl?: { grants?: { allowed?: string[] } } }>;
+      };
+      expect(parsed.nodes[0]?.acl?.grants?.allowed).toEqual(
+        expect.arrayContaining(['session:read', 'rpc:fs:read'])
+      );
+      for (const forbidden of [
+        'rpc:fs:write',
+        'rpc:fs:delete',
+        'rpc:git:write',
+        'pty:exec:arbitrary',
+        'preview:port-forward',
+      ]) {
+        expect(parsed.nodes[0]?.acl?.grants?.allowed).not.toContain(forbidden);
+      }
     });
   });
 
@@ -261,6 +289,203 @@ describe('hub node registry', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('migrates legacy paired nodes to hub-owned default ACL before summaries are returned', () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-node-registry-')
+    );
+    const storagePath = path.join(tmpDir, 'nodes.json');
+    try {
+      fs.writeFileSync(
+        storagePath,
+        JSON.stringify({
+          schemaVersion: 1,
+          pairTokens: [],
+          nodes: [
+            {
+              nodeId: 'node_legacy',
+              credentialId: 'cred_legacy',
+              credentialHash: '0'.repeat(64),
+              displayName: 'Legacy node',
+              hostname: 'legacy-host',
+              platform: 'darwin',
+              arch: 'arm64',
+              relayVersion: '0.1.0',
+              protocolVersion: '1.0',
+              capabilities: {
+                totals: {
+                  available: 0,
+                  degraded: 0,
+                  unavailable: 0,
+                  unknown: 0,
+                },
+                agents: {},
+                serviceManager: 'manual',
+                wsl: false,
+              },
+              createdAt: '2026-01-01T00:00:00.000Z',
+              pairedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              nodeId: 'node_null_acl',
+              credentialId: 'cred_null_acl',
+              credentialHash: '1'.repeat(64),
+              displayName: 'Null ACL node',
+              hostname: 'null-acl-host',
+              platform: 'darwin',
+              arch: 'arm64',
+              relayVersion: '0.1.0',
+              protocolVersion: '1.0',
+              capabilities: {
+                totals: {
+                  available: 0,
+                  degraded: 0,
+                  unavailable: 0,
+                  unknown: 0,
+                },
+                agents: {},
+                serviceManager: 'manual',
+                wsl: false,
+              },
+              acl: null,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              pairedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              nodeId: 'node_drifted_acl',
+              credentialId: 'cred_drifted_acl',
+              credentialHash: '2'.repeat(64),
+              displayName: 'Drifted ACL node',
+              hostname: 'drifted-acl-host',
+              platform: 'darwin',
+              arch: 'arm64',
+              relayVersion: '0.1.0',
+              protocolVersion: '1.0',
+              capabilities: {
+                totals: {
+                  available: 0,
+                  degraded: 0,
+                  unavailable: 0,
+                  unknown: 0,
+                },
+                agents: {},
+                serviceManager: 'manual',
+                wsl: false,
+              },
+              acl: {
+                schemaVersion: 1,
+                policyVersion: '1.0',
+                ref: 'acl:other-node:1.0',
+                peer: {
+                  kind: 'node',
+                  nodeId: 'other-node',
+                  credentialId: 'other-credential',
+                },
+                node: { nodeId: 'other-node', trustTier: 'dev' },
+                grants: { allowed: ['session:read'], requiresConfirmation: [] },
+                scope: { kind: 'node' },
+                lifecycle: {
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  updatedAt: '2026-01-01T00:00:00.000Z',
+                },
+              },
+              createdAt: '2026-01-01T00:00:00.000Z',
+              pairedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        })
+      );
+
+      const registry = createHubNodeRegistry({
+        storagePath,
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+      });
+      const node = registry.listNodes()[0];
+
+      expect(node?.trust).toMatchObject({
+        state: 'active',
+        level: 'dev',
+        tier: 'dev',
+        policy: {
+          policyVersion: '1.0',
+          ref: 'acl:node_legacy:1.0',
+          trustTier: 'dev',
+          allowed: expect.arrayContaining([
+            'session:read',
+            'session:create:terminal',
+            'rpc:fs:read',
+            'rpc:git:read',
+          ]),
+          requiresConfirmation: [],
+        },
+      });
+      for (const forbidden of [
+        'rpc:fs:write',
+        'rpc:fs:delete',
+        'rpc:git:write',
+        'pty:exec:arbitrary',
+        'preview:port-forward',
+      ]) {
+        expect(node?.trust.policy.allowed).not.toContain(forbidden);
+      }
+
+      const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+        nodes: Array<{
+          nodeId: string;
+          credentialId: string;
+          acl?: {
+            peer?: { nodeId?: string; credentialId?: string };
+            node?: { nodeId?: string };
+          };
+        }>;
+      };
+      for (const migratedNode of migrated.nodes) {
+        expect(migratedNode.acl).toBeDefined();
+        expect(migratedNode.acl?.peer?.nodeId).toBe(migratedNode.nodeId);
+        expect(migratedNode.acl?.node?.nodeId).toBe(migratedNode.nodeId);
+        expect(migratedNode.acl?.peer?.credentialId).toBe(
+          migratedNode.credentialId
+        );
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps node manifest availability separate from hub ACL grants', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest({
+          capabilities: {
+            ...manifest().capabilities,
+            git: {
+              id: 'git',
+              label: 'Git',
+              status: 'unavailable',
+              message: 'not installed',
+            },
+          },
+        }),
+      });
+
+      const node = registry.listNodes()[0];
+
+      expect(node?.capabilities.core.git).toBe('unavailable');
+      expect(node?.trust.policy.allowed).toEqual(
+        expect.arrayContaining(['rpc:git:read'])
+      );
+      expect(node?.trust.policy.allowed).not.toContain('rpc:git:write');
+    });
   });
 
   it('quarantines corrupt registry JSON and starts with empty replacement state', () => {
@@ -460,8 +685,9 @@ describe('hub node registry', () => {
         credentialState: 'revoked',
         trust: {
           state: 'revoked',
-          level: 'privileged-local-user',
-          warning: expect.stringContaining('local OS user'),
+          level: 'dev',
+          tier: 'dev',
+          warning: expect.stringContaining('blast radius'),
         },
       });
       expect(registry.listNodes()[0]).toMatchObject({

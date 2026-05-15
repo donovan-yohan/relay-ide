@@ -360,16 +360,20 @@ If you see `NODE_CREDENTIAL_REJECTED`:
 ### Assumptions
 
 - The hub runs on **private infrastructure**: Tailscale, private mesh, or host-restricted network.
-- There is **no multi-tenant SaaS** model. Every paired node is fully trusted.
-- A paired node acts as the **local OS user** on that machine.
+- There is **no multi-tenant SaaS** model; every node still requires explicit pairing and a revocable credential.
+- A paired node acts as the **local OS user** on that machine. The hub ACL constrains Relay protocol surfaces; it does not sandbox the OS user.
 
-### Trust level
+### Trust tiers and default ACL
 
-| Level                   | Description                                                                                                                                 |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `privileged-local-user` | Default for all paired nodes. The node can execute arbitrary shell commands, access local files, and run agent CLIs as the installing user. |
+| Tier | Blast radius |
+| ---- | ------------ |
+| `sandbox` | Experimental/constrained node. Keep grants narrow. |
+| `dev` | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
+| `prod` | Sensitive node. High-risk allowed bits may require confirmation and must never be silently widened. |
 
-This is a privileged trust boundary. Do not pair nodes you do not fully trust. There is no sandboxing or privilege separation beyond the OS user boundary.
+Legacy paired nodes receive a default `dev` ACL on upgrade. Session/read-safe bits are allowed; file write/delete, git write, arbitrary exec, and preview/port-forward remain off unless explicitly granted. Node manifest capabilities are availability probes only, not grants. See `docs/SECURITY_POLICY.md`.
+
+This is a privileged local-user blast radius. Do not pair nodes you do not control.
 
 ### Transport security
 
