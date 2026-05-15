@@ -47,7 +47,7 @@ relay-ide --bg
 relay-ide hub install
 ```
 
-Open `http://localhost:3456`. On first visit, Relay prompts for a PIN. If you run the server in the foreground, you can also set/reset the PIN from an interactive terminal:
+If no PIN exists, Relay sets one before accepting traffic: foreground starts with a terminal prompt when stdin is a TTY, while background/non-TTY starts fall back to browser setup. Then open `http://localhost:3456`. To reset the PIN later, run this on the host from an interactive terminal:
 
 ```bash
 relay-ide pin reset
@@ -190,7 +190,7 @@ relay-ide node link --hub http://hub.example:3456
 
 - Browser terminal rendering uses xterm.js; tmux owns process/session durability on the node.
 - The frontend is React 19 with Zustand and TanStack Query.
-- Vite HMR is available in source dev; package/runtime mode serves `dist/frontend`, so frontend source edits need `npm run build` before `npm start` reflects them.
+- Vite HMR is available in source dev. Non-dev runtime serves `dist/frontend`: `npm start` rebuilds before starting, but package/global runs (`relay-ide`) or direct `node dist/server/index.js` use the already-built bundle, so run `npm run build` after frontend source edits when you are not using Vite HMR.
 
 ## Background service
 
