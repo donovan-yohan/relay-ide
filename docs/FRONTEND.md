@@ -11,13 +11,43 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 - xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while tmux owns the server-side session/process substrate
 - Mobile-first responsive design with touch toolbar (hidden on desktop)
 
+## Product Vocabulary and Tab Context (#444)
+
+Frontend copy and state should use the six-layer model as its mental model: **View -> Workspace -> Project -> Instance -> Bench -> Tab**. In code, many APIs still expose `repoPath`, `worktreePath`, `SessionSummary`, and old workspace storage keys; treat those as compatibility contracts until server/shared migrations land.
+
+| Term          | Frontend meaning                                                                                        | Current implementation boundary                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **View**      | The active lens/filter, such as recent tabs, all sessions, this host, or a workspace-scoped view.       | Current sidebar and command palette filters are view-like but not yet saved View entities.                                                                |
+| **Workspace** | User-owned organization: named grouping, project pins, and lenses.                                      | Existing workspace groups and `/workspaces` repo-folder APIs are legacy compatibility. Do not present a repo path as the whole Workspace.                 |
+| **Project**   | The durable target: usually a repo, but eventually also node, agent provider, playbook, or saved query. | Existing repo rows are repo-kind Projects. Git labels remain correct for PRs, branches, remotes, and repo badges.                                         |
+| **Instance**  | A Project on a node/host.                                                                               | Existing `(nodeId, repoPath)` repo instances are git-specific Instance compatibility. Prefer host labels in compact chrome if “Instance” is too abstract. |
+| **Bench**     | cwd + environment within an Instance.                                                                   | Existing worktrees are git Bench compatibility. Use worktree copy only for literal git worktree operations.                                               |
+| **Tab**       | The active leaf surface: terminal, agent chat, file, diff, or preview.                                  | `WorkspaceTab`, session ids, and PTY streams are implementation details that back the user-visible Tab.                                                   |
+
+Worker/agent status is decoration, not hierarchy: **Project = what; Worker = who**. Future badges or view-model fields for active worker, human-driven/agent-driven/co-driven mode, or current workers should attach to Bench/Tab surfaces after their contract ships. Do not add a Worker tree node. `Project.identity.kind = 'agent'` means configuring an agent target, not showing an active worker.
+
+### State-key and copy rules during migration
+
+- Preserve legacy localStorage/API keys such as `claude-remote-active-workspace`, `claude-remote-workspace-sessions`, `relay-utility-rail::<path>`, `repoPath`, `worktreePath`, and `globalSessionId`; add adapter/view-model names around them instead of destructive renames.
+- The active context is the active **Tab** plus optional Project/Instance/Bench/repo binding. Avoid global “active repo” copy unless the tab actually has a repo binding.
+- The utility rail is tab-contextual. Its header and unavailable states should describe the active tab anchor: local repo tab, remote node tab, or free/non-git tab.
+- “Not a git repo”, “remote files unavailable until file RPC lands”, and “no pinned projects” are normal empty/unavailable states, not red failure states.
+- PR/git widgets read from explicit workspace pins and active-tab anchors; they must not silently fall back to a stale local repo when a remote/free tab is active.
+
+### First-wave implementation lane map
+
+1. Add vocabulary/view-model adapters for active tab anchor, project path/repo binding, utility-rail state key, and last-session recall while reading old storage keys.
+2. Make a copy-only pass on low-risk surfaces: add/connect flow, sidebar empty states, command palette placeholders/actions, and right-rail unavailable messages.
+3. Defer full #473 right-rail/create-tab migration, #428 remote file RPC, and broad sidebar IA reshaping to their own implementation PRs.
+4. Keep destructive git worktree actions and git/PR panels using git words where they are literal.
+
 ## Component Map
 
 | Component                            | Role                                                                                                                                                             |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `App.tsx`                            | Root layout: left sidebar + SplitPaneLayout hosting WorkspaceArea and WorkspaceUtilityRail for session view; dashboard / PR top bar + tabs for non-session views |
-| `Sidebar.tsx`                        | Flat workspace list with command palette search                                                                                                                  |
-| `RepoItem.tsx`                       | Repo tree item: sessions, inactive worktrees, context menus, workspace group membership                                                                          |
+| `Sidebar.tsx`                        | Current repo/workspace-group navigation surface; migration target is View -> Workspace -> Project -> Instance -> Bench with progressive disclosure               |
+| `RepoItem.tsx`                       | Repo-kind Project/Bench compatibility row: sessions/tabs, inactive git worktrees, context menus, workspace group membership                                      |
 | `CommandPalette.tsx`                 | Terminal-style command palette with action registry                                                                                                              |
 | `PrTopBar.tsx`                       | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                             |
 | `RepoDashboard.tsx`                  | Workspace dashboard: PRs with merge status, activity feed, CTAs                                                                                                  |
@@ -32,13 +62,13 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 | `SessionIndicator.tsx`               | Unicode shape-based session state indicator (shapes + colors + pulse animations)                                                                                 |
 | `SessionStatusBar.tsx`               | Multi-framework telemetry status bar (model, context %, tokens)                                                                                                  |
 | `AgentBadge.tsx`                     | Agent type indicator badge (Claude/Codex/OpenCode)                                                                                                               |
-| `WorkspaceUtilityRail.tsx`           | Right utility rail: fixed icon strip, selected utility pane host, visible/hidden shell model                                                                     |
+| `WorkspaceUtilityRail.tsx`           | Tab-contextual right utility rail: fixed icon strip, selected utility pane host, visible/hidden shell model; file/git panes require an active-tab anchor         |
 | `UtilityRailFilesPanel.tsx`          | Files utility pane wrapper around changed files and lazy filesystem browsing                                                                                     |
 | `UtilityRailReviewPanel.tsx`         | Review utility pane: changed-file list, diff source controls, and embedded DiffViewer                                                                            |
 | `UtilityRailLogsPanel.tsx`           | Logs utility pane shell for current session/activity output                                                                                                      |
 | `UtilityRailStatsPanel.tsx`          | Stats utility pane using telemetry summaries for active session and workspace                                                                                    |
 | `FileTreeSidebar.tsx`                | Reusable files panel implementation: changes tab (git diff tree), all files tab (lazy filesystem browser)                                                        |
-| `WorkspaceArea.tsx`                  | Workspace tab layout host for session, terminal, code, diff, and HTML tabs with draggable panes                                                                  |
+| `WorkspaceArea.tsx`                  | Tab layout host for session/terminal, code, diff, and HTML tabs with draggable panes; despite the legacy name, Tab is the leaf surface                           |
 | `SplitPaneLayout.tsx`                | Resizable layout wrapper for the workspace area and utility rail with draggable resize handles                                                                   |
 | `DiffViewer.tsx`                     | Unified diff renderer with diff2html parsing and Shiki syntax highlighting                                                                                       |
 | `CodeBlock.tsx`                      | Shared Shiki syntax highlighting wrapper component                                                                                                               |
@@ -93,7 +123,7 @@ State is managed via Zustand stores and React hooks. Pure logic modules live und
 
 ### Action Registry (`frontend/src/lib/actions/`)
 
-Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.tsx` via `registerGlobal()`. CommandPalette reads commands from the registry via `getAllActions()`.
+Typed action registry for the command palette. Actions are pure metadata (`ActionMeta`) defined in `definitions/` files, registered with handler closures in `App.tsx` via `registerGlobal()`. CommandPalette reads commands from the registry via `getAllActions()`. Labels and descriptions should use Tab/Project/Bench vocabulary unless an action is literally git/repo/worktree-specific.
 
 | Module                     | Role                                                                                                                   |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -136,7 +166,7 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 - Settings dialog close triggers `refreshAll()` for immediate sidebar update
 - All dialogs are built on `DialogShell.tsx` — use the `fullscreen` prop for the Settings modal and omit it for compact dialogs (AddWorkspace, CustomizeSession, DeleteWorktree). DialogShell uses `popover="manual"` + `showPopover()`/`hidePopover()` to guarantee top-layer stacking above xterm.js canvas elements (z-index alone is insufficient for canvas stacking contexts)
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
-- **Utility rail + workspace tabs** — `SplitPaneLayout` wraps the session view with `WorkspaceArea` (session/file/diff/html tabs) and `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is persisted per workspace path in the UI store; `openFileTab()`/`closeFileTab()` drive file tabs inside WorkspaceArea.
+- **Utility rail + tabs** — `SplitPaneLayout` wraps the active Tab view with `WorkspaceArea` (session/file/diff/html tabs) and `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is currently persisted with legacy workspace/path keys in the UI store; migration code should preserve those keys while exposing a tab-anchor/state-key adapter. `openFileTab()`/`closeFileTab()` drive file tabs inside WorkspaceArea.
 - **Cross-node terminal tabs (#443)** — `WorkspaceTab` session variant carries an optional `nodeId`. When set, `ws.ts` `connectPtySocket` routes via `/nodes/:nodeId/ws/sessions/:sessionId` (resolved through `parseGlobalSessionId` or `session.nodeId`). `WorkspaceTabBar` renders a per-tab node badge (label + heartbeat dot) sourced from `SummaryContext.findNode`, which `WorkspaceArea` populates from `useQuery(['hub-nodes'], fetchHubNodes)`. The tab-bar `+` button is replaced by `TerminalNodePicker` — a dropdown listing "this host" plus paired nodes; only `online` nodes are selectable. Choosing a node calls `createAgentSession({ type: 'terminal', nodeId })`; the layout reconciler picks the new session up via `sessions[]` → `sessionToWorkspaceTab` (which copies `session.nodeId` onto the tab).
 - Root directory scanning: one level deep for git repos, hidden directories excluded
 
