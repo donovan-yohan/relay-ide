@@ -18,14 +18,14 @@ Relay's product information architecture is now described as **View -> Workspace
 
 | Layer         | What it answers                                       | Current / compatibility boundary                                                                                                                                                                                       |
 | ------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **View**      | What lens am I looking through?                       | A filter or presentation across tabs/projects/workers. Views are not durable storage unless a future saved-view feature says so.                                                                                       |
+| **View**      | What lens am I looking through?                       | A filter or presentation across tabs/projects/workers. Views are not durable storage unless a future saved-view feature defines that persistence.                                                                      |
 | **Workspace** | What am I organizing?                                 | A user-owned grouping of Projects and pins. Do not use Workspace as the universal name for a filesystem path or repo checkout. Existing `/workspaces` routes remain legacy repo-folder compatibility during migration. |
 | **Project**   | What is being worked on?                              | Canonical identity: commonly a git remote, but also node, agent-provider, playbook, or other target kinds. Use `repo` only when the affordance is specifically git/PR/branch/remote.                                   |
 | **Instance**  | Where is that Project realized?                       | A host/node realization of a Project. Existing repo instance IDs such as `(nodeId, repoPath)` are git-specific Instance compatibility shapes.                                                                          |
 | **Bench**     | Which cwd + environment is active inside an Instance? | Generalizes git worktrees. Existing `worktreePath` and worktree instance IDs stay valid for git Bench compatibility and destructive git-worktree operations.                                                           |
 | **Tab**       | What leaf surface is active?                          | Terminal, agent chat, file, diff, or preview surface. Existing session/stream IDs remain process and routing identity, not the primary user-facing IA label.                                                           |
 
-**Project = what; Worker = who.** Workers/agents are dynamic decoration on a Bench or Tab (`currentWorkers`, `activeWorker`, `mode`), not a structural tree node between Project and Instance. `Project.identity.kind = 'agent'` means agent-as-target/configuration, not the active worker doing the work.
+**Project = what; Worker = who.** Worker/agent status should remain dynamic decoration on a Bench or Tab, not a structural tree node between Project and Instance. Future decoration fields may include names like `currentWorkers`, `activeWorker`, or `mode`, but those are not a shipped shared contract yet. `Project.identity.kind = 'agent'` means agent-as-target/configuration, not the active worker doing the work.
 
 ### Internal and compatibility identities
 
@@ -45,7 +45,7 @@ Keep these names precise where they describe implemented plumbing:
 
 ### Explicit non-goals for this docs slice
 
-- No dumb repo-wide rename of `workspace`, `repo`, `worktree`, or `session`.
+- No blanket repo-wide rename of `workspace`, `repo`, `worktree`, or `session`.
 - No full #473 right-rail/create-tab migration in this PR.
 - No #428 remote file RPC guarantee; remote file browsing can stay unavailable until that work lands.
 - No Worker/Agent tree node. Worker remains decoration and can later power a Worker-focused View.
@@ -205,7 +205,7 @@ This makes Tab and pane customization (#263) viable without losing process owner
 | -------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST`   | `/auth`                         | Authenticate with PIN, returns session cookie                                                                                                       |
 | `GET`    | `/sessions`                     | List active sessions                                                                                                                                |
-| `POST`   | `/sessions`                     | Create an agent/terminal process stream that backs a Tab, using legacy repo/worktree path fields when provided                                      |
+| `POST`   | `/sessions`                     | Create local agent/terminal Tab process; current local contract requires `repoPath`, with `worktreePath` selecting cwd when set                     |
 | `PATCH`  | `/sessions/:id`                 | Rename session                                                                                                                                      |
 | `DELETE` | `/sessions/:id`                 | Terminate session                                                                                                                                   |
 | `POST`   | `/sessions/:id/image`           | Upload clipboard image                                                                                                                              |
@@ -232,6 +232,7 @@ This makes Tab and pane customization (#263) viable without losing process owner
 | `POST`   | `/hub/node-heartbeat`           | Authenticated relay-node heartbeat using the persistent node credential                                                                             |
 | `GET`    | `/nodes`                        | List paired nodes with heartbeat status, reverse-link connection state, and capability summary                                                      |
 | `DELETE` | `/nodes/:nodeId`                | Revoke a paired node credential                                                                                                                     |
+| `POST`   | `/hub/nodes/:nodeId/sessions`   | Route session creation to an online node; RPC body uses `repoPath`, `worktreePath`, and `cwd`                                                       |
 | `GET`    | `/version`                      | Check for npm updates                                                                                                                               |
 | `POST`   | `/update`                       | Self-update via npm                                                                                                                                 |
 | `GET`    | `/config/defaultAgent`          | Get default coding agent                                                                                                                            |

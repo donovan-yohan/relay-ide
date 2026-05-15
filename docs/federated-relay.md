@@ -274,10 +274,15 @@ POST /hub/nodes/{nodeId}/sessions
 Cookie: token={auth-cookie}
 Content-Type: application/json
 
-{ "type": "agent", "workspacePath": "/Users/kyle/dev/relay-ide", ... }
+{
+  "type": "agent",
+  "repoPath": "/Users/kyle/dev/relay-ide",
+  "worktreePath": "/Users/kyle/dev/relay-ide/.worktrees/444-vocabulary-docs",
+  "cwd": "/Users/kyle/dev/relay-ide/.worktrees/444-vocabulary-docs"
+}
 ```
 
-`workspacePath` is a legacy path field in the current API. In the six-layer model it maps toward the cwd for a Bench; keep the field name for compatibility until the session-create contract is migrated.
+The current node-side `sessions.create` parser reads `repoPath`, `worktreePath`, and `cwd`; it does not read `workspacePath`. Send `cwd` explicitly for remote repo/worktree tabs. If `cwd` is omitted, the node defaults to its host home directory until the #473 create-tab/modal split lands. In the six-layer model, `repoPath` and `worktreePath` remain compatibility fields while `cwd` maps toward the Bench anchor.
 
 Preconditions checked by the hub:
 

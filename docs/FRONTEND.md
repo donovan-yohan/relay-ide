@@ -24,7 +24,7 @@ Frontend copy and state should use the six-layer model as its mental model: **Vi
 | **Bench**     | cwd + environment within an Instance.                                                                   | Existing worktrees are git Bench compatibility. Use worktree copy only for literal git worktree operations.                                               |
 | **Tab**       | The active leaf surface: terminal, agent chat, file, diff, or preview.                                  | `WorkspaceTab`, session ids, and PTY streams are implementation details that back the user-visible Tab.                                                   |
 
-Worker/agent status is decoration, not hierarchy: **Project = what; Worker = who**. Badges like active worker, human-driven/agent-driven/co-driven mode, and currentWorkers should attach to Bench/Tab surfaces. Do not add a Worker tree node. `Project.identity.kind = 'agent'` means configuring an agent target, not showing an active worker.
+Worker/agent status is decoration, not hierarchy: **Project = what; Worker = who**. Future badges or view-model fields for active worker, human-driven/agent-driven/co-driven mode, or current workers should attach to Bench/Tab surfaces after their contract ships. Do not add a Worker tree node. `Project.identity.kind = 'agent'` means configuring an agent target, not showing an active worker.
 
 ### State-key and copy rules during migration
 
