@@ -5,7 +5,7 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 ## Bird's Eye View
 
-Relay IDE is a remote web interface for interacting with Claude Code CLI sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a tmux-backed CLI process running on the host machine. The server manages tmux-backed PTY sessions, relays I/O over WebSocket, and watches for git worktree changes.
+Relay IDE is a remote web interface for interacting with agent and terminal sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a tmux-backed process running either on the hub machine or on a paired Relay node. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state.
 
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
@@ -100,10 +100,12 @@ Keep these names precise where they describe implemented plumbing:
 | `frameworks.ts`                         | Agent framework registry client surface: resolves configured/built-in agent frameworks, probes CLI availability, and surfaces runtime web availability where supported                                                                                             |
 | `node-manifest.ts`                      | Local node capability manifest: probes platform/arch/hostname/version, WSL, service manager, tmux/git/clipboard/browser/gh/tailscale/ssh, and agent tool availability non-fatally                                                                                  |
 | `local-node.ts`                         | Local node state: identity, manifest, repo inventory, credential storage, and heartbeat sender for the current machine when acting as a node                                                                                                                       |
-| `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, repo inventory aggregation, session creation routing, node revocation                                                                                           |
+| `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, direct session creation routing, node revocation                                                                                                                |
 | `hub-node-registry.ts`                  | Pair-token lifecycle, SHA256-hashed credential storage, timing-safe authentication, heartbeat state tracking, offline/stale/revoked status, registry persistence with debounced writes                                                                             |
 | `hub-node-link.ts`                      | Reverse WebSocket link manager: node link registration, RPC request/response, PTY stream proxy between browser and node, node event broadcast, cleanup on disconnect/revocation                                                                                    |
 | `repo-inventory.ts`                     | Local repo inventory collection: workspace scanning, git remote normalization, capability-gated repo identity resolution                                                                                                                                           |
+| `features/repo-inventory.ts`            | Repo inventory feature service: stores node-reported inventory snapshots and aggregates local + remote reports by canonical repo identity                                                                                                                          |
+| `features/repo-router.ts`               | Repo-aware hub HTTP routes moved out of `hub-node-router.ts`: `GET /hub/repo-inventory` aggregation and `POST /hub/nodes/:nodeId/sessions/reopen` cold-reopen routing                                                                                              |
 | `sandbox.ts`                            | Spawns isolated relay-ide server instances with ephemeral config, dynamic port allocation, and readiness polling for agent-driven testing                                                                                                                          |
 | `agent-browser.ts`                      | Playwright-based browser automation for agents: launches Chromium, captures screenshots, validates pages via console-error collection (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`)                                                              |
 
@@ -170,6 +172,28 @@ Browser (React)    <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .
                                                     <-- POST/DELETE /roots (manual broadcast)
 ```
 
+**Federated node-link flow (current):**
+
+```
+Browser <--WS /nodes/:nodeId/ws/sessions/:sessionId--> Hub
+Hub     <--WS /hub/node-link (reverse outbound link)--> Node
+Node    <--node-pty/tmux--> shell / agent CLI
+```
+
+Implemented today:
+
+- `relay-ide node connect` exchanges a short-lived pair token, writes `node-credential.json`, sends one authenticated heartbeat, and exits.
+- `relay-ide node link --hub <url>` is the foreground long-running reverse WebSocket client. It sends `control.hello`/`control.heartbeat` with manifest + repo inventory, handles `sessions.create` / `sessions.kill` RPC, and hosts routed PTY streams.
+- The hub can create remote sessions through `POST /hub/nodes/:nodeId/sessions` and attach browsers through `/nodes/:nodeId/ws/sessions/:sessionId` when the node is online, protocol-compatible, and tmux-capable.
+- `server/local-node.ts` makes the hub itself look like the default local node for existing sessions/events.
+
+Planned/deferred, not shipped:
+
+- #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) remains in spikes/design docs, not source.
+- #476 hub/node log proxy (`logs.tail`, node-log streaming, diagnostic bundles beyond current CLI `node status|logs|doctor`) is not implemented.
+- #427 full trust tiers, two-token confirmation, and audit-log sink are design direction only. Current paired nodes are privileged local users with revocable credentials.
+- #444 six-layer IA (`View -> Workspace -> Project -> Instance -> Bench -> Tab`) is not the persisted/current backend model.
+
 PTY flow:
 
 1. User types in xterm.js terminal
@@ -201,66 +225,70 @@ This makes Tab and pane customization (#263) viable without losing process owner
 
 ## REST API
 
-| Method   | Path                            | Description                                                                                                                                         |
-| -------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/auth`                         | Authenticate with PIN, returns session cookie                                                                                                       |
-| `GET`    | `/sessions`                     | List active sessions                                                                                                                                |
-| `POST`   | `/sessions`                     | Create local agent/terminal Tab process; current local contract requires `repoPath`, with `worktreePath` selecting cwd when set                     |
-| `PATCH`  | `/sessions/:id`                 | Rename session                                                                                                                                      |
-| `DELETE` | `/sessions/:id`                 | Terminate session                                                                                                                                   |
-| `POST`   | `/sessions/:id/image`           | Upload clipboard image                                                                                                                              |
-| `GET`    | `/branches`                     | List local and remote branches                                                                                                                      |
-| `GET`    | `/worktrees`                    | List inactive Claude Code worktrees                                                                                                                 |
-| `DELETE` | `/worktrees`                    | Remove worktree, prune refs, delete branch                                                                                                          |
-| `GET`    | `/workspaces`                   | Legacy: list configured repo/workspace folders with git info; not the future Workspace entity CRUD                                                  |
-| `POST`   | `/workspaces`                   | Legacy: add a repo/folder path (body: `{path}`)                                                                                                     |
-| `DELETE` | `/workspaces`                   | Remove workspace folder                                                                                                                             |
-| `GET`    | `/workspaces/dashboard`         | Aggregated PRs + activity for a workspace (`?path=X`)                                                                                               |
-| `GET`    | `/workspaces/settings`          | Per-workspace settings (`?path=X`)                                                                                                                  |
-| `PATCH`  | `/workspaces/settings`          | Update per-workspace settings                                                                                                                       |
-| `GET`    | `/workspaces/pr`                | PR info for a branch (`?path=X&branch=Y`)                                                                                                           |
-| `GET`    | `/workspaces/ci-status`         | CI check results (`?path=X&branch=Y`)                                                                                                               |
-| `POST`   | `/workspaces/branch`            | Switch branch (`?path=X`, body: `{branch}`)                                                                                                         |
-| `GET`    | `/workspaces/browse`            | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`)               |
-| `POST`   | `/workspaces/bulk`              | Add multiple workspace paths at once (body: `{paths}`)                                                                                              |
-| `GET`    | `/workspaces/autocomplete`      | Path prefix autocomplete (`?prefix=X`)                                                                                                              |
-| `POST`   | `/workspaces/worktree`          | Git-specific Bench compatibility: create a worktree with mountain name (`?path=X`)                                                                  |
-| `GET`    | `/workspaces/current-branch`    | Current checked-out branch (`?path=X`)                                                                                                              |
-| `GET`    | `/api/node/manifest`            | Local node manifest: platform/arch/hostname/version, WSL, service manager, and non-fatal capability/tool probes; CLI mirror is `relay-ide manifest` |
-| `POST`   | `/hub/pair-tokens`              | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                        |
-| `POST`   | `/hub/pairing/exchange`         | Exchange a one-time pair token for a persistent revocable node credential                                                                           |
-| `POST`   | `/hub/node-heartbeat`           | Authenticated relay-node heartbeat using the persistent node credential                                                                             |
-| `GET`    | `/nodes`                        | List paired nodes with heartbeat status, reverse-link connection state, and capability summary                                                      |
-| `DELETE` | `/nodes/:nodeId`                | Revoke a paired node credential                                                                                                                     |
-| `POST`   | `/hub/nodes/:nodeId/sessions`   | Route session creation to an online node; RPC body uses `repoPath`, `worktreePath`, and `cwd`                                                       |
-| `GET`    | `/version`                      | Check for npm updates                                                                                                                               |
-| `POST`   | `/update`                       | Self-update via npm                                                                                                                                 |
-| `GET`    | `/config/defaultAgent`          | Get default coding agent                                                                                                                            |
-| `PATCH`  | `/config/defaultAgent`          | Set default coding agent (`claude` or `codex`)                                                                                                      |
-| `POST`   | `/hooks/stop`                   | Hook callback: set session state to idle (localhost-only, per-session token auth)                                                                   |
-| `POST`   | `/hooks/notification`           | Hook callback: permission-prompt or waiting-for-input state (localhost-only, per-session token auth)                                                |
-| `POST`   | `/hooks/prompt-submit`          | Hook callback: set processing state, trigger branch rename on first message (localhost-only, per-session token auth)                                |
-| `POST`   | `/hooks/session-end`            | Hook callback: session cleanup dedup (localhost-only, per-session token auth)                                                                       |
-| `POST`   | `/hooks/tool-use`               | Hook callback: set currentActivity (tool name + detail) (localhost-only, per-session token auth)                                                    |
-| `POST`   | `/hooks/tool-result`            | Hook callback: clear currentActivity (localhost-only, per-session token auth)                                                                       |
-| `POST`   | `/webhooks/manage/setup`        | Create GitHub webhook + start smee client for current workspace (`?path=X`)                                                                         |
-| `DELETE` | `/webhooks/manage/setup`        | Delete GitHub webhook and stop smee client (`?path=X`)                                                                                              |
-| `GET`    | `/webhooks/manage/status`       | Webhook health state (smee connected, last event timestamp)                                                                                         |
-| `POST`   | `/webhooks/manage/reload`       | Reload smee client from saved config                                                                                                                |
-| `POST`   | `/webhooks/manage/ping`         | Send test ping to smee channel                                                                                                                      |
-| `POST`   | `/webhooks/manage/repos`        | Add a repo to the webhook-managed set (body: `{path}`)                                                                                              |
-| `POST`   | `/webhooks/manage/repos/remove` | Remove a repo from the webhook-managed set (body: `{path}`)                                                                                         |
-| `POST`   | `/webhooks/manage/backfill`     | Auto-provision webhooks for all repos that don't have one                                                                                           |
-| `GET`    | `/workspaces/changed-files`     | List changed files in a repo (`?path=X&base=ref`)                                                                                                   |
-| `GET`    | `/workspaces/divergence`        | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                                |
-| `GET`    | `/workspaces/file-diff`         | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                                      |
+| Method   | Path                                     | Description                                                                                                                                         |
+| -------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/auth`                                  | Authenticate with PIN, returns session cookie                                                                                                       |
+| `GET`    | `/sessions`                              | List active sessions                                                                                                                                |
+| `POST`   | `/sessions`                              | Create local agent/terminal Tab process; current local contract requires `repoPath`, with `worktreePath` selecting cwd when set                     |
+| `PATCH`  | `/sessions/:id`                          | Rename session                                                                                                                                      |
+| `DELETE` | `/sessions/:id`                          | Terminate session                                                                                                                                   |
+| `POST`   | `/sessions/:id/image`                    | Upload clipboard image                                                                                                                              |
+| `GET`    | `/branches`                              | List local and remote branches                                                                                                                      |
+| `GET`    | `/worktrees`                             | List inactive Claude Code worktrees                                                                                                                 |
+| `DELETE` | `/worktrees`                             | Remove worktree, prune refs, delete branch                                                                                                          |
+| `GET`    | `/workspaces`                            | Legacy: list configured repo/workspace folders with git info; not the future Workspace entity CRUD                                                  |
+| `POST`   | `/workspaces`                            | Legacy: add a repo/folder path (body: `{path}`)                                                                                                     |
+| `DELETE` | `/workspaces`                            | Remove workspace folder                                                                                                                             |
+| `GET`    | `/workspaces/dashboard`                  | Aggregated PRs + activity for a workspace (`?path=X`)                                                                                               |
+| `GET`    | `/workspaces/settings`                   | Per-workspace settings (`?path=X`)                                                                                                                  |
+| `PATCH`  | `/workspaces/settings`                   | Update per-workspace settings                                                                                                                       |
+| `GET`    | `/workspaces/pr`                         | PR info for a branch (`?path=X&branch=Y`)                                                                                                           |
+| `GET`    | `/workspaces/ci-status`                  | CI check results (`?path=X&branch=Y`)                                                                                                               |
+| `POST`   | `/workspaces/branch`                     | Switch branch (`?path=X`, body: `{branch}`)                                                                                                         |
+| `GET`    | `/workspaces/browse`                     | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`)               |
+| `POST`   | `/workspaces/bulk`                       | Add multiple workspace paths at once (body: `{paths}`)                                                                                              |
+| `GET`    | `/workspaces/autocomplete`               | Path prefix autocomplete (`?prefix=X`)                                                                                                              |
+| `POST`   | `/workspaces/worktree`                   | Git-specific Bench compatibility: create a worktree with mountain name (`?path=X`)                                                                  |
+| `GET`    | `/workspaces/current-branch`             | Current checked-out branch (`?path=X`)                                                                                                              |
+| `GET`    | `/api/node/manifest`                     | Local node manifest: platform/arch/hostname/version, WSL, service manager, and non-fatal capability/tool probes; CLI mirror is `relay-ide manifest` |
+| `POST`   | `/hub/pair-tokens`                       | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                        |
+| `POST`   | `/hub/pairing/exchange`                  | Exchange a one-time pair token for a persistent revocable node credential                                                                           |
+| `POST`   | `/hub/node-heartbeat`                    | Authenticated relay-node heartbeat using the persistent node credential                                                                             |
+| `GET`    | `/nodes`                                 | List paired nodes with heartbeat status, reverse-link connection state, and capability summary                                                      |
+| `GET`    | `/hub/repo-inventory`                    | Aggregate local + node-reported repo inventory by canonical git remote identity                                                                     |
+| `POST`   | `/hub/nodes/:nodeId/sessions`            | Route terminal/agent session creation to an online node over reverse-link RPC; RPC body uses `repoPath`, `worktreePath`, and `cwd`                  |
+| `DELETE` | `/hub/nodes/:nodeId/sessions/:sessionId` | Kill a node-local session through reverse-link RPC                                                                                                  |
+| `DELETE` | `/nodes/:nodeId`                         | Revoke a paired node credential                                                                                                                     |
+| `GET`    | `/version`                               | Check for npm updates                                                                                                                               |
+| `POST`   | `/update`                                | Self-update via npm                                                                                                                                 |
+| `GET`    | `/config/defaultAgent`                   | Get default coding agent                                                                                                                            |
+| `PATCH`  | `/config/defaultAgent`                   | Set default coding agent (`claude` or `codex`)                                                                                                      |
+| `POST`   | `/hooks/stop`                            | Hook callback: set session state to idle (localhost-only, per-session token auth)                                                                   |
+| `POST`   | `/hooks/notification`                    | Hook callback: permission-prompt or waiting-for-input state (localhost-only, per-session token auth)                                                |
+| `POST`   | `/hooks/prompt-submit`                   | Hook callback: set processing state, trigger branch rename on first message (localhost-only, per-session token auth)                                |
+| `POST`   | `/hooks/session-end`                     | Hook callback: session cleanup dedup (localhost-only, per-session token auth)                                                                       |
+| `POST`   | `/hooks/tool-use`                        | Hook callback: set currentActivity (tool name + detail) (localhost-only, per-session token auth)                                                    |
+| `POST`   | `/hooks/tool-result`                     | Hook callback: clear currentActivity (localhost-only, per-session token auth)                                                                       |
+| `POST`   | `/webhooks/manage/setup`                 | Create GitHub webhook + start smee client for current workspace (`?path=X`)                                                                         |
+| `DELETE` | `/webhooks/manage/setup`                 | Delete GitHub webhook and stop smee client (`?path=X`)                                                                                              |
+| `GET`    | `/webhooks/manage/status`                | Webhook health state (smee connected, last event timestamp)                                                                                         |
+| `POST`   | `/webhooks/manage/reload`                | Reload smee client from saved config                                                                                                                |
+| `POST`   | `/webhooks/manage/ping`                  | Send test ping to smee channel                                                                                                                      |
+| `POST`   | `/webhooks/manage/repos`                 | Add a repo to the webhook-managed set (body: `{path}`)                                                                                              |
+| `POST`   | `/webhooks/manage/repos/remove`          | Remove a repo from the webhook-managed set (body: `{path}`)                                                                                         |
+| `POST`   | `/webhooks/manage/backfill`              | Auto-provision webhooks for all repos that don't have one                                                                                           |
+| `GET`    | `/workspaces/changed-files`              | List changed files in a repo (`?path=X&base=ref`)                                                                                                   |
+| `GET`    | `/workspaces/divergence`                 | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                                |
+| `GET`    | `/workspaces/file-diff`                  | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                                      |
 
 ## WebSocket Channels
 
 - `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
+- `/nodes/:nodeId/ws/sessions/:sessionId` — Browser-to-hub endpoint for routed node PTY sessions. The hub proxies bytes to/from the node's reverse-link `pty` channel.
+- `/hub/node-link` — Node-to-hub reverse WebSocket. Authenticates with the node credential Bearer token and carries `control`, `rpc`, `events`, and `pty` JSON envelopes.
 - `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed` with `changedFiles: string[]`).
 
-Both channels require authentication via `token` cookie verified during HTTP upgrade.
+Browser-facing channels require authentication via `token` cookie verified during HTTP upgrade. `/hub/node-link` uses the node credential Bearer token instead.
 
 ## Cross-Cutting Concerns
 
