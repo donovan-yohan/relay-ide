@@ -135,4 +135,3 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 - [Architecture](ARCHITECTURE.md) — module boundaries and invariants
 - [Frontend](FRONTEND.md) — React 19 patterns and component conventions
 - [Quality](QUALITY.md) — testing patterns and test isolation
-- [Plans](PLANS.md) — active and completed execution plans

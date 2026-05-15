@@ -100,10 +100,12 @@ Keep these names precise where they describe implemented plumbing:
 | `frameworks.ts`                         | Agent framework registry client surface: resolves configured/built-in agent frameworks, probes CLI availability, and surfaces runtime web availability where supported                                                                                             |
 | `node-manifest.ts`                      | Local node capability manifest: probes platform/arch/hostname/version, WSL, service manager, tmux/git/clipboard/browser/gh/tailscale/ssh, and agent tool availability non-fatally                                                                                  |
 | `local-node.ts`                         | Local node state: identity, manifest, repo inventory, credential storage, and heartbeat sender for the current machine when acting as a node                                                                                                                       |
-| `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, repo inventory aggregation, session creation routing, node revocation                                                                                           |
+| `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, direct session creation routing, node revocation                                                                                                                |
 | `hub-node-registry.ts`                  | Pair-token lifecycle, SHA256-hashed credential storage, timing-safe authentication, heartbeat state tracking, offline/stale/revoked status, registry persistence with debounced writes                                                                             |
 | `hub-node-link.ts`                      | Reverse WebSocket link manager: node link registration, RPC request/response, PTY stream proxy between browser and node, node event broadcast, cleanup on disconnect/revocation                                                                                    |
 | `repo-inventory.ts`                     | Local repo inventory collection: workspace scanning, git remote normalization, capability-gated repo identity resolution                                                                                                                                           |
+| `features/repo-inventory.ts`            | Repo inventory feature service: stores node-reported inventory snapshots and aggregates local + remote reports by canonical repo identity                                                                                                                          |
+| `features/repo-router.ts`               | Repo-aware hub HTTP routes moved out of `hub-node-router.ts`: `GET /hub/repo-inventory` aggregation and `POST /hub/nodes/:nodeId/sessions/reopen` cold-reopen routing                                                                                              |
 | `sandbox.ts`                            | Spawns isolated relay-ide server instances with ephemeral config, dynamic port allocation, and readiness polling for agent-driven testing                                                                                                                          |
 | `agent-browser.ts`                      | Playwright-based browser automation for agents: launches Chromium, captures screenshots, validates pages via console-error collection (`launchBrowser`, `screenshot`, `validatePage`, `closeBrowser`)                                                              |
 
@@ -173,7 +175,7 @@ Browser (React)    <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .
 **Federated node-link flow (current):**
 
 ```
-Browser <--WS /nodes/{nodeId}/ws/sessions/{sessionId}--> Hub
+Browser <--WS /nodes/:nodeId/ws/sessions/:sessionId--> Hub
 Hub     <--WS /hub/node-link (reverse outbound link)--> Node
 Node    <--node-pty/tmux--> shell / agent CLI
 ```
