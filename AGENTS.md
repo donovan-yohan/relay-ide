@@ -1,6 +1,6 @@
 # relay-ide
 
-Relay Agentic Development Environment — remote web interface for Claude Code CLI sessions from any device. TypeScript + ESM backend (Express + node-pty + WebSocket) → `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) → `dist/frontend/`.
+Relay Agentic Development Environment — a hub/node web workspace for AI coding agents, terminals, and repo-aware development from any device. TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) → `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) → `dist/frontend/`.
 
 > This file is the map, not the manual. Keep under 120 lines. Push detail into `docs/*.md`.
 > `CLAUDE.md` is a symlink to this file — edit `AGENTS.md` and Claude will see it. Do not hand-edit generated `.claude/`, `.codex/`, `opencode.json` — they come from `.chalk/` via [chalkbag](https://github.com/donovan-yohan/chalk-bag).
@@ -10,10 +10,14 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Action             | Command                                                                  |
 | ------------------ | ------------------------------------------------------------------------ |
 | Build              | `npm run build`                                                          |
+| Type/lint check    | `npm run check`                                                          |
 | Self-host Relay    | `npm run dev:self`                                                       |
+| Source dev         | `npm run dev`                                                            |
+| Split dev backend  | `npm run dev:backend`                                                    |
+| Split dev frontend | `npm run dev:vite`                                                       |
 | Test               | `npm test`                                                               |
 | Node capabilities  | `relay-ide manifest`                                                     |
-| Start              | `npm start`                                                              |
+| Start hub          | `npm start` or `relay-ide hub`                                           |
 | Run (global)       | `relay-ide`                                                              |
 | Version bump       | `npm version patch\|minor\|major`                                        |
 | Mobile input tests | Add fixture to `test/fixtures/mobile-input/` before fixing keyboard bugs |
@@ -22,8 +26,9 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 
 | Category        | Path                               | When to look here                                                           |
 | --------------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| Docs index      | `docs/README.md`                   | Current source-of-truth docs vs historical plans/spikes                     |
 | Architecture    | `docs/ARCHITECTURE.md`             | Module boundaries, data flow, API routes, ADR rules                         |
-| Visual Design   | `DESIGN.md`                        | TUI aesthetic, colors, buttons, icons, border-radius rules                  |
+| Visual Design   | `DESIGN.md`                        | Product framing, TUI aesthetic, colors, spacing, buttons                    |
 | Design          | `docs/DESIGN.md`                   | Backend patterns, auth flow, PTY management, session types                  |
 | Frontend        | `docs/FRONTEND.md`                 | React 19 components, state management (Zustand + TanStack Query)            |
 | Quality         | `docs/QUALITY.md`                  | Test runner, test files, isolation patterns                                 |
@@ -37,6 +42,10 @@ Relay Agentic Development Environment — remote web interface for Claude Code C
 | Learnings       | `docs/LEARNINGS.md`                | Persistent cross-session learnings                                          |
 | Project skills  | `.chalk/skills/<name>/SKILL.md`    | Repo-local skills (see §Skills)                                             |
 | Work tracking   | GitHub Issues                      | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                     |
+
+## Product Vocabulary
+
+Use the six-layer vocabulary when naming IA work: View → Workspace → Project → Instance → Bench → Tab. Current implementation is still incremental: a Workspace is a grouping/config layer (`workspaces`, repo membership, settings), not a synonym for a repo; repo/worktree bindings are optional session/tab context.
 
 ## Design System
 
@@ -53,7 +62,8 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 
 ## Key Patterns
 
-- 69 `server/` modules (`adapters/`, `output-parsers/`, `protocol-adapters/`), one concern each — update ADRs when adding.
+- Hub/node is the current architecture direction: the hub owns the web UI; nodes expose local capabilities and PTY/session execution through hub-mediated links.
+- Agent frameworks are configurable; built-ins include Claude Code, Codex, OpenCode, and Hermes. Do not hard-code Claude-only assumptions in new docs or UI copy.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
 - tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer.
@@ -63,7 +73,7 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 - Node.js ≥ 24.0.0 — `nvm use` from `.nvmrc`.
 - Relative imports end in `.js`; builtins use `node:` prefix.
 - npm package — GitHub Actions publish (see `docs/references/deployment.md`).
-- Frontend edits (TSX/CSS) only render locally after `npm run build` — server serves `dist/frontend/`, not sources. Restart `npm start` to pick up new bundle.
+- Frontend edits (TSX/CSS) only render in package mode after `npm run build`; Vite HMR is available through `npm run dev`.
 
 ## Branching
 
@@ -74,15 +84,7 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 
 ## Work tracking
 
-GitHub Issues on `donovan-yohan/relay-ide`. Every issue needs:
-
-- Type: `bug` | `feature` | `improvement` | `spike`
-- State: `backlog` (rough) → `refined` (scoped, awaiting plan) → `todo` (planned, ready to claim) → `in-progress` (claimed, worktree open under `.worktrees/<issue-slug>`).
-- Priority: `p1-urgent` | `p2-high` | `p3-normal` | `p4-low`
-- Project (when applicable): `project:sidebar-nav`, `project:code-file-tools`, `project:verification-testing`, `project:command-center`, `project:agent-platform`, `project:true-workspaces`
-- `epic` label on parents
-
-`/ticket` handles creation + sub-issue / blocker mutations. Reference in `.chalk/skills/ticket/SKILL.md`.
+GitHub Issues on `donovan-yohan/relay-ide`. Every issue needs type, state, priority, project label when applicable, and `epic` on parent issues. `/ticket` handles creation + sub-issue / blocker mutations; reference `.chalk/skills/ticket/SKILL.md`.
 
 ## gstack
 
