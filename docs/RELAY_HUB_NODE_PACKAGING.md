@@ -80,7 +80,7 @@ relay-ide node logs
 relay-ide node doctor --hub https://hub.example.com
 ```
 
-`relay-ide node install` is bootstrap/service setup only in this slice. It pairs credentials, sends an initial heartbeat, and installs/starts the generic Relay service for supported service modes, but it does not itself hold `/hub/node-link`; routed sessions require `relay-ide node link --hub <url>` or an operator-managed wrapper around that foreground command.
+`relay-ide node install` is bootstrap/service setup only in this slice. It pairs credentials, sends an initial heartbeat, and installs/starts the generic Relay service for supported service modes, but it does not start or maintain a persistent `/hub/node-link`; routed sessions require `relay-ide node link --hub <url>` or an operator-managed wrapper around that foreground command.
 
 ## Publishing and updates
 
