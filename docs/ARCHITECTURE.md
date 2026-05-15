@@ -12,6 +12,44 @@ Output: terminal rendering via xterm.js, real-time session state updates.
 
 The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
+## Six-Layer Vocabulary Contract (#444)
+
+Relay's product information architecture is now described as **View -> Workspace -> Project -> Instance -> Bench -> Tab**. This vocabulary is a source-of-truth for docs and implementation planning; it does not mean every layer must be visible in every UI state. The single-repo golden path should stay compact, while remote, non-repo, and multi-node states expose the layer needed to avoid false repo/worktree assumptions.
+
+| Layer         | What it answers                                       | Current / compatibility boundary                                                                                                                                                                                       |
+| ------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **View**      | What lens am I looking through?                       | A filter or presentation across tabs/projects/workers. Views are not durable storage unless a future saved-view feature says so.                                                                                       |
+| **Workspace** | What am I organizing?                                 | A user-owned grouping of Projects and pins. Do not use Workspace as the universal name for a filesystem path or repo checkout. Existing `/workspaces` routes remain legacy repo-folder compatibility during migration. |
+| **Project**   | What is being worked on?                              | Canonical identity: commonly a git remote, but also node, agent-provider, playbook, or other target kinds. Use `repo` only when the affordance is specifically git/PR/branch/remote.                                   |
+| **Instance**  | Where is that Project realized?                       | A host/node realization of a Project. Existing repo instance IDs such as `(nodeId, repoPath)` are git-specific Instance compatibility shapes.                                                                          |
+| **Bench**     | Which cwd + environment is active inside an Instance? | Generalizes git worktrees. Existing `worktreePath` and worktree instance IDs stay valid for git Bench compatibility and destructive git-worktree operations.                                                           |
+| **Tab**       | What leaf surface is active?                          | Terminal, agent chat, file, diff, or preview surface. Existing session/stream IDs remain process and routing identity, not the primary user-facing IA label.                                                           |
+
+**Project = what; Worker = who.** Workers/agents are dynamic decoration on a Bench or Tab (`currentWorkers`, `activeWorker`, `mode`), not a structural tree node between Project and Instance. `Project.identity.kind = 'agent'` means agent-as-target/configuration, not the active worker doing the work.
+
+### Internal and compatibility identities
+
+Keep these names precise where they describe implemented plumbing:
+
+- `globalSessionId` remains an internal stream/routing identifier for hub/node session lookup and reconnect. It should not become primary user-facing copy.
+- `repoInstanceId`, `worktreeInstanceId`, `repoPath`, and `worktreePath` remain compatibility fields while shared/server/frontend contracts migrate.
+- `repo`, `branch`, `remote`, and `worktree` remain correct inside git-specific docs, routes, widgets, and destructive operations. The anti-pattern is treating them as universal IA terms for every Tab.
+
+### First-wave implementation lanes
+
+1. **Docs/source of truth:** keep this contract, `docs/FRONTEND.md`, and `docs/federated-relay.md` aligned before broad code changes.
+2. **Compatibility adapters:** add helpers that map legacy `repoPath`/`worktreePath`/workspace storage keys into Project/Instance/Bench/Tab view models without destructive localStorage or persistence migration.
+3. **Copy-only UI pass:** update low-risk visible copy to stop saying repo/worktree/session when the state may be remote, free/non-git, or tab-scoped. Preserve git nouns for literal git affordances.
+4. **Backend/shared contracts:** introduce new Workspace/Project/Instance/Bench entities and route wrappers while keeping legacy API fields readable.
+5. **Frontend IA migration:** migrate sidebar, command palette, create-tab, restore/resume, and utility rail consumers behind tab/context adapters, coordinated with #473.
+
+### Explicit non-goals for this docs slice
+
+- No dumb repo-wide rename of `workspace`, `repo`, `worktree`, or `session`.
+- No full #473 right-rail/create-tab migration in this PR.
+- No #428 remote file RPC guarantee; remote file browsing can stay unavailable until that work lands.
+- No Worker/Agent tree node. Worker remains decoration and can later power a Worker-focused View.
+
 ## Code Map
 
 ### `server/`
@@ -21,8 +59,8 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | Module                                  | Role                                                                                                                                                                                                                                                               |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `index.ts`                              | Composition root: Express app, REST routes, auth middleware, static serving                                                                                                                                                                                        |
-| `workspaces.ts`                         | Repo CRUD, Express Router: dashboard, settings, CI status, branch switch, path autocomplete                                                                                                                                                                        |
-| `workspace-groups.ts`                   | Workspace grouping entity CRUD: Express Router at `/workspace-groups` for create/read/update/delete/reorder workspace entities                                                                                                                                     |
+| `workspaces.ts`                         | Legacy repo-folder compatibility router: dashboard, settings, CI status, branch switch, path autocomplete. These `/workspaces` routes are not the future six-layer Workspace entity source of truth.                                                               |
+| `workspace-groups.ts`                   | Current workspace grouping CRUD for user-organized repo groups; compatibility surface until six-layer Workspace/Project persistence lands.                                                                                                                         |
 | `sessions.ts`                           | Session registry: routes `create()` to pty-handler, lifecycle ops, restore/reattach, idle sweep                                                                                                                                                                    |
 | `pty-handler.ts`                        | PTY session creation via node-pty attached to tmux, scrollback buffering (256KB), tmux session naming, continue-retry                                                                                                                                              |
 | `git.ts`                                | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
@@ -35,7 +73,7 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 | `service.ts`                            | Background service install/uninstall/status (launchd on macOS, systemd on Linux)                                                                                                                                                                                   |
 | `push.ts`                               | Web Push notification management (VAPID keys, subscription registry, SDK event enrichment)                                                                                                                                                                         |
 | `hooks.ts`                              | Claude Code hook HTTP endpoints: state detection (Stop, Notification, UserPromptSubmit), activity tracking (PreToolUse, PostToolUse), session cleanup (SessionEnd), and branch rename. Localhost-only with per-session token auth.                                 |
-| `types.ts`                              | Shared TypeScript interfaces (Session, Repo, Workspace entity, Config v4, WorkspaceLevelSettings, PR, CI, Activity types)                                                                                                                                          |
+| `types.ts`                              | Shared TypeScript interfaces, including legacy `Session`, `Repo`, `Workspace`, `repoPath`, and `worktreePath` compatibility shapes that map toward Project/Instance/Bench/Tab view models.                                                                         |
 | `analytics.ts`                          | Local analytics: SQLite-backed event tracking, `trackEvent()`, batch ingest endpoint, DB size/clear endpoints                                                                                                                                                      |
 | `port-allocator.ts`                     | Durable per-worktree port allocation, persisted assignments, `.env` managed-block reconciliation, and startup verification of allocated ports                                                                                                                      |
 | `review-poller.ts`                      | PR review automation: polls GitHub notifications for review requests, creates worktrees, optionally starts review sessions                                                                                                                                         |
@@ -159,7 +197,7 @@ Tmux session names are stable and human-readable:
 - On startup, the server checks whether the named tmux session still exists. If it does, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed process.
 - `sessions.ts` exposes targeted tmux helpers (`sendTmuxKeys`, `sendTmuxText`, `captureTmuxPane`) so future workspace panes can address a specific tmux-backed process by session id instead of relying only on the currently attached PTY stream.
 
-This makes workspace, tab, and pane customization (#263) viable without losing process ownership. Browser-level tabs and panes can be rearranged freely while the underlying tmux session remains the stable process identity for reconnect, restore, resize, copy-mode, and cleanup.
+This makes Tab and pane customization (#263) viable without losing process ownership; the tmux/session name is process substrate, while the browser Tab is the user-visible leaf surface. Browser-level tabs and panes can be rearranged freely while the underlying tmux session remains the stable process identity for reconnect, restore, resize, copy-mode, and cleanup.
 
 ## REST API
 
@@ -167,15 +205,15 @@ This makes workspace, tab, and pane customization (#263) viable without losing p
 | -------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST`   | `/auth`                         | Authenticate with PIN, returns session cookie                                                                                                       |
 | `GET`    | `/sessions`                     | List active sessions                                                                                                                                |
-| `POST`   | `/sessions`                     | Create session (agent or terminal, in workspace root or worktree)                                                                                   |
+| `POST`   | `/sessions`                     | Create an agent/terminal process stream that backs a Tab, using legacy repo/worktree path fields when provided                                      |
 | `PATCH`  | `/sessions/:id`                 | Rename session                                                                                                                                      |
 | `DELETE` | `/sessions/:id`                 | Terminate session                                                                                                                                   |
 | `POST`   | `/sessions/:id/image`           | Upload clipboard image                                                                                                                              |
 | `GET`    | `/branches`                     | List local and remote branches                                                                                                                      |
 | `GET`    | `/worktrees`                    | List inactive Claude Code worktrees                                                                                                                 |
 | `DELETE` | `/worktrees`                    | Remove worktree, prune refs, delete branch                                                                                                          |
-| `GET`    | `/workspaces`                   | List configured workspace folders with git info                                                                                                     |
-| `POST`   | `/workspaces`                   | Add workspace folder (body: `{path}`)                                                                                                               |
+| `GET`    | `/workspaces`                   | Legacy: list configured repo/workspace folders with git info; not the future Workspace entity CRUD                                                  |
+| `POST`   | `/workspaces`                   | Legacy: add a repo/folder path (body: `{path}`)                                                                                                     |
 | `DELETE` | `/workspaces`                   | Remove workspace folder                                                                                                                             |
 | `GET`    | `/workspaces/dashboard`         | Aggregated PRs + activity for a workspace (`?path=X`)                                                                                               |
 | `GET`    | `/workspaces/settings`          | Per-workspace settings (`?path=X`)                                                                                                                  |
@@ -186,7 +224,7 @@ This makes workspace, tab, and pane customization (#263) viable without losing p
 | `GET`    | `/workspaces/browse`            | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`)               |
 | `POST`   | `/workspaces/bulk`              | Add multiple workspace paths at once (body: `{paths}`)                                                                                              |
 | `GET`    | `/workspaces/autocomplete`      | Path prefix autocomplete (`?prefix=X`)                                                                                                              |
-| `POST`   | `/workspaces/worktree`          | Create worktree with mountain name (`?path=X`)                                                                                                      |
+| `POST`   | `/workspaces/worktree`          | Git-specific Bench compatibility: create a worktree with mountain name (`?path=X`)                                                                  |
 | `GET`    | `/workspaces/current-branch`    | Current checked-out branch (`?path=X`)                                                                                                              |
 | `GET`    | `/api/node/manifest`            | Local node manifest: platform/arch/hostname/version, WSL, service manager, and non-fatal capability/tool probes; CLI mirror is `relay-ide manifest` |
 | `POST`   | `/hub/pair-tokens`              | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                        |
@@ -239,21 +277,21 @@ Both channels require authentication via `token` cookie verified during HTTP upg
 > committed; older entries are summarized below until backfilled. Regenerate
 > with `/adr:update`.
 
-| ADR     | Topic                                                                                                                                                |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR-001 | Modular server architecture (composition root, dependency flow)                                                                                      |
-| ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping)                                                           |
-| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                                                                                            |
-| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                                                                          |
-| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                                                                                   |
-| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                                                                             |
-| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                                                                             |
-| ADR-009 | Hub/Node Federation (hub accepts node registrations via reverse WebSocket; nodes own data plane; hub owns routing/aggregation)                       |
-| ADR-010 | Node-Initiated Outbound Links (nodes dial hub to avoid NAT/firewall inbound)                                                                         |
-| ADR-011 | Agent-driven browser automation (`server/agent-browser.ts`, Playwright)                                                                              |
-| ADR-012 | Pair-Token/Credential Lifecycle (short-lived pair token → persistent revocable node credential; SHA256 storage; immediate revocation)                |
-| ADR-013 | Capability Manifest (nodes self-report probes; hub gates routing on capability state)                                                                |
-| ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                             |
+| ADR     | Topic                                                                                                                                                                                |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ADR-001 | Modular server architecture (composition root, dependency flow)                                                                                                                      |
+| ADR-003 | PTY session management (tmux substrate, in-memory state, scrollback, CLAUDECODE stripping)                                                                                           |
+| ADR-004 | PIN authentication (scrypt, cookie tokens, rate limiting)                                                                                                                            |
+| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                                                                                                          |
+| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                                                                                                                   |
+| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                                                                                                             |
+| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                                                                                                             |
+| ADR-009 | Hub/Node Federation (hub accepts node registrations via reverse WebSocket; nodes own data plane; hub owns routing/aggregation)                                                       |
+| ADR-010 | Node-Initiated Outbound Links (nodes dial hub to avoid NAT/firewall inbound)                                                                                                         |
+| ADR-011 | Agent-driven browser automation (`server/agent-browser.ts`, Playwright)                                                                                                              |
+| ADR-012 | Pair-Token/Credential Lifecycle (short-lived pair token → persistent revocable node credential; SHA256 storage; immediate revocation)                                                |
+| ADR-013 | Capability Manifest (nodes self-report probes; hub gates routing on capability state)                                                                                                |
+| ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                                                             |
 | ADR-015 | Core relay primitives are domain-agnostic; repo/git is a feature layer ([`docs/adrs/ADR-015-core-primitives-domain-agnostic.md`](./adrs/ADR-015-core-primitives-domain-agnostic.md)) |
 | ADR-016 | Node-to-node isolation invariant; inter-node traffic flows through the hub ([`docs/adrs/ADR-016-node-to-node-isolation.md`](./adrs/ADR-016-node-to-node-isolation.md))               |
 

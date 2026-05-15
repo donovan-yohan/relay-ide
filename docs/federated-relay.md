@@ -30,6 +30,28 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 | **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`.                                                                                                                                                                                    |
 | **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. |
 
+## Six-Layer Vocabulary Mapping (#444)
+
+Federated Relay keeps its precise low-level hub/node/repo/session terms, but maps them into the product IA so docs do not imply `repo = Workspace` or `worktree = universal cwd`. The source vocabulary is **View -> Workspace -> Project -> Instance -> Bench -> Tab**.
+
+| Product term  | Federated meaning                                                               | Low-level term that remains valid                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **View**      | Browser lens over nodes, projects, tabs, workers, or a workspace-scoped subset. | Hub/client filters and future saved views.                                                                                                         |
+| **Workspace** | User grouping/pins across Projects.                                             | Existing workspace/repo-folder APIs are migration compatibility, not the federation identity model.                                                |
+| **Project**   | Canonical “what” being worked on.                                               | `Repo identity` is a repo-kind Project identity derived from git remotes. Node/agent/playbook Projects may not have repo inventory.                |
+| **Instance**  | A Project realized on a node/host.                                              | `Repo instance` `(nodeId, repoPath)` is a git-specific Instance compatibility shape.                                                               |
+| **Bench**     | cwd + env inside an Instance.                                                   | `Worktree instance` `(nodeId, worktreePath)` is a git Bench compatibility shape. Free/non-git remote cwd is also a Bench-like anchor once modeled. |
+| **Tab**       | User-visible terminal/file/diff/agent-chat/preview surface.                     | A hub/node session and PTY stream back a Tab; `globalSessionId` remains internal routing identity.                                                 |
+
+Worker/agent identity is dynamic decoration on Bench/Tab, not a federated tree node. Use node/host labels for where work runs, repo/project labels for what is being worked on, and worker badges for who is active.
+
+### Compatibility boundaries
+
+- `globalSessionId` is an internal stream/routing id. It is useful in API diagnostics and reconnect paths, but users should primarily see Tab, node, cwd, and process status.
+- `repoPath` and `worktreePath` remain compatibility fields while old session creation, repo inventory, and git routes are migrated. They must stay node-scoped; never treat a path alone as global identity.
+- Repo inventory is deliberately git-specific. It can seed repo-kind Projects/Instances, but it is not the full future Project inventory.
+- Remote file browsing remains unavailable until #428 file RPC lands; do not document hub-local filesystem fallback as supported behavior.
+
 ## Reverse WebSocket Model
 
 The steady-state transport is a **reverse WebSocket** opened by the node to the hub. This avoids NAT, firewall, and WSL inbound-port problems.
@@ -255,6 +277,8 @@ Content-Type: application/json
 { "type": "agent", "workspacePath": "/Users/kyle/dev/relay-ide", ... }
 ```
 
+`workspacePath` is a legacy path field in the current API. In the six-layer model it maps toward the cwd for a Bench; keep the field name for compatibility until the session-create contract is migrated.
+
 Preconditions checked by the hub:
 
 1. Node is paired and not revoked
@@ -272,11 +296,11 @@ If any precondition fails, the hub returns a typed error with `retryable` guidan
 | `NODE_UNSUPPORTED`      | Node cannot host tmux-backed sessions | No        |
 | `NODE_OFFLINE`          | Node has no live reverse link         | Yes       |
 
-On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session with:
+On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session that backs a user-visible Tab with:
 
-- `globalSessionId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`
-- `repoInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(repoPath)}` (when applicable)
-- `worktreeInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(worktreePath)}` (when applicable)
+- `globalSessionId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}` for internal stream/routing identity
+- `repoInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(repoPath)}` as a repo-kind Instance compatibility id (when applicable)
+- `worktreeInstanceId`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(worktreePath)}` as a git Bench compatibility id (when applicable)
 
 ### Attaching to a PTY on a node
 
@@ -377,7 +401,7 @@ GET /hub/repo-inventory
 Cookie: token={auth-cookie}
 ```
 
-Response groups repo instances by canonical identity, showing per-node paths, branch counts, worktree counts, and online status.
+Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.
 
 ## Bootstrap and Service Modes
 
@@ -494,6 +518,7 @@ These were considered during design but are **not implemented** and should not b
 - **Anonymous worker pools** — Every node requires explicit pairing and trust.
 - **Cross-host tmux session transfer** — Sessions are node-local; re-creating on another node is a cold start.
 - **Real-time workspace state sync** — No conflict-free replicated worktree state.
+- **Full #444 IA migration** — This document maps federation terms to the six-layer vocabulary, but it does not implement Workspace/Project/Instance/Bench CRUD, #473 right-rail migration, #428 file RPC, or a Worker tree node.
 
 ## See Also
 
