@@ -24,7 +24,7 @@ No `relay-ide-hub`, `relay-ide-node`, `@relay-ide/hub`, or `@relay-ide/node` pac
 - Hub and node currently share the same TypeScript backend, service-manager abstraction, manifest probing, bootstrap diagnostics, protocol types, versioning, and update channel.
 - One global install keeps bootstrap commands short and reduces the chance that a target host installs a hub/node version skew by accident.
 - npm publishing already has the two channels Relay needs: pushes to `nightly` publish `relay-ide@nightly`; stable releases publish `relay-ide@latest` from tagged `master` releases.
-- The node CLI currently performs pairing, stores credentials, sends one heartbeat, and delegates generic service setup. It does not yet ship a separate long-running node daemon that would justify separate lifecycle or dependency boundaries.
+- The node CLI currently performs pairing, stores credentials, sends one heartbeat, exposes a foreground `node link` reverse-WebSocket client for routed sessions, and delegates generic service setup. It does not yet ship a separate node-only daemon/service unit that would justify separate lifecycle or dependency boundaries.
 - Back-compat is simple: existing users can keep running `relay-ide` and `relay-ide install`, while docs can name the explicit hub role for federated setups.
 
 ## The case against
@@ -65,18 +65,22 @@ relay-ide node connect \
   --hub https://hub.example.com \
   --pair-token <token>
 
-# Pair credentials, then install/start the local Relay-managed service.
+# Pair credentials, then install/start the generic Relay-managed service.
+# Current service install does not replace the foreground node-link command.
 relay-ide node install \
   --hub https://hub.example.com \
   --pair-token <token> \
   --service auto
+
+# Hold the steady-state reverse WebSocket used for routed sessions.
+relay-ide node link --hub https://hub.example.com
 
 relay-ide node status
 relay-ide node logs
 relay-ide node doctor --hub https://hub.example.com
 ```
 
-`relay-ide node install` is still bootstrap/service setup only in this slice. It does not start or maintain a persistent `/hub/node-link`; routed sessions require the follow-up persistent reverse-link client.
+`relay-ide node install` is bootstrap/service setup only in this slice. It pairs credentials, sends an initial heartbeat, and installs/starts the generic Relay service for supported service modes, but it does not start or maintain a persistent `/hub/node-link`; routed sessions require `relay-ide node link --hub <url>` or an operator-managed wrapper around that foreground command.
 
 ## Publishing and updates
 

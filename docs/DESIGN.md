@@ -38,6 +38,36 @@ Backend patterns and conventions for Relay IDE. The server is a composition-root
 | PR base branch change                         | `POST /workspaces/pr-base` runs `gh pr edit --base` to change a PR's target branch from the UI. TargetBranchSwitcher dropdown shows remote-only branches.                                                                                                                                                                                                                                                                                                                                                                                                      | Design doc                        |
 | Inline branch rename + PR warning modal       | Pencil icon triggers inline rename input. If a PR exists for the old branch, a warning modal offers Push (to remote), Ignore, or Cancel (undo rename).                                                                                                                                                                                                                                                                                                                                                                                                         | Design doc                        |
 
+## Current vs Planned Information Architecture
+
+Relay is moving from a repo/worktree-first UI toward the #444 six-layer model: `View -> Workspace -> Project -> Instance -> Bench -> Tab`. Treat this vocabulary as the product direction, not as a claim that every layer is fully wired today.
+
+### Implemented now
+
+- `shared/workspace.ts`, `shared/project.ts`, and `shared/bench.ts` provide scaffold-only identity types and helpers for Workspace, Project, Instance, and Bench. Their file comments explicitly say there is no server CRUD, migration, or frontend render wiring yet.
+- `ProjectIdentity` already distinguishes `repo`, `node`, `agent`, and `playbook` identities, but this is type scaffolding rather than shipped UI navigation.
+- Session records and frontend types still carry `workspacePath`, `repoPath`, `worktreePath`, `repoName`, and `branchName` for the current repo/worktree implementation. They also carry `cwd`, and routed sessions may carry `nodeId` / `globalSessionId`.
+- Remote terminal creation and PTY routing are implemented: frontend session creation targets `/hub/nodes/:nodeId/sessions` for non-local nodes, and PTY sockets route through `/nodes/:nodeId/ws/sessions/:sessionId`.
+- The utility rail now derives its anchor from the active tab/session context and separates the rail state key from file/git resource paths. Remote node tabs and free/non-git tabs get explicit unavailable/no-git states instead of silently using hub-local repo data.
+
+### Planned / do not describe as shipped
+
+- Saved Views and the full visible `Workspace -> Project -> Instance -> Bench -> Tab` sidebar migration.
+- Server CRUD/persistence for the #444 Workspace/Project/Instance/Bench scaffold types.
+- #428 remote File RPC and remote file/git browsing.
+- #470 Worker decoration (`Tab.mode`, active worker badges, intervention log, Workers View).
+- A repo-wide rename from legacy `workspace`/`worktree` API fields to Project/Bench vocabulary.
+
+### Vocabulary rules
+
+- **Tab** is the leaf surface. The active tab context is the surface-level source of truth: `nodeId` (local or remote), `cwd`, and `kind` (session/file/diff/html/etc.).
+- **Workspace** is a named grouping/pin set. It is not synonymous with a repo, even though the current local implementation still uses repo-like workspace records in many paths.
+- **Project** is canonical identity for what is being worked on. A git repo is the common Project kind; node, agent provider, and playbook identities are planned/typed cases.
+- **Instance** is a Project materialized on a host/node.
+- **Bench** is cwd + environment inside an Instance. For repo Projects this is usually a git worktree; for node/free contexts it can be an arbitrary cwd.
+- **Worker** is dynamic decoration on a Bench/Tab, not a Project tree node.
+- **Repo binding** is optional decoration. Show repo/git/branch/PR widgets only when the active tab has a verified repo/worktree binding (`repoPath`, `worktreePath`, or a future repo-kind Project/Bench binding).
+
 ## Config Precedence (canonical)
 
 1. CLI flags (`--port`, `--host`, `--config`)
@@ -61,11 +91,12 @@ Backend patterns and conventions for Relay IDE. The server is a composition-root
 
 ## Session Types
 
-Sessions are typed as `'agent' | 'terminal'`. All sessions carry a `workspacePath` (the repo root) and an optional `worktreePath` (null for workspace-root sessions, populated for worktree sessions). There is no `'repo'` or `'worktree'` type distinction — the presence of `worktreePath` encodes location.
+Sessions are typed as `'agent' | 'terminal'`. In the current implementation, local repo sessions carry `workspacePath` / `repoPath` (repo root) plus optional `worktreePath` (null for repo-root sessions, populated for worktree sessions). All sessions carry a `cwd`; remote sessions may carry `nodeId` and `globalSessionId`. In tab-first documentation, use repo/worktree as the local repo Project/Bench case, not as the universal model.
 
-- **Agent sessions** — The selected coding agent (Claude or Codex) runs in either the workspace root (`worktreePath` is null) or a git worktree (`worktreePath` is set). Workspace-root agent sessions support `continuePolicy: 'always'`, which maps to agent-specific continue args. The old `continue: boolean` config is mapped to `continuePolicy` for backward compatibility. New worktree sessions always use `continuePolicy: 'never'` — the `.claude` directory heuristic was removed. Multiple sessions per workspace are allowed.
-- **Terminal sessions** — A bare shell running in tmux in either the workspace root or a worktree. Useful for running commands alongside agent sessions.
-- **Worktree creation** — `POST /workspaces/worktree` creates a new git worktree with the next mountain name (everest, kilimanjaro, denali, ...) tracked per-config via `nextMountainIndex`. The frontend then calls `POST /sessions` with the returned `worktreePath` to start a session in the new worktree. `POST /sessions` does not create worktrees itself.
+- **Agent sessions** — The selected coding agent (built-ins are Claude Code, Codex, OpenCode, and Hermes) runs in either the repo root (`worktreePath` is null), a git worktree (`worktreePath` is set), or a routed node cwd when created through hub/node paths. Workspace-root agent sessions support `continuePolicy: 'always'`, which maps to agent-specific continue args. The old `continue: boolean` config is mapped to `continuePolicy` for backward compatibility. New worktree sessions always use `continuePolicy: 'never'` — the `.claude` directory heuristic was removed. Multiple sessions per workspace/repo are allowed.
+- **Terminal sessions** — A bare shell running in tmux for a local repo/worktree cwd, or a routed terminal on a paired node. Useful for running commands alongside agent sessions. Terminal tabs are still Tabs; their repo/git affordances depend on whether the active tab has a verified repo binding.
+- **Worktree creation** — `POST /workspaces/worktree` creates a new git worktree with the next mountain name (everest, kilimanjaro, denali, ...) tracked per-config via `nextMountainIndex`. The frontend then calls `POST /sessions` with the returned `worktreePath` to start a session in the new worktree. `POST /sessions` does not create worktrees itself. This is the implemented repo Project/Bench path.
+- **Remote node terminal creation** — Frontend creation paths can pass `nodeId`; non-local nodes route through `/hub/nodes/:nodeId/sessions` and return node-scoped session metadata. Remote file/git browsing is still unavailable until #428, so docs must not describe routed terminals as remotely browseable worktrees yet.
 - **Branch auto-rename** — New worktrees with mountain names get `needsBranchRename: true`. The rename instruction is delivered via a sideband `claude -p` invocation (a one-shot non-interactive Claude process) rather than PTY injection, keeping the main session's input stream clean. The `BranchWatcher` (`server/watcher.ts`) uses `fs.watch` on `.git/HEAD` files to detect branch changes reactively and broadcasts `session-renamed` when a branch changes. Additionally, `GET /sessions` enriches session data with live branch names (rate-limited to 10s intervals).
 - **Worktree deletion** (`DELETE /worktrees`) — Validated via `git worktree list` (supports arbitrary paths, not just `.worktrees/`). Main worktree cannot be deleted. Returns 409 if active sessions exist in the worktree (use `force: true` to kill sessions first). `GET /worktrees/status` provides pre-cleanup checks (active sessions, uncommitted changes) and validates that the path is a recognized worktree directory.
 
@@ -113,7 +144,7 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 - `--bg` is shortcut for `install` (installs + starts)
 - Service files generated with current CLI flags baked in
 - Service manager detection is capability-based, not platform-only: macOS uses launchd user agents; Linux uses systemd `--user` only when the user manager is actually available; WSL reports `wsl-systemd` only when WSL systemd and the user bus are both present, otherwise `wsl-manual`.
-- `GET /api/node/manifest` exposes the same local node capability schema as `relay-ide manifest`; hub pairing uses `POST /hub/pair-tokens` to return a short-lived token plus local/SSH/Tailscale bootstrap commands, and `relay-ide node status|logs|doctor` prints redacted diagnostics for reachability, service, token, connect-back, protocol, and heartbeat failures. SSH/Tailscale are bootstrap/fallback transports only; this slice pairs credentials and emits service-manager commands but does not start or maintain `/hub/node-link` for routed sessions yet. See `docs/federated-relay.md` for the full hub/node architecture and runbook.
+- `GET /api/node/manifest` exposes the same local node capability schema as `relay-ide manifest`; hub pairing uses `POST /hub/pair-tokens` to return a short-lived token plus local/SSH/Tailscale bootstrap commands, and `relay-ide node status|logs|doctor` prints redacted diagnostics for reachability, service, token, connect-back, protocol, and heartbeat failures. SSH/Tailscale are bootstrap/fallback transports only. `relay-ide node connect` / `node install` pair credentials and send an initial heartbeat; `relay-ide node link --hub <url>` is the foreground reverse WebSocket that maintains `/hub/node-link`, reports manifest + repo inventory, handles `sessions.create` / `sessions.kill` RPC, and carries routed PTY traffic. File/git RPC and richer log proxying remain follow-ups. See `docs/federated-relay.md` for the full hub/node architecture and runbook.
 - macOS: launchd plist (`RunAtLoad` + `KeepAlive`); Linux: systemd user unit (`Restart=on-failure`)
 - To change port/host: `uninstall` then re-install with new flags
 
@@ -135,4 +166,3 @@ The `server/output-parsers/` directory implements a vendor-extensible registry f
 - [Architecture](ARCHITECTURE.md) — module boundaries and invariants
 - [Frontend](FRONTEND.md) — React 19 patterns and component conventions
 - [Quality](QUALITY.md) — testing patterns and test isolation
-- [Plans](PLANS.md) — active and completed execution plans
