@@ -2,8 +2,8 @@
 
 ## Product Context
 
-- **What this is:** Remote web interface for managing Claude Code CLI sessions across repos and worktrees
-- **Who it's for:** Developers who use Claude Code — power users who live in terminals
+- **What this is:** Hub/node agentic development environment for managing terminal-native agent tabs across local and remote nodes. Repos and worktrees are the golden-path local Project/Bench case, but the user-facing source of truth is the active tab context: `nodeId`, `cwd`, and `kind`.
+- **Who it's for:** Developers who use CLI agents (Claude Code, Codex, OpenCode, and remote node shells) — power users who live in terminals
 - **Space/industry:** Developer tools, CLI companions, terminal multiplexers
 - **Project type:** Web app (mobile-friendly) with terminal-native aesthetic
 
@@ -46,9 +46,9 @@
 - **Merged:** `--status-merged: #a78bfa` — merged PRs, completed state
 - **Info:** `--status-info: #60a5fa` — informational, review actions
 
-### Repo Identity Colors
+### Repo / Project Identity Colors
 
-12 colors for hash-derived repo badge backgrounds. Each repo gets a deterministic color based on its name.
+12 colors for hash-derived repo/project badge backgrounds. Each bound repo Project gets a deterministic color based on its name; free/non-git and unbound remote tabs do not inherit a repo badge just because their `cwd` looks repo-shaped.
 
 ```
 --color-red:     #d97757    (terracotta — also the accent)
@@ -121,7 +121,7 @@ Each color has a muted variant for workspace group backgrounds: `color-mix(in sr
 - **Pattern:** Workspace containers use an outlined border derived from the group's assigned color
 - **Border:** `1px solid color-mix(in srgb, [group-color] 30%, transparent)` — subtle enough to group visually without competing with content
 - **Background:** Pure black (`--bg`) interior — no colored backgrounds
-- **Purpose:** Visual grouping of repos within a workspace, distinguishable at a glance by border color
+- **Purpose:** Visual grouping of pinned Projects and active Tabs within a workspace, distinguishable at a glance by border color. In the current local implementation many workspace rows still represent repo/worktree groups; document that as the repo Project/Bench case, not as the universal model.
 
 ## Alignment Architecture
 
