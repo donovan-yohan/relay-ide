@@ -3,7 +3,7 @@
 ## Product Context
 
 - **What this is:** Hub/node agentic development environment for managing terminal-native agent tabs across local and remote nodes. Repos and worktrees are the golden-path local Project/Bench case, but the user-facing source of truth is the active tab context: `nodeId`, `cwd`, and `kind`.
-- **Who it's for:** Developers who use CLI agents (Claude Code, Codex, OpenCode, and remote node shells) — power users who live in terminals
+- **Who it's for:** Developers who use CLI agents (Claude Code, Codex, OpenCode, Hermes, and remote node shells) — power users who live in terminals
 - **Space/industry:** Developer tools, CLI companions, terminal multiplexers
 - **Project type:** Web app (mobile-friendly) with terminal-native aesthetic
 
