@@ -22,6 +22,7 @@ import './WorkspaceUtilityRail.css';
 
 export interface UtilityRailReviewPanelProps {
   workspacePath: string;
+  stateKey?: string;
   reviewState?: WorkspaceReviewState | undefined;
   onRequestClose?: (() => void) | undefined;
   active?: boolean | undefined;
@@ -67,13 +68,15 @@ function sourceLabel(source: DiffSource, defaultBranch: string): string {
 
 export function UtilityRailReviewPanel({
   workspacePath,
+  stateKey,
   reviewState,
   onRequestClose,
   active = true,
 }: UtilityRailReviewPanelProps) {
+  const workspaceStateKey = stateKey ?? workspacePath;
   const queryClient = useQueryClient();
   const storeReviewState = useUiStore(
-    (s) => s.utilityRailByWorkspace[workspacePath]?.review
+    (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review
   );
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const setFileDiffViewMode = useUiStore((s) => s.setFileDiffViewMode);
@@ -116,9 +119,9 @@ export function UtilityRailReviewPanel({
       (review.defaultBranch === 'main' || review.defaultBranch === '') &&
       branch !== review.defaultBranch
     ) {
-      setReviewDefaultBranch(workspacePath, branch);
+      setReviewDefaultBranch(workspaceStateKey, branch);
     }
-  }, [defaultBranchQuery.data, review.defaultBranch, setReviewDefaultBranch, workspacePath]);
+  }, [defaultBranchQuery.data, review.defaultBranch, setReviewDefaultBranch, workspaceStateKey, workspacePath]);
 
   const filesQuery = useQuery<ChangedFilesResponse>({
     queryKey: changedFilesQueryKey(workspacePath, base),
@@ -143,8 +146,8 @@ export function UtilityRailReviewPanel({
     if (activeFilePath && files.some((file) => file.path === activeFilePath)) {
       return;
     }
-    setReviewActiveFile(workspacePath, files[0]?.path ?? null);
-  }, [activeFilePath, files, filesQuery.isError, filesQuery.isPending, setReviewActiveFile, workspacePath]);
+    setReviewActiveFile(workspaceStateKey, files[0]?.path ?? null);
+  }, [activeFilePath, files, filesQuery.isError, filesQuery.isPending, setReviewActiveFile, workspaceStateKey, workspacePath]);
 
   const {
     diff: fileDiff,
@@ -177,16 +180,16 @@ export function UtilityRailReviewPanel({
 
   const handleSelectFile = useCallback(
     (file: ChangedFile) => {
-      setReviewActiveFile(workspacePath, file.path);
+      setReviewActiveFile(workspaceStateKey, file.path);
     },
-    [setReviewActiveFile, workspacePath]
+    [setReviewActiveFile, workspaceStateKey]
   );
 
   const handleSourceChange = useCallback(
     (source: DiffSource) => {
-      setReviewDiffSource(workspacePath, source);
+      setReviewDiffSource(workspaceStateKey, source);
     },
-    [setReviewDiffSource, workspacePath]
+    [setReviewDiffSource, workspaceStateKey]
   );
 
   const handleModeToggle = useCallback(() => {
@@ -197,10 +200,10 @@ export function UtilityRailReviewPanel({
 
   const branchBase = review.diffSource === 'branch' ? base : null;
   const openBranchPanel = useCallback(() => {
-    openUtilityRailTab(workspacePath, 'branch', {
+    openUtilityRailTab(workspaceStateKey, 'branch', {
       branchBase,
     });
-  }, [branchBase, openUtilityRailTab, workspacePath]);
+  }, [branchBase, openUtilityRailTab, workspaceStateKey]);
 
   const scrollToHunk = useCallback(
     (delta: number) => {
@@ -212,10 +215,10 @@ export function UtilityRailReviewPanel({
         0,
         Math.min(hunks.length - 1, review.currentHunkIndex + delta)
       );
-      setReviewCurrentHunkIndex(workspacePath, target);
+      setReviewCurrentHunkIndex(workspaceStateKey, target);
       hunks[target]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     },
-    [review.currentHunkIndex, setReviewCurrentHunkIndex, workspacePath]
+    [review.currentHunkIndex, setReviewCurrentHunkIndex, workspaceStateKey]
   );
 
   const handleKeyDown = useCallback(
@@ -238,11 +241,11 @@ export function UtilityRailReviewPanel({
         if (onRequestClose) {
           onRequestClose();
         } else {
-          useUiStore.getState().setSelectedUtilityRailTab(workspacePath, null);
+          useUiStore.getState().setSelectedUtilityRailTab(workspaceStateKey, null);
         }
       }
     },
-    [onRequestClose, scrollToHunk, workspacePath]
+    [onRequestClose, scrollToHunk, workspaceStateKey]
   );
 
   useEffect(() => {

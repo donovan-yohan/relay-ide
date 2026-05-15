@@ -12,6 +12,7 @@ import './UtilityRailBranchPanel.css';
 
 export interface UtilityRailBranchPanelProps {
   workspacePath: string;
+  stateKey?: string;
 }
 
 function divergenceKey(workspacePath: string, base: string | null) {
@@ -149,12 +150,14 @@ function EmptyOrError({ data }: { data: BranchDivergenceSummary }) {
 
 export function UtilityRailBranchPanel({
   workspacePath,
+  stateKey,
 }: UtilityRailBranchPanelProps) {
+  const workspaceStateKey = stateKey ?? workspacePath;
   const queryClient = useQueryClient();
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const setUtilityBranchBase = useUiStore((s) => s.setUtilityBranchBase);
   const selectedBase = useUiStore(
-    (s) => s.getUtilityRailState(workspacePath).branchBase ?? null
+    (s) => s.getUtilityRailState(workspaceStateKey).branchBase ?? null
   );
 
   const query = useQuery<BranchDivergenceSummary>({
@@ -171,8 +174,8 @@ export function UtilityRailBranchPanel({
   useEffect(() => {
     if (!data || selectedBase !== null) return;
     const nextBase = data.selectedBase?.ref ?? data.baseCandidates[0]?.ref;
-    if (nextBase) setUtilityBranchBase(workspacePath, nextBase);
-  }, [data, selectedBase, setUtilityBranchBase, workspacePath]);
+    if (nextBase) setUtilityBranchBase(workspaceStateKey, nextBase);
+  }, [data, selectedBase, setUtilityBranchBase, workspaceStateKey]);
 
   const dirtySummary = useMemo(() => {
     if (!data) return '0 files';
@@ -194,12 +197,12 @@ export function UtilityRailBranchPanel({
   }, [queryClient, selectedBase, workspacePath]);
 
   const openChanges = useCallback(() => {
-    openUtilityRailTab(workspacePath, 'changes');
-  }, [openUtilityRailTab, workspacePath]);
+    openUtilityRailTab(workspaceStateKey, 'changes');
+  }, [openUtilityRailTab, workspaceStateKey]);
 
   const openReview = useCallback(() => {
-    openUtilityRailTab(workspacePath, 'review');
-  }, [openUtilityRailTab, workspacePath]);
+    openUtilityRailTab(workspaceStateKey, 'review');
+  }, [openUtilityRailTab, workspaceStateKey]);
 
   if (query.isPending && !data) {
     return (
@@ -268,7 +271,7 @@ export function UtilityRailBranchPanel({
           className="branch-select"
           value={currentBase}
           onChange={(event) =>
-            setUtilityBranchBase(workspacePath, event.target.value || null)
+            setUtilityBranchBase(workspaceStateKey, event.target.value || null)
           }
           disabled={baseOptions.length === 0 && !shouldShowMissingBaseOption}
         >

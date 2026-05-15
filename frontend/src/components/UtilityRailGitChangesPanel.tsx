@@ -7,6 +7,7 @@ import './UtilityRailGitChangesPanel.css';
 
 export interface UtilityRailGitChangesPanelProps {
   workspacePath: string;
+  stateKey?: string;
 }
 
 interface ChangedFilesResponse {
@@ -77,12 +78,14 @@ function FileRow({ file, selected, onClick }: RowProps) {
 
 export function UtilityRailGitChangesPanel({
   workspacePath,
+  stateKey,
 }: UtilityRailGitChangesPanelProps) {
+  const workspaceStateKey = stateKey ?? workspacePath;
   const queryClient = useQueryClient();
   const openUtilityRailTab = useUiStore((s) => s.openUtilityRailTab);
   const openReviewWorkspace = useUiStore((s) => s.openReviewWorkspace);
   const reviewFilePath = useUiStore(
-    (s) => s.utilityRailByWorkspace[workspacePath]?.review?.activeFilePath ?? null
+    (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review?.activeFilePath ?? null
   );
 
   const workingQuery = useQuery<ChangedFilesResponse>({
@@ -115,8 +118,8 @@ export function UtilityRailGitChangesPanel({
   }, [queryClient, workspacePath]);
 
   const openBranchPanel = useCallback(() => {
-    openUtilityRailTab(workspacePath, 'branch');
-  }, [openUtilityRailTab, workspacePath]);
+    openUtilityRailTab(workspaceStateKey, 'branch');
+  }, [openUtilityRailTab, workspaceStateKey]);
 
   const groups = useMemo(() => {
     const working = workingQuery.data?.files ?? [];
@@ -130,16 +133,16 @@ export function UtilityRailGitChangesPanel({
 
   const handleStagedClick = useCallback(
     (file: ChangedFile) => {
-      openReviewWorkspace(workspacePath, { filePath: file.path, base: 'cached' });
+      openReviewWorkspace(workspaceStateKey, { filePath: file.path, base: 'cached' });
     },
-    [openReviewWorkspace, workspacePath]
+    [openReviewWorkspace, workspaceStateKey]
   );
 
   const handleWorkingClick = useCallback(
     (file: ChangedFile) => {
-      openReviewWorkspace(workspacePath, { filePath: file.path, base: '' });
+      openReviewWorkspace(workspaceStateKey, { filePath: file.path, base: '' });
     },
-    [openReviewWorkspace, workspacePath]
+    [openReviewWorkspace, workspaceStateKey]
   );
 
   const selectedPath = reviewFilePath;

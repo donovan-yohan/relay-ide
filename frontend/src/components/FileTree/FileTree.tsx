@@ -23,6 +23,7 @@ import {
 } from '../../lib/api.js';
 import { useUiStore, type RightSidebarTab } from '../../lib/stores/ui.js';
 import type { ChangedFile, FileChangeStatus } from '../../lib/types.js';
+import type { UtilityRailDisabledReason } from '../../lib/utility-rail-context.js';
 import { FileTreeRow } from './FileTreeRow.js';
 import './file-tree.css';
 
@@ -34,6 +35,9 @@ export interface FileTreeHandle {
 
 export interface FileTreeProps {
   workspacePath: string;
+  stateKey?: string;
+  gitWorkspacePath?: string;
+  gitDisabledReason?: UtilityRailDisabledReason | null;
   changedFilesData?: string[];
 }
 
@@ -58,6 +62,12 @@ interface ChangedFilesResponse {
   error?: string;
 }
 
+const EMPTY_CHANGED_FILES_AGGREGATE = {
+  additions: 0,
+  deletions: 0,
+  fileCount: 0,
+};
+
 function changedFilesQueryKey(workspacePath: string, base: string) {
   return ['changedFiles', workspacePath, base] as const;
 }
@@ -67,11 +77,17 @@ function defaultBranchQueryKey(workspacePath: string) {
 }
 
 export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
-  function FileTree({ workspacePath }, ref) {
+  function FileTree(
+    { workspacePath, stateKey, gitWorkspacePath, gitDisabledReason },
+    ref
+  ) {
+    const workspaceStateKey = stateKey ?? workspacePath;
+    const effectiveGitWorkspacePath = gitWorkspacePath ?? workspacePath;
+    const gitEnabled = Boolean(effectiveGitWorkspacePath) && !gitDisabledReason;
     const rightSidebarTab = useUiStore((s) => s.rightSidebarTab);
     const setRightSidebarTab = useUiStore((s) => s.setRightSidebarTab);
     const reviewState = useUiStore(
-      (s) => s.utilityRailByWorkspace[workspacePath]?.review
+      (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review
     );
     const globalFileDiffSource = useUiStore((s) => s.fileDiffSource);
     const globalFileDiffDefaultBranch = useUiStore(
@@ -95,9 +111,9 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
     );
 
     const defaultBranchQuery = useQuery<string>({
-      queryKey: defaultBranchQueryKey(workspacePath),
-      queryFn: () => fetchDefaultBranch(workspacePath),
-      enabled: Boolean(workspacePath),
+      queryKey: defaultBranchQueryKey(effectiveGitWorkspacePath),
+      queryFn: () => fetchDefaultBranch(effectiveGitWorkspacePath),
+      enabled: gitEnabled,
       staleTime: 5 * 60 * 1000,
       retry: false,
     });
@@ -109,7 +125,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         setFileDiffDefaultBranch(branch);
       }
       if ((!reviewDefaultBranch || reviewDefaultBranch === 'main') && branch !== reviewDefaultBranch) {
-        setReviewDefaultBranch(workspacePath, branch);
+        setReviewDefaultBranch(workspaceStateKey, branch);
       }
     }, [
       defaultBranchQuery.data,
@@ -117,17 +133,17 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
       reviewDefaultBranch,
       setFileDiffDefaultBranch,
       setReviewDefaultBranch,
-      workspacePath,
+      workspaceStateKey,
     ]);
 
     const query = useQuery<ChangedFilesResponse>({
-      queryKey: changedFilesQueryKey(workspacePath, base),
+      queryKey: changedFilesQueryKey(effectiveGitWorkspacePath, base),
       queryFn: async () => {
-        const data = await fetchChangedFiles(workspacePath, base);
+        const data = await fetchChangedFiles(effectiveGitWorkspacePath, base);
         if (data.error) throw new Error(data.error);
         return data;
       },
-      enabled: Boolean(workspacePath),
+      enabled: gitEnabled,
       staleTime: 2 * 1000,
       retry: false,
     });
@@ -178,23 +194,33 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
     }, [allFilesLoading, allFilesTree.length, loadAllFiles, rightSidebarTab]);
 
     const refresh = useCallback(() => {
-      queryClient.invalidateQueries({
-        queryKey: changedFilesQueryKey(workspacePath, base),
-      });
-      queryClient.invalidateQueries({
-        queryKey: defaultBranchQueryKey(workspacePath),
-      });
+      if (gitEnabled) {
+        queryClient.invalidateQueries({
+          queryKey: changedFilesQueryKey(effectiveGitWorkspacePath, base),
+        });
+        queryClient.invalidateQueries({
+          queryKey: defaultBranchQueryKey(effectiveGitWorkspacePath),
+        });
+      }
       if (rightSidebarTab === 'all-files') void loadAllFiles();
-    }, [base, loadAllFiles, queryClient, rightSidebarTab, workspacePath]);
+    }, [
+      base,
+      effectiveGitWorkspacePath,
+      gitEnabled,
+      loadAllFiles,
+      queryClient,
+      rightSidebarTab,
+    ]);
 
     useImperativeHandle(ref, () => ({ refresh }), [refresh]);
 
-    const files = useMemo(() => query.data?.files ?? [], [query.data?.files]);
-    const aggregate = query.data?.aggregate ?? {
-      additions: 0,
-      deletions: 0,
-      fileCount: 0,
-    };
+    const files = useMemo(
+      () => (gitEnabled ? (query.data?.files ?? []) : []),
+      [gitEnabled, query.data?.files]
+    );
+    const aggregate = gitEnabled
+      ? (query.data?.aggregate ?? EMPTY_CHANGED_FILES_AGGREGATE)
+      : EMPTY_CHANGED_FILES_AGGREGATE;
 
     // ── Filter + tree-state ──
     const [filterText, setFilterText] = useState('');
@@ -259,7 +285,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
 
     const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
     const reviewFilePath = useUiStore(
-      (s) => s.utilityRailByWorkspace[workspacePath]?.review?.activeFilePath ?? null
+      (s) => s.utilityRailByWorkspace[workspaceStateKey]?.review?.activeFilePath ?? null
     );
     const selectedPath = useMemo(() => {
       if (rightSidebarTab === 'changes') return reviewFilePath;
@@ -282,12 +308,12 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         }
         const isChanged = files.some((f) => f.path === node.path);
         if (isChanged) {
-          openReviewWorkspace(workspacePath, { filePath: node.path });
+          openReviewWorkspace(workspaceStateKey, { filePath: node.path });
         } else {
           openFileTab(node.path, false);
         }
       },
-      [files, openFileTab, openReviewWorkspace, workspacePath]
+      [files, openFileTab, openReviewWorkspace, workspaceStateKey]
     );
 
     const toggleAllFilesDir = useCallback(
@@ -357,8 +383,9 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
       [visibleNodes, focusedIndex, handleNodeClick]
     );
 
-    const isLoading = query.isPending && files.length === 0;
-    const errorMsg = query.error instanceof Error ? query.error.message : null;
+    const isLoading = gitEnabled && query.isPending && files.length === 0;
+    const errorMsg =
+      gitEnabled && query.error instanceof Error ? query.error.message : null;
 
     function renderAllFilesNode(
       entries: BrowseEntry[],
