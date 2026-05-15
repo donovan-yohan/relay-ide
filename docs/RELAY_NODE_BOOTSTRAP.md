@@ -20,6 +20,7 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Pair node (pair-only)          | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
 | Pair + install service         | `relay-ide node install --hub <url> --pair-token <token> --service <mode>`                               |
+| Hold reverse node link         | `relay-ide node link --hub <url>`                                                                        |
 | Check node status              | `relay-ide node status`                                                                                  |
 | Read service logs              | `relay-ide node logs`                                                                                    |
 | Diagnose hub reachability      | `relay-ide node doctor --hub <url>`                                                                      |
@@ -49,7 +50,7 @@ On the target machine, run one of the following depending on the desired service
 # Pair-only: stores credential, sends one heartbeat, then exits
 relay-ide node connect --hub https://hub.example.com --pair-token <token>
 
-# Pair + install a persistent background service
+# Pair + install generic service setup (does not hold /hub/node-link by itself)
 relay-ide node install --hub https://hub.example.com --pair-token <token> --service launchd
 ```
 
@@ -108,13 +109,19 @@ This file is required for the node to authenticate heartbeats and the reverse We
 
 ### 4. Verify the node appears online
 
-On the node:
+On the node, hold the steady-state reverse link:
+
+```bash
+relay-ide node link --hub https://hub.example.com
+```
+
+Then check local diagnostics from another shell if needed:
 
 ```bash
 relay-ide node status
 ```
 
-On the hub, check the Environment Picker or call `GET /nodes`.
+On the hub, check the Environment Picker or call `GET /nodes`. A pair-only `node connect`/`node install` run sends one heartbeat, but routed sessions require the live `/hub/node-link` connection; if `node link` is not running the hub should treat the node as unavailable for remote PTY attachment.
 
 ## Per-Platform Service Setup
 
@@ -123,8 +130,11 @@ On the hub, check the Environment Picker or call `GET /nodes`.
 The service is installed as a user agent under `~/Library/LaunchAgents/com.relay-ide.plist`.
 
 ```bash
-# Pair + install + start
+# Pair + install generic service setup
 relay-ide node install --hub <url> --pair-token <token> --service launchd
+
+# Hold the steady-state reverse link for routed sessions
+relay-ide node link --hub <url>
 
 # Check status
 relay-ide node status
@@ -149,8 +159,11 @@ The plist uses `RunAtLoad` + `KeepAlive`. Logs are written to `~/.config/relay-i
 The service is installed as a per-user unit under `~/.config/systemd/user/relay-ide.service`.
 
 ```bash
-# Pair + install + start
+# Pair + install generic service setup
 relay-ide node install --hub <url> --pair-token <token> --service systemd-user
+
+# Hold the steady-state reverse link for routed sessions
+relay-ide node link --hub <url>
 
 # Check status
 relay-ide node status
@@ -195,8 +208,8 @@ For machines where no background service manager is available, or when you want 
 # Pair only
 relay-ide node connect --hub <url> --pair-token <token>
 
-# Then run Relay in the foreground
-relay-ide --port 3456
+# Then hold the reverse node link in the foreground
+relay-ide node link --hub <url>
 ```
 
 Manual mode has no Relay-managed logs. Use terminal output or redirect to a file.
@@ -375,7 +388,7 @@ All CLI output, diagnostics, and bootstrap command generation redact sensitive t
 | `pair_...` tokens                      | `pair_…redacted`                  |
 | `node_...._....secret_...` credentials | `node_…redacted.secret_…redacted` |
 | `secret_...` fragments                 | `secret_…redacted`                |
-| `Authorization: Bearer ***        | `Authorization: Bearer *** |
+| `Authorization: Bearer <token>`        | `Authorization: Bearer …redacted` |
 | `Bearer <token>`                       | `Bearer …redacted`                |
 
 The redaction is applied by `redactBootstrapSecrets()` in `shared/bootstrap-diagnostics.ts`.

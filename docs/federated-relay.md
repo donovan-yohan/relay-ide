@@ -18,6 +18,24 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 - **Node** — executes PTY sessions, hosts git worktrees, runs agent CLIs, reports capability manifest and repo inventory to the hub. The node always initiates the outbound connection to the hub.
 - **Client** — the browser. It may run on any device; execution happens on the selected node.
 
+## Current Implementation Status
+
+Implemented/current:
+
+- Pairing: `POST /hub/pair-tokens`, `POST /hub/pairing/exchange`, credential storage, heartbeat, `GET /nodes`, and `DELETE /nodes/:nodeId` are implemented in `server/hub-node-router.ts` and `server/hub-node-registry.ts`.
+- Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
+- Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
+- Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary; tmux-backed resume ships, raw fallback exists for future gates, and the hub currently requires tmux-capable nodes for routed sessions.
+- Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
+- Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
+
+Planned/deferred:
+
+- #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) is not implemented in source; current mentions live in spikes/design docs.
+- #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
+- #427 full trust tiers, two-token confirmation, and audit-log sink are not implemented. Current security model is explicit pairing + revocable node credential + private-infra trust.
+- #444 six-layer IA is product direction, not the persisted backend model in this doc.
+
 ## Hub/Node/Client Terminology
 
 | Term                  | Definition                                                                                                                                                                                                                                            |
@@ -148,7 +166,7 @@ relay-ide node install \
   --service launchd          # or systemd-user, wsl-systemd, wsl-manual, manual
 ```
 
-Both commands exchange the pair token, receive a persistent credential, and send an initial heartbeat. `node install` additionally writes a launchd plist or systemd user unit and starts the service.
+Both commands exchange the pair token, receive a persistent credential, write `node-credential.json`, and send an initial authenticated heartbeat. `node install` then runs the generic Relay service install path for supported service modes. In the current CLI, neither command opens or maintains the persistent reverse WebSocket; run `relay-ide node link --hub <url>` for steady-state session routing.
 
 > Bootstrap diagnostics pair credentials and install/start the generic Relay service. The persistent `/hub/node-link` reverse WebSocket is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager.
 
@@ -489,8 +507,9 @@ Operator commands and per-platform service setup have moved to `docs/RELAY_NODE_
 
 1. Open the hub UI → Environment Picker → Add Node.
 2. Copy the generated pair token.
-3. On the target machine, run `relay-ide node connect` (pair-only) or `relay-ide node install --service <mode>`.
-4. Verify the node appears online in the hub dashboard.
+3. On the target machine, run `relay-ide node connect` (pair-only) or `relay-ide node install --service <mode>` to store credentials and send the initial heartbeat.
+4. Run `relay-ide node link --hub <url>` (or an operator-managed wrapper around it) to keep the reverse WebSocket online for routed sessions.
+5. Verify the node appears online in the hub dashboard.
 
 ### Removing a node
 
