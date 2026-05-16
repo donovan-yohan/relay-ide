@@ -280,6 +280,37 @@ describe('security audit primitives', () => {
     });
   });
 
+  it('does not launder tail truncation when appending after deletion', () => {
+    const dbPath = tmpDbPath();
+    const log = new SecurityAuditLog(dbPath);
+    log.append(sampleEvent({ eventId: 'evt-1' }));
+    log.append(sampleEvent({ eventId: 'evt-2' }));
+    log.append(sampleEvent({ eventId: 'evt-3' }));
+    log.close();
+
+    const db = new Database(dbPath);
+    db.exec('DROP TRIGGER security_audit_no_delete');
+    db.prepare('DELETE FROM security_audit_log WHERE sequence = 3').run();
+    db.close();
+
+    const reopened = new SecurityAuditLog(dbPath);
+    expect(() =>
+      reopened.append(sampleEvent({ eventId: 'evt-4' }))
+    ).toThrow(/checkpoint mismatch/);
+    reopened.close();
+
+    expect(verifySecurityAuditLog(dbPath)).toMatchObject({
+      ok: false,
+      entriesVerified: 2,
+      break: {
+        sequence: 3,
+        reason: 'tail_checkpoint_mismatch',
+        expected: 3,
+        actual: 2,
+      },
+    });
+  });
+
   it('reports corrupt or partial storage instead of silently trusting it', () => {
     const dbPath = tmpDbPath();
     fs.writeFileSync(dbPath, 'not a sqlite database');

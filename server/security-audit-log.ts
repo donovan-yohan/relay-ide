@@ -59,7 +59,12 @@ BEGIN
   SET latest_sequence = NEW.sequence,
       latest_hash = NEW.entry_hash,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-  WHERE id = 1;
+  WHERE id = 1
+    AND latest_sequence = NEW.sequence - 1
+    AND (
+      latest_hash = NEW.prev_hash
+      OR (latest_hash IS NULL AND NEW.prev_hash IS NULL)
+    );
 END;
 `;
 
@@ -139,6 +144,7 @@ export class SecurityAuditLog {
           'SELECT sequence, entry_hash FROM security_audit_log ORDER BY sequence DESC LIMIT 1'
         )
         .get() as { sequence: number; entry_hash: string } | undefined;
+      assertCheckpointMatchesTail(this.db, last);
       const entry = normalizeSecurityAuditEntry(input, {
         sequence: last ? last.sequence + 1 : 1,
         prevHash: last?.entry_hash ?? null,
@@ -353,6 +359,30 @@ function ensureSecurityAuditCheckpoint(db: Database.Database): void {
     latestSequence: tail?.sequence ?? 0,
     latestHash: tail?.entry_hash ?? null,
   });
+}
+
+function assertCheckpointMatchesTail(
+  db: Database.Database,
+  tail: { sequence: number; entry_hash: string } | undefined
+): void {
+  const checkpoint = db
+    .prepare(
+      'SELECT latest_sequence, latest_hash FROM security_audit_checkpoint WHERE id = 1'
+    )
+    .get() as AuditCheckpointRow | undefined;
+  if (!checkpoint) {
+    throw new Error('security audit checkpoint is missing');
+  }
+  const tailSequence = tail?.sequence ?? 0;
+  const tailHash = tail?.entry_hash ?? null;
+  if (
+    checkpoint.latest_sequence !== tailSequence ||
+    checkpoint.latest_hash !== tailHash
+  ) {
+    throw new Error(
+      `security audit checkpoint mismatch: checkpoint tail ${checkpoint.latest_sequence}/${checkpoint.latest_hash ?? 'null'} does not match current tail ${tailSequence}/${tailHash ?? 'null'}`
+    );
+  }
 }
 
 function rowToEntry(row: AuditRow): NormalizedSecurityAuditEntry | null {
