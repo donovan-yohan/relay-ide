@@ -7,6 +7,8 @@ export const RELAY_CAPABILITY_BITS = [
   'session:create:terminal',
   'session:create:agent',
   'session:attach',
+  'tab:mode:set-agent',
+  'tab:intervention:read',
   'rpc:fs:list',
   'rpc:fs:read',
   'rpc:fs:tail',

@@ -151,9 +151,11 @@ import {
 import {
   actorFromRequestBody,
   capabilityDecisionFromRequest,
+  capabilitiesDecisionFromRequest,
   capabilityError,
   clampInterventionLimit,
   CONTROL_READ_CAPABILITY,
+  CONTROL_SESSION_CAPABILITY,
   CONTROL_WRITE_CAPABILITY,
   createAgentDrivenInitialControlState,
   errorStatus as sessionControlErrorStatus,
@@ -1394,6 +1396,9 @@ async function main(): Promise<void> {
   if (startupConfig.control?.coDrivenAutoRevertMs !== undefined) {
     sessionConfig.coDrivenAutoRevertMs = startupConfig.control.coDrivenAutoRevertMs;
   }
+  if (securityAuditLog) {
+    sessionConfig.securityAuditSink = securityAuditLog;
+  }
   sessions.configure(sessionConfig);
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
@@ -2014,7 +2019,10 @@ async function main(): Promise<void> {
   });
 
   app.get('/sessions/:id/interventions', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, INTERVENTION_READ_CAPABILITY);
+    const decision = capabilitiesDecisionFromRequest(req, [
+      CONTROL_READ_CAPABILITY,
+      INTERVENTION_READ_CAPABILITY,
+    ]);
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
@@ -2047,7 +2055,10 @@ async function main(): Promise<void> {
   });
 
   app.post('/sessions/:id/control/hand-back', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_WRITE_CAPABILITY);
+    const decision = capabilitiesDecisionFromRequest(req, [
+      CONTROL_SESSION_CAPABILITY,
+      CONTROL_WRITE_CAPABILITY,
+    ]);
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });

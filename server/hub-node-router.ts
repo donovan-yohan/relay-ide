@@ -59,7 +59,7 @@ import {
   policyDecisionToRelayError,
   requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
-  sessionCreateCapability,
+  sessionCreateCapabilities,
 } from './hub-policy-evaluator.js';
 
 interface HubNodeSessionTransport {
@@ -1169,7 +1169,10 @@ export function createHubNodeRouter(
       nodeId,
       intent: { action: 'sessions.create', target: nodeId },
       scope: sessionCreatePolicyScope(nodeId, body),
-      requiredCapabilities: [sessionCreateCapability(sessionType)],
+      requiredCapabilities: sessionCreateCapabilities({
+        sessionType,
+        controlMode: body['controlMode'],
+      }),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
       params: body,
       now: createNow,

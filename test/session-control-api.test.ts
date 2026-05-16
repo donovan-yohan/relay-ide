@@ -96,15 +96,23 @@ describe('session control API helpers', () => {
 
   it('surfaces the #427 capability placeholder and rejects explicit missing capabilities', () => {
     expect(
-      evaluateControlCapabilityPlaceholder(undefined, 'session:intervention:read')
-    ).toMatchObject({ decision: 'allow', placeholder: true, capability: 'session:intervention:read' });
+      evaluateControlCapabilityPlaceholder(undefined, 'tab:intervention:read')
+    ).toMatchObject({ decision: 'allow', placeholder: true, capability: 'tab:intervention:read' });
 
     expect(
-      evaluateControlCapabilityPlaceholder('session:read,session:attach', 'session:intervention:read')
+      evaluateControlCapabilityPlaceholder('session:read,session:attach', 'tab:intervention:read')
     ).toMatchObject({
       decision: 'deny',
       reasonCode: 'CAPABILITY_REQUIRED',
-      capability: 'session:intervention:read',
+      capability: 'tab:intervention:read',
+    });
+
+    expect(
+      evaluateControlCapabilityPlaceholder('session:read,tab:intervention:read', 'tab:mode:set-agent')
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'CAPABILITY_REQUIRED',
+      capability: 'tab:mode:set-agent',
     });
   });
 

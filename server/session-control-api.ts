@@ -6,14 +6,16 @@ import type {
   InterventionRecord,
 } from '../shared/control-state.js';
 
-export const CONTROL_READ_CAPABILITY = 'session:control:read' as const;
-export const INTERVENTION_READ_CAPABILITY = 'session:intervention:read' as const;
-export const CONTROL_WRITE_CAPABILITY = 'session:control:write' as const;
+export const CONTROL_READ_CAPABILITY = 'session:read' as const;
+export const INTERVENTION_READ_CAPABILITY = 'tab:intervention:read' as const;
+export const CONTROL_WRITE_CAPABILITY = 'tab:mode:set-agent' as const;
+export const CONTROL_SESSION_CAPABILITY = 'session:attach' as const;
 
 export type SessionControlCapability =
   | typeof CONTROL_READ_CAPABILITY
   | typeof INTERVENTION_READ_CAPABILITY
-  | typeof CONTROL_WRITE_CAPABILITY;
+  | typeof CONTROL_WRITE_CAPABILITY
+  | typeof CONTROL_SESSION_CAPABILITY;
 
 export interface ControlCapabilityDecision {
   decision: 'allow' | 'deny';
@@ -103,6 +105,20 @@ export function capabilityDecisionFromRequest(
 ): ControlCapabilityDecision {
   const header = req.header('x-relay-capabilities') ?? undefined;
   return evaluateControlCapabilityPlaceholder(header, capability);
+}
+
+export function capabilitiesDecisionFromRequest(
+  req: Request,
+  capabilities: readonly SessionControlCapability[]
+): ControlCapabilityDecision {
+  const header = req.header('x-relay-capabilities') ?? undefined;
+  let firstAllow: ControlCapabilityDecision | undefined;
+  for (const capability of capabilities) {
+    const decision = evaluateControlCapabilityPlaceholder(header, capability);
+    if (decision.decision !== 'allow') return decision;
+    firstAllow ??= decision;
+  }
+  return firstAllow ?? evaluateControlCapabilityPlaceholder(header, CONTROL_READ_CAPABILITY);
 }
 
 export function errorStatus(error: SessionControlError): number {

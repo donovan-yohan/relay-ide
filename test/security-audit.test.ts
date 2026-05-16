@@ -7,6 +7,7 @@ import {
   classifySecurityAuditWriteFailure,
   hashAuditMaterial,
   redactAuditValue,
+  securityAuditEntryForTabControlEvent,
   SECURITY_AUDIT_EVENT_TYPES,
   type SecurityAuditEntryInput,
 } from '../shared/security-audit.js';
@@ -183,6 +184,95 @@ describe('security audit primitives', () => {
     expect(bytes).not.toContain('raw-pair-token');
     expect(bytes).not.toContain('terminal stream');
     expect(bytes).not.toContain('raw-env-secret');
+  });
+
+  it('correlates tab control events without copying raw intervention payloads', () => {
+    const dbPath = tmpDbPath();
+    const log = new SecurityAuditLog(dbPath);
+    const rawTypedInput = 'deploy --token raw-control-secret';
+    const entry = securityAuditEntryForTabControlEvent({
+      eventId: 'intervention-evt-1',
+      type: 'tab.intervention',
+      occurredAt: '2026-05-16T00:00:00.000Z',
+      identity: {
+        nodeId: 'node-a',
+        sessionId: 'session-a',
+        globalSessionId: 'node-a:session-a',
+        cwd: '/repo',
+      },
+      actor: { kind: 'human', id: 'operator-a', displayName: 'operator' },
+      reason: 'human input',
+      controlMode: 'co-driven',
+      intervention: {
+        id: 'intervention-evt-1',
+        sessionId: 'session-a',
+        tabId: 'node-a:session-a',
+        nodeId: 'node-a',
+        globalSessionId: 'node-a:session-a',
+        cwd: '/repo',
+        timestamp: '2026-05-16T00:00:00.000Z',
+        author: { kind: 'human', id: 'operator-a', displayName: 'operator' },
+        source: 'pty-input',
+        kind: 'human-input',
+        payloadPreview: rawTypedInput,
+        redaction: {
+          redacted: true,
+          byteCount: rawTypedInput.length,
+          charCount: rawTypedInput.length,
+          lineCount: 1,
+          hashSha256: 'abc123',
+          classes: ['secret-like'],
+        },
+        modeBefore: 'agent-driven',
+        modeAfter: 'co-driven',
+      },
+    });
+
+    const persisted = log.append(entry);
+    log.close();
+
+    expect(persisted).toMatchObject({
+      eventId: 'intervention-evt-1',
+      eventType: 'bridge_event',
+      decision: 'recorded',
+      reasonCode: 'TAB_INTERVENTION_RECORDED',
+      node: { nodeId: 'node-a' },
+      sessionId: 'session-a',
+      intent: { action: 'tab.intervention', target: 'node-a:session-a' },
+      correlationId: 'intervention-evt-1',
+      requiredBits: [],
+      grantedBits: [],
+    });
+    expect(entry.material.params).toMatchObject({
+      sourceEventId: 'intervention-evt-1',
+      interventionKind: 'human-input',
+      interventionSource: 'pty-input',
+      payload: { hashSha256: 'abc123', classes: ['secret-like'] },
+      modeBefore: 'agent-driven',
+      modeAfter: 'co-driven',
+    });
+    expect(JSON.stringify(entry)).not.toContain(rawTypedInput);
+    expect(fs.readFileSync(dbPath, 'utf8')).not.toContain(rawTypedInput);
+  });
+
+  it('marks agent-driven mode restore audit entries with only the mode-set capability', () => {
+    const entry = securityAuditEntryForTabControlEvent({
+      eventId: 'mode-evt-1',
+      type: 'tab.mode-changed',
+      occurredAt: '2026-05-16T00:00:01.000Z',
+      identity: { nodeId: 'node-a', sessionId: 'session-a', cwd: '/repo' },
+      actor: { kind: 'agent', id: 'worker-1', nodeId: 'node-a' },
+      reason: 'hand-back',
+      previousControlMode: 'co-driven',
+      controlMode: 'agent-driven',
+    });
+
+    expect(entry.requiredBits).toEqual(['tab:mode:set-agent']);
+    expect(entry.grantedBits).toEqual(['tab:mode:set-agent']);
+    expect(entry.deniedBits).toEqual([]);
+    expect(entry.requiredBits).not.toEqual(
+      expect.arrayContaining(['rpc:fs:write', 'rpc:git:write', 'pty:exec:arbitrary'])
+    );
   });
 
   it('verifies a clean append-only chain', () => {

@@ -127,9 +127,11 @@ Routed and local session summaries carry a product `controlMode` contract that i
 
 The summary fields are flattened on `SessionSummary`: `activeActors`, optional `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness` (`fresh`, `stale`, `unknown`), and optional `controlReason`. This lets the hub/client render current control state from session list/create responses without fetching intervention history. Legacy or backfilled sessions normalize to `human-driven` with `unknown` freshness.
 
-Reserved node-link event envelope names for later intervention work are `tab.mode-changed` and `tab.intervention` on the `events` channel. Their identity shape uses `nodeId`, node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree fields (`repoPath`, `worktreePath`, `repoName`, `branchName`) are optional decoration so local repo tabs, remote node tabs, and free/non-git tabs remain representable.
+`tab.mode-changed` and `tab.intervention` event envelope names are emitted on the `events` channel. Their identity shape uses `nodeId`, node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree fields (`repoPath`, `worktreePath`, `repoName`, `branchName`) are optional decoration so local repo tabs, remote node tabs, and free/non-git tabs remain representable. #470 owns the product semantics of when control modes change and when interventions are captured; #427 owns the allow/challenge/deny policy and hash-chained audit trail for those events.
 
-#427 boundary: #490 only defines and serializes state. It does not add capability gates, trust tiers, two-token confirmation, security policy evaluation, intervention persistence, or hash-chained audit logging.
+Control/intervention audit correlation is intentionally compact: audit rows carry stable event/session/node identifiers, actor identity hashes, intervention kind/source, mode before/after, payload size/hash/redaction summary, and hashes of the compact scope/params. Raw keystrokes, terminal bytes, file bytes, secrets, and full environment values must stay in the intervention/control source systems and must not be duplicated into the security audit log.
+
+#427 boundary: #490 only defines and serializes state. The #499 correlation slice records compact #470 control/intervention events into the #427 audit surface, but it does not broaden control semantics, add file/git/exec powers, or make intervention history a transcript export.
 
 ### Session control reads and hand-back ack (#493)
 
@@ -147,7 +149,7 @@ relay-ide sessions interventions <session-id> [--limit <n>]
 relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>
 ```
 
-Capability checks currently use the #427 placeholder header contract: omitted `x-relay-capabilities` preserves compatibility, while an explicit header must include `session:control:read`, `session:intervention:read`, or `session:control:write` for the respective operation.
+Capability checks currently use the #427 placeholder header contract: omitted `x-relay-capabilities` preserves compatibility, while an explicit header must include `session:read` for session summaries, `tab:intervention:read` plus session visibility for intervention history, or `tab:mode:set-agent` plus the session control bit for any path that restores `agent-driven`. The `tab:mode:set-agent` bit is scoped to the mode transition only; it does not imply file write, git write, arbitrary exec, or any other high-risk capability.
 
 ### Heartbeat and Offline Detection
 
