@@ -53,6 +53,7 @@ import {
 import {
   appendPolicyAudit,
   evaluateHubPolicy,
+  isSessionCreateType,
   policyDecisionToRelayError,
   revokePolicyAffectedSessions,
   sessionCreateCapability,
@@ -125,6 +126,7 @@ export function errorStatus(error: RelayNodeError): number {
     case 'NODE_UNSUPPORTED':
     case 'INVALID_REQUEST':
       return 400;
+    case 'UNSUPPORTED_CAPABILITY':
     case 'NODE_REVOKED':
     case 'SESSION_EXPIRED':
     case 'SESSION_REVOKED':
@@ -622,6 +624,44 @@ function appendRoutedSessionAudit(
   }
 }
 
+function auditLifecycleDenial(
+  sink: RoutedSessionAuditSink | undefined,
+  validation: Exclude<ReturnType<InMemorySessionEnvelopeRegistry['validate']>, { ok: true }>,
+  nodeId: string,
+  sessionId: string,
+  action: string,
+  params?: unknown
+): void {
+  const reasonCode =
+    typeof validation.error.details?.['reasonCode'] === 'string'
+      ? validation.error.details['reasonCode']
+      : validation.error.code;
+  appendRoutedSessionAudit(sink, {
+    eventType:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expiry'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revocation'
+          : 'denial',
+    decision:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expired'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revoked'
+          : 'deny',
+    reasonCode,
+    peer: auditPeerForSummary(validation.summary),
+    node: { nodeId },
+    sessionId,
+    intent: { action, target: nodeId },
+    material: {
+      scope: validation.summary?.scope ?? null,
+      params: params ?? validation.error.details ?? null,
+    },
+    ...(validation.summary?.correlationId ? { correlationId: validation.summary.correlationId } : {}),
+  });
+}
+
 function sendPolicyDecision(
   sink: RoutedSessionAuditSink | undefined,
   res: Response,
@@ -1108,7 +1148,18 @@ export function createHubNodeRouter(
       );
       return;
     }
-    const sessionType = body['type'] === 'agent' ? 'agent' : 'terminal';
+    const rawSessionType = body['type'];
+    if (rawSessionType !== undefined && !isSessionCreateType(rawSessionType)) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
+          reasonCode: 'INVALID_SESSION_TYPE',
+          field: 'type',
+        })
+      );
+      return;
+    }
+    const sessionType = rawSessionType === 'agent' ? 'agent' : 'terminal';
     const policyDecision = evaluateHubPolicy({
       peer: { kind: 'hub' },
       node,
@@ -1196,7 +1247,23 @@ export function createHubNodeRouter(
       }
 
       const lifecycle = envelopes.validate({ nodeId, sessionId, now: now() });
-      const scoped = lifecycle.ok ? lifecycle.summary : lifecycle.summary;
+      if (!lifecycle.ok) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId,
+          sessionId,
+          'sessions.kill',
+          { method: 'DELETE' }
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+      const scoped = lifecycle.summary;
       const killPolicyDecision = evaluateHubPolicy({
         peer: { kind: 'hub' },
         node,

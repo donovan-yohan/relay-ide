@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import {
   classifySecurityAuditWriteFailure,
   type SecurityAuditDecision,
@@ -29,6 +30,7 @@ export type HubPolicyReasonCode =
   | 'POLICY_NODE_REVOKED'
   | 'POLICY_NODE_ID_MISMATCH'
   | 'POLICY_PEER_NODE_MISMATCH'
+  | 'POLICY_PEER_CREDENTIAL_MISMATCH'
   | 'POLICY_SCOPE_NODE_MISMATCH'
   | 'POLICY_SCOPE_DENIED'
   | 'POLICY_ACL_MISSING'
@@ -99,7 +101,13 @@ export interface HubPolicyDecision {
   params?: unknown;
 }
 
-export function sessionCreateCapability(sessionType: unknown): RelayCapabilityBit {
+export type SessionCreateType = 'agent' | 'terminal';
+
+export function isSessionCreateType(value: unknown): value is SessionCreateType {
+  return value === 'agent' || value === 'terminal';
+}
+
+export function sessionCreateCapability(sessionType: SessionCreateType): RelayCapabilityBit {
   return sessionType === 'agent' ? 'session:create:agent' : 'session:create:terminal';
 }
 
@@ -132,7 +140,7 @@ export function requiredCapabilitiesForRpcIntent(action: string): string[] {
     case 'preview.port-forward':
       return ['preview:port-forward'];
     default:
-      return [];
+      return [`rpc:unknown:${action}`];
   }
 }
 
@@ -157,6 +165,17 @@ export function evaluateHubPolicy(input: HubPolicyEvaluationInput): HubPolicyDec
       withPolicy(base, input.node),
       'POLICY_PEER_NODE_MISMATCH',
       'node credential cannot act as a different node'
+    );
+  }
+  if (
+    input.peer.kind === 'node' &&
+    input.peer.credentialId &&
+    input.peer.credentialId !== input.node.credentialId
+  ) {
+    return deny(
+      withPolicy(base, input.node),
+      'POLICY_PEER_CREDENTIAL_MISMATCH',
+      'node credential does not match the active credential for this node'
     );
   }
   if (input.scope.nodeId !== input.nodeId) {
@@ -257,8 +276,7 @@ export function evaluateHubPolicy(input: HubPolicyEvaluationInput): HubPolicyDec
 }
 
 export function policyDecisionToRelayError(decision: HubPolicyDecision): RelayNodeError {
-  const code: RelayNodeError['code'] =
-    decision.decision === 'challenge' ? 'UNSUPPORTED_CAPABILITY' : 'UNAUTHORIZED';
+  const code: RelayNodeError['code'] = policyDecisionErrorCode(decision);
   return {
     code,
     message: decision.message,
@@ -275,6 +293,26 @@ export function policyDecisionToRelayError(decision: HubPolicyDecision): RelayNo
       policyVersion: decision.policyVersion ?? null,
     },
   };
+}
+
+function policyDecisionErrorCode(decision: HubPolicyDecision): RelayNodeError['code'] {
+  switch (decision.reasonCode) {
+    case 'POLICY_NODE_NOT_PAIRED':
+      return 'NOT_FOUND';
+    case 'POLICY_NODE_REVOKED':
+    case 'POLICY_ACL_REVOKED':
+      return 'NODE_REVOKED';
+    case 'POLICY_SESSION_EXPIRED':
+      return 'SESSION_EXPIRED';
+    case 'POLICY_SESSION_REVOKED':
+      return 'SESSION_REVOKED';
+    case 'POLICY_SCOPE_NODE_MISMATCH':
+      return 'SESSION_MISMATCH';
+    case 'POLICY_AUDIT_WRITE_FAILED_CLOSED':
+      return 'INTERNAL';
+    default:
+      return decision.decision === 'challenge' ? 'UNSUPPORTED_CAPABILITY' : 'UNAUTHORIZED';
+  }
 }
 
 export function auditEntryForPolicyDecision(
@@ -475,7 +513,18 @@ function scopeMatchesPolicy(policy: RelayPolicyScope, scope: HubPolicyScope): bo
 }
 
 function pathWithinPrefix(candidate: string, prefix: string): boolean {
-  return candidate === prefix || candidate.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);
+  const candidatePath = canonicalPolicyPath(candidate);
+  const prefixPath = canonicalPolicyPath(prefix);
+  if (!candidatePath || !prefixPath) return false;
+  return candidatePath === prefixPath || candidatePath.startsWith(`${prefixPath}/`);
+}
+
+function canonicalPolicyPath(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\0')) return null;
+  const normalized = path.posix.normalize(trimmed);
+  if (!path.posix.isAbsolute(normalized)) return null;
+  return normalized;
 }
 
 function auditEventType(decision: HubPolicyDecision): SecurityAuditEventType {

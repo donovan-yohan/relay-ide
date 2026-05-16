@@ -19,9 +19,11 @@ import {
 } from '../hub-node-router.js';
 import {
   evaluateHubPolicy,
+  isSessionCreateType,
   policyDecisionToRelayError,
   appendPolicyAudit,
   sessionCreateCapability,
+  type SessionCreateType,
 } from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
 import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
@@ -41,6 +43,16 @@ export interface RepoFeatureRouterOptions {
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
   auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
+}
+
+function sessionCreateTypeFromBody(body: Record<string, unknown>): SessionCreateType | RelayNodeError {
+  const rawSessionType = body['type'];
+  if (rawSessionType === undefined) return 'agent';
+  if (isSessionCreateType(rawSessionType)) return rawSessionType;
+  return relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
+    reasonCode: 'INVALID_SESSION_TYPE',
+    field: 'type',
+  });
 }
 
 // Repo-feature HTTP surface. These routes used to live in
@@ -160,6 +172,11 @@ export function createRepoFeatureRouter(
         );
         return;
       }
+      const sessionType = sessionCreateTypeFromBody(body);
+      if (typeof sessionType !== 'string') {
+        sendRelayError(res, sessionType);
+        return;
+      }
       try {
         const reports = [...repoInventoryFeature.listInventoryReports()];
         if (options.collectLocalRepoInventory) {
@@ -183,7 +200,7 @@ export function createRepoFeatureRouter(
             repoPath: target.repo.localPath,
             ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
           },
-          requiredCapabilities: [sessionCreateCapability(body['type'])],
+          requiredCapabilities: [sessionCreateCapability(sessionType)],
           ...(expiresAt !== undefined ? { expiresAt } : {}),
           params: body,
           now: reopenNow,

@@ -3,6 +3,8 @@ import {
   appendPolicyAudit,
   auditEntryForPolicyDecision,
   evaluateHubPolicy,
+  policyDecisionToRelayError,
+  requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
 } from '../server/hub-policy-evaluator.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
@@ -137,6 +139,58 @@ describe('hub policy evaluator', () => {
     });
   });
 
+  it('maps unknown RPC intents to an unknown capability so callers fail closed', () => {
+    const required = requiredCapabilitiesForRpcIntent('rpc.fs.format-disk');
+    expect(required).toEqual(['rpc:unknown:rpc.fs.format-disk']);
+
+    expect(evaluateHubPolicy(baseInput({ requiredCapabilities: required }))).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_UNKNOWN_CAPABILITY',
+      unknownBits: ['rpc:unknown:rpc.fs.format-disk'],
+    });
+  });
+
+  it('canonicalizes path ACL comparisons before checking prefixes', () => {
+    const node = nodeSummary({
+      scope: { kind: 'path', pathPrefixes: ['/srv/allowed'] },
+      allowed: ['session:create:terminal'],
+    });
+
+    expect(
+      evaluateHubPolicy(
+        baseInput({
+          node,
+          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '/srv/allowed/project' },
+        })
+      )
+    ).toMatchObject({ decision: 'allow' });
+
+    expect(
+      evaluateHubPolicy(
+        baseInput({
+          node,
+          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '/srv/allowed/../outside' },
+        })
+      )
+    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_SCOPE_DENIED' });
+
+    expect(
+      evaluateHubPolicy(
+        baseInput({
+          node,
+          scope: { kind: 'node-cwd', nodeId: node.nodeId, cwd: '../allowed/project' },
+        })
+      )
+    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_SCOPE_DENIED' });
+  });
+
+  it('preserves typed relay errors for policy lifecycle failures', () => {
+    const expired = evaluateHubPolicy(
+      baseInput({ expiresAt: '2026-01-02T03:04:04.000Z', sessionId: 's1' })
+    );
+    expect(policyDecisionToRelayError(expired)).toMatchObject({ code: 'SESSION_EXPIRED' });
+  });
+
   it('returns challenge for prod high-risk capabilities after trust-tier overlay', () => {
     const node = nodeSummary({
       trustTier: 'prod',
@@ -168,6 +222,12 @@ describe('hub policy evaluator', () => {
         baseInput({ peer: { kind: 'node', nodeId: 'node_b' } })
       )
     ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_PEER_NODE_MISMATCH' });
+
+    expect(
+      evaluateHubPolicy(
+        baseInput({ peer: { kind: 'node', nodeId: 'node_a', credentialId: 'stale_cred' } })
+      )
+    ).toMatchObject({ decision: 'deny', reasonCode: 'POLICY_PEER_CREDENTIAL_MISMATCH' });
   });
 
   it('denies expired and revoked session lifecycles', () => {

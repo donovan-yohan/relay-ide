@@ -67,6 +67,22 @@ function routedSessionStatus(code: string): number {
   return 400;
 }
 
+function routedPolicyStatus(code: string): number {
+  if (code === 'UNAUTHORIZED') return 401;
+  if (code === 'NOT_FOUND') return 404;
+  if (code === 'INTERNAL') return 500;
+  if (
+    code === 'UNSUPPORTED_CAPABILITY' ||
+    code === 'NODE_REVOKED' ||
+    code === 'SESSION_EXPIRED' ||
+    code === 'SESSION_REVOKED' ||
+    code === 'SESSION_MISMATCH'
+  ) {
+    return 403;
+  }
+  return routedSessionStatus(code);
+}
+
 function auditAttachDenial(
   sink: RoutedSessionAuditSink | undefined,
   validation: Exclude<
@@ -551,7 +567,7 @@ function setupWebSocket(
       const auditedDecision = appendPolicyAudit(auditSink, policyDecision);
       if (auditedDecision.decision !== 'allow') {
         const error = policyDecisionToRelayError(auditedDecision);
-        socket.write(`HTTP/1.1 ${routedSessionStatus(error.code)} ${error.code}\r\n\r\n`);
+        socket.write(`HTTP/1.1 ${routedPolicyStatus(error.code)} ${error.code}\r\n\r\n`);
         socket.destroy();
         return;
       }

@@ -449,8 +449,9 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('routes remote session delete to the selected connected node', async () => {
-    const { base, wsBase } = await startHub();
+    const { base, wsBase, sessionEnvelopes } = await startHub();
     const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });
