@@ -57,6 +57,7 @@ import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
+  isControlStateSummary,
   normalizeControlStateSummary,
   type ControlStateSummary,
   type ControlActor,
@@ -671,10 +672,41 @@ function write(id: string, data: string): void {
   }
 }
 
+function createRoutedPtyControlState(
+  nodeId: string,
+  sessionId: string
+): ControlStateSummary {
+  const activeWorker: ControlActor = {
+    kind: 'agent',
+    id: 'terminal',
+    displayName: 'terminal',
+    nodeId,
+    sessionId,
+  };
+  return {
+    controlMode: 'agent-driven',
+    activeActors: [activeWorker],
+    activeWorker,
+    lastInterventionAt: null,
+    lastInterventionBy: null,
+    lastInterventionEventId: null,
+    controlFreshness: 'fresh',
+    controlReason: 'routed-session-created',
+  };
+}
+
+function ensureRoutedPtyControlState(session: Session, nodeId: string, sessionId: string): void {
+  if (isControlStateSummary(session.controlState)) return;
+  session.controlState = createRoutedPtyControlState(nodeId, sessionId);
+}
+
 function routedPtyControlSession(nodeId: string, sessionId: string): Session {
   const globalSessionId = createGlobalSessionId(nodeId, sessionId);
   const existing = routedPtyControlSessions.get(globalSessionId);
-  if (existing) return existing;
+  if (existing) {
+    ensureRoutedPtyControlState(existing, nodeId, sessionId);
+    return existing;
+  }
 
   const envelope = sessionEnvelopeRegistry.read(sessionId, nodeId);
   const now = new Date().toISOString();
@@ -708,6 +740,7 @@ function routedPtyControlSession(nodeId: string, sessionId: string): Session {
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',
+    controlState: createRoutedPtyControlState(nodeId, sessionId),
   } as unknown as Session;
   routedPtyControlSessions.set(globalSessionId, session);
   return session;

@@ -154,4 +154,42 @@ describe('PTY WebSocket intervention control', () => {
       lastInterventionEventId: records[0]!.id,
     });
   });
+
+  it('records remote routed PTY input through the real sessions recorder', async () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-routed-interventions-'));
+    cleanupFns.push(() => fs.rmSync(configDir, { recursive: true, force: true }));
+    initInterventionLog(configDir);
+    sessions.configure({ configDir, interventionDebounceMs: 5 });
+
+    const events: Array<Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]> = [];
+    sessions.onControlEvent((event) => events.push(event));
+
+    sessions.recordRoutedPtyInput({
+      nodeId: 'remote-node-a',
+      sessionId: 'remote-session-a',
+      data: 'echo routed\\n',
+    });
+
+    await waitForInterventionCount('remote-session-a', 1);
+    const records = sessions.getInterventions('remote-session-a', { nodeId: 'remote-node-a' });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      sessionId: 'remote-session-a',
+      tabId: 'remote-node-a:remote-session-a',
+      nodeId: 'remote-node-a',
+      globalSessionId: 'remote-node-a:remote-session-a',
+      source: 'pty-input',
+      kind: 'human-input',
+      modeBefore: 'agent-driven',
+      modeAfter: 'co-driven',
+      payloadPreview: 'echo routed\\n',
+    });
+    expect(events.map((event) => event.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
+    expect(events[0]?.identity).toMatchObject({
+      nodeId: 'remote-node-a',
+      sessionId: 'remote-session-a',
+      globalSessionId: 'remote-node-a:remote-session-a',
+    });
+  });
 });
