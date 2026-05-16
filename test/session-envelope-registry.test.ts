@@ -67,6 +67,47 @@ describe('session envelope registry', () => {
     });
   });
 
+  it('accepts explicit agent peer identities for future brain-as-peer adapters', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const envelope = registry.create({
+      envelope: {
+        sessionId: 'agent-peer-session',
+        globalSessionId: 'node-a:agent-peer-session',
+        nodeId: 'node-a',
+        intent: {
+          kind: ROUTED_NODE_SESSION_INTENT,
+          description: 'adapter-owned routed node session',
+        },
+        scope: {
+          kind: 'node-cwd',
+          nodeId: 'node-a',
+          cwd: '/srv/app',
+        },
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: null,
+        revocable: true,
+        peerIdentity: {
+          kind: 'agent',
+          id: 'brain-1',
+          adapter: 'example-adapter',
+          displayName: 'Example Brain',
+        },
+      },
+      sessionId: 'agent-peer-session',
+      nodeId: 'node-a',
+      cwd: '/srv/app',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+
+    expect(envelope.peerIdentity).toEqual({
+      kind: 'agent',
+      id: 'brain-1',
+      adapter: 'example-adapter',
+      displayName: 'Example Brain',
+    });
+  });
+
   it('validates allowed, expired, revoked, and mismatched routed envelopes', () => {
     const registry = createSessionEnvelopeRegistry();
     const issuedAt = '2026-01-02T03:04:05.000Z';

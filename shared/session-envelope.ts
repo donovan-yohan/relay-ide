@@ -43,6 +43,13 @@ export interface SessionScope {
 export type SessionPeerIdentity =
   | { kind: 'local-user'; id: string; displayName?: string }
   | { kind: 'relay-node'; nodeId: NodeId; credentialId?: string; displayName?: string }
+  | {
+      kind: 'agent';
+      id: string;
+      adapter: string;
+      displayName?: string;
+      credentialId?: string;
+    }
   | { kind: 'unknown'; id?: string; displayName?: string };
 
 export interface SessionEnvelope {
@@ -123,6 +130,9 @@ function isPeerIdentity(value: unknown): value is SessionPeerIdentity {
   if (!candidate) return false;
   if (candidate['kind'] === 'local-user') return typeof candidate['id'] === 'string';
   if (candidate['kind'] === 'relay-node') return typeof candidate['nodeId'] === 'string';
+  if (candidate['kind'] === 'agent') {
+    return typeof candidate['id'] === 'string' && typeof candidate['adapter'] === 'string';
+  }
   return candidate['kind'] === 'unknown';
 }
 

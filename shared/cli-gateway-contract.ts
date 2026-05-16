@@ -1,0 +1,563 @@
+import { RELAY_NODE_LINK_PROTOCOL_VERSION } from './relay-node-protocol.js';
+import { RELAY_SECURITY_POLICY_VERSION } from './security-policy.js';
+
+export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
+export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
+
+export type RelayCliGatewayCommand =
+  | 'contract.list'
+  | 'contract.schema'
+  | 'nodes.manifest'
+  | 'nodes.list'
+  | 'sessions.list'
+  | 'sessions.get'
+  | 'sessions.create'
+  | 'sessions.interventions'
+  | 'sessions.handBack';
+
+export type RelayCliGatewayErrorCode =
+  | 'UNAUTHORIZED'
+  | 'SERVER_UNAVAILABLE'
+  | 'INVALID_ARGUMENT'
+  | 'INVALID_JSON'
+  | 'UNSUPPORTED'
+  | 'NOT_FOUND'
+  | 'FORBIDDEN'
+  | 'SESSION_CONFLICT'
+  | 'CONTROL_STATE_STALE'
+  | 'INTERVENTION_ACK_REQUIRED'
+  | 'INTERVENTION_ACK_STALE'
+  | 'CONTROL_STATE_UNKNOWN'
+  | 'UPSTREAM_ERROR'
+  | 'INTERNAL';
+
+export interface RelayCliGatewayError {
+  code: RelayCliGatewayErrorCode;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface RelayCliGatewayOkEnvelope<T = unknown> {
+  ok: true;
+  contract: typeof RELAY_CLI_GATEWAY_MAJOR;
+  contractVersion: typeof RELAY_CLI_GATEWAY_CONTRACT_VERSION;
+  command: RelayCliGatewayCommand;
+  data: T;
+}
+
+export interface RelayCliGatewayErrorEnvelope {
+  ok: false;
+  contract: typeof RELAY_CLI_GATEWAY_MAJOR;
+  contractVersion: typeof RELAY_CLI_GATEWAY_CONTRACT_VERSION;
+  command: RelayCliGatewayCommand;
+  error: RelayCliGatewayError;
+}
+
+export type RelayCliGatewayEnvelope<T = unknown> =
+  | RelayCliGatewayOkEnvelope<T>
+  | RelayCliGatewayErrorEnvelope;
+
+export interface RelayJsonSchema {
+  $schema?: string;
+  $id?: string;
+  title?: string;
+  description?: string;
+  type?: string | readonly string[];
+  enum?: readonly string[];
+  const?: unknown;
+  properties?: Record<string, RelayJsonSchema>;
+  required?: readonly string[];
+  additionalProperties?: boolean;
+  items?: RelayJsonSchema;
+  anyOf?: readonly RelayJsonSchema[];
+  oneOf?: readonly RelayJsonSchema[];
+  format?: string;
+  minimum?: number;
+  maximum?: number;
+  default?: unknown;
+}
+
+export interface RelayCliGatewayCommandSpec {
+  name: RelayCliGatewayCommand;
+  cli: readonly string[];
+  summary: string;
+  stable: boolean;
+  transport: 'local' | 'hub-http' | 'hub-http-or-node-rpc';
+  requiresAuth: boolean;
+  capabilityHints: readonly string[];
+  inputSchema: RelayJsonSchema;
+  outputSchema: RelayJsonSchema;
+  errorCodes: readonly RelayCliGatewayErrorCode[];
+  unsupported?: string;
+}
+
+export interface RelayCliGatewayContractManifest {
+  schemaVersion: 1;
+  contract: typeof RELAY_CLI_GATEWAY_MAJOR;
+  contractVersion: typeof RELAY_CLI_GATEWAY_CONTRACT_VERSION;
+  generatedFrom: 'shared/cli-gateway-contract.ts';
+  protocolVersions: {
+    nodeLink: typeof RELAY_NODE_LINK_PROTOCOL_VERSION;
+    securityPolicy: typeof RELAY_SECURITY_POLICY_VERSION;
+  };
+  errorEnvelopeSchema: RelayJsonSchema;
+  commandSchemas: readonly RelayCliGatewayCommandSpec[];
+}
+
+const stringSchema = { type: 'string' } as const;
+const nullableStringSchema = { type: ['string', 'null'] } as const;
+const booleanSchema = { type: 'boolean' } as const;
+
+const controlActorSchema: RelayJsonSchema = {
+  title: 'ControlActor',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    kind: { type: 'string', enum: ['agent', 'human', 'system'] },
+    id: stringSchema,
+    displayName: stringSchema,
+    nodeId: stringSchema,
+    sessionId: stringSchema,
+  },
+  required: ['kind'],
+};
+
+const sessionPeerIdentitySchema: RelayJsonSchema = {
+  title: 'SessionPeerIdentity',
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'local-user' },
+        id: stringSchema,
+        displayName: stringSchema,
+      },
+      required: ['kind', 'id'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'relay-node' },
+        nodeId: stringSchema,
+        credentialId: stringSchema,
+        displayName: stringSchema,
+      },
+      required: ['kind', 'nodeId'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'agent' },
+        id: stringSchema,
+        adapter: stringSchema,
+        displayName: stringSchema,
+        credentialId: stringSchema,
+      },
+      required: ['kind', 'id', 'adapter'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'unknown' },
+        id: stringSchema,
+        displayName: stringSchema,
+      },
+      required: ['kind'],
+    },
+  ],
+};
+
+const sessionEnvelopeSchema: RelayJsonSchema = {
+  title: 'SessionEnvelope',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    nodeId: stringSchema,
+    intent: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: stringSchema,
+        description: stringSchema,
+      },
+      required: ['kind', 'description'],
+    },
+    scope: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { type: 'string', enum: ['local-compatibility', 'node-cwd', 'repo', 'worktree'] },
+        nodeId: stringSchema,
+        cwd: stringSchema,
+        repoPath: stringSchema,
+        worktreePath: nullableStringSchema,
+      },
+      required: ['kind', 'nodeId', 'cwd'],
+    },
+    issuedAt: { type: 'string', format: 'date-time' },
+    expiresAt: { type: ['string', 'null'], format: 'date-time' },
+    revocable: booleanSchema,
+    peerIdentity: sessionPeerIdentitySchema,
+    correlationId: stringSchema,
+    auditId: stringSchema,
+  },
+  required: [
+    'sessionId',
+    'globalSessionId',
+    'nodeId',
+    'intent',
+    'scope',
+    'issuedAt',
+    'expiresAt',
+    'revocable',
+    'peerIdentity',
+  ],
+};
+
+const sessionDescriptorSchema: RelayJsonSchema = {
+  title: 'RelaySessionDescriptor',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    type: { type: 'string', enum: ['agent', 'terminal'] },
+    agent: stringSchema,
+    mode: { type: 'string', enum: ['pty', 'web'] },
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+    cwd: stringSchema,
+    repoPath: stringSchema,
+    worktreePath: nullableStringSchema,
+    repoName: stringSchema,
+    branchName: stringSchema,
+    displayName: stringSchema,
+    status: { type: 'string', enum: ['active', 'disconnected'] },
+    controlMode: { type: 'string', enum: ['agent-driven', 'human-driven', 'co-driven'] },
+    activeActors: { type: 'array', items: controlActorSchema },
+    activeWorker: controlActorSchema,
+    lastInterventionAt: nullableStringSchema,
+    lastInterventionBy: { oneOf: [controlActorSchema, { type: 'null' }] },
+    lastInterventionEventId: nullableStringSchema,
+    controlFreshness: { type: 'string', enum: ['fresh', 'stale', 'unknown'] },
+    controlReason: stringSchema,
+    sessionEnvelope: sessionEnvelopeSchema,
+  },
+  required: ['id', 'type', 'agent', 'mode', 'cwd', 'displayName', 'status'],
+};
+
+const createSessionInputSchema: RelayJsonSchema = {
+  title: 'CreateSessionInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: {
+      description: 'Optional execution node. Omit for current local /sessions path.',
+      type: 'string',
+    },
+    repoPath: stringSchema,
+    worktreePath: nullableStringSchema,
+    cwd: stringSchema,
+    type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
+    mode: { type: 'string', enum: ['pty', 'web'] },
+    agent: stringSchema,
+    yolo: booleanSchema,
+    cols: { type: 'number', minimum: 1, maximum: 500 },
+    rows: { type: 'number', minimum: 1, maximum: 200 },
+    branchName: stringSchema,
+    initialPrompt: stringSchema,
+    continuePolicy: { type: 'string', enum: ['always', 'never'] },
+    controlMode: {
+      type: 'string',
+      enum: ['agent-driven', 'human-driven'],
+      description:
+        'Only routed node session creation currently policy-checks controlMode. Local create rejects agent-driven as unsupported until hub policy support lands.',
+    },
+    sessionEnvelope: sessionEnvelopeSchema,
+    ttlSeconds: { type: 'number', minimum: 1 },
+    expiresAt: { type: 'string', format: 'date-time' },
+    confirmationToken: stringSchema,
+  },
+};
+
+const gatewayErrorSchema: RelayJsonSchema = {
+  title: 'RelayCliGatewayErrorEnvelope',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { const: false },
+    contract: { const: RELAY_CLI_GATEWAY_MAJOR },
+    contractVersion: { const: RELAY_CLI_GATEWAY_CONTRACT_VERSION },
+    command: stringSchema,
+    error: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        code: {
+          type: 'string',
+          enum: [
+            'UNAUTHORIZED',
+            'SERVER_UNAVAILABLE',
+            'INVALID_ARGUMENT',
+            'INVALID_JSON',
+            'UNSUPPORTED',
+            'NOT_FOUND',
+            'FORBIDDEN',
+            'SESSION_CONFLICT',
+            'CONTROL_STATE_STALE',
+            'INTERVENTION_ACK_REQUIRED',
+            'INTERVENTION_ACK_STALE',
+            'CONTROL_STATE_UNKNOWN',
+            'UPSTREAM_ERROR',
+            'INTERNAL',
+          ],
+        },
+        message: stringSchema,
+        retryable: booleanSchema,
+        details: { type: 'object', additionalProperties: true },
+      },
+      required: ['code', 'message', 'retryable'],
+    },
+  },
+  required: ['ok', 'contract', 'contractVersion', 'command', 'error'],
+};
+
+const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
+  title,
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { const: true },
+    contract: { const: RELAY_CLI_GATEWAY_MAJOR },
+    contractVersion: { const: RELAY_CLI_GATEWAY_CONTRACT_VERSION },
+    command: stringSchema,
+    data,
+  },
+  required: ['ok', 'contract', 'contractVersion', 'command', 'data'],
+});
+
+const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
+  {
+    name: 'contract.list',
+    cli: ['relay-ide', 'v1', '--list', '--json'],
+    summary: 'List versioned gateway commands and machine-readable schemas.',
+    stable: true,
+    transport: 'local',
+    requiresAuth: false,
+    capabilityHints: [],
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    outputSchema: okOutput('ContractListOutput', { $id: 'RelayCliGatewayContractManifest', type: 'object' }),
+    errorCodes: ['INTERNAL'],
+  },
+  {
+    name: 'contract.schema',
+    cli: ['relay-ide', 'v1', 'schema', '--json'],
+    summary: 'Emit the complete v1 CLI gateway contract manifest.',
+    stable: true,
+    transport: 'local',
+    requiresAuth: false,
+    capabilityHints: [],
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    outputSchema: okOutput('ContractSchemaOutput', { $id: 'RelayCliGatewayContractManifest', type: 'object' }),
+    errorCodes: ['INTERNAL'],
+  },
+  {
+    name: 'nodes.manifest',
+    cli: ['relay-ide', 'v1', 'nodes', 'manifest', '--json'],
+    summary: 'Return this host local node capability manifest.',
+    stable: true,
+    transport: 'local',
+    requiresAuth: false,
+    capabilityHints: [],
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    outputSchema: okOutput('NodesManifestOutput', { type: 'object', additionalProperties: true }),
+    errorCodes: ['INTERNAL'],
+  },
+  {
+    name: 'nodes.list',
+    cli: ['relay-ide', 'v1', 'nodes', 'list', '--json'],
+    summary: 'List hub-known local/remote relay nodes and summarized capabilities.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    outputSchema: okOutput('NodesListOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { nodes: { type: 'array', items: { type: 'object', additionalProperties: true } } },
+      required: ['nodes'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'sessions.list',
+    cli: ['relay-ide', 'v1', 'sessions', 'list', '--json'],
+    summary: 'List active local and routed sessions with identity and control summaries.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    outputSchema: okOutput('SessionsListOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { sessions: { type: 'array', items: sessionDescriptorSchema } },
+      required: ['sessions'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'sessions.get',
+    cli: ['relay-ide', 'v1', 'sessions', 'get', '--id', '<session-id>', '--json'],
+    summary: 'Inspect one session by node-local id or globalSessionId.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema },
+      required: ['id'],
+    },
+    outputSchema: okOutput('SessionsGetOutput', sessionDescriptorSchema),
+    errorCodes: ['UNAUTHORIZED', 'NOT_FOUND', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'sessions.create',
+    cli: ['relay-ide', 'v1', 'sessions', 'create', '--input-json', '<json>', '--json'],
+    summary: 'Create a local or routed node session and return the created descriptor.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:create:terminal', 'session:create:agent', 'tab:mode:set-agent'],
+    inputSchema: createSessionInputSchema,
+    outputSchema: okOutput('SessionsCreateOutput', sessionDescriptorSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'UNSUPPORTED',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.interventions',
+    cli: ['relay-ide', 'v1', 'sessions', 'interventions', '--id', '<session-id>', '--json'],
+    summary: 'Read bounded, redacted intervention metadata for a local session.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'tab:intervention:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema, limit: { type: 'number', minimum: 1, maximum: 200 } },
+      required: ['id'],
+    },
+    outputSchema: okOutput('SessionsInterventionsOutput', {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        rawPayloadAvailable: { const: false },
+        transcriptExportAvailable: { const: false },
+      },
+    }),
+    errorCodes: ['UNAUTHORIZED', 'NOT_FOUND', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'sessions.handBack',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'hand-back',
+      '--id',
+      '<session-id>',
+      '--latest-seen-intervention-event-id',
+      '<event-id>',
+      '--json',
+    ],
+    summary: 'Acknowledge latest human intervention before restoring agent-driven control.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach', 'tab:mode:set-agent'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema, latestSeenInterventionEventId: stringSchema },
+      required: ['id', 'latestSeenInterventionEventId'],
+    },
+    outputSchema: okOutput('SessionsHandBackOutput', { type: 'object', additionalProperties: true }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SESSION_CONFLICT',
+      'CONTROL_STATE_STALE',
+      'INTERVENTION_ACK_REQUIRED',
+      'INTERVENTION_ACK_STALE',
+      'CONTROL_STATE_UNKNOWN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+];
+
+export const RELAY_CLI_GATEWAY_CONTRACT: RelayCliGatewayContractManifest = {
+  schemaVersion: 1,
+  contract: RELAY_CLI_GATEWAY_MAJOR,
+  contractVersion: RELAY_CLI_GATEWAY_CONTRACT_VERSION,
+  generatedFrom: 'shared/cli-gateway-contract.ts',
+  protocolVersions: {
+    nodeLink: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    securityPolicy: RELAY_SECURITY_POLICY_VERSION,
+  },
+  errorEnvelopeSchema: gatewayErrorSchema,
+  commandSchemas: commandSpecs,
+};
+
+export function gatewayOk<T>(
+  command: RelayCliGatewayCommand,
+  data: T
+): RelayCliGatewayOkEnvelope<T> {
+  return {
+    ok: true,
+    contract: RELAY_CLI_GATEWAY_MAJOR,
+    contractVersion: RELAY_CLI_GATEWAY_CONTRACT_VERSION,
+    command,
+    data,
+  };
+}
+
+export function gatewayError(
+  command: RelayCliGatewayCommand,
+  error: RelayCliGatewayError
+): RelayCliGatewayErrorEnvelope {
+  return {
+    ok: false,
+    contract: RELAY_CLI_GATEWAY_MAJOR,
+    contractVersion: RELAY_CLI_GATEWAY_CONTRACT_VERSION,
+    command,
+    error,
+  };
+}
+
+export function commandSpec(name: RelayCliGatewayCommand): RelayCliGatewayCommandSpec {
+  const spec = RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.find((entry) => entry.name === name);
+  if (!spec) throw new Error(`unknown CLI gateway command spec: ${name}`);
+  return spec;
+}
+
+export function stableCommandNames(): RelayCliGatewayCommand[] {
+  return RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.map((entry) => entry.name);
+}
