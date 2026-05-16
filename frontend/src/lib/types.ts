@@ -5,6 +5,7 @@ import type {
   RepoInstanceId,
   WorktreeInstanceId,
 } from '../../../shared/identity.js';
+import type { SessionEnvelope } from '../../../shared/session-envelope.js';
 import type {
   RepoIdentityWarning,
   ResolvedRemoteIdentity,
@@ -187,6 +188,8 @@ export interface SessionSummary {
   dataQuality?: EventSourceType | undefined;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
+  /** Typed intent/scope envelope. New server responses include this; old cached sessions may omit it. */
+  sessionEnvelope?: SessionEnvelope | undefined;
 }
 
 export interface WorktreeInfo {

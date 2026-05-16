@@ -38,6 +38,12 @@ import {
   normalizeControlActor,
   normalizeControlStateSummary,
 } from '../shared/control-state.js';
+import {
+  ROUTED_NODE_SESSION_INTENT,
+  isSessionEnvelope,
+  normalizeSessionEnvelope,
+} from '../shared/session-envelope.js';
+import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
@@ -151,6 +157,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     repoNameOk &&
     branchNameOk &&
     controlSummaryFieldsOk(session) &&
+    (session.sessionEnvelope === undefined ||
+      isSessionEnvelope(session.sessionEnvelope)) &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
@@ -173,11 +181,12 @@ export function scopedNodeSession(
   delete scoped.repoInstanceId;
   delete scoped.worktreeInstanceId;
 
-  return {
+  const globalSessionId = createGlobalSessionId(nodeId, scoped.id);
+  const result = {
     ...scoped,
     ...normalizeControlStateSummary(scoped),
     nodeId,
-    globalSessionId: createGlobalSessionId(nodeId, scoped.id),
+    globalSessionId,
     ...(scoped.repoPath
       ? { repoInstanceId: createRepoInstanceId(nodeId, scoped.repoPath) }
       : {}),
@@ -189,6 +198,25 @@ export function scopedNodeSession(
           ),
         }
       : {}),
+  };
+  return {
+    ...result,
+    sessionEnvelope: normalizeSessionEnvelope(
+      scoped.sessionEnvelope,
+      {
+        sessionId: scoped.id,
+        nodeId,
+        globalSessionId,
+        cwd: scoped.cwd,
+        ...(scoped.repoPath ? { repoPath: scoped.repoPath } : {}),
+        ...(scoped.worktreePath !== undefined
+          ? { worktreePath: scoped.worktreePath }
+          : {}),
+        issuedAt: scoped.createdAt,
+        peerIdentity: { kind: 'relay-node', nodeId },
+      },
+      ROUTED_NODE_SESSION_INTENT
+    ),
   };
 }
 
@@ -804,9 +832,9 @@ export function createHubNodeRouter(
         'sessions.create',
         bodyRecord(req)
       );
-      res
-        .status(201)
-        .json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
+      const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
+      sessionEnvelopeRegistry.upsert(session.sessionEnvelope!);
+      res.status(201).json(session);
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
         sendRelayError(res, error.relayNodeError);
@@ -873,6 +901,7 @@ export function createHubNodeRouter(
         await options.nodeLinks.request(nodeId, 'sessions.kill', {
           id: sessionId,
         });
+        sessionEnvelopeRegistry.delete(sessionId, nodeId);
         res.json({ ok: true });
       } catch (error) {
         if (error instanceof HubNodeLinkError) {
