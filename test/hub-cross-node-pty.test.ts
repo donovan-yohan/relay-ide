@@ -501,21 +501,30 @@ async function createRemoteSession(input: {
   node: SimulatedNode;
   sessionId: string;
 }): Promise<SessionSummary> {
+  const createController = new AbortController();
   const createPromise = fetch(
     `${input.base}/hub/nodes/${encodeURIComponent(input.node.nodeId)}/sessions`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      signal: createController.signal,
       body: JSON.stringify({
         repoPath: `/nodes/${input.node.hostname}/relay-ide`,
         type: 'terminal',
       }),
     }
   );
-  const createRequest = await input.node.waitFor(
-    (message) => message.channel === 'rpc' && message.type === 'sessions.create',
-    `${input.node.hostname} sessions.create`
-  );
+  let createRequest: RelayNodeEnvelope;
+  try {
+    createRequest = await input.node.waitFor(
+      (message) => message.channel === 'rpc' && message.type === 'sessions.create',
+      `${input.node.hostname} sessions.create`
+    );
+  } catch (error) {
+    createController.abort();
+    await createPromise.catch(() => undefined);
+    throw error;
+  }
   input.node.answerCreate(createRequest, input.sessionId);
   const createRes = await createPromise;
   expect(createRes.status, `${input.node.hostname} session create failed`).toBe(201);
