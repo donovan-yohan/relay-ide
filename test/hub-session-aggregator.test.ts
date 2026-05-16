@@ -6,6 +6,7 @@ import {
 import { HubNodeLinkError } from '../server/hub-node-link.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
 import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
@@ -157,6 +158,48 @@ describe('aggregateRemoteSessions', () => {
       nodeId: 'node-a',
       globalSessionId: 'node-a:s-listed',
     });
+  });
+
+  it('does not clobber a renewed remote expiry with a stale sessions.list envelope', async () => {
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
+    const staleEnvelope = createRoutedNodeSessionEnvelope({
+      sessionId: 's-renewed',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:s-renewed',
+      cwd: '/srv/relay-ide',
+      repoPath: '/srv/relay-ide',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
+    });
+    sessionEnvelopes.upsert(staleEnvelope);
+    expect(
+      sessionEnvelopes.renew({
+        sessionId: 's-renewed',
+        nodeId: 'node-a',
+        expiresAt: '2026-01-02T03:10:00.000Z',
+        now: new Date('2026-01-02T03:04:30.000Z'),
+      })
+    ).toMatchObject({ ok: true });
+
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async () => ({
+        sessions: [{ ...localSession('s-renewed', 'node-a'), sessionEnvelope: staleEnvelope }],
+      }),
+    });
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      sessionEnvelopes,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.sessionEnvelope?.expiresAt).toBe('2026-01-02T03:10:00.000Z');
+    expect(sessionEnvelopes.read('s-renewed', 'node-a')?.expiresAt).toBe(
+      '2026-01-02T03:10:00.000Z'
+    );
   });
 
   it('drops sessions from a failed node but keeps results from other nodes', async () => {

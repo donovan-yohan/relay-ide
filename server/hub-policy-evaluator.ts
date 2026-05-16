@@ -130,6 +130,8 @@ export function requiredCapabilitiesForRpcIntent(action: string): string[] {
       return ['session:create:agent'];
     case 'sessions.attach':
       return ['session:attach'];
+    case 'sessions.renew':
+      return ['session:attach'];
     case 'sessions.read':
       return ['session:read'];
     case 'rpc.fs.list':

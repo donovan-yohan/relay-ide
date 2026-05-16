@@ -327,7 +327,7 @@ describe('hub-routed node session create and attach', () => {
 
   it('renews routed scoped session expiry without changing authority', async () => {
     const { base, sessionEnvelopes, auditEntries } = await startHub();
-    const nodeId = 'node-a';
+    const { nodeId } = await pairNode(base);
     sessionEnvelopes.upsert(
       createRoutedNodeSessionEnvelope({
         sessionId: 'remote-session-1',
@@ -380,9 +380,103 @@ describe('hub-routed node session create and attach', () => {
     );
   });
 
+  it('re-evaluates node policy before extending a routed scoped session', async () => {
+    const { base, sessionEnvelopes } = await startHub();
+    const nodeId = 'unpaired-renew-node';
+    sessionEnvelopes.upsert(
+      createRoutedNodeSessionEnvelope({
+        sessionId: 'policy-renew-route',
+        globalSessionId: `${nodeId}:policy-renew-route`,
+        nodeId,
+        repoPath: '/srv/relay-ide',
+        cwd: '/srv/relay-ide',
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: '2026-01-02T03:05:00.000Z',
+      })
+    );
+
+    const res = await fetch(`${base}/hub/scoped-sessions/policy-renew-route/renew`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'NOT_FOUND',
+        details: { reasonCode: 'POLICY_NODE_NOT_PAIRED', requiredBits: ['session:attach'] },
+      },
+    });
+    expect(sessionEnvelopes.read('policy-renew-route', nodeId)?.expiresAt).toBe(
+      '2026-01-02T03:05:00.000Z'
+    );
+  });
+
+  it('fails closed when renew addresses duplicate local session ids without nodeId', async () => {
+    const { base, sessionEnvelopes } = await startHub();
+    for (const nodeId of ['node-a', 'node-b']) {
+      sessionEnvelopes.upsert(
+        createRoutedNodeSessionEnvelope({
+          sessionId: 'duplicate-renew-route',
+          globalSessionId: `${nodeId}:duplicate-renew-route`,
+          nodeId,
+          repoPath: `/srv/${nodeId}`,
+          cwd: `/srv/${nodeId}`,
+          issuedAt: '2026-01-02T03:04:05.000Z',
+          expiresAt: '2026-01-02T03:05:00.000Z',
+        })
+      );
+    }
+
+    const res = await fetch(`${base}/hub/scoped-sessions/duplicate-renew-route/renew`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ ttlSeconds: 300 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID', matches: 2 },
+      },
+    });
+  });
+
+  it('returns typed INVALID_REQUEST for overflow renewal TTL input', async () => {
+    const { base, sessionEnvelopes } = await startHub();
+    const { nodeId } = await pairNode(base);
+    sessionEnvelopes.upsert(
+      createRoutedNodeSessionEnvelope({
+        sessionId: 'overflow-renew-route',
+        globalSessionId: `${nodeId}:overflow-renew-route`,
+        nodeId,
+        repoPath: '/srv/relay-ide',
+        cwd: '/srv/relay-ide',
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: '2026-01-02T03:05:00.000Z',
+      })
+    );
+
+    const res = await fetch(`${base}/hub/scoped-sessions/overflow-renew-route/renew`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId, ttlSeconds: Number.MAX_SAFE_INTEGER }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'INVALID_LIFECYCLE_INPUT', field: 'ttlSeconds' },
+      },
+    });
+  });
+
   it('denies scoped session renewals for expired revoked mismatched non-renewable and authority mutation cases', async () => {
     const { base, sessionEnvelopes, auditEntries } = await startHub();
-    const nodeId = 'node-a';
+    const { nodeId } = await pairNode(base);
     for (const [sessionId, expiresAt, revocable] of [
       ['expired-renew-route', '2026-01-02T03:04:00.000Z', true],
       ['revoked-renew-route', '2026-01-02T03:10:00.000Z', true],

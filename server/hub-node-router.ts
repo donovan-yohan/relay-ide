@@ -1033,7 +1033,7 @@ function renewExpiresAtFromBody(
   body: Record<string, unknown>,
   now: Date
 ): string | RelayNodeError {
-  const lifecycleError = lifecycleInputError(body);
+  const lifecycleError = lifecycleInputError(body, now);
   if (lifecycleError) {
     return relayError('INVALID_REQUEST', lifecycleError.message, false, {
       reasonCode: 'INVALID_LIFECYCLE_INPUT',
@@ -1135,6 +1135,20 @@ function sessionCreatePolicyScope(
       : worktreePath
         ? { worktreePath }
         : {}),
+  };
+}
+
+function sessionRenewPolicyScope(
+  summary: ScopedSessionSummary
+): Parameters<typeof evaluateHubPolicy>[0]['scope'] {
+  return {
+    kind: summary.scope.kind,
+    nodeId: summary.nodeId,
+    cwd: summary.scope.cwd,
+    ...(summary.scope.repoPath ? { repoPath: summary.scope.repoPath } : {}),
+    ...(summary.scope.worktreePath !== undefined
+      ? { worktreePath: summary.scope.worktreePath }
+      : {}),
   };
 }
 
@@ -1643,6 +1657,58 @@ export function createHubNodeRouter(
       });
       sendRelayError(res, expiresAt);
       return;
+    }
+
+    if (nodeId !== DEFAULT_LOCAL_NODE_ID) {
+      const lifecycle = envelopes.validate({
+        sessionId,
+        ...(nodeId ? { nodeId } : {}),
+        now: renewalNow,
+      });
+      if (lifecycle.ok === false) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId ?? denial.summary?.nodeId ?? 'unknown',
+          sessionId,
+          'sessions.renew',
+          body
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+
+      const policyNode = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === lifecycle.summary.nodeId);
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node: policyNode ?? null,
+        nodeId: lifecycle.summary.nodeId,
+        intent: { action: 'sessions.renew', target: lifecycle.summary.nodeId },
+        scope: sessionRenewPolicyScope(lifecycle.summary),
+        requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.renew'),
+        expiresAt: lifecycle.summary.expiresAt,
+        revokedAt: lifecycle.summary.revokedAt,
+        sessionId: lifecycle.summary.sessionId,
+        ...(lifecycle.summary.correlationId
+          ? { correlationId: lifecycle.summary.correlationId }
+          : {}),
+        params: body,
+        now: renewalNow,
+      });
+      if (
+        sendPolicyDecision(options.auditSink, res, policyDecision, body, {
+          confirmations,
+          req,
+          canonicalParams: body,
+          now: renewalNow,
+        })
+      ) return;
     }
 
     const renewed =

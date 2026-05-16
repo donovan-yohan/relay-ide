@@ -111,6 +111,16 @@ function isIsoLike(value: string): boolean {
   return ISO_DATE_PATTERN.test(value) && Number.isFinite(Date.parse(value));
 }
 
+function validDateMs(value: number): boolean {
+  return Number.isFinite(value) && Number.isFinite(new Date(value).getTime());
+}
+
+function ttlExpiryIso(ttlMs: number, now: Date): string | undefined {
+  const expiresMs = now.getTime() + Math.round(ttlMs);
+  if (!validDateMs(expiresMs)) return undefined;
+  return new Date(expiresMs).toISOString();
+}
+
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
@@ -120,7 +130,10 @@ export interface LifecycleInputError {
   message: string;
 }
 
-export function lifecycleInputError(input: Record<string, unknown>): LifecycleInputError | null {
+export function lifecycleInputError(
+  input: Record<string, unknown>,
+  now = new Date()
+): LifecycleInputError | null {
   if (hasOwn(input, 'expiresAt')) {
     const expiresAt = input['expiresAt'];
     if (expiresAt !== null && !(typeof expiresAt === 'string' && isIsoLike(expiresAt))) {
@@ -136,6 +149,9 @@ export function lifecycleInputError(input: Record<string, unknown>): LifecycleIn
     if (!(typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0)) {
       return { field: 'ttlMs', message: 'ttlMs must be a positive finite number' };
     }
+    if (!ttlExpiryIso(ttlMs, now)) {
+      return { field: 'ttlMs', message: 'ttlMs is too large to produce a valid expiry' };
+    }
   }
 
   if (hasOwn(input, 'ttlSeconds')) {
@@ -144,6 +160,13 @@ export function lifecycleInputError(input: Record<string, unknown>): LifecycleIn
       return {
         field: 'ttlSeconds',
         message: 'ttlSeconds must be a positive finite number',
+      };
+    }
+    const ttlMs = ttlSeconds * 1000;
+    if (!Number.isFinite(ttlMs) || !ttlExpiryIso(ttlMs, now)) {
+      return {
+        field: 'ttlSeconds',
+        message: 'ttlSeconds is too large to produce a valid expiry',
       };
     }
   }
@@ -161,7 +184,7 @@ export function expiresAtFromLifecycleInput(
 
   const ttlMs = input['ttlMs'];
   if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0) {
-    return new Date(now.getTime() + Math.round(ttlMs)).toISOString();
+    return ttlExpiryIso(ttlMs, now);
   }
 
   const ttlSeconds = input['ttlSeconds'];
@@ -170,7 +193,7 @@ export function expiresAtFromLifecycleInput(
     Number.isFinite(ttlSeconds) &&
     ttlSeconds > 0
   ) {
-    return new Date(now.getTime() + Math.round(ttlSeconds * 1000)).toISOString();
+    return ttlExpiryIso(ttlSeconds * 1000, now);
   }
 
   return undefined;
@@ -213,6 +236,44 @@ function revokeRecord(
   record.revokeReason = options.reason ?? record.revokeReason ?? 'operator-revoked';
 }
 
+function sameOptionalPath(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left ?? undefined) === (right ?? undefined);
+}
+
+function sameAuthorityForExpiryPreservation(
+  previous: SessionEnvelope,
+  incoming: SessionEnvelope
+): boolean {
+  return (
+    previous.sessionId === incoming.sessionId &&
+    previous.globalSessionId === incoming.globalSessionId &&
+    previous.nodeId === incoming.nodeId &&
+    previous.issuedAt === incoming.issuedAt &&
+    previous.revocable === incoming.revocable &&
+    previous.intent.kind === incoming.intent.kind &&
+    previous.scope.kind === incoming.scope.kind &&
+    previous.scope.nodeId === incoming.scope.nodeId &&
+    previous.scope.cwd === incoming.scope.cwd &&
+    sameOptionalPath(previous.scope.repoPath, incoming.scope.repoPath) &&
+    sameOptionalPath(previous.scope.worktreePath, incoming.scope.worktreePath) &&
+    previous.peerIdentity.kind === incoming.peerIdentity.kind
+  );
+}
+
+function preserveRenewedExpiry(
+  previous: SessionEnvelope,
+  incoming: SessionEnvelope
+): SessionEnvelope {
+  if (!sameAuthorityForExpiryPreservation(previous, incoming)) return incoming;
+  if (!previous.expiresAt || !incoming.expiresAt) return incoming;
+  const previousMs = Date.parse(previous.expiresAt);
+  const incomingMs = Date.parse(incoming.expiresAt);
+  if (Number.isFinite(previousMs) && Number.isFinite(incomingMs) && previousMs > incomingMs) {
+    return { ...incoming, expiresAt: previous.expiresAt };
+  }
+  return incoming;
+}
+
 export class InMemorySessionEnvelopeRegistry {
   private readonly records = new Map<string, SessionEnvelopeRecord>();
 
@@ -233,12 +294,15 @@ export class InMemorySessionEnvelopeRegistry {
   upsert(envelope: SessionEnvelope): SessionEnvelope {
     const key = sessionEnvelopeKey(envelope);
     const previous = this.records.get(key);
+    const storedEnvelope = previous
+      ? preserveRenewedExpiry(previous.envelope, envelope)
+      : envelope;
     this.records.set(key, {
-      envelope,
+      envelope: storedEnvelope,
       revokedAt: previous?.revokedAt ?? null,
       revokeReason: previous?.revokeReason ?? null,
     });
-    return envelope;
+    return storedEnvelope;
   }
 
   readRecord(sessionIdOrGlobalId: string, nodeId?: string): SessionEnvelopeRecord | undefined {
@@ -335,6 +399,23 @@ export class InMemorySessionEnvelopeRegistry {
 
   validate(context: SessionLifecycleValidationContext): SessionLifecycleValidation {
     const now = nowDate(context.now);
+    if (!context.nodeId && !this.records.has(context.sessionId)) {
+      const localMatches = this.countLocalSessionId(context.sessionId);
+      if (localMatches > 1) {
+        return {
+          ok: false,
+          error: relaySessionError(
+            'INVALID_REQUEST',
+            'AMBIGUOUS_LOCAL_SESSION_ID',
+            'nodeId is required when addressing a scoped session by node-local session id',
+            {
+              sessionId: context.sessionId,
+              matches: localMatches,
+            }
+          ),
+        };
+      }
+    }
     const record = this.readRecord(context.sessionId, context.nodeId);
     if (!record) {
       const mismatchedRecord = context.nodeId
