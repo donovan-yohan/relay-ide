@@ -1047,6 +1047,7 @@ describe('hub node routes and link', () => {
         repoInventoryFeature,
         nodeLinks,
         sessionEnvelopes,
+        now: () => now,
       })
     );
     const server = http.createServer(app);
@@ -1097,6 +1098,34 @@ describe('hub node routes and link', () => {
       nodeWs.once('error', reject);
     });
 
+    for (const [field, invalidLifecycle] of [
+      ['expiresAt', { expiresAt: 'not-a-date' }],
+      ['ttlMs', { ttlMs: 0 }],
+      ['ttlSeconds', { ttlSeconds: '60' }],
+    ] as const) {
+      const invalidLifecycleRes = await fetch(
+        `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/sessions/reopen`,
+        {
+          method: 'POST',
+          headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            ...invalidLifecycle,
+          }),
+        }
+      );
+      expect(invalidLifecycleRes.status).toBe(400);
+      expect(await invalidLifecycleRes.json()).toMatchObject({
+        error: {
+          code: 'INVALID_REQUEST',
+          details: {
+            reasonCode: 'INVALID_LIFECYCLE_INPUT',
+            field,
+          },
+        },
+      });
+    }
+
     const reopenPromise = fetch(
       `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/sessions/reopen`,
       {
@@ -1105,6 +1134,7 @@ describe('hub node routes and link', () => {
         body: JSON.stringify({
           repoIdentity: 'github.com/donovan-yohan/relay-ide',
           type: 'terminal',
+          ttlMs: 3_200_000_000_000,
         }),
       }
     );
@@ -1117,6 +1147,7 @@ describe('hub node routes and link', () => {
         repoPath: '/srv/repos/relay-ide',
         worktreePath: null,
         type: 'terminal',
+        ttlMs: 3_200_000_000_000,
       },
     });
     nodeWs.send(
@@ -1155,14 +1186,22 @@ describe('hub node routes and link', () => {
     const reopenRes = await reopenPromise;
     expect(reopenRes.status).toBe(201);
     const reopened = (await reopenRes.json()) as {
-      session: { id: string; nodeId: string; globalSessionId: string };
+      session: {
+        id: string;
+        nodeId: string;
+        globalSessionId: string;
+        sessionEnvelope: { expiresAt: string | null };
+      };
     };
     expect(reopened.session).toMatchObject({
       id: 'reopened-session',
       nodeId: exchanged.node.nodeId,
       globalSessionId: `${exchanged.node.nodeId}:reopened-session`,
+      sessionEnvelope: { expiresAt: '2127-05-30T03:57:25.000Z' },
     });
-    expect(sessionEnvelopes.read('reopened-session', exchanged.node.nodeId)).toBeTruthy();
+    expect(sessionEnvelopes.read('reopened-session', exchanged.node.nodeId)).toMatchObject({
+      expiresAt: '2127-05-30T03:57:25.000Z',
+    });
 
     const upgrade = await rawUpgrade(
       port,

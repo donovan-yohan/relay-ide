@@ -4,6 +4,7 @@ import {
   isLocallyOwnedSession,
 } from '../server/hub-session-aggregator.js';
 import { HubNodeLinkError } from '../server/hub-node-link.js';
+import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
@@ -132,6 +133,30 @@ describe('aggregateRemoteSessions', () => {
     for (const session of result) {
       expect(session.globalSessionId).toMatch(/^node-(a|b):(s1|s2)$/);
     }
+  });
+
+  it('registers listed remote session envelopes for later routed attach validation', async () => {
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => ({
+        sessions: [localSession('s-listed', nodeId)],
+      }),
+    });
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      sessionEnvelopes,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(sessionEnvelopes.read('s-listed', 'node-a')).toMatchObject({
+      sessionId: 's-listed',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:s-listed',
+    });
   });
 
   it('drops sessions from a failed node but keeps results from other nodes', async () => {

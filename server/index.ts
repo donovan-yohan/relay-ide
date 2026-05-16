@@ -1874,6 +1874,7 @@ async function main(): Promise<void> {
         registry: hubNodeRegistry,
         nodeLinks: hubNodeLinks,
         logger,
+        sessionEnvelopes: sessionEnvelopeRegistry,
       }),
     ]);
     const allSessions = [...localSessions, ...remoteSessions];
