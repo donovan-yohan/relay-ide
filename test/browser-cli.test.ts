@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import * as http from 'node:http';
+import { WebSocketServer } from 'ws';
 
 let tmpDir: string;
 
@@ -562,3 +563,131 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
     captured.find((entry) => entry.url?.endsWith('/files/read'))?.body
   ).toMatchObject({ path: 'hello.txt', maxBytes: 64, maxLines: 2 });
 });
+
+test('v1 gateway session stream and input use routed PTY websocket', async () => {
+  const session = {
+    id: 'remote-session-1',
+    globalSessionId: 'node-a:remote-session-1',
+    nodeId: 'node-a',
+    type: 'terminal',
+    agent: 'shell',
+    mode: 'pty',
+    cwd: '/fixture',
+    displayName: 'fixture terminal',
+    status: 'active',
+  };
+  const upgrades: Array<{ url?: string; cookie?: string; marker?: string | string[] }> = [];
+  const inputs: string[] = [];
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/sessions/remote-session-1') {
+      res.end(JSON.stringify(session));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+  });
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    upgrades.push({
+      url: req.url,
+      cookie: req.headers.cookie,
+      marker: req.headers['x-relay-cli-gateway'],
+    });
+    if (req.url !== '/nodes/node-a/ws/sessions/remote-session-1') {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.send('stream-marker\n');
+      ws.on('message', (data) => {
+        const text = data.toString();
+        inputs.push(text);
+        ws.send(`echo:${text}`);
+      });
+    });
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    const streamStdout = await execNode(
+      [
+        'dist/bin/relay-ide.js',
+        'v1',
+        'sessions',
+        'stream',
+        '--id',
+        'remote-session-1',
+        '--max-events',
+        '1',
+        '--json',
+      ],
+      env
+    );
+    const streamLines = streamStdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(streamLines[0]).toMatchObject({
+      ok: true,
+      command: 'sessions.stream',
+      data: { event: 'data', data: 'stream-marker\n', nodeId: 'node-a' },
+    });
+    expect(streamLines.at(-1)).toMatchObject({
+      ok: true,
+      command: 'sessions.stream',
+      data: { event: 'closed', frames: 1, truncated: false },
+    });
+
+    const inputEnvelope = parseEnvelope<{
+      output: string;
+      matched: boolean;
+      bytesSent: number;
+      nodeId: string;
+    }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'sessions',
+          'input',
+          '--id',
+          'remote-session-1',
+          '--data',
+          'marker-input\n',
+          '--wait-for',
+          'echo:marker-input',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(inputEnvelope).toMatchObject({
+      ok: true,
+      command: 'sessions.input',
+      data: { matched: true, nodeId: 'node-a' },
+    });
+    expect(inputEnvelope.data.output).toContain('echo:marker-input\n');
+  } finally {
+    wss.close();
+    await close(server);
+  }
+
+  expect(upgrades).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        url: '/nodes/node-a/ws/sessions/remote-session-1',
+        cookie: 'token=scoped-token',
+        marker: 'v1',
+      }),
+    ])
+  );
+  expect(inputs).toContain('marker-input\n');
+});
+

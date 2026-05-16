@@ -14,6 +14,8 @@ export type RelayCliGatewayCommand =
   | 'sessions.create'
   | 'sessions.attach'
   | 'sessions.detach'
+  | 'sessions.stream'
+  | 'sessions.input'
   | 'sessions.interventions'
   | 'sessions.handBack'
   | 'files.list'
@@ -391,6 +393,80 @@ const detachOutputSchema: RelayJsonSchema = {
   required: ['detached', 'killed', 'session', 'message'],
 };
 
+const sessionStreamInputSchema: RelayJsonSchema = {
+  title: 'SessionsStreamInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    mode: { type: 'string', enum: ['ndjson'], default: 'ndjson' },
+    maxEvents: { type: 'number', minimum: 1, maximum: 10000 },
+    maxBytes: { type: 'number', minimum: 1, maximum: 1048576 },
+    idleTimeoutMs: { type: 'number', minimum: 1, maximum: 300000 },
+  },
+  required: ['id'],
+};
+
+const sessionStreamEventSchema: RelayJsonSchema = {
+  title: 'SessionsStreamEvent',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    event: { type: 'string', enum: ['data', 'closed'] },
+    sessionId: stringSchema,
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+    encoding: { const: 'utf8' },
+    data: stringSchema,
+    bytes: { type: 'number', minimum: 0 },
+    sequence: { type: 'number', minimum: 0 },
+    closeCode: { type: 'number' },
+    reason: stringSchema,
+    frames: { type: 'number', minimum: 0 },
+    bytesReceived: { type: 'number', minimum: 0 },
+    truncated: booleanSchema,
+    maxBytes: { type: 'number', minimum: 1 },
+    backpressureClosed: booleanSchema,
+  },
+  required: ['event', 'sessionId'],
+};
+
+const sessionInputInputSchema: RelayJsonSchema = {
+  title: 'SessionsInputInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    data: stringSchema,
+    dataBase64: stringSchema,
+    stdin: booleanSchema,
+    waitFor: stringSchema,
+    timeoutMs: { type: 'number', minimum: 1, maximum: 300000 },
+    maxBytes: { type: 'number', minimum: 1, maximum: 1048576 },
+  },
+  required: ['id'],
+};
+
+const sessionInputOutputSchema: RelayJsonSchema = {
+  title: 'SessionsInputOutput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sent: booleanSchema,
+    sessionId: stringSchema,
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+    bytesSent: { type: 'number', minimum: 0 },
+    output: stringSchema,
+    matched: booleanSchema,
+    waitFor: stringSchema,
+    bytesReceived: { type: 'number', minimum: 0 },
+    truncated: booleanSchema,
+    maxBytes: { type: 'number', minimum: 1 },
+  },
+  required: ['sent', 'sessionId', 'bytesSent', 'matched', 'bytesReceived', 'truncated'],
+};
+
 const createSessionInputSchema: RelayJsonSchema = {
   title: 'CreateSessionInput',
   type: 'object',
@@ -646,6 +722,69 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.stream',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'stream',
+      '--id',
+      '<session-id>',
+      '--mode',
+      'ndjson',
+      '--json',
+    ],
+    summary:
+      'Attach to a PTY session and emit UTF-8 output frames as newline-delimited gateway envelopes.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:attach'],
+    inputSchema: sessionStreamInputSchema,
+    outputSchema: okOutput('SessionsStreamEvent', sessionStreamEventSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.input',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'input',
+      '--id',
+      '<session-id>',
+      '--data',
+      '<text>',
+      '--json',
+    ],
+    summary:
+      'Send one UTF-8 input chunk to a PTY session, optionally waiting for observable echoed output.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:attach'],
+    inputSchema: sessionInputInputSchema,
+    outputSchema: okOutput('SessionsInputOutput', sessionInputOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],

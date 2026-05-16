@@ -3,6 +3,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as service from '../server/service.js';
@@ -36,6 +37,7 @@ import {
   gatewayOk,
   type RelayCliGatewayCommand,
   type RelayCliGatewayEnvelope,
+  type RelayCliGatewayErrorCode,
 } from '../shared/cli-gateway-contract.js';
 import {
   gatewayCliInvalidArgumentError,
@@ -47,6 +49,7 @@ import {
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
 import { isFileRpcOperation, type FileRpcOperation } from '../shared/file-rpc.js';
+import { WebSocket } from 'ws';
 
 const execFileAsync = promisify(execFile);
 
@@ -374,7 +377,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions attach|sessions detach|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
   );
   process.exit(1);
 }
@@ -653,6 +656,348 @@ async function runGatewaySessionDetach(sessionArgs: string[]): Promise<never> {
   );
 }
 
+interface GatewayPtyTarget {
+  requestedId: string;
+  sessionId: string;
+  nodeId?: string;
+  globalSessionId?: string;
+  wsPath: string;
+}
+
+function gatewayOptionalPositiveInt(
+  commandName: RelayCliGatewayCommand,
+  sessionArgs: string[],
+  flag: string,
+  max: number
+): number | undefined {
+  const raw = gatewayArg(sessionArgs, flag);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
+    gatewayInvalid(commandName, `${flag} must be a positive integer <= ${max}`, {
+      flag,
+      value: raw,
+      max,
+    });
+  }
+  return parsed;
+}
+
+function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+  if (!token) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UNAUTHORIZED',
+        message:
+          'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+        retryable: false,
+      }),
+      1
+    );
+  }
+  return token;
+}
+
+function gatewayWsPort(): string {
+  return getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+}
+
+async function resolveGatewayPtyTarget(
+  id: string,
+  commandName: RelayCliGatewayCommand
+): Promise<GatewayPtyTarget> {
+  const session = await gatewaySessionDescriptor(id, commandName);
+  const sessionId = session.id ?? id;
+  const nodeId = session.nodeId;
+  const globalSessionId = session.globalSessionId;
+  const wsPath = nodeId
+    ? `/nodes/${encodeURIComponent(nodeId)}/ws/sessions/${encodeURIComponent(sessionId)}`
+    : `/ws/${encodeURIComponent(sessionId)}`;
+  return {
+    requestedId: id,
+    sessionId,
+    ...(nodeId ? { nodeId } : {}),
+    ...(globalSessionId ? { globalSessionId } : {}),
+    wsPath,
+  };
+}
+
+function gatewayWsErrorCode(message: string): RelayCliGatewayErrorCode {
+  if (message.includes('Unexpected server response: 401')) return 'UNAUTHORIZED';
+  if (message.includes('Unexpected server response: 403')) return 'FORBIDDEN';
+  if (message.includes('Unexpected server response: 404')) return 'NODE_OFFLINE';
+  if (message.includes('ECONNREFUSED') || message.includes('connect')) return 'SERVER_UNAVAILABLE';
+  return 'UPSTREAM_ERROR';
+}
+
+function gatewayOpenPtyWebSocket(
+  commandName: RelayCliGatewayCommand,
+  target: GatewayPtyTarget
+): Promise<WebSocket> {
+  const token = gatewayRequiredToken(commandName);
+  const port = gatewayWsPort();
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${target.wsPath}`, {
+    headers: {
+      Cookie: `token=${encodeURIComponent(token)}`,
+      'x-relay-cli-gateway': 'v1',
+    },
+  });
+  return new Promise((resolve) => {
+    let opened = false;
+    ws.once('open', () => {
+      opened = true;
+      resolve(ws);
+    });
+    ws.once('error', (error) => {
+      if (opened) return;
+      const message = error instanceof Error ? error.message : String(error);
+      printGatewayEnvelope(
+        gatewayError(commandName, {
+          code: gatewayWsErrorCode(message),
+          message: `could not attach PTY stream: ${message}`,
+          retryable: true,
+          details: {
+            sessionId: target.sessionId,
+            ...(target.nodeId ? { nodeId: target.nodeId } : {}),
+          },
+        }),
+        1
+      );
+    });
+  });
+}
+
+function gatewayTargetPayload(target: GatewayPtyTarget): Record<string, unknown> {
+  return {
+    sessionId: target.sessionId,
+    ...(target.nodeId ? { nodeId: target.nodeId } : {}),
+    ...(target.globalSessionId ? { globalSessionId: target.globalSessionId } : {}),
+  };
+}
+
+function writeGatewayNdjson(envelope: RelayCliGatewayEnvelope): boolean {
+  return process.stdout.write(`${JSON.stringify(envelope)}
+`);
+}
+
+async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.stream', sessionArgs);
+  const mode = gatewayArg(sessionArgs, '--mode') ?? 'ndjson';
+  if (mode !== 'ndjson') {
+    gatewayInvalid('sessions.stream', '--mode must be ndjson', { field: 'mode', value: mode });
+  }
+  const maxEvents = gatewayOptionalPositiveInt('sessions.stream', sessionArgs, '--max-events', 10000);
+  const maxBytes = gatewayOptionalPositiveInt('sessions.stream', sessionArgs, '--max-bytes', 1048576);
+  const idleTimeoutMs = gatewayOptionalPositiveInt(
+    'sessions.stream',
+    sessionArgs,
+    '--idle-timeout-ms',
+    300000
+  );
+  const target = await resolveGatewayPtyTarget(id, 'sessions.stream');
+  const ws = await gatewayOpenPtyWebSocket('sessions.stream', target);
+  let sequence = 0;
+  let frames = 0;
+  let bytesReceived = 0;
+  let truncated = false;
+  let backpressureClosed = false;
+  let idleTimer: NodeJS.Timeout | undefined;
+
+  const refreshIdleTimer = (): void => {
+    if (!idleTimeoutMs) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => ws.close(1000, 'idle timeout'), idleTimeoutMs);
+    idleTimer.unref?.();
+  };
+  refreshIdleTimer();
+
+  ws.on('message', (data) => {
+    refreshIdleTimer();
+    let text = data.toString('utf8');
+    const rawBytes = Buffer.byteLength(text, 'utf8');
+    if (maxBytes !== undefined && bytesReceived + rawBytes > maxBytes) {
+      const remaining = Math.max(0, maxBytes - bytesReceived);
+      text = Buffer.from(text, 'utf8').subarray(0, remaining).toString('utf8');
+      truncated = true;
+    }
+    const bytes = Buffer.byteLength(text, 'utf8');
+    bytesReceived += bytes;
+    if (bytes > 0) {
+      frames += 1;
+      const ok = writeGatewayNdjson(
+        gatewayOk('sessions.stream', {
+          event: 'data',
+          ...gatewayTargetPayload(target),
+          encoding: 'utf8',
+          data: text,
+          bytes,
+          sequence: sequence++,
+        })
+      );
+      if (!ok) {
+        backpressureClosed = true;
+        ws.close(1013, 'stdout backpressure');
+        return;
+      }
+    }
+    if (truncated || (maxEvents !== undefined && frames >= maxEvents)) {
+      ws.close(1000, truncated ? 'maxBytes reached' : 'maxEvents reached');
+    }
+  });
+
+  ws.once('close', (code, reason) => {
+    if (idleTimer) clearTimeout(idleTimer);
+    writeGatewayNdjson(
+      gatewayOk('sessions.stream', {
+        event: 'closed',
+        ...gatewayTargetPayload(target),
+        closeCode: code,
+        reason: reason.toString('utf8'),
+        frames,
+        bytesReceived,
+        truncated,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+        backpressureClosed,
+      })
+    );
+    process.exit(0);
+  });
+  ws.once('error', (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    writeGatewayNdjson(
+      gatewayError('sessions.stream', {
+        code: gatewayWsErrorCode(message),
+        message: `PTY stream error: ${message}`,
+        retryable: true,
+        details: gatewayTargetPayload(target),
+      })
+    );
+  });
+  await new Promise(() => {});
+  process.exit(0);
+}
+
+function gatewayInputData(sessionArgs: string[]): string {
+  const data = gatewayArg(sessionArgs, '--data');
+  const dataBase64 = gatewayArg(sessionArgs, '--data-base64');
+  if (data !== undefined && dataBase64 !== undefined) {
+    gatewayInvalid('sessions.input', 'use only one of --data or --data-base64');
+  }
+  if (data !== undefined) return data;
+  if (dataBase64 !== undefined) return Buffer.from(dataBase64, 'base64').toString('utf8');
+  if (sessionArgs.includes('--stdin')) return fs.readFileSync(0, 'utf8');
+  gatewayInvalid('sessions.input', 'one of --data, --data-base64, or --stdin is required');
+}
+
+async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.input', sessionArgs);
+  const input = gatewayInputData(sessionArgs);
+  const waitFor = gatewayArg(sessionArgs, '--wait-for');
+  const timeoutMs =
+    gatewayOptionalPositiveInt('sessions.input', sessionArgs, '--timeout-ms', 300000) ?? 5000;
+  const maxBytes =
+    gatewayOptionalPositiveInt('sessions.input', sessionArgs, '--max-bytes', 1048576) ?? 65536;
+  const target = await resolveGatewayPtyTarget(id, 'sessions.input');
+  const ws = await gatewayOpenPtyWebSocket('sessions.input', target);
+  const bytesSent = Buffer.byteLength(input, 'utf8');
+  let output = '';
+  let bytesReceived = 0;
+  let truncated = false;
+  let settled = false;
+
+  const finish = (matched: boolean): void => {
+    if (settled) return;
+    settled = true;
+    try {
+      ws.close(1000, 'sessions.input complete');
+    } catch {
+      /* already closing */
+    }
+    printGatewayEnvelope(
+      gatewayOk('sessions.input', {
+        sent: true,
+        ...gatewayTargetPayload(target),
+        bytesSent,
+        output,
+        matched,
+        ...(waitFor !== undefined ? { waitFor } : {}),
+        bytesReceived,
+        truncated,
+        maxBytes,
+      }),
+      0
+    );
+  };
+
+  const fail = (message: string): void => {
+    if (settled) return;
+    settled = true;
+    try {
+      ws.close(1011, message);
+    } catch {
+      /* already closing */
+    }
+    printGatewayEnvelope(
+      gatewayError('sessions.input', {
+        code: 'UPSTREAM_ERROR',
+        message,
+        retryable: true,
+        details: {
+          ...gatewayTargetPayload(target),
+          ...(waitFor !== undefined ? { waitFor } : {}),
+          bytesReceived,
+          truncated,
+        },
+      }),
+      1
+    );
+  };
+
+  const timer = waitFor
+    ? setTimeout(() => fail(`timed out waiting for PTY output: ${waitFor}`), timeoutMs)
+    : undefined;
+  timer?.unref?.();
+
+  ws.on('message', (data) => {
+    if (settled) return;
+    const text = data.toString('utf8');
+    const nextBytes = Buffer.byteLength(text, 'utf8');
+    if (bytesReceived + nextBytes > maxBytes) {
+      const remaining = Math.max(0, maxBytes - bytesReceived);
+      output += Buffer.from(text, 'utf8').subarray(0, remaining).toString('utf8');
+      bytesReceived = maxBytes;
+      truncated = true;
+      fail(`PTY output exceeded maxBytes before waitFor matched`);
+      return;
+    }
+    output += text;
+    bytesReceived += nextBytes;
+    if (waitFor && output.includes(waitFor)) finish(true);
+  });
+  ws.once('close', () => {
+    if (settled) return;
+    if (waitFor) fail(`PTY stream closed before waitFor matched: ${waitFor}`);
+    else finish(false);
+  });
+  ws.once('error', (error) => {
+    if (settled) return;
+    const message = error instanceof Error ? error.message : String(error);
+    fail(`PTY input stream error: ${message}`);
+  });
+
+  ws.send(input, (error) => {
+    if (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      fail(`could not send PTY input: ${message}`);
+      return;
+    }
+    if (!waitFor) setTimeout(() => finish(false), 10).unref?.();
+  });
+  await new Promise(() => {});
+  process.exit(0);
+}
+
 async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<never> {
   const id = requireGatewaySessionId('sessions.interventions', sessionArgs);
   const limit = gatewayArg(sessionArgs, '--limit');
@@ -695,6 +1040,8 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'create') return runGatewaySessionCreate(sessionArgs);
   if (sessionSubcommand === 'attach') return runGatewaySessionAttach(sessionArgs);
   if (sessionSubcommand === 'detach') return runGatewaySessionDetach(sessionArgs);
+  if (sessionSubcommand === 'stream') return runGatewaySessionStream(sessionArgs);
+  if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
   }

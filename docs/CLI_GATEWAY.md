@@ -12,6 +12,8 @@ relay-ide v1 sessions get --id <session-id-or-global-id> --json
 relay-ide v1 sessions create --input-json '{...}' --json
 relay-ide v1 sessions attach --id <session-id-or-global-id> --json
 relay-ide v1 sessions detach --id <session-id-or-global-id> --json
+relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
+relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
@@ -123,6 +125,34 @@ Fail-closed examples:
 
 The gateway must never silently downgrade unsupported scoped, privileged, or control-mode requests.
 
+## Session stream and input
+
+`relay-ide v1 sessions stream --id <id> --mode ndjson --json` opens the same authenticated PTY attach path as the browser tab and emits newline-delimited gateway envelopes. Each output chunk is a `sessions.stream` success envelope with `data.event: "data"`, UTF-8 `data.data`, `bytes`, and a monotonic `sequence`. When the CLI detaches or the PTY closes, it emits one final `data.event: "closed"` envelope with `closeCode`, `reason`, `frames`, `bytesReceived`, and `truncated`.
+
+Useful smoke form:
+
+```bash
+relay-ide v1 sessions stream --id remote-session-1 --max-events 1 --json
+```
+
+Caps are contract-level and conservative:
+
+- `--mode ndjson` is the only stable stream mode in v1.
+- `--max-events N` detaches after N data frames.
+- `--max-bytes N` detaches after at most N UTF-8 bytes; the last frame may be truncated and the final envelope reports `truncated: true`.
+- `--idle-timeout-ms N` detaches after N ms without output.
+- If stdout backpressure is observed, the CLI closes the stream instead of dropping frames; the final envelope reports `backpressureClosed: true`.
+
+`relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`.
+
+Example:
+
+```bash
+relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' --wait-for relay-ok --json
+```
+
+`stream` and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or tmux process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
+
 ## Read-only file RPC commands
 
 The `files.*` commands route through the existing scoped #505 File RPC surface:
@@ -214,4 +244,4 @@ File commands remain read-only. They must surface unavailable node, missing path
 
 ## Deferred work
 
-Event subscription, input streaming, attach streaming, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
+Event subscription beyond PTY output, multi-session fan-out, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.

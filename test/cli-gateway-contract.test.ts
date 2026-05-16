@@ -37,6 +37,8 @@ describe('CLI gateway contract', () => {
       'sessions.create',
       'sessions.attach',
       'sessions.detach',
+      'sessions.stream',
+      'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
       'files.list',
@@ -203,6 +205,8 @@ describe('CLI gateway contract', () => {
       'sessions.create',
       'sessions.attach',
       'sessions.detach',
+      'sessions.stream',
+      'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
       'files.list',
@@ -254,7 +258,7 @@ describe('CLI gateway contract', () => {
   });
 
 
-  it('advertises descriptor-only attach/detach and read-only file RPC commands', () => {
+  it('advertises descriptor-only attach/detach, session I/O, and read-only file RPC commands', () => {
     expect(commandSpec('sessions.attach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
@@ -262,6 +266,21 @@ describe('CLI gateway contract', () => {
     expect(commandSpec('sessions.detach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
+    });
+
+    const stream = commandSpec('sessions.stream');
+    expect(stream.capabilityHints).toEqual(['session:read', 'session:attach']);
+    expect(stream.outputSchema).toMatchObject({
+      properties: {
+        data: { properties: { event: { enum: ['data', 'closed'] } } },
+      },
+    });
+
+    const input = commandSpec('sessions.input');
+    expect(input.capabilityHints).toEqual(['session:read', 'session:attach']);
+    expect(input.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: { maxBytes: { maximum: 1048576 } },
     });
 
     const list = commandSpec('files.list');
