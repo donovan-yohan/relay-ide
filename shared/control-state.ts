@@ -135,6 +135,15 @@ export function normalizeControlActor(value: unknown): ControlActor | undefined 
   return actor;
 }
 
+function controlActorIdentityKey(actor: ControlActor): string {
+  return JSON.stringify([
+    actor.kind,
+    actor.id ?? null,
+    actor.nodeId ?? null,
+    actor.sessionId ?? null,
+  ]);
+}
+
 export function normalizeControlActors(values: unknown): ControlActor[] {
   if (!Array.isArray(values)) return [];
   const actors: ControlActor[] = [];
@@ -142,7 +151,7 @@ export function normalizeControlActors(values: unknown): ControlActor[] {
   for (const value of values) {
     const actor = normalizeControlActor(value);
     if (!actor) continue;
-    const key = [actor.kind, actor.id, actor.nodeId, actor.sessionId].join(':');
+    const key = controlActorIdentityKey(actor);
     if (seen.has(key)) continue;
     seen.add(key);
     actors.push(actor);
@@ -159,30 +168,32 @@ export function normalizeControlStateSummary(
   }
 
   const record = value as Record<string, unknown>;
-  const legacy = createLegacyControlStateSummary(fallbackReason);
+  const controlMode = isControlMode(record.controlMode)
+    ? record.controlMode
+    : undefined;
   const activeActors = normalizeControlActors(record.activeActors);
+  const controlFreshness = isControlFreshness(record.controlFreshness)
+    ? record.controlFreshness
+    : undefined;
+
+  if (!controlMode || activeActors.length === 0 || !controlFreshness) {
+    return createLegacyControlStateSummary(fallbackReason);
+  }
+
   const activeWorker = normalizeControlActor(record.activeWorker);
   const lastInterventionBy = normalizeControlActor(record.lastInterventionBy);
   const controlReason = optionalString(record.controlReason);
 
   const summary: ControlStateSummary = {
-    controlMode: isControlMode(record.controlMode)
-      ? record.controlMode
-      : legacy.controlMode,
-    activeActors: activeActors.length > 0 ? activeActors : legacy.activeActors,
+    controlMode,
+    activeActors,
     lastInterventionAt: optionalNullableString(record.lastInterventionAt),
     lastInterventionBy: lastInterventionBy ?? null,
     lastInterventionEventId: optionalNullableString(record.lastInterventionEventId),
-    controlFreshness: isControlFreshness(record.controlFreshness)
-      ? record.controlFreshness
-      : legacy.controlFreshness,
+    controlFreshness,
   };
   if (activeWorker) summary.activeWorker = activeWorker;
-  if (controlReason) {
-    summary.controlReason = controlReason;
-  } else if (legacy.controlReason) {
-    summary.controlReason = legacy.controlReason;
-  }
+  if (controlReason) summary.controlReason = controlReason;
   return summary;
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createLegacyControlStateSummary,
   isControlStateSummary,
+  normalizeControlActors,
   normalizeControlStateSummary,
   type ControlStateSummary,
   type TabControlIdentity,
@@ -93,6 +94,55 @@ describe('control-state contract', () => {
     expect(normalized.controlMode).toBe('agent-driven');
     expect(normalized.controlMode).not.toBe('pty');
     expect(normalized.controlMode).not.toBe('web');
+    expect(normalized.controlReason).toBeUndefined();
+  });
+
+  it('normalizes malformed non-legacy summaries atomically to legacy control state', () => {
+    expect(
+      normalizeControlStateSummary({
+        controlMode: 'agent-driven',
+        controlFreshness: 'fresh',
+        lastInterventionAt: null,
+        lastInterventionBy: null,
+        lastInterventionEventId: null,
+      })
+    ).toMatchObject({
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'local-user' }],
+      controlFreshness: 'unknown',
+      controlReason: 'legacy-backfill',
+    });
+  });
+
+  it('preserves valid non-legacy summaries without inventing a control reason', () => {
+    const normalized = normalizeControlStateSummary({
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'operator' }],
+      controlFreshness: 'fresh',
+      lastInterventionAt: null,
+      lastInterventionBy: null,
+      lastInterventionEventId: null,
+    });
+
+    expect(normalized).toMatchObject({
+      controlMode: 'human-driven',
+      activeActors: [{ kind: 'human', id: 'operator' }],
+      controlFreshness: 'fresh',
+    });
+    expect(normalized.controlReason).toBeUndefined();
+  });
+
+  it('dedupes actors with collision-safe tuple identity keys', () => {
+    expect(
+      normalizeControlActors([
+        { kind: 'agent', id: 'agent:node', nodeId: 'session' },
+        { kind: 'agent', id: 'agent', nodeId: 'node:session' },
+        { kind: 'agent', id: 'agent:node', nodeId: 'session' },
+      ])
+    ).toEqual([
+      { kind: 'agent', id: 'agent:node', nodeId: 'session' },
+      { kind: 'agent', id: 'agent', nodeId: 'node:session' },
+    ]);
   });
 
   it.each([
