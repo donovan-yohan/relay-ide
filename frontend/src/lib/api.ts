@@ -38,6 +38,7 @@ import {
   type NodeId,
 } from '../../../shared/identity.js';
 import type { SessionLane } from '../../../shared/session-lane.js';
+import type { ControlActor, InterventionRecord } from '../../../shared/control-state.js';
 import { registerConfirmationRetry } from './confirmation-retries.js';
 
 export class ConflictError extends Error {
@@ -333,6 +334,48 @@ export async function setupPin(pin: string, confirm: string): Promise<void> {
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   return json<SessionSummary[]>(await fetch('/sessions'));
+}
+
+export interface InterventionReadResponse {
+  interventions: InterventionRecord[];
+  count: number;
+  limit: number;
+  truncated: boolean;
+  rawPayloadAvailable: false;
+  transcriptExportAvailable: false;
+  redaction: {
+    payload: 'preview-only';
+    metadataIncluded: true;
+  };
+}
+
+export async function fetchSessionInterventions(
+  sessionId: string,
+  limit = 12
+): Promise<InterventionReadResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return json<InterventionReadResponse>(
+    await fetch(
+      `/sessions/${encodeURIComponent(sessionId)}/interventions?${query.toString()}`
+    )
+  );
+}
+
+export async function handBackSessionControl(input: {
+  sessionId: string;
+  latestSeenInterventionEventId: string;
+  actor?: ControlActor;
+}): Promise<{ ok: true; events: unknown[]; ackedHumanInterventions: InterventionRecord[] }> {
+  return json<{ ok: true; events: unknown[]; ackedHumanInterventions: InterventionRecord[] }>(
+    await fetch(`/sessions/${encodeURIComponent(input.sessionId)}/control/hand-back`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        latestSeenInterventionEventId: input.latestSeenInterventionEventId,
+        ...(input.actor ? { actor: input.actor } : {}),
+      }),
+    })
+  );
 }
 
 export async function fetchHubNodes(): Promise<HubNodeSummary[]> {

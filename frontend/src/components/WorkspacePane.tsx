@@ -16,16 +16,19 @@ import {
 } from '../lib/workspace-summary.js';
 import { WorkspaceTabBar } from './WorkspaceTabBar.js';
 import { WorkspaceDropOverlay } from './WorkspaceDropOverlay.js';
+import InterventionStrip from './InterventionStrip.js';
 import './WorkspacePane.css';
 
 interface WorkspacePaneSummaryStripProps {
   tab: WorkspaceTab;
   summary: WorkspaceTabSummary;
+  summaryContext: SummaryContext;
 }
 
 function WorkspacePaneSummaryStrip({
   tab,
   summary,
+  summaryContext,
 }: WorkspacePaneSummaryStripProps) {
   if (tab.kind === 'file') {
     const segments = summary.breadcrumb?.segments ?? [];
@@ -79,18 +82,22 @@ function WorkspacePaneSummaryStrip({
       </div>
     );
   }
+  const session = summaryContext.findSession?.(tab.sessionId);
   return (
-    <div className="ws-pane__summary ws-pane__summary--session">
-      <span className="ws-pane__summary-title">{summary.primary}</span>
-      {summary.meta && (
-        <span className="ws-pane__summary-meta">{summary.meta}</span>
-      )}
-      {summary.dot && (
-        <span
-          className={`ws-pane__summary-dot ws-pane__summary-dot--${summary.dot}`}
-        />
-      )}
-    </div>
+    <>
+      <div className="ws-pane__summary ws-pane__summary--session">
+        <span className="ws-pane__summary-title">{summary.primary}</span>
+        {summary.meta && (
+          <span className="ws-pane__summary-meta">{summary.meta}</span>
+        )}
+        {summary.dot && (
+          <span
+            className={`ws-pane__summary-dot ws-pane__summary-dot--${summary.dot}`}
+          />
+        )}
+      </div>
+      <InterventionStrip session={session} nodeBadge={summary.nodeBadge} />
+    </>
   );
 }
 
@@ -155,7 +162,11 @@ function WorkspacePaneImpl({
           : {})}
       />
       {activeTab && activeSummary && (
-        <WorkspacePaneSummaryStrip tab={activeTab} summary={activeSummary} />
+        <WorkspacePaneSummaryStrip
+          tab={activeTab}
+          summary={activeSummary}
+          summaryContext={summaryContext}
+        />
       )}
       <div className="ws-pane__body-wrap">
         <div className="ws-pane__body" ref={bodyRef} role="tabpanel">

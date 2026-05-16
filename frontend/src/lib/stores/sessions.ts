@@ -31,6 +31,7 @@ import {
   sessionEventMatches,
   type SessionEventScope,
 } from '../../../../shared/node-boundary.js';
+import type { InterventionRecord, TabControlEvent } from '../../../../shared/control-state.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -169,6 +170,7 @@ export interface SessionsState {
   repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
   reconnectingPtySessionIds: Record<string, true>;
   backendConnectionStatus: BackendConnectionStatus;
+  interventionsBySession: Record<string, InterventionRecord[]>;
   // Actions
   setActiveSessionId: (id: string | null) => void;
   rememberSessionForWorkspace: (
@@ -214,6 +216,7 @@ export interface SessionsState {
     scope?: SessionEventScope
   ) => void;
   handleUserViewed: (sessionId: string, scope?: SessionEventScope) => void;
+  handleTabControlEvent: (event: TabControlEvent) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
   initSessionNotification: (sessionId: string, defaultEnabled: boolean) => void;
   getNotificationSessionIds: () => string[];
@@ -354,6 +357,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   repoEnrichmentMeta: {},
   reconnectingPtySessionIds: {},
   backendConnectionStatus: 'connected',
+  interventionsBySession: {},
 
   setActiveSessionId: (id) => {
     const key = id === null ? null : resolveSessionKey(get().sessions, id);
@@ -771,6 +775,47 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
             isUnread: false,
           };
         }),
+      };
+    });
+  },
+
+  handleTabControlEvent: (event) => {
+    const identity = event.identity;
+    const scope: SessionEventScope = {
+      sessionId: identity.sessionId,
+      localSessionId: identity.sessionId,
+      ...(identity.nodeId ? { nodeId: identity.nodeId } : {}),
+      ...(identity.globalSessionId ? { globalSessionId: identity.globalSessionId } : {}),
+    };
+    const cacheKey = identity.globalSessionId ?? `${identity.nodeId}:${identity.sessionId}`;
+    set((state) => {
+      const sessions = state.sessions.map((session): SessionSummary => {
+        if (!sessionMatchesEventScope(session, identity.sessionId, scope)) {
+          return session;
+        }
+        const updated: SessionSummary = {
+          ...session,
+          controlMode: event.controlMode,
+          activeActors: [event.actor],
+          controlFreshness: 'fresh',
+        };
+        if (event.reason) updated.controlReason = event.reason;
+        if (event.type === 'tab.intervention') {
+          updated.lastInterventionAt = event.intervention.timestamp;
+          updated.lastInterventionBy = event.intervention.author;
+          updated.lastInterventionEventId = event.intervention.id;
+        }
+        return updated;
+      });
+      if (event.type !== 'tab.intervention') return { sessions };
+      const previous = state.interventionsBySession[cacheKey] ?? [];
+      const next = [event.intervention, ...previous.filter((record) => record.id !== event.intervention.id)].slice(0, 12);
+      return {
+        sessions,
+        interventionsBySession: {
+          ...state.interventionsBySession,
+          [cacheKey]: next,
+        },
       };
     });
   },
