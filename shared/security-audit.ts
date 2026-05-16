@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import type { ControlActor, TabControlEvent } from './control-state.js';
 import {
   HIGH_RISK_CAPABILITIES,
   RELAY_SECURITY_POLICY_VERSION,
@@ -164,6 +165,124 @@ export function stableStringify(value: unknown): string {
 
 export function hashAuditMaterial(value: unknown): string {
   return sha256Hex(stableStringify(redactAuditValue(value)));
+}
+
+export function securityAuditEntryForTabControlEvent(
+  event: TabControlEvent
+): SecurityAuditEntryInput {
+  return {
+    eventId: event.eventId,
+    timestamp: event.occurredAt,
+    eventType: 'bridge_event',
+    decision: 'recorded',
+    reasonCode:
+      event.type === 'tab.mode-changed'
+        ? 'TAB_CONTROL_MODE_CHANGED'
+        : 'TAB_INTERVENTION_RECORDED',
+    peer: auditPeerFromControlActor(event.actor),
+    node: { nodeId: event.identity.nodeId },
+    sessionId: event.identity.sessionId,
+    intent: {
+      action: event.type,
+      target: event.identity.globalSessionId ?? event.identity.sessionId,
+    },
+    material: {
+      scope: controlEventAuditScope(event),
+      params: controlEventAuditParams(event),
+    },
+    requiredBits: controlEventRequiredBits(event),
+    grantedBits: controlEventRequiredBits(event),
+    deniedBits: [],
+    refs: { policyVersion: RELAY_SECURITY_POLICY_VERSION },
+    correlationId: event.eventId,
+  };
+}
+
+function auditPeerFromControlActor(actor: ControlActor): SecurityAuditPeerIdentity {
+  if (actor.kind === 'human') {
+    return {
+      kind: 'user',
+      ...(actor.nodeId ? { nodeId: actor.nodeId } : {}),
+      ...(actor.displayName ? { displayName: actor.displayName } : {}),
+      ...(actor.id ? { principalHash: sha256Hex(actor.id) } : {}),
+    };
+  }
+  if (actor.kind === 'agent' && actor.nodeId) {
+    return {
+      kind: 'node',
+      nodeId: actor.nodeId,
+      ...(actor.displayName ? { displayName: actor.displayName } : {}),
+      ...(actor.id ? { principalHash: sha256Hex(actor.id) } : {}),
+    };
+  }
+  return {
+    kind: 'system',
+    ...(actor.nodeId ? { nodeId: actor.nodeId } : {}),
+    ...(actor.displayName ? { displayName: actor.displayName } : {}),
+    ...(actor.id ? { principalHash: sha256Hex(actor.id) } : {}),
+  };
+}
+
+function controlEventAuditScope(event: TabControlEvent): Record<string, unknown> {
+  return {
+    nodeId: event.identity.nodeId,
+    sessionId: event.identity.sessionId,
+    globalSessionId: event.identity.globalSessionId ?? null,
+    cwd: event.identity.cwd,
+    repoPath: event.identity.repoPath ?? null,
+    worktreePath: event.identity.worktreePath ?? null,
+  };
+}
+
+function controlActorAuditSummary(actor: ControlActor): Record<string, unknown> {
+  return {
+    kind: actor.kind,
+    idHash: actor.id ? sha256Hex(actor.id) : null,
+    displayName: actor.displayName ?? null,
+    nodeId: actor.nodeId ?? null,
+    sessionId: actor.sessionId ?? null,
+  };
+}
+
+function controlEventAuditParams(event: TabControlEvent): Record<string, unknown> {
+  const base = {
+    sourceEventId: event.eventId,
+    kind: event.type,
+    reason: event.reason ?? null,
+    author: controlActorAuditSummary(event.actor),
+  };
+  if (event.type === 'tab.mode-changed') {
+    return {
+      ...base,
+      modeBefore: event.previousControlMode,
+      modeAfter: event.controlMode,
+    };
+  }
+  return {
+    ...base,
+    interventionId: event.intervention.id,
+    interventionKind: event.intervention.kind,
+    interventionSource: event.intervention.source,
+    payload: {
+      hashSha256: event.intervention.redaction.hashSha256,
+      byteCount: event.intervention.redaction.byteCount,
+      charCount: event.intervention.redaction.charCount,
+      lineCount: event.intervention.redaction.lineCount,
+      classes: event.intervention.redaction.classes,
+      redacted: event.intervention.redaction.redacted,
+    },
+    modeBefore: event.intervention.modeBefore,
+    modeAfter: event.intervention.modeAfter ?? event.controlMode,
+    acked: event.intervention.ackedAt !== undefined,
+  };
+}
+
+function controlEventRequiredBits(event: TabControlEvent): RelayCapabilityBit[] {
+  const modeAfter =
+    event.type === 'tab.mode-changed'
+      ? event.controlMode
+      : event.intervention.modeAfter ?? event.controlMode;
+  return modeAfter === 'agent-driven' ? ['tab:mode:set-agent'] : [];
 }
 
 export function redactAuditValue(value: unknown): unknown {

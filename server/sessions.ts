@@ -84,6 +84,10 @@ import {
   validateAgentHandBackAck,
   type SessionControlError,
 } from './session-control-api.js';
+import {
+  securityAuditEntryForTabControlEvent,
+  type SecurityAuditEntryInput,
+} from '../shared/security-audit.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -164,6 +168,7 @@ let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
 let defaultInterventionDebounceMs: number | undefined;
 let defaultCoDrivenAutoRevertMs: number | undefined;
+let defaultSecurityAuditSink: { append(input: SecurityAuditEntryInput): unknown } | undefined;
 
 function configure(opts: {
   port?: number;
@@ -171,12 +176,14 @@ function configure(opts: {
   configDir?: string;
   interventionDebounceMs?: number;
   coDrivenAutoRevertMs?: number;
+  securityAuditSink?: { append(input: SecurityAuditEntryInput): unknown };
 }): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
   defaultInterventionDebounceMs = opts.interventionDebounceMs;
   defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
+  defaultSecurityAuditSink = opts.securityAuditSink;
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -234,7 +241,27 @@ function onControlEvent(cb: ControlEventCallback): void {
 }
 
 function fireControlEvent(event: TabControlEvent): void {
-  for (const cb of [...controlEventCallbacks]) cb(event);
+  for (const cb of [...controlEventCallbacks]) {
+    try {
+      cb(event);
+    } catch (err) {
+      logger.warn('control event listener failed for event %s: %s', event.eventId, err);
+    }
+  }
+}
+
+function auditControlEvent(event: TabControlEvent): void {
+  if (!defaultSecurityAuditSink) return;
+  try {
+    defaultSecurityAuditSink.append(securityAuditEntryForTabControlEvent(event));
+  } catch (err) {
+    logger.warn('security audit append failed for control event %s: %s', event.eventId, err);
+  }
+}
+
+function emitAndAuditControlEvent(event: TabControlEvent): void {
+  fireControlEvent(event);
+  auditControlEvent(event);
 }
 
 function controlEngineOptions() {
@@ -245,7 +272,7 @@ function controlEngineOptions() {
     ...(defaultCoDrivenAutoRevertMs !== undefined
       ? { autoRevertMs: defaultCoDrivenAutoRevertMs }
       : {}),
-    emitEvent: fireControlEvent,
+    emitEvent: emitAndAuditControlEvent,
   };
 }
 

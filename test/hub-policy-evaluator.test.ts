@@ -6,6 +6,7 @@ import {
   policyDecisionToRelayError,
   requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
+  sessionCreateCapabilities,
 } from '../server/hub-policy-evaluator.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import {
@@ -316,6 +317,23 @@ describe('hub policy evaluator', () => {
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.list')).toEqual(['rpc:fs:list']);
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.stat')).toEqual(['rpc:fs:read']);
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.read')).toEqual(['rpc:fs:read']);
+  });
+
+  it('separates tab intervention/control capabilities from file/git/exec powers', () => {
+    expect(requiredCapabilitiesForRpcIntent('sessions.interventions.read')).toEqual([
+      'session:read',
+      'tab:intervention:read',
+    ]);
+    expect(requiredCapabilitiesForRpcIntent('sessions.control.set-agent')).toEqual([
+      'session:attach',
+      'tab:mode:set-agent',
+    ]);
+    expect(
+      sessionCreateCapabilities({ sessionType: 'agent', controlMode: 'agent-driven' })
+    ).toEqual(['session:create:agent', 'tab:mode:set-agent']);
+    expect(
+      sessionCreateCapabilities({ sessionType: 'terminal', controlMode: 'human-driven' })
+    ).toEqual(['session:create:terminal']);
   });
 
   it('denies File RPC when the node ACL lacks the required read-only capability', () => {

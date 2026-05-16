@@ -111,7 +111,18 @@ export function sessionCreateCapability(sessionType: SessionCreateType): RelayCa
   return sessionType === 'agent' ? 'session:create:agent' : 'session:create:terminal';
 }
 
+export function sessionCreateCapabilities(input: {
+  sessionType: SessionCreateType;
+  controlMode?: unknown;
+}): RelayCapabilityBit[] {
+  const capabilities = [sessionCreateCapability(input.sessionType)];
+  if (input.controlMode === 'agent-driven') capabilities.push('tab:mode:set-agent');
+  return capabilities;
+}
+
 export function requiredCapabilitiesForRpcIntent(action: string): string[] {
+  if (action === 'sessions.interventions.read') return ['session:read', 'tab:intervention:read'];
+  if (action === 'sessions.control.set-agent') return ['session:attach', 'tab:mode:set-agent'];
   switch (action) {
     case 'sessions.create.terminal':
       return ['session:create:terminal'];
