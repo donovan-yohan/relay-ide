@@ -241,7 +241,13 @@ function onControlEvent(cb: ControlEventCallback): void {
 }
 
 function fireControlEvent(event: TabControlEvent): void {
-  for (const cb of [...controlEventCallbacks]) cb(event);
+  for (const cb of [...controlEventCallbacks]) {
+    try {
+      cb(event);
+    } catch (err) {
+      logger.warn('control event listener failed for event %s: %s', event.eventId, err);
+    }
+  }
 }
 
 function auditControlEvent(event: TabControlEvent): void {

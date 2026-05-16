@@ -12,6 +12,7 @@ import * as sessions from '../server/sessions.js';
 import { closeInterventionLog, initInterventionLog } from '../server/intervention-log.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { PtySession } from '../server/types.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 
 const execFileAsync = promisify(execFile);
 const cleanupFns: Array<() => void | Promise<void>> = [];
@@ -191,5 +192,43 @@ describe('PTY WebSocket intervention control', () => {
       sessionId: 'remote-session-a',
       globalSessionId: 'remote-node-a:remote-session-a',
     });
+  });
+
+  it('still appends control audit entries when a control-event listener throws', async () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-audit-isolation-'));
+    cleanupFns.push(() => fs.rmSync(configDir, { recursive: true, force: true }));
+    initInterventionLog(configDir);
+    const auditEntries: SecurityAuditEntryInput[] = [];
+    sessions.configure({
+      configDir,
+      interventionDebounceMs: 5,
+      securityAuditSink: { append: (entry) => auditEntries.push(entry) },
+    });
+    const deliveredEvents: Array<Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]> = [];
+    sessions.onControlEvent(() => {
+      throw new Error('listener boom');
+    });
+    sessions.onControlEvent((event) => deliveredEvents.push(event));
+    expect(() =>
+      sessions.recordRoutedPtyInput({
+        nodeId: 'remote-node-a',
+        sessionId: 'remote-session-a-throw',
+        data: 'echo audited\\n',
+      })
+    ).not.toThrow();
+    await waitForInterventionCount('remote-session-a-throw', 1);
+    expect(deliveredEvents.map((event) => event.type)).toEqual([
+      'tab.mode-changed',
+      'tab.intervention',
+    ]);
+    expect(auditEntries).toHaveLength(2);
+    expect(auditEntries.map((entry) => entry.intent.action)).toEqual([
+      'tab.mode-changed',
+      'tab.intervention',
+    ]);
+    expect(auditEntries.map((entry) => entry.eventType)).toEqual([
+      'bridge_event',
+      'bridge_event',
+    ]);
   });
 });
