@@ -76,6 +76,7 @@ interface StoredNodeRecord {
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;
+  linkDisconnectedAt?: string;
   revokedAt?: string;
 }
 
@@ -376,6 +377,12 @@ function statusForNode(
   offlineMs: number
 ): HubNodeStatus {
   if (node.revokedAt) return 'revoked';
+  if (
+    node.linkDisconnectedAt &&
+    Date.parse(node.linkDisconnectedAt) >= Date.parse(node.lastSeenAt)
+  ) {
+    return 'offline';
+  }
   const ageMs = now.getTime() - Date.parse(node.lastSeenAt);
   if (ageMs > offlineMs) return 'offline';
   if (ageMs > staleMs) return 'stale';
@@ -745,6 +752,7 @@ export class HubNodeRegistry {
     }
     const previousStatus = statusForNode(node, this.now(), this.staleMs, this.offlineMs);
     node.lastSeenAt = now;
+    delete node.linkDisconnectedAt;
     node.protocolVersion = input.protocolVersion;
     if (input.manifest) {
       node.hostname = input.manifest.hostname;
@@ -761,6 +769,26 @@ export class HubNodeRegistry {
     this.scheduleHeartbeatPersist();
     this.notifyNodeStatusIfChanged(node, 'online', input.manifest, previousStatus);
     return publicNode(node, 'online');
+  }
+
+  markNodeLinkDisconnected(nodeId: string): HubNodeSummary {
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.revokedAt) return publicNode(node, 'revoked');
+
+    const previousStatus = statusForNode(
+      node,
+      this.now(),
+      this.staleMs,
+      this.offlineMs
+    );
+    node.linkDisconnectedAt = this.now().toISOString();
+    this.persist();
+    this.notifyNodeStatusIfChanged(node, 'offline', undefined, previousStatus);
+    return publicNode(node, 'offline');
   }
 
   beginCredentialRotation(nodeId: string): CredentialRotationResult {

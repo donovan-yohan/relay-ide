@@ -5,10 +5,14 @@ import * as path from 'node:path';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
-import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import {
+  RELAY_NODE_LINK_PROTOCOL,
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
+} from '../shared/relay-node-protocol.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
 
 const cleanupFns: Array<() => Promise<void> | void> = [];
@@ -50,6 +54,28 @@ async function nextNodeStatus(ws: WebSocket): Promise<Record<string, unknown>> {
     const [raw] = (await once(ws, 'message')) as [Buffer];
     const payload = JSON.parse(raw.toString()) as Record<string, unknown>;
     if (payload['type'] === 'node.status') return payload;
+  }
+}
+
+async function nextJson(ws: WebSocket): Promise<Record<string, unknown>> {
+  const [raw] = (await once(ws, 'message')) as [Buffer];
+  return JSON.parse(raw.toString()) as Record<string, unknown>;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timed out after ${ms}ms`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -157,5 +183,96 @@ describe('hub node status event websocket', () => {
       status: 'revoked',
       lastSeenAt: '2026-01-02T03:05:36.000Z',
     });
+  });
+
+  it('emits offline promptly when a fresh live reverse node-link closes', async () => {
+    const currentTime = new Date('2026-01-02T03:04:05.000Z');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-link-offline-'));
+    cleanupFns.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+    const registry = createHubNodeRegistry({
+      storagePath: path.join(tmpDir, 'hub', 'nodes.json'),
+      now: () => currentTime,
+      staleMs: 45_000,
+      offlineMs: 90_000,
+      heartbeatPersistDebounceMs: 1,
+    });
+    const nodeLinks = createHubNodeLinkManager();
+    const server = http.createServer();
+    const { wss } = setupWebSocket(
+      server,
+      new Set<string>(),
+      null,
+      undefined,
+      true,
+      undefined,
+      registry,
+      nodeLinks
+    );
+    cleanupFns.push(() => wss.close());
+    cleanupFns.push(() => closeServer(server));
+    const port = await listen(server);
+
+    const browser = new WebSocket(`ws://127.0.0.1:${port}/ws/events`);
+    cleanupFns.push(() => browser.close());
+    await waitForOpen(browser);
+
+    const online = nextNodeStatus(browser);
+    const pair = registry.createPairToken({ displayName: 'link-close-node' });
+    const exchanged = registry.exchangePairToken({
+      pairToken: pair.pairToken,
+      manifest: manifest('link-close-node'),
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    });
+    await expect(online).resolves.toMatchObject({
+      type: 'node.status',
+      nodeId: exchanged.node.nodeId,
+      status: 'online',
+      lastSeenAt: '2026-01-02T03:04:05.000Z',
+    });
+
+    const nodeLink = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
+      headers: { authorization: `Bearer ${exchanged.credential.token}` },
+    });
+    cleanupFns.push(() => nodeLink.close());
+    await waitForOpen(nodeLink);
+    nodeLink.send(
+      JSON.stringify({
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId: exchanged.node.nodeId,
+        channel: 'control',
+        type: 'control.hello',
+        requestId: 'hello-1',
+        timestamp: currentTime.toISOString(),
+        payload: { manifest: manifest('link-close-node') },
+      })
+    );
+    await expect(nextJson(nodeLink)).resolves.toMatchObject({
+      type: 'control.hello.result',
+      requestId: 'hello-1',
+    });
+    expect(registry.listNodes()).toEqual([
+      expect.objectContaining({
+        nodeId: exchanged.node.nodeId,
+        status: 'online',
+      }),
+    ]);
+
+    const offline = withTimeout(nextNodeStatus(browser), 1_000);
+    nodeLink.close();
+    await expect(offline).resolves.toMatchObject({
+      type: 'node.status',
+      nodeId: exchanged.node.nodeId,
+      status: 'offline',
+      lastSeenAt: '2026-01-02T03:04:05.000Z',
+    });
+    expect(registry.listNodes()).toEqual([
+      expect.objectContaining({
+        nodeId: exchanged.node.nodeId,
+        status: 'offline',
+        lastSeenAt: '2026-01-02T03:04:05.000Z',
+      }),
+    ]);
   });
 });

@@ -218,11 +218,11 @@ export class HubNodeLinkManager {
     const existing = this.links.get(nodeId);
     if (existing && existing !== ws) {
       this.cleanupNodeLinkResources(nodeId, existing);
-      if (existing.readyState === existing.OPEN) {
-        existing.close(1012, 'replaced by newer relay-node link');
-      }
     }
     this.links.set(nodeId, ws);
+    if (existing && existing !== ws && existing.readyState === existing.OPEN) {
+      existing.close(1012, 'replaced by newer relay-node link');
+    }
     const cleanup = () => this.unregisterNodeLink(nodeId, ws);
     ws.once('close', cleanup);
     ws.once('error', cleanup);
@@ -459,8 +459,22 @@ export function handleHubNodeLink(
     ws.close(4003, 'node revoked');
   });
   const cleanup = () => unsubscribeStatus();
+  let disconnected = false;
+  const markDisconnected = () => {
+    if (disconnected) return;
+    disconnected = true;
+    if (nodeLinks?.hasActiveNode(authenticatedNodeId)) return;
+    try {
+      registry.markNodeLinkDisconnected(authenticatedNodeId);
+    } catch {
+      // Authenticated links can race with revoke/unpair lifecycle; close/error
+      // cleanup must never crash the WebSocket upgrade handler.
+    }
+  };
   ws.on('close', cleanup);
   ws.on('error', cleanup);
+  ws.on('close', markDisconnected);
+  ws.on('error', markDisconnected);
 
   ws.on('message', (data) => {
     const parsed = parseEnvelope(data);
