@@ -625,8 +625,9 @@ function setupWebSocket(
         } catch (_) {
           // ignore
         }
-        // Use session.pty dynamically so writes go to current PTY
-        session.pty.write(str);
+        // Route browser PTY input through the session write path so control
+        // interventions are recorded before the active PTY receives input.
+        sessions.write(session.id, str);
         // Update activity timestamp on user input (throttled broadcast to avoid storm)
         const now = Date.now();
         session.lastActivity = new Date(now).toISOString();
@@ -669,6 +670,10 @@ function setupWebSocket(
       ws.on('close', cleanup);
       ws.on('error', cleanup);
     }
+  });
+
+  sessions.onControlEvent((event) => {
+    broadcastEvent('tab-control-event', { event });
   });
 
   sessions.onBackendStateChange((sessionId, state, permissionType) => {

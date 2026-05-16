@@ -38,6 +38,7 @@ export interface NodeLinkPtyHostDeps {
   defaultCwd?: string;
   defaultEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
+  inputRecorder?: (input: { sessionId: string; data: string }) => void;
   /**
    * Resume capability the manifest advertises. Determines which
    * factory is constructed when `attachmentFactory` is not supplied.
@@ -138,6 +139,7 @@ export function createNodeLinkPtyHost(
 ): NodeLinkPtyHost {
   const logger = options.logger ?? createLogger('node-link-pty');
   const factory = resolveFactory(options);
+  const inputRecorder = options.inputRecorder;
   const defaultShell = options.defaultShell ?? defaultLoginShell();
   const defaultCwd = options.defaultCwd ?? process.cwd();
   const defaultEnv = options.defaultEnv ?? process.env;
@@ -260,6 +262,7 @@ export function createNodeLinkPtyHost(
     if (!stream) return;
     if (typeof data !== 'string') return;
     try {
+      inputRecorder?.({ sessionId: stream.sessionId, data });
       stream.attachment.write(Buffer.from(data, 'utf8'));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

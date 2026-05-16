@@ -57,14 +57,26 @@ import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
+  isControlStateSummary,
   normalizeControlStateSummary,
   type ControlStateSummary,
+  type ControlActor,
+  type TabControlEvent,
+  type InterventionRecord,
 } from '../shared/control-state.js';
 import {
   LOCAL_COMPATIBILITY_SESSION_INTENT,
   normalizeSessionEnvelope,
 } from '../shared/session-envelope.js';
 import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
+import {
+  acknowledgeHumanInput,
+  applyControlModeAction,
+  maybeAutoRevertToAgentDriven,
+  recordHumanPtyInput,
+  type ControlModeAction,
+} from './control-engine.js';
+import { listInterventions } from './intervention-log.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -134,6 +146,7 @@ export type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();
+const routedPtyControlSessions = new Map<string, Session>();
 
 // Session metadata cache: session ID or worktree path -> SessionMeta
 const metaCache = new Map<string, SessionMeta>();
@@ -142,15 +155,21 @@ const metaCache = new Map<string, SessionMeta>();
 let defaultPort: number | undefined;
 let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
+let defaultInterventionDebounceMs: number | undefined;
+let defaultCoDrivenAutoRevertMs: number | undefined;
 
 function configure(opts: {
   port?: number;
   forceOutputParser?: boolean;
   configDir?: string;
+  interventionDebounceMs?: number;
+  coDrivenAutoRevertMs?: number;
 }): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
+  defaultInterventionDebounceMs = opts.interventionDebounceMs;
+  defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -200,12 +219,36 @@ let agentCounter = 0;
 type StateChangeCallback = (sessionId: string, state: AgentState) => void;
 const stateChangeCallbacks: StateChangeCallback[] = [];
 
+type ControlEventCallback = (event: TabControlEvent) => void;
+const controlEventCallbacks: ControlEventCallback[] = [];
+
+function onControlEvent(cb: ControlEventCallback): void {
+  controlEventCallbacks.push(cb);
+}
+
+function fireControlEvent(event: TabControlEvent): void {
+  for (const cb of [...controlEventCallbacks]) cb(event);
+}
+
+function controlEngineOptions() {
+  return {
+    ...(defaultInterventionDebounceMs !== undefined
+      ? { inputDebounceMs: defaultInterventionDebounceMs }
+      : {}),
+    ...(defaultCoDrivenAutoRevertMs !== undefined
+      ? { autoRevertMs: defaultCoDrivenAutoRevertMs }
+      : {}),
+    emitEvent: fireControlEvent,
+  };
+}
+
 function onStateChange(cb: StateChangeCallback): void {
   stateChangeCallbacks.push(cb);
 }
 
 export function __resetStateChangeCallbacksForTests(): void {
   stateChangeCallbacks.length = 0;
+  controlEventCallbacks.length = 0;
 }
 
 type SessionCreateCallback = (
@@ -622,10 +665,126 @@ function write(id: string, data: string): void {
     throw new Error(`Session not found: ${id}`);
   }
   if (session.mode === 'pty') {
+    recordHumanPtyInput(session, data, controlEngineOptions());
     session.pty.write(data);
   } else {
     logger.warn(`write() called on web session ${id} — no-op`);
   }
+}
+
+function createRoutedPtyControlState(
+  nodeId: string,
+  sessionId: string
+): ControlStateSummary {
+  const activeWorker: ControlActor = {
+    kind: 'agent',
+    id: 'terminal',
+    displayName: 'terminal',
+    nodeId,
+    sessionId,
+  };
+  return {
+    controlMode: 'agent-driven',
+    activeActors: [activeWorker],
+    activeWorker,
+    lastInterventionAt: null,
+    lastInterventionBy: null,
+    lastInterventionEventId: null,
+    controlFreshness: 'fresh',
+    controlReason: 'routed-session-created',
+  };
+}
+
+function ensureRoutedPtyControlState(session: Session, nodeId: string, sessionId: string): void {
+  if (isControlStateSummary(session.controlState)) return;
+  session.controlState = createRoutedPtyControlState(nodeId, sessionId);
+}
+
+function routedPtyControlSession(nodeId: string, sessionId: string): Session {
+  const globalSessionId = createGlobalSessionId(nodeId, sessionId);
+  const existing = routedPtyControlSessions.get(globalSessionId);
+  if (existing) {
+    ensureRoutedPtyControlState(existing, nodeId, sessionId);
+    return existing;
+  }
+
+  const envelope = sessionEnvelopeRegistry.read(sessionId, nodeId);
+  const now = new Date().toISOString();
+  const session = {
+    id: sessionId,
+    nodeId,
+    type: 'terminal',
+    agent: 'terminal',
+    mode: 'pty',
+    pty: { write: () => {}, resize: () => {}, kill: () => {} },
+    scrollback: [],
+    useTmux: false,
+    tmuxSessionName: `routed-${globalSessionId}`,
+    onPtyReplacedCallbacks: [],
+    restored: false,
+    outputParser: 'codex',
+    hookToken: '',
+    hooksActive: false,
+    cleanedUp: false,
+    yolo: false,
+    claudeArgs: [],
+    continuePolicy: 'never',
+    cwd: envelope?.scope.cwd ?? '/',
+    repoPath: envelope?.scope.repoPath,
+    worktreePath: envelope?.scope.worktreePath,
+    displayName: `Remote ${nodeId}/${sessionId}`,
+    createdAt: envelope?.issuedAt ?? now,
+    lastActivity: now,
+    idle: true,
+    customCommand: null,
+    status: 'active',
+    needsBranchRename: false,
+    agentState: 'idle',
+    controlState: createRoutedPtyControlState(nodeId, sessionId),
+  } as unknown as Session;
+  routedPtyControlSessions.set(globalSessionId, session);
+  return session;
+}
+
+function recordRoutedPtyInput(input: { nodeId: string; sessionId: string; data: string }): void {
+  const session = routedPtyControlSession(input.nodeId, input.sessionId);
+  session.lastActivity = new Date().toISOString();
+  recordHumanPtyInput(session, input.data, controlEngineOptions());
+}
+
+function controlAction(id: string, action: ControlModeAction): TabControlEvent[] {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return applyControlModeAction(session, action, controlEngineOptions());
+}
+
+function acknowledgeInterventions(id: string, actor?: ControlActor): number {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return acknowledgeHumanInput(session, actor, controlEngineOptions());
+}
+
+function maybeAutoRevert(id: string, nodeConnected?: boolean) {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return maybeAutoRevertToAgentDriven({
+    session,
+    ...(nodeConnected !== undefined ? { nodeConnected } : {}),
+    options: controlEngineOptions(),
+  });
+}
+
+function getInterventions(
+  id: string,
+  options: { nodeId?: string; limit?: number } = {}
+): InterventionRecord[] {
+  return listInterventions({ sessionId: id, ...options });
 }
 
 function tmuxTargetForSession(id: string): string {
@@ -1653,6 +1812,12 @@ export {
   captureTmuxPane,
   updateDisplayName,
   write,
+  recordRoutedPtyInput,
+  controlAction,
+  acknowledgeInterventions,
+  maybeAutoRevert,
+  getInterventions,
+  onControlEvent,
   onStateChange,
   onSessionCreate,
   onSessionEnd,

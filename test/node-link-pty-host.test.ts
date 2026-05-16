@@ -57,9 +57,11 @@ describe('node link pty host (unit)', () => {
   it('opens attachment on pty.attach, forwards data, closes on detach', async () => {
     const sent: RelayNodeEnvelope[] = [];
     const factory: MockAttachmentFactory = createMockAttachmentFactory();
+    const inputRecords: Array<{ sessionId: string; data: string }> = [];
     const host = createNodeLinkPtyHost({
       nodeId: 'node-1',
       attachmentFactory: factory,
+      inputRecorder: (input) => inputRecords.push(input),
     });
     const build = envelopeBuilder('node-1');
     const ctx = {
@@ -93,6 +95,7 @@ describe('node link pty host (unit)', () => {
     expect(factory.records[0]!.written.map((b) => b.toString('utf8'))).toEqual([
       'ls\n',
     ]);
+    expect(inputRecords).toEqual([{ sessionId: 'session-a', data: 'ls\n' }]);
 
     host.handle(
       build('pty', 'pty.resize', {
@@ -291,7 +294,10 @@ describe('node link pty host (integration)', () => {
       manifest: fakeManifest(),
     });
 
-    const linkManager = createHubNodeLinkManager();
+    const remoteInputRecords: Array<{ nodeId: string; sessionId: string; data: string }> = [];
+    const linkManager = createHubNodeLinkManager({
+      ptyInputRecorder: (input) => remoteInputRecords.push(input),
+    });
     const server = http.createServer(express());
     setupWebSocket(
       server,
@@ -402,5 +408,8 @@ describe('node link pty host (integration)', () => {
     expect(
       factory.records[0]!.written.map((b) => b.toString('utf8')).join('')
     ).toContain('echo hi');
+    expect(remoteInputRecords).toEqual([
+      { nodeId: exchanged.credential.nodeId, sessionId: 'session-int', data: 'echo hi' },
+    ]);
   });
 });
