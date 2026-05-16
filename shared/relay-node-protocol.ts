@@ -17,6 +17,7 @@ export type RelayNodeErrorCode =
   | 'NODE_OFFLINE'
   | 'NODE_UNSUPPORTED'
   | 'NODE_BUSY'
+  | 'ROTATION_IN_PROGRESS'
   | 'UNSUPPORTED_CAPABILITY'
   | 'SESSION_EXPIRED'
   | 'SESSION_REVOKED'
@@ -57,7 +58,30 @@ export interface RelayNodeCredential {
 }
 
 export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
-export type HubNodeCredentialState = 'active' | 'revoked';
+export type HubNodeCredentialRotationState =
+  | 'issuing'
+  | 'delivered'
+  | 'proved'
+  | 'stable'
+  | 'failed';
+export type HubNodeCredentialState =
+  | 'active'
+  | 'rotating'
+  | 'rotation-failed'
+  | 'revoked';
+
+export interface HubNodeCredentialRotationSummary {
+  rotationId: string;
+  state: HubNodeCredentialRotationState;
+  previousCredentialId: string;
+  nextCredentialId: string;
+  issuedAt: string;
+  deliveredAt?: string;
+  provedAt?: string;
+  stableAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+}
 export type HubNodeTrustState = 'active' | 'trusted' | 'paired' | 'revoked';
 export type HubNodeTrustLevel = RelayTrustTier | 'privileged-local-user' | 'standard';
 export type HubNodeVersionState =
@@ -139,6 +163,7 @@ export interface HubNodeSummary {
     policy?: RelayAclSummary;
   };
   credentialState: HubNodeCredentialState;
+  credentialRotation?: HubNodeCredentialRotationSummary;
   version: {
     state: HubNodeVersionState;
     nodeProtocolVersion: string;

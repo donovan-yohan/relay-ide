@@ -137,6 +137,7 @@ export function errorStatus(error: RelayNodeError): number {
   switch (error.code) {
     case 'UNAUTHORIZED':
       return 401;
+    case 'ROTATION_IN_PROGRESS':
     case 'CONFIRMATION_REQUIRED':
       return 409;
     case 'TOKEN_EXPIRED':
@@ -910,6 +911,38 @@ function auditLifecycleRevocation(
   });
 }
 
+function auditCredentialRotation(
+  sink: RoutedSessionAuditSink | undefined,
+  input: {
+    nodeId: string;
+    eventType: 'rotation' | 'revocation';
+    decision: 'recorded' | 'rotated' | 'failed' | 'revoked';
+    reasonCode: string;
+    credentialId?: string;
+    rotationId?: string;
+    params?: unknown;
+  }
+): void {
+  appendRoutedSessionAudit(sink, {
+    eventType: input.eventType,
+    decision: input.decision,
+    reasonCode: input.reasonCode,
+    peer: { kind: 'node', nodeId: input.nodeId, ...(input.credentialId ? { credentialId: input.credentialId } : {}) },
+    node: { nodeId: input.nodeId },
+    intent: { action: 'nodes.credential.rotate', target: input.nodeId },
+    material: {
+      params: {
+        ...(input.rotationId ? { rotationId: input.rotationId } : {}),
+        ...(input.params && typeof input.params === 'object'
+          ? (input.params as Record<string, unknown>)
+          : input.params !== undefined
+            ? { detail: input.params }
+            : {}),
+      },
+    },
+  });
+}
+
 function revokedReasonFromBody(body: Record<string, unknown>): string | undefined {
   const reason = body['reason'];
   return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
@@ -1254,6 +1287,7 @@ export function createHubNodeRouter(
         node: registry.recordHeartbeat({
           nodeId: authenticated.node.nodeId,
           protocolVersion,
+          credentialId: authenticated.credentialId,
           ...(manifest ? { manifest } : {}),
           ...(repoInventory !== undefined && repoInventory !== null
             ? { repoInventory }
@@ -1268,6 +1302,131 @@ export function createHubNodeRouter(
   router.get('/nodes', requireAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
   });
+
+  router.post('/hub/nodes/:nodeId/credential-rotation', requireAuth, async (req, res) => {
+    const { nodeId } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    const body = bodyRecord(req);
+    const delivery = stringField(body, 'delivery') ?? 'online';
+    if (delivery !== 'online' && delivery !== 'manual') {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'delivery must be "online" or "manual"')
+      );
+      return;
+    }
+    try {
+      const started = registry.beginCredentialRotation(nodeId);
+      auditCredentialRotation(options.auditSink, {
+        nodeId,
+        eventType: 'rotation',
+        decision: 'recorded',
+        reasonCode: 'CREDENTIAL_ROTATION_ISSUED',
+        credentialId: started.rotation.previousCredentialId,
+        rotationId: started.rotation.rotationId,
+        params: { delivery },
+      });
+      if (delivery === 'online') {
+        if (!options.nodeLinks?.hasActiveNode(nodeId)) {
+          const failed = registry.failCredentialRotation(
+            nodeId,
+            started.rotation.rotationId,
+            'node is not connected for online credential rotation'
+          );
+          auditCredentialRotation(options.auditSink, {
+            nodeId,
+            eventType: 'rotation',
+            decision: 'failed',
+            reasonCode: 'CREDENTIAL_ROTATION_NODE_OFFLINE',
+            credentialId: started.rotation.previousCredentialId,
+            rotationId: started.rotation.rotationId,
+          });
+          res.status(503).json({
+            error: relayError('NODE_OFFLINE', 'node is not connected', true),
+            node: failed.node,
+            rotation: failed.rotation,
+          });
+          return;
+        }
+        try {
+          await options.nodeLinks.request(nodeId, 'credential.rotate', {
+            credential: started.credential,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const failed = registry.failCredentialRotation(
+            nodeId,
+            started.rotation.rotationId,
+            message
+          );
+          auditCredentialRotation(options.auditSink, {
+            nodeId,
+            eventType: 'rotation',
+            decision: 'failed',
+            reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
+            credentialId: started.rotation.previousCredentialId,
+            rotationId: started.rotation.rotationId,
+            params: { message },
+          });
+          res.status(502).json({
+            error: relayError('NODE_UNSUPPORTED', 'credential rotation delivery failed', true, {
+              reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
+            }),
+            node: failed.node,
+            rotation: failed.rotation,
+          });
+          return;
+        }
+        const delivered = registry.markCredentialRotationDelivered(
+          nodeId,
+          started.rotation.rotationId
+        );
+        auditCredentialRotation(options.auditSink, {
+          nodeId,
+          eventType: 'rotation',
+          decision: 'recorded',
+          reasonCode: 'CREDENTIAL_ROTATION_DELIVERED',
+          credentialId: started.rotation.previousCredentialId,
+          rotationId: started.rotation.rotationId,
+        });
+        res.status(202).json({
+          node: delivered.node,
+          rotation: delivered.rotation,
+        });
+        return;
+      }
+      res.status(201).json(started);
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  router.post(
+    '/hub/nodes/:nodeId/credential-rotation/clear-failure',
+    requireAuth,
+    (req, res) => {
+      const { nodeId } = req.params;
+      if (!nodeId) {
+        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        return;
+      }
+      try {
+        const node = registry.clearCredentialRotationFailure(nodeId);
+        auditCredentialRotation(options.auditSink, {
+          nodeId,
+          eventType: 'rotation',
+          decision: 'recorded',
+          reasonCode: 'CREDENTIAL_ROTATION_FAILURE_CLEARED',
+        });
+        res.json({ node });
+      } catch (error) {
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
 
   // Repo-feature endpoints (GET /hub/repo-inventory + POST
   // /hub/nodes/:nodeId/sessions/reopen) used to live here. Per #425.2 /
@@ -1787,6 +1946,14 @@ export function createHubNodeRouter(
     }
     try {
       const node = registry.revokeNode(nodeId);
+      auditCredentialRotation(options.auditSink, {
+        nodeId,
+        eventType: 'revocation',
+        decision: 'revoked',
+        reasonCode: 'NODE_CREDENTIAL_REVOKED',
+        credentialId: node.credentialId,
+        params: { method: 'DELETE' },
+      });
       const revokedSessions = revokePolicyAffectedSessions({
         envelopes,
         nodeId,

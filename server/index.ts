@@ -875,6 +875,17 @@ function initializeRuntimeDirectories(configDir: string): void {
   }
 }
 
+function createAuditedHubNodeRegistry(
+  configDir: string,
+  auditSink: ReturnType<typeof createSecurityAuditLog> | undefined
+): ReturnType<typeof createHubNodeRegistry> {
+  const options: Parameters<typeof createHubNodeRegistry>[0] = {
+    storagePath: path.join(configDir, 'hub-node-registry.json'),
+  };
+  if (auditSink) options.auditSink = auditSink;
+  return createHubNodeRegistry(options);
+}
+
 async function ensureFrontendAvailableForStartup(
   frontendDir: string,
   packageRoot: string
@@ -1034,9 +1045,10 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err
     );
   }
-  const hubNodeRegistry = createHubNodeRegistry({
-    storagePath: path.join(configDir, 'hub-node-registry.json'),
-  });
+  const hubNodeRegistry = createAuditedHubNodeRegistry(
+    configDir,
+    securityAuditLog
+  );
   const repoInventoryFeature = createRepoInventoryFeature(hubNodeRegistry);
   const hubNodeLinks = createHubNodeLinkManager({
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,

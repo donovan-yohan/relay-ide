@@ -29,6 +29,7 @@ import {
   type LocalLogRole,
 } from '../server/local-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
+import { writeNodeCredentialFile } from './node-credential-file.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -521,8 +522,16 @@ function validateNodeServiceMode(
   }
 }
 
-function loadNodeCredential(): { nodeId: string; token: string } {
-  const credentialPath = path.join(service.CONFIG_DIR, 'node-credential.json');
+function nodeCredentialPath(): string {
+  return path.join(service.CONFIG_DIR, 'node-credential.json');
+}
+
+function writeNodeCredential(credential: unknown): void {
+  writeNodeCredentialFile(nodeCredentialPath(), credential);
+}
+
+function loadNodeCredential(): { nodeId: string; token: string; credentialId?: string } {
+  const credentialPath = nodeCredentialPath();
   if (!fs.existsSync(credentialPath)) {
     logger.error(
       `NODE_LINK_FAILED: no node credential at ${credentialPath}. Run 'relay-ide node connect' first.`
@@ -537,7 +546,7 @@ function loadNodeCredential(): { nodeId: string; token: string } {
       );
       process.exit(1);
     }
-    const parsed = raw as { nodeId?: unknown; token?: unknown };
+    const parsed = raw as { nodeId?: unknown; token?: unknown; credentialId?: unknown };
     if (
       typeof parsed.nodeId !== 'string' ||
       !parsed.nodeId ||
@@ -549,7 +558,13 @@ function loadNodeCredential(): { nodeId: string; token: string } {
       );
       process.exit(1);
     }
-    return { nodeId: parsed.nodeId, token: parsed.token };
+    return {
+      nodeId: parsed.nodeId,
+      token: parsed.token,
+      ...(typeof parsed.credentialId === 'string' && parsed.credentialId
+        ? { credentialId: parsed.credentialId }
+        : {}),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(redactBootstrapSecrets(`NODE_LINK_FAILED: ${message}`));
@@ -580,7 +595,22 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     sessionResume,
   });
   const localRelayNode = createLocalRelayNode({ nodeId: credential.nodeId });
-  const rpcHost = createNodeLinkRpcHost({ localRelayNode });
+  const nodeLinkClient: { current?: ReturnType<typeof createNodeLinkClient> } = {};
+  const rpcHost = createNodeLinkRpcHost({
+    localRelayNode,
+    rotateCredential: (rotatedCredential) => {
+      if (rotatedCredential.nodeId !== credential.nodeId) {
+        throw new Error('credential rotation nodeId mismatch');
+      }
+      writeNodeCredential(rotatedCredential);
+      logger.info(
+        `credential rotated to ${rotatedCredential.credentialId}; restarting node link to prove possession`
+      );
+      setTimeout(() => {
+        void nodeLinkClient.current?.stop('credential rotated');
+      }, 25).unref?.();
+    },
+  });
   const client = createNodeLinkClient({
     hubUrl,
     credential,
@@ -600,6 +630,7 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     onPtyEnvelope: (envelope, ctx) => ptyHost.handle(envelope, ctx),
     onRpcEnvelope: (envelope, ctx) => rpcHost.handle(envelope, ctx),
   });
+  nodeLinkClient.current = client;
   await new Promise<void>((resolve) => {
     let exiting = false;
     const finish = (exitCode: number): void => {
@@ -682,19 +713,7 @@ async function pairNode(
       process.exit(1);
     }
 
-    fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
-    const credentialPath = path.join(
-      service.CONFIG_DIR,
-      'node-credential.json'
-    );
-    fs.writeFileSync(
-      credentialPath,
-      `${JSON.stringify(exchange.credential, null, 2)}\n`,
-      {
-        mode: 0o600,
-      }
-    );
-    fs.chmodSync(credentialPath, 0o600);
+    writeNodeCredential(exchange.credential);
 
     const heartbeatRes = await fetch(
       nodeEndpoint(hubUrl, '/hub/node-heartbeat'),
@@ -724,7 +743,7 @@ async function pairNode(
     logger.info(
       `Node paired as ${exchange.node?.displayName ?? exchange.credential.nodeId}.`
     );
-    logger.info(`Credential saved to ${credentialPath}.`);
+    logger.info(`Credential saved to ${nodeCredentialPath()}.`);
     if (lifecycle === 'install') {
       logger.info(
         'Sent initial heartbeat; node install is pairing plus local service setup only and does not start or maintain /hub/node-link.'

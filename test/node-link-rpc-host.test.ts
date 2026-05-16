@@ -354,6 +354,47 @@ describe('node-link-rpc-host', () => {
     expect(err.message).toContain('not implemented');
   });
 
+  it('handles credential.rotate by invoking the configured credential installer', async () => {
+    const localRelayNode = fakeLocalNode();
+    const rotateCredential = vi.fn().mockResolvedValue(undefined);
+    const host = createNodeLinkRpcHost({ localRelayNode, rotateCredential });
+    const { sent, ctx } = context();
+    const credential = {
+      protocol: RELAY_NODE_LINK_PROTOCOL,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      nodeId: 'node-a',
+      credentialId: 'cred_next',
+      token: 'node-a.secret',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+    };
+
+    host.handle(envelope('credential.rotate', { credential }), ctx);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(rotateCredential).toHaveBeenCalledWith(credential);
+    expect(sent[0]!.type).toBe('credential.rotate.result');
+    expect(sent[0]!.payload).toMatchObject({
+      ok: true,
+      nodeId: 'node-a',
+      credentialId: 'cred_next',
+    });
+  });
+
+  it('rejects malformed credential.rotate payloads without calling the installer', async () => {
+    const localRelayNode = fakeLocalNode();
+    const rotateCredential = vi.fn();
+    const host = createNodeLinkRpcHost({ localRelayNode, rotateCredential });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('credential.rotate', { credential: { nodeId: 'node-a' } }), ctx);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(rotateCredential).not.toHaveBeenCalled();
+    expect(sent[0]!.type).toBe('credential.rotate.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+  });
+
   it('ignores envelopes from non-rpc channels', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
