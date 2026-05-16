@@ -26,7 +26,7 @@ import {
 import {
   evaluateHubPolicy,
   isSessionCreateType,
-  sessionCreateCapability,
+  sessionCreateCapabilities,
   type SessionCreateType,
 } from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
@@ -207,7 +207,10 @@ export function createRepoFeatureRouter(
             repoPath: target.repo.localPath,
             ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
           },
-          requiredCapabilities: [sessionCreateCapability(sessionType)],
+          requiredCapabilities: sessionCreateCapabilities({
+            sessionType,
+            controlMode: routedBody['controlMode'],
+          }),
           ...(expiresAt !== undefined ? { expiresAt } : {}),
           params: routedBody,
           now: reopenNow,

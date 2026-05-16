@@ -74,6 +74,23 @@ describe('confirmation challenge store', () => {
       verb: 'push',
       refSpec: 'HEAD:main',
     });
+
+    const sessionCreateA = canonicalConfirmationParams('sessions.create', {
+      type: 'terminal',
+      cwd: '/srv/app',
+      command: 'npm test',
+      initialPrompt: 'ship it',
+    });
+    const sessionCreateB = canonicalConfirmationParams('sessions.create', {
+      type: 'terminal',
+      cwd: '/srv/app',
+      command: 'npm run build',
+      initialPrompt: 'ship it',
+    });
+    expect(sessionCreateA).toMatchObject({ action: 'sessions.create', type: 'terminal', cwd: '/srv/app' });
+    expect(sessionCreateA).toHaveProperty('paramsHash');
+    expect(sessionCreateA.paramsHash).not.toBe(sessionCreateB.paramsHash);
+    expect(JSON.stringify(sessionCreateA)).not.toContain('ship it');
   });
 
   it('requires distinct approval, mints a hashed single-use token, and binds redemption to exact params', () => {

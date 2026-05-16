@@ -408,7 +408,7 @@ export function canonicalConfirmationParams(
     case 'sessions.kill':
     case 'sessions.create.agent':
     case 'sessions.create.terminal':
-      return canonicalGenericParams(action, record, [
+      return canonicalSessionParams(action, record, [
         'type',
         'cwd',
         'repoPath',
@@ -611,6 +611,21 @@ function canonicalGenericParams(
     if (value !== undefined) result[key] = value;
   }
   return result;
+}
+
+function canonicalSessionParams(
+  action: string,
+  record: Record<string, unknown> | undefined,
+  keys: string[]
+): CanonicalConfirmationParams {
+  return {
+    ...canonicalGenericParams(action, record, keys),
+    // Keep the operator-readable fields above, but bind the approval token to
+    // the full routed session payload so omitted security-relevant fields (for
+    // example command/customCommand/initialPrompt/controlMode/useTmux) cannot be
+    // changed between approval and redemption.
+    paramsHash: sha256Hex(stableStringify(record ?? null)),
+  };
 }
 
 function stripUndefined(input: Record<string, unknown>): CanonicalConfirmationParams {
