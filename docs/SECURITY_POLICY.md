@@ -29,14 +29,14 @@ Security audit entries are normalized in `shared/security-audit.ts` and persiste
 
 Event types cover grants, denials, challenges, approvals, expiry, revocation, rotation, failed redemption, same-session approval attempts, and #470 bridge events. Raw bearer tokens, pair tokens, confirmation tokens, full env values, file bytes, and terminal byte streams must be passed through the audit redaction helpers before hashing; the persisted entry stores hashes for scope/params rather than raw payload bytes.
 
-Persistence uses a SQLite append-only table with an atomic insert transaction and update/delete rejection triggers. Verify with:
+Persistence uses a SQLite append-only table with an atomic insert transaction, update/delete rejection triggers, and a singleton tail checkpoint updated on every append. Verify with:
 
 ```bash
 relay-ide audit verify --db ~/.config/relay-ide/security-audit.db
 relay-ide audit verify --db ~/.config/relay-ide/security-audit.db --json
 ```
 
-The verifier replays rows in sequence order and recomputes `prevHash` / `entryHash`. It reports the exact first break location for gaps, row tamper, insert/reorder attacks, and corrupt/partial storage. Hash chaining detects accidental corruption and post-hoc edits against the current DB file, but it is not remote attestation: a compromised hub/root account can still rewrite the whole history and recompute hashes unless future slices add external shipping or trusted timestamping. External SIEM, third-party timestamping, full PTY transcript recording, credential rotation, confirmation registries, and evaluator gates are intentionally outside this slice.
+The verifier replays rows in sequence order and recomputes `prevHash` / `entryHash`, using SQLite row iteration so verification memory stays bounded by the largest row rather than total log size. It reports the exact first break location for gaps, row tamper, insert/reorder attacks, tail truncation relative to the stored checkpoint, and corrupt/partial storage. Hash chaining plus the DB-local checkpoint detects accidental corruption and post-hoc edits against the current DB file, but it is not remote attestation: a compromised hub/root account can still rewrite the whole history, recompute hashes, and rewrite the checkpoint unless future slices add external shipping or trusted timestamping. External SIEM, third-party timestamping, full PTY transcript recording, credential rotation, confirmation registries, and evaluator gates are intentionally outside this slice.
 
 Audit storage is intentionally unbounded in this slice: Relay does not yet enforce retention, rotation, or a maximum `security-audit.db` size. Operators must provision and monitor the config-directory storage accordingly; manual pruning or rotation will break the contiguous sequence/hash chain unless a future retention design preserves verifier semantics.
 

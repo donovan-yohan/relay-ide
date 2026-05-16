@@ -21,7 +21,8 @@ export const SECURITY_AUDIT_EVENT_TYPES = [
   'bridge_event',
 ] as const;
 
-export type SecurityAuditEventType = (typeof SECURITY_AUDIT_EVENT_TYPES)[number];
+export type SecurityAuditEventType =
+  (typeof SECURITY_AUDIT_EVENT_TYPES)[number];
 
 export type SecurityAuditDecision =
   | 'allow'
@@ -118,8 +119,28 @@ export interface SecurityAuditFailureClassification {
 
 const REDACTED = '[REDACTED]';
 const MAX_STRING_LENGTH = 512;
-const SENSITIVE_KEY_PATTERN =
-  /(^|_|-|\.)(authorization|bearer|cookie|credential|env|filebytes|password|pairtoken|confirmationtoken|secret|stderr|stdout|terminal|terminalbytes|token|value)(_|-|\.|$)/i;
+const SENSITIVE_KEY_TERMS = new Set([
+  'authorization',
+  'bearer',
+  'confirmation_token',
+  'confirmationtoken',
+  'cookie',
+  'credential',
+  'env',
+  'file_bytes',
+  'filebytes',
+  'password',
+  'pair_token',
+  'pairtoken',
+  'secret',
+  'stderr',
+  'stdout',
+  'terminal',
+  'terminal_bytes',
+  'terminalbytes',
+  'token',
+  'value',
+]);
 const SENSITIVE_TEXT_PATTERN =
   /(bearer\s+[a-z0-9._~+/=-]+|gh[pousr]_[a-z0-9_]+|sk-[a-z0-9_-]+|relay-[a-z0-9._~+/=-]{16,})/gi;
 const HIGH_RISK_SET = new Set<RelayCapabilityBit>(HIGH_RISK_CAPABILITIES);
@@ -154,7 +175,7 @@ function redactAuditValueInner(
   key: string | undefined,
   seen: WeakSet<object>
 ): unknown {
-  if (key && SENSITIVE_KEY_PATTERN.test(key)) return REDACTED;
+  if (key && isSensitiveAuditKey(key)) return REDACTED;
   if (value == null) return value;
   if (Buffer.isBuffer(value)) return REDACTED;
   if (value instanceof Uint8Array) return REDACTED;
@@ -166,6 +187,8 @@ function redactAuditValueInner(
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (Array.isArray(value)) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
     return value.map((item) => redactAuditValueInner(item, undefined, seen));
   }
   if (typeof value === 'object') {
@@ -173,14 +196,29 @@ function redactAuditValueInner(
     seen.add(value);
     const record = value as Record<string, unknown>;
     const redacted: Record<string, unknown> = {};
-    for (const [childKey, childValue] of Object.entries(record).sort(([a], [b]) =>
-      a.localeCompare(b)
+    for (const [childKey, childValue] of Object.entries(record).sort(
+      ([a], [b]) => compareJsonKeys(a, b)
     )) {
       redacted[childKey] = redactAuditValueInner(childValue, childKey, seen);
     }
     return redacted;
   }
   return String(value);
+}
+
+function isSensitiveAuditKey(key: string): boolean {
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^a-z0-9]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+  if (SENSITIVE_KEY_TERMS.has(normalized)) return true;
+  return normalized.split('_').some((part) => SENSITIVE_KEY_TERMS.has(part));
+}
+
+function compareJsonKeys(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
 
 function sortForJson(value: unknown): unknown {
@@ -190,7 +228,7 @@ function sortForJson(value: unknown): unknown {
     const record = value as Record<string, unknown>;
     const sorted: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(record).sort(([a], [b]) =>
-      a.localeCompare(b)
+      compareJsonKeys(a, b)
     )) {
       if (child !== undefined) sorted[key] = sortForJson(child);
     }
@@ -216,7 +254,9 @@ export function normalizeSecurityAuditEntry(
   chain: { sequence: number; prevHash: string | null }
 ): NormalizedSecurityAuditEntry {
   if (!isSecurityAuditEventType(input.eventType)) {
-    throw new Error(`Unknown security audit event type: ${String(input.eventType)}`);
+    throw new Error(
+      `Unknown security audit event type: ${String(input.eventType)}`
+    );
   }
   const timestamp = input.timestamp ?? new Date().toISOString();
   const base: Omit<NormalizedSecurityAuditEntry, 'entryHash'> = {
@@ -240,14 +280,18 @@ export function normalizeSecurityAuditEntry(
     grantedBits: [...(input.grantedBits ?? [])],
     deniedBits: [...(input.deniedBits ?? [])],
     ...(input.refs?.aclRef ? { aclRef: input.refs.aclRef } : {}),
-    ...(input.refs?.policyVersion ? { policyVersion: input.refs.policyVersion } : {}),
+    ...(input.refs?.policyVersion
+      ? { policyVersion: input.refs.policyVersion }
+      : {}),
     correlationId: input.correlationId ?? crypto.randomUUID(),
     prevHash: chain.prevHash,
   };
   return { ...base, entryHash: computeSecurityAuditEntryHash(base) };
 }
 
-function normalizePeer(peer: SecurityAuditPeerIdentity): SecurityAuditPeerIdentity {
+function normalizePeer(
+  peer: SecurityAuditPeerIdentity
+): SecurityAuditPeerIdentity {
   return {
     kind: peer.kind,
     ...(peer.nodeId ? { nodeId: peer.nodeId } : {}),

@@ -29,7 +29,9 @@ afterEach(() => {
   }
 });
 
-function sampleEvent(overrides: Partial<SecurityAuditEntryInput> = {}): SecurityAuditEntryInput {
+function sampleEvent(
+  overrides: Partial<SecurityAuditEntryInput> = {}
+): SecurityAuditEntryInput {
   return {
     eventId: overrides.eventId,
     timestamp: overrides.timestamp,
@@ -44,7 +46,10 @@ function sampleEvent(overrides: Partial<SecurityAuditEntryInput> = {}): Security
     },
     node: overrides.node ?? { nodeId: 'node-1', trustTier: 'dev' },
     sessionId: overrides.sessionId ?? 'session-1',
-    intent: overrides.intent ?? { action: 'rpc.fs.read', target: '/repo/README.md' },
+    intent: overrides.intent ?? {
+      action: 'rpc.fs.read',
+      target: '/repo/README.md',
+    },
     material: overrides.material ?? {
       scope: { kind: 'path', pathPrefixes: ['/repo'] },
       params: { path: '/repo/README.md' },
@@ -77,7 +82,9 @@ describe('security audit primitives', () => {
 
   it('normalizes entries with sequence/hash chain fields', () => {
     const log = new SecurityAuditLog(tmpDbPath());
-    const first = log.append(sampleEvent({ eventId: 'evt-1', correlationId: 'corr-a' }));
+    const first = log.append(
+      sampleEvent({ eventId: 'evt-1', correlationId: 'corr-a' })
+    );
     const second = log.append(
       sampleEvent({
         eventId: 'evt-2',
@@ -118,11 +125,15 @@ describe('security audit primitives', () => {
   it('redacts tokens, env values, file bytes, and terminal streams before hashing', () => {
     const payload = {
       authorization: 'Bearer relay-secret-token-1234567890',
+      bearerToken: 'bearer-token-raw',
+      nodeBearerToken: 'node-bearer-token-raw',
+      accessToken: 'access-token-raw',
+      authToken: 'auth-token-raw',
       pairToken: 'pair-secret',
       confirmationToken: 'confirm-secret',
-      env: { GITHUB_TOKEN: 'ghp_abcdef1234567890', SAFE: 'not stored either' },
+      env: { GITHUB_TOKEN: 'ghp_ab...7890', SAFE: 'not stored either' },
       fileBytes: Buffer.from('super secret file'),
-      terminalBytes: '\u001b[31mraw transcript with sk-live-secret\u001b[0m',
+      terminalBytes: '\u001b[31mraw transcript with ***\u001b[0m',
       nested: { note: 'keep ordinary text' },
     };
 
@@ -130,6 +141,10 @@ describe('security audit primitives', () => {
     const serialized = JSON.stringify(redacted);
 
     expect(serialized).not.toContain('relay-secret-token');
+    expect(serialized).not.toContain('bearer-token-raw');
+    expect(serialized).not.toContain('node-bearer-token-raw');
+    expect(serialized).not.toContain('access-token-raw');
+    expect(serialized).not.toContain('auth-token-raw');
     expect(serialized).not.toContain('pair-secret');
     expect(serialized).not.toContain('confirm-secret');
     expect(serialized).not.toContain('ghp_abcdef');
@@ -137,6 +152,14 @@ describe('security audit primitives', () => {
     expect(serialized).not.toContain('sk-live-secret');
     expect(serialized).toContain('keep ordinary text');
     expect(hashAuditMaterial(payload)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('redacts circular arrays without recursing forever', () => {
+    const circular: unknown[] = ['keep'];
+    circular.push(circular);
+
+    expect(redactAuditValue(circular)).toEqual(['keep', '[Circular]']);
+    expect(hashAuditMaterial(circular)).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('does not persist raw sensitive material in audit rows', () => {
@@ -200,7 +223,9 @@ describe('security audit primitives', () => {
 
     const db = new Database(dbPath);
     db.exec('DROP TRIGGER security_audit_no_update');
-    db.prepare("UPDATE security_audit_log SET decision = 'deny' WHERE sequence = 2").run();
+    db.prepare(
+      "UPDATE security_audit_log SET decision = 'deny' WHERE sequence = 2"
+    ).run();
     db.close();
 
     expect(verifySecurityAuditLog(dbPath)).toMatchObject({
@@ -227,6 +252,31 @@ describe('security audit primitives', () => {
       ok: false,
       entriesVerified: 1,
       break: { sequence: 2, eventId: 'evt-3', reason: 'sequence_gap' },
+    });
+  });
+
+  it('detects tail truncation against the stored checkpoint', () => {
+    const dbPath = tmpDbPath();
+    const log = new SecurityAuditLog(dbPath);
+    log.append(sampleEvent({ eventId: 'evt-1' }));
+    log.append(sampleEvent({ eventId: 'evt-2' }));
+    log.append(sampleEvent({ eventId: 'evt-3' }));
+    log.close();
+
+    const db = new Database(dbPath);
+    db.exec('DROP TRIGGER security_audit_no_delete');
+    db.prepare('DELETE FROM security_audit_log WHERE sequence = 3').run();
+    db.close();
+
+    expect(verifySecurityAuditLog(dbPath)).toMatchObject({
+      ok: false,
+      entriesVerified: 2,
+      break: {
+        sequence: 3,
+        reason: 'tail_checkpoint_mismatch',
+        expected: 3,
+        actual: 2,
+      },
     });
   });
 

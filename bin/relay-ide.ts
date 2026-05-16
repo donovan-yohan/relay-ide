@@ -231,16 +231,55 @@ if (command === 'audit') {
     logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
     process.exit(1);
   }
-  const dbFlagIndex = auditArgs.indexOf('--db');
-  const dbPath =
-    dbFlagIndex !== -1 && dbFlagIndex + 1 < auditArgs.length
-      ? path.resolve(auditArgs[dbFlagIndex + 1]!)
-      : path.join(path.dirname(resolveConfigPath()), 'security-audit.db');
+  const jsonOutput = auditArgs.includes('--json');
+  let explicitDbPath = false;
+  let dbPath = path.join(
+    path.dirname(resolveConfigPath()),
+    'security-audit.db'
+  );
+  for (let idx = 1; idx < auditArgs.length; idx += 1) {
+    const auditArg = auditArgs[idx];
+    if (auditArg === '--json') continue;
+    if (auditArg === '--db') {
+      const candidate = auditArgs[idx + 1];
+      if (!candidate || candidate.startsWith('--')) {
+        logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+        process.exit(1);
+      }
+      explicitDbPath = true;
+      dbPath = path.resolve(candidate);
+      idx += 1;
+      continue;
+    }
+    logger.error(`Unknown audit verify option: ${auditArg}`);
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  if (explicitDbPath && !fs.existsSync(dbPath)) {
+    const result = {
+      ok: false,
+      entriesVerified: 0,
+      lastHash: null,
+      break: {
+        sequence: 0,
+        reason: 'storage_corrupt',
+        actual: 'database file does not exist',
+      },
+    };
+    if (jsonOutput) {
+      console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+    } else {
+      logger.error(
+        `Security audit log FAILED at ${dbPath}: explicit --db path does not exist`
+      );
+    }
+    process.exit(1);
+  }
   const { verifySecurityAuditLog } = await import(
     '../server/security-audit-log.js'
   );
   const result = verifySecurityAuditLog(dbPath);
-  if (auditArgs.includes('--json')) {
+  if (jsonOutput) {
     console.log(JSON.stringify({ dbPath, ...result }, null, 2));
   } else if (result.ok) {
     logger.info(

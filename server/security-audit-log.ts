@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS security_audit_log (
 CREATE INDEX IF NOT EXISTS idx_security_audit_event_id ON security_audit_log(event_id);
 CREATE INDEX IF NOT EXISTS idx_security_audit_correlation ON security_audit_log(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_security_audit_occurred_at ON security_audit_log(occurred_at);
+CREATE TABLE IF NOT EXISTS security_audit_checkpoint (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  latest_sequence INTEGER NOT NULL,
+  latest_hash TEXT,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TRIGGER IF NOT EXISTS security_audit_no_update
 BEFORE UPDATE ON security_audit_log
 BEGIN
@@ -46,7 +52,21 @@ BEFORE DELETE ON security_audit_log
 BEGIN
   SELECT RAISE(ABORT, 'security audit log is append-only');
 END;
+CREATE TRIGGER IF NOT EXISTS security_audit_checkpoint_after_insert
+AFTER INSERT ON security_audit_log
+BEGIN
+  UPDATE security_audit_checkpoint
+  SET latest_sequence = NEW.sequence,
+      latest_hash = NEW.entry_hash,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE id = 1;
+END;
 `;
+
+interface AuditCheckpointRow {
+  latest_sequence: number;
+  latest_hash: string | null;
+}
 
 interface AuditRow {
   sequence: number;
@@ -80,7 +100,8 @@ export interface SecurityAuditVerificationBreak {
     | 'malformed_row'
     | 'sequence_gap'
     | 'prev_hash_mismatch'
-    | 'entry_hash_mismatch';
+    | 'entry_hash_mismatch'
+    | 'tail_checkpoint_mismatch';
   expected?: string | number | null;
   actual?: string | number | null;
 }
@@ -108,6 +129,7 @@ export class SecurityAuditLog {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA_SQL);
+    ensureSecurityAuditCheckpoint(this.db);
   }
 
   append(input: SecurityAuditEntryInput): NormalizedSecurityAuditEntry {
@@ -175,7 +197,9 @@ export function createSecurityAuditLog(dbPath: string): SecurityAuditLog {
   return new SecurityAuditLog(dbPath);
 }
 
-export function verifySecurityAuditLog(dbPath: string): SecurityAuditVerificationResult {
+export function verifySecurityAuditLog(
+  dbPath: string
+): SecurityAuditVerificationResult {
   if (!fs.existsSync(dbPath)) {
     return { ok: true, entriesVerified: 0, lastHash: null };
   }
@@ -196,81 +220,139 @@ function verifySecurityAuditDatabase(
   try {
     const integrity = db.pragma('integrity_check', { simple: true }) as string;
     if (integrity !== 'ok') return storageCorruptBreak(integrity);
+    const checkpoint = db
+      .prepare(
+        'SELECT latest_sequence, latest_hash FROM security_audit_checkpoint WHERE id = 1'
+      )
+      .get() as AuditCheckpointRow | undefined;
+    if (!checkpoint) return storageCorruptBreak('missing audit checkpoint');
     const rows = db
       .prepare('SELECT * FROM security_audit_log ORDER BY sequence ASC')
-      .all() as AuditRow[];
-    return verifyAuditRows(rows);
+      .iterate() as IterableIterator<AuditRow>;
+    return verifyAuditRows(rows, checkpoint);
   } catch (error) {
     return storageCorruptBreak(error);
   }
 }
 
-function verifyAuditRows(rows: AuditRow[]): SecurityAuditVerificationResult {
+function verifyAuditRows(
+  rows: IterableIterator<AuditRow>,
+  checkpoint: AuditCheckpointRow
+): SecurityAuditVerificationResult {
   let expectedSequence = 1;
   let prevHash: string | null = null;
   let entriesVerified = 0;
-  for (const row of rows) {
-    if (row.sequence !== expectedSequence) {
-      return {
-        ok: false,
-        entriesVerified,
-        lastHash: prevHash,
-        break: {
-          sequence: expectedSequence,
-          eventId: row.event_id,
-          reason: 'sequence_gap',
-          expected: expectedSequence,
-          actual: row.sequence,
-        },
-      };
+  let next = rows.next();
+  try {
+    while (!next.done) {
+      const row = next.value;
+      if (row.sequence !== expectedSequence) {
+        return {
+          ok: false,
+          entriesVerified,
+          lastHash: prevHash,
+          break: {
+            sequence: expectedSequence,
+            eventId: row.event_id,
+            reason: 'sequence_gap',
+            expected: expectedSequence,
+            actual: row.sequence,
+          },
+        };
+      }
+      const entry = rowToEntry(row);
+      if (!entry) {
+        return {
+          ok: false,
+          entriesVerified,
+          lastHash: prevHash,
+          break: {
+            sequence: row.sequence,
+            eventId: row.event_id,
+            reason: 'malformed_row',
+          },
+        };
+      }
+      if (entry.prevHash !== prevHash) {
+        return {
+          ok: false,
+          entriesVerified,
+          lastHash: prevHash,
+          break: {
+            sequence: entry.sequence,
+            eventId: entry.eventId,
+            reason: 'prev_hash_mismatch',
+            expected: prevHash,
+            actual: entry.prevHash,
+          },
+        };
+      }
+      const hashCheck = verifySecurityAuditEntryHash(entry);
+      if (hashCheck.ok === false) {
+        return {
+          ok: false,
+          entriesVerified,
+          lastHash: prevHash,
+          break: {
+            sequence: entry.sequence,
+            eventId: entry.eventId,
+            reason: 'entry_hash_mismatch',
+            expected: hashCheck.expected,
+            actual: hashCheck.actual,
+          },
+        };
+      }
+      prevHash = entry.entryHash;
+      entriesVerified += 1;
+      expectedSequence += 1;
+      next = rows.next();
     }
-    const entry = rowToEntry(row);
-    if (!entry) {
-      return {
-        ok: false,
-        entriesVerified,
-        lastHash: prevHash,
-        break: {
-          sequence: row.sequence,
-          eventId: row.event_id,
-          reason: 'malformed_row',
-        },
-      };
-    }
-    if (entry.prevHash !== prevHash) {
-      return {
-        ok: false,
-        entriesVerified,
-        lastHash: prevHash,
-        break: {
-          sequence: entry.sequence,
-          eventId: entry.eventId,
-          reason: 'prev_hash_mismatch',
-          expected: prevHash,
-          actual: entry.prevHash,
-        },
-      };
-    }
-    const hashCheck = verifySecurityAuditEntryHash(entry);
-    if (hashCheck.ok === false) {
-      return {
-        ok: false,
-        entriesVerified,
-        lastHash: prevHash,
-        break: {
-          sequence: entry.sequence,
-          eventId: entry.eventId,
-          reason: 'entry_hash_mismatch',
-          expected: hashCheck.expected,
-          actual: hashCheck.actual,
-        },
-      };
-    }
-    prevHash = entry.entryHash;
-    entriesVerified += 1;
-    expectedSequence += 1;
+  } finally {
+    rows.return?.();
+  }
+  if (checkpoint.latest_sequence !== entriesVerified) {
+    return {
+      ok: false,
+      entriesVerified,
+      lastHash: prevHash,
+      break: {
+        sequence: entriesVerified + 1,
+        reason: 'tail_checkpoint_mismatch',
+        expected: checkpoint.latest_sequence,
+        actual: entriesVerified,
+      },
+    };
+  }
+  if (checkpoint.latest_hash !== prevHash) {
+    return {
+      ok: false,
+      entriesVerified,
+      lastHash: prevHash,
+      break: {
+        sequence: entriesVerified,
+        reason: 'tail_checkpoint_mismatch',
+        expected: checkpoint.latest_hash,
+        actual: prevHash,
+      },
+    };
   }
   return { ok: true, entriesVerified, lastHash: prevHash };
+}
+
+function ensureSecurityAuditCheckpoint(db: Database.Database): void {
+  const tail = db
+    .prepare(
+      'SELECT sequence, entry_hash FROM security_audit_log ORDER BY sequence DESC LIMIT 1'
+    )
+    .get() as { sequence: number; entry_hash: string } | undefined;
+  db.prepare(
+    `INSERT OR IGNORE INTO security_audit_checkpoint (
+      id, latest_sequence, latest_hash
+    ) VALUES (1, @latestSequence, @latestHash)`
+  ).run({
+    latestSequence: tail?.sequence ?? 0,
+    latestHash: tail?.entry_hash ?? null,
+  });
 }
 
 function rowToEntry(row: AuditRow): NormalizedSecurityAuditEntry | null {
@@ -279,14 +361,17 @@ function rowToEntry(row: AuditRow): NormalizedSecurityAuditEntry | null {
       eventId: row.event_id,
       timestamp: row.occurred_at,
       sequence: row.sequence,
-      schemaVersion: row.schema_version as NormalizedSecurityAuditEntry['schemaVersion'],
+      schemaVersion:
+        row.schema_version as NormalizedSecurityAuditEntry['schemaVersion'],
       eventType: row.event_type as NormalizedSecurityAuditEntry['eventType'],
       decision: row.decision as NormalizedSecurityAuditEntry['decision'],
       reasonCode: row.reason_code,
       peer: JSON.parse(row.peer_json) as NormalizedSecurityAuditEntry['peer'],
       node: JSON.parse(row.node_json) as NormalizedSecurityAuditEntry['node'],
       ...(row.session_id ? { sessionId: row.session_id } : {}),
-      intent: JSON.parse(row.intent_json) as NormalizedSecurityAuditEntry['intent'],
+      intent: JSON.parse(
+        row.intent_json
+      ) as NormalizedSecurityAuditEntry['intent'],
       scopeHash: row.scope_hash,
       paramsHash: row.params_hash,
       requiredBits: JSON.parse(
