@@ -76,6 +76,12 @@ Full suite always runs in CI (`npm test` in `.github/workflows/publish.yml`).
 - `pull-requests.test.ts` tests type construction only, no `gh` CLI calls or runtime dependencies
 - `webhook-manager.test.ts` and `branch-watcher.test.ts` use `GIT_ISOLATED_ENV` constant to strip `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` from child git processes
 
+## Security Policy Tests
+
+- Assert forbidden capabilities one by one with individual `not.toContain(...)` checks. Avoid negated `arrayContaining([...])` for deny-list/default-deny coverage; it only proves the full set is absent.
+- Persisted policy migration tests should cover missing, explicit `null`, malformed object, unknown-bit, and identity-drift ACL records, then verify the repaired least-privilege ACL is written back to disk.
+- Keep manifest-vs-ACL separation covered: changing node-reported availability/probe data must not change hub ACL grants.
+
 ## E2E Testing
 
 Playwright component tests live in `test/e2e/`. They are excluded from `npm test` via `vitest.config.ts` (`exclude: ['test/e2e/**']`) and run separately.

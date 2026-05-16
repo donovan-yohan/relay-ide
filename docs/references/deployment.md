@@ -39,6 +39,12 @@ feature-branch → PR → nightly → auto-publish as nightly
 
 Nightly versions are stamped automatically: `3.18.1-nightly.20260328.42`
 
+#### Nightly PR release gate
+
+Before merging a `nightly` PR, verify that the latest PR head SHA matches the SHA tested by QA and approved by review. Treat bot comments that arrive after review as stale-evidence invalidators until they are triaged as blocker, follow-up, or noise.
+
+For security/platform PRs, machine-resolvable valid bot blockers should create a fix lane and refreshed QA/review evidence before final merge. After merge to `nightly`, confirm the publish workflow succeeds and `relay-ide@nightly` resolves to the new prerelease version when the PR is expected to publish.
+
 ### 2. Stable Release
 
 Version bump on nightly, PR to master, then tag. Direct pushes to master are
