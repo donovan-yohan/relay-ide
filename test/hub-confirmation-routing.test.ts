@@ -431,6 +431,75 @@ describe('hub confirmation routing', () => {
     expect(nodeLinks.requests).toHaveLength(0);
   });
 
+  it('invalidates an approved requester token when approval audit append fails closed', async () => {
+    const auditEntries: Parameters<RoutedSessionAuditSink['append']>[0][] = [];
+    const { base, nodeLinks } = await startHub({
+      auditSink: {
+        append: (entry) => {
+          if (entry.eventType === 'approval') throw new Error('approval audit sink unavailable');
+          auditEntries.push(entry);
+        },
+      },
+    });
+    const originalBody = { repoPath: '/srv/relay-ide', type: 'terminal' };
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+      body: JSON.stringify(originalBody),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_REQUIRED' } },
+    });
+
+    const approval = await fetch(`${base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'approver-browser',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(approval.status).toBe(500);
+    expect(await approval.json()).toMatchObject({
+      error: { code: 'INTERNAL', details: { reasonCode: 'POLICY_AUDIT_WRITE_FAILED_CLOSED' } },
+    });
+
+    const requesterPickup = await fetch(`${base}/hub/confirmations/challenge-1/requester-token`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+    });
+    expect(requesterPickup.status).toBe(401);
+    expect(await requesterPickup.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_NOT_APPROVED' } },
+    });
+
+    const redeemed = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+      body: JSON.stringify({ ...originalBody, confirmationToken: 'raw-confirmation-token' }),
+    });
+    expect(redeemed.status).toBe(401);
+    expect(await redeemed.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_TOKEN_INVALID' } },
+    });
+    expect(nodeLinks.requests).toHaveLength(0);
+    expect(auditEntries.map((entry) => entry.eventType)).toEqual(['challenge']);
+  });
+
   it('requires the same two-token confirmation flow for repo cold reopen sessions.create', async () => {
     const { base, nodeLinks, auditEntries } = await startColdReopenHub();
     const reopenBody = {

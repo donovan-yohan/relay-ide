@@ -166,6 +166,12 @@ export interface ConfirmationChallengeStore {
     requesterAuthSessionHash: string;
     now?: Date;
   }): ConfirmationRequesterTokenResult;
+  invalidateChallenge(input: {
+    challengeId: string;
+    reasonCode: ConfirmationReasonCode;
+    message: string;
+    now?: Date;
+  }): ConfirmationChallenge | undefined;
   getChallenge(challengeId: string): ConfirmationChallenge | undefined;
   listChallenges(): ConfirmationChallengePublicView[];
 }
@@ -417,11 +423,31 @@ export function createConfirmationChallengeStore(
     };
   }
 
+  function invalidateChallenge(input: {
+    challengeId: string;
+    reasonCode: ConfirmationReasonCode;
+    message: string;
+    now?: Date;
+  }): ConfirmationChallenge | undefined {
+    const current = input.now ?? now();
+    const challenge = challenges.get(input.challengeId);
+    if (!challenge) return undefined;
+    challenge.status = 'invalidated';
+    challenge.reasonCode = input.reasonCode;
+    challenge.message = input.message;
+    challenge.approvedAt = current.toISOString();
+    delete challenge.tokenExpiresAt;
+    delete challenge.tokenHash;
+    delete challenge.requesterToken;
+    return challenge;
+  }
+
   return {
     createChallenge,
     approveChallenge,
     redeemToken,
     getRequesterToken,
+    invalidateChallenge,
     getChallenge: (challengeId) => {
       pruneStoredChallenges(now());
       return challenges.get(challengeId);

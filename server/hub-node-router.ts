@@ -1125,6 +1125,14 @@ export function createHubNodeRouter(
       ? appendConfirmationAudit(options.auditSink, result.audit, result.challenge.decision)
       : null;
     if (auditError) {
+      if (result.ok === true) {
+        confirmations.invalidateChallenge({
+          challengeId: result.challenge.challengeId,
+          reasonCode: 'CONFIRMATION_TOKEN_INVALID',
+          message: 'confirmation approval audit write failed; approval token invalidated',
+          now: now(),
+        });
+      }
       sendRelayError(res, auditError);
       return;
     }
