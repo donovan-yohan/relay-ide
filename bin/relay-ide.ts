@@ -926,6 +926,88 @@ if (command === 'worktree') {
   await new Promise(() => {});
 }
 
+if (command === 'sessions') {
+  const sessionArgs = args.slice(1);
+  const subCommand = sessionArgs[0];
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+
+  if (!token) {
+    logger.error(
+      'Error: RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.'
+    );
+    process.exit(1);
+  }
+
+  const scopedSessionRequest = async (
+    pathName: string,
+    init: RequestInit = {}
+  ): Promise<unknown> => {
+    const res = await fetch(`http://127.0.0.1:${port}${pathName}`, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`server returned ${res.status}: ${body}`);
+    }
+    return res.json();
+  }
+
+  try {
+    if (subCommand === 'scoped' && sessionArgs[1] === 'list') {
+      const includeRevoked = sessionArgs.includes('--include-revoked') ? '1' : '0';
+      const includeExpired = sessionArgs.includes('--active-only') ? '0' : '1';
+      const data = await scopedSessionRequest(
+        `/hub/scoped-sessions?includeRevoked=${includeRevoked}&includeExpired=${includeExpired}`
+      );
+      console.log(JSON.stringify(data, null, 2));
+      process.exit(0);
+    }
+
+    if (subCommand === 'scoped' && sessionArgs[1] === 'revoke') {
+      const sessionId = sessionArgs[2];
+      if (!sessionId) {
+        logger.error('Usage: relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]');
+        process.exit(1);
+      }
+      const nodeId = getNodeArg(sessionArgs, '--node-id');
+      const reason = getNodeArg(sessionArgs, '--reason');
+      const data = await scopedSessionRequest(
+        `/hub/scoped-sessions/${encodeURIComponent(sessionId)}/revoke`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(nodeId ? { nodeId } : {}),
+            ...(reason ? { reason } : {}),
+          }),
+        }
+      );
+      console.log(JSON.stringify(data, null, 2));
+      process.exit(0);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Error: ${msg}`);
+    process.exit(1);
+  }
+
+  logger.error(`Usage: relay-ide sessions scoped <list|revoke>
+
+Commands:
+  relay-ide sessions scoped list [--include-revoked] [--active-only]
+  relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]
+
+Environment:
+  RELAY_IDE_BROWSER_TOKEN   Auth token for scoped-session API
+  RELAY_IDE_PORT            Server port (default: 3456)`);
+  process.exit(1);
+}
+
 if (command === 'pin') {
   const subCommand = args[1];
   if (subCommand !== 'reset') {

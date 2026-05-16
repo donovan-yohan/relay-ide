@@ -8,6 +8,7 @@ import type {
   RepoInventoryReport,
   RepoInventoryWorktreeInstance,
 } from '../shared/repo-inventory.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import {
   HubNodeRegistryError,
   type HubNodeRegistry,
@@ -21,7 +22,7 @@ import {
   generateBootstrapCommands,
   type BootstrapServiceMode,
 } from '../shared/bootstrap-diagnostics.js';
-import { HubNodeLinkError, type HubNodeLinkManager } from './hub-node-link.js';
+import { HubNodeLinkError } from './hub-node-link.js';
 import {
   createRepoInventoryFeature,
   type RepoInventoryFeature,
@@ -42,14 +43,33 @@ import {
   createRoutedNodeSessionEnvelope,
   isSessionEnvelope,
 } from '../shared/session-envelope.js';
-import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
+import {
+  expiresAtFromLifecycleInput,
+  lifecycleInputError,
+  sessionEnvelopeRegistry,
+  type InMemorySessionEnvelopeRegistry,
+  type ScopedSessionSummary,
+} from './session-envelope-registry.js';
+
+interface HubNodeSessionTransport {
+  hasActiveNode(nodeId: string): boolean;
+  request(nodeId: string, type: string, payload: unknown): Promise<unknown>;
+}
+
+export interface RoutedSessionAuditSink {
+  append(input: SecurityAuditEntryInput): unknown;
+}
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  scopedSessionAuth?: express.RequestHandler;
   repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
-  nodeLinks?: HubNodeLinkManager;
+  nodeLinks?: HubNodeSessionTransport;
+  sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  auditSink?: RoutedSessionAuditSink;
+  now?: () => Date;
 }
 
 function bearerToken(req: Request): string | null {
@@ -99,6 +119,9 @@ export function errorStatus(error: RelayNodeError): number {
     case 'INVALID_REQUEST':
       return 400;
     case 'NODE_REVOKED':
+    case 'SESSION_EXPIRED':
+    case 'SESSION_REVOKED':
+    case 'SESSION_MISMATCH':
       return 403;
     case 'NOT_FOUND':
     case 'NODE_OFFLINE':
@@ -172,7 +195,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
 
 export function scopedNodeSession(
   nodeId: string,
-  session: SessionSummary
+  session: SessionSummary,
+  lifecycle: { expiresAt?: string | null; issuedAt?: string } = {}
 ): SessionSummary {
   const scoped: SessionSummary = { ...session };
   delete scoped.nodeId;
@@ -212,8 +236,11 @@ export function scopedNodeSession(
       ...(scoped.worktreePath !== undefined
         ? { worktreePath: scoped.worktreePath }
         : {}),
-      issuedAt: existingEnvelope?.issuedAt ?? scoped.createdAt,
-      expiresAt: existingEnvelope?.expiresAt ?? null,
+      issuedAt: lifecycle.issuedAt ?? existingEnvelope?.issuedAt ?? scoped.createdAt,
+      expiresAt:
+        lifecycle.expiresAt !== undefined
+          ? lifecycle.expiresAt
+          : (existingEnvelope?.expiresAt ?? null),
       revocable: existingEnvelope?.revocable ?? true,
       peerIdentity: { kind: 'relay-node', nodeId },
       ...(existingEnvelope?.correlationId
@@ -559,6 +586,82 @@ export function coldReopenSessionPayload(
   return payload;
 }
 
+function auditPeerForSummary(summary: ScopedSessionSummary | undefined): SecurityAuditEntryInput['peer'] {
+  if (summary?.peerIdentity.kind === 'relay-node') {
+    return {
+      kind: 'node',
+      nodeId: summary.peerIdentity.nodeId,
+      ...(summary.peerIdentity.credentialId
+        ? { credentialId: summary.peerIdentity.credentialId }
+        : {}),
+      ...(summary.peerIdentity.displayName
+        ? { displayName: summary.peerIdentity.displayName }
+        : {}),
+    };
+  }
+  return { kind: 'hub' };
+}
+
+function appendRoutedSessionAudit(
+  sink: RoutedSessionAuditSink | undefined,
+  input: SecurityAuditEntryInput
+): void {
+  if (!sink) return;
+  try {
+    sink.append(input);
+  } catch {
+    // Best-effort lifecycle visibility. The lifecycle validator itself is
+    // already fail-closed for expired/revoked/mismatched session envelopes.
+  }
+}
+
+function auditLifecycleRevocation(
+  sink: RoutedSessionAuditSink | undefined,
+  summary: ScopedSessionSummary,
+  params?: unknown
+): void {
+  appendRoutedSessionAudit(sink, {
+    eventType: 'revocation',
+    decision: 'revoked',
+    reasonCode: 'SESSION_REVOKED',
+    peer: auditPeerForSummary(summary),
+    node: { nodeId: summary.nodeId },
+    sessionId: summary.sessionId,
+    intent: { action: 'sessions.revoke', target: summary.nodeId },
+    material: { scope: summary.scope, params: params ?? null },
+    ...(summary.correlationId ? { correlationId: summary.correlationId } : {}),
+  });
+}
+
+function revokedReasonFromBody(body: Record<string, unknown>): string | undefined {
+  const reason = body['reason'];
+  return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
+}
+
+function includeFlag(value: unknown): boolean {
+  return value === '1' || value === 'true' || value === true;
+}
+
+function revokeAddressError(
+  envelopes: InMemorySessionEnvelopeRegistry,
+  sessionIdOrGlobalId: string,
+  nodeId?: string
+): RelayNodeError | null {
+  if (nodeId || envelopes.hasGlobalSessionId(sessionIdOrGlobalId)) return null;
+  const localMatches = envelopes.countLocalSessionId(sessionIdOrGlobalId);
+  if (localMatches === 0) return null;
+  return relayError(
+    'INVALID_REQUEST',
+    'nodeId is required when revoking by node-local session id',
+    false,
+    {
+      reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID',
+      sessionId: sessionIdOrGlobalId,
+      matches: localMatches,
+    }
+  );
+}
+
 function manifestFromBody(
   body: Record<string, unknown>,
   required = false
@@ -652,6 +755,9 @@ export function createHubNodeRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
+  const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
+  const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
+  const now = () => options.now?.() ?? new Date();
   const repoInventoryFeature =
     options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
 
@@ -783,6 +889,70 @@ export function createHubNodeRouter(
   // #433 they moved to `server/features/repo-router.ts`. Composition
   // root mounts both routers.
 
+  router.get('/hub/scoped-sessions', scopedSessionAuth, (req, res) => {
+    res.json({
+      sessions: envelopes.listSummaries({
+        now: now(),
+        includeRevoked: includeFlag(req.query['includeRevoked']),
+        includeExpired: req.query['includeExpired'] === '0' ? false : true,
+      }),
+    });
+  });
+
+  router.post('/hub/scoped-sessions/:sessionId/revoke', scopedSessionAuth, (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
+      return;
+    }
+    const body = bodyRecord(req);
+    const queryNodeId =
+      typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
+    const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
+    const revokeReason = revokedReasonFromBody(body);
+    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+    if (addressError) {
+      sendRelayError(res, addressError);
+      return;
+    }
+    const summary = envelopes.revoke(sessionId, {
+      ...(nodeId ? { nodeId } : {}),
+      ...(revokeReason ? { reason: revokeReason } : {}),
+      now: now(),
+    });
+    if (!summary) {
+      sendRelayError(res, relayError('NOT_FOUND', 'scoped session envelope was not found'));
+      return;
+    }
+    auditLifecycleRevocation(options.auditSink, summary, body);
+    res.json({ session: summary });
+  });
+
+  router.delete('/hub/scoped-sessions/:sessionId', scopedSessionAuth, (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
+      return;
+    }
+    const nodeId = typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
+    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+    if (addressError) {
+      sendRelayError(res, addressError);
+      return;
+    }
+    const summary = envelopes.revoke(sessionId, {
+      ...(nodeId ? { nodeId } : {}),
+      reason: 'operator-revoked',
+      now: now(),
+    });
+    if (!summary) {
+      sendRelayError(res, relayError('NOT_FOUND', 'scoped session envelope was not found'));
+      return;
+    }
+    auditLifecycleRevocation(options.auditSink, summary, { method: 'DELETE' });
+    res.json({ session: summary });
+  });
+
   router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {
@@ -830,14 +1000,85 @@ export function createHubNodeRouter(
       return;
     }
 
+    const body = bodyRecord(req);
+    const lifecycleError = lifecycleInputError(body);
+    if (lifecycleError) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', lifecycleError.message, false, {
+          reasonCode: 'INVALID_LIFECYCLE_INPUT',
+          field: lifecycleError.field,
+        })
+      );
+      return;
+    }
+    const createNow = now();
+    const expiresAt = expiresAtFromLifecycleInput(body, createNow);
+    if (expiresAt !== undefined && expiresAt !== null && Date.parse(expiresAt) <= createNow.getTime()) {
+      const error = relayError(
+        'SESSION_EXPIRED',
+        'routed session envelope is already expired',
+        false,
+        { reasonCode: 'SESSION_EXPIRED', expiresAt }
+      );
+      appendRoutedSessionAudit(options.auditSink, {
+        eventType: 'expiry',
+        decision: 'expired',
+        reasonCode: 'SESSION_EXPIRED',
+        peer: { kind: 'hub' },
+        node: { nodeId },
+        intent: { action: 'sessions.create', target: nodeId },
+        material: { params: body },
+      });
+      sendRelayError(res, error);
+      return;
+    }
+    const requestedEnvelope = isSessionEnvelope(body['sessionEnvelope'])
+      ? body['sessionEnvelope']
+      : null;
+    if (requestedEnvelope && requestedEnvelope.nodeId !== nodeId) {
+      appendRoutedSessionAudit(options.auditSink, {
+        eventType: 'denial',
+        decision: 'deny',
+        reasonCode: 'SESSION_NODE_MISMATCH',
+        peer: { kind: 'hub' },
+        node: { nodeId },
+        sessionId: requestedEnvelope.sessionId,
+        intent: { action: 'sessions.create', target: nodeId },
+        material: {
+          params: {
+            expectedNodeId: requestedEnvelope.nodeId,
+            actualNodeId: nodeId,
+          },
+        },
+        ...(requestedEnvelope.correlationId ? { correlationId: requestedEnvelope.correlationId } : {}),
+      });
+      sendRelayError(
+        res,
+        relayError(
+          'SESSION_MISMATCH',
+          'routed session envelope node does not match the route',
+          false,
+          {
+            reasonCode: 'SESSION_NODE_MISMATCH',
+            expectedNodeId: requestedEnvelope.nodeId,
+            actualNodeId: nodeId,
+          }
+        )
+      );
+      return;
+    }
+
     try {
       const payload = await options.nodeLinks.request(
         nodeId,
         'sessions.create',
-        bodyRecord(req)
+        body
       );
-      const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
-      sessionEnvelopeRegistry.upsert(session.sessionEnvelope!);
+      const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+      });
+      envelopes.upsert(session.sessionEnvelope!);
       res.status(201).json(session);
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
@@ -905,7 +1146,7 @@ export function createHubNodeRouter(
         await options.nodeLinks.request(nodeId, 'sessions.kill', {
           id: sessionId,
         });
-        sessionEnvelopeRegistry.delete(sessionId, nodeId);
+        envelopes.delete(sessionId, nodeId);
         res.json({ ok: true });
       } catch (error) {
         if (error instanceof HubNodeLinkError) {

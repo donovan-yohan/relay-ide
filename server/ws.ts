@@ -24,10 +24,84 @@ import {
   createNodeScopedSessionEvent,
 } from '../shared/node-boundary.js';
 
+import {
+  sessionEnvelopeRegistry,
+  type InMemorySessionEnvelopeRegistry,
+} from './session-envelope-registry.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import type { RoutedSessionAuditSink } from './hub-node-router.js';
+
 const logger = createLogger('ws');
 
 function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
+}
+
+function appendRoutedSessionAudit(
+  sink: RoutedSessionAuditSink | undefined,
+  input: SecurityAuditEntryInput
+): void {
+  if (!sink) return;
+  try {
+    sink.append(input);
+  } catch {
+    // WebSocket upgrades cannot rely on audit persistence; lifecycle
+    // validation itself remains fail-closed before the PTY attach starts.
+  }
+}
+
+function routedSessionStatus(code: string): number {
+  if (code === 'NOT_FOUND') return 404;
+  if (
+    code === 'SESSION_EXPIRED' ||
+    code === 'SESSION_REVOKED' ||
+    code === 'SESSION_MISMATCH'
+  ) {
+    return 403;
+  }
+  return 400;
+}
+
+function auditAttachDenial(
+  sink: RoutedSessionAuditSink | undefined,
+  validation: Exclude<
+    ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+    { ok: true }
+  >,
+  nodeId: string,
+  sessionId: string
+): void {
+  if (validation.ok) return;
+  const reasonCode =
+    typeof validation.error.details?.['reasonCode'] === 'string'
+      ? validation.error.details['reasonCode']
+      : validation.error.code;
+  appendRoutedSessionAudit(sink, {
+    eventType:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expiry'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revocation'
+          : 'denial',
+    decision:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expired'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revoked'
+          : 'deny',
+    reasonCode,
+    peer:
+      validation.summary?.peerIdentity.kind === 'relay-node'
+        ? { kind: 'node', nodeId: validation.summary.peerIdentity.nodeId }
+        : { kind: 'hub' },
+    node: { nodeId },
+    sessionId: validation.record?.envelope.sessionId ?? sessionId,
+    intent: { action: 'sessions.attach', target: nodeId },
+    material: { scope: validation.summary?.scope ?? null },
+    ...(validation.record?.envelope.correlationId
+      ? { correlationId: validation.record.envelope.correlationId }
+      : {}),
+  });
 }
 
 function sendAgentErrorV2(
@@ -288,7 +362,9 @@ function setupWebSocket(
   noPinMode = false,
   localNode?: LocalRelayNode,
   hubNodeRegistry?: HubNodeRegistry,
-  nodeLinks?: HubNodeLinkManager
+  nodeLinks?: HubNodeLinkManager,
+  sessionEnvelopes: InMemorySessionEnvelopeRegistry = sessionEnvelopeRegistry,
+  auditSink?: RoutedSessionAuditSink
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -421,6 +497,22 @@ function setupWebSocket(
         sessionId = decodeURIComponent(routedPtyMatch[2]!);
       } catch {
         socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const validation = sessionEnvelopes.validate({
+        nodeId,
+        sessionId,
+      });
+      if (!validation.ok) {
+        const denial = validation as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditAttachDenial(auditSink, denial, nodeId, sessionId);
+        socket.write(
+          `HTTP/1.1 ${routedSessionStatus(denial.error.code)} ${denial.error.code}\r\n\r\n`
+        );
         socket.destroy();
         return;
       }
