@@ -1245,6 +1245,7 @@ async function main(): Promise<void> {
       collectLocalRepoInventory: collectLocalInventory,
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
+      renewLocalSession: localRelayNode.sessions.renew,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );

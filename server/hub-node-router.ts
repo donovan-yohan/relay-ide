@@ -34,6 +34,7 @@ import {
 } from './features/repo-inventory.js';
 import type { SessionSummary } from './types.js';
 import {
+  DEFAULT_LOCAL_NODE_ID,
   createGlobalSessionId,
   createRepoInstanceId,
   createWorktreeInstanceId,
@@ -106,6 +107,11 @@ interface HubNodeRouterOptions {
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeSessionTransport;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  renewLocalSession?: (input: {
+    id: string;
+    expiresAt: string;
+    now?: Date;
+  }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
   confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
@@ -165,6 +171,7 @@ export function errorStatus(error: RelayNodeError): number {
     case 'SESSION_EXPIRED':
     case 'SESSION_REVOKED':
     case 'SESSION_MISMATCH':
+    case 'SESSION_NON_RENEWABLE':
       return 403;
     case 'NOT_FOUND':
     case 'NODE_OFFLINE':
@@ -1014,6 +1021,108 @@ function revokedReasonFromBody(body: Record<string, unknown>): string | undefine
   return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
 }
 
+const SESSION_RENEW_IMMUTABLE_FIELDS = [
+  'intent',
+  'scope',
+  'peerIdentity',
+  'sessionEnvelope',
+] as const;
+
+function renewAuthorityError(body: Record<string, unknown>): RelayNodeError | null {
+  const field = SESSION_RENEW_IMMUTABLE_FIELDS.find((key) => body[key] !== undefined);
+  if (!field) return null;
+  return relayError(
+    'SESSION_MISMATCH',
+    'session renewal cannot change intent, scope, peer identity, or envelope authority',
+    false,
+    { reasonCode: 'SESSION_RENEW_AUTHORITY_IMMUTABLE', field }
+  );
+}
+
+function renewExpiresAtFromBody(
+  body: Record<string, unknown>,
+  now: Date
+): string | RelayNodeError {
+  const lifecycleError = lifecycleInputError(body, now);
+  if (lifecycleError) {
+    return relayError('INVALID_REQUEST', lifecycleError.message, false, {
+      reasonCode: 'INVALID_LIFECYCLE_INPUT',
+      field: lifecycleError.field,
+    });
+  }
+  if (body['expiresAt'] === null) {
+    return relayError(
+      'INVALID_REQUEST',
+      'session renewal requires a finite future expiresAt or ttlSeconds/ttlMs',
+      false,
+      { reasonCode: 'SESSION_RENEWAL_EXPIRY_REQUIRED', field: 'expiresAt' }
+    );
+  }
+  const expiresAt = expiresAtFromLifecycleInput(body, now);
+  if (typeof expiresAt !== 'string') {
+    return relayError(
+      'INVALID_REQUEST',
+      'session renewal requires expiresAt, ttlMs, or ttlSeconds',
+      false,
+      { reasonCode: 'SESSION_RENEWAL_EXPIRY_REQUIRED' }
+    );
+  }
+  return expiresAt;
+}
+
+function auditLifecycleRenewal(
+  sink: RoutedSessionAuditSink | undefined,
+  input: {
+    summary: ScopedSessionSummary;
+    previousSummary: ScopedSessionSummary;
+    params?: unknown;
+  }
+): void {
+  appendRoutedSessionAudit(sink, {
+    eventType: 'grant',
+    decision: 'allow',
+    reasonCode: 'SESSION_RENEWED',
+    peer: auditPeerForSummary(input.summary),
+    node: { nodeId: input.summary.nodeId },
+    sessionId: input.summary.sessionId,
+    intent: { action: 'sessions.renew', target: input.summary.nodeId },
+    material: {
+      scope: input.summary.scope,
+      params: {
+        requested: input.params ?? null,
+        previousExpiresAt: input.previousSummary.expiresAt,
+        renewedExpiresAt: input.summary.expiresAt,
+      },
+    },
+    ...(input.summary.correlationId ? { correlationId: input.summary.correlationId } : {}),
+  });
+}
+
+function auditRenewalImmediateDenial(
+  sink: RoutedSessionAuditSink | undefined,
+  input: {
+    error: RelayNodeError;
+    nodeId?: string;
+    sessionId: string;
+    params?: unknown;
+  }
+): void {
+  const reasonCode =
+    typeof input.error.details?.['reasonCode'] === 'string'
+      ? input.error.details['reasonCode']
+      : input.error.code;
+  appendRoutedSessionAudit(sink, {
+    eventType: 'denial',
+    decision: 'deny',
+    reasonCode,
+    peer: { kind: 'hub' },
+    node: { ...(input.nodeId ? { nodeId: input.nodeId } : {}) },
+    sessionId: input.sessionId,
+    intent: { action: 'sessions.renew', ...(input.nodeId ? { target: input.nodeId } : {}) },
+    material: { params: input.params ?? input.error.details ?? null },
+  });
+}
+
 function includeFlag(value: unknown): boolean {
   return value === '1' || value === 'true' || value === true;
 }
@@ -1080,6 +1189,20 @@ function sessionCreatePolicyScope(
       : worktreePath
         ? { worktreePath }
         : {}),
+  };
+}
+
+function sessionRenewPolicyScope(
+  summary: ScopedSessionSummary
+): Parameters<typeof evaluateHubPolicy>[0]['scope'] {
+  return {
+    kind: summary.scope.kind,
+    nodeId: summary.nodeId,
+    cwd: summary.scope.cwd,
+    ...(summary.scope.repoPath ? { repoPath: summary.scope.repoPath } : {}),
+    ...(summary.scope.worktreePath !== undefined
+      ? { worktreePath: summary.scope.worktreePath }
+      : {}),
   };
 }
 
@@ -1663,6 +1786,128 @@ export function createHubNodeRouter(
         includeExpired: req.query['includeExpired'] === '0' ? false : true,
       }),
     });
+  });
+
+  router.post('/hub/scoped-sessions/:sessionId/renew', scopedSessionAuth, (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
+      return;
+    }
+    const body = bodyRecord(req);
+    const queryNodeId =
+      typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
+    const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
+    const renewalNow = now();
+
+    const authorityError = renewAuthorityError(body);
+    if (authorityError) {
+      auditRenewalImmediateDenial(options.auditSink, {
+        error: authorityError,
+        ...(nodeId ? { nodeId } : {}),
+        sessionId,
+        params: body,
+      });
+      sendRelayError(res, authorityError);
+      return;
+    }
+
+    const expiresAt = renewExpiresAtFromBody(body, renewalNow);
+    if (typeof expiresAt !== 'string') {
+      auditRenewalImmediateDenial(options.auditSink, {
+        error: expiresAt,
+        ...(nodeId ? { nodeId } : {}),
+        sessionId,
+        params: body,
+      });
+      sendRelayError(res, expiresAt);
+      return;
+    }
+
+    if (nodeId !== DEFAULT_LOCAL_NODE_ID) {
+      const lifecycle = envelopes.validate({
+        sessionId,
+        ...(nodeId ? { nodeId } : {}),
+        now: renewalNow,
+      });
+      if (lifecycle.ok === false) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId ?? denial.summary?.nodeId ?? 'unknown',
+          sessionId,
+          'sessions.renew',
+          body
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+
+      const policyNode = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === lifecycle.summary.nodeId);
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node: policyNode ?? null,
+        nodeId: lifecycle.summary.nodeId,
+        intent: { action: 'sessions.renew', target: lifecycle.summary.nodeId },
+        scope: sessionRenewPolicyScope(lifecycle.summary),
+        requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.renew'),
+        expiresAt: lifecycle.summary.expiresAt,
+        revokedAt: lifecycle.summary.revokedAt,
+        sessionId: lifecycle.summary.sessionId,
+        ...(lifecycle.summary.correlationId
+          ? { correlationId: lifecycle.summary.correlationId }
+          : {}),
+        params: body,
+        now: renewalNow,
+      });
+      if (
+        sendPolicyDecision(options.auditSink, res, policyDecision, body, {
+          confirmations,
+          req,
+          canonicalParams: body,
+          now: renewalNow,
+        })
+      ) return;
+    }
+
+    const renewed =
+      nodeId === DEFAULT_LOCAL_NODE_ID && options.renewLocalSession
+        ? options.renewLocalSession({ id: sessionId, expiresAt, now: renewalNow })
+        : envelopes.renew({
+            sessionId,
+            ...(nodeId ? { nodeId } : {}),
+            expiresAt,
+            now: renewalNow,
+          });
+    if (renewed.ok === false) {
+      const denial = renewed as Exclude<
+        ReturnType<InMemorySessionEnvelopeRegistry['renew']>,
+        { ok: true }
+      >;
+      auditLifecycleDenial(
+        options.auditSink,
+        denial,
+        nodeId ?? denial.summary?.nodeId ?? 'unknown',
+        sessionId,
+        'sessions.renew',
+        body
+      );
+      sendRelayError(res, denial.error);
+      return;
+    }
+
+    auditLifecycleRenewal(options.auditSink, {
+      previousSummary: renewed.previousSummary,
+      summary: renewed.summary,
+      params: body,
+    });
+    res.json({ session: renewed.summary });
   });
 
   router.post('/hub/scoped-sessions/:sessionId/revoke', scopedSessionAuth, (req, res) => {

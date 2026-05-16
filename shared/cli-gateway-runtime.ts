@@ -370,6 +370,10 @@ export function normalizeGatewayErrorCode(
   const code = typeof body?.['code'] === 'string' ? body['code'] : undefined;
   if (code === 'CONFIRMATION_REQUIRED' || reason === 'CONFIRMATION_REQUIRED') return 'CONFIRMATION_REQUIRED';
   if (code === 'NODE_OFFLINE') return 'NODE_OFFLINE';
+  if (code === 'SESSION_EXPIRED') return 'SESSION_EXPIRED';
+  if (code === 'SESSION_REVOKED') return 'SESSION_REVOKED';
+  if (code === 'SESSION_MISMATCH') return 'SESSION_MISMATCH';
+  if (code === 'SESSION_NON_RENEWABLE') return 'SESSION_NON_RENEWABLE';
   if (code === 'UNSUPPORTED') return 'UNSUPPORTED';
   if (reason === 'HAND_BACK_ACK_REQUIRED') return 'INTERVENTION_ACK_REQUIRED';
   if (reason === 'STALE_INTERVENTION_ACK') return 'INTERVENTION_ACK_STALE';

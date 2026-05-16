@@ -101,8 +101,8 @@ export async function aggregateRemoteSessions(
     }
     for (const session of result.value.sessions) {
       const scoped = scopedNodeSession(result.value.nodeId, session);
-      envelopes.upsert(scoped.sessionEnvelope!);
-      aggregated.push(scoped);
+      const sessionEnvelope = envelopes.upsert(scoped.sessionEnvelope!);
+      aggregated.push({ ...scoped, sessionEnvelope });
     }
   }
 

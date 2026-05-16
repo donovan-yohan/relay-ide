@@ -192,13 +192,19 @@ describe('session envelope registry', () => {
     expect(lifecycleInputError({ ttlSeconds: '60' })).toMatchObject({
       field: 'ttlSeconds',
     });
-    expect(lifecycleInputError({ ttlMs: 500 })).toBeNull();
+    expect(lifecycleInputError({ ttlSeconds: Number.MAX_SAFE_INTEGER }, now)).toMatchObject({
+      field: 'ttlSeconds',
+    });
+    expect(lifecycleInputError({ ttlMs: Number.MAX_SAFE_INTEGER }, now)).toMatchObject({
+      field: 'ttlMs',
+    });
+    expect(lifecycleInputError({ ttlMs: 500 }, now)).toBeNull();
     expect(expiresAtFromLifecycleInput({ ttlMs: 500 }, now)).toBe(
       '2026-01-02T03:04:05.500Z'
     );
   });
 
-  it('requires nodeId or globalSessionId for revoke by local session id', () => {
+  it('requires nodeId or globalSessionId for revoke and renew by duplicate local session id', () => {
     const registry = createSessionEnvelopeRegistry();
     registry.create({
       sessionId: 'duplicate-local',
@@ -206,6 +212,7 @@ describe('session envelope registry', () => {
       globalSessionId: 'node-a:duplicate-local',
       cwd: '/srv/a',
       issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
       intentKind: ROUTED_NODE_SESSION_INTENT,
     });
     registry.create({
@@ -214,10 +221,28 @@ describe('session envelope registry', () => {
       globalSessionId: 'node-b:duplicate-local',
       cwd: '/srv/b',
       issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
       intentKind: ROUTED_NODE_SESSION_INTENT,
     });
 
     expect(registry.countLocalSessionId('duplicate-local')).toBe(2);
+    expect(registry.validate({ sessionId: 'duplicate-local' })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID', matches: 2 },
+      },
+    });
+    expect(
+      registry.renew({
+        sessionId: 'duplicate-local',
+        expiresAt: '2026-01-02T03:10:00.000Z',
+        now: new Date('2026-01-02T03:04:30.000Z'),
+      })
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_REQUEST', details: { reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID' } },
+    });
     expect(registry.revoke('duplicate-local')).toBeUndefined();
     expect(registry.revoke('node-a:duplicate-local')).toMatchObject({
       nodeId: 'node-a',
@@ -261,5 +286,231 @@ describe('session envelope registry', () => {
       ['expired-session', 'expired'],
     ]);
     expect(registry.listActive(new Date('2026-01-02T03:05:00.000Z'))).toHaveLength(1);
+  });
+
+  it('renews only expiry while preserving scoped authority', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const envelope = registry.create({
+      sessionId: 'renewable-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:renewable-session',
+      cwd: '/srv/app',
+      repoPath: '/srv/app',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+      correlationId: 'corr-renew',
+      auditId: 'audit-renew',
+    });
+    const beforeAuthority = {
+      intent: envelope.intent,
+      scope: envelope.scope,
+      peerIdentity: envelope.peerIdentity,
+      nodeId: envelope.nodeId,
+      globalSessionId: envelope.globalSessionId,
+      issuedAt: envelope.issuedAt,
+      correlationId: envelope.correlationId,
+      auditId: envelope.auditId,
+    };
+
+    const result = registry.renew({
+      sessionId: envelope.sessionId,
+      nodeId: envelope.nodeId,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      now: new Date('2026-01-02T03:04:30.000Z'),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      previousSummary: { expiresAt: '2026-01-02T03:05:00.000Z' },
+      summary: { expiresAt: '2026-01-02T03:10:00.000Z', status: 'active' },
+    });
+    const renewed = registry.read(envelope.globalSessionId);
+    expect(renewed?.expiresAt).toBe('2026-01-02T03:10:00.000Z');
+    expect({
+      intent: renewed?.intent,
+      scope: renewed?.scope,
+      peerIdentity: renewed?.peerIdentity,
+      nodeId: renewed?.nodeId,
+      globalSessionId: renewed?.globalSessionId,
+      issuedAt: renewed?.issuedAt,
+      correlationId: renewed?.correlationId,
+      auditId: renewed?.auditId,
+    }).toEqual(beforeAuthority);
+  });
+
+  it('preserves a renewed expiry when stale remote listings replay the old envelope', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const envelope = registry.create({
+      sessionId: 'stale-listed-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:stale-listed-session',
+      cwd: '/srv/app',
+      repoPath: '/srv/app',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+
+    expect(
+      registry.renew({
+        sessionId: envelope.sessionId,
+        nodeId: envelope.nodeId,
+        expiresAt: '2026-01-02T03:10:00.000Z',
+        now: new Date('2026-01-02T03:04:30.000Z'),
+      })
+    ).toMatchObject({ ok: true });
+
+    const stored = registry.upsert(envelope);
+    expect(stored.expiresAt).toBe('2026-01-02T03:10:00.000Z');
+    expect(registry.read(envelope.globalSessionId)?.expiresAt).toBe(
+      '2026-01-02T03:10:00.000Z'
+    );
+  });
+
+  it('does not preserve renewed expiry when stale listings carry a different peer authority', () => {
+    const cases = [
+      {
+        name: 'local user id',
+        previousPeerIdentity: { kind: 'local-user' as const, id: 'local-a' },
+        incomingPeerIdentity: { kind: 'local-user' as const, id: 'local-b' },
+      },
+      {
+        name: 'relay node credential',
+        previousPeerIdentity: {
+          kind: 'relay-node' as const,
+          nodeId: 'node-a',
+          credentialId: 'credential-a',
+        },
+        incomingPeerIdentity: {
+          kind: 'relay-node' as const,
+          nodeId: 'node-a',
+          credentialId: 'credential-b',
+        },
+      },
+      {
+        name: 'agent id',
+        previousPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'codex' },
+        incomingPeerIdentity: { kind: 'agent' as const, id: 'agent-b', adapter: 'codex' },
+      },
+      {
+        name: 'agent adapter',
+        previousPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'codex' },
+        incomingPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'claude' },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const registry = createSessionEnvelopeRegistry();
+      const caseSlug = testCase.name.replace(/ /g, '-');
+      const envelope = registry.create({
+        sessionId: `stale-listed-${caseSlug}`,
+        nodeId: 'node-a',
+        globalSessionId: `node-a:stale-listed-${caseSlug}`,
+        cwd: '/srv/app',
+        repoPath: '/srv/app',
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: '2026-01-02T03:05:00.000Z',
+        intentKind: ROUTED_NODE_SESSION_INTENT,
+        peerIdentity: testCase.previousPeerIdentity,
+      });
+
+      expect(
+        registry.renew({
+          sessionId: envelope.sessionId,
+          nodeId: envelope.nodeId,
+          expiresAt: '2026-01-02T03:10:00.000Z',
+          now: new Date('2026-01-02T03:04:30.000Z'),
+        })
+      ).toMatchObject({ ok: true });
+
+      const staleFromDifferentAuthority = {
+        ...envelope,
+        peerIdentity: testCase.incomingPeerIdentity,
+      };
+      const stored = registry.upsert(staleFromDifferentAuthority);
+
+      expect(stored.expiresAt).toBe('2026-01-02T03:05:00.000Z');
+      expect(stored.peerIdentity).toEqual(testCase.incomingPeerIdentity);
+      expect(registry.read(envelope.globalSessionId)?.expiresAt).toBe(
+        '2026-01-02T03:05:00.000Z'
+      );
+    }
+  });
+
+  it('denies renewal for expired, revoked, mismatched, and non-renewable sessions', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const issuedAt = '2026-01-02T03:04:05.000Z';
+    const active = registry.create({
+      sessionId: 'active-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:active-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    const expired = registry.create({
+      sessionId: 'expired-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:expired-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:04:10.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    const revoked = registry.create({
+      sessionId: 'revoked-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:revoked-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    registry.revoke(revoked.sessionId, { nodeId: revoked.nodeId, reason: 'test-revoke' });
+    const nonRenewable = registry.create({
+      sessionId: 'non-renewable-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:non-renewable-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      revocable: false,
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+
+    expect(
+      registry.renew({
+        sessionId: expired.sessionId,
+        nodeId: expired.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_EXPIRED' } });
+    expect(
+      registry.renew({
+        sessionId: revoked.sessionId,
+        nodeId: revoked.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_REVOKED' } });
+    expect(
+      registry.renew({
+        sessionId: active.sessionId,
+        nodeId: 'node-b',
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_MISMATCH' } });
+    expect(
+      registry.renew({
+        sessionId: nonRenewable.sessionId,
+        nodeId: nonRenewable.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_NON_RENEWABLE' } });
   });
 });
