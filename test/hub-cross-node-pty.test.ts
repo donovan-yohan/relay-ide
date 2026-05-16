@@ -11,6 +11,7 @@ import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createLocalRelayNode } from '../server/local-node.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { SessionSummary } from '../server/types.js';
+import { createGlobalSessionId } from '../shared/identity.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -108,7 +109,7 @@ function remoteSession(input: {
     idle: false,
     customCommand: null,
     nodeId: input.nodeId,
-    globalSessionId: `${input.nodeId}:${input.sessionId}`,
+    globalSessionId: createGlobalSessionId(input.nodeId, input.sessionId),
     repoInstanceId: `${encodeURIComponent(input.nodeId)}:${encodeURIComponent(repoPath)}`,
     useTmux: true,
     tmuxSessionName: `relay-ide-${input.sessionId}`,
@@ -119,7 +120,23 @@ function remoteSession(input: {
 }
 
 async function listen(server: http.Server): Promise<number> {
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    const cleanupListeners = () => {
+      server.off('error', onError);
+      server.off('listening', onListening);
+    };
+    const onError = (error: Error) => {
+      cleanupListeners();
+      reject(error);
+    };
+    const onListening = () => {
+      cleanupListeners();
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(0, '127.0.0.1');
+  });
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('smoke hub did not bind a TCP port');
@@ -200,6 +217,10 @@ class SimulatedNode {
         break;
       }
     });
+    ws.on('close', () => this.rejectWaiters(`${this.hostname} node link closed`));
+    ws.on('error', (error) =>
+      this.rejectWaiters(`${this.hostname} node link error: ${error.message}`)
+    );
   }
 
   waitFor(
@@ -270,6 +291,13 @@ class SimulatedNode {
     if (index >= 0) this.waiters.splice(index, 1);
     clearTimeout(waiter.timer);
   }
+
+  private rejectWaiters(reason: string): void {
+    for (const waiter of [...this.waiters]) {
+      this.removeWaiter(waiter);
+      waiter.reject(new Error(`stopped waiting for ${waiter.label}: ${reason}`));
+    }
+  }
 }
 
 class BrowserClient {
@@ -296,7 +324,13 @@ class BrowserClient {
     });
     ws.on('close', (code, reason) => {
       this.closes.push({ code, reason: reason.toString() });
+      this.rejectWaiters(
+        `browser socket closed (${code}${reason.length ? ` ${reason.toString()}` : ''})`
+      );
     });
+    ws.on('error', (error) =>
+      this.rejectWaiters(`browser socket error: ${error.message}`)
+    );
   }
 
   waitFor(
@@ -322,6 +356,41 @@ class BrowserClient {
     });
   }
 
+  waitForBytes(
+    predicate: (message: string) => boolean,
+    expectedBytes: number,
+    label: string,
+    timeoutMs = 4_000
+  ): Promise<number> {
+    const receivedBytes = () => this.countBytes(predicate);
+    const existingBytes = receivedBytes();
+    if (existingBytes >= expectedBytes) return Promise.resolve(existingBytes);
+
+    return new Promise<number>((resolve, reject) => {
+      const waiter = {
+        label,
+        predicate: () => {
+          const bytes = receivedBytes();
+          if (bytes < expectedBytes) return false;
+          resolve(bytes);
+          return true;
+        },
+        resolve: () => {},
+        reject,
+        timer: setTimeout(() => {
+          this.removeWaiter(waiter);
+          reject(
+            new Error(
+              `timed out waiting for ${expectedBytes} browser bytes for ${label}; received ${receivedBytes()}`
+            )
+          );
+        }, timeoutMs),
+      };
+      waiter.timer.unref?.();
+      this.waiters.push(waiter);
+    });
+  }
+
   send(data: string): void {
     this.ws.send(data);
   }
@@ -334,6 +403,21 @@ class BrowserClient {
     const index = this.waiters.indexOf(waiter);
     if (index >= 0) this.waiters.splice(index, 1);
     clearTimeout(waiter.timer);
+  }
+
+  private countBytes(predicate: (message: string) => boolean): number {
+    return this.messages.reduce(
+      (total, message) =>
+        predicate(message) ? total + Buffer.byteLength(message) : total,
+      0
+    );
+  }
+
+  private rejectWaiters(reason: string): void {
+    for (const waiter of [...this.waiters]) {
+      this.removeWaiter(waiter);
+      waiter.reject(new Error(`stopped waiting for ${waiter.label}: ${reason}`));
+    }
   }
 }
 
@@ -444,7 +528,7 @@ async function attachBrowser(input: {
   sessionId: string;
 }): Promise<{ browser: BrowserClient; attach: RelayNodeEnvelope }> {
   const browserWs = new WebSocket(
-    `${input.wsBase}/nodes/${encodeURIComponent(input.node.nodeId)}/ws/sessions/${input.sessionId}`
+    `${input.wsBase}/nodes/${encodeURIComponent(input.node.nodeId)}/ws/sessions/${encodeURIComponent(input.sessionId)}`
   );
   await waitForOpen(browserWs);
   const browser = new BrowserClient(browserWs);
@@ -465,9 +549,13 @@ async function runSustainedEcho(input: {
   browser: BrowserClient;
   streamId: string;
   marker: string;
-}): Promise<{ bytesFromBrowser: number; bytesToBrowser: number }> {
+}): Promise<{
+  bytesFromBrowser: number;
+  bytesObservedByNode: number;
+  bytesToBrowser: number;
+}> {
   let bytesFromBrowser = 0;
-  let bytesToBrowser = 0;
+  let bytesObservedByNode = 0;
   const deadline = Date.now() + STRESS_DURATION_MS;
   const inputPump = (async () => {
     while (Date.now() < deadline || bytesFromBrowser < STRESS_TOTAL_BYTES) {
@@ -480,7 +568,7 @@ async function runSustainedEcho(input: {
     }
   })();
 
-  while (bytesToBrowser < STRESS_TOTAL_BYTES) {
+  while (bytesObservedByNode < STRESS_TOTAL_BYTES) {
     const ptyInput = await input.node.waitFor(
       (message) =>
         message.channel === 'pty' &&
@@ -492,16 +580,17 @@ async function runSustainedEcho(input: {
     const data = (ptyInput.payload as { data?: unknown } | undefined)?.data;
     expect(typeof data).toBe('string');
     expect(data as string).toContain(input.marker);
-    bytesToBrowser += Buffer.byteLength(data as string);
+    bytesObservedByNode += Buffer.byteLength(data as string);
     input.node.sendPtyData(input.streamId, data as string);
   }
-  await inputPump;
-  await input.browser.waitFor(
-    (message) => message.includes(`${input.marker}:0:`),
-    `${input.marker} first echoed chunk`,
+  const bytesToBrowser = await input.browser.waitForBytes(
+    (message) => message.includes(input.marker),
+    STRESS_TOTAL_BYTES,
+    `${input.marker} echoed browser bytes`,
     4_000
   );
-  return { bytesFromBrowser, bytesToBrowser };
+  await inputPump;
+  return { bytesFromBrowser, bytesObservedByNode, bytesToBrowser };
 }
 
 describe('hub cross-node PTY smoke harness', () => {
@@ -532,12 +621,12 @@ describe('hub cross-node PTY smoke harness', () => {
     expect(sessionA).toMatchObject({
       id: 'terminal-a',
       nodeId: nodeA.nodeId,
-      globalSessionId: `${nodeA.nodeId}:terminal-a`,
+      globalSessionId: createGlobalSessionId(nodeA.nodeId, 'terminal-a'),
     });
     expect(sessionB).toMatchObject({
       id: 'terminal-b',
       nodeId: nodeB.nodeId,
-      globalSessionId: `${nodeB.nodeId}:terminal-b`,
+      globalSessionId: createGlobalSessionId(nodeB.nodeId, 'terminal-b'),
     });
 
     const [{ browser: browserA, attach: attachA }, { browser: browserB, attach: attachB }] =
@@ -580,8 +669,10 @@ describe('hub cross-node PTY smoke harness', () => {
       }),
     ]);
     expect(stressA.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(stressA.bytesObservedByNode).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(stressA.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(stressB.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(stressB.bytesObservedByNode).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(stressB.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
     expect(browserA.messages.join('')).not.toContain('BBBB');
     expect(browserB.messages.join('')).not.toContain('AAAA');
