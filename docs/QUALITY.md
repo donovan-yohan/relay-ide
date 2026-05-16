@@ -16,7 +16,7 @@ Testing patterns and quality standards for Relay IDE.
 
 ```bash
 npm test                                    # Run all unit/integration tests (vitest)
-npm run test:smoke:multi-node              # Hub + two simulated nodes smoke harness
+npm run test:smoke:multi-node              # Canonical hub + two-node PTY smoke harness
 npx vitest run                              # Same as npm test
 npx vitest run test/auth.test.ts            # Run a single test file
 npx vitest run --changed HEAD~1             # Run only tests affected by recent changes
