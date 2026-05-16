@@ -7,6 +7,7 @@ import {
   DEFAULT_NODE_HEARTBEAT_TIMEOUTS,
 } from '../server/hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
 
 // Test-local agent list. Specific ids are an INPUT to the fixture,
@@ -780,7 +781,16 @@ describe('hub node registry', () => {
   });
 
   it('rotates node credentials without invalidating the previous token until proof', () => {
-    withTmpRegistry((registry) => {
+    const auditEntries: SecurityAuditEntryInput[] = [];
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-node-registry-')
+    );
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath: path.join(tmpDir, 'nodes.json'),
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+      });
       const exchanged = registry.exchangePairToken({
         pairToken: registry.createPairToken({}).pairToken,
         manifest: manifest(),
@@ -843,7 +853,30 @@ describe('hub node registry', () => {
         credentialId: rotation.credential.credentialId,
         credentialState: 'active',
       });
-    });
+      expect(auditEntries).toHaveLength(1);
+      expect(auditEntries[0]).toMatchObject({
+        eventType: 'rotation',
+        decision: 'rotated',
+        reasonCode: 'CREDENTIAL_ROTATION_PROVED',
+        peer: {
+          kind: 'node',
+          nodeId: exchanged.node.nodeId,
+          credentialId: rotation.credential.credentialId,
+        },
+        intent: { action: 'nodes.credential.rotate', target: exchanged.node.nodeId },
+        material: {
+          params: {
+            rotationId: rotation.rotation.rotationId,
+            previousCredentialId: exchanged.credential.credentialId,
+            nextCredentialId: rotation.credential.credentialId,
+          },
+        },
+      });
+      expect(JSON.stringify(auditEntries)).not.toContain(rotation.credential.token);
+      expect(JSON.stringify(auditEntries)).not.toContain(exchanged.credential.token);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('clears failed credential rotations before allowing recovery attempts', () => {

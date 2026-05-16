@@ -1256,10 +1256,12 @@ describe('hub node routes and link', () => {
       manifest: manifest(),
     });
     const app = express();
+    const auditEntries: unknown[] = [];
     app.use(express.json());
     app.use(
       createHubNodeRouter({
         registry,
+        auditSink: { append: (entry) => auditEntries.push(entry) },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
@@ -1270,6 +1272,16 @@ describe('hub node routes and link', () => {
     const port = await listen(server);
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
+
+    const unauthenticatedRotateRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delivery: 'manual' }),
+      }
+    );
+    expect(unauthenticatedRotateRes.status).toBe(401);
 
     const rotateRes = await fetch(
       `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
@@ -1288,6 +1300,27 @@ describe('hub node routes and link', () => {
     expect(rotate.node.credentialState).toBe('rotating');
     expect(rotate.rotation.state).toBe('issuing');
     expect(rotate.credential.token).not.toBe(exchanged.credential.token);
+    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries[0]).toMatchObject({
+      eventType: 'rotation',
+      decision: 'recorded',
+      reasonCode: 'CREDENTIAL_ROTATION_ISSUED',
+      peer: {
+        kind: 'node',
+        nodeId: exchanged.node.nodeId,
+        credentialId: exchanged.credential.credentialId,
+      },
+      material: { params: { delivery: 'manual', rotationId: rotate.rotation.rotationId } },
+    });
+    expect(JSON.stringify(auditEntries)).not.toContain(rotate.credential.token);
+
+    const nodesDuringRotationRes = await fetch(`${base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(nodesDuringRotationRes.status).toBe(200);
+    const nodesDuringRotationText = await nodesDuringRotationRes.text();
+    expect(nodesDuringRotationText).not.toContain(rotate.credential.token);
+    expect(nodesDuringRotationText).not.toContain(exchanged.credential.token);
 
     const collisionRes = await fetch(
       `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,

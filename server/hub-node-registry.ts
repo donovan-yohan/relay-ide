@@ -29,6 +29,7 @@ import {
   summarizeAcl,
   type RelayNodeAcl,
 } from '../shared/security-policy.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 
 const logger = createLogger('hub-node-registry');
 const REVERSE_LINK_ROUTE = 'reverse-link' as const;
@@ -127,6 +128,7 @@ export interface HubNodeRegistryOptions {
   staleMs?: number;
   offlineMs?: number;
   heartbeatPersistDebounceMs?: number;
+  auditSink?: { append(input: SecurityAuditEntryInput): unknown };
 }
 
 export const DEFAULT_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -531,6 +533,7 @@ export class HubNodeRegistry {
   private heartbeatPersistTimer: NodeJS.Timeout | null = null;
   private heartbeatPersistDirty = false;
   private heartbeatPersistError: unknown = null;
+  private readonly auditSink: { append(input: SecurityAuditEntryInput): unknown } | undefined;
   private readonly nodeRevokedListeners = new Set<NodeRevokedListener>();
 
   constructor(options: HubNodeRegistryOptions) {
@@ -542,6 +545,7 @@ export class HubNodeRegistry {
     this.heartbeatPersistDebounceMs =
       options.heartbeatPersistDebounceMs ??
       DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
+    this.auditSink = options.auditSink;
     this.state = readRegistryFile(options.storagePath);
     const needsAclMigration = registryNeedsAclMigration(this.state);
     for (const node of this.state.nodes) ensureNodeAcl(node);
@@ -852,6 +856,40 @@ export class HubNodeRegistry {
     delete rotation.nextCredentialHash;
     rotation.state = 'stable';
     rotation.stableAt = now;
+    this.auditCredentialRotationProved(node, rotation, now);
+  }
+
+  private auditCredentialRotationProved(
+    node: StoredNodeRecord,
+    rotation: StoredCredentialRotation,
+    provedAt: string
+  ): void {
+    if (!this.auditSink) return;
+    try {
+      this.auditSink.append({
+        eventType: 'rotation',
+        decision: 'rotated',
+        reasonCode: 'CREDENTIAL_ROTATION_PROVED',
+        peer: {
+          kind: 'node',
+          nodeId: node.nodeId,
+          credentialId: rotation.nextCredentialId,
+        },
+        node: { nodeId: node.nodeId },
+        intent: { action: 'nodes.credential.rotate', target: node.nodeId },
+        material: {
+          params: {
+            rotationId: rotation.rotationId,
+            previousCredentialId: rotation.previousCredentialId,
+            nextCredentialId: rotation.nextCredentialId,
+            provedAt,
+          },
+        },
+      });
+    } catch {
+      // Best-effort proof visibility only. Never leak or retry bearer tokens
+      // from the heartbeat path when an audit sink is unavailable.
+    }
   }
 
   async flushPendingHeartbeatPersist(): Promise<void> {
