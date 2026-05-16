@@ -11,7 +11,7 @@ function readRepoFile(relativePath: string): string {
 }
 
 describe('relay-node bootstrap docs', () => {
-  it('keeps macOS launchd diagnostics aligned with the service label and CLI log hint', () => {
+  it('keeps macOS launchd diagnostics aligned with local CLI log behavior', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
     const serviceSource = readRepoFile('server/service.ts');
@@ -22,10 +22,8 @@ describe('relay-node bootstrap docs', () => {
     const serviceLabel = serviceLabelMatch![1];
 
     expect(serviceLabel).toBe('com.relay-ide');
-
-    const launchdLogHint = `launchctl print gui/$(id -u)/${serviceLabel}`;
-    expect(cliSource).toContain(launchdLogHint);
-    expect(docs).toContain(launchdLogHint);
+    expect(cliSource).toContain('logs [--lines <n>] [--follow]');
+    expect(cliSource).toContain('readLocalLogSnapshot');
     expect(docs).not.toContain(`${serviceLabel}.node`);
   });
 
