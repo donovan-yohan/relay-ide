@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -147,6 +148,18 @@ import {
   removePortsFromEnvFile,
   upsertPortsInEnvFile,
 } from './port-allocator.js';
+import {
+  actorFromRequestBody,
+  capabilityDecisionFromRequest,
+  capabilityError,
+  clampInterventionLimit,
+  CONTROL_READ_CAPABILITY,
+  CONTROL_WRITE_CAPABILITY,
+  createAgentDrivenInitialControlState,
+  errorStatus as sessionControlErrorStatus,
+  INTERVENTION_READ_CAPABILITY,
+  toInterventionReadResponse,
+} from './session-control-api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -662,6 +675,7 @@ async function removeWorktreeFromDisk(
 }
 
 type AgentSessionParams = {
+  id?: string;
   repoName: string;
   repoPath: string;
   worktreePath: string | null | undefined;
@@ -682,6 +696,7 @@ type AgentSessionParams = {
   computedInitialPrompt: string | undefined;
   claudeFullscreen: boolean;
   sessionLane: SessionLane | undefined;
+  controlState?: ReturnType<typeof createAgentDrivenInitialControlState>;
   /** Port env var names to inject for this worktree (from repo settings) */
   portVariables?: string[] | undefined;
 };
@@ -722,7 +737,9 @@ function createTerminalSessionRecord(
 
 /** Creates an agent session record and writes worktree metadata if applicable. */
 function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
+  const sessionId = params.id ?? crypto.randomBytes(8).toString('hex');
   const session = localRelayNode.sessions.create({
+    id: sessionId,
     type: 'agent',
     agent: params.resolvedAgent,
     repoName: params.repoName,
@@ -742,6 +759,12 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
+    controlState:
+      params.controlState ??
+      createAgentDrivenInitialControlState({
+        workerId: sessionId,
+        displayName: params.displayName,
+      }),
     needsBranchRename: params.needsBranchRename,
     branchRenamePrompt: params.branchRenamePrompt,
     ...(params.computedInitialPrompt != null && {
@@ -1940,6 +1963,114 @@ async function main(): Promise<void> {
       })
     );
     res.json(allSessions);
+  });
+
+  app.get('/sessions/:id', requireScopedSessionAuth, async (req, res) => {
+    const decision = capabilityDecisionFromRequest(req, CONTROL_READ_CAPABILITY);
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+    const id = req.params['id'] as string;
+    const local = localRelayNode.sessions.get(id);
+    if (local) {
+      const session = localRelayNode.sessions.list().find((candidate) => candidate.id === id);
+      if (!session) {
+        res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            reasonCode: 'SESSION_NOT_FOUND',
+            message: 'session summary was not found',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      res.json(session);
+      return;
+    }
+    const remoteSessions = await aggregateRemoteSessions({
+      registry: hubNodeRegistry,
+      nodeLinks: hubNodeLinks,
+      logger,
+      sessionEnvelopes: sessionEnvelopeRegistry,
+    });
+    const remote = remoteSessions.find(
+      (candidate) => candidate.id === id || candidate.globalSessionId === id
+    );
+    if (!remote) {
+      res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          reasonCode: 'SESSION_NOT_FOUND',
+          message: 'session was not found',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    res.json(remote);
+  });
+
+  app.get('/sessions/:id/interventions', requireScopedSessionAuth, (req, res) => {
+    const decision = capabilityDecisionFromRequest(req, INTERVENTION_READ_CAPABILITY);
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+    const id = req.params['id'] as string;
+    if (!localRelayNode.sessions.get(id)) {
+      res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          reasonCode: 'SESSION_NOT_FOUND',
+          message: 'session was not found or is not locally readable',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    const limit = clampInterventionLimit(
+      typeof req.query.limit === 'string' ? req.query.limit : undefined
+    );
+    const records = localRelayNode.sessions.getInterventions(
+      id,
+      { limit }
+    );
+    res.json(
+      toInterventionReadResponse(
+        { records, limit }
+      )
+    );
+  });
+
+  app.post('/sessions/:id/control/hand-back', requireScopedSessionAuth, (req, res) => {
+    const decision = capabilityDecisionFromRequest(req, CONTROL_WRITE_CAPABILITY);
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+    const body = typeof req.body === 'object' && req.body !== null ? req.body as Record<string, unknown> : {};
+    const latestSeenInterventionEventId =
+      typeof body['latestSeenInterventionEventId'] === 'string'
+        ? body['latestSeenInterventionEventId']
+        : undefined;
+    const actor = actorFromRequestBody(body['actor']);
+    const result = localRelayNode.sessions.handBackToAgent({
+      id: req.params['id'] as string,
+      ...(latestSeenInterventionEventId === undefined
+        ? {}
+        : { latestSeenInterventionEventId }),
+      ...(actor === undefined ? {} : { actor }),
+    });
+    if (result.ok === false) {
+      res.status(sessionControlErrorStatus(result.error)).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, events: result.events, ackedHumanInterventions: result.ackedHumanInterventions });
   });
 
   // GET /repos — scan root dirs for repos

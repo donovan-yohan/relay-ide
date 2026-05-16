@@ -958,6 +958,58 @@ if (command === 'sessions') {
   }
 
   try {
+    if (subCommand === 'get') {
+      const sessionId = sessionArgs[1];
+      if (!sessionId) {
+        logger.error('Usage: relay-ide sessions get <session-id>');
+        process.exit(1);
+      }
+      const data = await scopedSessionRequest(
+        `/sessions/${encodeURIComponent(sessionId)}`
+      );
+      console.log(JSON.stringify(data, null, 2));
+      process.exit(0);
+    }
+
+    if (subCommand === 'interventions') {
+      const sessionId = sessionArgs[1];
+      if (!sessionId) {
+        logger.error('Usage: relay-ide sessions interventions <session-id> [--limit <n>]');
+        process.exit(1);
+      }
+      const limit = getNodeArg(sessionArgs, '--limit');
+      const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+      const data = await scopedSessionRequest(
+        `/sessions/${encodeURIComponent(sessionId)}/interventions${query}`
+      );
+      console.log(JSON.stringify(data, null, 2));
+      process.exit(0);
+    }
+
+    if (subCommand === 'hand-back') {
+      const sessionId = sessionArgs[1];
+      const latestSeenInterventionEventId = getNodeArg(
+        sessionArgs,
+        '--latest-seen-intervention-event-id'
+      );
+      if (!sessionId || !latestSeenInterventionEventId) {
+        logger.error(
+          'Usage: relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>'
+        );
+        process.exit(1);
+      }
+      const data = await scopedSessionRequest(
+        `/sessions/${encodeURIComponent(sessionId)}/control/hand-back`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latestSeenInterventionEventId }),
+        }
+      );
+      console.log(JSON.stringify(data, null, 2));
+      process.exit(0);
+    }
+
     if (subCommand === 'scoped' && sessionArgs[1] === 'list') {
       const includeRevoked = sessionArgs.includes('--include-revoked') ? '1' : '0';
       const includeExpired = sessionArgs.includes('--active-only') ? '0' : '1';
@@ -996,14 +1048,17 @@ if (command === 'sessions') {
     process.exit(1);
   }
 
-  logger.error(`Usage: relay-ide sessions scoped <list|revoke>
+  logger.error(`Usage: relay-ide sessions <command>
 
 Commands:
+  relay-ide sessions get <session-id>
+  relay-ide sessions interventions <session-id> [--limit <n>]
+  relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>
   relay-ide sessions scoped list [--include-revoked] [--active-only]
   relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]
 
 Environment:
-  RELAY_IDE_BROWSER_TOKEN   Auth token for scoped-session API
+  RELAY_IDE_BROWSER_TOKEN   Auth token for session/scoped-session API
   RELAY_IDE_PORT            Server port (default: 3456)`);
   process.exit(1);
 }

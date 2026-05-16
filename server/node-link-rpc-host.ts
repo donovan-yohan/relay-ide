@@ -1,8 +1,10 @@
+import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import type { LocalRelayNode } from './local-node.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
+import { createAgentDrivenInitialControlState } from './session-control-api.js';
 import type {
   NodeLinkChannelHandler,
   NodeLinkEnvelopeHandlerContext,
@@ -60,9 +62,30 @@ function asNullableString(value: unknown): string | null | undefined {
   return undefined;
 }
 
+function parseInitialControlMode(
+  record: Record<string, unknown>,
+  type: SessionsCreateInput['type']
+): Pick<SessionsCreateInput, 'controlMode'> | RelayNodeError {
+  const controlMode = asString(record['controlMode']);
+  if (controlMode === undefined) return {};
+  if (controlMode !== 'agent-driven') {
+    return invalidRequest(
+      'sessions.create payload.controlMode must be "agent-driven" when set'
+    );
+  }
+  if (type !== 'agent') {
+    return invalidRequest(
+      'sessions.create payload.controlMode="agent-driven" is only supported for agent sessions'
+    );
+  }
+  return { controlMode };
+}
+
 interface SessionsCreateInput {
+  id?: string;
   type: 'agent' | 'terminal';
   mode?: 'pty' | 'web';
+  controlMode?: 'agent-driven';
   agent?: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -102,7 +125,12 @@ function parseSessionsCreateInput(
     );
   }
   const input: SessionsCreateInput = { type: typeRaw };
+  const id = asString(record['id']);
+  if (id !== undefined) input.id = id;
   if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
+  const initialControl = parseInitialControlMode(record, typeRaw);
+  if ('code' in initialControl) return initialControl;
+  if (initialControl.controlMode) input.controlMode = initialControl.controlMode;
   const agent = asString(record['agent']);
   if (agent !== undefined) input.agent = agent;
   const repoPath = asString(record['repoPath']);
@@ -240,9 +268,16 @@ export function createNodeLinkRpcHost(
         );
         return;
       }
-      const result = localRelayNode.sessions.create(
-        parsed as unknown as CreateParams
-      );
+      const { controlMode, ...createInput } = parsed;
+      if (controlMode === 'agent-driven') {
+        const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
+        createInput.id = sessionId;
+        (createInput as CreateParams).controlState = createAgentDrivenInitialControlState({
+          workerId: sessionId,
+          ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
+        });
+      }
+      const result = localRelayNode.sessions.create(createInput as CreateParams);
       sendResultEnvelope(ctx, envelope, {
         session: sessionSummaryFromCreateResult(result),
       });

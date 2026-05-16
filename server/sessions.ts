@@ -76,7 +76,14 @@ import {
   recordHumanPtyInput,
   type ControlModeAction,
 } from './control-engine.js';
-import { listInterventions } from './intervention-log.js';
+import {
+  listInterventions,
+  listUnackedHumanInput,
+} from './intervention-log.js';
+import {
+  validateAgentHandBackAck,
+  type SessionControlError,
+} from './session-control-api.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -766,6 +773,45 @@ function acknowledgeInterventions(id: string, actor?: ControlActor): number {
     throw new Error(`Session not found: ${id}`);
   }
   return acknowledgeHumanInput(session, actor, controlEngineOptions());
+}
+
+function interventionScopeForSession(session: Session) {
+  const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+  return {
+    sessionId: session.id,
+    nodeId,
+    globalSessionId: createGlobalSessionId(nodeId, session.id),
+  };
+}
+
+function handBackToAgent(input: {
+  id: string;
+  latestSeenInterventionEventId?: string;
+  actor?: ControlActor;
+}):
+  | { ok: true; events: TabControlEvent[]; ackedHumanInterventions: number }
+  | { ok: false; error: SessionControlError } {
+  const session = sessions.get(input.id);
+  const summary = session
+    ? {
+        id: session.id,
+        status: session.status,
+        ...normalizeControlStateSummary(session.controlState),
+      }
+    : undefined;
+  const scope = session ? interventionScopeForSession(session) : { sessionId: input.id };
+  const unackedHumanInterventions = listUnackedHumanInput(scope);
+  const validation = validateAgentHandBackAck({
+    session: summary,
+    ...(input.latestSeenInterventionEventId === undefined
+      ? {}
+      : { latestSeenInterventionEventId: input.latestSeenInterventionEventId }),
+    unackedHumanInterventions,
+  });
+  if (validation.ok === false) return { ok: false, error: validation.error };
+  const ackedHumanInterventions = acknowledgeInterventions(input.id, input.actor);
+  const events = controlAction(input.id, 'hand-back');
+  return { ok: true, events, ackedHumanInterventions };
 }
 
 function maybeAutoRevert(id: string, nodeConnected?: boolean) {
@@ -1815,6 +1861,7 @@ export {
   recordRoutedPtyInput,
   controlAction,
   acknowledgeInterventions,
+  handBackToAgent,
   maybeAutoRevert,
   getInterventions,
   onControlEvent,
