@@ -368,6 +368,76 @@ describe('session envelope registry', () => {
     );
   });
 
+  it('does not preserve renewed expiry when stale listings carry a different peer authority', () => {
+    const cases = [
+      {
+        name: 'local user id',
+        previousPeerIdentity: { kind: 'local-user' as const, id: 'local-a' },
+        incomingPeerIdentity: { kind: 'local-user' as const, id: 'local-b' },
+      },
+      {
+        name: 'relay node credential',
+        previousPeerIdentity: {
+          kind: 'relay-node' as const,
+          nodeId: 'node-a',
+          credentialId: 'credential-a',
+        },
+        incomingPeerIdentity: {
+          kind: 'relay-node' as const,
+          nodeId: 'node-a',
+          credentialId: 'credential-b',
+        },
+      },
+      {
+        name: 'agent id',
+        previousPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'codex' },
+        incomingPeerIdentity: { kind: 'agent' as const, id: 'agent-b', adapter: 'codex' },
+      },
+      {
+        name: 'agent adapter',
+        previousPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'codex' },
+        incomingPeerIdentity: { kind: 'agent' as const, id: 'agent-a', adapter: 'claude' },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const registry = createSessionEnvelopeRegistry();
+      const caseSlug = testCase.name.replace(/ /g, '-');
+      const envelope = registry.create({
+        sessionId: `stale-listed-${caseSlug}`,
+        nodeId: 'node-a',
+        globalSessionId: `node-a:stale-listed-${caseSlug}`,
+        cwd: '/srv/app',
+        repoPath: '/srv/app',
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: '2026-01-02T03:05:00.000Z',
+        intentKind: ROUTED_NODE_SESSION_INTENT,
+        peerIdentity: testCase.previousPeerIdentity,
+      });
+
+      expect(
+        registry.renew({
+          sessionId: envelope.sessionId,
+          nodeId: envelope.nodeId,
+          expiresAt: '2026-01-02T03:10:00.000Z',
+          now: new Date('2026-01-02T03:04:30.000Z'),
+        })
+      ).toMatchObject({ ok: true });
+
+      const staleFromDifferentAuthority = {
+        ...envelope,
+        peerIdentity: testCase.incomingPeerIdentity,
+      };
+      const stored = registry.upsert(staleFromDifferentAuthority);
+
+      expect(stored.expiresAt).toBe('2026-01-02T03:05:00.000Z');
+      expect(stored.peerIdentity).toEqual(testCase.incomingPeerIdentity);
+      expect(registry.read(envelope.globalSessionId)?.expiresAt).toBe(
+        '2026-01-02T03:05:00.000Z'
+      );
+    }
+  });
+
   it('denies renewal for expired, revoked, mismatched, and non-renewable sessions', () => {
     const registry = createSessionEnvelopeRegistry();
     const issuedAt = '2026-01-02T03:04:05.000Z';

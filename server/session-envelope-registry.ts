@@ -240,6 +240,34 @@ function sameOptionalPath(left: string | null | undefined, right: string | null 
   return (left ?? undefined) === (right ?? undefined);
 }
 
+function samePeerAuthority(
+  previous: SessionEnvelope['peerIdentity'],
+  incoming: SessionEnvelope['peerIdentity']
+): boolean {
+  switch (previous.kind) {
+    case 'local-user':
+      return incoming.kind === 'local-user' && previous.id === incoming.id;
+    case 'relay-node':
+      return (
+        incoming.kind === 'relay-node' &&
+        previous.nodeId === incoming.nodeId &&
+        (previous.credentialId ?? undefined) === (incoming.credentialId ?? undefined)
+      );
+    case 'agent':
+      return (
+        incoming.kind === 'agent' &&
+        previous.id === incoming.id &&
+        previous.adapter === incoming.adapter &&
+        (previous.credentialId ?? undefined) === (incoming.credentialId ?? undefined)
+      );
+    case 'unknown':
+      return (
+        incoming.kind === 'unknown' &&
+        (previous.id ?? undefined) === (incoming.id ?? undefined)
+      );
+  }
+}
+
 function sameAuthorityForExpiryPreservation(
   previous: SessionEnvelope,
   incoming: SessionEnvelope
@@ -256,7 +284,7 @@ function sameAuthorityForExpiryPreservation(
     previous.scope.cwd === incoming.scope.cwd &&
     sameOptionalPath(previous.scope.repoPath, incoming.scope.repoPath) &&
     sameOptionalPath(previous.scope.worktreePath, incoming.scope.worktreePath) &&
-    previous.peerIdentity.kind === incoming.peerIdentity.kind
+    samePeerAuthority(previous.peerIdentity, incoming.peerIdentity)
   );
 }
 
