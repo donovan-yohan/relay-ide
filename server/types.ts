@@ -25,6 +25,7 @@ import type {
   ControlMode,
   ControlStateSummary,
 } from '../shared/control-state.js';
+import type { SessionEnvelope } from '../shared/session-envelope.js';
 
 export type AgentState =
   | 'initializing'
@@ -287,6 +288,8 @@ interface BaseSession {
   currentActivity?: { tool: string; detail?: string } | undefined;
   /** Product control state; separate from transport `mode` (`pty` | `web`). */
   controlState?: ControlStateSummary | undefined;
+  /** Typed intent/scope envelope for future revoke/expiry enforcement hooks. */
+  sessionEnvelope?: SessionEnvelope | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
   _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
   lastAttentionNotifiedAt?: number | undefined;
@@ -421,6 +424,8 @@ export interface SessionSummary {
   dataQuality?: EventSourceType;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
+  /** Typed intent/scope envelope. Present on new responses; legacy callers should normalize when absent. */
+  sessionEnvelope?: SessionEnvelope | undefined;
 }
 
 export interface TelemetryData {

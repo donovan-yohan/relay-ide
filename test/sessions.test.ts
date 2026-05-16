@@ -22,6 +22,7 @@ import {
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
+import { LOCAL_COMPATIBILITY_SESSION_INTENT } from '../shared/session-envelope.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
@@ -126,10 +127,31 @@ describe('sessions', () => {
     expect(result.pid).toBeTypeOf('number');
     expect(result.createdAt).toBeTruthy();
     expect('pty' in result).toBe(false);
+    expect(result.sessionEnvelope).toMatchObject({
+      sessionId: result.id,
+      globalSessionId: `local:${result.id}`,
+      nodeId: 'local',
+      intent: { kind: LOCAL_COMPATIBILITY_SESSION_INTENT },
+      scope: {
+        kind: 'local-compatibility',
+        nodeId: 'local',
+        cwd: '/tmp',
+        repoPath: '/tmp',
+        worktreePath: null,
+      },
+      revocable: true,
+      peerIdentity: { kind: 'local-user', id: 'local-dev' },
+    });
+    expect(result.sessionEnvelope.expiresAt).toBeNull();
 
     const list = sessions.list();
     expect(list.length).toBe(1);
     expect(list[0]?.id).toBe(result.id);
+    expect(list[0]?.sessionEnvelope).toMatchObject({
+      sessionId: result.id,
+      intent: { kind: LOCAL_COMPATIBILITY_SESSION_INTENT },
+      scope: { kind: 'local-compatibility', cwd: '/tmp' },
+    });
   });
 
   it('does not synthesize repo instance identity without repoPath', () => {
