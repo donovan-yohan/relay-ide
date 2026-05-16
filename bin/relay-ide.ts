@@ -28,6 +28,7 @@ import {
   resolveLocalLogPlan,
   type LocalLogRole,
 } from '../server/local-logs.js';
+import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +59,9 @@ Commands:
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  diag               Collect local diagnostics
+    bundle [--output <dir>] [--lines <n>] [--json]
+                                       Write a timestamped redacted diagnostics directory
   audit              Manage local security audit logs
     verify [--db <path>] [--json]
                                        Verify the hash-chained security audit log
@@ -238,6 +242,36 @@ if (command === 'manifest') {
   console.log(
     JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2)
   );
+  process.exit(0);
+}
+
+if (command === 'diag') {
+  const diagArgs = args.slice(1);
+  const subCommand = diagArgs[0];
+  if (subCommand !== 'bundle') {
+    logger.error(
+      'Usage: relay-ide diag bundle [--output <dir>] [--lines <n>] [--json] [--config <path>]'
+    );
+    process.exit(1);
+  }
+  const outputRoot = getArg('--output');
+  const result = await createDiagnosticsBundle({
+    configPath: resolveConfigPath(),
+    ...(outputRoot ? { outputRoot } : {}),
+    lines: parseLogLineCount(getArg('--lines'), 200),
+  });
+  if (diagArgs.includes('--json')) {
+    console.log(
+      JSON.stringify(
+        { bundleDir: result.bundleDir, manifestPath: result.manifestPath },
+        null,
+        2
+      )
+    );
+  } else {
+    logger.info(`Diagnostics bundle written to ${result.bundleDir}`);
+    logger.info(`Manifest: ${result.manifestPath}`);
+  }
   process.exit(0);
 }
 
