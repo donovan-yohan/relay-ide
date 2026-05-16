@@ -30,6 +30,11 @@ import {
 } from './session-envelope-registry.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import type { RoutedSessionAuditSink } from './hub-node-router.js';
+import {
+  appendPolicyAudit,
+  evaluateHubPolicy,
+  policyDecisionToRelayError,
+} from './hub-policy-evaluator.js';
 
 const logger = createLogger('ws');
 
@@ -60,6 +65,22 @@ function routedSessionStatus(code: string): number {
     return 403;
   }
   return 400;
+}
+
+function routedPolicyStatus(code: string): number {
+  if (code === 'UNAUTHORIZED') return 401;
+  if (code === 'NOT_FOUND') return 404;
+  if (code === 'INTERNAL') return 500;
+  if (
+    code === 'UNSUPPORTED_CAPABILITY' ||
+    code === 'NODE_REVOKED' ||
+    code === 'SESSION_EXPIRED' ||
+    code === 'SESSION_REVOKED' ||
+    code === 'SESSION_MISMATCH'
+  ) {
+    return 403;
+  }
+  return routedSessionStatus(code);
 }
 
 function auditAttachDenial(
@@ -513,6 +534,40 @@ function setupWebSocket(
         socket.write(
           `HTTP/1.1 ${routedSessionStatus(denial.error.code)} ${denial.error.code}\r\n\r\n`
         );
+        socket.destroy();
+        return;
+      }
+      const node = hubNodeRegistry
+        ?.listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action: 'sessions.attach', target: nodeId },
+        scope: {
+          kind: validation.summary.scope.kind,
+          nodeId,
+          cwd: validation.summary.scope.cwd,
+          ...(validation.summary.scope.repoPath
+            ? { repoPath: validation.summary.scope.repoPath }
+            : {}),
+          ...(validation.summary.scope.worktreePath !== undefined
+            ? { worktreePath: validation.summary.scope.worktreePath }
+            : {}),
+        },
+        requiredCapabilities: ['session:attach'],
+        sessionId,
+        expiresAt: validation.summary.expiresAt,
+        ...(validation.summary.revokedAt ? { revokedAt: validation.summary.revokedAt } : {}),
+        ...(validation.summary.correlationId
+          ? { correlationId: validation.summary.correlationId }
+          : {}),
+      });
+      const auditedDecision = appendPolicyAudit(auditSink, policyDecision);
+      if (auditedDecision.decision !== 'allow') {
+        const error = policyDecisionToRelayError(auditedDecision);
+        socket.write(`HTTP/1.1 ${routedPolicyStatus(error.code)} ${error.code}\r\n\r\n`);
         socket.destroy();
         return;
       }

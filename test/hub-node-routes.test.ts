@@ -921,6 +921,38 @@ describe('hub node routes and link', () => {
     });
     expect(heartbeat.status).toBe(200);
 
+    const missingKillRes = await fetch(
+      `${base}/hub/nodes/${exchanged.node.nodeId}/sessions/missing-session`,
+      { method: 'DELETE', headers: { 'x-test-auth': 'yes' } }
+    );
+    expect(missingKillRes.status).toBe(404);
+    expect(await missingKillRes.json()).toMatchObject({
+      error: {
+        code: 'NOT_FOUND',
+        details: { reasonCode: 'SESSION_ENVELOPE_NOT_FOUND' },
+      },
+    });
+    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries[0]).toMatchObject({
+      eventType: 'denial',
+      decision: 'deny',
+      reasonCode: 'SESSION_ENVELOPE_NOT_FOUND',
+      intent: { action: 'sessions.kill', target: exchanged.node.nodeId },
+    });
+
+    const invalidTypeRes = await fetch(`${base}/hub/nodes/${exchanged.node.nodeId}/sessions`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'future-kind', cwd: '/srv/app' }),
+    });
+    expect(invalidTypeRes.status).toBe(400);
+    expect(await invalidTypeRes.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'INVALID_SESSION_TYPE', field: 'type' },
+      },
+    });
+
     for (const invalidLifecycle of [
       { expiresAt: 'not-a-date' },
       { ttlMs: 0 },
@@ -997,8 +1029,14 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({ nodeId: exchanged.node.nodeId, reason: 'operator-test' }),
     });
     expect(revokeRes.status).toBe(200);
-    expect(auditEntries).toHaveLength(1);
-    expect(auditEntries[0]).toMatchObject({
+    expect(auditEntries).toHaveLength(3);
+    expect(auditEntries[1]).toMatchObject({
+      eventType: 'grant',
+      decision: 'allow',
+      reasonCode: 'POLICY_ALLOWED',
+      intent: { action: 'sessions.create', target: exchanged.node.nodeId },
+    });
+    expect(auditEntries[2]).toMatchObject({
       eventType: 'revocation',
       decision: 'revoked',
       reasonCode: 'SESSION_REVOKED',

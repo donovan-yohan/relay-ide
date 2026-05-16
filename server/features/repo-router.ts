@@ -15,7 +15,16 @@ import {
   sendRelayError,
   sendRegistryError,
   sessionFromPayload,
+  type RoutedSessionAuditSink,
 } from '../hub-node-router.js';
+import {
+  evaluateHubPolicy,
+  isSessionCreateType,
+  policyDecisionToRelayError,
+  appendPolicyAudit,
+  sessionCreateCapability,
+  type SessionCreateType,
+} from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
 import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
 import {
@@ -32,7 +41,18 @@ export interface RepoFeatureRouterOptions {
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
+}
+
+function sessionCreateTypeFromBody(body: Record<string, unknown>): SessionCreateType | RelayNodeError {
+  const rawSessionType = body['type'];
+  if (rawSessionType === undefined) return 'agent';
+  if (isSessionCreateType(rawSessionType)) return rawSessionType;
+  return relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
+    reasonCode: 'INVALID_SESSION_TYPE',
+    field: 'type',
+  });
 }
 
 // Repo-feature HTTP surface. These routes used to live in
@@ -152,6 +172,11 @@ export function createRepoFeatureRouter(
         );
         return;
       }
+      const sessionType = sessionCreateTypeFromBody(body);
+      if (typeof sessionType !== 'string') {
+        sendRelayError(res, sessionType);
+        return;
+      }
       try {
         const reports = [...repoInventoryFeature.listInventoryReports()];
         if (options.collectLocalRepoInventory) {
@@ -160,6 +185,31 @@ export function createRepoFeatureRouter(
         const target = findColdReopenTarget(reports, nodeId, body);
         if ('code' in target) {
           sendRelayError(res, target as RelayNodeError);
+          return;
+        }
+
+        const policyDecision = evaluateHubPolicy({
+          peer: { kind: 'hub' },
+          node,
+          nodeId,
+          intent: { action: 'sessions.create', target: nodeId },
+          scope: {
+            kind: target.worktree ? 'worktree' : 'repo',
+            nodeId,
+            cwd: target.worktree?.localPath ?? target.repo.localPath,
+            repoPath: target.repo.localPath,
+            ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
+          },
+          requiredCapabilities: [sessionCreateCapability(sessionType)],
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+          params: body,
+          now: reopenNow,
+        });
+        const auditedDecision = appendPolicyAudit(options.auditSink, policyDecision, {
+          params: body,
+        });
+        if (auditedDecision.decision !== 'allow') {
+          sendRelayError(res, policyDecisionToRelayError(auditedDecision));
           return;
         }
 

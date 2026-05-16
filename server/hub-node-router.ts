@@ -50,6 +50,14 @@ import {
   type InMemorySessionEnvelopeRegistry,
   type ScopedSessionSummary,
 } from './session-envelope-registry.js';
+import {
+  appendPolicyAudit,
+  evaluateHubPolicy,
+  isSessionCreateType,
+  policyDecisionToRelayError,
+  revokePolicyAffectedSessions,
+  sessionCreateCapability,
+} from './hub-policy-evaluator.js';
 
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
@@ -118,6 +126,7 @@ export function errorStatus(error: RelayNodeError): number {
     case 'NODE_UNSUPPORTED':
     case 'INVALID_REQUEST':
       return 400;
+    case 'UNSUPPORTED_CAPABILITY':
     case 'NODE_REVOKED':
     case 'SESSION_EXPIRED':
     case 'SESSION_REVOKED':
@@ -615,6 +624,56 @@ function appendRoutedSessionAudit(
   }
 }
 
+function auditLifecycleDenial(
+  sink: RoutedSessionAuditSink | undefined,
+  validation: Exclude<ReturnType<InMemorySessionEnvelopeRegistry['validate']>, { ok: true }>,
+  nodeId: string,
+  sessionId: string,
+  action: string,
+  params?: unknown
+): void {
+  const reasonCode =
+    typeof validation.error.details?.['reasonCode'] === 'string'
+      ? validation.error.details['reasonCode']
+      : validation.error.code;
+  appendRoutedSessionAudit(sink, {
+    eventType:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expiry'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revocation'
+          : 'denial',
+    decision:
+      validation.error.code === 'SESSION_EXPIRED'
+        ? 'expired'
+        : validation.error.code === 'SESSION_REVOKED'
+          ? 'revoked'
+          : 'deny',
+    reasonCode,
+    peer: auditPeerForSummary(validation.summary),
+    node: { nodeId },
+    sessionId,
+    intent: { action, target: nodeId },
+    material: {
+      scope: validation.summary?.scope ?? null,
+      params: params ?? validation.error.details ?? null,
+    },
+    ...(validation.summary?.correlationId ? { correlationId: validation.summary.correlationId } : {}),
+  });
+}
+
+function sendPolicyDecision(
+  sink: RoutedSessionAuditSink | undefined,
+  res: Response,
+  decision: ReturnType<typeof evaluateHubPolicy>,
+  params?: unknown
+): boolean {
+  const audited = appendPolicyAudit(sink, decision, { params });
+  if (audited.decision === 'allow') return false;
+  sendRelayError(res, policyDecisionToRelayError(audited));
+  return true;
+}
+
 function auditLifecycleRevocation(
   sink: RoutedSessionAuditSink | undefined,
   summary: ScopedSessionSummary,
@@ -640,6 +699,27 @@ function revokedReasonFromBody(body: Record<string, unknown>): string | undefine
 
 function includeFlag(value: unknown): boolean {
   return value === '1' || value === 'true' || value === true;
+}
+
+function sessionCreatePolicyScope(
+  nodeId: string,
+  body: Record<string, unknown>
+): Parameters<typeof evaluateHubPolicy>[0]['scope'] {
+  const repoPath = stringField(body, 'repoPath');
+  const worktreePath = stringField(body, 'worktreePath');
+  const cwd = stringField(body, 'cwd') ?? worktreePath ?? repoPath ?? '/';
+  const kind = worktreePath ? 'worktree' : repoPath ? 'repo' : 'node-cwd';
+  return {
+    kind,
+    nodeId,
+    cwd,
+    ...(repoPath ? { repoPath } : {}),
+    ...(body['worktreePath'] === null
+      ? { worktreePath: null }
+      : worktreePath
+        ? { worktreePath }
+        : {}),
+  };
 }
 
 function revokeAddressError(
@@ -1068,6 +1148,30 @@ export function createHubNodeRouter(
       );
       return;
     }
+    const rawSessionType = body['type'];
+    if (rawSessionType !== undefined && !isSessionCreateType(rawSessionType)) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
+          reasonCode: 'INVALID_SESSION_TYPE',
+          field: 'type',
+        })
+      );
+      return;
+    }
+    const sessionType = rawSessionType === 'agent' ? 'agent' : 'terminal';
+    const policyDecision = evaluateHubPolicy({
+      peer: { kind: 'hub' },
+      node,
+      nodeId,
+      intent: { action: 'sessions.create', target: nodeId },
+      scope: sessionCreatePolicyScope(nodeId, body),
+      requiredCapabilities: [sessionCreateCapability(sessionType)],
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      params: body,
+      now: createNow,
+    });
+    if (sendPolicyDecision(options.auditSink, res, policyDecision, body)) return;
 
     try {
       const payload = await options.nodeLinks.request(
@@ -1142,6 +1246,50 @@ export function createHubNodeRouter(
         return;
       }
 
+      const lifecycle = envelopes.validate({ nodeId, sessionId, now: now() });
+      if (!lifecycle.ok) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId,
+          sessionId,
+          'sessions.kill',
+          { method: 'DELETE' }
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+      const scoped = lifecycle.summary;
+      const killPolicyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action: 'sessions.kill', target: nodeId },
+        scope: scoped
+          ? {
+              kind: scoped.scope.kind,
+              nodeId,
+              cwd: scoped.scope.cwd,
+              ...(scoped.scope.repoPath ? { repoPath: scoped.scope.repoPath } : {}),
+              ...(scoped.scope.worktreePath !== undefined
+                ? { worktreePath: scoped.scope.worktreePath }
+                : {}),
+            }
+          : { kind: 'node', nodeId, cwd: '/' },
+        requiredCapabilities: ['session:attach'],
+        sessionId,
+        ...(scoped?.correlationId ? { correlationId: scoped.correlationId } : {}),
+        ...(scoped?.expiresAt !== undefined ? { expiresAt: scoped.expiresAt } : {}),
+        ...(scoped?.revokedAt ? { revokedAt: scoped.revokedAt } : {}),
+        params: { method: 'DELETE' },
+        now: now(),
+      });
+      if (sendPolicyDecision(options.auditSink, res, killPolicyDecision, { method: 'DELETE' })) return;
+
       try {
         await options.nodeLinks.request(nodeId, 'sessions.kill', {
           id: sessionId,
@@ -1171,7 +1319,25 @@ export function createHubNodeRouter(
       return;
     }
     try {
-      res.json({ node: registry.revokeNode(nodeId) });
+      const node = registry.revokeNode(nodeId);
+      const revokedSessions = revokePolicyAffectedSessions({
+        envelopes,
+        nodeId,
+        node,
+        reason: 'node-revoked',
+        now: now(),
+        auditSink: options.auditSink,
+      });
+      res.json({
+        node,
+        events: revokedSessions.map((session) => ({
+          type: 'SESSION_PERMISSION_REVOKED',
+          nodeId,
+          sessionId: session.sessionId,
+          globalSessionId: session.globalSessionId,
+          reasonCode: 'POLICY_NODE_REVOKED',
+        })),
+      });
     } catch (error) {
       sendRegistryError(registry, res, error);
     }
