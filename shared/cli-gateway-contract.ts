@@ -24,6 +24,8 @@ export type RelayCliGatewayErrorCode =
   | 'NOT_FOUND'
   | 'FORBIDDEN'
   | 'SESSION_CONFLICT'
+  | 'CONFIRMATION_REQUIRED'
+  | 'NODE_OFFLINE'
   | 'CONTROL_STATE_STALE'
   | 'INTERVENTION_ACK_REQUIRED'
   | 'INTERVENTION_ACK_STALE'
@@ -146,18 +148,6 @@ const sessionPeerIdentitySchema: RelayJsonSchema = {
         displayName: stringSchema,
       },
       required: ['kind', 'nodeId'],
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        kind: { const: 'agent' },
-        id: stringSchema,
-        adapter: stringSchema,
-        displayName: stringSchema,
-        credentialId: stringSchema,
-      },
-      required: ['kind', 'id', 'adapter'],
     },
     {
       type: 'object',
@@ -310,6 +300,8 @@ const gatewayErrorSchema: RelayJsonSchema = {
             'NOT_FOUND',
             'FORBIDDEN',
             'SESSION_CONFLICT',
+            'CONFIRMATION_REQUIRED',
+            'NODE_OFFLINE',
             'CONTROL_STATE_STALE',
             'INTERVENTION_ACK_REQUIRED',
             'INTERVENTION_ACK_STALE',
@@ -446,6 +438,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'UNSUPPORTED',
       'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
+      'NODE_OFFLINE',
       'UPSTREAM_ERROR',
     ],
   },

@@ -36,8 +36,14 @@ import {
   gatewayOk,
   type RelayCliGatewayCommand,
   type RelayCliGatewayEnvelope,
-  type RelayCliGatewayErrorCode,
 } from '../shared/cli-gateway-contract.js';
+import {
+  gatewayErrorMessage,
+  gatewayErrorRetryable,
+  normalizeGatewayErrorCode,
+  sanitizedGatewayErrorDetails,
+  validateAndSanitizeGatewayCreateInput,
+} from '../shared/cli-gateway-runtime.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -294,31 +300,6 @@ function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown>
   return input;
 }
 
-function normalizeGatewayErrorCode(
-  status: number,
-  upstream: Record<string, unknown> | undefined
-): RelayCliGatewayErrorCode {
-  const error = upstream?.['error'];
-  const body =
-    typeof error === 'object' && error !== null
-      ? (error as Record<string, unknown>)
-      : upstream;
-  const reason = typeof body?.['reasonCode'] === 'string' ? body['reasonCode'] : undefined;
-  const code = typeof body?.['code'] === 'string' ? body['code'] : undefined;
-  if (reason === 'HAND_BACK_ACK_REQUIRED') return 'INTERVENTION_ACK_REQUIRED';
-  if (reason === 'STALE_INTERVENTION_ACK') return 'INTERVENTION_ACK_STALE';
-  if (reason === 'CONTROL_STATE_STALE') return 'CONTROL_STATE_STALE';
-  if (reason === 'CONTROL_STATE_UNKNOWN') return 'CONTROL_STATE_UNKNOWN';
-  if (code === 'UNAUTHORIZED' || status === 401) return 'UNAUTHORIZED';
-  if (code === 'NODE_UNSUPPORTED') return 'UNSUPPORTED';
-  if (code === 'NOT_FOUND' || status === 404) return 'NOT_FOUND';
-  if (code === 'FORBIDDEN' || status === 403) return 'FORBIDDEN';
-  if (status === 400 || code === 'INVALID_REQUEST') return 'INVALID_ARGUMENT';
-  if (status === 409 || code === 'SESSION_CONFLICT') return 'SESSION_CONFLICT';
-  if (status === 503) return 'SERVER_UNAVAILABLE';
-  return 'UPSTREAM_ERROR';
-}
-
 async function gatewayHttpJson(input: {
   commandName: RelayCliGatewayCommand;
   pathName: string;
@@ -342,6 +323,7 @@ async function gatewayHttpJson(input: {
   const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
+    'x-relay-cli-gateway': 'v1',
   };
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.capabilities?.length) {
@@ -379,42 +361,18 @@ async function gatewayHttpJson(input: {
       typeof body === 'object' && body !== null
         ? (body as Record<string, unknown>)
         : undefined;
-    const upstreamError = upstream?.['error'];
-    const errorRecord =
-      typeof upstreamError === 'object' && upstreamError !== null
-        ? (upstreamError as Record<string, unknown>)
-        : upstream;
-    const message =
-      typeof errorRecord?.['message'] === 'string'
-        ? errorRecord['message']
-        : `Relay hub returned HTTP ${res.status}`;
+    const message = gatewayErrorMessage(res.status, upstream);
     printGatewayEnvelope(
       gatewayError(input.commandName, {
         code: normalizeGatewayErrorCode(res.status, upstream),
         message,
-        retryable: res.status === 503 || res.status >= 500,
-        details: { status: res.status, upstream: body },
+        retryable: gatewayErrorRetryable(res.status, upstream),
+        details: sanitizedGatewayErrorDetails(res.status, upstream),
       }),
       1
     );
   }
   return body;
-}
-
-function printGatewayUnsupported(
-  commandName: RelayCliGatewayCommand,
-  message: string,
-  details: Record<string, unknown>
-): never {
-  printGatewayEnvelope(
-    gatewayError(commandName, {
-      code: 'UNSUPPORTED',
-      message,
-      retryable: false,
-      details,
-    }),
-    1
-  );
 }
 
 function requireGatewaySessionId(
@@ -480,31 +438,14 @@ async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk('sessions.get', session), 0);
 }
 
-function validateGatewayCreateInput(input: Record<string, unknown>, nodeId: string | undefined): void {
-  if (input['controlMode'] === 'agent-driven' && !nodeId) {
-    printGatewayUnsupported(
-      'sessions.create',
-      'local /sessions creation does not yet policy-gate initial controlMode=agent-driven; use routed node creation or omit controlMode',
-      { field: 'controlMode', supported: ['human-driven', undefined] }
-    );
-  }
-  if (!nodeId && typeof input['cwd'] === 'string') {
-    printGatewayUnsupported(
-      'sessions.create',
-      'local /sessions creation derives cwd from repoPath/worktreePath; explicit cwd requires routed node creation',
-      { field: 'cwd', supported: ['repoPath', 'worktreePath'] }
-    );
-  }
-  if (!nodeId && typeof input['repoPath'] !== 'string') {
-    gatewayInvalid('sessions.create', 'local session creation requires repoPath');
-  }
-}
-
 async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
   const input = parseGatewayCreateInput(sessionArgs);
-  const nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : undefined;
-  validateGatewayCreateInput(input, nodeId);
-  const body = { ...input };
+  const validated = validateAndSanitizeGatewayCreateInput(input);
+  if (validated.ok === false) {
+    printGatewayEnvelope(gatewayError('sessions.create', validated.error), 1);
+  }
+  const nodeId = validated.nodeId;
+  const body = { ...validated.input };
   delete body['nodeId'];
   const session = await gatewayHttpJson({
     commandName: 'sessions.create',
@@ -514,10 +455,10 @@ async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
     method: 'POST',
     body,
     capabilities: [
-      input['type'] === 'terminal'
+      validated.sessionType === 'terminal'
         ? 'session:create:terminal'
         : 'session:create:agent',
-      ...(input['controlMode'] === 'agent-driven' ? ['tab:mode:set-agent'] : []),
+      ...(validated.input['controlMode'] === 'agent-driven' ? ['tab:mode:set-agent'] : []),
     ],
   });
   printGatewayEnvelope(gatewayOk('sessions.create', session), 0);

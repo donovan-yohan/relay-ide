@@ -88,6 +88,7 @@ export interface RoutedSessionAuditSink {
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  cliGatewayAuth?: express.RequestHandler;
   scopedSessionAuth?: express.RequestHandler;
   repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
@@ -1086,6 +1087,7 @@ export function createHubNodeRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
+  const cliGatewayAuth = options.cliGatewayAuth ?? requireAuth;
   const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
   const confirmations = options.confirmations ?? createConfirmationChallengeStore();
@@ -1299,7 +1301,7 @@ export function createHubNodeRouter(
     }
   });
 
-  router.get('/nodes', requireAuth, (_req, res) => {
+  router.get('/nodes', cliGatewayAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
   });
 
@@ -1497,7 +1499,7 @@ export function createHubNodeRouter(
     res.json({ session: summary });
   });
 
-  router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
+  router.post('/hub/nodes/:nodeId/sessions', cliGatewayAuth, async (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {
       sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));

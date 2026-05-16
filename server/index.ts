@@ -1162,6 +1162,21 @@ async function main(): Promise<void> {
     next();
   };
 
+  const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
+    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+      next();
+      return;
+    }
+    if (
+      req.header('x-relay-cli-gateway') === 'v1' &&
+      validateScopedToken(bearerScopedToken(req))
+    ) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: 'Unauthorized' });
+  };
+
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
     if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
       next();
@@ -1185,6 +1200,7 @@ async function main(): Promise<void> {
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
       requireAuth,
+      cliGatewayAuth: requireCliGatewayAuth,
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
@@ -1933,7 +1949,7 @@ async function main(): Promise<void> {
   // GET /sessions — enrich with live branch from git (rate-limited to avoid spawning git on every poll)
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
-  app.get('/sessions', requireAuth, async (_req, res) => {
+  app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
       Promise.resolve(localRelayNode.sessions.list()),
       aggregateRemoteSessions({
@@ -2523,7 +2539,7 @@ async function main(): Promise<void> {
   });
 
   // POST /sessions — unified endpoint for agent and terminal sessions
-  app.post('/sessions', requireAuth, async (req, res) => {
+  app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
     const {
       repoPath,
       worktreePath,

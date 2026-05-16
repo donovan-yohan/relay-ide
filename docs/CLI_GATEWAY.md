@@ -86,7 +86,7 @@ Missing tokens and rejected hub responses are converted to the gateway error env
 - `sessionEnvelope` with #426 intent/scope/lifecycle/peer identity
 - #470/#493 control summary fields such as `controlMode`, `activeActors`, `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness`, and `controlReason`
 
-External brain identity is represented by `sessionEnvelope.peerIdentity.kind: "agent"` with `id`, `adapter`, and optional display/credential metadata. Adapters must not add impersonation flags such as `--act-as-node` or `--brain`; the hub credential/session registry owns peer identity.
+External brain/agent peer identity is reserved for hub-owned credential/session registry work. v1 currently documents the envelope field but only round-trips `local-user`, `relay-node`, and `unknown` peer identities; routed creates are represented as `relay-node` peers. Adapters must not add impersonation flags such as `--act-as-node` or `--brain`.
 
 ## Session create support and fail-closed behavior
 
@@ -95,13 +95,16 @@ External brain identity is represented by `sessionEnvelope.peerIdentity.kind: "a
 Supported now:
 
 - local repo/worktree-backed session creation using `repoPath` and optional `worktreePath`
-- routed node creation with `nodeId`, `cwd`, `type`, `mode`, `agent`, lifecycle fields, and optional `sessionEnvelope` where the existing backend supports them
+- routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
 - `controlMode=agent-driven` only for routed node creation, where hub/node policy and hand-back state can be checked
 
 Fail-closed examples:
 
 - local create without `repoPath` returns `INVALID_ARGUMENT`
+- unknown `sessions create` input fields return `INVALID_ARGUMENT` before any backend forwarding
 - local create with explicit `cwd` returns `UNSUPPORTED` because the local endpoint derives `cwd` from `repoPath`/`worktreePath`
+- local scoped/lifecycle/peer fields (`sessionEnvelope`, `ttlSeconds`, `expiresAt`, `confirmationToken`) return `UNSUPPORTED` until implemented locally
+- `sessionEnvelope.peerIdentity.kind: "agent"` returns `UNSUPPORTED` until hub-owned agent peer identity is implemented
 - local `controlMode=agent-driven` returns `UNSUPPORTED` until local create has the same policy gate as routed creation
 - malformed JSON returns `INVALID_JSON`
 - unknown flags/commands return `INVALID_ARGUMENT`

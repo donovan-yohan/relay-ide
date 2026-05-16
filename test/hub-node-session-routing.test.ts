@@ -246,15 +246,28 @@ describe('hub-routed node session create and attach', () => {
     const sessionEnvelopes = createSessionEnvelopeRegistry();
     const app = express();
     app.use(express.json());
+    const requireAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') next();
+      else res.status(401).json({ error: 'Unauthorized' });
+    };
+    const cliGatewayAuth: express.RequestHandler = (req, res, next) => {
+      if (
+        req.header('x-test-auth') === 'yes' ||
+        (req.header('x-relay-cli-gateway') === 'v1' &&
+          req.header('authorization') === 'Bearer scoped-test-token')
+      ) {
+        next();
+        return;
+      }
+      res.status(401).json({ error: 'Unauthorized' });
+    };
     app.use(
       createHubNodeRouter({
         registry,
         nodeLinks,
         sessionEnvelopes,
-        requireAuth: (req, res, next) => {
-          if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
-        },
+        requireAuth,
+        cliGatewayAuth,
       })
     );
     const server = http.createServer(app);
@@ -280,6 +293,32 @@ describe('hub-routed node session create and attach', () => {
       registry,
     };
   }
+
+  it('lets v1 CLI gateway scoped bearer auth read nodes and create routed sessions without cookies', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+    const cliHeaders = {
+      authorization: 'Bearer scoped-test-token',
+      'x-relay-cli-gateway': 'v1',
+    };
+
+    const nodesRes = await fetch(`${base}/nodes`, { headers: cliHeaders });
+    expect(nodesRes.status).toBe(200);
+    expect(await nodesRes.json()).toMatchObject({ nodes: [{ nodeId }] });
+
+    const createRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { ...cliHeaders, 'content-type': 'application/json' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
+    expect(createRes.status).toBe(404);
+    expect(await createRes.json()).toMatchObject({
+      error: { code: 'NODE_OFFLINE', retryable: true },
+    });
+  });
 
   it('returns NODE_OFFLINE when a selected node has no live reverse link', async () => {
     const { base } = await startHub();
