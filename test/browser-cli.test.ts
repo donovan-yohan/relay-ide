@@ -29,13 +29,47 @@ async function close(server: http.Server): Promise<void> {
   });
 }
 
-async function execNode(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    execFile('node', args, { encoding: 'utf-8', env, timeout: 10_000 }, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
+async function execNode(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    execFile(
+      'node',
+      args,
+      { encoding: 'utf-8', env, timeout: 10_000 },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      }
+    );
   });
+}
+
+async function execNodeFailure(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ status: number | string | undefined; stdout: string; stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    execFile(
+      'node',
+      args,
+      { encoding: 'utf-8', env, timeout: 10_000 },
+      (error, stdout, stderr) => {
+        if (!error) {
+          reject(new Error(`expected command to fail: node ${args.join(' ')}`));
+          return;
+        }
+        const execError = error as { code?: number | string };
+        resolve({ status: execError.code, stdout, stderr });
+      }
+    );
+  });
+}
+
+function parseEnvelope<T = unknown>(stdout: string): {
+  ok: boolean;
+  command: string;
+  data: T;
+} {
+  return JSON.parse(stdout) as { ok: boolean; command: string; data: T };
 }
 
 beforeEach(() => {
@@ -210,4 +244,321 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
       }),
     ])
   );
+});
+
+test('v1 files.read preserves its command envelope when session lookup fails', async () => {
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    captured.push({
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+    });
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/sessions/missing') {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'session not found' } }));
+      return;
+    }
+    res.statusCode = 500;
+    res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'unexpected route' } }));
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    const failure = await execNodeFailure(
+      [
+        'dist/bin/relay-ide.js',
+        'v1',
+        'files',
+        'read',
+        '--session-id',
+        'missing',
+        '--path',
+        'hello.txt',
+        '--json',
+      ],
+      env
+    );
+    const envelope = JSON.parse(failure.stdout) as {
+      ok: boolean;
+      command: string;
+      error: { code: string; message: string; details?: Record<string, unknown> };
+    };
+    expect(failure.status).not.toBe(0);
+    expect(envelope).toMatchObject({
+      ok: false,
+      command: 'files.read',
+      error: { code: 'NOT_FOUND' },
+    });
+    expect(envelope.error.message).toContain('session not found');
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual(['GET /sessions/missing']);
+});
+
+
+test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches without kill', async () => {
+  const captured: CapturedGatewayRequest[] = [];
+  const session = {
+    id: 'remote-session-1',
+    globalSessionId: 'node-a:remote-session-1',
+    nodeId: 'node-a',
+    type: 'terminal',
+    agent: 'shell',
+    mode: 'pty',
+    cwd: '/fixture',
+    displayName: 'fixture terminal',
+    status: 'active',
+  };
+  const server = http.createServer((req, res) => {
+    const entry: CapturedGatewayRequest = {
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+    };
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      if (rawBody) entry.body = JSON.parse(rawBody) as Record<string, unknown>;
+      captured.push(entry);
+      res.setHeader('content-type', 'application/json');
+
+      if (req.method === 'GET' && req.url === '/nodes') {
+        res.end(
+          JSON.stringify({
+            nodes: [
+              {
+                nodeId: 'node-a',
+                status: 'online',
+                availability: 'available',
+                cwd: '/fixture',
+              },
+            ],
+          })
+        );
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/hub/nodes/node-a/sessions') {
+        res.statusCode = 201;
+        res.end(JSON.stringify(session));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/sessions/remote-session-1') {
+        res.end(JSON.stringify(session));
+        return;
+      }
+      if (
+        req.method === 'POST' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1/files/list'
+      ) {
+        res.end(
+          JSON.stringify({
+            operation: 'list',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture',
+            entries: [
+              {
+                path: '/fixture/hello.txt',
+                name: 'hello.txt',
+                type: 'file',
+                size: 12,
+                mtimeMs: 1,
+                mode: 0o100644,
+              },
+            ],
+            truncated: false,
+            maxEntries: entry.body?.['maxEntries'] ?? 100,
+          })
+        );
+        return;
+      }
+      if (
+        req.method === 'POST' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1/files/stat'
+      ) {
+        res.end(
+          JSON.stringify({
+            operation: 'stat',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture/hello.txt',
+            name: 'hello.txt',
+            type: 'file',
+            size: 14,
+            mtimeMs: 1,
+            mode: 0o100644,
+          })
+        );
+        return;
+      }
+      if (
+        req.method === 'POST' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1/files/read'
+      ) {
+        res.end(
+          JSON.stringify({
+            operation: 'read',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture/hello.txt',
+            encoding: 'utf8',
+            content: 'hello gateway\n',
+            bytesRead: 14,
+            truncatedBytes: false,
+            truncatedLines: false,
+            maxBytes: entry.body?.['maxBytes'] ?? 32768,
+            maxLines: entry.body?.['maxLines'],
+          })
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    const nodes = parseEnvelope<{ nodes: unknown[] }>(
+      await execNode(['dist/bin/relay-ide.js', 'v1', 'nodes', 'list', '--json'], env)
+    );
+    expect(nodes).toMatchObject({ ok: true, command: 'nodes.list' });
+    expect(nodes.data.nodes).toHaveLength(1);
+
+    const created = parseEnvelope<typeof session>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'sessions',
+          'create',
+          '--input-json',
+          '{"nodeId":"node-a","cwd":"/fixture","type":"terminal"}',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(created).toMatchObject({ ok: true, command: 'sessions.create' });
+    expect(created.data).toMatchObject({ id: 'remote-session-1', nodeId: 'node-a' });
+
+    const attached = parseEnvelope<{ attach: { streaming: boolean }; session: typeof session }>(
+      await execNode(
+        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'attach', '--id', 'remote-session-1', '--json'],
+        env
+      )
+    );
+    expect(attached.data.attach.streaming).toBe(false);
+
+    const listed = parseEnvelope<{ entries: Array<{ name: string }> }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'list',
+          '--session-id',
+          'remote-session-1',
+          '--path',
+          '.',
+          '--max-entries',
+          '5',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(listed.data.entries[0]?.name).toBe('hello.txt');
+
+    const stat = parseEnvelope<{ name: string; type: string; size: number }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'stat',
+          '--session-id',
+          'remote-session-1',
+          '--path',
+          'hello.txt',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(stat).toMatchObject({ ok: true, command: 'files.stat' });
+    expect(stat.data).toMatchObject({ name: 'hello.txt', type: 'file', size: 14 });
+
+    const read = parseEnvelope<{ content: string; maxBytes: number; maxLines: number }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'read',
+          '--session-id',
+          'remote-session-1',
+          '--path',
+          'hello.txt',
+          '--max-bytes',
+          '64',
+          '--max-lines',
+          '2',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(read.data).toMatchObject({ content: 'hello gateway\n', maxBytes: 64, maxLines: 2 });
+
+    const detached = parseEnvelope<{ detached: boolean; killed: boolean; session: typeof session }>(
+      await execNode(
+        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'detach', '--id', 'remote-session-1', '--json'],
+        env
+      )
+    );
+    expect(detached.data).toMatchObject({ detached: true, killed: false });
+
+    const stillThere = parseEnvelope<typeof session>(
+      await execNode(
+        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'get', '--id', 'remote-session-1', '--json'],
+        env
+      )
+    );
+    expect(stillThere.data).toMatchObject({ id: 'remote-session-1', status: 'active' });
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual(
+    expect.arrayContaining([
+      'GET /nodes',
+      'POST /hub/nodes/node-a/sessions',
+      'POST /hub/nodes/node-a/sessions/remote-session-1/files/list',
+      'POST /hub/nodes/node-a/sessions/remote-session-1/files/stat',
+      'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
+      'GET /sessions/remote-session-1',
+    ])
+  );
+  expect(captured.some((entry) => entry.method === 'DELETE')).toBe(false);
+  expect(
+    captured.find((entry) => entry.url?.endsWith('/files/read'))?.body
+  ).toMatchObject({ path: 'hello.txt', maxBytes: 64, maxLines: 2 });
 });

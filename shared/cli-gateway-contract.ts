@@ -12,8 +12,13 @@ export type RelayCliGatewayCommand =
   | 'sessions.list'
   | 'sessions.get'
   | 'sessions.create'
+  | 'sessions.attach'
+  | 'sessions.detach'
   | 'sessions.interventions'
-  | 'sessions.handBack';
+  | 'sessions.handBack'
+  | 'files.list'
+  | 'files.stat'
+  | 'files.read';
 
 export type RelayCliGatewayErrorCode =
   | 'UNAUTHORIZED'
@@ -242,6 +247,150 @@ const sessionDescriptorSchema: RelayJsonSchema = {
   required: ['id', 'type', 'agent', 'mode', 'cwd', 'displayName', 'status'],
 };
 
+
+const fileRpcStatSchema: RelayJsonSchema = {
+  title: 'FileRpcStat',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    path: stringSchema,
+    name: stringSchema,
+    type: { type: 'string', enum: ['file', 'directory', 'symlink', 'other'] },
+    size: { type: 'number', minimum: 0 },
+    mtimeMs: { type: 'number' },
+    mode: { type: 'number' },
+  },
+  required: ['path', 'name', 'type', 'size', 'mtimeMs', 'mode'],
+};
+
+const fileRpcBaseInputSchema: RelayJsonSchema = {
+  title: 'FileRpcGatewayInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: stringSchema,
+    sessionId: stringSchema,
+    id: stringSchema,
+    path: stringSchema,
+    cwd: stringSchema,
+    confirmationToken: stringSchema,
+  },
+  required: ['sessionId'],
+};
+
+const fileRpcListInputSchema: RelayJsonSchema = {
+  ...fileRpcBaseInputSchema,
+  title: 'FileRpcListGatewayInput',
+  properties: {
+    ...(fileRpcBaseInputSchema.properties ?? {}),
+    maxEntries: { type: 'number', minimum: 1, maximum: 500 },
+  },
+};
+
+const fileRpcStatInputSchema: RelayJsonSchema = {
+  ...fileRpcBaseInputSchema,
+  title: 'FileRpcStatGatewayInput',
+};
+
+const fileRpcReadInputSchema: RelayJsonSchema = {
+  ...fileRpcBaseInputSchema,
+  title: 'FileRpcReadGatewayInput',
+  properties: {
+    ...(fileRpcBaseInputSchema.properties ?? {}),
+    maxBytes: { type: 'number', minimum: 1, maximum: 65536 },
+    maxLines: { type: 'number', minimum: 1, maximum: 2000 },
+  },
+};
+
+const fileRpcListOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation: { const: 'list' },
+    root: stringSchema,
+    cwd: stringSchema,
+    path: stringSchema,
+    entries: { type: 'array', items: fileRpcStatSchema },
+    truncated: booleanSchema,
+    maxEntries: { type: 'number' },
+  },
+  required: ['operation', 'root', 'cwd', 'path', 'entries', 'truncated', 'maxEntries'],
+};
+
+const fileRpcStatOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation: { const: 'stat' },
+    root: stringSchema,
+    cwd: stringSchema,
+    path: stringSchema,
+    stat: fileRpcStatSchema,
+  },
+  required: ['operation', 'root', 'cwd', 'path', 'stat'],
+};
+
+const fileRpcReadOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation: { const: 'read' },
+    root: stringSchema,
+    cwd: stringSchema,
+    path: stringSchema,
+    encoding: { const: 'utf8' },
+    content: stringSchema,
+    bytesRead: { type: 'number' },
+    truncatedBytes: booleanSchema,
+    truncatedLines: booleanSchema,
+    maxBytes: { type: 'number' },
+    maxLines: { type: 'number' },
+  },
+  required: [
+    'operation',
+    'root',
+    'cwd',
+    'path',
+    'encoding',
+    'content',
+    'bytesRead',
+    'truncatedBytes',
+    'truncatedLines',
+    'maxBytes',
+  ],
+};
+
+const attachOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    session: sessionDescriptorSchema,
+    attach: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        streaming: booleanSchema,
+        mode: { const: 'descriptor' },
+        message: stringSchema,
+      },
+      required: ['streaming', 'mode', 'message'],
+    },
+  },
+  required: ['session', 'attach'],
+};
+
+const detachOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    detached: booleanSchema,
+    killed: booleanSchema,
+    session: sessionDescriptorSchema,
+    message: stringSchema,
+  },
+  required: ['detached', 'killed', 'session', 'message'],
+};
+
 const createSessionInputSchema: RelayJsonSchema = {
   title: 'CreateSessionInput',
   type: 'object',
@@ -452,6 +601,56 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     ],
   },
   {
+    name: 'sessions.attach',
+    cli: ['relay-ide', 'v1', 'sessions', 'attach', '--id', '<session-id>', '--json'],
+    summary:
+      'Resolve a local or routed session descriptor for adapter attach without starting a streaming adapter runtime.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:attach'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema },
+      required: ['id'],
+    },
+    outputSchema: okOutput('SessionsAttachOutput', attachOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.detach',
+    cli: ['relay-ide', 'v1', 'sessions', 'detach', '--id', '<session-id>', '--json'],
+    summary:
+      'Detach adapter control from a session without killing the underlying remote process.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:attach'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema },
+      required: ['id'],
+    },
+    outputSchema: okOutput('SessionsDetachOutput', detachOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
     name: 'sessions.interventions',
     cli: ['relay-ide', 'v1', 'sessions', 'interventions', '--id', '<session-id>', '--json'],
     summary: 'Read bounded, redacted intervention metadata for a local session.',
@@ -518,6 +717,99 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INTERVENTION_ACK_STALE',
       'CONTROL_STATE_UNKNOWN',
       'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'files.list',
+    cli: [
+      'relay-ide',
+      'v1',
+      'files',
+      'list',
+      '--session-id',
+      '<session-id>',
+      '--path',
+      '<path>',
+      '--json',
+    ],
+    summary: 'List a directory through scoped read-only File RPC.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:list'],
+    inputSchema: fileRpcListInputSchema,
+    outputSchema: okOutput('FilesListOutput', fileRpcListOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'files.stat',
+    cli: [
+      'relay-ide',
+      'v1',
+      'files',
+      'stat',
+      '--session-id',
+      '<session-id>',
+      '--path',
+      '<path>',
+      '--json',
+    ],
+    summary: 'Stat a path through scoped read-only File RPC.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:read'],
+    inputSchema: fileRpcStatInputSchema,
+    outputSchema: okOutput('FilesStatOutput', fileRpcStatOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'files.read',
+    cli: [
+      'relay-ide',
+      'v1',
+      'files',
+      'read',
+      '--session-id',
+      '<session-id>',
+      '--path',
+      '<path>',
+      '--json',
+    ],
+    summary: 'Read UTF-8 file content through scoped read-only File RPC with byte/line caps.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:read'],
+    inputSchema: fileRpcReadInputSchema,
+    outputSchema: okOutput('FilesReadOutput', fileRpcReadOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
       'UPSTREAM_ERROR',
     ],
   },
