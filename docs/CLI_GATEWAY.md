@@ -143,7 +143,7 @@ Caps are contract-level and conservative:
 - `--idle-timeout-ms N` detaches after N ms without output.
 - If stdout backpressure is observed, the CLI closes the stream instead of dropping frames; the final envelope reports `backpressureClosed: true`.
 
-`relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`.
+`relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. Exactly one of `--data`, `--data-base64`, or `--stdin` is required; mixed or missing input sources fail with `INVALID_ARGUMENT` before Relay opens the temporary attach socket. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`.
 
 Example:
 

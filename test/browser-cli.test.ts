@@ -564,6 +564,39 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
   ).toMatchObject({ path: 'hello.txt', maxBytes: 64, maxLines: 2 });
 });
 
+test('v1 gateway sessions input rejects missing and mixed input sources before attach', async () => {
+  const env = {
+    ...process.env,
+    RELAY_IDE_PORT: '19999',
+    RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+    PATH: process.env.PATH,
+  };
+
+  for (const args of [
+    ['dist/bin/relay-ide.js', 'v1', 'sessions', 'input', '--id', 'remote-session-1', '--json'],
+    [
+      'dist/bin/relay-ide.js',
+      'v1',
+      'sessions',
+      'input',
+      '--id',
+      'remote-session-1',
+      '--data',
+      'marker-input\n',
+      '--stdin',
+      '--json',
+    ],
+  ]) {
+    const failure = await execNodeFailure(args, env);
+    expect(failure.status).toBe(1);
+    const envelope = JSON.parse(failure.stdout) as { ok: boolean; error: { code: string; message: string } };
+    expect(envelope).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(envelope.error.message).toContain(
+      'exactly one of --data, --data-base64, or --stdin is required'
+    );
+  }
+});
+
 test('v1 gateway session stream and input use routed PTY websocket', async () => {
   const session = {
     id: 'remote-session-1',

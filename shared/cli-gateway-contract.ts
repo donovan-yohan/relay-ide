@@ -431,20 +431,44 @@ const sessionStreamEventSchema: RelayJsonSchema = {
   required: ['event', 'sessionId'],
 };
 
+const sessionInputCommonProperties = {
+  id: stringSchema,
+  waitFor: stringSchema,
+  timeoutMs: { type: 'number', minimum: 1, maximum: 300000 },
+  maxBytes: { type: 'number', minimum: 1, maximum: 1048576 },
+} satisfies Record<string, RelayJsonSchema>;
+
 const sessionInputInputSchema: RelayJsonSchema = {
   title: 'SessionsInputInput',
   type: 'object',
   additionalProperties: false,
   properties: {
-    id: stringSchema,
+    ...sessionInputCommonProperties,
     data: stringSchema,
     dataBase64: stringSchema,
     stdin: booleanSchema,
-    waitFor: stringSchema,
-    timeoutMs: { type: 'number', minimum: 1, maximum: 300000 },
-    maxBytes: { type: 'number', minimum: 1, maximum: 1048576 },
   },
   required: ['id'],
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { ...sessionInputCommonProperties, data: stringSchema },
+      required: ['id', 'data'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { ...sessionInputCommonProperties, dataBase64: stringSchema },
+      required: ['id', 'dataBase64'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { ...sessionInputCommonProperties, stdin: { const: true } },
+      required: ['id', 'stdin'],
+    },
+  ],
 };
 
 const sessionInputOutputSchema: RelayJsonSchema = {

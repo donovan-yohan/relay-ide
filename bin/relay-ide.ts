@@ -881,13 +881,14 @@ async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
 function gatewayInputData(sessionArgs: string[]): string {
   const data = gatewayArg(sessionArgs, '--data');
   const dataBase64 = gatewayArg(sessionArgs, '--data-base64');
-  if (data !== undefined && dataBase64 !== undefined) {
-    gatewayInvalid('sessions.input', 'use only one of --data or --data-base64');
+  const stdin = sessionArgs.includes('--stdin');
+  const sourceCount = [data !== undefined, dataBase64 !== undefined, stdin].filter(Boolean).length;
+  if (sourceCount !== 1) {
+    gatewayInvalid('sessions.input', 'exactly one of --data, --data-base64, or --stdin is required');
   }
   if (data !== undefined) return data;
   if (dataBase64 !== undefined) return Buffer.from(dataBase64, 'base64').toString('utf8');
-  if (sessionArgs.includes('--stdin')) return fs.readFileSync(0, 'utf8');
-  gatewayInvalid('sessions.input', 'one of --data, --data-base64, or --stdin is required');
+  return fs.readFileSync(0, 'utf8');
 }
 
 async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
