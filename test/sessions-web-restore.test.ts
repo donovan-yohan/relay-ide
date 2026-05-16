@@ -153,6 +153,18 @@ describe('web session restore failure recovery', () => {
           adapterType: 'claude',
           needsBranchRename: true,
           additionalDirs: [path.join(configDir, 'extra')],
+          controlState: {
+            controlMode: 'co-driven',
+            activeActors: [
+              { kind: 'human', id: 'operator' },
+              { kind: 'agent', id: 'claude' },
+            ],
+            activeWorker: { kind: 'agent', id: 'claude' },
+            lastInterventionAt: '2026-01-02T03:04:05.000Z',
+            lastInterventionBy: { kind: 'human', id: 'operator' },
+            lastInterventionEventId: 'evt-restored-web',
+            controlFreshness: 'fresh',
+          },
         },
         createdAt: Date.now() - 10_000,
         lastActivity: Date.now() - 5_000,
@@ -179,6 +191,11 @@ describe('web session restore failure recovery', () => {
     expect(session.additionalDirs).toEqual([path.join(configDir, 'extra')]);
     expect(session.status).toBe('disconnected');
     expect(session.agentState).toBe('error');
+    expect(session.controlState).toMatchObject({
+      controlMode: 'co-driven',
+      controlFreshness: 'fresh',
+      lastInterventionEventId: 'evt-restored-web',
+    });
     expect(session.agentSessionV2.live.status).toBe('disconnected');
     expect(session.agentSessionV2.live.error).toBe('resume failed');
     expect(
@@ -249,7 +266,15 @@ describe('web session restore failure recovery', () => {
     expect(summary).not.toHaveProperty('branchName');
     expect(summary).not.toHaveProperty('repoInstanceId');
     expect(summary).not.toHaveProperty('worktreeInstanceId');
-    expect(summary).toMatchObject({ mode: 'web', cwd: configDir });
+    expect(summary).toMatchObject({
+      mode: 'web',
+      cwd: configDir,
+      controlMode: 'human-driven',
+      controlFreshness: 'unknown',
+      lastInterventionAt: null,
+      lastInterventionBy: null,
+      lastInterventionEventId: null,
+    });
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
   });
 });

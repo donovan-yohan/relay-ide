@@ -118,6 +118,19 @@ Once authenticated, the WebSocket carries multiplexed JSON envelopes:
 - On revocation, the hub sends a `control.error` with code `NODE_REVOKED` and closes the WebSocket with code `4003`.
 - Pending RPCs and active PTY streams tied to a closed link are cleaned up immediately.
 
+### Session control-state summaries (#490)
+
+Routed and local session summaries carry a product `controlMode` contract that is deliberately separate from session transport `mode`:
+
+- `mode`: execution transport (`pty` or `web`).
+- `controlMode`: current product ownership of the Tab (`agent-driven`, `human-driven`, or `co-driven`).
+
+The summary fields are flattened on `SessionSummary`: `activeActors`, optional `activeWorker`, `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness` (`fresh`, `stale`, `unknown`), and optional `controlReason`. This lets the hub/client render current control state from session list/create responses without fetching intervention history. Legacy or backfilled sessions normalize to `human-driven` with `unknown` freshness.
+
+Reserved node-link event envelope names for later intervention work are `tab.mode-changed` and `tab.intervention` on the `events` channel. Their identity shape uses `nodeId`, node-local `sessionId`, optional `globalSessionId`, and `cwd`; repo/worktree fields (`repoPath`, `worktreePath`, `repoName`, `branchName`) are optional decoration so local repo tabs, remote node tabs, and free/non-git tabs remain representable.
+
+#427 boundary: #490 only defines and serializes state. It does not add capability gates, trust tiers, two-token confirmation, security policy evaluation, intervention persistence, or hash-chained audit logging.
+
 ### Heartbeat and Offline Detection
 
 - Default heartbeat is implicit: any `control.hello` or `control.heartbeat` refreshes the node's `lastSeenAt`.
@@ -226,6 +239,8 @@ The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) wit
 | Pair token lifetime                  | Default 10 minutes; single-use; consumed on exchange              |
 | Registry file                        | Written with `0600` mode; atomic write via temp+rename            |
 | Revocation                           | Immediate; active links are killed; no grace period               |
+
+This table is the implemented security boundary. Control-state fields from #490 are renderable state only; they are not policy decisions and do not imply capability gates, trust tiers, two-token confirmation, security policy evaluation, or hash-chained audit logging.
 
 ## Node Manifest and Capabilities
 

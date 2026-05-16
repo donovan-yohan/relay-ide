@@ -30,6 +30,11 @@ import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import {
+  createLegacyControlStateSummary,
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 const MAX_SCROLLBACK = 256 * 1024; // 256KB max
@@ -394,6 +399,7 @@ export type CreatePtyParams = {
   hookToken?: string | undefined;
   hooksActive?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
+  controlState?: ControlStateSummary | undefined;
   frameworks?: Record<string, Partial<AgentFramework>> | undefined;
   claudeFullscreen?: boolean | undefined;
   /** Environment variable names to inject with allocated ports (per-worktree) */
@@ -788,7 +794,12 @@ function buildSessionObject(
     yolo: paramYolo,
     claudeArgs: paramClaudeArgs,
     continuePolicy,
+    controlState,
   } = params;
+
+  const normalizedControlState = normalizeControlStateSummary(
+    controlState ?? createLegacyControlStateSummary()
+  );
 
   return {
     id,
@@ -827,6 +838,7 @@ function buildSessionObject(
     claudeArgs: paramClaudeArgs ?? [],
     continuePolicy: continuePolicy ?? 'never',
     dataQuality: hooksActive ? effectiveEventSource : 'parser',
+    controlState: normalizedControlState,
     _lastHookTime: undefined,
   };
 }
@@ -1198,6 +1210,7 @@ export function createPtySession(
     status: 'active' as SessionStatus,
     needsBranchRename: false,
     agentState: 'initializing',
+    ...session.controlState,
   };
 
   return { session, result };
