@@ -51,6 +51,9 @@ Commands:
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  audit              Manage local security audit logs
+    verify [--db <path>] [--json]
+                                       Verify the hash-chained security audit log
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
     logs                               Print platform log commands
@@ -219,6 +222,36 @@ if (command === 'manifest') {
     JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2)
   );
   process.exit(0);
+}
+
+if (command === 'audit') {
+  const auditArgs = args.slice(1);
+  const subCommand = auditArgs[0];
+  if (subCommand !== 'verify') {
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  const dbFlagIndex = auditArgs.indexOf('--db');
+  const dbPath =
+    dbFlagIndex !== -1 && dbFlagIndex + 1 < auditArgs.length
+      ? path.resolve(auditArgs[dbFlagIndex + 1]!)
+      : path.join(path.dirname(resolveConfigPath()), 'security-audit.db');
+  const { verifySecurityAuditLog } = await import(
+    '../server/security-audit-log.js'
+  );
+  const result = verifySecurityAuditLog(dbPath);
+  if (auditArgs.includes('--json')) {
+    console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+  } else if (result.ok) {
+    logger.info(
+      `Security audit log OK: ${result.entriesVerified} entries verified at ${dbPath}`
+    );
+  } else {
+    logger.error(
+      `Security audit log FAILED at ${dbPath}: ${JSON.stringify(result.break)}`
+    );
+  }
+  process.exit(result.ok ? 0 : 1);
 }
 
 function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
