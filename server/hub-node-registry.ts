@@ -143,7 +143,15 @@ const PRIVILEGED_NODE_WARNING =
 export type CredentialAuthResult =
   | { ok: true; node: HubNodeSummary; credentialId: string; rotationId?: string }
   | { ok: false; error: RelayNodeError };
-type NodeRevokedListener = (nodeId: string) => void;
+
+export interface HubNodeStatusEvent {
+  nodeId: string;
+  status: HubNodeStatus;
+  lastSeenAt: string;
+  manifest?: NodeManifest;
+}
+
+type NodeStatusListener = (event: HubNodeStatusEvent) => void;
 
 class HubNodeRegistryError extends Error {
   readonly relayNodeError: RelayNodeError;
@@ -534,7 +542,8 @@ export class HubNodeRegistry {
   private heartbeatPersistDirty = false;
   private heartbeatPersistError: unknown = null;
   private readonly auditSink: { append(input: SecurityAuditEntryInput): unknown } | undefined;
-  private readonly nodeRevokedListeners = new Set<NodeRevokedListener>();
+  private readonly nodeStatusListeners = new Set<NodeStatusListener>();
+  private readonly lastNotifiedStatuses = new Map<string, HubNodeStatus>();
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
@@ -549,6 +558,7 @@ export class HubNodeRegistry {
     this.state = readRegistryFile(options.storagePath);
     const needsAclMigration = registryNeedsAclMigration(this.state);
     for (const node of this.state.nodes) ensureNodeAcl(node);
+    this.refreshLastNotifiedStatuses();
     if (needsAclMigration) writeRegistryFile(this.storagePath, this.state);
   }
 
@@ -556,11 +566,17 @@ export class HubNodeRegistry {
     this.now = now;
   }
 
-  onNodeRevoked(listener: NodeRevokedListener): () => void {
-    this.nodeRevokedListeners.add(listener);
+  onNodeStatus(listener: NodeStatusListener): () => void {
+    this.nodeStatusListeners.add(listener);
     return () => {
-      this.nodeRevokedListeners.delete(listener);
+      this.nodeStatusListeners.delete(listener);
     };
+  }
+
+  onNodeRevoked(listener: (nodeId: string) => void): () => void {
+    return this.onNodeStatus((event) => {
+      if (event.status === 'revoked') listener(event.nodeId);
+    });
   }
 
   createPairToken(options: {
@@ -650,6 +666,7 @@ export class HubNodeRegistry {
     pairToken.usedAt = timestamp;
     this.state.nodes.push(node);
     this.persist();
+    this.notifyNodeStatusIfChanged(node, 'online', input.manifest);
     return {
       credential: {
         protocol: RELAY_NODE_LINK_PROTOCOL,
@@ -726,6 +743,7 @@ export class HubNodeRegistry {
     if (input.credentialId) {
       this.proveCredentialRotation(node, input.credentialId, now);
     }
+    const previousStatus = statusForNode(node, this.now(), this.staleMs, this.offlineMs);
     node.lastSeenAt = now;
     node.protocolVersion = input.protocolVersion;
     if (input.manifest) {
@@ -741,6 +759,7 @@ export class HubNodeRegistry {
       node.repoInventory = input.repoInventory;
     }
     this.scheduleHeartbeatPersist();
+    this.notifyNodeStatusIfChanged(node, 'online', input.manifest, previousStatus);
     return publicNode(node, 'online');
   }
 
@@ -912,6 +931,17 @@ export class HubNodeRegistry {
     );
   }
 
+  refreshNodeStatuses(): HubNodeStatusEvent[] {
+    const now = this.now();
+    const events: HubNodeStatusEvent[] = [];
+    for (const node of this.state.nodes) {
+      const status = statusForNode(node, now, this.staleMs, this.offlineMs);
+      const event = this.notifyNodeStatusIfChanged(node, status);
+      if (event) events.push(event);
+    }
+    return events;
+  }
+
   listInventoryPayloads(
     options: { includeRevoked?: boolean } = {}
   ): InventoryPayloadRecord[] {
@@ -934,7 +964,7 @@ export class HubNodeRegistry {
     if (!alreadyRevoked) {
       node.revokedAt = this.now().toISOString();
       this.persist();
-      this.notifyNodeRevoked(nodeId);
+      this.notifyNodeStatusIfChanged(node, 'revoked');
     }
     return publicNode(node, 'revoked');
   }
@@ -955,17 +985,42 @@ export class HubNodeRegistry {
     };
   }
 
-  private notifyNodeRevoked(nodeId: string): void {
-    this.nodeRevokedListeners.forEach((listener) => {
+  private refreshLastNotifiedStatuses(): void {
+    const now = this.now();
+    this.lastNotifiedStatuses.clear();
+    for (const node of this.state.nodes) {
+      this.lastNotifiedStatuses.set(
+        node.nodeId,
+        statusForNode(node, now, this.staleMs, this.offlineMs)
+      );
+    }
+  }
+
+  private notifyNodeStatusIfChanged(
+    node: StoredNodeRecord,
+    status: HubNodeStatus,
+    manifest?: NodeManifest,
+    previousStatus: HubNodeStatus | undefined = this.lastNotifiedStatuses.get(node.nodeId)
+  ): HubNodeStatusEvent | null {
+    if (previousStatus === status) return null;
+    this.lastNotifiedStatuses.set(node.nodeId, status);
+    const event: HubNodeStatusEvent = {
+      nodeId: node.nodeId,
+      status,
+      lastSeenAt: node.lastSeenAt,
+      ...(manifest ? { manifest } : {}),
+    };
+    this.nodeStatusListeners.forEach((listener) => {
       try {
-        listener(nodeId);
+        listener(event);
       } catch {
         logger.warn(
-          'hub node revoke listener failed; continuing revoke notifications for node %s',
-          nodeId
+          'hub node status listener failed; continuing status notifications for node %s',
+          node.nodeId
         );
       }
     });
+    return event;
   }
 
   private persist(): void {

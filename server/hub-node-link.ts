@@ -442,8 +442,8 @@ export function handleHubNodeLink(
 ): void {
   const authenticatedNodeId = authenticated.node.nodeId;
   nodeLinks?.registerNodeLink(authenticatedNodeId, ws);
-  const unsubscribeRevoked = registry.onNodeRevoked((nodeId) => {
-    if (nodeId !== authenticatedNodeId) return;
+  const unsubscribeStatus = registry.onNodeStatus((event) => {
+    if (event.nodeId !== authenticatedNodeId || event.status !== 'revoked') return;
     sendJson(
       ws,
       errorEnvelope(
@@ -458,7 +458,7 @@ export function handleHubNodeLink(
     );
     ws.close(4003, 'node revoked');
   });
-  const cleanup = () => unsubscribeRevoked();
+  const cleanup = () => unsubscribeStatus();
   ws.on('close', cleanup);
   ws.on('error', cleanup);
 
