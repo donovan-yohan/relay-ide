@@ -66,6 +66,7 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'sessions.renew',
       'sessions.attach',
       'sessions.detach',
       'sessions.stream',
@@ -234,6 +235,7 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'sessions.renew',
       'sessions.attach',
       'sessions.detach',
       'sessions.stream',
@@ -289,7 +291,29 @@ describe('CLI gateway contract', () => {
   });
 
 
-  it('advertises descriptor-only attach/detach, session I/O, and read-only file RPC commands', () => {
+  it('advertises descriptor-only attach/detach, session renewal, session I/O, and read-only file RPC commands', () => {
+    const renew = commandSpec('sessions.renew');
+    expect(renew).toMatchObject({
+      capabilityHints: ['session:attach'],
+      transport: 'hub-http',
+    });
+    expect(renew.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        ttlSeconds: { minimum: 1 },
+        expiresAt: { format: 'date-time' },
+      },
+    });
+    expect(renew.errorCodes).toEqual(
+      expect.arrayContaining([
+        'SESSION_EXPIRED',
+        'SESSION_REVOKED',
+        'SESSION_MISMATCH',
+        'SESSION_NON_RENEWABLE',
+      ])
+    );
+
     expect(commandSpec('sessions.attach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
