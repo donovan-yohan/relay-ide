@@ -10,7 +10,10 @@ import type {
   RepoInventoryReport,
   RepoInventoryWorktreeInstance,
 } from '../shared/repo-inventory.js';
-import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import {
+  classifySecurityAuditWriteFailure,
+  type SecurityAuditEntryInput,
+} from '../shared/security-audit.js';
 import {
   HubNodeRegistryError,
   type HubNodeRegistry,
@@ -306,7 +309,7 @@ function confirmationTokenFromRequest(req: Request, body: Record<string, unknown
   return headerToken?.trim() || undefined;
 }
 
-function paramsWithoutConfirmation(body: Record<string, unknown>): Record<string, unknown> {
+export function paramsWithoutConfirmation(body: Record<string, unknown>): Record<string, unknown> {
   const cleaned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
     if (key === 'confirmationToken' || key === 'confirmationChallengeId') continue;
@@ -316,17 +319,18 @@ function paramsWithoutConfirmation(body: Record<string, unknown>): Record<string
 }
 
 function authSessionHash(req: Request): string {
-  const explicit = req.header('x-auth-session')?.trim();
-  if (explicit) return hashAuthSessionIdentity(`header:${explicit}`);
   const cookieToken = typeof req.cookies?.token === 'string' ? req.cookies.token : undefined;
   if (cookieToken) return hashAuthSessionIdentity(`cookie:${cookieToken}`);
   const authHeader = req.header('authorization')?.trim();
   if (authHeader) return hashAuthSessionIdentity(`authorization:${authHeader}`);
+  const explicit = req.header('x-auth-session')?.trim();
+  if (explicit && req.header('x-test-auth')) return hashAuthSessionIdentity(`test-header:${explicit}`);
   if (req.header('x-test-auth')) return hashAuthSessionIdentity(`test:${req.header('x-test-auth')}`);
   return hashAuthSessionIdentity(`remote:${req.ip ?? 'unknown'}`);
 }
 
 function authSessionLabel(req: Request): string | undefined {
+  if (!req.header('x-test-auth')) return undefined;
   return req.header('x-auth-session')?.trim() || undefined;
 }
 
@@ -344,9 +348,32 @@ function relayErrorForConfirmationFailure(failure: ConfirmationFailure): RelayNo
 
 function appendConfirmationAudit(
   sink: RoutedSessionAuditSink | undefined,
-  entry: SecurityAuditEntryInput | undefined
-): void {
-  if (entry) appendRoutedSessionAudit(sink, entry);
+  entry: SecurityAuditEntryInput | undefined,
+  decision: HubPolicyDecision
+): RelayNodeError | null {
+  if (!entry || !sink) return null;
+  try {
+    sink.append(entry);
+    return null;
+  } catch {
+    const classification = classifySecurityAuditWriteFailure({
+      ...(decision.trustTier ? { trustTier: decision.trustTier } : {}),
+      requiredBits: decision.requiredBits,
+      decision: entry.decision,
+    });
+    if (classification.mode === 'fail-closed') {
+      return policyDecisionToRelayError({
+        ...decision,
+        decision: 'deny',
+        reasonCode: 'POLICY_AUDIT_WRITE_FAILED_CLOSED',
+        message: classification.visibleMessage,
+        grantedBits: [],
+        deniedBits: decision.requiredBits,
+        challengeBits: [],
+      });
+    }
+    return null;
+  }
 }
 
 function confirmationCreateInput(
@@ -401,15 +428,28 @@ function resolveConfirmationForDecision(input: {
       canonicalParams,
       now: input.now,
     });
-    appendConfirmationAudit(input.auditSink, redeemed.audit);
+    const auditError = appendConfirmationAudit(
+      input.auditSink,
+      redeemed.audit,
+      redeemed.challenge?.decision ?? input.decision
+    );
+    if (auditError) return { ok: false, error: auditError };
     if (redeemed.ok === true) return { ok: true };
     return { ok: false, error: relayErrorForConfirmationFailure(redeemed) };
   }
+  const decisionWithCanonicalParams = { ...input.decision, params: canonicalParams };
+  const auditedDecision = appendPolicyAudit(
+    input.auditSink,
+    decisionWithCanonicalParams,
+    { params: canonicalParams }
+  );
+  if (auditedDecision.decision !== 'challenge') {
+    return { ok: false, error: policyDecisionToRelayError(auditedDecision) };
+  }
   const challenge = input.confirmations.createChallenge(
-    { ...input.decision, params: canonicalParams },
+    decisionWithCanonicalParams,
     confirmationCreateInput(input.req, requesterAuthSessionHash, canonicalParams)
   );
-  appendPolicyAudit(input.auditSink, { ...input.decision, params: canonicalParams }, { params: canonicalParams });
   return {
     ok: false,
     error: relayError('CONFIRMATION_REQUIRED', challenge.message, false, {
@@ -802,7 +842,7 @@ function auditLifecycleDenial(
   });
 }
 
-function sendPolicyDecision(
+export function sendPolicyDecision(
   sink: RoutedSessionAuditSink | undefined,
   res: Response,
   decision: ReturnType<typeof evaluateHubPolicy>,
@@ -1036,7 +1076,13 @@ export function createHubNodeRouter(
     const result = confirmations.approveChallenge(
       confirmationApprovalInput(req, challengeId, decision, now())
     );
-    appendConfirmationAudit(options.auditSink, result.audit);
+    const auditError = result.challenge
+      ? appendConfirmationAudit(options.auditSink, result.audit, result.challenge.decision)
+      : null;
+    if (auditError) {
+      sendRelayError(res, auditError);
+      return;
+    }
     if (result.ok === false) {
       sendRelayError(res, relayErrorForConfirmationFailure(result));
       return;

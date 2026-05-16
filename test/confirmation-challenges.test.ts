@@ -181,7 +181,7 @@ describe('confirmation challenge store', () => {
 
     const denied = store.createChallenge(challengeDecision(), {
       requesterAuthSessionHash: 'requester-session',
-      canonicalParams: challengeDecision().params,
+      canonicalParams: challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>,
     });
     expect(
       store.approveChallenge({
@@ -194,7 +194,7 @@ describe('confirmation challenge store', () => {
 
     const revoked = store.createChallenge(challengeDecision(), {
       requesterAuthSessionHash: 'requester-session',
-      canonicalParams: challengeDecision().params,
+      canonicalParams: challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>,
     });
     expect(
       store.approveChallenge({
@@ -207,7 +207,7 @@ describe('confirmation challenge store', () => {
 
     const capped = store.createChallenge(challengeDecision(), {
       requesterAuthSessionHash: 'requester-session',
-      canonicalParams: challengeDecision().params,
+      canonicalParams: challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>,
     });
     const approved = store.approveChallenge({
       challengeId: capped.challengeId,
@@ -229,4 +229,40 @@ describe('confirmation challenge store', () => {
     }
     expect(store.getChallenge(capped.challengeId)?.status).toBe('invalidated');
   });
+
+  it('expires stale list entries and bounds stored terminal challenges', () => {
+    let current = NOW;
+    let nextId = 0;
+    const store = createConfirmationChallengeStore({
+      now: () => current,
+      randomId: () => `challenge-${++nextId}`,
+      randomToken: () => `raw-token-${nextId}`,
+      challengeTtlMs: 1_000,
+      tokenTtlMs: 1_000,
+      maxChallenges: 2,
+    });
+    const params = challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>;
+    const first = store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    current = new Date(NOW.getTime() + 1_001);
+    expect(store.listChallenges()).toEqual([
+      expect.objectContaining({ challengeId: first.challengeId, status: 'expired' }),
+    ]);
+
+    current = new Date(NOW.getTime() + 2_100);
+    store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    const visible = store.listChallenges();
+    expect(visible).toHaveLength(2);
+    expect(visible.map((challenge) => challenge.challengeId)).not.toContain(first.challengeId);
+  });
 });
+

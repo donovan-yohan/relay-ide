@@ -6,6 +6,7 @@ import type { HubPolicyDecision } from './hub-policy-evaluator.js';
 export const DEFAULT_CONFIRMATION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const DEFAULT_CONFIRMATION_TOKEN_TTL_MS = 60 * 1000;
 export const DEFAULT_CONFIRMATION_MAX_FAILED_REDEMPTIONS = 3;
+export const DEFAULT_CONFIRMATION_MAX_CHALLENGES = 1000;
 
 export type ConfirmationDecision = 'approve' | 'deny' | 'deny_revoke';
 export type ConfirmationChallengeStatus =
@@ -123,6 +124,7 @@ export interface ConfirmationChallengeStoreOptions {
   challengeTtlMs?: number;
   tokenTtlMs?: number;
   maxFailedRedemptions?: number;
+  maxChallenges?: number;
 }
 
 export interface ConfirmationChallengeStore {
@@ -160,9 +162,41 @@ export function createConfirmationChallengeStore(
   const tokenTtlMs = options.tokenTtlMs ?? DEFAULT_CONFIRMATION_TOKEN_TTL_MS;
   const maxFailedRedemptions =
     options.maxFailedRedemptions ?? DEFAULT_CONFIRMATION_MAX_FAILED_REDEMPTIONS;
+  const maxChallenges = Math.max(1, options.maxChallenges ?? DEFAULT_CONFIRMATION_MAX_CHALLENGES);
   const now = options.now ?? (() => new Date());
   const randomId = options.randomId ?? randomChallengeId;
   const randomToken = options.randomToken ?? randomConfirmationToken;
+
+  function terminalRetentionMs(): number {
+    return Math.max(challengeTtlMs, tokenTtlMs, 1);
+  }
+
+  function isTerminal(status: ConfirmationChallengeStatus): boolean {
+    return status !== 'pending' && status !== 'approved';
+  }
+
+  function pruneExpired(current: Date): void {
+    for (const challenge of Array.from(challenges.values())) expireIfNeeded(challenge, current, true);
+  }
+
+  function pruneStoredChallenges(current: Date): void {
+    pruneExpired(current);
+    const cutoff = current.getTime() - terminalRetentionMs();
+    for (const [challengeId, challenge] of Array.from(challenges.entries())) {
+      const finishedAt = Date.parse(
+        challenge.redeemedAt ?? challenge.approvedAt ?? challenge.expiresAt
+      );
+      if (isTerminal(challenge.status) && Number.isFinite(finishedAt) && finishedAt < cutoff) {
+        challenges.delete(challengeId);
+      }
+    }
+    while (challenges.size > maxChallenges) {
+      const terminal = Array.from(challenges.values()).find((challenge) => isTerminal(challenge.status));
+      const oldest = terminal ?? challenges.values().next().value;
+      if (!oldest) break;
+      challenges.delete(oldest.challengeId);
+    }
+  }
 
   function createChallenge(
     decision: HubPolicyDecision,
@@ -173,6 +207,7 @@ export function createConfirmationChallengeStore(
     }
   ): ConfirmationChallenge {
     const createdAt = now();
+    pruneStoredChallenges(createdAt);
     const challenge: ConfirmationChallenge = {
       challengeId: randomId(),
       status: 'pending',
@@ -320,8 +355,14 @@ export function createConfirmationChallengeStore(
     createChallenge,
     approveChallenge,
     redeemToken,
-    getChallenge: (challengeId) => challenges.get(challengeId),
-    listChallenges: () => Array.from(challenges.values()).map(publicChallenge),
+    getChallenge: (challengeId) => {
+      pruneStoredChallenges(now());
+      return challenges.get(challengeId);
+    },
+    listChallenges: () => {
+      pruneStoredChallenges(now());
+      return Array.from(challenges.values()).map(publicChallenge);
+    },
   };
 }
 
