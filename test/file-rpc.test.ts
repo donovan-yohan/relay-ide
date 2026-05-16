@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -124,6 +125,63 @@ describe('read-only File RPC foundation', () => {
       truncatedBytes: true,
       truncatedLines: true,
     });
+  });
+
+  it('continues reading after short file-handle reads before reporting truncation', async () => {
+    const root = fixtureRoot();
+    const file = path.join(root, 'short-read.txt');
+    fs.writeFileSync(file, 'abcdefghijklmnopqrstuvwxyz');
+    const probeHandle = await fsPromises.open(file, 'r');
+    const handlePrototype = Object.getPrototypeOf(probeHandle) as {
+      read: (buffer: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>;
+    };
+    const realRead = handlePrototype.read;
+    await probeHandle.close();
+    handlePrototype.read = function shortRead(
+      this: unknown,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number
+    ) {
+      return realRead.call(this, buffer, offset, Math.min(length, 5), position);
+    };
+
+    try {
+      const completeRead = await executeLocalFileRpc('read', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: file,
+        maxBytes: 30,
+      });
+
+      expect(completeRead).toMatchObject({
+        operation: 'read',
+        content: 'abcdefghijklmnopqrstuvwxyz',
+        bytesRead: 26,
+        truncatedBytes: false,
+        truncatedLines: false,
+      });
+
+      const truncatedRead = await executeLocalFileRpc('read', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: file,
+        maxBytes: 10,
+      });
+
+      expect(truncatedRead).toMatchObject({
+        operation: 'read',
+        content: 'abcdefghij',
+        bytesRead: 10,
+        truncatedBytes: true,
+        truncatedLines: false,
+      });
+    } finally {
+      handlePrototype.read = realRead;
+    }
   });
 
   it('denies realpath symlink escapes from the scoped root', async () => {

@@ -418,10 +418,15 @@ async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse
   const handle = await fs.open(request.path, 'r');
   try {
     const buffer = Buffer.alloc(Math.min(maxBytes + 1, FILE_RPC_MAX_READ_BYTES + 1));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const read = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
     const visibleBytes = Math.min(bytesRead, maxBytes);
     let content = buffer.subarray(0, visibleBytes).toString('utf8');
-    const truncatedBytes = bytesRead > maxBytes || stats.size > maxBytes;
+    const truncatedBytes = bytesRead > maxBytes;
     let truncatedLines = false;
     if (maxLines !== undefined) {
       const lines = content.split('\n');
