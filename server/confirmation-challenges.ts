@@ -59,6 +59,7 @@ export interface ConfirmationChallenge {
   approvedAt?: string;
   tokenExpiresAt?: string;
   tokenHash?: string;
+  requesterToken?: string;
   redeemedAt?: string;
   failedRedemptions: number;
   maxFailedRedemptions: number;
@@ -117,6 +118,16 @@ export type ConfirmationRedemptionResult =
     }
   | ConfirmationFailure;
 
+export type ConfirmationRequesterTokenResult =
+  | {
+      ok: true;
+      reasonCode: 'CONFIRMATION_APPROVED';
+      message: string;
+      challenge: ConfirmationChallenge;
+      confirmationToken: string;
+    }
+  | ConfirmationFailure;
+
 export interface ConfirmationChallengeStoreOptions {
   now?: () => Date;
   randomId?: () => string;
@@ -150,6 +161,17 @@ export interface ConfirmationChallengeStore {
     canonicalParams: CanonicalConfirmationParams;
     now?: Date;
   }): ConfirmationRedemptionResult;
+  getRequesterToken(input: {
+    challengeId: string;
+    requesterAuthSessionHash: string;
+    now?: Date;
+  }): ConfirmationRequesterTokenResult;
+  invalidateChallenge(input: {
+    challengeId: string;
+    reasonCode: ConfirmationReasonCode;
+    message: string;
+    now?: Date;
+  }): ConfirmationChallenge | undefined;
   getChallenge(challengeId: string): ConfirmationChallenge | undefined;
   listChallenges(): ConfirmationChallengePublicView[];
 }
@@ -293,6 +315,7 @@ export function createConfirmationChallengeStore(
     challenge.approvedAt = current.toISOString();
     challenge.tokenExpiresAt = new Date(current.getTime() + tokenTtlMs).toISOString();
     challenge.tokenHash = hashToken(token);
+    challenge.requesterToken = token;
     return {
       ok: true,
       reasonCode: 'CONFIRMATION_APPROVED',
@@ -355,6 +378,7 @@ export function createConfirmationChallengeStore(
     challenge.redeemedAt = current.toISOString();
     challenge.reasonCode = 'CONFIRMATION_APPROVED';
     challenge.message = 'confirmation token redeemed';
+    delete challenge.requesterToken;
     return {
       ok: true,
       reasonCode: 'CONFIRMATION_APPROVED',
@@ -368,10 +392,62 @@ export function createConfirmationChallengeStore(
     };
   }
 
+  function getRequesterToken(input: {
+    challengeId: string;
+    requesterAuthSessionHash: string;
+    now?: Date;
+  }): ConfirmationRequesterTokenResult {
+    const current = input.now ?? now();
+    const challenge = challenges.get(input.challengeId);
+    if (!challenge) return failure('CONFIRMATION_NOT_FOUND', 'confirmation challenge not found');
+    const expiryFailure = expireIfNeeded(challenge, current, true);
+    if (expiryFailure) return expiryFailure;
+    if (challenge.requesterAuthSessionHash !== input.requesterAuthSessionHash) {
+      return failure('CONFIRMATION_REQUESTER_MISMATCH', 'confirmation token can only be picked up by the original requesting auth session', challenge);
+    }
+    if (challenge.status === 'redeemed') {
+      return failure('CONFIRMATION_ALREADY_USED', 'confirmation token was already used', challenge);
+    }
+    if (challenge.status !== 'approved') {
+      return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
+    }
+    if (!challenge.requesterToken) {
+      return failure('CONFIRMATION_TOKEN_INVALID', 'confirmation token is no longer available', challenge);
+    }
+    return {
+      ok: true,
+      reasonCode: 'CONFIRMATION_APPROVED',
+      message: 'confirmation token available to original requester',
+      challenge,
+      confirmationToken: challenge.requesterToken,
+    };
+  }
+
+  function invalidateChallenge(input: {
+    challengeId: string;
+    reasonCode: ConfirmationReasonCode;
+    message: string;
+    now?: Date;
+  }): ConfirmationChallenge | undefined {
+    const current = input.now ?? now();
+    const challenge = challenges.get(input.challengeId);
+    if (!challenge) return undefined;
+    challenge.status = 'invalidated';
+    challenge.reasonCode = input.reasonCode;
+    challenge.message = input.message;
+    challenge.approvedAt = current.toISOString();
+    delete challenge.tokenExpiresAt;
+    delete challenge.tokenHash;
+    delete challenge.requesterToken;
+    return challenge;
+  }
+
   return {
     createChallenge,
     approveChallenge,
     redeemToken,
+    getRequesterToken,
+    invalidateChallenge,
     getChallenge: (challengeId) => {
       pruneStoredChallenges(now());
       return challenges.get(challengeId);
@@ -518,6 +594,7 @@ function expireIfNeeded(
   if (!challengeExpired && !tokenExpired) return null;
   challenge.status = 'expired';
   challenge.reasonCode = 'CONFIRMATION_EXPIRED';
+  delete challenge.requesterToken;
   challenge.message = tokenExpired
     ? 'confirmation token expired'
     : 'confirmation challenge expired';

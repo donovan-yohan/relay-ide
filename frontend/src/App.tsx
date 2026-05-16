@@ -65,6 +65,7 @@ import UpdateToast from './components/UpdateToast.js';
 import { showImageToast } from './components/ImageToast.js';
 import ErrorToast from './components/ErrorToast.js';
 import NotificationStack from './components/NotificationStack.js';
+import ConfirmationPrompt from './components/ConfirmationPrompt.js';
 import InstallBanner from './components/InstallBanner.js';
 import CommandPalette from './components/CommandPalette.js';
 import OpenPicker from './components/OpenPicker.js';
@@ -1359,6 +1360,7 @@ export default function App() {
       />
 
       {/* Toasts */}
+      <ConfirmationPrompt />
       <UpdateToast />
       <InstallBanner />
       <ErrorToast />
