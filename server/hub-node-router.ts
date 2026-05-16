@@ -55,12 +55,22 @@ import {
 import {
   appendPolicyAudit,
   evaluateHubPolicy,
+  type HubPolicyDecision,
   isSessionCreateType,
   policyDecisionToRelayError,
   requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
   sessionCreateCapabilities,
 } from './hub-policy-evaluator.js';
+import {
+  canonicalConfirmationParams,
+  createConfirmationChallengeStore,
+  hashAuthSessionIdentity,
+  publicChallenge,
+  type ConfirmationChallengeStore,
+  type ConfirmationDecision,
+  type ConfirmationFailure,
+} from './confirmation-challenges.js';
 
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
@@ -79,6 +89,7 @@ interface HubNodeRouterOptions {
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeSessionTransport;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
 }
@@ -122,6 +133,8 @@ export function errorStatus(error: RelayNodeError): number {
   switch (error.code) {
     case 'UNAUTHORIZED':
       return 401;
+    case 'CONFIRMATION_REQUIRED':
+      return 409;
     case 'TOKEN_EXPIRED':
     case 'TOKEN_ALREADY_USED':
     case 'PROTOCOL_INCOMPATIBLE':
@@ -284,6 +297,130 @@ export function bodyRecord(req: Request): Record<string, unknown> {
   return typeof req.body === 'object' && req.body !== null
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+function confirmationTokenFromRequest(req: Request, body: Record<string, unknown>): string | undefined {
+  const bodyToken = body['confirmationToken'];
+  if (typeof bodyToken === 'string' && bodyToken.trim()) return bodyToken.trim();
+  const headerToken = req.header('x-confirmation-token');
+  return headerToken?.trim() || undefined;
+}
+
+function paramsWithoutConfirmation(body: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (key === 'confirmationToken' || key === 'confirmationChallengeId') continue;
+    cleaned[key] = value;
+  }
+  return cleaned;
+}
+
+function authSessionHash(req: Request): string {
+  const explicit = req.header('x-auth-session')?.trim();
+  if (explicit) return hashAuthSessionIdentity(`header:${explicit}`);
+  const cookieToken = typeof req.cookies?.token === 'string' ? req.cookies.token : undefined;
+  if (cookieToken) return hashAuthSessionIdentity(`cookie:${cookieToken}`);
+  const authHeader = req.header('authorization')?.trim();
+  if (authHeader) return hashAuthSessionIdentity(`authorization:${authHeader}`);
+  if (req.header('x-test-auth')) return hashAuthSessionIdentity(`test:${req.header('x-test-auth')}`);
+  return hashAuthSessionIdentity(`remote:${req.ip ?? 'unknown'}`);
+}
+
+function authSessionLabel(req: Request): string | undefined {
+  return req.header('x-auth-session')?.trim() || undefined;
+}
+
+function relayErrorForConfirmationFailure(failure: ConfirmationFailure): RelayNodeError {
+  return relayError(
+    failure.reasonCode === 'CONFIRMATION_REQUIRED' ? 'CONFIRMATION_REQUIRED' : 'UNAUTHORIZED',
+    failure.message,
+    false,
+    {
+      reasonCode: failure.reasonCode,
+      ...(failure.challenge ? { challenge: publicChallenge(failure.challenge) } : {}),
+    }
+  );
+}
+
+function appendConfirmationAudit(
+  sink: RoutedSessionAuditSink | undefined,
+  entry: SecurityAuditEntryInput | undefined
+): void {
+  if (entry) appendRoutedSessionAudit(sink, entry);
+}
+
+function confirmationCreateInput(
+  req: Request,
+  requesterAuthSessionHash: string,
+  canonicalParams: ReturnType<typeof canonicalConfirmationParams>
+) {
+  const requesterDisplayName = authSessionLabel(req);
+  return {
+    requesterAuthSessionHash,
+    ...(requesterDisplayName ? { requesterDisplayName } : {}),
+    canonicalParams,
+  };
+}
+
+function confirmationApprovalInput(
+  req: Request,
+  challengeId: string,
+  decision: ConfirmationDecision,
+  now: Date
+) {
+  const approverDisplayName = authSessionLabel(req);
+  return {
+    challengeId,
+    approverAuthSessionHash: authSessionHash(req),
+    ...(approverDisplayName ? { approverDisplayName } : {}),
+    decision,
+    now,
+  };
+}
+
+function resolveConfirmationForDecision(input: {
+  confirmations: ConfirmationChallengeStore;
+  auditSink: RoutedSessionAuditSink | undefined;
+  req: Request;
+  decision: HubPolicyDecision;
+  params: Record<string, unknown>;
+  now: Date;
+}): { ok: true } | { ok: false; error: RelayNodeError } {
+  if (input.decision.decision !== 'challenge') return { ok: true };
+  const canonicalParams = canonicalConfirmationParams(
+    input.decision.intent.action,
+    input.params
+  );
+  const requesterAuthSessionHash = authSessionHash(input.req);
+  const token = confirmationTokenFromRequest(input.req, bodyRecord(input.req));
+  if (token) {
+    const redeemed = input.confirmations.redeemToken({
+      token,
+      requesterAuthSessionHash,
+      decision: { ...input.decision, params: canonicalParams },
+      canonicalParams,
+      now: input.now,
+    });
+    appendConfirmationAudit(input.auditSink, redeemed.audit);
+    if (redeemed.ok === true) return { ok: true };
+    return { ok: false, error: relayErrorForConfirmationFailure(redeemed) };
+  }
+  const challenge = input.confirmations.createChallenge(
+    { ...input.decision, params: canonicalParams },
+    confirmationCreateInput(input.req, requesterAuthSessionHash, canonicalParams)
+  );
+  appendPolicyAudit(input.auditSink, { ...input.decision, params: canonicalParams }, { params: canonicalParams });
+  return {
+    ok: false,
+    error: relayError('CONFIRMATION_REQUIRED', challenge.message, false, {
+      reasonCode: 'CONFIRMATION_REQUIRED',
+      challenge: publicChallenge(challenge),
+    }),
+  };
+}
+
+function isConfirmationDecision(value: unknown): value is ConfirmationDecision {
+  return value === 'approve' || value === 'deny' || value === 'deny_revoke';
 }
 
 export interface ColdReopenWarning {
@@ -669,8 +806,27 @@ function sendPolicyDecision(
   sink: RoutedSessionAuditSink | undefined,
   res: Response,
   decision: ReturnType<typeof evaluateHubPolicy>,
-  params?: unknown
+  params?: unknown,
+  confirmation?: {
+    confirmations: ConfirmationChallengeStore;
+    req: Request;
+    canonicalParams: Record<string, unknown>;
+    now: Date;
+  }
 ): boolean {
+  if (decision.decision === 'challenge' && confirmation) {
+    const resolved = resolveConfirmationForDecision({
+      confirmations: confirmation.confirmations,
+      auditSink: sink,
+      req: confirmation.req,
+      decision,
+      params: confirmation.canonicalParams,
+      now: confirmation.now,
+    });
+    if (resolved.ok === true) return false;
+    sendRelayError(res, resolved.error);
+    return true;
+  }
   const audited = appendPolicyAudit(sink, decision, { params });
   if (audited.decision === 'allow') return false;
   sendRelayError(res, policyDecisionToRelayError(audited));
@@ -840,9 +996,56 @@ export function createHubNodeRouter(
   const { registry, requireAuth } = options;
   const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
+  const confirmations = options.confirmations ?? createConfirmationChallengeStore();
   const now = () => options.now?.() ?? new Date();
   const repoInventoryFeature =
     options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
+
+  router.get('/hub/confirmations', requireAuth, (_req, res) => {
+    res.json({ challenges: confirmations.listChallenges() });
+  });
+
+  router.get('/hub/confirmations/:challengeId', requireAuth, (req, res) => {
+    const { challengeId } = req.params;
+    const challenge = challengeId ? confirmations.getChallenge(challengeId) : undefined;
+    if (!challenge) {
+      sendRelayError(
+        res,
+        relayError('NOT_FOUND', 'confirmation challenge not found', false, {
+          reasonCode: 'CONFIRMATION_NOT_FOUND',
+        })
+      );
+      return;
+    }
+    res.json({ challenge: publicChallenge(challenge) });
+  });
+
+  router.post('/hub/confirmations/:challengeId/approve', requireAuth, (req, res) => {
+    const { challengeId } = req.params;
+    const body = bodyRecord(req);
+    const decision = body['decision'] ?? 'approve';
+    if (!challengeId || !isConfirmationDecision(decision)) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'decision must be approve, deny, or deny_revoke', false, {
+          reasonCode: 'CONFIRMATION_INVALID_DECISION',
+        })
+      );
+      return;
+    }
+    const result = confirmations.approveChallenge(
+      confirmationApprovalInput(req, challengeId, decision, now())
+    );
+    appendConfirmationAudit(options.auditSink, result.audit);
+    if (result.ok === false) {
+      sendRelayError(res, relayErrorForConfirmationFailure(result));
+      return;
+    }
+    res.json({
+      confirmationToken: result.confirmationToken,
+      challenge: publicChallenge(result.challenge),
+    });
+  });
 
   router.post('/hub/pair-tokens', requireAuth, (req, res) => {
     const body = bodyRecord(req);
@@ -1084,7 +1287,8 @@ export function createHubNodeRouter(
     }
 
     const body = bodyRecord(req);
-    const lifecycleError = lifecycleInputError(body);
+    const routedBody = paramsWithoutConfirmation(body);
+    const lifecycleError = lifecycleInputError(routedBody);
     if (lifecycleError) {
       sendRelayError(
         res,
@@ -1096,7 +1300,7 @@ export function createHubNodeRouter(
       return;
     }
     const createNow = now();
-    const expiresAt = expiresAtFromLifecycleInput(body, createNow);
+    const expiresAt = expiresAtFromLifecycleInput(routedBody, createNow);
     if (expiresAt !== undefined && expiresAt !== null && Date.parse(expiresAt) <= createNow.getTime()) {
       const error = relayError(
         'SESSION_EXPIRED',
@@ -1111,13 +1315,13 @@ export function createHubNodeRouter(
         peer: { kind: 'hub' },
         node: { nodeId },
         intent: { action: 'sessions.create', target: nodeId },
-        material: { params: body },
+        material: { params: routedBody },
       });
       sendRelayError(res, error);
       return;
     }
-    const requestedEnvelope = isSessionEnvelope(body['sessionEnvelope'])
-      ? body['sessionEnvelope']
+    const requestedEnvelope = isSessionEnvelope(routedBody['sessionEnvelope'])
+      ? routedBody['sessionEnvelope']
       : null;
     if (requestedEnvelope && requestedEnvelope.nodeId !== nodeId) {
       appendRoutedSessionAudit(options.auditSink, {
@@ -1151,7 +1355,7 @@ export function createHubNodeRouter(
       );
       return;
     }
-    const rawSessionType = body['type'];
+    const rawSessionType = routedBody['type'];
     if (rawSessionType !== undefined && !isSessionCreateType(rawSessionType)) {
       sendRelayError(
         res,
@@ -1168,22 +1372,29 @@ export function createHubNodeRouter(
       node,
       nodeId,
       intent: { action: 'sessions.create', target: nodeId },
-      scope: sessionCreatePolicyScope(nodeId, body),
+      scope: sessionCreatePolicyScope(nodeId, routedBody),
       requiredCapabilities: sessionCreateCapabilities({
         sessionType,
-        controlMode: body['controlMode'],
+        controlMode: routedBody['controlMode'],
       }),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
-      params: body,
+      params: routedBody,
       now: createNow,
     });
-    if (sendPolicyDecision(options.auditSink, res, policyDecision, body)) return;
+    if (
+      sendPolicyDecision(options.auditSink, res, policyDecision, routedBody, {
+        confirmations,
+        req,
+        canonicalParams: routedBody,
+        now: createNow,
+      })
+    ) return;
 
     try {
       const payload = await options.nodeLinks.request(
         nodeId,
         'sessions.create',
-        body
+        routedBody
       );
       const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
         ...(expiresAt !== undefined ? { expiresAt } : {}),
@@ -1257,6 +1468,7 @@ export function createHubNodeRouter(
       }
 
       const body = bodyRecord(req);
+      const routedBody = paramsWithoutConfirmation(body);
       const lifecycle = envelopes.validate({ nodeId, sessionId, now: now() });
       if (!lifecycle.ok) {
         const denial = lifecycle as Exclude<
@@ -1269,7 +1481,7 @@ export function createHubNodeRouter(
           nodeId,
           sessionId,
           `rpc.fs.${operation}`,
-          body
+          routedBody
         );
         sendRelayError(res, denial.error);
         return;
@@ -1280,7 +1492,7 @@ export function createHubNodeRouter(
         nodePlatform: node.platform,
         nodeId,
         session: lifecycle.summary,
-        body,
+        body: routedBody,
       });
       if (normalized.ok === false) {
         sendRelayError(res, normalized.error);
@@ -1305,13 +1517,19 @@ export function createHubNodeRouter(
         ...(lifecycle.summary.revokedAt
           ? { revokedAt: lifecycle.summary.revokedAt }
           : {}),
-        params: { ...body, path: normalized.value.request.path },
+        params: { ...routedBody, path: normalized.value.request.path },
         now: now(),
       });
+      const canonicalFileParams = {
+        ...routedBody,
+        path: normalized.value.request.path,
+      };
       if (
-        sendPolicyDecision(options.auditSink, res, policyDecision, {
-          ...body,
-          path: normalized.value.request.path,
+        sendPolicyDecision(options.auditSink, res, policyDecision, canonicalFileParams, {
+          confirmations,
+          req,
+          canonicalParams: canonicalFileParams,
+          now: now(),
         })
       ) {
         return;
@@ -1405,6 +1623,8 @@ export function createHubNodeRouter(
         return;
       }
       const scoped = lifecycle.summary;
+      const killNow = now();
+      const killParams = { method: 'DELETE' };
       const killPolicyDecision = evaluateHubPolicy({
         peer: { kind: 'hub' },
         node,
@@ -1426,10 +1646,17 @@ export function createHubNodeRouter(
         ...(scoped?.correlationId ? { correlationId: scoped.correlationId } : {}),
         ...(scoped?.expiresAt !== undefined ? { expiresAt: scoped.expiresAt } : {}),
         ...(scoped?.revokedAt ? { revokedAt: scoped.revokedAt } : {}),
-        params: { method: 'DELETE' },
-        now: now(),
+        params: killParams,
+        now: killNow,
       });
-      if (sendPolicyDecision(options.auditSink, res, killPolicyDecision, { method: 'DELETE' })) return;
+      if (
+        sendPolicyDecision(options.auditSink, res, killPolicyDecision, killParams, {
+          confirmations,
+          req,
+          canonicalParams: killParams,
+          now: killNow,
+        })
+      ) return;
 
       try {
         await options.nodeLinks.request(nodeId, 'sessions.kill', {

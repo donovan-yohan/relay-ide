@@ -10,6 +10,7 @@ export type RelayNodeChannel = 'control' | 'rpc' | 'events' | 'pty' | 'preview';
 
 export type RelayNodeErrorCode =
   | 'UNAUTHORIZED'
+  | 'CONFIRMATION_REQUIRED'
   | 'TOKEN_EXPIRED'
   | 'TOKEN_ALREADY_USED'
   | 'NODE_REVOKED'
