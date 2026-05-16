@@ -1,5 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as os from 'node:os';
+import { isFileRpcOperation } from '../shared/file-rpc.js';
+import { executeLocalFileRpc } from './file-rpc.js';
 import type { LocalRelayNode } from './local-node.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
@@ -22,7 +24,8 @@ import type { SessionSummary } from './types.js';
 // envelope on the same `requestId`.
 //
 // Wired today: `sessions.create` (#425.7), `sessions.list` (#465),
-// and `sessions.kill` (#478).
+// `sessions.kill` (#478), and read-only File RPC `fs.list` / `fs.stat` /
+// `fs.read` (#505).
 // Other RPC types fall through to an INVALID_REQUEST response so
 // misrouted envelopes don't silently hang the hub-side pending
 // request.
@@ -333,6 +336,26 @@ export function createNodeLinkRpcHost(
     }
   }
 
+  async function handleFileRpc(
+    operation: 'list' | 'stat' | 'read',
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): Promise<void> {
+    try {
+      const result = await executeLocalFileRpc(operation, envelope.payload);
+      if ('code' in result) {
+        sendErrorEnvelope(ctx, envelope, result);
+        return;
+      }
+      sendResultEnvelope(ctx, envelope, result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`fs.${operation} failed: ${message}`);
+      sendErrorEnvelope(ctx, envelope, internalError(message));
+    }
+  }
+
   function handle(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -348,6 +371,11 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'sessions.kill') {
       handleSessionsKill(envelope, ctx);
+      return;
+    }
+    const fsMatch = envelope.type.match(/^fs\.(.+)$/);
+    if (fsMatch && isFileRpcOperation(fsMatch[1])) {
+      void handleFileRpc(fsMatch[1], envelope, ctx);
       return;
     }
     logger.warn(

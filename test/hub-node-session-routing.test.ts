@@ -277,6 +277,7 @@ describe('hub-routed node session create and attach', () => {
       port,
       nodeLinks,
       sessionEnvelopes,
+      registry,
     };
   }
 
@@ -903,6 +904,119 @@ describe('hub-routed node session create and attach', () => {
       localSessionId: 'remote-session-1',
       globalSessionId: `${nodeId}:remote-session-1`,
       timestamp: '2026-01-02T03:04:05.000Z',
+    });
+  });
+
+  it('routes read-only File RPC requests with scoped root and bounds', async () => {
+    const { base, wsBase, sessionEnvelopes } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const readPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1/files/read`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ path: 'README.md', maxBytes: 999_999, maxLines: 1 }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'fs.read',
+      payload: {
+        sessionId: 'remote-session-1',
+        root: '/srv/relay-ide',
+        cwd: '/srv/relay-ide',
+        path: '/srv/relay-ide/README.md',
+        maxBytes: 65536,
+        maxLines: 1,
+      },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'fs.read.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          operation: 'read',
+          root: '/srv/relay-ide',
+          cwd: '/srv/relay-ide',
+          path: '/srv/relay-ide/README.md',
+          encoding: 'utf8',
+          content: '# Relay',
+          bytesRead: 7,
+          truncatedBytes: false,
+          truncatedLines: false,
+          maxBytes: 65536,
+          maxLines: 1,
+        },
+      })
+    );
+
+    const res = await readPromise;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ operation: 'read', content: '# Relay' });
+  });
+
+  it('denies File RPC traversal before it reaches the node link', async () => {
+    const { base, wsBase, sessionEnvelopes } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1/files/list`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ path: '../secret' }),
+      }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', details: { reasonCode: 'FILE_RPC_ROOT_ESCAPE' } },
+    });
+    expect(nodeWs.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('denies File RPC for wrong or missing scoped sessions', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/missing-session/files/stat`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ path: 'README.md' }),
+      }
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'NOT_FOUND', details: { reasonCode: 'SESSION_ENVELOPE_NOT_FOUND' } },
     });
   });
 

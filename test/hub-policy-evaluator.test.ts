@@ -312,6 +312,39 @@ describe('hub policy evaluator', () => {
     });
   });
 
+  it('maps read-only File RPC intents to read/list capability bits', () => {
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.list')).toEqual(['rpc:fs:list']);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.stat')).toEqual(['rpc:fs:read']);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.read')).toEqual(['rpc:fs:read']);
+  });
+
+  it('denies File RPC when the node ACL lacks the required read-only capability', () => {
+    const node = nodeSummary({ allowed: ['session:read'] });
+    const decision = evaluateHubPolicy(
+      baseInput({
+        node,
+        intent: { action: 'rpc.fs.read', target: node.nodeId },
+        requiredCapabilities: requiredCapabilitiesForRpcIntent('rpc.fs.read'),
+        scope: {
+          kind: 'repo',
+          nodeId: node.nodeId,
+          cwd: '/srv/relay',
+          repoPath: '/srv/relay',
+        },
+        sessionId: 's1',
+      })
+    );
+    expect(decision).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_CAPABILITY_DENIED',
+      deniedBits: ['rpc:fs:read'],
+    });
+    expect(policyDecisionToRelayError(decision)).toMatchObject({
+      code: 'UNAUTHORIZED',
+      details: { reasonCode: 'POLICY_CAPABILITY_DENIED', deniedBits: ['rpc:fs:read'] },
+    });
+  });
+
   it('fails closed when audit persistence fails for high-risk decisions', () => {
     const node = nodeSummary({ trustTier: 'prod', allowed: ['rpc:fs:write'] });
     const decision = evaluateHubPolicy(
