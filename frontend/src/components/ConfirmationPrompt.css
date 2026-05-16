@@ -1,0 +1,191 @@
+.confirmation-prompt {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(78vh, 720px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--status-warning);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--bg), 0 16px 48px rgba(0, 0, 0, 0.72);
+  font-family: var(--font-mono);
+}
+
+.confirmation-prompt__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.confirmation-prompt__header h2 {
+  margin: 2px 0 0;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.confirmation-prompt__eyebrow {
+  color: var(--status-warning);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.confirmation-prompt__status {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.confirmation-prompt__status--pending {
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.confirmation-prompt__status--approved {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.confirmation-prompt__meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 12px 0;
+}
+
+.confirmation-prompt__meta div {
+  min-width: 0;
+}
+
+.confirmation-prompt__meta dt,
+.confirmation-prompt__field {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.confirmation-prompt__meta dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirmation-prompt__bits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.confirmation-prompt__bits span {
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--status-warning) 50%, transparent);
+  color: var(--status-warning);
+  font-size: var(--font-size-xs);
+}
+
+.confirmation-prompt__field {
+  margin: 10px 0;
+}
+
+.confirmation-prompt__field input,
+.confirmation-prompt__field select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.confirmation-prompt__field input:focus,
+.confirmation-prompt__field select:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.confirmation-prompt__params {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+}
+
+.confirmation-prompt__params summary {
+  padding: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.confirmation-prompt__params pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.confirmation-prompt__message {
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.confirmation-prompt__message--ok {
+  color: var(--status-success);
+}
+
+.confirmation-prompt__message--error {
+  color: var(--status-error);
+}
+
+.confirmation-prompt__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .confirmation-prompt {
+    right: 8px;
+    bottom: 8px;
+    width: calc(100vw - 16px);
+    max-height: 70vh;
+    padding: 12px;
+  }
+
+  .confirmation-prompt__meta {
+    grid-template-columns: 1fr;
+  }
+
+  .confirmation-prompt__actions {
+    justify-content: stretch;
+  }
+
+  .confirmation-prompt__actions .tui-btn {
+    flex: 1 1 auto;
+  }
+}

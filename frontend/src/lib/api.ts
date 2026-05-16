@@ -38,6 +38,7 @@ import {
   type NodeId,
 } from '../../../shared/identity.js';
 import type { SessionLane } from '../../../shared/session-lane.js';
+import { registerConfirmationRetry } from './confirmation-retries.js';
 
 export class ConflictError extends Error {
   sessionId: string;
@@ -52,17 +53,66 @@ export class HttpError extends Error {
   status: number;
   code: string | undefined;
   retryable: boolean | undefined;
+  details: Record<string, unknown> | undefined;
   constructor(
     status: number,
     message = httpErrorMessage(status),
     code?: string | undefined,
-    retryable?: boolean | undefined
+    retryable?: boolean | undefined,
+    details?: Record<string, unknown> | undefined
   ) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.details = details;
+  }
+}
+
+export interface CanonicalConfirmationParams {
+  action: string;
+  [key: string]: unknown;
+}
+
+export type ConfirmationDecision = 'approve' | 'deny' | 'deny_revoke';
+export type ConfirmationChallengeStatus =
+  | 'pending'
+  | 'approved'
+  | 'denied'
+  | 'revoked'
+  | 'expired'
+  | 'redeemed'
+  | 'invalidated';
+
+export interface ConfirmationChallenge {
+  challengeId: string;
+  status: ConfirmationChallengeStatus;
+  nodeId: string;
+  intent: { action: string; target?: string };
+  requiredBits: string[];
+  challengeBits: string[];
+  sessionId?: string;
+  canonicalParams: CanonicalConfirmationParams;
+  canonicalParamsHash: string;
+  requesterDisplayName?: string;
+  approverDisplayName?: string;
+  createdAt: string;
+  expiresAt: string;
+  approvedAt?: string;
+  tokenExpiresAt?: string;
+  failedRedemptions: number;
+  maxFailedRedemptions: number;
+  reasonCode: string;
+  message: string;
+}
+
+export class ConfirmationRequiredError extends HttpError {
+  challenge: ConfirmationChallenge;
+  constructor(error: HttpError, challenge: ConfirmationChallenge) {
+    super(error.status, error.message, error.code, error.retryable, error.details);
+    this.name = 'ConfirmationRequiredError';
+    this.challenge = challenge;
   }
 }
 
@@ -120,16 +170,42 @@ async function parseErrorBody(
   return (await httpErrorFromResponse(res, fallback)).message;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isConfirmationChallenge(value: unknown): value is ConfirmationChallenge {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['challengeId'] === 'string' &&
+    typeof value['status'] === 'string' &&
+    typeof value['nodeId'] === 'string' &&
+    isRecord(value['intent']) &&
+    typeof value['canonicalParamsHash'] === 'string' &&
+    isRecord(value['canonicalParams']) &&
+    Array.isArray(value['requiredBits']) &&
+    Array.isArray(value['challengeBits']) &&
+    typeof value['expiresAt'] === 'string'
+  );
+}
+
+function confirmationChallengeFromError(error: HttpError): ConfirmationChallenge | undefined {
+  const challenge = error.details?.['challenge'];
+  return isConfirmationChallenge(challenge) ? challenge : undefined;
+}
+
 async function httpErrorFromResponse(
   res: Response,
   fallback?: string
 ): Promise<HttpError> {
   try {
     const data = (await res.json()) as { error?: unknown; message?: unknown };
-    const structuredError =
-      typeof data.error === 'object' && data.error !== null
-        ? (data.error as Record<string, unknown>)
-        : null;
+    const structuredError = isRecord(data.error) ? data.error : null;
+    const details = isRecord(structuredError?.['details'])
+      ? structuredError['details']
+      : typeof (data as { sessionId?: unknown }).sessionId === 'string'
+        ? { sessionId: (data as { sessionId: string }).sessionId }
+        : undefined;
     const code =
       typeof data.error === 'string'
         ? data.error
@@ -148,7 +224,7 @@ async function httpErrorFromResponse(
           : typeof data.error === 'string'
             ? httpErrorMessage(res.status, data.error)
             : httpErrorMessage(res.status, fallback);
-    return new HttpError(res.status, message, code, retryable);
+    return new HttpError(res.status, message, code, retryable, details);
   } catch {
     return new HttpError(res.status, httpErrorMessage(res.status, fallback));
   }
@@ -179,6 +255,53 @@ export async function checkAuthStatus(): Promise<{
     await fetch('/auth/status')
   );
   return { hasPIN: data.hasPIN === true, noPin: data.noPin === true };
+}
+
+export async function fetchConfirmationChallenges(): Promise<ConfirmationChallenge[]> {
+  const data = await json<{ challenges?: unknown[] }>(await fetch('/hub/confirmations'));
+  return Array.isArray(data.challenges)
+    ? data.challenges.filter(isConfirmationChallenge)
+    : [];
+}
+
+export async function fetchConfirmationChallenge(
+  challengeId: string
+): Promise<ConfirmationChallenge> {
+  const data = await json<{ challenge?: unknown }>(
+    await fetch('/hub/confirmations/' + encodeURIComponent(challengeId))
+  );
+  if (!isConfirmationChallenge(data.challenge)) {
+    throw new Error('confirmation challenge response was malformed');
+  }
+  return data.challenge;
+}
+
+export async function approveConfirmationChallenge(
+  challengeId: string,
+  decision: ConfirmationDecision,
+  approverSession?: string
+): Promise<{ confirmationToken?: string; challenge: ConfirmationChallenge }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (approverSession?.trim()) headers['x-auth-session'] = approverSession.trim();
+  const res = await fetch(
+    '/hub/confirmations/' + encodeURIComponent(challengeId) + '/approve',
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ decision }),
+    }
+  );
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to approve confirmation');
+  const data = await jsonEither<{ confirmationToken?: unknown; challenge?: unknown }>(res);
+  if (!isConfirmationChallenge(data.challenge)) {
+    throw new Error('confirmation approval response was malformed');
+  }
+  return {
+    ...(typeof data.confirmationToken === 'string'
+      ? { confirmationToken: data.confirmationToken }
+      : {}),
+    challenge: data.challenge,
+  };
 }
 
 export async function setupPin(pin: string, confirm: string): Promise<void> {
@@ -542,7 +665,7 @@ export async function enrichBranches(
   return jsonEither<EnrichBranchesResult>(res);
 }
 
-export async function createSession(body: {
+export interface CreateSessionBody {
   nodeId?: NodeId | undefined;
   repoPath?: string | undefined;
   worktreePath?: string | null | undefined;
@@ -570,27 +693,77 @@ export async function createSession(body: {
     repoPath: string;
     repoName: string;
   };
-}): Promise<SessionSummary> {
-  const { nodeId, ...sessionBody } = body;
-  const sessionPath =
-    nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID
-      ? '/hub/nodes/' + encodeURIComponent(nodeId) + '/sessions'
-      : '/sessions';
-  const res = await fetch(sessionPath, {
+}
+
+function sessionCreatePath(nodeId?: NodeId | undefined): string {
+  return nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID
+    ? '/hub/nodes/' + encodeURIComponent(nodeId) + '/sessions'
+    : '/sessions';
+}
+
+async function postSessionCreate(
+  sessionPath: string,
+  sessionBody: Omit<CreateSessionBody, 'nodeId'>,
+  confirmationToken?: string
+): Promise<Response> {
+  return fetch(sessionPath, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sessionBody),
+    body: JSON.stringify({
+      ...sessionBody,
+      ...(confirmationToken ? { confirmationToken } : {}),
+    }),
   });
-  if (res.status === 409) {
-    try {
-      const data = await jsonEither<{ sessionId?: string }>(res);
-      throw new ConflictError(data.sessionId ?? '');
-    } catch (e) {
-      if (e instanceof ConflictError) throw e;
-      throw new ConflictError('');
-    }
+}
+
+async function parseSessionCreateResponse(
+  res: Response,
+  retryContext?: {
+    sessionPath: string;
+    sessionBody: Omit<CreateSessionBody, 'nodeId'>;
   }
-  return json<SessionSummary>(res);
+): Promise<SessionSummary> {
+  if (res.ok) return jsonEither<SessionSummary>(res);
+
+  const error = await httpErrorFromResponse(res);
+  const challenge = confirmationChallengeFromError(error);
+  if (error.code === 'CONFIRMATION_REQUIRED' && challenge) {
+    if (retryContext) {
+      registerConfirmationRetry({
+        challenge,
+        label: challenge.intent.action,
+        paramsHash: challenge.canonicalParamsHash,
+        retry: async (confirmationToken) =>
+          parseSessionCreateResponse(
+            await postSessionCreate(
+              retryContext.sessionPath,
+              retryContext.sessionBody,
+              confirmationToken
+            )
+          ),
+      });
+    }
+    throw new ConfirmationRequiredError(error, challenge);
+  }
+
+  if (res.status === 409) {
+    const sessionId =
+      typeof error.details?.['sessionId'] === 'string'
+        ? error.details['sessionId']
+        : '';
+    throw new ConflictError(sessionId);
+  }
+
+  throw error;
+}
+
+export async function createSession(body: CreateSessionBody): Promise<SessionSummary> {
+  const { nodeId, ...sessionBody } = body;
+  const sessionPath = sessionCreatePath(nodeId);
+  return parseSessionCreateResponse(await postSessionCreate(sessionPath, sessionBody), {
+    sessionPath,
+    sessionBody,
+  });
 }
 
 export async function killSession(
@@ -602,8 +775,26 @@ export async function killSession(
       ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions/${encodeURIComponent(id)}`
       : `/sessions/${encodeURIComponent(id)}`;
   const res = await fetch(sessionPath, { method: 'DELETE' });
-  if (!res.ok)
-    throw await httpErrorFromResponse(res, 'Failed to close session');
+  if (res.ok) return;
+
+  const error = await httpErrorFromResponse(res, 'Failed to close session');
+  const challenge = confirmationChallengeFromError(error);
+  if (error.code === 'CONFIRMATION_REQUIRED' && challenge) {
+    registerConfirmationRetry({
+      challenge,
+      label: challenge.intent.action,
+      paramsHash: challenge.canonicalParamsHash,
+      retry: async (confirmationToken) => {
+        const retryRes = await fetch(sessionPath, {
+          method: 'DELETE',
+          headers: { 'x-confirmation-token': confirmationToken },
+        });
+        if (!retryRes.ok) throw await httpErrorFromResponse(retryRes, 'Failed to close session');
+      },
+    });
+    throw new ConfirmationRequiredError(error, challenge);
+  }
+  throw error;
 }
 
 export async function renameSession(
