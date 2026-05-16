@@ -35,8 +35,13 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'sessions.attach',
+      'sessions.detach',
       'sessions.interventions',
       'sessions.handBack',
+      'files.list',
+      'files.stat',
+      'files.read',
     ]);
 
     for (const spec of RELAY_CLI_GATEWAY_CONTRACT.commandSchemas) {
@@ -196,8 +201,13 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'sessions.attach',
+      'sessions.detach',
       'sessions.interventions',
       'sessions.handBack',
+      'files.list',
+      'files.stat',
+      'files.read',
     ] as const;
 
     for (const command of invalidArgumentCommands) {
@@ -241,6 +251,47 @@ describe('CLI gateway contract', () => {
         },
       })
     ).toEqual({ status: 500, upstreamCode: 'INTERNAL', field: 'repoPath' });
+  });
+
+
+  it('advertises descriptor-only attach/detach and read-only file RPC commands', () => {
+    expect(commandSpec('sessions.attach')).toMatchObject({
+      capabilityHints: ['session:read', 'session:attach'],
+      transport: 'hub-http',
+    });
+    expect(commandSpec('sessions.detach')).toMatchObject({
+      capabilityHints: ['session:read', 'session:attach'],
+      transport: 'hub-http',
+    });
+
+    const list = commandSpec('files.list');
+    expect(list.capabilityHints).toEqual(['session:read', 'rpc:fs:list']);
+    expect(list.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['sessionId'],
+      properties: { maxEntries: { maximum: 500 } },
+    });
+    expect(list.outputSchema).toMatchObject({
+      properties: {
+        data: {
+          properties: {
+            operation: { const: 'list' },
+            entries: { type: 'array' },
+          },
+        },
+      },
+    });
+
+    const read = commandSpec('files.read');
+    expect(read.capabilityHints).toEqual(['session:read', 'rpc:fs:read']);
+    expect(read.inputSchema).toMatchObject({
+      properties: {
+        maxBytes: { maximum: 65536 },
+        maxLines: { maximum: 2000 },
+      },
+    });
+    expect(read.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'NOT_FOUND']));
+    expect(commandSpec('files.stat').capabilityHints).toEqual(['session:read', 'rpc:fs:read']);
   });
 
   it('does not expose raw intervention payloads as a gateway contract', () => {
