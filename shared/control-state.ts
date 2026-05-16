@@ -36,7 +36,12 @@ export interface TabControlEventBase {
   type: TabControlEventType;
   occurredAt: string;
   identity: TabControlIdentity;
+  /** Triggering actor for the event; not necessarily the complete active driver list. */
   actor: ControlActor;
+  /** Effective actors after this event is applied. */
+  activeActors?: ControlActor[];
+  /** Effective agent worker after this event is applied, if agent-visible control remains active. */
+  activeWorker?: ControlActor;
   reason?: string;
 }
 

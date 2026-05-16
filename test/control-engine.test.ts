@@ -161,6 +161,14 @@ describe('control transition engine', () => {
       controlReason: 'human input',
     });
     expect(events.map((event) => event.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
+    expect(events[0]).toMatchObject({
+      controlMode: 'co-driven',
+      activeActors: [
+        { kind: 'human', id: 'local-user' },
+        { kind: 'agent', id: 'codex' },
+      ],
+      activeWorker: { kind: 'agent', id: 'codex' },
+    });
   });
 
   it('does not record human-driven or empty PTY input as intervention input', () => {
@@ -241,6 +249,12 @@ describe('control transition engine', () => {
     expect(records.map((record) => record.kind)).toEqual(['join', 'take-over', 'hand-back']);
     expect(events.filter((event) => event.type === 'tab.intervention')).toHaveLength(3);
     expect(events.filter((event) => event.type === 'tab.mode-changed')).toHaveLength(3);
+    expect(events.at(-1)).toMatchObject({
+      controlMode: 'agent-driven',
+      actor: { kind: 'human', id: 'local-user' },
+      activeActors: [{ kind: 'agent', id: 'codex' }],
+      activeWorker: { kind: 'agent', id: 'codex' },
+    });
     expect(records.every((record) => record.ackedAt)).toBe(true);
   });
 

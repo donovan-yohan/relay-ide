@@ -257,6 +257,14 @@ function buildRecord(input: {
   return record;
 }
 
+function eventControlStateFields(session: Session): Pick<ControlStateSummary, 'activeActors' | 'activeWorker'> {
+  const summary = normalizeControlStateSummary(session.controlState);
+  return {
+    activeActors: summary.activeActors,
+    ...(summary.activeWorker ? { activeWorker: summary.activeWorker } : {}),
+  };
+}
+
 function updateControlState(input: {
   session: Session;
   controlMode: ControlMode;
@@ -295,6 +303,7 @@ function emitModeChanged(
     occurredAt: nowIso(options),
     identity: identityForSession(session),
     actor,
+    ...eventControlStateFields(session),
     reason,
     previousControlMode,
     controlMode,
@@ -317,6 +326,7 @@ function emitIntervention(
     occurredAt: record.timestamp,
     identity: identityForSession(session),
     actor,
+    ...eventControlStateFields(session),
     reason,
     controlMode,
     intervention: record,
