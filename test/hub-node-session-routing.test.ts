@@ -246,15 +246,28 @@ describe('hub-routed node session create and attach', () => {
     const sessionEnvelopes = createSessionEnvelopeRegistry();
     const app = express();
     app.use(express.json());
+    const requireAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') next();
+      else res.status(401).json({ error: 'Unauthorized' });
+    };
+    const cliGatewayAuth: express.RequestHandler = (req, res, next) => {
+      if (
+        req.header('x-test-auth') === 'yes' ||
+        (req.header('x-relay-cli-gateway') === 'v1' &&
+          req.header('authorization') === 'Bearer scoped-test-token')
+      ) {
+        next();
+        return;
+      }
+      res.status(401).json({ error: 'Unauthorized' });
+    };
     app.use(
       createHubNodeRouter({
         registry,
         nodeLinks,
         sessionEnvelopes,
-        requireAuth: (req, res, next) => {
-          if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
-        },
+        requireAuth,
+        cliGatewayAuth,
       })
     );
     const server = http.createServer(app);
@@ -280,6 +293,146 @@ describe('hub-routed node session create and attach', () => {
       registry,
     };
   }
+
+  it('lets v1 CLI gateway scoped bearer auth read nodes and create routed sessions without cookies', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+    const cliHeaders = {
+      authorization: 'Bearer scoped-test-token',
+      'x-relay-cli-gateway': 'v1',
+    };
+
+    const nodesRes = await fetch(`${base}/nodes`, { headers: cliHeaders });
+    expect(nodesRes.status).toBe(200);
+    expect(await nodesRes.json()).toMatchObject({ nodes: [{ nodeId }] });
+
+    const createRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { ...cliHeaders, 'content-type': 'application/json' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
+    expect(createRes.status).toBe(404);
+    expect(await createRes.json()).toMatchObject({
+      error: { code: 'NODE_OFFLINE', retryable: true },
+    });
+  });
+
+  it('rejects hidden v1 create fields before node-link routing', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer scoped-test-token',
+          'x-relay-cli-gateway': 'v1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          repoPath: '/srv/relay-ide',
+          type: 'terminal',
+          command: 'hidden-non-contract-field',
+        }),
+      }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: { field: 'command' },
+      },
+    });
+  });
+
+  it('defaults routed v1 creates to agent and forwards only sanitized fields', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer scoped-test-token',
+          'x-relay-cli-gateway': 'v1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide' }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'sessions.create',
+      payload: { repoPath: '/srv/relay-ide', type: 'agent' },
+    });
+    expect(request.payload as Record<string, unknown>).not.toHaveProperty('nodeId');
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            type: 'agent',
+            displayName: 'relay-ide agent',
+          },
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ type: 'agent', nodeId });
+  });
+
+  it('rejects routed v1 create bodies with a conflicting nodeId', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+
+    const res = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer scoped-test-token',
+          'x-relay-cli-gateway': 'v1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          nodeId: 'other-node',
+          repoPath: '/srv/relay-ide',
+          type: 'terminal',
+        }),
+      }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: { field: 'nodeId', nodeId, bodyNodeId: 'other-node' },
+      },
+    });
+  });
 
   it('returns NODE_OFFLINE when a selected node has no live reverse link', async () => {
     const { base } = await startHub();

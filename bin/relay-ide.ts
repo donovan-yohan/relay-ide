@@ -30,6 +30,22 @@ import {
 } from '../server/local-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
+import {
+  RELAY_CLI_GATEWAY_CONTRACT,
+  gatewayError,
+  gatewayOk,
+  type RelayCliGatewayCommand,
+  type RelayCliGatewayEnvelope,
+} from '../shared/cli-gateway-contract.js';
+import {
+  gatewayCliInvalidArgumentError,
+  gatewayCliInvalidJsonError,
+  gatewayErrorMessage,
+  gatewayErrorRetryable,
+  normalizeGatewayErrorCode,
+  sanitizedGatewayErrorDetails,
+  validateAndSanitizeGatewayCreateInput,
+} from '../shared/cli-gateway-runtime.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,6 +76,7 @@ Commands:
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions
   diag               Collect local diagnostics
     bundle [--output <dir>] [--lines <n>] [--json]
                                        Write a timestamped redacted diagnostics directory
@@ -173,6 +190,343 @@ async function runAsyncCommand(fn: () => Promise<void> | void): Promise<never> {
 }
 
 const command = args[0];
+
+function printGatewayEnvelope(
+  envelope: RelayCliGatewayEnvelope,
+  exitCode: number
+): never {
+  console.log(JSON.stringify(envelope, null, 2));
+  process.exit(exitCode);
+}
+
+function gatewayInvalid(
+  commandName: RelayCliGatewayCommand,
+  message: string,
+  details?: Record<string, unknown>
+): never {
+  printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidArgumentError(commandName, message, details)), 1);
+}
+
+function gatewayArg(commandArgs: string[], flag: string): string | undefined {
+  const idx = commandArgs.indexOf(flag);
+  if (idx === -1 || idx + 1 >= commandArgs.length) return undefined;
+  const value = commandArgs[idx + 1];
+  return value && !value.startsWith('--') ? value : undefined;
+}
+
+function parseGatewayJson(
+  commandName: RelayCliGatewayCommand,
+  raw: string
+): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    gatewayInvalid(commandName, 'input JSON must be an object');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidJsonError(commandName, message)), 1);
+  }
+}
+
+function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown> {
+  const inputJson = gatewayArg(sessionArgs, '--input-json');
+  if (inputJson) return parseGatewayJson('sessions.create', inputJson);
+  const inputFile = gatewayArg(sessionArgs, '--input-file');
+  if (inputFile) {
+    try {
+      return parseGatewayJson(
+        'sessions.create',
+        fs.readFileSync(path.resolve(inputFile), 'utf8')
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      gatewayInvalid('sessions.create', `could not read --input-file: ${message}`);
+    }
+  }
+
+  const input: Record<string, unknown> = {};
+  for (const [flag, key] of [
+    ['--node-id', 'nodeId'],
+    ['--repo-path', 'repoPath'],
+    ['--worktree-path', 'worktreePath'],
+    ['--cwd', 'cwd'],
+    ['--type', 'type'],
+    ['--mode', 'mode'],
+    ['--agent', 'agent'],
+    ['--branch-name', 'branchName'],
+    ['--initial-prompt', 'initialPrompt'],
+    ['--continue-policy', 'continuePolicy'],
+    ['--control-mode', 'controlMode'],
+    ['--confirmation-token', 'confirmationToken'],
+    ['--expires-at', 'expiresAt'],
+  ] as const) {
+    const value = gatewayArg(sessionArgs, flag);
+    if (value !== undefined) input[key] = value;
+  }
+  for (const [flag, key] of [
+    ['--cols', 'cols'],
+    ['--rows', 'rows'],
+    ['--ttl-seconds', 'ttlSeconds'],
+  ] as const) {
+    const value = gatewayArg(sessionArgs, flag);
+    if (value !== undefined) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        gatewayInvalid('sessions.create', `${flag} must be numeric`, { flag, value });
+      }
+      input[key] = numeric;
+    }
+  }
+  if (sessionArgs.includes('--yolo')) input['yolo'] = true;
+  const envelopeRaw = gatewayArg(sessionArgs, '--session-envelope-json');
+  if (envelopeRaw) {
+    input['sessionEnvelope'] = parseGatewayJson('sessions.create', envelopeRaw);
+  }
+  return input;
+}
+
+async function gatewayHttpJson(input: {
+  commandName: RelayCliGatewayCommand;
+  pathName: string;
+  method?: string;
+  body?: unknown;
+  capabilities?: readonly string[];
+}): Promise<unknown> {
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+  if (!token) {
+    printGatewayEnvelope(
+      gatewayError(input.commandName, {
+        code: 'UNAUTHORIZED',
+        message:
+          'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+        retryable: false,
+      }),
+      1
+    );
+  }
+
+  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    'x-relay-cli-gateway': 'v1',
+  };
+  if (input.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (input.capabilities?.length) {
+    headers['x-relay-capabilities'] = input.capabilities.join(',');
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${port}${input.pathName}`, {
+      method: input.method ?? 'GET',
+      headers,
+      ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError(input.commandName, {
+        code: 'SERVER_UNAVAILABLE',
+        message: `could not connect to Relay hub on port ${port}: ${message}`,
+        retryable: true,
+      }),
+      1
+    );
+  }
+
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  if (!res.ok) {
+    const upstream =
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)
+        : undefined;
+    const message = gatewayErrorMessage(res.status, upstream);
+    printGatewayEnvelope(
+      gatewayError(input.commandName, {
+        code: normalizeGatewayErrorCode(res.status, upstream),
+        message,
+        retryable: gatewayErrorRetryable(res.status, upstream),
+        details: sanitizedGatewayErrorDetails(res.status, upstream),
+      }),
+      1
+    );
+  }
+  return body;
+}
+
+function requireGatewaySessionId(
+  commandName: RelayCliGatewayCommand,
+  sessionArgs: string[]
+): string {
+  const id = gatewayArg(sessionArgs, '--id') ?? sessionArgs[0];
+  if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+  return id;
+}
+
+function gatewayUsage(): never {
+  logger.error(
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions interventions|sessions hand-back) --json'
+  );
+  process.exit(1);
+}
+
+function loadGatewayManifestConfig(): Pick<Config, 'frameworks'> | undefined {
+  const configPath = resolveConfigPath();
+  if (!fs.existsSync(configPath)) return undefined;
+  try {
+    return loadConfig(configPath);
+  } catch {
+    return undefined;
+  }
+}
+
+async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
+  const nodeSubcommand = gatewayArgs[1];
+  if (nodeSubcommand === 'manifest') {
+    const config = loadGatewayManifestConfig();
+    const manifest = await getNodeManifest(config ? { config } : {});
+    printGatewayEnvelope(gatewayOk('nodes.manifest', manifest), 0);
+  }
+  if (nodeSubcommand === 'list') {
+    const data = await gatewayHttpJson({
+      commandName: 'nodes.list',
+      pathName: '/nodes',
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk('nodes.list', data), 0);
+  }
+  gatewayInvalid('nodes.list', 'unknown nodes command', { args: gatewayArgs });
+}
+
+async function runGatewaySessionList(): Promise<never> {
+  const sessions = await gatewayHttpJson({
+    commandName: 'sessions.list',
+    pathName: '/sessions',
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.list', { sessions }), 0);
+}
+
+async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.get', sessionArgs);
+  const session = await gatewayHttpJson({
+    commandName: 'sessions.get',
+    pathName: `/sessions/${encodeURIComponent(id)}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.get', session), 0);
+}
+
+async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
+  const input = parseGatewayCreateInput(sessionArgs);
+  const validated = validateAndSanitizeGatewayCreateInput(input);
+  if (validated.ok === false) {
+    printGatewayEnvelope(gatewayError('sessions.create', validated.error), 1);
+  }
+  const nodeId = validated.nodeId;
+  const body = { ...validated.input };
+  delete body['nodeId'];
+  const session = await gatewayHttpJson({
+    commandName: 'sessions.create',
+    pathName: nodeId
+      ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions`
+      : '/sessions',
+    method: 'POST',
+    body,
+    capabilities: [
+      validated.sessionType === 'terminal'
+        ? 'session:create:terminal'
+        : 'session:create:agent',
+      ...(validated.input['controlMode'] === 'agent-driven' ? ['tab:mode:set-agent'] : []),
+    ],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.create', session), 0);
+}
+
+async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.interventions', sessionArgs);
+  const limit = gatewayArg(sessionArgs, '--limit');
+  const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.interventions',
+    pathName: `/sessions/${encodeURIComponent(id)}/interventions${query}`,
+    capabilities: ['session:read', 'tab:intervention:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.interventions', data), 0);
+}
+
+async function runGatewaySessionHandBack(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.handBack', sessionArgs);
+  const latestSeenInterventionEventId = gatewayArg(
+    sessionArgs,
+    '--latest-seen-intervention-event-id'
+  );
+  if (!latestSeenInterventionEventId) {
+    gatewayInvalid(
+      'sessions.handBack',
+      '--latest-seen-intervention-event-id is required'
+    );
+  }
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.handBack',
+    pathName: `/sessions/${encodeURIComponent(id)}/control/hand-back`,
+    method: 'POST',
+    body: { latestSeenInterventionEventId },
+    capabilities: ['session:attach', 'tab:mode:set-agent'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.handBack', data), 0);
+}
+
+async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
+  const sessionSubcommand = gatewayArgs[1];
+  const sessionArgs = gatewayArgs.slice(2);
+  if (sessionSubcommand === 'list') return runGatewaySessionList();
+  if (sessionSubcommand === 'get') return runGatewaySessionGet(sessionArgs);
+  if (sessionSubcommand === 'create') return runGatewaySessionCreate(sessionArgs);
+  if (sessionSubcommand === 'interventions') {
+    return runGatewaySessionInterventions(sessionArgs);
+  }
+  if (sessionSubcommand === 'hand-back') {
+    return runGatewaySessionHandBack(sessionArgs);
+  }
+  gatewayInvalid('sessions.list', 'unknown sessions command', { args: gatewayArgs });
+}
+
+async function runGatewayV1(): Promise<never> {
+  const gatewayArgs = args.slice(1);
+  const json = gatewayArgs.includes('--json');
+  const top = gatewayArgs[0];
+
+  if ((top === '--list' || top === 'list') && json) {
+    printGatewayEnvelope(
+      gatewayOk('contract.list', {
+        commands: RELAY_CLI_GATEWAY_CONTRACT.commandSchemas,
+        errorEnvelopeSchema: RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema,
+      }),
+      0
+    );
+  }
+  if (top === 'schema' && json) {
+    printGatewayEnvelope(gatewayOk('contract.schema', RELAY_CLI_GATEWAY_CONTRACT), 0);
+  }
+  if (!json) gatewayUsage();
+  if (top === 'nodes') return runGatewayNodes(gatewayArgs);
+  if (top === 'sessions') return runGatewaySessions(gatewayArgs);
+  gatewayInvalid('contract.list', 'unknown v1 gateway command', { args: gatewayArgs });
+}
+
+if (command === 'v1') {
+  await runGatewayV1();
+}
+
 if (command === 'dev') {
   await import('../scripts/dev.js');
   await new Promise(() => {});
