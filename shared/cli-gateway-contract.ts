@@ -12,6 +12,7 @@ export type RelayCliGatewayCommand =
   | 'sessions.list'
   | 'sessions.get'
   | 'sessions.create'
+  | 'sessions.renew'
   | 'sessions.attach'
   | 'sessions.detach'
   | 'sessions.stream'
@@ -33,6 +34,10 @@ export type RelayCliGatewayErrorCode =
   | 'SESSION_CONFLICT'
   | 'CONFIRMATION_REQUIRED'
   | 'NODE_OFFLINE'
+  | 'SESSION_EXPIRED'
+  | 'SESSION_REVOKED'
+  | 'SESSION_MISMATCH'
+  | 'SESSION_NON_RENEWABLE'
   | 'CONTROL_STATE_STALE'
   | 'INTERVENTION_ACK_REQUIRED'
   | 'INTERVENTION_ACK_STALE'
@@ -525,6 +530,20 @@ const createSessionInputSchema: RelayJsonSchema = {
   },
 };
 
+const renewSessionInputSchema: RelayJsonSchema = {
+  title: 'RenewSessionInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    sessionId: stringSchema,
+    nodeId: stringSchema,
+    ttlSeconds: { type: 'number', minimum: 1 },
+    expiresAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['id'],
+};
+
 const gatewayErrorSchema: RelayJsonSchema = {
   title: 'RelayCliGatewayErrorEnvelope',
   type: 'object',
@@ -551,6 +570,10 @@ const gatewayErrorSchema: RelayJsonSchema = {
             'SESSION_CONFLICT',
             'CONFIRMATION_REQUIRED',
             'NODE_OFFLINE',
+            'SESSION_EXPIRED',
+            'SESSION_REVOKED',
+            'SESSION_MISMATCH',
+            'SESSION_NON_RENEWABLE',
             'CONTROL_STATE_STALE',
             'INTERVENTION_ACK_REQUIRED',
             'INTERVENTION_ACK_STALE',
@@ -697,6 +720,34 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SERVER_UNAVAILABLE',
       'CONFIRMATION_REQUIRED',
       'NODE_OFFLINE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.renew',
+    cli: ['relay-ide', 'v1', 'sessions', 'renew', '--id', '<session-id>', '--ttl-seconds', '<seconds>', '--json'],
+    summary: 'Renew or extend a scoped session expiry without changing its intent, scope, or peer identity.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach'],
+    inputSchema: renewSessionInputSchema,
+    outputSchema: okOutput('SessionsRenewOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { session: { type: 'object', additionalProperties: true } },
+      required: ['session'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SESSION_EXPIRED',
+      'SESSION_REVOKED',
+      'SESSION_MISMATCH',
+      'SESSION_NON_RENEWABLE',
+      'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
   },

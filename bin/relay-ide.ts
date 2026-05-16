@@ -377,7 +377,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
   );
   process.exit(1);
 }
@@ -999,6 +999,45 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   process.exit(0);
 }
 
+async function runGatewaySessionRenew(sessionArgs: string[]): Promise<never> {
+  const requestedId = requireGatewaySessionId('sessions.renew', sessionArgs);
+  const input: Record<string, unknown> = {};
+  const nodeIdArg = gatewayArg(sessionArgs, '--node-id');
+  if (nodeIdArg) input['nodeId'] = nodeIdArg;
+  const expiresAt = gatewayArg(sessionArgs, '--expires-at');
+  if (expiresAt) input['expiresAt'] = expiresAt;
+  const ttlSeconds = gatewayArg(sessionArgs, '--ttl-seconds');
+  if (ttlSeconds !== undefined) {
+    const numeric = Number(ttlSeconds);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      gatewayInvalid('sessions.renew', '--ttl-seconds must be a positive number', {
+        field: 'ttlSeconds',
+        value: ttlSeconds,
+      });
+    }
+    input['ttlSeconds'] = numeric;
+  }
+  if (input['expiresAt'] === undefined && input['ttlSeconds'] === undefined) {
+    gatewayInvalid('sessions.renew', '--ttl-seconds or --expires-at is required');
+  }
+
+  let sessionId = requestedId;
+  if (!input['nodeId']) {
+    const session = await gatewaySessionDescriptor(requestedId, 'sessions.renew');
+    if (typeof session.nodeId === 'string') input['nodeId'] = session.nodeId;
+    sessionId = session.id ?? requestedId;
+  }
+
+  const result = await gatewayHttpJson({
+    commandName: 'sessions.renew',
+    pathName: `/hub/scoped-sessions/${encodeURIComponent(sessionId)}/renew`,
+    method: 'POST',
+    body: input,
+    capabilities: ['session:attach'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.renew', result), 0);
+}
+
 async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<never> {
   const id = requireGatewaySessionId('sessions.interventions', sessionArgs);
   const limit = gatewayArg(sessionArgs, '--limit');
@@ -1039,6 +1078,7 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'list') return runGatewaySessionList();
   if (sessionSubcommand === 'get') return runGatewaySessionGet(sessionArgs);
   if (sessionSubcommand === 'create') return runGatewaySessionCreate(sessionArgs);
+  if (sessionSubcommand === 'renew') return runGatewaySessionRenew(sessionArgs);
   if (sessionSubcommand === 'attach') return runGatewaySessionAttach(sessionArgs);
   if (sessionSubcommand === 'detach') return runGatewaySessionDetach(sessionArgs);
   if (sessionSubcommand === 'stream') return runGatewaySessionStream(sessionArgs);

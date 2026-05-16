@@ -2,6 +2,7 @@ import * as sessionsModule from './sessions.js';
 import type { CreateResult } from './sessions.js';
 import type { CreateParams } from './sessions.js';
 import type { CreateWebParams } from './web-session-handler.js';
+import type { SessionRenewResult } from './session-envelope-registry.js';
 import type { Session, SessionSummary } from './types.js';
 import type { InterventionRecord, TabControlEvent, ControlActor } from '../shared/control-state.js';
 import type { SessionControlError } from './session-control-api.js';
@@ -21,6 +22,11 @@ export interface NodeSessionBoundary {
   list(): SessionSummary[];
   get(id: string): Session | undefined;
   create(params: CreateParams): CreateResult;
+  renew(input: {
+    id: string;
+    expiresAt: string;
+    now?: Date;
+  }): SessionRenewResult;
   createWeb(params: CreateWebParams): Promise<{ session: SessionSummary }>;
   kill(id: string): void;
   updateDisplayName(
@@ -66,6 +72,7 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   list: sessionsModule.list,
   get: sessionsModule.get,
   create: sessionsModule.create,
+  renew: sessionsModule.renew,
   createWeb: sessionsModule.createWeb,
   kill: sessionsModule.kill,
   updateDisplayName: sessionsModule.updateDisplayName,

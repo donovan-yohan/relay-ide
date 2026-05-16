@@ -23,6 +23,7 @@ import {
   createLocalCompatibilitySessionEnvelope,
   createRoutedNodeSessionEnvelope,
 } from '../shared/session-envelope.js';
+import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -244,6 +245,7 @@ describe('hub-routed node session create and attach', () => {
     });
     const nodeLinks = createHubNodeLinkManager();
     const sessionEnvelopes = createSessionEnvelopeRegistry();
+    const auditEntries: SecurityAuditEntryInput[] = [];
     const app = express();
     app.use(express.json());
     const requireAuth: express.RequestHandler = (req, res, next) => {
@@ -266,6 +268,8 @@ describe('hub-routed node session create and attach', () => {
         registry,
         nodeLinks,
         sessionEnvelopes,
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+        now,
         requireAuth,
         cliGatewayAuth,
       })
@@ -290,6 +294,7 @@ describe('hub-routed node session create and attach', () => {
       port,
       nodeLinks,
       sessionEnvelopes,
+      auditEntries,
       registry,
     };
   }
@@ -318,6 +323,130 @@ describe('hub-routed node session create and attach', () => {
     expect(await createRes.json()).toMatchObject({
       error: { code: 'NODE_OFFLINE', retryable: true },
     });
+  });
+
+  it('renews routed scoped session expiry without changing authority', async () => {
+    const { base, sessionEnvelopes, auditEntries } = await startHub();
+    const nodeId = 'node-a';
+    sessionEnvelopes.upsert(
+      createRoutedNodeSessionEnvelope({
+        sessionId: 'remote-session-1',
+        globalSessionId: `${nodeId}:remote-session-1`,
+        nodeId,
+        repoPath: '/srv/relay-ide',
+        cwd: '/srv/relay-ide',
+        issuedAt: '2026-01-02T03:04:05.000Z',
+        expiresAt: '2026-01-02T03:05:00.000Z',
+        correlationId: 'corr-route-renew',
+      })
+    );
+    const before = sessionEnvelopes.read(`${nodeId}:remote-session-1`);
+
+    const res = await fetch(`${base}/hub/scoped-sessions/remote-session-1/renew`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId, ttlSeconds: 300 }),
+    });
+
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as { session: { expiresAt: string } };
+    expect(payload.session.expiresAt).toBe('2026-01-02T03:09:05.000Z');
+    const after = sessionEnvelopes.read(`${nodeId}:remote-session-1`);
+    expect(after?.expiresAt).toBe('2026-01-02T03:09:05.000Z');
+    expect({
+      intent: after?.intent,
+      scope: after?.scope,
+      peerIdentity: after?.peerIdentity,
+      nodeId: after?.nodeId,
+      globalSessionId: after?.globalSessionId,
+      issuedAt: after?.issuedAt,
+      correlationId: after?.correlationId,
+    }).toEqual({
+      intent: before?.intent,
+      scope: before?.scope,
+      peerIdentity: before?.peerIdentity,
+      nodeId: before?.nodeId,
+      globalSessionId: before?.globalSessionId,
+      issuedAt: before?.issuedAt,
+      correlationId: before?.correlationId,
+    });
+    expect(auditEntries).toContainEqual(
+      expect.objectContaining({
+        eventType: 'grant',
+        decision: 'allow',
+        reasonCode: 'SESSION_RENEWED',
+        sessionId: 'remote-session-1',
+      })
+    );
+  });
+
+  it('denies scoped session renewals for expired revoked mismatched non-renewable and authority mutation cases', async () => {
+    const { base, sessionEnvelopes, auditEntries } = await startHub();
+    const nodeId = 'node-a';
+    for (const [sessionId, expiresAt, revocable] of [
+      ['expired-renew-route', '2026-01-02T03:04:00.000Z', true],
+      ['revoked-renew-route', '2026-01-02T03:10:00.000Z', true],
+      ['mismatch-renew-route', '2026-01-02T03:10:00.000Z', true],
+      ['nonrenew-renew-route', '2026-01-02T03:10:00.000Z', false],
+      ['authority-renew-route', '2026-01-02T03:10:00.000Z', true],
+    ] as const) {
+      sessionEnvelopes.upsert(
+        createRoutedNodeSessionEnvelope({
+          sessionId,
+          globalSessionId: `${nodeId}:${sessionId}`,
+          nodeId,
+          repoPath: '/srv/relay-ide',
+          cwd: '/srv/relay-ide',
+          issuedAt: '2026-01-02T03:04:05.000Z',
+          expiresAt,
+          revocable,
+        })
+      );
+    }
+    sessionEnvelopes.revoke('revoked-renew-route', { nodeId, reason: 'test-revoked' });
+
+    async function renew(sessionId: string, body: Record<string, unknown>) {
+      const res = await fetch(`${base}/hub/scoped-sessions/${sessionId}/renew`, {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, payload: await res.json() };
+    }
+
+    await expect(renew('expired-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+      status: 403,
+      payload: { error: { code: 'SESSION_EXPIRED' } },
+    });
+    await expect(renew('revoked-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+      status: 403,
+      payload: { error: { code: 'SESSION_REVOKED' } },
+    });
+    await expect(
+      renew('mismatch-renew-route', { nodeId: 'node-b', ttlSeconds: 300 })
+    ).resolves.toMatchObject({
+      status: 403,
+      payload: { error: { code: 'SESSION_MISMATCH' } },
+    });
+    await expect(renew('nonrenew-renew-route', { nodeId, ttlSeconds: 300 })).resolves.toMatchObject({
+      status: 403,
+      payload: { error: { code: 'SESSION_NON_RENEWABLE' } },
+    });
+    await expect(
+      renew('authority-renew-route', { nodeId, ttlSeconds: 300, scope: { kind: 'node-cwd' } })
+    ).resolves.toMatchObject({
+      status: 403,
+      payload: { error: { code: 'SESSION_MISMATCH' } },
+    });
+    expect(auditEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'expiry', reasonCode: 'SESSION_EXPIRED' }),
+        expect.objectContaining({ eventType: 'revocation', reasonCode: 'SESSION_REVOKED' }),
+        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_NODE_MISMATCH' }),
+        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_NON_RENEWABLE' }),
+        expect.objectContaining({ eventType: 'denial', reasonCode: 'SESSION_RENEW_AUTHORITY_IMMUTABLE' }),
+      ])
+    );
   });
 
   it('rejects hidden v1 create fields before node-link routing', async () => {

@@ -68,7 +68,10 @@ import {
   LOCAL_COMPATIBILITY_SESSION_INTENT,
   normalizeSessionEnvelope,
 } from '../shared/session-envelope.js';
-import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
+import {
+  sessionEnvelopeRegistry,
+  type SessionRenewResult,
+} from './session-envelope-registry.js';
 import {
   acknowledgeHumanInput,
   applyControlModeAction,
@@ -513,6 +516,31 @@ function create({
 
 function get(id: string): Session | undefined {
   return sessions.get(id);
+}
+
+function renew(input: {
+  id: string;
+  expiresAt: string;
+  now?: Date;
+}): SessionRenewResult {
+  const session = sessions.get(input.id);
+  if (session) {
+    const summary = list().find((candidate) => candidate.id === input.id);
+    if (summary?.sessionEnvelope) {
+      session.sessionEnvelope = summary.sessionEnvelope;
+      sessionEnvelopeRegistry.upsert(summary.sessionEnvelope);
+    }
+  }
+  const result = sessionEnvelopeRegistry.renew({
+    sessionId: input.id,
+    nodeId: DEFAULT_LOCAL_NODE_ID,
+    expiresAt: input.expiresAt,
+    ...(input.now ? { now: input.now } : {}),
+  });
+  if (result.ok === true && session) {
+    session.sessionEnvelope = result.record.envelope;
+  }
+  return result;
 }
 
 function list(): SessionSummary[] {
@@ -1873,6 +1901,7 @@ async function createWeb(
 export {
   configure,
   create,
+  renew,
   createWeb,
   get,
   list,

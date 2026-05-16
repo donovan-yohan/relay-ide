@@ -262,4 +262,131 @@ describe('session envelope registry', () => {
     ]);
     expect(registry.listActive(new Date('2026-01-02T03:05:00.000Z'))).toHaveLength(1);
   });
+
+  it('renews only expiry while preserving scoped authority', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const envelope = registry.create({
+      sessionId: 'renewable-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:renewable-session',
+      cwd: '/srv/app',
+      repoPath: '/srv/app',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      expiresAt: '2026-01-02T03:05:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+      correlationId: 'corr-renew',
+      auditId: 'audit-renew',
+    });
+    const beforeAuthority = {
+      intent: envelope.intent,
+      scope: envelope.scope,
+      peerIdentity: envelope.peerIdentity,
+      nodeId: envelope.nodeId,
+      globalSessionId: envelope.globalSessionId,
+      issuedAt: envelope.issuedAt,
+      correlationId: envelope.correlationId,
+      auditId: envelope.auditId,
+    };
+
+    const result = registry.renew({
+      sessionId: envelope.sessionId,
+      nodeId: envelope.nodeId,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      now: new Date('2026-01-02T03:04:30.000Z'),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      previousSummary: { expiresAt: '2026-01-02T03:05:00.000Z' },
+      summary: { expiresAt: '2026-01-02T03:10:00.000Z', status: 'active' },
+    });
+    const renewed = registry.read(envelope.globalSessionId);
+    expect(renewed?.expiresAt).toBe('2026-01-02T03:10:00.000Z');
+    expect({
+      intent: renewed?.intent,
+      scope: renewed?.scope,
+      peerIdentity: renewed?.peerIdentity,
+      nodeId: renewed?.nodeId,
+      globalSessionId: renewed?.globalSessionId,
+      issuedAt: renewed?.issuedAt,
+      correlationId: renewed?.correlationId,
+      auditId: renewed?.auditId,
+    }).toEqual(beforeAuthority);
+  });
+
+  it('denies renewal for expired, revoked, mismatched, and non-renewable sessions', () => {
+    const registry = createSessionEnvelopeRegistry();
+    const issuedAt = '2026-01-02T03:04:05.000Z';
+    const active = registry.create({
+      sessionId: 'active-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:active-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    const expired = registry.create({
+      sessionId: 'expired-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:expired-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:04:10.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    const revoked = registry.create({
+      sessionId: 'revoked-renewal-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:revoked-renewal-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    registry.revoke(revoked.sessionId, { nodeId: revoked.nodeId, reason: 'test-revoke' });
+    const nonRenewable = registry.create({
+      sessionId: 'non-renewable-session',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:non-renewable-session',
+      cwd: '/srv/app',
+      issuedAt,
+      expiresAt: '2026-01-02T03:10:00.000Z',
+      revocable: false,
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+
+    expect(
+      registry.renew({
+        sessionId: expired.sessionId,
+        nodeId: expired.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_EXPIRED' } });
+    expect(
+      registry.renew({
+        sessionId: revoked.sessionId,
+        nodeId: revoked.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_REVOKED' } });
+    expect(
+      registry.renew({
+        sessionId: active.sessionId,
+        nodeId: 'node-b',
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_MISMATCH' } });
+    expect(
+      registry.renew({
+        sessionId: nonRenewable.sessionId,
+        nodeId: nonRenewable.nodeId,
+        expiresAt: '2026-01-02T03:20:00.000Z',
+        now: new Date('2026-01-02T03:05:00.000Z'),
+      })
+    ).toMatchObject({ ok: false, error: { code: 'SESSION_NON_RENEWABLE' } });
+  });
 });

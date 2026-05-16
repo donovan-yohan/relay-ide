@@ -47,8 +47,24 @@ export interface SessionLifecycleValidationContext {
   now?: Date;
 }
 
+export interface SessionRenewInput {
+  sessionId: string;
+  nodeId?: string;
+  expiresAt: string;
+  now?: Date;
+}
+
 export type SessionLifecycleValidation =
   | { ok: true; record: SessionEnvelopeRecord; summary: ScopedSessionSummary }
+  | { ok: false; error: RelayNodeError; record?: SessionEnvelopeRecord; summary?: ScopedSessionSummary };
+
+export type SessionRenewResult =
+  | {
+      ok: true;
+      record: SessionEnvelopeRecord;
+      previousSummary: ScopedSessionSummary;
+      summary: ScopedSessionSummary;
+    }
   | { ok: false; error: RelayNodeError; record?: SessionEnvelopeRecord; summary?: ScopedSessionSummary };
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
@@ -427,6 +443,60 @@ export class InMemorySessionEnvelopeRegistry {
       };
     }
     return { ok: true, record, summary };
+  }
+
+  renew(input: SessionRenewInput): SessionRenewResult {
+    const now = nowDate(input.now);
+    const lifecycle = this.validate({
+      sessionId: input.sessionId,
+      ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+      now,
+    });
+    if (lifecycle.ok === false) return lifecycle;
+
+    if (!lifecycle.record.envelope.revocable) {
+      return {
+        ok: false,
+        record: lifecycle.record,
+        summary: lifecycle.summary,
+        error: relaySessionError(
+          'SESSION_NON_RENEWABLE',
+          'SESSION_NON_RENEWABLE',
+          'scoped session is not renewable',
+          {
+            sessionId: lifecycle.summary.sessionId,
+            nodeId: lifecycle.summary.nodeId,
+          }
+        ),
+      };
+    }
+
+    const expiryMs = Date.parse(input.expiresAt);
+    if (!Number.isFinite(expiryMs) || expiryMs <= now.getTime()) {
+      return {
+        ok: false,
+        record: lifecycle.record,
+        summary: lifecycle.summary,
+        error: relaySessionError(
+          'SESSION_EXPIRED',
+          'SESSION_RENEWAL_EXPIRES_IN_PAST',
+          'renewed scoped session expiry must be in the future',
+          { expiresAt: input.expiresAt }
+        ),
+      };
+    }
+
+    const previousSummary = lifecycle.summary;
+    lifecycle.record.envelope = {
+      ...lifecycle.record.envelope,
+      expiresAt: new Date(expiryMs).toISOString(),
+    };
+    return {
+      ok: true,
+      record: lifecycle.record,
+      previousSummary,
+      summary: lifecycleSummary(lifecycle.record, now),
+    };
   }
 
   delete(sessionIdOrGlobalId: string, nodeId?: string): boolean {
