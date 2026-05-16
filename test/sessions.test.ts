@@ -61,7 +61,8 @@ function delay(ms: number): Promise<void> {
 }
 
 async function waitForTmuxSession(name: string): Promise<void> {
-  for (let i = 0; i < 20; i++) {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
     try {
       await execTmux(['has-session', '-t', name]);
       return;
@@ -80,23 +81,32 @@ async function waitForSessionRemoval(id: string): Promise<void> {
   expect(sessions.get(id)).toBeUndefined();
 }
 
-afterEach(() => {
+afterEach(async () => {
   // Kill any remaining sessions created during tests. Some restore tests add
   // sessions directly from disk, so cleanup must inspect the live registry too.
   const ids = new Set([
     ...createdIds,
     ...sessions.list().map((session) => session.id),
   ]);
+  const tmuxSessionNames: string[] = [];
   for (const id of ids) {
     try {
       const session = sessions.get(id);
       if (session) {
+        if (session.mode === 'pty' && session.tmuxSessionName) {
+          tmuxSessionNames.push(session.tmuxSessionName);
+        }
         sessions.kill(id);
       }
     } catch {
       // Already killed or exited, ignore
     }
   }
+  await Promise.all(
+    tmuxSessionNames.map((name) =>
+      execTmux(['kill-session', '-t', name]).catch(() => {})
+    )
+  );
   createdIds.length = 0;
 });
 

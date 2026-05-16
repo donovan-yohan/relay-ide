@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createLocalLogFollower,
@@ -163,6 +164,64 @@ describe('local Relay logs', () => {
       fs.appendFileSync(logFile, 'appended\n');
       await waitFor(() => output.includes('appended'));
       expect(output).toBe('appended\n');
+    } finally {
+      follower.close();
+    }
+  });
+
+  it('retries an unread append after an async stream error', async () => {
+    const dir = makeTempDir();
+    const logFile = path.join(dir, 'relay-ide.log');
+    fs.writeFileSync(logFile, 'existing\n');
+    const failingStream = new PassThrough();
+    let failNextRead = true;
+    const createReadStream = ((...args: Parameters<typeof fs.createReadStream>) => {
+      if (failNextRead) {
+        failNextRead = false;
+        queueMicrotask(() => failingStream.destroy(new Error('simulated stream failure')));
+        return failingStream as ReturnType<typeof fs.createReadStream>;
+      }
+      return fs.createReadStream(...args);
+    }) as typeof fs.createReadStream;
+    const errors: Error[] = [];
+    let output = '';
+    const follower = createLocalLogFollower({
+      files: [logFile],
+      pollIntervalMs: 20,
+      createReadStream,
+      write: (chunk) => {
+        output += chunk;
+      },
+      onError: (error) => errors.push(error),
+    });
+
+    try {
+      fs.appendFileSync(logFile, 'after-error\n');
+      await waitFor(() => errors.some((error) => error.message === 'simulated stream failure'));
+      await waitFor(() => output.includes('after-error'));
+      expect(output).toBe('after-error\n');
+    } finally {
+      follower.close();
+    }
+  });
+
+  it('follows a truncated log file from the beginning', async () => {
+    const dir = makeTempDir();
+    const logFile = path.join(dir, 'relay-ide.log');
+    fs.writeFileSync(logFile, 'existing-long-line\n');
+    let output = '';
+    const follower = createLocalLogFollower({
+      files: [logFile],
+      pollIntervalMs: 20,
+      write: (chunk) => {
+        output += chunk;
+      },
+    });
+
+    try {
+      fs.writeFileSync(logFile, 'new\n');
+      await waitFor(() => output.includes('new'));
+      expect(output).toBe('new\n');
     } finally {
       follower.close();
     }
