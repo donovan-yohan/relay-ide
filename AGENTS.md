@@ -39,7 +39,8 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Hub/node pkg    | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands    |
 | Node bootstrap  | `docs/RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
 | Federated dev   | `docs/FEDERATED_DEV.md`            | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
-| Federated Relay | `docs/federated-relay.md`          | Hub/node architecture, pairing, routing, ADRs                               |
+| Federated Relay | `docs/federated-relay.md`           | Hub/node architecture, pairing, routing, ADRs                               |
+| CLI gateway     | `docs/CLI_GATEWAY.md`              | Versioned `relay-ide v1 ... --json` contract for external agent adapters    |
 | Learnings       | `docs/LEARNINGS.md`                | Persistent cross-session learnings                                          |
 | Project skills  | `.chalk/skills/<name>/SKILL.md`    | Repo-local skills (see §Skills)                                             |
 | Work tracking   | GitHub Issues                      | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                     |

@@ -126,6 +126,8 @@ import type {
   WorkspaceSettings,
 } from './types.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
+import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
@@ -1150,6 +1152,43 @@ async function main(): Promise<void> {
     return match?.[1]?.trim() ?? '';
   }
 
+  function isCliGatewayV1Request(req: express.Request): boolean {
+    return req.header('x-relay-cli-gateway') === 'v1';
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  function sendGatewayCreateValidationError(
+    res: express.Response,
+    error: RelayCliGatewayError
+  ): void {
+    res.status(400).json({ error });
+  }
+
+  function sessionCreateBodyFromRequest(
+    req: express.Request,
+    res: express.Response
+  ): Record<string, unknown> | null {
+    const body = req.body as unknown;
+    if (!isCliGatewayV1Request(req)) return isRecord(body) ? body : {};
+    if (!isRecord(body)) {
+      sendGatewayCreateValidationError(res, {
+        code: 'INVALID_ARGUMENT',
+        message: 'sessions.create input JSON must be an object',
+        retryable: false,
+      });
+      return null;
+    }
+    const validated = validateAndSanitizeLocalGatewayCreateInput(body);
+    if (validated.ok === false) {
+      sendGatewayCreateValidationError(res, validated.error);
+      return null;
+    }
+    return validated.input;
+  }
+
   const requireAuth: express.RequestHandler = (req, res, next) => {
     if (process.env.NO_PIN === '1') {
       next();
@@ -1160,6 +1199,21 @@ async function main(): Promise<void> {
       return;
     }
     next();
+  };
+
+  const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
+    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+      next();
+      return;
+    }
+    if (
+      req.header('x-relay-cli-gateway') === 'v1' &&
+      validateScopedToken(bearerScopedToken(req))
+    ) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: 'Unauthorized' });
   };
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
@@ -1185,6 +1239,7 @@ async function main(): Promise<void> {
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
       requireAuth,
+      cliGatewayAuth: requireCliGatewayAuth,
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
@@ -1933,7 +1988,7 @@ async function main(): Promise<void> {
   // GET /sessions — enrich with live branch from git (rate-limited to avoid spawning git on every poll)
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
-  app.get('/sessions', requireAuth, async (_req, res) => {
+  app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
       Promise.resolve(localRelayNode.sessions.list()),
       aggregateRemoteSessions({
@@ -2523,7 +2578,9 @@ async function main(): Promise<void> {
   });
 
   // POST /sessions — unified endpoint for agent and terminal sessions
-  app.post('/sessions', requireAuth, async (req, res) => {
+  app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
+    const createBody = sessionCreateBodyFromRequest(req, res);
+    if (!createBody) return;
     const {
       repoPath,
       worktreePath,
@@ -2544,7 +2601,7 @@ async function main(): Promise<void> {
       continuePolicy: explicitContinuePolicy,
       sessionLane,
       ticketContext,
-    } = req.body as {
+    } = createBody as {
       repoPath?: string;
       worktreePath?: string | null;
       type?: 'agent' | 'terminal';

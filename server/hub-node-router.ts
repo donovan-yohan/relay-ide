@@ -75,6 +75,8 @@ import {
   type ConfirmationDecision,
   type ConfirmationFailure,
 } from './confirmation-challenges.js';
+import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
+import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
@@ -88,6 +90,7 @@ export interface RoutedSessionAuditSink {
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  cliGatewayAuth?: express.RequestHandler;
   scopedSessionAuth?: express.RequestHandler;
   repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
@@ -304,6 +307,59 @@ export function bodyRecord(req: Request): Record<string, unknown> {
   return typeof req.body === 'object' && req.body !== null
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCliGatewayV1Request(req: Request): boolean {
+  return req.header('x-relay-cli-gateway') === 'v1';
+}
+
+function sendGatewayCreateValidationError(
+  res: Response,
+  error: RelayCliGatewayError
+): void {
+  res.status(400).json({ error });
+}
+
+function routedGatewayCreateBodyFromRequest(
+  req: Request,
+  res: Response,
+  routeNodeId: string
+): Record<string, unknown> | null {
+  const body = req.body as unknown;
+  if (!isCliGatewayV1Request(req)) return paramsWithoutConfirmation(bodyRecord(req));
+  if (!isRecord(body)) {
+    sendGatewayCreateValidationError(res, {
+      code: 'INVALID_ARGUMENT',
+      message: 'sessions.create input JSON must be an object',
+      retryable: false,
+    });
+    return null;
+  }
+
+  const validationInput = paramsWithoutConfirmation(body);
+  if (validationInput['nodeId'] === undefined) validationInput['nodeId'] = routeNodeId;
+  const validated = validateAndSanitizeGatewayCreateInput(validationInput);
+  if (validated.ok === false) {
+    sendGatewayCreateValidationError(res, validated.error);
+    return null;
+  }
+  if (validated.nodeId !== routeNodeId) {
+    sendGatewayCreateValidationError(res, {
+      code: 'INVALID_ARGUMENT',
+      message: 'sessions.create nodeId must match route nodeId',
+      retryable: false,
+      details: { field: 'nodeId', nodeId: routeNodeId, bodyNodeId: validated.nodeId ?? null },
+    });
+    return null;
+  }
+
+  const routedBody = { ...validated.input };
+  delete routedBody['nodeId'];
+  return routedBody;
 }
 
 function confirmationTokenFromRequest(req: Request, body: Record<string, unknown>): string | undefined {
@@ -1086,6 +1142,7 @@ export function createHubNodeRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
+  const cliGatewayAuth = options.cliGatewayAuth ?? requireAuth;
   const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
   const confirmations = options.confirmations ?? createConfirmationChallengeStore();
@@ -1299,7 +1356,7 @@ export function createHubNodeRouter(
     }
   });
 
-  router.get('/nodes', requireAuth, (_req, res) => {
+  router.get('/nodes', cliGatewayAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
   });
 
@@ -1497,12 +1554,14 @@ export function createHubNodeRouter(
     res.json({ session: summary });
   });
 
-  router.post('/hub/nodes/:nodeId/sessions', requireAuth, async (req, res) => {
+  router.post('/hub/nodes/:nodeId/sessions', cliGatewayAuth, async (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {
       sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
       return;
     }
+    const routedBody = routedGatewayCreateBodyFromRequest(req, res, nodeId);
+    if (!routedBody) return;
     const node = registry
       .listNodes()
       .find((candidate) => candidate.nodeId === nodeId);
@@ -1544,8 +1603,6 @@ export function createHubNodeRouter(
       return;
     }
 
-    const body = bodyRecord(req);
-    const routedBody = paramsWithoutConfirmation(body);
     const lifecycleError = lifecycleInputError(routedBody);
     if (lifecycleError) {
       sendRelayError(
