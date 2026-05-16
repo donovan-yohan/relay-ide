@@ -39,9 +39,8 @@ import {
   normalizeControlStateSummary,
 } from '../shared/control-state.js';
 import {
-  ROUTED_NODE_SESSION_INTENT,
+  createRoutedNodeSessionEnvelope,
   isSessionEnvelope,
-  normalizeSessionEnvelope,
 } from '../shared/session-envelope.js';
 import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 
@@ -181,6 +180,9 @@ export function scopedNodeSession(
   delete scoped.repoInstanceId;
   delete scoped.worktreeInstanceId;
 
+  const existingEnvelope = isSessionEnvelope(scoped.sessionEnvelope)
+    ? scoped.sessionEnvelope
+    : null;
   const globalSessionId = createGlobalSessionId(nodeId, scoped.id);
   const result = {
     ...scoped,
@@ -201,22 +203,24 @@ export function scopedNodeSession(
   };
   return {
     ...result,
-    sessionEnvelope: normalizeSessionEnvelope(
-      scoped.sessionEnvelope,
-      {
-        sessionId: scoped.id,
-        nodeId,
-        globalSessionId,
-        cwd: scoped.cwd,
-        ...(scoped.repoPath ? { repoPath: scoped.repoPath } : {}),
-        ...(scoped.worktreePath !== undefined
-          ? { worktreePath: scoped.worktreePath }
-          : {}),
-        issuedAt: scoped.createdAt,
-        peerIdentity: { kind: 'relay-node', nodeId },
-      },
-      ROUTED_NODE_SESSION_INTENT
-    ),
+    sessionEnvelope: createRoutedNodeSessionEnvelope({
+      sessionId: scoped.id,
+      nodeId,
+      globalSessionId,
+      cwd: scoped.cwd,
+      ...(scoped.repoPath ? { repoPath: scoped.repoPath } : {}),
+      ...(scoped.worktreePath !== undefined
+        ? { worktreePath: scoped.worktreePath }
+        : {}),
+      issuedAt: existingEnvelope?.issuedAt ?? scoped.createdAt,
+      expiresAt: existingEnvelope?.expiresAt ?? null,
+      revocable: existingEnvelope?.revocable ?? true,
+      peerIdentity: { kind: 'relay-node', nodeId },
+      ...(existingEnvelope?.correlationId
+        ? { correlationId: existingEnvelope.correlationId }
+        : {}),
+      ...(existingEnvelope?.auditId ? { auditId: existingEnvelope.auditId } : {}),
+    }),
   };
 }
 
