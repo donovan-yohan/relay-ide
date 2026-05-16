@@ -212,6 +212,29 @@ describe('read-only File RPC foundation', () => {
     expect('startOffset' in tail && tail.startOffset).toBeGreaterThan(0);
   });
 
+  it('preserves a trailing empty line when tailing one line from a blank final line', async () => {
+    const root = fixtureRoot();
+    const logFile = path.join(root, 'blank-final-line.log');
+    fs.writeFileSync(logFile, 'one\ntwo\n\n');
+
+    const tail = await executeLocalFileRpc('tail', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: logFile,
+      maxBytes: 64,
+      maxLines: 1,
+    });
+
+    expect(tail).toMatchObject({
+      operation: 'tail',
+      content: '\n',
+      truncatedBytes: false,
+      truncatedLines: true,
+      maxLines: 1,
+    });
+  });
+
   it('denies tail for directories and missing files with typed File RPC reasons', async () => {
     const root = fixtureRoot();
 

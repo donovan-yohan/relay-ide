@@ -502,7 +502,7 @@ function tailTextByLines(content: string, maxLines: number | undefined): {
   if (lines.length <= maxLines) return { content, truncatedLines: false };
   const selected = lines.slice(-maxLines).join('\n');
   return {
-    content: selected ? `${selected}${endsWithNewline ? '\n' : ''}` : '',
+    content: `${selected}${endsWithNewline ? '\n' : ''}`,
     truncatedLines: true,
   };
 }
