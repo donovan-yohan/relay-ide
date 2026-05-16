@@ -29,6 +29,7 @@ import {
   type LocalLogRole,
 } from '../server/local-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
+import { writeNodeCredentialFile } from './node-credential-file.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -526,12 +527,7 @@ function nodeCredentialPath(): string {
 }
 
 function writeNodeCredential(credential: unknown): void {
-  fs.mkdirSync(service.CONFIG_DIR, { recursive: true });
-  const credentialPath = nodeCredentialPath();
-  fs.writeFileSync(credentialPath, `${JSON.stringify(credential, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  fs.chmodSync(credentialPath, 0o600);
+  writeNodeCredentialFile(nodeCredentialPath(), credential);
 }
 
 function loadNodeCredential(): { nodeId: string; token: string; credentialId?: string } {
