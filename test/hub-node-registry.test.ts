@@ -709,7 +709,7 @@ describe('hub node registry', () => {
     });
   });
 
-  it('isolates revoke listener exceptions and continues notifying later listeners', () => {
+  it('isolates status listener exceptions and continues notifying later listeners', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       withTmpRegistry((registry) => {
@@ -719,11 +719,11 @@ describe('hub node registry', () => {
         });
         const notifiedNodeIds: string[] = [];
 
-        registry.onNodeRevoked(() => {
+        registry.onNodeStatus(() => {
           throw new Error('listener should not leak');
         });
-        registry.onNodeRevoked((nodeId) => {
-          notifiedNodeIds.push(nodeId);
+        registry.onNodeStatus((event) => {
+          if (event.status === 'revoked') notifiedNodeIds.push(event.nodeId);
         });
 
         expect(() => registry.revokeNode(exchanged.node.nodeId)).not.toThrow();
@@ -736,7 +736,7 @@ describe('hub node registry', () => {
         });
         expect(warnSpy).toHaveBeenCalledWith(
           expect.stringContaining(
-            '[hub-node-registry] hub node revoke listener failed; continuing revoke notifications for node %s'
+            '[hub-node-registry] hub node status listener failed; continuing status notifications for node %s'
           ),
           exchanged.node.nodeId
         );

@@ -484,6 +484,21 @@ function setupWebSocket(
     broadcastEvent(type, data);
   });
 
+  const unsubscribeNodeStatus = hubNodeRegistry?.onNodeStatus((event) => {
+    broadcastEvent('node.status', { ...event });
+  });
+
+  const nodeStatusRefreshTimer = hubNodeRegistry
+    ? setInterval(() => {
+        hubNodeRegistry.refreshNodeStatuses();
+      }, 5_000)
+    : null;
+  nodeStatusRefreshTimer?.unref?.();
+  server.on('close', () => {
+    unsubscribeNodeStatus?.();
+    if (nodeStatusRefreshTimer) clearInterval(nodeStatusRefreshTimer);
+  });
+
   server.on('upgrade', (request, socket, head) => {
     const requestPath = request.url
       ? new URL(request.url, 'http://relay.local').pathname.replace(/\/$/, '')

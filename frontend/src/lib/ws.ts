@@ -22,6 +22,8 @@ import { resolveSessionByKey, resolveSessionKey } from './session-keys.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 import type { TabControlEvent } from '../../../shared/control-state.js';
+import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
+import type { NodeManifest } from '../../../shared/node-manifest.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -102,6 +104,13 @@ export type EventMessage =
     }
   | { type: 'browser-tab-opened'; filePath: string; token: string }
   | { type: 'browser-tab-refreshed'; filePath: string }
+  | {
+      type: 'node.status';
+      nodeId: string;
+      status: HubNodeStatus;
+      lastSeenAt: string;
+      manifest?: NodeManifest;
+    }
   | { type: 'server-restarting'; reason?: string };
 
 type EventCallback = (msg: EventMessage) => void;

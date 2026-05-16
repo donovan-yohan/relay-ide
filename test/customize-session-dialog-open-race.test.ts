@@ -3,6 +3,7 @@
 import React, { act, createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
 import type { CustomizeSessionDialogHandle } from '../frontend/src/components/dialogs/CustomizeSessionDialog.js';
 import type { AggregatedRepoInventoryResponse } from '../shared/repo-inventory.js';
@@ -295,9 +296,18 @@ async function renderAndOpen(
   document.body.appendChild(container);
   root = createRoot(container);
   const ref = createRef<CustomizeSessionDialogHandle>();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
 
   await act(async () => {
-    root!.render(React.createElement(CustomizeSessionDialog, { ref }));
+    root!.render(
+      React.createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        React.createElement(CustomizeSessionDialog, { ref })
+      )
+    );
   });
   await act(async () => {
     await ref.current!.open(workspace);
@@ -530,9 +540,18 @@ describe('CustomizeSessionDialog open races', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     const ref = createRef<CustomizeSessionDialogHandle>();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
 
     await act(async () => {
-      root!.render(React.createElement(CustomizeSessionDialog, { ref }));
+      root!.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(CustomizeSessionDialog, { ref })
+        )
+      );
     });
 
     let firstOpen!: Promise<void>;

@@ -160,6 +160,30 @@ Capability checks currently use the #427 placeholder header contract: omitted `x
   - `stale` → `offline` after 90s without heartbeat
 - Heartbeat state is persisted to disk with a 5s debounce (`DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS`).
 
+### Browser node-status events (#466)
+
+The authenticated browser event WebSocket (`/ws/events`) emits node status transitions as compact cache-update envelopes. The browser still uses `GET /nodes` for the initial node snapshot, window-refocus/manual refreshes, and one reconnect resync after the event socket reconnects; `node.status` only replaces interval polling for observed transitions.
+
+```json
+{
+  "type": "node.status",
+  "nodeId": "node_dev_macbook",
+  "status": "online",
+  "lastSeenAt": "2026-05-16T17:42:00.000Z",
+  "manifest": {
+    "schemaVersion": 1,
+    "platform": "darwin",
+    "arch": "arm64",
+    "hostname": "dev-macbook",
+    "relayVersion": "0.1.0",
+    "generatedAt": "2026-05-16T17:42:00.000Z",
+    "capabilities": {}
+  }
+}
+```
+
+`status` is one of `online`, `stale`, `offline`, or `revoked`. `manifest` is optional and is present when the transition came from a fresh node hello/heartbeat; stale/offline/revoked transitions usually include only `nodeId`, `status`, and `lastSeenAt`.
+
 ## Pairing and Credential Lifecycle
 
 ### Step 1: Generate a pair token

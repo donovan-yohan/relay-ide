@@ -101,8 +101,8 @@ export function HubNodeDashboardPanel() {
   const { data: nodes } = useQuery({
     queryKey: ['hub-nodes'],
     queryFn: fetchHubNodes,
-    staleTime: 15_000,
-    refetchInterval: 15_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
     retry: false,
   });
 

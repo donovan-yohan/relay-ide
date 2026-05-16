@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import TuiCheckbox from '../TuiCheckbox.js';
@@ -887,6 +888,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
   function CustomizeSessionDialog({ onSessionCreated }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
     const openRequestIdRef = useRef(0);
+    const queryClient = useQueryClient();
     const [workspacePath, setWorkspacePath] = useState('');
     const [worktreePath, setWorktreePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState('');
@@ -940,6 +942,16 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const selectedRemoteHome = cleanCwd(selectedRemoteNode?.homeDir);
 
     useEffect(() => {
+      return queryClient.getQueryCache().subscribe((event) => {
+        if (event.query.queryKey[0] !== 'hub-nodes') return;
+        const nextNodes = event.query.state.data;
+        if (Array.isArray(nextNodes)) {
+          setNodes(nextNodes as HubNodeSummary[]);
+        }
+      });
+    }, [queryClient]);
+
+    useEffect(() => {
       if (!remoteNodeSelected) {
         setRemoteCwd('');
         return;
@@ -984,6 +996,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           setInventory(inventoryResult.value);
         }
         if (nodesResult.status === 'fulfilled') {
+          queryClient.setQueryData(['hub-nodes'], nodesResult.value);
           setNodes(nodesResult.value);
         }
         const config = useConfigStore.getState();

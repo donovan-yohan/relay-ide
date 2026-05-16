@@ -145,7 +145,8 @@ export function TerminalNodePicker({
     queryKey: ['hub-nodes'],
     queryFn: fetchHubNodes,
     enabled: open,
-    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
   });
 
   const choices = useMemo(() => buildChoices(nodes), [nodes]);
