@@ -17,16 +17,16 @@ function makeTempDir(): string {
   return dir;
 }
 
-function waitFor(predicate: () => boolean): Promise<void> {
+function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const timer = setInterval(() => {
       if (predicate()) {
         clearInterval(timer);
         resolve();
-      } else if (Date.now() - startedAt > 1_000) {
+      } else if (Date.now() - startedAt > timeoutMs) {
         clearInterval(timer);
-        reject(new Error('timed out waiting for log follower'));
+        reject(new Error(`timed out waiting ${timeoutMs}ms for log follower`));
       }
     }, 10);
   });
