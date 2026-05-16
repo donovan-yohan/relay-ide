@@ -5,11 +5,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import express from 'express';
 import { WebSocket } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createRepoFeatureRouter } from '../server/features/repo-router.js';
-import { createHubNodeLinkManager } from '../server/hub-node-link.js';
+import { createHubNodeLinkManager, HubNodeLinkError } from '../server/hub-node-link.js';
 import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
@@ -104,6 +104,21 @@ function tmpRegistry(now = () => new Date('2026-01-02T03:04:05.000Z')) {
     now,
   });
   return { tmpDir, registry };
+}
+
+function mutateStoredNode(
+  tmpDir: string,
+  nodeId: string,
+  mutate: (node: Record<string, unknown>) => void
+): void {
+  const storagePath = path.join(tmpDir, 'nodes.json');
+  const state = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+    nodes: Array<Record<string, unknown>>;
+  };
+  const node = state.nodes.find((candidate) => candidate['nodeId'] === nodeId);
+  if (!node) throw new Error(`missing stored node ${nodeId}`);
+  mutate(node);
+  fs.writeFileSync(storagePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 
 function repoInventoryReport(
@@ -1529,6 +1544,220 @@ describe('hub node routes and link', () => {
       credentialRotation: { state: 'stable' },
     });
     expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+  });
+
+  it('gates hub node log proxy before RPC and forwards remote log errors/snapshots', async () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const { tmpDir, registry } = tmpRegistry(() => now);
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const headers = { 'x-test-auth': 'yes' };
+
+    const offlineRequest = vi.fn();
+    const offlineApp = express();
+    offlineApp.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks: {
+          hasActiveNode: () => false,
+          request: offlineRequest,
+        } as never,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        now: () => now,
+      })
+    );
+    const offlineServer = http.createServer(offlineApp);
+    const offlinePort = await listen(offlineServer);
+    cleanup.push(() => close(offlineServer));
+    const offlineRes = await fetch(
+      `http://127.0.0.1:${offlinePort}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/logs`,
+      { headers }
+    );
+    expect(offlineRes.status).toBe(404);
+    expect(await offlineRes.json()).toMatchObject({
+      error: { code: 'NODE_OFFLINE', retryable: true },
+    });
+    expect(offlineRequest).not.toHaveBeenCalled();
+
+    mutateStoredNode(tmpDir, exchanged.node.nodeId, (node) => {
+      node['protocolVersion'] = '1.1';
+    });
+    const skewRegistry = createHubNodeRegistry({
+      storagePath: path.join(tmpDir, 'nodes.json'),
+      now: () => now,
+    });
+    const skewRequest = vi.fn();
+    const skewApp = express();
+    skewApp.use(
+      createHubNodeRouter({
+        registry: skewRegistry,
+        nodeLinks: { hasActiveNode: () => true, request: skewRequest } as never,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        now: () => now,
+      })
+    );
+    const skewServer = http.createServer(skewApp);
+    const skewPort = await listen(skewServer);
+    cleanup.push(() => close(skewServer));
+    const skewRes = await fetch(
+      `http://127.0.0.1:${skewPort}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/logs`,
+      { headers }
+    );
+    expect(skewRes.status).toBe(400);
+    expect(await skewRes.json()).toMatchObject({
+      error: { code: 'VERSION_SKEW', retryable: false },
+    });
+    expect(skewRequest).not.toHaveBeenCalled();
+
+    mutateStoredNode(tmpDir, exchanged.node.nodeId, (node) => {
+      node['protocolVersion'] = '1.0';
+      const acl = node['acl'] as { grants: { allowed: string[] } };
+      acl.grants.allowed = acl.grants.allowed.filter((bit) => bit !== 'rpc:fs:tail');
+    });
+    const deniedRegistry = createHubNodeRegistry({
+      storagePath: path.join(tmpDir, 'nodes.json'),
+      now: () => now,
+    });
+    const deniedRequest = vi.fn();
+    const deniedApp = express();
+    deniedApp.use(
+      createHubNodeRouter({
+        registry: deniedRegistry,
+        nodeLinks: { hasActiveNode: () => true, request: deniedRequest } as never,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        now: () => now,
+      })
+    );
+    const deniedServer = http.createServer(deniedApp);
+    const deniedPort = await listen(deniedServer);
+    cleanup.push(() => close(deniedServer));
+    const deniedRes = await fetch(
+      `http://127.0.0.1:${deniedPort}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/logs`,
+      { headers }
+    );
+    expect(deniedRes.status).toBe(401);
+    expect(await deniedRes.json()).toMatchObject({
+      error: {
+        code: 'UNAUTHORIZED',
+        details: { reasonCode: 'POLICY_CAPABILITY_DENIED' },
+      },
+    });
+    expect(deniedRequest).not.toHaveBeenCalled();
+
+    mutateStoredNode(tmpDir, exchanged.node.nodeId, (node) => {
+      const acl = node['acl'] as { grants: { allowed: string[] } };
+      acl.grants.allowed.push('rpc:fs:tail');
+    });
+    const routeRegistry = createHubNodeRegistry({
+      storagePath: path.join(tmpDir, 'nodes.json'),
+      now: () => now,
+    });
+    const routeRequest = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new HubNodeLinkError({
+          code: 'NOT_FOUND',
+          message: 'node log file was not found',
+          retryable: false,
+        })
+      )
+      .mockResolvedValueOnce({ status: 'empty', output: '', lines: 0 });
+    const routeApp = express();
+    routeApp.use(
+      createHubNodeRouter({
+        registry: routeRegistry,
+        nodeLinks: { hasActiveNode: () => true, request: routeRequest } as never,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        now: () => now,
+      })
+    );
+    const routeServer = http.createServer(routeApp);
+    const routePort = await listen(routeServer);
+    cleanup.push(() => close(routeServer));
+    const routeBase = `http://127.0.0.1:${routePort}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/logs`;
+
+    const missingLogRes = await fetch(routeBase, { headers });
+    expect(missingLogRes.status).toBe(404);
+    expect(await missingLogRes.json()).toMatchObject({
+      error: { code: 'NOT_FOUND', retryable: false },
+    });
+
+    const emptyLogRes = await fetch(routeBase, { headers });
+    expect(emptyLogRes.status).toBe(200);
+    expect(await emptyLogRes.json()).toMatchObject({
+      log: { status: 'empty', output: '' },
+    });
+    expect(routeRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('sets node log follow headers before stream open and cancels if the client disconnects early', async () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const { tmpDir, registry } = tmpRegistry(() => now);
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    let closeCalled = false;
+    let resolveStream: ((stream: { payload: unknown; close(): void }) => void) | undefined;
+    const nodeLinks = {
+      hasActiveNode: () => true,
+      request: vi.fn(),
+      streamRequest: vi.fn(
+        () =>
+          new Promise<{ payload: unknown; close(): void }>((resolve) => {
+            resolveStream = resolve;
+          })
+      ),
+    };
+    const app = express();
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks: nodeLinks as never,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+        now: () => now,
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/logs?follow=1`,
+      { headers: { 'x-test-auth': 'yes' } }
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    await res.body?.cancel();
+
+    expect(resolveStream).toBeDefined();
+    resolveStream?.({
+      payload: { status: 'ok', output: 'initial\n' },
+      close: () => {
+        closeCalled = true;
+      },
+    });
+    await vi.waitFor(() => expect(closeCalled).toBe(true));
   });
 
 });

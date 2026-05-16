@@ -3,6 +3,13 @@ import * as os from 'node:os';
 import { isFileRpcOperation } from '../shared/file-rpc.js';
 import { executeLocalFileRpc } from './file-rpc.js';
 import type { LocalRelayNode } from './local-node.js';
+import {
+  createNodeLogFollower,
+  defaultNodeLogRuntime,
+  parseNodeLogTailRequest,
+  readNodeLogTailSnapshot,
+  type NodeLogFollower,
+} from './node-logs.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
@@ -34,11 +41,14 @@ import type { SessionSummary } from './types.js';
 export interface NodeLinkRpcHostOptions {
   localRelayNode: LocalRelayNode;
   rotateCredential?: (credential: RelayNodeCredential) => Promise<void> | void;
+  localLogConfigPath?: string;
+  localLogDir?: string | null;
   logger?: Logger;
 }
 
 export interface NodeLinkRpcHost {
   handle: NodeLinkChannelHandler;
+  closeAllLogFollowers(): void;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -253,6 +263,7 @@ function sendResultEnvelope(
   ctx.send(
     ctx.buildEnvelope('rpc', `${envelope.type}.result`, {
       ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+      ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
       payload,
     })
   );
@@ -266,6 +277,7 @@ function sendErrorEnvelope(
   ctx.send(
     ctx.buildEnvelope('rpc', `${envelope.type}.error`, {
       ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+      ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
       error,
     })
   );
@@ -276,6 +288,21 @@ export function createNodeLinkRpcHost(
 ): NodeLinkRpcHost {
   const logger = options.logger ?? createLogger('node-link-rpc');
   const { localRelayNode } = options;
+  const defaultLogs = defaultNodeLogRuntime();
+  const logConfigPath = options.localLogConfigPath ?? defaultLogs.configPath;
+  const logDir = options.localLogDir ?? defaultLogs.serviceLogDir;
+  const logFollowers = new Map<string, NodeLogFollower>();
+
+  function closeLogFollower(streamId: string): void {
+    const follower = logFollowers.get(streamId);
+    if (!follower) return;
+    logFollowers.delete(streamId);
+    follower.close();
+  }
+
+  function closeAllLogFollowers(): void {
+    for (const streamId of Array.from(logFollowers.keys())) closeLogFollower(streamId);
+  }
 
   async function handleSessionsCreate(
     envelope: RelayNodeEnvelope,
@@ -380,6 +407,77 @@ export function createNodeLinkRpcHost(
     }
   }
 
+  function sendStreamEnvelope(
+    ctx: NodeLinkEnvelopeHandlerContext,
+    envelope: RelayNodeEnvelope,
+    type: string,
+    payload?: unknown
+  ): void {
+    ctx.send(
+      ctx.buildEnvelope('rpc', type, {
+        ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+        ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
+        ...(payload !== undefined ? { payload } : {}),
+      })
+    );
+  }
+
+  function handleLogsTail(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): void {
+    const parsed = parseNodeLogTailRequest(envelope.payload);
+    if ('code' in parsed) {
+      sendErrorEnvelope(ctx, envelope, parsed);
+      return;
+    }
+    if (parsed.follow && !envelope.streamId) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('logs.tail follow requires envelope.streamId')
+      );
+      return;
+    }
+    const snapshot = readNodeLogTailSnapshot({
+      configPath: logConfigPath,
+      serviceLogDir: logDir,
+      lines: parsed.lines,
+    });
+    if ('code' in snapshot) {
+      sendErrorEnvelope(ctx, envelope, snapshot);
+      return;
+    }
+    sendResultEnvelope(ctx, envelope, snapshot);
+    if (!parsed.follow) return;
+    const streamId = envelope.streamId;
+    if (!streamId) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('logs.tail follow requires envelope.streamId')
+      );
+      return;
+    }
+    closeLogFollower(streamId);
+    const follower = createNodeLogFollower({
+      configPath: logConfigPath,
+      serviceLogDir: logDir,
+      write: (chunk) => sendStreamEnvelope(ctx, envelope, 'logs.tail.chunk', { chunk }),
+      onError: (error) => {
+        logger.warn(`logs.tail follow failed: ${error.message}`);
+        sendStreamEnvelope(ctx, envelope, 'logs.tail.error', {
+          error: internalError(error.message),
+        });
+      },
+    });
+    logFollowers.set(streamId, follower);
+  }
+
+  function handleLogsTailCancel(envelope: RelayNodeEnvelope): void {
+    if (envelope.streamId) closeLogFollower(envelope.streamId);
+  }
+
   async function handleCredentialRotate(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -432,6 +530,14 @@ export function createNodeLinkRpcHost(
       void handleCredentialRotate(envelope, ctx);
       return;
     }
+    if (envelope.type === 'logs.tail') {
+      handleLogsTail(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'logs.tail.cancel') {
+      handleLogsTailCancel(envelope);
+      return;
+    }
     const fsMatch = envelope.type.match(/^fs\.(.+)$/);
     if (fsMatch && isFileRpcOperation(fsMatch[1])) {
       void handleFileRpc(fsMatch[1], envelope, ctx);
@@ -447,5 +553,5 @@ export function createNodeLinkRpcHost(
     );
   }
 
-  return { handle };
+  return { handle, closeAllLogFollowers };
 }
