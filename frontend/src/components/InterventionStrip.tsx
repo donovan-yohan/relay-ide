@@ -16,6 +16,8 @@ import type { SessionSummary } from '../lib/types.js';
 import TabControlBadge from './TabControlBadge.js';
 import './InterventionStrip.css';
 
+const EMPTY_INTERVENTIONS: InterventionRecord[] = [];
+
 export interface InterventionStripProps {
   session?: SessionSummary | undefined;
   nodeBadge?: NodeBadge | undefined;
@@ -67,7 +69,9 @@ function InterventionItem({ record }: { record: InterventionRecord }) {
 export function InterventionStrip({ session, nodeBadge }: InterventionStripProps) {
   const cacheKey = sessionCacheKey(session);
   const cachedRecords = useSessionsStore((state) =>
-    cacheKey ? (state.interventionsBySession[cacheKey] ?? []) : []
+    cacheKey
+      ? (state.interventionsBySession[cacheKey] ?? EMPTY_INTERVENTIONS)
+      : EMPTY_INTERVENTIONS
   );
   const refreshAll = useSessionsStore((state) => state.refreshAll);
   const queryClient = useQueryClient();
