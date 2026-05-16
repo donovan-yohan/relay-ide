@@ -1,4 +1,6 @@
 import * as express from 'express';
+import { isFileRpcOperation } from '../shared/file-rpc.js';
+import { normalizeHubFileRpcRequest } from './file-rpc.js';
 import type { Request, Response } from 'express';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import type {
@@ -55,6 +57,7 @@ import {
   evaluateHubPolicy,
   isSessionCreateType,
   policyDecisionToRelayError,
+  requiredCapabilitiesForRpcIntent,
   revokePolicyAffectedSessions,
   sessionCreateCapability,
 } from './hub-policy-evaluator.js';
@@ -1192,6 +1195,141 @@ export function createHubNodeRouter(
       sendRegistryError(registry, res, error);
     }
   });
+
+  router.post(
+    '/hub/nodes/:nodeId/sessions/:sessionId/files/:operation',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId, sessionId, operation } = req.params;
+      if (!nodeId) {
+        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        return;
+      }
+      if (!sessionId) {
+        sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
+        return;
+      }
+      if (!isFileRpcOperation(operation)) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, or read', false, {
+            reasonCode: 'FILE_RPC_INVALID_REQUEST',
+            operation,
+          })
+        );
+        return;
+      }
+      const node = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+        const [nodeMajor] = node.protocolVersion.split('.');
+        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+        sendRelayError(
+          res,
+          relayError(
+            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+          )
+        );
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      const body = bodyRecord(req);
+      const lifecycle = envelopes.validate({ nodeId, sessionId, now: now() });
+      if (!lifecycle.ok) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId,
+          sessionId,
+          `rpc.fs.${operation}`,
+          body
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+
+      const normalized = normalizeHubFileRpcRequest({
+        operation,
+        nodePlatform: node.platform,
+        nodeId,
+        session: lifecycle.summary,
+        body,
+      });
+      if (normalized.ok === false) {
+        sendRelayError(res, normalized.error);
+        return;
+      }
+
+      const action = `rpc.fs.${operation}`;
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action, target: nodeId },
+        scope: normalized.value.policyScope,
+        requiredCapabilities: requiredCapabilitiesForRpcIntent(action),
+        sessionId,
+        ...(lifecycle.summary.correlationId
+          ? { correlationId: lifecycle.summary.correlationId }
+          : {}),
+        ...(lifecycle.summary.expiresAt !== undefined
+          ? { expiresAt: lifecycle.summary.expiresAt }
+          : {}),
+        ...(lifecycle.summary.revokedAt
+          ? { revokedAt: lifecycle.summary.revokedAt }
+          : {}),
+        params: { ...body, path: normalized.value.request.path },
+        now: now(),
+      });
+      if (
+        sendPolicyDecision(options.auditSink, res, policyDecision, {
+          ...body,
+          path: normalized.value.request.path,
+        })
+      ) {
+        return;
+      }
+
+      try {
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          `fs.${operation}`,
+          normalized.value.request
+        );
+        res.json(payload);
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
 
   router.delete(
     '/hub/nodes/:nodeId/sessions/:sessionId',

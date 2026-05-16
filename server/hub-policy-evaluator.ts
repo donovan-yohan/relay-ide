@@ -123,6 +123,8 @@ export function requiredCapabilitiesForRpcIntent(action: string): string[] {
       return ['session:read'];
     case 'rpc.fs.list':
       return ['rpc:fs:list'];
+    case 'rpc.fs.stat':
+      return ['rpc:fs:read'];
     case 'rpc.fs.read':
       return ['rpc:fs:read'];
     case 'rpc.fs.tail':
