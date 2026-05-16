@@ -13,6 +13,12 @@ import {
 import { upsertWebSessionNow } from './relay-state-db.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import {
+  createLegacyControlStateSummary,
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
+import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -35,6 +41,7 @@ export interface CreateWebParams {
   additionalDirs?: string[];
   runtimeOwnership?: 'spawned' | 'attached';
   hookToken?: string;
+  controlState?: ControlStateSummary;
   /** Additional agent-specific configuration passed through to the protocol adapter */
   extra?: Record<string, unknown>;
 }
@@ -72,6 +79,10 @@ export async function createWebSession(
   );
   const activeRuntime = adapterV2;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
+  const createdAt = new Date().toISOString();
+  const normalizedControlState = normalizeControlStateSummary(
+    params.controlState ?? createLegacyControlStateSummary()
+  );
 
   const session: WebSession = {
     mode: 'web',
@@ -85,8 +96,8 @@ export async function createWebSession(
     ...(params.repoName ? { repoName: params.repoName } : {}),
     ...(params.repoPath ? { branchName: params.branchName ?? '' } : {}),
     displayName: params.displayName,
-    createdAt: new Date().toISOString(),
-    lastActivity: new Date().toISOString(),
+    createdAt,
+    lastActivity: createdAt,
     idle: true,
     customCommand: null,
     status: 'active',
@@ -122,6 +133,17 @@ export async function createWebSession(
     runtimeOwnership: params.runtimeOwnership ?? activeRuntime.runtimeOwnership,
     hookToken,
     hooksActive: true,
+    controlState: normalizedControlState,
+    sessionEnvelope: createLocalCompatibilitySessionEnvelope({
+      sessionId: id,
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      cwd: params.cwd,
+      ...(params.repoPath ? { repoPath: params.repoPath } : {}),
+      ...(params.worktreePath !== undefined
+        ? { worktreePath: params.worktreePath }
+        : {}),
+      issuedAt: createdAt,
+    }),
   };
 
   sessionsMap.set(id, session);

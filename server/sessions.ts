@@ -56,6 +56,15 @@ import {
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import {
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
+import {
+  LOCAL_COMPATIBILITY_SESSION_INTENT,
+  normalizeSessionEnvelope,
+} from '../shared/session-envelope.js';
+import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -85,6 +94,7 @@ interface SerializedPtySession {
   continuePolicy?: ContinuePolicy;
   workspaceId?: string;
   additionalDirs?: string[];
+  controlState?: ControlStateSummary;
   pendingSince?: string;
 }
 
@@ -98,7 +108,7 @@ type RestartReason =
   | 'unspecified';
 
 interface PendingSessionsFile {
-  version: number; // now 6 — web sessions moved to relay-state.db
+  version: number; // now 7 — control-state summaries are serialized
   timestamp: string;
   reason?: RestartReason | string;
   sessions: SerializedPtySession[];
@@ -143,12 +153,15 @@ function configure(opts: {
   defaultConfigDir = opts.configDir;
 }
 
-function withLocalIdentity<T extends SessionSummary>(summary: T): T {
+function withLocalIdentity<T extends SessionSummary>(
+  summary: T
+): T & { sessionEnvelope: NonNullable<SessionSummary['sessionEnvelope']> } {
   const nodeId = DEFAULT_LOCAL_NODE_ID;
-  return {
+  const globalSessionId = createGlobalSessionId(nodeId, summary.id);
+  const base = {
     ...summary,
     nodeId,
-    globalSessionId: createGlobalSessionId(nodeId, summary.id),
+    globalSessionId,
     ...(summary.repoPath
       ? { repoInstanceId: createRepoInstanceId(nodeId, summary.repoPath) }
       : {}),
@@ -161,6 +174,24 @@ function withLocalIdentity<T extends SessionSummary>(summary: T): T {
         }
       : {}),
   };
+  return {
+    ...base,
+    sessionEnvelope: normalizeSessionEnvelope(
+      summary.sessionEnvelope,
+      {
+        sessionId: summary.id,
+        nodeId,
+        globalSessionId,
+        cwd: summary.cwd,
+        ...(summary.repoPath ? { repoPath: summary.repoPath } : {}),
+        ...(summary.worktreePath !== undefined
+          ? { worktreePath: summary.worktreePath }
+          : {}),
+        issuedAt: summary.createdAt,
+      },
+      LOCAL_COMPATIBILITY_SESSION_INTENT
+    ),
+  } as T & { sessionEnvelope: NonNullable<SessionSummary['sessionEnvelope']> };
 }
 
 let terminalCounter = 0;
@@ -323,7 +354,10 @@ function create({
       ...ptyParams,
       callbacks: {
         onStateChange: stateChangeCallbacks,
-        onSessionEnd: sessionEndCallbacks,
+        onSessionEnd: [
+          ...sessionEndCallbacks,
+          (sessionId: string) => sessionEnvelopeRegistry.delete(sessionId),
+        ],
         fireBackendStateIfChanged,
       },
     },
@@ -391,10 +425,13 @@ function create({
     };
     stateChangeCallbacks.push(promptHandler);
   }
-  return withLocalIdentity({
+  const summary = withLocalIdentity({
     ...result,
     needsBranchRename: !!ptySession.needsBranchRename,
   });
+  ptySession.sessionEnvelope = summary.sessionEnvelope;
+  sessionEnvelopeRegistry.upsert(summary.sessionEnvelope);
+  return summary;
 }
 
 function get(id: string): Session | undefined {
@@ -402,46 +439,51 @@ function get(id: string): Session | undefined {
 }
 
 function list(): SessionSummary[] {
-  return Array.from(sessions.values())
-    .map(
-      (s): SessionSummary =>
-        withLocalIdentity({
-          id: s.id,
-          type: s.type,
-          agent: s.agent,
-          mode: s.mode,
-          ...(s.repoPath ? { repoPath: s.repoPath } : {}),
-          ...(s.worktreePath !== undefined
-            ? { worktreePath: s.worktreePath }
-            : {}),
-          cwd: s.cwd,
-          ...(s.repoName ? { repoName: s.repoName } : {}),
-          ...(s.branchName !== undefined ? { branchName: s.branchName } : {}),
-          displayName: s.displayName,
-          createdAt: s.createdAt,
-          lastActivity: s.lastActivity,
-          idle: s.idle,
-          customCommand: s.customCommand,
-          status: s.status,
-          needsBranchRename: !!s.needsBranchRename,
-          agentState: s.agentState,
-          currentActivity: s.currentActivity,
-          ...(s.mode === 'pty'
-            ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
-            : {}),
-          ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
-          ...(s.additionalDirs?.length
-            ? { additionalDirs: s.additionalDirs }
-            : {}),
-          ...(s.mode === 'pty' && s.dataQuality !== undefined
-            ? { dataQuality: s.dataQuality }
-            : {}),
-          ...(s._lastEmittedPermissionType !== undefined
-            ? { permissionType: s._lastEmittedPermissionType }
-            : {}),
-        })
-    )
+  const summaries = Array.from(sessions.values())
+    .map((s): SessionSummary => {
+      const summary = withLocalIdentity({
+        id: s.id,
+        type: s.type,
+        agent: s.agent,
+        mode: s.mode,
+        ...(s.repoPath ? { repoPath: s.repoPath } : {}),
+        ...(s.worktreePath !== undefined
+          ? { worktreePath: s.worktreePath }
+          : {}),
+        cwd: s.cwd,
+        ...(s.repoName ? { repoName: s.repoName } : {}),
+        ...(s.branchName !== undefined ? { branchName: s.branchName } : {}),
+        displayName: s.displayName,
+        createdAt: s.createdAt,
+        lastActivity: s.lastActivity,
+        idle: s.idle,
+        customCommand: s.customCommand,
+        status: s.status,
+        needsBranchRename: !!s.needsBranchRename,
+        agentState: s.agentState,
+        currentActivity: s.currentActivity,
+        ...normalizeControlStateSummary(s.controlState),
+        ...(s.mode === 'pty'
+          ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
+          : {}),
+        ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
+        ...(s.additionalDirs?.length
+          ? { additionalDirs: s.additionalDirs }
+          : {}),
+        ...(s.mode === 'pty' && s.dataQuality !== undefined
+          ? { dataQuality: s.dataQuality }
+          : {}),
+        ...(s._lastEmittedPermissionType !== undefined
+          ? { permissionType: s._lastEmittedPermissionType }
+          : {}),
+        ...(s.sessionEnvelope ? { sessionEnvelope: s.sessionEnvelope } : {}),
+      });
+      s.sessionEnvelope = summary.sessionEnvelope;
+      sessionEnvelopeRegistry.upsert(summary.sessionEnvelope);
+      return summary;
+    })
     .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
+  return summaries;
 }
 
 function updateDisplayName(
@@ -512,6 +554,7 @@ function kill(id: string): void {
   }
 
   sessions.delete(id);
+  sessionEnvelopeRegistry.delete(id);
 }
 
 function detachForRestart(id: string): void {
@@ -775,6 +818,7 @@ function serializePtySession(
     ...(session.additionalDirs?.length
       ? { additionalDirs: session.additionalDirs }
       : {}),
+    controlState: normalizeControlStateSummary(session.controlState),
   };
 }
 
@@ -813,7 +857,7 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
 
   const reason = options.reason ?? 'unspecified';
   const pending: PendingSessionsFile = {
-    version: Math.max(6, preservedFailures?.version ?? 6),
+    version: Math.max(7, preservedFailures?.version ?? 7),
     timestamp: serializedAt,
     reason,
     sessions: sessionsToWrite,
@@ -1052,6 +1096,7 @@ function restoreSession(
       : {}),
     ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
     ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+    controlState: normalizeControlStateSummary(s.controlState),
   };
   if (spawn.command) createParams.command = spawn.command;
   if (initialScrollback) createParams.initialScrollback = initialScrollback;
@@ -1087,6 +1132,7 @@ async function restoreWebSessionFromDb(
     ...(row.meta.additionalDirs !== undefined
       ? { additionalDirs: row.meta.additionalDirs }
       : {}),
+    controlState: normalizeControlStateSummary(row.meta.controlState),
     ...(persistedConfig.model !== undefined
       ? { model: persistedConfig.model }
       : {}),
@@ -1573,6 +1619,9 @@ async function createWeb(
     sessions,
     fireBackendStateIfChanged
   );
+  if (result.session.sessionEnvelope) {
+    sessionEnvelopeRegistry.upsert(result.session.sessionEnvelope);
+  }
   trackEvent({
     category: 'session',
     action: 'created',

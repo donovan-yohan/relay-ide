@@ -2,6 +2,10 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { WebSession } from './types.js';
 import type { AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('relay-state-db');
@@ -75,6 +79,7 @@ export interface WebSessionMeta {
   adapterType: string;
   needsBranchRename?: boolean;
   additionalDirs?: string[];
+  controlState?: ControlStateSummary;
 }
 
 export interface LoadedWebSessionRow {
@@ -264,6 +269,7 @@ function writeUpsert(session: WebSession): void {
     ...(session.additionalDirs?.length
       ? { additionalDirs: session.additionalDirs }
       : {}),
+    controlState: normalizeControlStateSummary(session.controlState),
   };
 
   try {

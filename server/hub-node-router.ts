@@ -32,6 +32,17 @@ import {
   createRepoInstanceId,
   createWorktreeInstanceId,
 } from '../shared/identity.js';
+import {
+  isControlFreshness,
+  isControlMode,
+  normalizeControlActor,
+  normalizeControlStateSummary,
+} from '../shared/control-state.js';
+import {
+  createRoutedNodeSessionEnvelope,
+  isSessionEnvelope,
+} from '../shared/session-envelope.js';
+import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
@@ -45,6 +56,32 @@ function bearerToken(req: Request): string | null {
   const header = req.header('authorization') ?? '';
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() || null;
+}
+
+function optionalControlActorOk(value: unknown): boolean {
+  return value === undefined || value === null || normalizeControlActor(value) !== undefined;
+}
+
+function optionalControlStringOk(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
+  const activeActorsOk =
+    session.activeActors === undefined ||
+    (Array.isArray(session.activeActors) &&
+      session.activeActors.every((actor) => normalizeControlActor(actor)));
+  return (
+    (session.controlMode === undefined || isControlMode(session.controlMode)) &&
+    activeActorsOk &&
+    optionalControlActorOk(session.activeWorker) &&
+    optionalControlStringOk(session.lastInterventionAt) &&
+    optionalControlActorOk(session.lastInterventionBy) &&
+    optionalControlStringOk(session.lastInterventionEventId) &&
+    (session.controlFreshness === undefined ||
+      isControlFreshness(session.controlFreshness)) &&
+    (session.controlReason === undefined || typeof session.controlReason === 'string')
+  );
 }
 
 // Shared utilities exported for the repo feature router (and any other
@@ -118,6 +155,9 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof session.cwd === 'string' &&
     repoNameOk &&
     branchNameOk &&
+    controlSummaryFieldsOk(session) &&
+    (session.sessionEnvelope === undefined ||
+      isSessionEnvelope(session.sessionEnvelope)) &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
@@ -140,10 +180,15 @@ export function scopedNodeSession(
   delete scoped.repoInstanceId;
   delete scoped.worktreeInstanceId;
 
-  return {
+  const existingEnvelope = isSessionEnvelope(scoped.sessionEnvelope)
+    ? scoped.sessionEnvelope
+    : null;
+  const globalSessionId = createGlobalSessionId(nodeId, scoped.id);
+  const result = {
     ...scoped,
+    ...normalizeControlStateSummary(scoped),
     nodeId,
-    globalSessionId: createGlobalSessionId(nodeId, scoped.id),
+    globalSessionId,
     ...(scoped.repoPath
       ? { repoInstanceId: createRepoInstanceId(nodeId, scoped.repoPath) }
       : {}),
@@ -155,6 +200,27 @@ export function scopedNodeSession(
           ),
         }
       : {}),
+  };
+  return {
+    ...result,
+    sessionEnvelope: createRoutedNodeSessionEnvelope({
+      sessionId: scoped.id,
+      nodeId,
+      globalSessionId,
+      cwd: scoped.cwd,
+      ...(scoped.repoPath ? { repoPath: scoped.repoPath } : {}),
+      ...(scoped.worktreePath !== undefined
+        ? { worktreePath: scoped.worktreePath }
+        : {}),
+      issuedAt: existingEnvelope?.issuedAt ?? scoped.createdAt,
+      expiresAt: existingEnvelope?.expiresAt ?? null,
+      revocable: existingEnvelope?.revocable ?? true,
+      peerIdentity: { kind: 'relay-node', nodeId },
+      ...(existingEnvelope?.correlationId
+        ? { correlationId: existingEnvelope.correlationId }
+        : {}),
+      ...(existingEnvelope?.auditId ? { auditId: existingEnvelope.auditId } : {}),
+    }),
   };
 }
 
@@ -770,9 +836,9 @@ export function createHubNodeRouter(
         'sessions.create',
         bodyRecord(req)
       );
-      res
-        .status(201)
-        .json(scopedNodeSession(nodeId, sessionFromPayload(payload)));
+      const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
+      sessionEnvelopeRegistry.upsert(session.sessionEnvelope!);
+      res.status(201).json(session);
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
         sendRelayError(res, error.relayNodeError);
@@ -839,6 +905,7 @@ export function createHubNodeRouter(
         await options.nodeLinks.request(nodeId, 'sessions.kill', {
           id: sessionId,
         });
+        sessionEnvelopeRegistry.delete(sessionId, nodeId);
         res.json({ ok: true });
       } catch (error) {
         if (error instanceof HubNodeLinkError) {

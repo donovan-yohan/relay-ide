@@ -21,6 +21,13 @@ import { createNodeLinkPtyHost } from '../server/node-link-pty-host.js';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
 import { createLocalRelayNode } from '../server/local-node.js';
 import { collectLocalRepoInventory } from '../server/repo-inventory.js';
+import {
+  createLocalLogFollower,
+  parseLogLineCount,
+  readLocalLogSnapshot,
+  resolveLocalLogPlan,
+  type LocalLogRole,
+} from '../server/local-logs.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,14 +53,17 @@ Commands:
     install                           Install/start the hub background service
     uninstall                         Stop and remove the hub background service
     status                            Show hub service status
-    logs                              Print platform log commands for the hub service
+    logs [--lines <n>] [--follow]     Print or follow local hub log files
   install            Back-compat alias for relay-ide hub install
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  audit              Manage local security audit logs
+    verify [--db <path>] [--json]
+                                       Verify the hash-chained security audit log
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
-    logs                               Print platform log commands
+    logs [--lines <n>] [--follow]      Print or follow local node log files
     doctor --hub <url>                 Check hub reachability and local node capability
     connect --hub <url> --pair-token <token>
                                        Exchange a pair token and send one heartbeat
@@ -147,6 +157,16 @@ function runServiceCommand(fn: () => void): never {
   process.exit(0);
 }
 
+async function runAsyncCommand(fn: () => Promise<void> | void): Promise<never> {
+  try {
+    await fn();
+  } catch (e) {
+    logger.error((e as Error).message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 const command = args[0];
 if (command === 'dev') {
   await import('../scripts/dev.js');
@@ -221,36 +241,124 @@ if (command === 'manifest') {
   process.exit(0);
 }
 
+if (command === 'audit') {
+  const auditArgs = args.slice(1);
+  const subCommand = auditArgs[0];
+  if (subCommand !== 'verify') {
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  const jsonOutput = auditArgs.includes('--json');
+  let explicitDbPath = false;
+  let dbPath = path.join(
+    path.dirname(resolveConfigPath()),
+    'security-audit.db'
+  );
+  for (let idx = 1; idx < auditArgs.length; idx += 1) {
+    const auditArg = auditArgs[idx];
+    if (auditArg === '--json') continue;
+    if (auditArg === '--db') {
+      const candidate = auditArgs[idx + 1];
+      if (!candidate || candidate.startsWith('--')) {
+        logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+        process.exit(1);
+      }
+      explicitDbPath = true;
+      dbPath = path.resolve(candidate);
+      idx += 1;
+      continue;
+    }
+    logger.error(`Unknown audit verify option: ${auditArg}`);
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  if (explicitDbPath && !fs.existsSync(dbPath)) {
+    const result = {
+      ok: false,
+      entriesVerified: 0,
+      lastHash: null,
+      break: {
+        sequence: 0,
+        reason: 'storage_corrupt',
+        actual: 'database file does not exist',
+      },
+    };
+    if (jsonOutput) {
+      console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+    } else {
+      logger.error(
+        `Security audit log FAILED at ${dbPath}: explicit --db path does not exist`
+      );
+    }
+    process.exit(1);
+  }
+  const { verifySecurityAuditLog } = await import(
+    '../server/security-audit-log.js'
+  );
+  const result = verifySecurityAuditLog(dbPath);
+  if (jsonOutput) {
+    console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+  } else if (result.ok) {
+    logger.info(
+      `Security audit log OK: ${result.entriesVerified} entries verified at ${dbPath}`
+    );
+  } else {
+    logger.error(
+      `Security audit log FAILED at ${dbPath}: ${JSON.stringify(result.break)}`
+    );
+  }
+  process.exit(result.ok ? 0 : 1);
+}
+
 function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
   const idx = nodeArgs.indexOf(flag);
   if (idx === -1 || idx + 1 >= nodeArgs.length) return undefined;
   return nodeArgs[idx + 1];
 }
 
-function serviceLogHints(kind: string, mode: 'hub' | 'node'): string[] {
-  if (kind === 'launchd') {
-    return ['launchctl print gui/$(id -u)/com.relay-ide'];
+async function printLocalLogs(
+  role: LocalLogRole,
+  commandArgs: string[]
+): Promise<void> {
+  const lines = parseLogLineCount(getNodeArg(commandArgs, '--lines'));
+  const follow = commandArgs.includes('--follow') || commandArgs.includes('-f');
+  const configPath = resolveConfigPath();
+  const serviceLogDir = service.getServicePaths().logDir;
+  const snapshot = readLocalLogSnapshot({
+    role,
+    configPath,
+    serviceLogDir,
+    lines,
+  });
+
+  if (snapshot.output) {
+    process.stdout.write(snapshot.output);
+  } else {
+    logger.info(snapshot.message);
   }
-  if (kind === 'systemd-user' || kind === 'wsl-systemd') {
-    return [
-      'systemctl --user status relay-ide',
-      'journalctl --user -u relay-ide --no-pager -n 100',
-    ];
-  }
-  if (kind === 'systemd-system') {
-    return [
-      'sudo systemctl status relay-ide',
-      'sudo journalctl -u relay-ide --no-pager -n 100',
-    ];
-  }
-  if (mode === 'hub') {
-    return [
-      'manual mode has no Relay-managed service logs; run relay-ide hub in the foreground',
-    ];
-  }
-  return [
-    'manual mode has no Relay-managed service logs; node connect only pairs credentials and exits',
-  ];
+
+  if (!follow) return;
+
+  const plan = resolveLocalLogPlan(configPath, serviceLogDir);
+  logger.info(
+    snapshot.status === 'missing'
+      ? 'Waiting for local Relay log files; press Ctrl-C to stop.'
+      : 'Following local Relay log files; press Ctrl-C to stop.'
+  );
+  const follower = createLocalLogFollower({
+    files: plan.files,
+    write: (chunk) => process.stdout.write(chunk),
+    onError: (error) => logger.error(`Log follow error: ${error.message}`),
+  });
+
+  await new Promise<void>((resolve) => {
+    const stop = (): void => {
+      follower.close();
+      resolve();
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
 }
 
 function printHubStatus(): void {
@@ -271,10 +379,8 @@ function printHubStatus(): void {
   for (const caveat of st.manager.caveats) logger.info(caveat);
 }
 
-function printHubLogs(): void {
-  const st = service.status();
-  logger.info(`Log hints for ${st.manager.label} (${st.manager.kind}):`);
-  for (const hint of serviceLogHints(st.manager.kind, 'hub')) logger.info(hint);
+async function printHubLogs(commandArgs: string[]): Promise<void> {
+  await printLocalLogs('hub', commandArgs);
 }
 
 async function printNodeStatus(): Promise<void> {
@@ -293,13 +399,8 @@ async function printNodeStatus(): Promise<void> {
   for (const caveat of manifest.serviceManager.caveats) logger.info(caveat);
 }
 
-async function printNodeLogs(): Promise<void> {
-  const manifest = await getNodeManifest();
-  logger.info(
-    `Log hints for ${manifest.serviceManager.label} (${manifest.serviceManager.kind}):`
-  );
-  for (const hint of serviceLogHints(manifest.serviceManager.kind, 'node'))
-    logger.info(hint);
+async function printNodeLogs(commandArgs: string[]): Promise<void> {
+  await printLocalLogs('node', commandArgs);
 }
 
 async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
@@ -625,7 +726,7 @@ if (command === 'hub') {
   } else if (subCommand === 'status') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
-    runServiceCommand(printHubLogs);
+    await runAsyncCommand(() => printHubLogs(hubArgs.slice(1)));
   } else if (
     hubArgs.includes('--bg') &&
     (!subCommand || subCommand.startsWith('-'))
@@ -658,8 +759,7 @@ if (command === 'node') {
     process.exit(0);
   }
   if (subCommand === 'logs') {
-    await printNodeLogs();
-    process.exit(0);
+    await runAsyncCommand(() => printNodeLogs(nodeArgs.slice(1)));
   }
   if (subCommand === 'doctor') {
     await runNodeDoctor(getNodeArg(nodeArgs, '--hub'));

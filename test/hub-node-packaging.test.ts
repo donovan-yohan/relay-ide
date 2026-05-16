@@ -9,6 +9,11 @@ const repoRoot = path.resolve(__dirname, '..');
 const serviceMocks = vi.hoisted(() => ({
   install: vi.fn(),
   uninstall: vi.fn(),
+  getServicePaths: vi.fn(() => ({
+    servicePath: '/tmp/relay-ide-test-service',
+    logDir: '/tmp/relay-ide-test-config/logs',
+    label: 'relay-ide-test',
+  })),
   status: vi.fn(() => ({
     installed: false,
     running: false,
@@ -32,6 +37,7 @@ vi.mock('../server/service.js', () => ({
   CONFIG_DIR: '/tmp/relay-ide-test-config',
   install: serviceMocks.install,
   uninstall: serviceMocks.uninstall,
+  getServicePaths: serviceMocks.getServicePaths,
   status: serviceMocks.status,
 }));
 
@@ -56,6 +62,7 @@ async function runCli(
   const originalArgv = process.argv;
   serviceMocks.install.mockClear();
   serviceMocks.uninstall.mockClear();
+  serviceMocks.getServicePaths.mockClear();
   serviceMocks.status.mockClear();
   loggerMocks.info.mockClear();
   loggerMocks.error.mockClear();
@@ -87,6 +94,10 @@ async function runCli(
 
 function readRepoFile(relativePath: string): string {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+}
+
+function resetCliLogDir(): void {
+  fs.rmSync('/tmp/relay-ide-test-config', { recursive: true, force: true });
 }
 
 describe('hub/node packaging decision', () => {
@@ -207,6 +218,54 @@ describe('hub/node packaging decision', () => {
     expect(serviceMocks.install).not.toHaveBeenCalled();
     expect(loggerMocks.error).toHaveBeenCalledWith(
       expect.stringContaining('Usage: relay-ide hub')
+    );
+  });
+
+  it('tails local hub logs with --lines without platform log commands', async () => {
+    resetCliLogDir();
+    const logDir = '/tmp/relay-ide-test-config/logs';
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'relay-ide.log'),
+      ['first', 'second', 'third'].join('\n') + '\n'
+    );
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        stdout += String(chunk);
+        return true;
+      });
+
+    try {
+      const result = await runCli(['hub', 'logs', '--lines', '2']);
+
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toBe('second\nthird\n');
+      expect(loggerMocks.info).not.toHaveBeenCalledWith(
+        expect.stringContaining('journalctl')
+      );
+      expect(serviceMocks.getServicePaths).toHaveBeenCalled();
+    } finally {
+      stdoutSpy.mockRestore();
+      resetCliLogDir();
+    }
+  });
+
+  it('reports missing local node logs from the CLI without systemd or journalctl', async () => {
+    resetCliLogDir();
+
+    const result = await runCli(['node', 'logs']);
+
+    expect(result.exitCode).toBe(0);
+    expect(loggerMocks.info).toHaveBeenCalledWith(
+      expect.stringContaining('No local Relay node log files were found')
+    );
+    expect(loggerMocks.info).not.toHaveBeenCalledWith(
+      expect.stringContaining('journalctl')
+    );
+    expect(loggerMocks.info).not.toHaveBeenCalledWith(
+      expect.stringContaining('systemctl')
     );
   });
 
