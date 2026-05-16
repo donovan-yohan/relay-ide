@@ -31,11 +31,54 @@ import {
   sessionEventMatches,
   type SessionEventScope,
 } from '../../../../shared/node-boundary.js';
+import {
+  normalizeControlActors,
+  type ControlActor,
+  type InterventionRecord,
+  type TabControlEvent,
+} from '../../../../shared/control-state.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
 const WORKSPACE_SESSIONS_KEY = 'claude-remote-workspace-sessions';
 const logger = createLogger('sessions');
+
+function eventAgentActor(
+  session: SessionSummary,
+  event: TabControlEvent
+): ControlActor | undefined {
+  return (
+    event.activeWorker ??
+    session.activeWorker ??
+    session.activeActors?.find((actor) => actor.kind === 'agent') ??
+    (event.actor.kind === 'agent' ? event.actor : undefined)
+  );
+}
+
+function activeActorsForControlEvent(
+  session: SessionSummary,
+  event: TabControlEvent
+): ControlActor[] {
+  const eventActors = normalizeControlActors(event.activeActors);
+  if (eventActors.length > 0) return eventActors;
+
+  const agent = eventAgentActor(session, event);
+  if (event.controlMode === 'agent-driven') {
+    return normalizeControlActors([agent ?? event.actor]);
+  }
+  if (event.controlMode === 'human-driven') {
+    return normalizeControlActors([event.actor]);
+  }
+  return normalizeControlActors([event.actor, agent].filter(Boolean));
+}
+
+function activeWorkerForControlEvent(
+  session: SessionSummary,
+  event: TabControlEvent
+): ControlActor | undefined {
+  if (event.controlMode === 'human-driven') return undefined;
+  return eventAgentActor(session, event);
+}
 
 const BOOT_FETCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_ENRICHMENT_TTL_MS = 600_000;
@@ -169,6 +212,7 @@ export interface SessionsState {
   repoEnrichmentMeta: Record<string, RepoEnrichmentMeta>;
   reconnectingPtySessionIds: Record<string, true>;
   backendConnectionStatus: BackendConnectionStatus;
+  interventionsBySession: Record<string, InterventionRecord[]>;
   // Actions
   setActiveSessionId: (id: string | null) => void;
   rememberSessionForWorkspace: (
@@ -214,6 +258,7 @@ export interface SessionsState {
     scope?: SessionEventScope
   ) => void;
   handleUserViewed: (sessionId: string, scope?: SessionEventScope) => void;
+  handleTabControlEvent: (event: TabControlEvent) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
   initSessionNotification: (sessionId: string, defaultEnabled: boolean) => void;
   getNotificationSessionIds: () => string[];
@@ -354,6 +399,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   repoEnrichmentMeta: {},
   reconnectingPtySessionIds: {},
   backendConnectionStatus: 'connected',
+  interventionsBySession: {},
 
   setActiveSessionId: (id) => {
     const key = id === null ? null : resolveSessionKey(get().sessions, id);
@@ -771,6 +817,52 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
             isUnread: false,
           };
         }),
+      };
+    });
+  },
+
+  handleTabControlEvent: (event) => {
+    const identity = event.identity;
+    const scope: SessionEventScope = {
+      sessionId: identity.sessionId,
+      localSessionId: identity.sessionId,
+      ...(identity.nodeId ? { nodeId: identity.nodeId } : {}),
+      ...(identity.globalSessionId ? { globalSessionId: identity.globalSessionId } : {}),
+    };
+    const cacheKey = identity.globalSessionId ?? `${identity.nodeId}:${identity.sessionId}`;
+    set((state) => {
+      const sessions = state.sessions.map((session): SessionSummary => {
+        if (!sessionMatchesEventScope(session, identity.sessionId, scope)) {
+          return session;
+        }
+        const activeActors = activeActorsForControlEvent(session, event);
+        const activeWorker = activeWorkerForControlEvent(session, event);
+        const updated: SessionSummary = {
+          ...session,
+          controlMode: event.controlMode,
+          activeActors,
+          controlFreshness: 'fresh',
+        };
+        if (activeWorker) updated.activeWorker = activeWorker;
+        else delete updated.activeWorker;
+        if (event.reason) updated.controlReason = event.reason;
+        else delete updated.controlReason;
+        if (event.type === 'tab.intervention') {
+          updated.lastInterventionAt = event.intervention.timestamp;
+          updated.lastInterventionBy = event.intervention.author;
+          updated.lastInterventionEventId = event.intervention.id;
+        }
+        return updated;
+      });
+      if (event.type !== 'tab.intervention') return { sessions };
+      const previous = state.interventionsBySession[cacheKey] ?? [];
+      const next = [event.intervention, ...previous.filter((record) => record.id !== event.intervention.id)].slice(0, 12);
+      return {
+        sessions,
+        interventionsBySession: {
+          ...state.interventionsBySession,
+          [cacheKey]: next,
+        },
       };
     });
   },

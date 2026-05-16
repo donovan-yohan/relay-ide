@@ -170,6 +170,7 @@ describe('WorkspaceArea session tab close routing', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -227,5 +228,14 @@ describe('WorkspaceArea session tab close routing', () => {
       '/sessions/remote-session-1',
       expect.anything()
     );
+    const reactStoreErrors = consoleErrorSpy.mock.calls
+      .flat()
+      .filter(
+        (message) =>
+          typeof message === 'string' &&
+          (message.includes('getSnapshot') ||
+            message.includes('Maximum update depth'))
+      );
+    expect(reactStoreErrors).toEqual([]);
   });
 });

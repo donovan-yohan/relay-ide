@@ -307,6 +307,10 @@ export function useEventSocket({
             eventSessionScope(msg)
           );
       },
+      'tab-control-event': (msg) => {
+        useSessionsStore.getState().handleTabControlEvent(msg.event);
+        queryClient.invalidateQueries({ queryKey: ['session-interventions'] });
+      },
       'account-telemetry': (msg) => {
         useTelemetryStore
           .getState()

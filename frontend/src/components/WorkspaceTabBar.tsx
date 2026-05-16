@@ -11,6 +11,7 @@ import {
   type SummaryContext,
   type WorkspaceTabSummary,
 } from '../lib/workspace-summary.js';
+import { TabControlBadge } from './TabControlBadge.js';
 import './WorkspaceTabBar.css';
 
 const ICON_GLYPH: Record<WorkspaceTabSummary['icon'], string> = {
@@ -41,6 +42,7 @@ interface WorkspaceTabItemProps {
   paneId: string;
   isActive: boolean;
   summary: WorkspaceTabSummary;
+  summaryContext: SummaryContext;
   onSelect: () => void;
   onClose: () => void;
 }
@@ -50,6 +52,7 @@ function WorkspaceTabItem({
   paneId,
   isActive,
   summary,
+  summaryContext,
   onSelect,
   onClose,
 }: WorkspaceTabItemProps) {
@@ -67,6 +70,8 @@ function WorkspaceTabItem({
   ]
     .filter(Boolean)
     .join(' ');
+  const session =
+    tab.kind === 'session' ? summaryContext.findSession?.(tab.sessionId) : undefined;
 
   return (
     <div
@@ -94,6 +99,13 @@ function WorkspaceTabItem({
       </span>
       <span className="ws-tab__name">{summary.primary}</span>
       {summary.meta && <span className="ws-tab__meta">{summary.meta}</span>}
+      {tab.kind === 'session' && (
+        <TabControlBadge
+          session={session}
+          nodeBadge={summary.nodeBadge}
+          compact
+        />
+      )}
       {summary.nodeBadge && (
         <span
           className={`ws-tab__node ws-tab__node--${summary.nodeBadge.status}`}
@@ -176,6 +188,7 @@ export function WorkspaceTabBar({
             paneId={pane.id}
             isActive={pane.activeTabId === tabId}
             summary={summary}
+            summaryContext={summaryContext}
             onSelect={() => onSelectTab(tabId)}
             onClose={() => onCloseTab(tabId)}
           />

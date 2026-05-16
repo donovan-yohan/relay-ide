@@ -21,6 +21,7 @@ import { createLogger } from './logger.js';
 import { resolveSessionByKey, resolveSessionKey } from './session-keys.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
+import type { TabControlEvent } from '../../../shared/control-state.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -94,6 +95,7 @@ export type EventMessage =
       sessionId: string;
       data: SessionTelemetry | Record<string, unknown>;
     } & SessionScopedEvent)
+  | { type: 'tab-control-event'; event: TabControlEvent }
   | {
       type: 'account-telemetry';
       data: AccountTelemetry | Record<string, unknown> | null;
