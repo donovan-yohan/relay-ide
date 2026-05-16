@@ -9,6 +9,9 @@ import { createLogger } from './logger.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type HubNodeCredentialRotationState,
+  type HubNodeCredentialRotationSummary,
+  type HubNodeCredentialState,
   type HubNodeStatus,
   type HubNodeSummary,
   type HubNodeVersionState,
@@ -40,6 +43,20 @@ interface StoredPairToken {
   usedAt?: string;
 }
 
+interface StoredCredentialRotation {
+  rotationId: string;
+  previousCredentialId: string;
+  nextCredentialId: string;
+  nextCredentialHash?: string;
+  state: HubNodeCredentialRotationState;
+  issuedAt: string;
+  deliveredAt?: string;
+  provedAt?: string;
+  stableAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+}
+
 interface StoredNodeRecord {
   nodeId: string;
   credentialId: string;
@@ -54,6 +71,7 @@ interface StoredNodeRecord {
   capabilities: NodeCapabilityManifestSummary;
   acl?: RelayNodeAcl;
   repoInventory?: unknown;
+  credentialRotation?: StoredCredentialRotation;
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;
@@ -82,8 +100,20 @@ export interface PairExchangeInput {
 export interface HeartbeatInput {
   nodeId: string;
   protocolVersion: string;
+  credentialId?: string;
   manifest?: NodeManifest;
   repoInventory?: unknown;
+}
+
+export interface CredentialRotationResult {
+  node: HubNodeSummary;
+  credential: RelayNodeCredential;
+  rotation: HubNodeCredentialRotationSummary;
+}
+
+export interface CredentialRotationPublicResult {
+  node: HubNodeSummary;
+  rotation: HubNodeCredentialRotationSummary;
 }
 
 export interface InventoryPayloadRecord {
@@ -109,17 +139,22 @@ const PRIVILEGED_NODE_WARNING =
   'A paired Relay node runs with that machine\'s local OS-user blast radius; hub ACL policy grants individual capability bits.';
 
 export type CredentialAuthResult =
-  | { ok: true; node: HubNodeSummary }
+  | { ok: true; node: HubNodeSummary; credentialId: string; rotationId?: string }
   | { ok: false; error: RelayNodeError };
 type NodeRevokedListener = (nodeId: string) => void;
 
 class HubNodeRegistryError extends Error {
   readonly relayNodeError: RelayNodeError;
 
-  constructor(code: RelayNodeErrorCode, message: string, retryable = false) {
+  constructor(
+    code: RelayNodeErrorCode,
+    message: string,
+    retryable = false,
+    details?: Record<string, unknown>
+  ) {
     super(`${code}: ${message}`);
     this.name = 'HubNodeRegistryError';
-    this.relayNodeError = { code, message, retryable };
+    this.relayNodeError = { code, message, retryable, ...(details ? { details } : {}) };
   }
 }
 
@@ -362,12 +397,85 @@ function versionState(protocolVersion: string): HubNodeVersionState {
   return nodeMajor === hubMajor ? 'version-skew' : 'incompatible';
 }
 
+function publicRotation(
+  rotation: StoredCredentialRotation | undefined
+): HubNodeCredentialRotationSummary | undefined {
+  if (!rotation) return undefined;
+  return {
+    rotationId: rotation.rotationId,
+    state: rotation.state,
+    previousCredentialId: rotation.previousCredentialId,
+    nextCredentialId: rotation.nextCredentialId,
+    issuedAt: rotation.issuedAt,
+    ...(rotation.deliveredAt ? { deliveredAt: rotation.deliveredAt } : {}),
+    ...(rotation.provedAt ? { provedAt: rotation.provedAt } : {}),
+    ...(rotation.stableAt ? { stableAt: rotation.stableAt } : {}),
+    ...(rotation.failedAt ? { failedAt: rotation.failedAt } : {}),
+    ...(rotation.failureReason ? { failureReason: rotation.failureReason } : {}),
+  };
+}
+
+function credentialState(node: StoredNodeRecord): HubNodeCredentialState {
+  if (node.revokedAt) return 'revoked';
+  if (node.credentialRotation?.state === 'failed') return 'rotation-failed';
+  if (
+    node.credentialRotation &&
+    node.credentialRotation.state !== 'stable'
+  ) {
+    return 'rotating';
+  }
+  return 'active';
+}
+
+function activeRotation(node: StoredNodeRecord): StoredCredentialRotation | undefined {
+  const rotation = node.credentialRotation;
+  if (!rotation) return undefined;
+  if (rotation.state === 'failed' || rotation.state === 'stable') return undefined;
+  return rotation;
+}
+
+function updateAclCredential(node: StoredNodeRecord, credentialId: string, now: string): void {
+  const acl = ensureNodeAcl(node);
+  node.acl = {
+    ...acl,
+    peer: {
+      ...acl.peer,
+      credentialId,
+    },
+    lifecycle: {
+      ...acl.lifecycle,
+      updatedAt: now,
+    },
+  };
+}
+
+function credentialToken(nodeId: string): { token: string; credentialId: string; hash: string } {
+  const credentialId = randomToken('cred');
+  const secret = randomToken('secret');
+  const token = `${nodeId}.${secret}`;
+  return { token, credentialId, hash: sha256(token) };
+}
+
+function assertNoActiveRotation(node: StoredNodeRecord): void {
+  const rotation = node.credentialRotation;
+  if (!rotation || rotation.state === 'stable') return;
+  throw new HubNodeRegistryError(
+    'ROTATION_IN_PROGRESS',
+    'credential rotation is already in progress',
+    true,
+    { rotationId: rotation.rotationId, reasonCode: 'ROTATION_IN_PROGRESS' }
+  );
+}
+
 function publicNode(
   node: StoredNodeRecord,
   status: HubNodeStatus
 ): HubNodeSummary {
   const acl = ensureNodeAcl(node);
   const aclSummary = summarizeAcl(acl);
+  const rotationSummary = node.credentialRotation
+    ? publicRotation(node.credentialRotation)
+    : undefined;
   return {
     nodeId: node.nodeId,
     displayName: node.displayName,
@@ -386,7 +494,8 @@ function publicNode(
       warning: PRIVILEGED_NODE_WARNING,
       policy: aclSummary,
     },
-    credentialState: node.revokedAt ? 'revoked' : 'active',
+    credentialState: credentialState(node),
+    ...(rotationSummary ? { credentialRotation: rotationSummary } : {}),
     version: {
       state: versionState(node.protocolVersion),
       nodeProtocolVersion: node.protocolVersion,
@@ -504,14 +613,12 @@ export class HubNodeRegistry {
     }
 
     const nodeId = randomToken('node');
-    const credentialId = randomToken('cred');
-    const secret = randomToken('secret');
-    const token = `${nodeId}.${secret}`;
+    const credential = credentialToken(nodeId);
     const timestamp = now.toISOString();
     const node: StoredNodeRecord = {
       nodeId,
-      credentialId,
-      credentialHash: sha256(token),
+      credentialId: credential.credentialId,
+      credentialHash: credential.hash,
       displayName: nodeDisplayName(
         input.displayName ?? pairToken.displayName,
         input.manifest
@@ -525,7 +632,7 @@ export class HubNodeRegistry {
       capabilities: summarizeCapabilities(input.manifest),
       acl: createLegacyDefaultNodeAcl({
         nodeId,
-        credentialId,
+        credentialId: credential.credentialId,
         displayName: nodeDisplayName(
           input.displayName ?? pairToken.displayName,
           input.manifest
@@ -544,8 +651,8 @@ export class HubNodeRegistry {
         protocol: RELAY_NODE_LINK_PROTOCOL,
         protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
         nodeId,
-        credentialId,
-        token,
+        credentialId: credential.credentialId,
+        token: credential.token,
         issuedAt: timestamp,
       },
       node: publicNode(node, 'online'),
@@ -563,7 +670,15 @@ export class HubNodeRegistry {
     const node = this.state.nodes.find(
       (candidate) => candidate.nodeId === nodeId
     );
-    if (!node || !timingSafeEqualHex(node.credentialHash, tokenHash)) {
+    const rotation = node ? activeRotation(node) : undefined;
+    const matchesActive = node
+      ? timingSafeEqualHex(node.credentialHash, tokenHash)
+      : false;
+    const matchesRotation =
+      node &&
+      rotation?.nextCredentialHash &&
+      timingSafeEqualHex(rotation.nextCredentialHash, tokenHash);
+    if (!node || (!matchesActive && !matchesRotation)) {
       return {
         ok: false,
         error: {
@@ -589,6 +704,8 @@ export class HubNodeRegistry {
         node,
         statusForNode(node, this.now(), this.staleMs, this.offlineMs)
       ),
+      credentialId: matchesRotation ? rotation!.nextCredentialId : node.credentialId,
+      ...(matchesRotation ? { rotationId: rotation!.rotationId } : {}),
     };
   }
 
@@ -602,6 +719,9 @@ export class HubNodeRegistry {
     if (node.revokedAt)
       throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
     const now = this.now().toISOString();
+    if (input.credentialId) {
+      this.proveCredentialRotation(node, input.credentialId, now);
+    }
     node.lastSeenAt = now;
     node.protocolVersion = input.protocolVersion;
     if (input.manifest) {
@@ -618,6 +738,114 @@ export class HubNodeRegistry {
     }
     this.scheduleHeartbeatPersist();
     return publicNode(node, 'online');
+  }
+
+  beginCredentialRotation(nodeId: string): CredentialRotationResult {
+    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.revokedAt)
+      throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
+    assertNoActiveRotation(node);
+    const issuedAt = this.now().toISOString();
+    const next = credentialToken(nodeId);
+    node.credentialRotation = {
+      rotationId: randomToken('rot'),
+      previousCredentialId: node.credentialId,
+      nextCredentialId: next.credentialId,
+      nextCredentialHash: next.hash,
+      state: 'issuing',
+      issuedAt,
+    };
+    this.persist();
+    return {
+      node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)),
+      credential: {
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId,
+        credentialId: next.credentialId,
+        token: next.token,
+        issuedAt,
+      },
+      rotation: publicRotation(node.credentialRotation)!,
+    };
+  }
+
+  markCredentialRotationDelivered(
+    nodeId: string,
+    rotationId: string
+  ): CredentialRotationPublicResult {
+    const node = this.requireRotationNode(nodeId, rotationId);
+    const rotation = node.credentialRotation!;
+    if (rotation.state === 'issuing') {
+      rotation.state = 'delivered';
+      rotation.deliveredAt = this.now().toISOString();
+      this.persist();
+    }
+    return { node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)), rotation: publicRotation(rotation)! };
+  }
+
+  failCredentialRotation(
+    nodeId: string,
+    rotationId: string,
+    reason: string
+  ): CredentialRotationPublicResult {
+    const node = this.requireRotationNode(nodeId, rotationId);
+    const rotation = node.credentialRotation!;
+    if (rotation.state !== 'stable') {
+      rotation.state = 'failed';
+      rotation.failedAt = this.now().toISOString();
+      rotation.failureReason = reason;
+      delete rotation.nextCredentialHash;
+      this.persist();
+    }
+    return { node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)), rotation: publicRotation(rotation)! };
+  }
+
+  clearCredentialRotationFailure(nodeId: string): HubNodeSummary {
+    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.credentialRotation?.state !== 'failed') {
+      throw new HubNodeRegistryError(
+        'INVALID_REQUEST',
+        'node has no failed credential rotation to clear'
+      );
+    }
+    delete node.credentialRotation;
+    this.persist();
+    return publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs));
+  }
+
+  private requireRotationNode(nodeId: string, rotationId: string): StoredNodeRecord {
+    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (!node.credentialRotation || node.credentialRotation.rotationId !== rotationId) {
+      throw new HubNodeRegistryError('NOT_FOUND', 'credential rotation was not found');
+    }
+    return node;
+  }
+
+  private proveCredentialRotation(
+    node: StoredNodeRecord,
+    credentialId: string,
+    now: string
+  ): void {
+    const rotation = activeRotation(node);
+    if (!rotation || rotation.nextCredentialId !== credentialId) return;
+    if (!rotation.nextCredentialHash) {
+      throw new HubNodeRegistryError('INTERNAL', 'credential rotation is missing proof hash');
+    }
+    rotation.state = 'proved';
+    rotation.provedAt = now;
+    node.credentialId = rotation.nextCredentialId;
+    node.credentialHash = rotation.nextCredentialHash;
+    updateAclCredential(node, rotation.nextCredentialId, now);
+    delete rotation.nextCredentialHash;
+    rotation.state = 'stable';
+    rotation.stableAt = now;
   }
 
   async flushPendingHeartbeatPersist(): Promise<void> {

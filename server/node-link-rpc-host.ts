@@ -13,6 +13,7 @@ import type {
 } from './node-link-client.js';
 import type {
   RelayNodeEnvelope,
+  RelayNodeCredential,
   RelayNodeError,
 } from '../shared/relay-node-protocol.js';
 import { isSessionLane, type SessionLane } from '../shared/session-lane.js';
@@ -32,6 +33,7 @@ import type { SessionSummary } from './types.js';
 
 export interface NodeLinkRpcHostOptions {
   localRelayNode: LocalRelayNode;
+  rotateCredential?: (credential: RelayNodeCredential) => Promise<void> | void;
   logger?: Logger;
 }
 
@@ -47,6 +49,28 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function parseCredentialRotatePayload(
+  raw: unknown
+): RelayNodeCredential | RelayNodeError {
+  const record = asRecord(raw);
+  const credentialRecord = asRecord(record?.['credential']);
+  if (!credentialRecord) {
+    return invalidRequest('credential.rotate payload.credential must be an object');
+  }
+  const protocol = asString(credentialRecord['protocol']);
+  const protocolVersion = asString(credentialRecord['protocolVersion']);
+  const nodeId = asString(credentialRecord['nodeId']);
+  const credentialId = asString(credentialRecord['credentialId']);
+  const token = asString(credentialRecord['token']);
+  const issuedAt = asString(credentialRecord['issuedAt']);
+  if (!protocol || !protocolVersion || !nodeId || !credentialId || !token || !issuedAt) {
+    return invalidRequest(
+      'credential.rotate payload.credential requires protocol, protocolVersion, nodeId, credentialId, token, and issuedAt'
+    );
+  }
+  return { protocol, protocolVersion, nodeId, credentialId, token, issuedAt } as RelayNodeCredential;
 }
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -356,6 +380,37 @@ export function createNodeLinkRpcHost(
     }
   }
 
+  async function handleCredentialRotate(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): Promise<void> {
+    const credential = parseCredentialRotatePayload(envelope.payload);
+    if ('code' in credential) {
+      sendErrorEnvelope(ctx, envelope, credential);
+      return;
+    }
+    if (!options.rotateCredential) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('credential.rotate is not configured on this node')
+      );
+      return;
+    }
+    try {
+      await options.rotateCredential(credential);
+      sendResultEnvelope(ctx, envelope, {
+        ok: true,
+        nodeId: credential.nodeId,
+        credentialId: credential.credentialId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`credential.rotate failed: ${message}`);
+      sendErrorEnvelope(ctx, envelope, internalError(message));
+    }
+  }
+
   function handle(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -371,6 +426,10 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'sessions.kill') {
       handleSessionsKill(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'credential.rotate') {
+      void handleCredentialRotate(envelope, ctx);
       return;
     }
     const fsMatch = envelope.type.match(/^fs\.(.+)$/);

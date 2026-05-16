@@ -1248,4 +1248,80 @@ describe('hub node routes and link', () => {
     expect(upgrade).toContain('101 Switching Protocols');
   });
 
+  it('exposes manual credential rotation and clear-failure operator routes', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const rotateRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'manual' }),
+      }
+    );
+    expect(rotateRes.status).toBe(201);
+    const rotate = (await rotateRes.json()) as {
+      credential: { token: string; credentialId: string };
+      rotation: { rotationId: string; state: string };
+      node: { credentialState: string };
+    };
+    expect(rotate.node.credentialState).toBe('rotating');
+    expect(rotate.rotation.state).toBe('issuing');
+    expect(rotate.credential.token).not.toBe(exchanged.credential.token);
+
+    const collisionRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'manual' }),
+      }
+    );
+    expect(collisionRes.status).toBe(409);
+    const collision = (await collisionRes.json()) as {
+      error: { code: string; details?: { rotationId?: string } };
+    };
+    expect(collision.error.code).toBe('ROTATION_IN_PROGRESS');
+    expect(collision.error.details?.rotationId).toBe(rotate.rotation.rotationId);
+
+    registry.failCredentialRotation(
+      exchanged.node.nodeId,
+      rotate.rotation.rotationId,
+      'operator aborted'
+    );
+    const clearRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation/clear-failure`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+    expect(clearRes.status).toBe(200);
+    const clear = (await clearRes.json()) as {
+      node: { credentialState: string; credentialRotation?: unknown };
+    };
+    expect(clear.node.credentialState).toBe('active');
+    expect(clear.node.credentialRotation).toBeUndefined();
+  });
+
 });

@@ -496,7 +496,7 @@ function setupWebSocket(
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        handleHubNodeLink(ws, hubNodeRegistry, authenticated.node, nodeLinks);
+        handleHubNodeLink(ws, hubNodeRegistry, authenticated, nodeLinks);
       });
       return;
     }

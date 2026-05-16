@@ -15,6 +15,7 @@ import {
 interface AuthenticatedNodeLink {
   node: HubNodeSummary;
   token: string;
+  credentialId: string;
 }
 
 interface PendingRpc {
@@ -54,8 +55,8 @@ export function authenticateHubNodeLink(
   if (!registry) return null;
   const token = bearerToken(request);
   if (!token) return null;
-  const node = registry.authenticateCredential(token);
-  return node ? { node, token } : null;
+  const auth = registry.authenticateCredentialDetailed(token);
+  return auth.ok ? { node: auth.node, token, credentialId: auth.credentialId } : null;
 }
 
 function envelope(
@@ -436,10 +437,10 @@ export function createHubNodeLinkManager(
 export function handleHubNodeLink(
   ws: WebSocket,
   registry: HubNodeRegistry,
-  authenticatedNode: HubNodeSummary,
+  authenticated: AuthenticatedNodeLink,
   nodeLinks?: HubNodeLinkManager
 ): void {
-  const authenticatedNodeId = authenticatedNode.nodeId;
+  const authenticatedNodeId = authenticated.node.nodeId;
   nodeLinks?.registerNodeLink(authenticatedNodeId, ws);
   const unsubscribeRevoked = registry.onNodeRevoked((nodeId) => {
     if (nodeId !== authenticatedNodeId) return;
@@ -542,6 +543,7 @@ export function handleHubNodeLink(
       const node = registry.recordHeartbeat({
         nodeId: authenticatedNodeId,
         protocolVersion: parsed.protocolVersion,
+        credentialId: authenticated.credentialId,
         ...(manifest ? { manifest } : {}),
         ...(repoInventory !== undefined && repoInventory !== null
           ? { repoInventory }

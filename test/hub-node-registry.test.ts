@@ -778,4 +778,109 @@ describe('hub node registry', () => {
       ).toThrow(/PROTOCOL_INCOMPATIBLE/);
     });
   });
+
+  it('rotates node credentials without invalidating the previous token until proof', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+
+      expect(rotation.node).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        credentialState: 'rotating',
+        credentialId: exchanged.credential.credentialId,
+        credentialRotation: {
+          state: 'issuing',
+          previousCredentialId: exchanged.credential.credentialId,
+          nextCredentialId: rotation.credential.credentialId,
+        },
+      });
+      expect(rotation.credential.token).not.toEqual(exchanged.credential.token);
+      expect(
+        registry.authenticateCredentialDetailed(exchanged.credential.token)
+      ).toMatchObject({
+        ok: true,
+        credentialId: exchanged.credential.credentialId,
+      });
+      expect(
+        registry.authenticateCredentialDetailed(rotation.credential.token)
+      ).toMatchObject({
+        ok: true,
+        credentialId: rotation.credential.credentialId,
+        rotationId: rotation.rotation.rotationId,
+      });
+      expect(() =>
+        registry.beginCredentialRotation(exchanged.node.nodeId)
+      ).toThrow(/ROTATION_IN_PROGRESS/);
+
+      const delivered = registry.markCredentialRotationDelivered(
+        exchanged.node.nodeId,
+        rotation.rotation.rotationId
+      );
+      expect(delivered.rotation.state).toBe('delivered');
+
+      const proved = registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        credentialId: rotation.credential.credentialId,
+        manifest: manifest(),
+      });
+
+      expect(proved).toMatchObject({
+        credentialId: rotation.credential.credentialId,
+        credentialState: 'active',
+        credentialRotation: {
+          state: 'stable',
+          previousCredentialId: exchanged.credential.credentialId,
+          nextCredentialId: rotation.credential.credentialId,
+        },
+      });
+      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+      expect(registry.authenticateCredential(rotation.credential.token)).toMatchObject({
+        credentialId: rotation.credential.credentialId,
+        credentialState: 'active',
+      });
+    });
+  });
+
+  it('clears failed credential rotations before allowing recovery attempts', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+
+      const failed = registry.failCredentialRotation(
+        exchanged.node.nodeId,
+        rotation.rotation.rotationId,
+        'delivery failed'
+      );
+
+      expect(failed.node).toMatchObject({
+        credentialState: 'rotation-failed',
+        credentialRotation: {
+          state: 'failed',
+          failureReason: 'delivery failed',
+        },
+      });
+      expect(() =>
+        registry.beginCredentialRotation(exchanged.node.nodeId)
+      ).toThrow(/ROTATION_IN_PROGRESS/);
+
+      const cleared = registry.clearCredentialRotationFailure(exchanged.node.nodeId);
+
+      expect(cleared).toMatchObject({
+        credentialState: 'active',
+        credentialId: exchanged.credential.credentialId,
+      });
+      expect(cleared.credentialRotation).toBeUndefined();
+      expect(() =>
+        registry.beginCredentialRotation(exchanged.node.nodeId)
+      ).not.toThrow();
+    });
+  });
 });
