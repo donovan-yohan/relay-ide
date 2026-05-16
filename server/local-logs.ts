@@ -129,13 +129,18 @@ export function createLocalLogFollower(options: {
   files: string[];
   write: (chunk: string) => void;
   onError?: (error: Error) => void;
+  createReadStream?: typeof fs.createReadStream;
   pollIntervalMs?: number;
 }): LocalLogFollower {
   const followedFiles = new Map<string, FollowedFileState>();
+  const activeReads = new Set<string>();
   const files = Array.from(new Set(options.files));
   const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const createReadStream = options.createReadStream ?? fs.createReadStream;
 
   const pollFile = (file: string): void => {
+    if (activeReads.has(file)) return;
+
     let curr: fs.Stats;
     try {
       curr = fs.statSync(file);
@@ -152,16 +157,33 @@ export function createLocalLogFollower(options: {
       followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
       return;
     }
+
+    activeReads.add(file);
+    const chunks: string[] = [];
     try {
-      followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
-      const stream = fs.createReadStream(file, {
+      const stream = createReadStream(file, {
         start,
         end: curr.size - 1,
         encoding: 'utf8',
       });
-      stream.on('data', (chunk) => options.write(String(chunk)));
-      stream.on('error', (error) => options.onError?.(error));
+      stream.on('data', (chunk) => chunks.push(String(chunk)));
+      stream.on('end', () => {
+        try {
+          const output = chunks.join('');
+          if (output.length > 0) options.write(output);
+          followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
+        } catch (error) {
+          options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          activeReads.delete(file);
+        }
+      });
+      stream.on('error', (error) => {
+        activeReads.delete(file);
+        options.onError?.(error);
+      });
     } catch (error) {
+      activeReads.delete(file);
       options.onError?.(error instanceof Error ? error : new Error(String(error)));
     }
   };
