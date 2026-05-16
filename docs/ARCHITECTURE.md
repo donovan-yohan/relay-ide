@@ -102,6 +102,7 @@ Keep these names precise where they describe implemented plumbing:
 | `local-node.ts`                         | Local node state: identity, manifest, repo inventory, credential storage, and heartbeat sender for the current machine when acting as a node                                                                                                                       |
 | `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, direct session creation routing, node revocation                                                                                                                |
 | `hub-node-registry.ts`                  | Pair-token lifecycle, SHA256-hashed credential storage, timing-safe authentication, hub-owned ACL policy/default migration, heartbeat state tracking, offline/stale/revoked status, registry persistence with debounced writes                            |
+| `security-audit-log.ts`                 | Hash-chained security audit persistence: append-only SQLite table, atomic inserts, verifier for gaps/tamper/corruption, and CLI-facing verification result shape                                                                                       |
 | `hub-node-link.ts`                      | Reverse WebSocket link manager: node link registration, RPC request/response, PTY stream proxy between browser and node, node event broadcast, cleanup on disconnect/revocation                                                                                    |
 | `repo-inventory.ts`                     | Local repo inventory collection: workspace scanning, git remote normalization, capability-gated repo identity resolution                                                                                                                                           |
 | `features/repo-inventory.ts`            | Repo inventory feature service: stores node-reported inventory snapshots and aggregates local + remote reports by canonical repo identity                                                                                                                          |
@@ -192,7 +193,7 @@ Planned/deferred, not shipped:
 
 - #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) remains in spikes/design docs, not source.
 - #476 hub/node log proxy (`logs.tail`, node-log streaming, diagnostic bundles beyond current CLI `node status|logs|doctor`) is not implemented.
-- #427 trust-tier/capability/ACL schema and legacy defaults are implemented in `shared/security-policy.ts` and `server/hub-node-registry.ts`. Policy evaluator gates, two-token confirmation, credential rotation, and audit-log sink remain deferred.
+- #427 trust-tier/capability/ACL schema and legacy defaults are implemented in `shared/security-policy.ts` and `server/hub-node-registry.ts`. The hash-chained audit sink/verifier primitive is implemented in `shared/security-audit.ts` and `server/security-audit-log.ts`. Policy evaluator gates, two-token confirmation, credential rotation, and external audit shipping remain deferred.
 - #444 six-layer IA (`View -> Workspace -> Project -> Instance -> Bench -> Tab`) is not the persisted/current backend model.
 
 PTY flow:

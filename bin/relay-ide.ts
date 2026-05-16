@@ -51,6 +51,9 @@ Commands:
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  audit              Manage local security audit logs
+    verify [--db <path>] [--json]
+                                       Verify the hash-chained security audit log
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
     logs                               Print platform log commands
@@ -219,6 +222,75 @@ if (command === 'manifest') {
     JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2)
   );
   process.exit(0);
+}
+
+if (command === 'audit') {
+  const auditArgs = args.slice(1);
+  const subCommand = auditArgs[0];
+  if (subCommand !== 'verify') {
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  const jsonOutput = auditArgs.includes('--json');
+  let explicitDbPath = false;
+  let dbPath = path.join(
+    path.dirname(resolveConfigPath()),
+    'security-audit.db'
+  );
+  for (let idx = 1; idx < auditArgs.length; idx += 1) {
+    const auditArg = auditArgs[idx];
+    if (auditArg === '--json') continue;
+    if (auditArg === '--db') {
+      const candidate = auditArgs[idx + 1];
+      if (!candidate || candidate.startsWith('--')) {
+        logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+        process.exit(1);
+      }
+      explicitDbPath = true;
+      dbPath = path.resolve(candidate);
+      idx += 1;
+      continue;
+    }
+    logger.error(`Unknown audit verify option: ${auditArg}`);
+    logger.error('Usage: relay-ide audit verify [--db <path>] [--json]');
+    process.exit(1);
+  }
+  if (explicitDbPath && !fs.existsSync(dbPath)) {
+    const result = {
+      ok: false,
+      entriesVerified: 0,
+      lastHash: null,
+      break: {
+        sequence: 0,
+        reason: 'storage_corrupt',
+        actual: 'database file does not exist',
+      },
+    };
+    if (jsonOutput) {
+      console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+    } else {
+      logger.error(
+        `Security audit log FAILED at ${dbPath}: explicit --db path does not exist`
+      );
+    }
+    process.exit(1);
+  }
+  const { verifySecurityAuditLog } = await import(
+    '../server/security-audit-log.js'
+  );
+  const result = verifySecurityAuditLog(dbPath);
+  if (jsonOutput) {
+    console.log(JSON.stringify({ dbPath, ...result }, null, 2));
+  } else if (result.ok) {
+    logger.info(
+      `Security audit log OK: ${result.entriesVerified} entries verified at ${dbPath}`
+    );
+  } else {
+    logger.error(
+      `Security audit log FAILED at ${dbPath}: ${JSON.stringify(result.break)}`
+    );
+  }
+  process.exit(result.ok ? 0 : 1);
 }
 
 function getNodeArg(nodeArgs: string[], flag: string): string | undefined {
