@@ -534,8 +534,8 @@ export function WorkspaceArea({
   const hubNodesQuery = useQuery({
     queryKey: ['hub-nodes'],
     queryFn: fetchHubNodes,
-    refetchInterval: 15_000,
-    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
   });
   const hubNodes = hubNodesQuery.data;
 

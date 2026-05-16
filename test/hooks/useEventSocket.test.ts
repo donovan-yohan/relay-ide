@@ -23,6 +23,10 @@ const wsMock = vi.hoisted(() => ({
   ),
 }));
 
+const apiMock = vi.hoisted(() => ({
+  fetchHubNodes: vi.fn(),
+}));
+
 const storeMock = vi.hoisted(() => ({
   refreshAll: vi.fn(),
   ensureFreshAll: vi.fn(),
@@ -74,6 +78,10 @@ vi.mock('../../frontend/src/lib/ws.js', () => ({
   connectEventSocket: wsMock.connectEventSocket,
 }));
 
+vi.mock('../../frontend/src/lib/api.js', () => ({
+  fetchHubNodes: apiMock.fetchHubNodes,
+}));
+
 vi.mock('../../frontend/src/lib/stores/sessions.js', () => ({
   useSessionsStore: {
     getState: () => storeMock,
@@ -112,9 +120,23 @@ describe('useEventSocket repo-scoped refresh', () => {
     storeMock.backendConnectionStatus = 'connected';
     storeMock.sessions = [];
     storeMock.worktrees = [];
+    apiMock.fetchHubNodes.mockResolvedValue([]);
   });
 
-  function mount(queryClient = { invalidateQueries: vi.fn() } as any): void {
+  function makeQueryClient(cachedNodes?: unknown[]): any {
+    let nodes = cachedNodes;
+    return {
+      invalidateQueries: vi.fn(),
+      setQueryData: vi.fn((_queryKey, updater) => {
+        nodes = typeof updater === 'function' ? updater(nodes) : updater;
+      }),
+      get nodes() {
+        return nodes;
+      },
+    };
+  }
+
+  function mount(queryClient = makeQueryClient()): void {
     useEventSocket({
       authAuthenticated: true,
       queryClient,
@@ -134,11 +156,12 @@ describe('useEventSocket repo-scoped refresh', () => {
     await vi.waitFor(() =>
       expect(storeMock.ensureFreshAll).toHaveBeenCalledWith(0)
     );
+    expect(apiMock.fetchHubNodes).toHaveBeenCalledTimes(1);
     expect(telemetryMock.refreshTelemetry).toHaveBeenCalledTimes(2);
   });
 
   it('refreshes sessions, worktrees, dashboard, and file data after websocket reconnect', async () => {
-    const queryClient = { invalidateQueries: vi.fn() } as any;
+    const queryClient = makeQueryClient();
     const changedFilesRefresh = vi.fn();
     useEventSocket({
       authAuthenticated: true,
@@ -149,7 +172,11 @@ describe('useEventSocket repo-scoped refresh', () => {
 
     wsMock.onOpen?.();
     wsMock.onOpen?.();
-    await vi.waitFor(() => expect(storeMock.refreshAll).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['dashboard'],
+      })
+    );
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['dashboard'],
@@ -158,6 +185,58 @@ describe('useEventSocket repo-scoped refresh', () => {
       queryKey: ['files-list'],
     });
     expect(changedFilesRefresh).toHaveBeenCalled();
+  });
+
+  it('applies node.status events to the hub-nodes query cache without polling', () => {
+    const queryClient = makeQueryClient([
+      {
+        nodeId: 'node-a',
+        displayName: 'build box',
+        hostname: 'old-host',
+        platform: 'darwin',
+        arch: 'arm64',
+        relayVersion: '1.0.0',
+        protocolVersion: '1.0',
+        status: 'online',
+        connection: { route: 'reverse-link', status: 'connected' },
+        trust: { state: 'active', level: 'privileged-local-user' },
+        credentialState: 'active',
+        version: {
+          state: 'compatible',
+          nodeProtocolVersion: '1.0',
+          hubProtocolVersion: '1.0',
+        },
+        capabilities: {
+          totals: { available: 0, degraded: 0, unavailable: 0, unknown: 0 },
+          core: {},
+          agents: {},
+        },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        pairedAt: '2026-01-01T00:00:00.000Z',
+        lastSeenAt: '2026-01-01T00:00:00.000Z',
+        credentialId: 'cred-a',
+      },
+    ]);
+    mount(queryClient);
+
+    wsMock.onMessage?.({
+      type: 'node.status',
+      nodeId: 'node-a',
+      status: 'offline',
+      lastSeenAt: '2026-01-01T00:02:00.000Z',
+    });
+
+    expect(queryClient.nodes).toMatchObject([
+      {
+        nodeId: 'node-a',
+        status: 'offline',
+        connection: { route: 'reverse-link', status: 'offline' },
+        lastSeenAt: '2026-01-01T00:02:00.000Z',
+      },
+    ]);
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: ['hub-nodes'],
+    });
   });
 
   it('marks backend restart state and preserves the active pty session for reconnect', () => {

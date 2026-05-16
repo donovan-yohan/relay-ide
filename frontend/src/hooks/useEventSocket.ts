@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
+import { fetchHubNodes } from '../lib/api.js';
 import { connectEventSocket } from '../lib/ws.js';
 import type { EventMessage } from '../lib/ws.js';
 import { useAuthStore } from '../lib/stores/auth.js';
@@ -9,6 +10,10 @@ import { useTelemetryStore } from '../lib/stores/telemetry.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import type { AccountTelemetry, SessionTelemetry } from '../lib/types.js';
 import type { SessionEventScope } from '../../../shared/node-boundary.js';
+import type {
+  HubNodeStatus,
+  HubNodeSummary,
+} from '../../../shared/relay-node-protocol.js';
 
 export interface UseEventSocketParams {
   authAuthenticated: boolean;
@@ -162,6 +167,65 @@ function invalidateReconnectQueries(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: ['fileDiff'] });
 }
 
+const HUB_NODE_REVERSE_LINK_ROUTE = 'reverse-link';
+
+function hubNodeConnectionSummary(
+  status: HubNodeStatus
+): HubNodeSummary['connection'] {
+  if (status === 'online') {
+    return { route: HUB_NODE_REVERSE_LINK_ROUTE, status: 'connected' };
+  }
+  if (status === 'stale') {
+    return { route: HUB_NODE_REVERSE_LINK_ROUTE, status: 'stale heartbeat' };
+  }
+  if (status === 'offline') {
+    return { route: HUB_NODE_REVERSE_LINK_ROUTE, status: 'offline' };
+  }
+  return { route: HUB_NODE_REVERSE_LINK_ROUTE, status: 'revoked' };
+}
+
+function applyHubNodeStatusEvent(
+  queryClient: QueryClient,
+  msg: Extract<EventMessage, { type: 'node.status' }>
+): void {
+  let matchedCachedNode = false;
+  queryClient.setQueryData<HubNodeSummary[]>(['hub-nodes'], (nodes) => {
+    if (!nodes) return nodes;
+    return nodes.map((node) => {
+      if (node.nodeId !== msg.nodeId) return node;
+      matchedCachedNode = true;
+      return {
+        ...node,
+        ...(msg.manifest
+          ? {
+              hostname: msg.manifest.hostname,
+              ...(msg.manifest.homeDir ? { homeDir: msg.manifest.homeDir } : {}),
+              platform: msg.manifest.platform,
+              arch: msg.manifest.arch,
+              relayVersion: msg.manifest.relayVersion,
+            }
+          : {}),
+        status: msg.status,
+        connection: hubNodeConnectionSummary(msg.status),
+        lastSeenAt: msg.lastSeenAt,
+      };
+    });
+  });
+  if (!matchedCachedNode) {
+    queryClient.invalidateQueries({ queryKey: ['hub-nodes'] });
+  }
+}
+
+async function resyncHubNodesAfterReconnect(
+  queryClient: QueryClient
+): Promise<void> {
+  try {
+    queryClient.setQueryData(['hub-nodes'], await fetchHubNodes());
+  } catch {
+    queryClient.invalidateQueries({ queryKey: ['hub-nodes'] });
+  }
+}
+
 function forceRefreshRepos(repoPaths: string[], source: 'webhook' | 'manual') {
   for (const repoPath of repoPaths) {
     void useSessionsStore.getState().forceRefresh(repoPath, source);
@@ -193,6 +257,7 @@ export function useEventSocket({
       const sessions = useSessionsStore.getState();
       sessions.setBackendConnectionStatus('connected');
       await sessions.refreshAll();
+      await resyncHubNodesAfterReconnect(queryClient);
       invalidateReconnectQueries(queryClient);
       throttledChangedFilesRefresh();
       void sessions.ensureFreshAll(0);
@@ -310,6 +375,9 @@ export function useEventSocket({
       'tab-control-event': (msg) => {
         useSessionsStore.getState().handleTabControlEvent(msg.event);
         queryClient.invalidateQueries({ queryKey: ['session-interventions'] });
+      },
+      'node.status': (msg) => {
+        applyHubNodeStatusEvent(queryClient, msg);
       },
       'account-telemetry': (msg) => {
         useTelemetryStore
