@@ -10,6 +10,7 @@ import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { createLocalRelayNode } from '../server/local-node.js';
+import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { SessionSummary } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
@@ -18,7 +19,10 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
-import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
+import {
+  createLocalCompatibilitySessionEnvelope,
+  createRoutedNodeSessionEnvelope,
+} from '../shared/session-envelope.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -206,6 +210,22 @@ function remoteSession(nodeId: string): SessionSummary {
   };
 }
 
+function seedRemoteSessionEnvelope(
+  sessionEnvelopes: ReturnType<typeof createSessionEnvelopeRegistry>,
+  nodeId: string
+): void {
+  sessionEnvelopes.upsert(
+    createRoutedNodeSessionEnvelope({
+      sessionId: 'remote-session-1',
+      globalSessionId: `${nodeId}:remote-session-1`,
+      nodeId,
+      repoPath: '/srv/relay-ide',
+      cwd: '/srv/relay-ide',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+    })
+  );
+}
+
 describe('hub-routed node session create and attach', () => {
   const cleanup: Array<() => Promise<void> | void> = [];
 
@@ -223,12 +243,14 @@ describe('hub-routed node session create and attach', () => {
       now,
     });
     const nodeLinks = createHubNodeLinkManager();
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
     const app = express();
     app.use(express.json());
     app.use(
       createHubNodeRouter({
         registry,
         nodeLinks,
+        sessionEnvelopes,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
@@ -244,7 +266,8 @@ describe('hub-routed node session create and attach', () => {
       true,
       createLocalRelayNode({ nodeId: 'hub-node' }),
       registry,
-      nodeLinks
+      nodeLinks,
+      sessionEnvelopes
     );
     const port = await listen(server);
     cleanup.push(() => close(server));
@@ -253,6 +276,7 @@ describe('hub-routed node session create and attach', () => {
       wsBase: `ws://127.0.0.1:${port}`,
       port,
       nodeLinks,
+      sessionEnvelopes,
     };
   }
 
@@ -671,8 +695,9 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('proxies browser PTY attach through the hub to the node-owned session', async () => {
-    const { base, wsBase } = await startHub();
+    const { base, wsBase, sessionEnvelopes } = await startHub();
     const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -788,8 +813,9 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('closes browser PTY streams promptly when a node reverse link is replaced', async () => {
-    const { base, wsBase } = await startHub();
+    const { base, wsBase, sessionEnvelopes } = await startHub();
     const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },
     });

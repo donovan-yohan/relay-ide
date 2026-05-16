@@ -133,6 +133,7 @@ import {
   cleanExpiredTokens,
 } from './browser-content.js';
 import { createLogger, initFileLogging } from './logger.js';
+import { createSecurityAuditLog } from './security-audit-log.js';
 import {
   initializeDefaultAllocator,
   getDefaultAllocator,
@@ -990,6 +991,17 @@ async function main(): Promise<void> {
 
   const configDir = getConfigDir(CONFIG_PATH);
   initializeRuntimeDirectories(configDir);
+  let securityAuditLog: ReturnType<typeof createSecurityAuditLog> | undefined;
+  try {
+    securityAuditLog = createSecurityAuditLog(
+      path.join(configDir, 'security-audit.db')
+    );
+  } catch (err) {
+    logger.warn(
+      'Security audit log disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
   const hubNodeRegistry = createHubNodeRegistry({
     storagePath: path.join(configDir, 'hub-node-registry.json'),
   });
@@ -1100,6 +1112,7 @@ async function main(): Promise<void> {
       requireAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
+      ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
   app.use(
@@ -1203,7 +1216,9 @@ async function main(): Promise<void> {
     process.env.NO_PIN === '1',
     localRelayNode,
     hubNodeRegistry,
-    hubNodeLinks
+    hubNodeLinks,
+    undefined,
+    securityAuditLog
   );
 
   const browserScopedToken = generateScopedToken();

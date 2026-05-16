@@ -11,6 +11,7 @@ import { createRepoFeatureRouter } from '../server/features/repo-router.js';
 import { createHubNodeLinkManager } from '../server/hub-node-link.js';
 import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
+import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 
@@ -800,5 +801,112 @@ describe('hub node routes and link', () => {
       error: { code: 'INVALID_REQUEST', retryable: false },
     });
     expect(registry.listInventoryPayloads()).toHaveLength(0);
+  });
+
+  it('lists and revokes scoped routed sessions through hub API', async () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const { tmpDir, registry } = tmpRegistry(() => now);
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
+    const auditEntries: unknown[] = [];
+    const nodeLinks = {
+      hasActiveNode: () => true,
+      request: async () => ({
+        session: {
+          id: 'remote-session',
+          type: 'agent',
+          mode: 'pty',
+          cwd: '/srv/app',
+          displayName: 'remote session',
+          createdAt: now.toISOString(),
+          lastActivity: now.toISOString(),
+          idle: false,
+          customCommand: null,
+          status: 'active',
+          needsBranchRename: false,
+          agentState: 'idle',
+        },
+      }),
+    };
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks: nodeLinks as never,
+        sessionEnvelopes,
+        now: () => now,
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const heartbeat = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${exchanged.credential.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.credential.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest(),
+      }),
+    });
+    expect(heartbeat.status).toBe(200);
+
+    const createRes = await fetch(`${base}/hub/nodes/${exchanged.node.nodeId}/sessions`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'agent',
+        cwd: '/srv/app',
+        expiresAt: '2026-01-02T03:06:00.000Z',
+      }),
+    });
+    expect(createRes.status).toBe(201);
+
+    const listRes = await fetch(`${base}/hub/scoped-sessions`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(listRes.status).toBe(200);
+    const list = (await listRes.json()) as { sessions: Array<Record<string, unknown>> };
+    expect(list.sessions).toHaveLength(1);
+    expect(list.sessions[0]).toMatchObject({
+      sessionId: 'remote-session',
+      nodeId: exchanged.node.nodeId,
+      status: 'active',
+      expiresAt: '2026-01-02T03:06:00.000Z',
+    });
+
+    const revokeRes = await fetch(`${base}/hub/scoped-sessions/remote-session/revoke`, {
+      method: 'POST',
+      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+      body: JSON.stringify({ nodeId: exchanged.node.nodeId, reason: 'operator-test' }),
+    });
+    expect(revokeRes.status).toBe(200);
+    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries[0]).toMatchObject({
+      eventType: 'revocation',
+      decision: 'revoked',
+      reasonCode: 'SESSION_REVOKED',
+    });
+
+    const activeOnlyRes = await fetch(`${base}/hub/scoped-sessions?includeRevoked=0`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    const activeOnly = (await activeOnlyRes.json()) as { sessions: unknown[] };
+    expect(activeOnly.sessions).toHaveLength(0);
   });
 });
