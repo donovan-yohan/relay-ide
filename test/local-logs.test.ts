@@ -167,4 +167,28 @@ describe('local Relay logs', () => {
       follower.close();
     }
   });
+
+  it('follows a recreated log file from the beginning after rotation', async () => {
+    const dir = makeTempDir();
+    const logFile = path.join(dir, 'relay-ide.log');
+    const rotatedLogFile = path.join(dir, 'relay-ide.log.1');
+    fs.writeFileSync(logFile, 'existing\n');
+    let output = '';
+    const follower = createLocalLogFollower({
+      files: [logFile],
+      pollIntervalMs: 20,
+      write: (chunk) => {
+        output += chunk;
+      },
+    });
+
+    try {
+      fs.renameSync(logFile, rotatedLogFile);
+      fs.writeFileSync(logFile, 'first-new-line\nsecond-new-line\n');
+      await waitFor(() => output.includes('second-new-line'));
+      expect(output).toBe('first-new-line\nsecond-new-line\n');
+    } finally {
+      follower.close();
+    }
+  });
 });

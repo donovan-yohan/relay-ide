@@ -24,6 +24,17 @@ export interface LocalLogFollower {
   close(): void;
 }
 
+interface FollowedFileIdentity {
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+}
+
+interface FollowedFileState {
+  offset: number;
+  identity?: FollowedFileIdentity;
+}
+
 export function parseLogLineCount(
   value: string | undefined,
   fallback = DEFAULT_LOG_LINES
@@ -120,18 +131,23 @@ export function createLocalLogFollower(options: {
   onError?: (error: Error) => void;
   pollIntervalMs?: number;
 }): LocalLogFollower {
-  const offsets = new Map<string, number>();
+  const followedFiles = new Map<string, FollowedFileState>();
   const files = Array.from(new Set(options.files));
   for (const file of files) {
-    offsets.set(file, initialOffset(file));
+    followedFiles.set(file, initialFollowedFileState(file));
     fs.watchFile(
       file,
       { interval: options.pollIntervalMs ?? 500, persistent: true },
       (curr) => {
         if (!curr.isFile()) return;
-        const previousOffset = offsets.get(file) ?? 0;
-        const start = curr.size < previousOffset ? 0 : previousOffset;
-        if (curr.size <= start) return;
+        const previousState = followedFiles.get(file) ?? { offset: 0 };
+        const currentIdentity = fileIdentity(curr);
+        const rotated = !sameFileIdentity(previousState.identity, currentIdentity);
+        const start = rotated || curr.size < previousState.offset ? 0 : previousState.offset;
+        if (curr.size <= start) {
+          followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
+          return;
+        }
         try {
           const stream = fs.createReadStream(file, {
             start,
@@ -140,7 +156,9 @@ export function createLocalLogFollower(options: {
           });
           stream.on('data', (chunk) => options.write(String(chunk)));
           stream.on('error', (error) => options.onError?.(error));
-          stream.on('end', () => offsets.set(file, curr.size));
+          stream.on('end', () => {
+            followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
+          });
         } catch (error) {
           options.onError?.(error instanceof Error ? error : new Error(String(error)));
         }
@@ -218,13 +236,33 @@ function isReadableFile(filePath: string): boolean {
   }
 }
 
-function initialOffset(filePath: string): number {
+function initialFollowedFileState(filePath: string): FollowedFileState {
   try {
     const stat = fs.statSync(filePath);
-    return stat.isFile() ? stat.size : 0;
+    return stat.isFile() ? { offset: stat.size, identity: fileIdentity(stat) } : { offset: 0 };
   } catch {
-    return 0;
+    return { offset: 0 };
   }
+}
+
+function fileIdentity(stat: fs.Stats): FollowedFileIdentity {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    birthtimeMs: stat.birthtimeMs,
+  };
+}
+
+function sameFileIdentity(
+  previous: FollowedFileIdentity | undefined,
+  current: FollowedFileIdentity
+): boolean {
+  return (
+    previous !== undefined &&
+    previous.dev === current.dev &&
+    previous.ino === current.ino &&
+    previous.birthtimeMs === current.birthtimeMs
+  );
 }
 
 function formatLogChunk(file: string, text: string, includeHeader: boolean): string {
