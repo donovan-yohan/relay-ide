@@ -3,6 +3,8 @@ import type { CreateResult } from './sessions.js';
 import type { CreateParams } from './sessions.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { Session, SessionSummary } from './types.js';
+import type { InterventionRecord, TabControlEvent, ControlActor } from '../shared/control-state.js';
+import type { SessionControlError } from './session-control-api.js';
 import {
   DEFAULT_LOCAL_ENVIRONMENT_ID,
   createLocalEventAuthority,
@@ -26,6 +28,14 @@ export interface NodeSessionBoundary {
     displayName: string
   ): { id: string; displayName: string };
   write(id: string, data: string): void;
+  getInterventions(id: string, options?: { nodeId?: string; limit?: number }): InterventionRecord[];
+  handBackToAgent(input: {
+    id: string;
+    latestSeenInterventionEventId?: string;
+    actor?: ControlActor;
+  }):
+    | { ok: true; events: TabControlEvent[]; ackedHumanInterventions: number }
+    | { ok: false; error: SessionControlError };
 }
 
 type LocalRelayNodeSessionOverrides = Partial<{
@@ -60,6 +70,8 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   kill: sessionsModule.kill,
   updateDisplayName: sessionsModule.updateDisplayName,
   write: sessionsModule.write,
+  getInterventions: sessionsModule.getInterventions,
+  handBackToAgent: sessionsModule.handBackToAgent,
 };
 
 export function createLocalRelayNode(

@@ -131,6 +131,24 @@ Reserved node-link event envelope names for later intervention work are `tab.mod
 
 #427 boundary: #490 only defines and serializes state. It does not add capability gates, trust tiers, two-token confirmation, security policy evaluation, intervention persistence, or hash-chained audit logging.
 
+### Session control reads and hand-back ack (#493)
+
+The scoped session API exposes current control state without requiring raw terminal history export:
+
+- `GET /sessions/:id` returns a local or routed session summary with the flattened control fields above.
+- `GET /sessions/:id/interventions?limit=<n>` returns bounded local-session intervention records plus redaction metadata (`rawPayloadAvailable: false`, `transcriptExportAvailable: false`). It is intentionally not a routed read, keylog, or terminal transcript endpoint.
+- `POST /sessions/:id/control/hand-back` accepts `{ "latestSeenInterventionEventId": "..." }` and only resumes `agent-driven` after the caller acknowledges the latest unacked human intervention id. Missing, old, stale, unknown, disconnected, or already-acked state returns a typed error.
+
+The matching CLI surface is:
+
+```bash
+relay-ide sessions get <session-id>
+relay-ide sessions interventions <session-id> [--limit <n>]
+relay-ide sessions hand-back <session-id> --latest-seen-intervention-event-id <event-id>
+```
+
+Capability checks currently use the #427 placeholder header contract: omitted `x-relay-capabilities` preserves compatibility, while an explicit header must include `session:control:read`, `session:intervention:read`, or `session:control:write` for the respective operation.
+
 ### Heartbeat and Offline Detection
 
 - Default heartbeat is implicit: any `control.hello` or `control.heartbeat` refreshes the node's `lastSeenAt`.

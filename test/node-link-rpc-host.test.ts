@@ -132,6 +132,71 @@ describe('node-link-rpc-host', () => {
     expect(replyPayload.session).not.toHaveProperty('pid');
   });
 
+  it('turns requested initial agent-driven control mode into fresh control state before dispatch', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        id: 'worker-session-1',
+        type: 'agent',
+        cwd: '/home/user/project',
+        displayName: 'Remote Codex worker',
+        controlMode: 'agent-driven',
+      }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall).toMatchObject({
+      id: 'worker-session-1',
+      type: 'agent',
+      cwd: '/home/user/project',
+      controlState: {
+        controlMode: 'agent-driven',
+        activeActors: [
+          {
+            kind: 'agent',
+            id: 'worker-session-1',
+            displayName: 'Remote Codex worker',
+          },
+        ],
+        activeWorker: {
+          kind: 'agent',
+          id: 'worker-session-1',
+          displayName: 'Remote Codex worker',
+        },
+        controlFreshness: 'fresh',
+        controlReason: 'requested-initial-agent-driven',
+      },
+    });
+    expect(createCall).not.toHaveProperty('controlMode');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.result');
+  });
+
+  it('rejects requested agent-driven initial control for terminal sessions', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', { type: 'terminal', controlMode: 'agent-driven' }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('agent sessions');
+  });
+
   it('defaults missing cwd to os.homedir() so routed creates from the picker never spawn with undefined', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
