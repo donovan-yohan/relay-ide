@@ -133,43 +133,51 @@ export function createLocalLogFollower(options: {
 }): LocalLogFollower {
   const followedFiles = new Map<string, FollowedFileState>();
   const files = Array.from(new Set(options.files));
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+
+  const pollFile = (file: string): void => {
+    let curr: fs.Stats;
+    try {
+      curr = fs.statSync(file);
+    } catch {
+      return;
+    }
+    if (!curr.isFile()) return;
+
+    const previousState = followedFiles.get(file) ?? { offset: 0 };
+    const currentIdentity = fileIdentity(curr);
+    const rotated = !sameFileIdentity(previousState.identity, currentIdentity);
+    const start = rotated || curr.size < previousState.offset ? 0 : previousState.offset;
+    if (curr.size <= start) {
+      followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
+      return;
+    }
+    try {
+      followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
+      const stream = fs.createReadStream(file, {
+        start,
+        end: curr.size - 1,
+        encoding: 'utf8',
+      });
+      stream.on('data', (chunk) => options.write(String(chunk)));
+      stream.on('error', (error) => options.onError?.(error));
+    } catch (error) {
+      options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+
   for (const file of files) {
     followedFiles.set(file, initialFollowedFileState(file));
-    fs.watchFile(
-      file,
-      { interval: options.pollIntervalMs ?? 500, persistent: true },
-      (curr) => {
-        if (!curr.isFile()) return;
-        const previousState = followedFiles.get(file) ?? { offset: 0 };
-        const currentIdentity = fileIdentity(curr);
-        const rotated = !sameFileIdentity(previousState.identity, currentIdentity);
-        const start = rotated || curr.size < previousState.offset ? 0 : previousState.offset;
-        if (curr.size <= start) {
-          followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
-          return;
-        }
-        try {
-          const stream = fs.createReadStream(file, {
-            start,
-            end: curr.size - 1,
-            encoding: 'utf8',
-          });
-          stream.on('data', (chunk) => options.write(String(chunk)));
-          stream.on('error', (error) => options.onError?.(error));
-          stream.on('end', () => {
-            followedFiles.set(file, { offset: curr.size, identity: currentIdentity });
-          });
-        } catch (error) {
-          options.onError?.(error instanceof Error ? error : new Error(String(error)));
-        }
-      }
-    );
   }
+
+  const pollTimer = setInterval(() => {
+    for (const file of files) pollFile(file);
+  }, pollIntervalMs);
 
   return {
     files,
     close() {
-      for (const file of files) fs.unwatchFile(file);
+      clearInterval(pollTimer);
     },
   };
 }
