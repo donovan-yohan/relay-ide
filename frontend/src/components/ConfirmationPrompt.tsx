@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   approveConfirmationChallenge,
   fetchConfirmationChallenges,
+  fetchConfirmationRequesterToken,
   type ConfirmationChallenge,
   type ConfirmationDecision,
 } from '../lib/api.js';
@@ -78,7 +79,8 @@ export const ConfirmationPrompt: React.FC = () => {
   const [loading, setLoading] = useState<ConfirmationDecision | 'retry' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [, setRetryVersion] = useState(0);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const autoRetryingIds = useRef<Set<string>>(new Set());
 
   const refresh = async (): Promise<void> => {
     const next = await fetchConfirmationChallenges();
@@ -132,6 +134,45 @@ export const ConfirmationPrompt: React.FC = () => {
     visibleChallenges.find((challenge) => challenge.challengeId === selectedId) ?? visibleChallenges[0];
   const retryRegistration = selected ? getConfirmationRetry(selected.challengeId) : undefined;
 
+  useEffect(() => {
+    const approvedRetry = visibleChallenges.find(
+      (challenge) =>
+        challenge.status === 'approved' &&
+        getConfirmationRetry(challenge.challengeId) &&
+        !autoRetryingIds.current.has(challenge.challengeId)
+    );
+    if (!approvedRetry) return;
+
+    autoRetryingIds.current.add(approvedRetry.challengeId);
+    setLoading('retry');
+    setErrorMessage(null);
+    setStatusMessage('approved challenge received; requesting token for original browser retry');
+
+    void (async () => {
+      try {
+        const result = await fetchConfirmationRequesterToken(approvedRetry.challengeId);
+        const registration = getConfirmationRetry(result.challenge.challengeId);
+        if (!registration) {
+          setStatusMessage('approved challenge has no local retry in this browser session');
+          return;
+        }
+        if (registration.paramsHash !== result.challenge.canonicalParamsHash) {
+          setErrorMessage('approved token was not retried: local params hash does not match the challenge');
+          return;
+        }
+        await retryConfirmedOperation(result.challenge, result.confirmationToken);
+        await useSessionsStore.getState().refreshAll();
+        setStatusMessage('approved by another browser and retried with the exact original params');
+        await refresh();
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        autoRetryingIds.current.delete(approvedRetry.challengeId);
+        setLoading(null);
+      }
+    })();
+  }, [visibleChallenges, retryVersion]);
+
   if (!selected) return null;
 
   const handleDecision = async (decision: ConfirmationDecision) => {
@@ -162,7 +203,7 @@ export const ConfirmationPrompt: React.FC = () => {
       }
       const registration = getConfirmationRetry(result.challenge.challengeId);
       if (!registration) {
-        setStatusMessage('challenge approved. no local retry is registered in this browser session.');
+        setStatusMessage('challenge approved. waiting for the requesting browser to pick up the token and retry.');
         await refresh();
         return;
       }

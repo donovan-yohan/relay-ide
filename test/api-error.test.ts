@@ -3,11 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ConfirmationRequiredError,
   createSession,
+  fetchConfirmationRequesterToken,
   HttpError,
   killSession,
+  type ConfirmationChallenge,
 } from '../frontend/src/lib/api.js';
 import {
   clearConfirmationRetry,
+  createConfirmationRetryRegistry,
   getConfirmationRetry,
 } from '../frontend/src/lib/confirmation-retries.js';
 
@@ -182,6 +185,60 @@ describe('frontend api errors', () => {
     });
 
     clearConfirmationRetry('challenge-1');
+  });
+
+  it('hands approved tokens to the requester registry, not the approver registry', async () => {
+    const requesterRegistry = createConfirmationRetryRegistry();
+    const approverRegistry = createConfirmationRetryRegistry();
+    const approvedChallenge: ConfirmationChallenge = {
+      challengeId: 'challenge-1',
+      status: 'approved',
+      nodeId: 'node-a',
+      intent: { action: 'sessions.create', target: 'node-a' },
+      requiredBits: ['session:create:terminal'],
+      challengeBits: ['session:create:terminal'],
+      canonicalParams: {
+        action: 'sessions.create',
+        type: 'terminal',
+        cwd: '/home/relay/project',
+      },
+      canonicalParamsHash: 'hash-1',
+      createdAt: '2026-05-16T00:00:00.000Z',
+      expiresAt: '2026-05-16T00:05:00.000Z',
+      approvedAt: '2026-05-16T00:01:00.000Z',
+      tokenExpiresAt: '2026-05-16T00:02:00.000Z',
+      failedRedemptions: 0,
+      maxFailedRedemptions: 3,
+      reasonCode: 'CONFIRMATION_APPROVED',
+      message: 'confirmation approved',
+    };
+    const retry = vi.fn(async () => ({ id: 'remote-session-1' }));
+    requesterRegistry.registerConfirmationRetry({
+      challenge: approvedChallenge,
+      label: 'sessions.create',
+      paramsHash: 'hash-1',
+      retry,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ confirmationToken: 'requester-token-1', challenge: approvedChallenge }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      )
+    );
+
+    expect(approverRegistry.getConfirmationRetry('challenge-1')).toBeUndefined();
+    const pickup = await fetchConfirmationRequesterToken('challenge-1');
+    await requesterRegistry.retryConfirmedOperation(pickup.challenge, pickup.confirmationToken);
+
+    expect(fetch).toHaveBeenCalledWith('/hub/confirmations/challenge-1/requester-token', {
+      method: 'POST',
+    });
+    expect(retry).toHaveBeenCalledWith('requester-token-1');
+    expect(requesterRegistry.getConfirmationRetry('challenge-1')).toBeUndefined();
   });
 
   it('preserves local session lane markers in create payloads', async () => {

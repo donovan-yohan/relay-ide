@@ -1079,6 +1079,32 @@ export function createHubNodeRouter(
     res.json({ challenge: publicChallenge(challenge) });
   });
 
+  router.post('/hub/confirmations/:challengeId/requester-token', requireAuth, (req, res) => {
+    const { challengeId } = req.params;
+    if (!challengeId) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'confirmation challenge id is required', false, {
+          reasonCode: 'CONFIRMATION_NOT_FOUND',
+        })
+      );
+      return;
+    }
+    const result = confirmations.getRequesterToken({
+      challengeId,
+      requesterAuthSessionHash: authSessionHash(req),
+      now: now(),
+    });
+    if (result.ok === false) {
+      sendRelayError(res, relayErrorForConfirmationFailure(result));
+      return;
+    }
+    res.json({
+      confirmationToken: result.confirmationToken,
+      challenge: publicChallenge(result.challenge),
+    });
+  });
+
   router.post('/hub/confirmations/:challengeId/approve', requireAuth, (req, res) => {
     const { challengeId } = req.params;
     const body = bodyRecord(req);

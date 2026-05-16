@@ -128,10 +128,28 @@ describe('confirmation challenge store', () => {
     if (!approved.ok) throw new Error('expected approval');
     expect(approved.confirmationToken).toBe('raw-token');
     expect(approved.challenge.tokenHash).not.toBe('raw-token');
+    expect(approved.challenge.requesterToken).toBe('raw-token');
     expect(approved.challenge.approverAuthSessionHash).toBe('approver-session');
     expect(approved.audit.peer.principalHash).toBe('approver-session');
     expect(approved.audit.peer.principalHash).not.toBe('requester-session');
     expect(approved.audit.peer.displayName).toBe('second browser');
+
+    const approverPickup = store.getRequesterToken({
+      challengeId: challenge.challengeId,
+      requesterAuthSessionHash: 'approver-session',
+      now: NOW,
+    });
+    expect(approverPickup.ok).toBe(false);
+    if (!approverPickup.ok) expect(approverPickup.reasonCode).toBe('CONFIRMATION_REQUESTER_MISMATCH');
+
+    const requesterPickup = store.getRequesterToken({
+      challengeId: challenge.challengeId,
+      requesterAuthSessionHash: 'requester-session',
+      now: NOW,
+    });
+    expect(requesterPickup.ok).toBe(true);
+    if (!requesterPickup.ok) throw new Error('expected requester token pickup');
+    expect(requesterPickup.confirmationToken).toBe('raw-token');
 
     const mismatch = store.redeemToken({
       token: 'raw-token',
@@ -165,6 +183,7 @@ describe('confirmation challenge store', () => {
     if (!redeemed.ok) throw new Error('expected redemption');
     expect(redeemed.audit.peer.principalHash).toBe('requester-session');
     expect(redeemed.audit.peer.principalHash).not.toBe('approver-session');
+    expect(redeemed.challenge.requesterToken).toBeUndefined();
 
     const usedAgain = store.redeemToken({
       token: 'raw-token',

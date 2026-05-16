@@ -304,6 +304,21 @@ export async function approveConfirmationChallenge(
   };
 }
 
+export async function fetchConfirmationRequesterToken(
+  challengeId: string
+): Promise<{ confirmationToken: string; challenge: ConfirmationChallenge }> {
+  const res = await fetch(
+    '/hub/confirmations/' + encodeURIComponent(challengeId) + '/requester-token',
+    { method: 'POST' }
+  );
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to fetch confirmation token');
+  const data = await jsonEither<{ confirmationToken?: unknown; challenge?: unknown }>(res);
+  if (typeof data.confirmationToken !== 'string' || !isConfirmationChallenge(data.challenge)) {
+    throw new Error('confirmation requester-token response was malformed');
+  }
+  return { confirmationToken: data.confirmationToken, challenge: data.challenge };
+}
+
 export async function setupPin(pin: string, confirm: string): Promise<void> {
   const res = await fetch('/auth/setup', {
     method: 'POST',

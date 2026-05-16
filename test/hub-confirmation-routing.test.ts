@@ -313,6 +313,37 @@ describe('hub confirmation routing', () => {
       challenge: { challengeId: 'challenge-1', status: 'approved' },
     });
 
+    const wrongRequesterPickup = await fetch(
+      `${base}/hub/confirmations/challenge-1/requester-token`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-test-auth': 'yes',
+          'x-auth-session': 'approver-browser',
+        },
+      }
+    );
+    expect(wrongRequesterPickup.status).toBe(401);
+    expect(await wrongRequesterPickup.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_REQUESTER_MISMATCH' } },
+    });
+
+    const requesterPickup = await fetch(`${base}/hub/confirmations/challenge-1/requester-token`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+    });
+    expect(requesterPickup.status).toBe(200);
+    const requesterPickupJson = await requesterPickup.json();
+    expect(requesterPickupJson).toMatchObject({
+      confirmationToken: 'raw-confirmation-token',
+      challenge: { challengeId: 'challenge-1', status: 'approved' },
+    });
+
     const tampered = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
       method: 'POST',
       headers: {
