@@ -45,6 +45,7 @@ import {
 } from '../shared/session-envelope.js';
 import {
   expiresAtFromLifecycleInput,
+  lifecycleInputError,
   sessionEnvelopeRegistry,
   type InMemorySessionEnvelopeRegistry,
   type ScopedSessionSummary,
@@ -62,6 +63,7 @@ export interface RoutedSessionAuditSink {
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
+  scopedSessionAuth?: express.RequestHandler;
   repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeSessionTransport;
@@ -640,6 +642,26 @@ function includeFlag(value: unknown): boolean {
   return value === '1' || value === 'true' || value === true;
 }
 
+function revokeAddressError(
+  envelopes: InMemorySessionEnvelopeRegistry,
+  sessionIdOrGlobalId: string,
+  nodeId?: string
+): RelayNodeError | null {
+  if (nodeId || envelopes.hasGlobalSessionId(sessionIdOrGlobalId)) return null;
+  const localMatches = envelopes.countLocalSessionId(sessionIdOrGlobalId);
+  if (localMatches === 0) return null;
+  return relayError(
+    'INVALID_REQUEST',
+    'nodeId is required when revoking by node-local session id',
+    false,
+    {
+      reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID',
+      sessionId: sessionIdOrGlobalId,
+      matches: localMatches,
+    }
+  );
+}
+
 function manifestFromBody(
   body: Record<string, unknown>,
   required = false
@@ -733,6 +755,7 @@ export function createHubNodeRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth } = options;
+  const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
   const now = () => options.now?.() ?? new Date();
   const repoInventoryFeature =
@@ -866,7 +889,7 @@ export function createHubNodeRouter(
   // #433 they moved to `server/features/repo-router.ts`. Composition
   // root mounts both routers.
 
-  router.get('/hub/scoped-sessions', requireAuth, (req, res) => {
+  router.get('/hub/scoped-sessions', scopedSessionAuth, (req, res) => {
     res.json({
       sessions: envelopes.listSummaries({
         now: now(),
@@ -876,7 +899,7 @@ export function createHubNodeRouter(
     });
   });
 
-  router.post('/hub/scoped-sessions/:sessionId/revoke', requireAuth, (req, res) => {
+  router.post('/hub/scoped-sessions/:sessionId/revoke', scopedSessionAuth, (req, res) => {
     const { sessionId } = req.params;
     if (!sessionId) {
       sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
@@ -887,6 +910,11 @@ export function createHubNodeRouter(
       typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
     const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
     const revokeReason = revokedReasonFromBody(body);
+    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+    if (addressError) {
+      sendRelayError(res, addressError);
+      return;
+    }
     const summary = envelopes.revoke(sessionId, {
       ...(nodeId ? { nodeId } : {}),
       ...(revokeReason ? { reason: revokeReason } : {}),
@@ -900,13 +928,18 @@ export function createHubNodeRouter(
     res.json({ session: summary });
   });
 
-  router.delete('/hub/scoped-sessions/:sessionId', requireAuth, (req, res) => {
+  router.delete('/hub/scoped-sessions/:sessionId', scopedSessionAuth, (req, res) => {
     const { sessionId } = req.params;
     if (!sessionId) {
       sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
       return;
     }
     const nodeId = typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
+    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+    if (addressError) {
+      sendRelayError(res, addressError);
+      return;
+    }
     const summary = envelopes.revoke(sessionId, {
       ...(nodeId ? { nodeId } : {}),
       reason: 'operator-revoked',
@@ -968,6 +1001,17 @@ export function createHubNodeRouter(
     }
 
     const body = bodyRecord(req);
+    const lifecycleError = lifecycleInputError(body);
+    if (lifecycleError) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', lifecycleError.message, false, {
+          reasonCode: 'INVALID_LIFECYCLE_INPUT',
+          field: lifecycleError.field,
+        })
+      );
+      return;
+    }
     const createNow = now();
     const expiresAt = expiresAtFromLifecycleInput(body, createNow);
     if (expiresAt !== undefined && expiresAt !== null && Date.parse(expiresAt) <= createNow.getTime()) {

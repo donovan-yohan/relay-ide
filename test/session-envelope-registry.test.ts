@@ -3,7 +3,11 @@ import {
   LOCAL_COMPATIBILITY_SESSION_INTENT,
   ROUTED_NODE_SESSION_INTENT,
 } from '../shared/session-envelope.js';
-import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
+import {
+  createSessionEnvelopeRegistry,
+  expiresAtFromLifecycleInput,
+  lifecycleInputError,
+} from '../server/session-envelope-registry.js';
 
 describe('session envelope registry', () => {
   it('creates, reads, and lists active local compatibility envelopes', () => {
@@ -134,6 +138,53 @@ describe('session envelope registry', () => {
     ).toMatchObject({
       ok: false,
       error: { code: 'SESSION_MISMATCH', details: { reasonCode: 'SESSION_NODE_MISMATCH' } },
+    });
+  });
+
+  it('fails closed for malformed present lifecycle fields', () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+
+    expect(lifecycleInputError({ expiresAt: 'not-a-date' })).toMatchObject({
+      field: 'expiresAt',
+    });
+    expect(lifecycleInputError({ ttlMs: 0 })).toMatchObject({ field: 'ttlMs' });
+    expect(lifecycleInputError({ ttlSeconds: '60' })).toMatchObject({
+      field: 'ttlSeconds',
+    });
+    expect(lifecycleInputError({ ttlMs: 500 })).toBeNull();
+    expect(expiresAtFromLifecycleInput({ ttlMs: 500 }, now)).toBe(
+      '2026-01-02T03:04:05.500Z'
+    );
+  });
+
+  it('requires nodeId or globalSessionId for revoke by local session id', () => {
+    const registry = createSessionEnvelopeRegistry();
+    registry.create({
+      sessionId: 'duplicate-local',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:duplicate-local',
+      cwd: '/srv/a',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+    registry.create({
+      sessionId: 'duplicate-local',
+      nodeId: 'node-b',
+      globalSessionId: 'node-b:duplicate-local',
+      cwd: '/srv/b',
+      issuedAt: '2026-01-02T03:04:05.000Z',
+      intentKind: ROUTED_NODE_SESSION_INTENT,
+    });
+
+    expect(registry.countLocalSessionId('duplicate-local')).toBe(2);
+    expect(registry.revoke('duplicate-local')).toBeUndefined();
+    expect(registry.revoke('node-a:duplicate-local')).toMatchObject({
+      nodeId: 'node-a',
+      status: 'revoked',
+    });
+    expect(registry.revoke('duplicate-local', { nodeId: 'node-b' })).toMatchObject({
+      nodeId: 'node-b',
+      status: 'revoked',
     });
   });
 

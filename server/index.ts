@@ -130,8 +130,10 @@ import {
 import {
   createBrowserContentRouter,
   generateScopedToken,
+  validateScopedToken,
   cleanExpiredTokens,
 } from './browser-content.js';
+import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 import { createLogger, initFileLogging } from './logger.js';
 import { createSecurityAuditLog } from './security-audit-log.js';
 import {
@@ -1083,21 +1085,41 @@ async function main(): Promise<void> {
     res.json({ status: 'ok' });
   });
 
+  function authenticatedCookieToken(req: express.Request): boolean {
+    const token = req.cookies && req.cookies.token;
+    if (!token) return false;
+    const config = getConfig();
+    return authenticatedTokens.has(token) || auth.verifyCookieToken(token, config.pinHash);
+  }
+
+  function bearerScopedToken(req: express.Request): string {
+    const authHeader = req.header('authorization') ?? '';
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() ?? '';
+  }
+
   const requireAuth: express.RequestHandler = (req, res, next) => {
     if (process.env.NO_PIN === '1') {
       next();
       return;
     }
-    const token = req.cookies && req.cookies.token;
-    const config = getConfig();
-    const tokenAccepted =
-      authenticatedTokens.has(token) ||
-      auth.verifyCookieToken(token, config.pinHash);
-    if (!token || !tokenAccepted) {
+    if (!authenticatedCookieToken(req)) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
     next();
+  };
+
+  const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
+    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+      next();
+      return;
+    }
+    if (validateScopedToken(bearerScopedToken(req))) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: 'Unauthorized' });
   };
 
   const collectLocalInventory = () =>
@@ -1110,8 +1132,10 @@ async function main(): Promise<void> {
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
       requireAuth,
+      scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
+      sessionEnvelopes: sessionEnvelopeRegistry,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
@@ -1122,6 +1146,7 @@ async function main(): Promise<void> {
       requireAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
+      sessionEnvelopes: sessionEnvelopeRegistry,
     })
   );
 
@@ -1217,7 +1242,7 @@ async function main(): Promise<void> {
     localRelayNode,
     hubNodeRegistry,
     hubNodeLinks,
-    undefined,
+    sessionEnvelopeRegistry,
     securityAuditLog
   );
 

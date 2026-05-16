@@ -95,13 +95,53 @@ function isIsoLike(value: string): boolean {
   return ISO_DATE_PATTERN.test(value) && Number.isFinite(Date.parse(value));
 }
 
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+export interface LifecycleInputError {
+  field: 'expiresAt' | 'ttlMs' | 'ttlSeconds';
+  message: string;
+}
+
+export function lifecycleInputError(input: Record<string, unknown>): LifecycleInputError | null {
+  if (hasOwn(input, 'expiresAt')) {
+    const expiresAt = input['expiresAt'];
+    if (expiresAt !== null && !(typeof expiresAt === 'string' && isIsoLike(expiresAt))) {
+      return {
+        field: 'expiresAt',
+        message: 'expiresAt must be null or an ISO timestamp',
+      };
+    }
+  }
+
+  if (hasOwn(input, 'ttlMs')) {
+    const ttlMs = input['ttlMs'];
+    if (!(typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0)) {
+      return { field: 'ttlMs', message: 'ttlMs must be a positive finite number' };
+    }
+  }
+
+  if (hasOwn(input, 'ttlSeconds')) {
+    const ttlSeconds = input['ttlSeconds'];
+    if (!(typeof ttlSeconds === 'number' && Number.isFinite(ttlSeconds) && ttlSeconds > 0)) {
+      return {
+        field: 'ttlSeconds',
+        message: 'ttlSeconds must be a positive finite number',
+      };
+    }
+  }
+
+  return null;
+}
+
 export function expiresAtFromLifecycleInput(
   input: Record<string, unknown>,
   now = new Date()
 ): string | null | undefined {
   const expiresAt = input['expiresAt'];
   if (expiresAt === null) return null;
-  if (typeof expiresAt === 'string') return isIsoLike(expiresAt) ? expiresAt : undefined;
+  if (typeof expiresAt === 'string') return expiresAt;
 
   const ttlMs = input['ttlMs'];
   if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0) {
@@ -231,11 +271,23 @@ export class InMemorySessionEnvelopeRegistry {
     return this.list({ ...options, now }).map((record) => lifecycleSummary(record, now));
   }
 
+  hasGlobalSessionId(globalSessionId: string): boolean {
+    return this.records.has(globalSessionId);
+  }
+
+  countLocalSessionId(sessionId: string): number {
+    return Array.from(this.records.values()).filter(
+      (record) => record.envelope.sessionId === sessionId
+    ).length;
+  }
+
   revoke(
     sessionIdOrGlobalId: string,
     options: { nodeId?: string; reason?: string; now?: Date } = {}
   ): ScopedSessionSummary | undefined {
-    const record = this.readRecord(sessionIdOrGlobalId, options.nodeId);
+    const record = options.nodeId
+      ? this.readRecord(sessionIdOrGlobalId, options.nodeId)
+      : this.records.get(sessionIdOrGlobalId);
     if (!record) return undefined;
     const nowIso = nowDate(options.now).toISOString();
     record.revokedAt = record.revokedAt ?? nowIso;

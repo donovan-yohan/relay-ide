@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import express from 'express';
@@ -172,6 +173,40 @@ async function listen(server: http.Server): Promise<number> {
 async function close(server: http.Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function rawUpgrade(port: number, pathName: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(
+        `GET ${pathName} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          'Connection: Upgrade\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'
+      );
+    });
+    let response = '';
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      reject(new Error('timed out waiting for raw upgrade response'));
+    });
+    socket.on('data', (chunk) => {
+      response += chunk.toString();
+      socket.destroy();
+      resolve(response);
+    });
+    socket.on('error', reject);
+  });
+}
+
+async function nextJson(ws: WebSocket): Promise<Record<string, unknown>> {
+  return await new Promise<Record<string, unknown>>((resolve) => {
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+    );
   });
 }
 
@@ -841,12 +876,32 @@ describe('hub node routes and link', () => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
         },
+        scopedSessionAuth: (req, res, next) => {
+          if (
+            req.header('x-test-auth') === 'yes' ||
+            req.header('authorization') === 'Bearer scoped-session-token'
+          ) {
+            next();
+          } else {
+            res.status(401).json({ error: 'Unauthorized' });
+          }
+        },
       })
     );
     const server = http.createServer(app);
     const port = await listen(server);
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
+
+    const scopedListRes = await fetch(`${base}/hub/scoped-sessions`, {
+      headers: { authorization: 'Bearer scoped-session-token' },
+    });
+    expect(scopedListRes.status).toBe(200);
+
+    const bearerNodesRes = await fetch(`${base}/nodes`, {
+      headers: { authorization: 'Bearer scoped-session-token' },
+    });
+    expect(bearerNodesRes.status).toBe(401);
 
     const exchanged = registry.exchangePairToken({
       pairToken: registry.createPairToken({}).pairToken,
@@ -865,6 +920,28 @@ describe('hub node routes and link', () => {
       }),
     });
     expect(heartbeat.status).toBe(200);
+
+    for (const invalidLifecycle of [
+      { expiresAt: 'not-a-date' },
+      { ttlMs: 0 },
+      { ttlSeconds: '60' },
+    ]) {
+      const invalidRes = await fetch(
+        `${base}/hub/nodes/${exchanged.node.nodeId}/sessions`,
+        {
+          method: 'POST',
+          headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'agent', cwd: '/srv/app', ...invalidLifecycle }),
+        }
+      );
+      expect(invalidRes.status).toBe(400);
+      expect(await invalidRes.json()).toMatchObject({
+        error: {
+          code: 'INVALID_REQUEST',
+          details: { reasonCode: 'INVALID_LIFECYCLE_INPUT' },
+        },
+      });
+    }
 
     const createRes = await fetch(`${base}/hub/nodes/${exchanged.node.nodeId}/sessions`, {
       method: 'POST',
@@ -890,6 +967,30 @@ describe('hub node routes and link', () => {
       expiresAt: '2026-01-02T03:06:00.000Z',
     });
 
+    sessionEnvelopes.create({
+      sessionId: 'remote-session',
+      nodeId: 'other-node',
+      globalSessionId: 'other-node:remote-session',
+      cwd: '/srv/other',
+      issuedAt: now.toISOString(),
+    });
+
+    const ambiguousRevokeRes = await fetch(
+      `${base}/hub/scoped-sessions/remote-session/revoke`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'operator-test' }),
+      }
+    );
+    expect(ambiguousRevokeRes.status).toBe(400);
+    expect(await ambiguousRevokeRes.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'AMBIGUOUS_LOCAL_SESSION_ID', matches: 2 },
+      },
+    });
+
     const revokeRes = await fetch(`${base}/hub/scoped-sessions/remote-session/revoke`, {
       method: 'POST',
       headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
@@ -906,7 +1007,168 @@ describe('hub node routes and link', () => {
     const activeOnlyRes = await fetch(`${base}/hub/scoped-sessions?includeRevoked=0`, {
       headers: { 'x-test-auth': 'yes' },
     });
-    const activeOnly = (await activeOnlyRes.json()) as { sessions: unknown[] };
-    expect(activeOnly.sessions).toHaveLength(0);
+    const activeOnly = (await activeOnlyRes.json()) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    expect(activeOnly.sessions).toHaveLength(1);
+    expect(activeOnly.sessions[0]).toMatchObject({
+      sessionId: 'remote-session',
+      nodeId: 'other-node',
+      status: 'active',
+    });
   });
+
+  it('registers cold-reopen routed sessions before websocket attach validation', async () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const { tmpDir, registry } = tmpRegistry(() => now);
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    const requireAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') next();
+      else res.status(401).json({ error: 'Unauthorized' });
+    };
+    const repoInventoryFeature = createRepoInventoryFeature(registry);
+    const nodeLinks = createHubNodeLinkManager();
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
+    app.use(
+      createHubNodeRouter({
+        registry,
+        requireAuth,
+        repoInventoryFeature,
+        nodeLinks,
+        sessionEnvelopes,
+      })
+    );
+    app.use(
+      createRepoFeatureRouter({
+        registry,
+        requireAuth,
+        repoInventoryFeature,
+        nodeLinks,
+        sessionEnvelopes,
+      })
+    );
+    const server = http.createServer(app);
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      true,
+      undefined,
+      registry,
+      nodeLinks,
+      sessionEnvelopes
+    );
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+    const wsBase = `ws://127.0.0.1:${port}`;
+
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const heartbeat = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${exchanged.credential.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest(),
+        repoInventory: repoInventoryReport(
+          exchanged.node.nodeId,
+          '/srv/repos/relay-ide'
+        ),
+      }),
+    });
+    expect(heartbeat.status).toBe(200);
+
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${exchanged.credential.token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await new Promise<void>((resolve, reject) => {
+      nodeWs.once('open', resolve);
+      nodeWs.once('error', reject);
+    });
+
+    const reopenPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/sessions/reopen`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          repoIdentity: 'github.com/donovan-yohan/relay-ide',
+          type: 'terminal',
+        }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      channel: 'rpc',
+      type: 'sessions.create',
+      payload: {
+        repoPath: '/srv/repos/relay-ide',
+        worktreePath: null,
+        type: 'terminal',
+      },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId: exchanged.node.nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: now.toISOString(),
+        payload: {
+          session: {
+            id: 'reopened-session',
+            type: 'terminal',
+            agent: 'claude',
+            mode: 'pty',
+            repoPath: '/srv/repos/relay-ide',
+            worktreePath: null,
+            cwd: '/srv/repos/relay-ide',
+            repoName: 'relay-ide',
+            branchName: 'feature/inventory',
+            displayName: 'reopened terminal',
+            createdAt: now.toISOString(),
+            lastActivity: now.toISOString(),
+            idle: false,
+            customCommand: null,
+            status: 'active',
+            needsBranchRename: false,
+            agentState: 'idle',
+          },
+        },
+      })
+    );
+
+    const reopenRes = await reopenPromise;
+    expect(reopenRes.status).toBe(201);
+    const reopened = (await reopenRes.json()) as {
+      session: { id: string; nodeId: string; globalSessionId: string };
+    };
+    expect(reopened.session).toMatchObject({
+      id: 'reopened-session',
+      nodeId: exchanged.node.nodeId,
+      globalSessionId: `${exchanged.node.nodeId}:reopened-session`,
+    });
+    expect(sessionEnvelopes.read('reopened-session', exchanged.node.nodeId)).toBeTruthy();
+
+    const upgrade = await rawUpgrade(
+      port,
+      `/nodes/${encodeURIComponent(exchanged.node.nodeId)}/ws/sessions/reopened-session`
+    );
+    expect(upgrade).toContain('101 Switching Protocols');
+  });
+
 });

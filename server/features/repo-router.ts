@@ -18,6 +18,10 @@ import {
 } from '../hub-node-router.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
 import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
+import {
+  sessionEnvelopeRegistry,
+  type InMemorySessionEnvelopeRegistry,
+} from '../session-envelope-registry.js';
 
 export interface RepoFeatureRouterOptions {
   registry: HubNodeRegistry;
@@ -25,6 +29,7 @@ export interface RepoFeatureRouterOptions {
   repoInventoryFeature: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
+  sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
 }
 
 // Repo-feature HTTP surface. These routes used to live in
@@ -43,6 +48,7 @@ export function createRepoFeatureRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth, repoInventoryFeature } = options;
+  const sessionEnvelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
 
   router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
     try {
@@ -131,6 +137,7 @@ export function createRepoFeatureRouter(
           sessionPayload
         );
         const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
+        if (session.sessionEnvelope) sessionEnvelopes.upsert(session.sessionEnvelope);
         res.status(201).json({
           session,
           transfer: {
