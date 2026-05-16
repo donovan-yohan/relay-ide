@@ -15,7 +15,14 @@ import {
   sendRelayError,
   sendRegistryError,
   sessionFromPayload,
+  type RoutedSessionAuditSink,
 } from '../hub-node-router.js';
+import {
+  evaluateHubPolicy,
+  policyDecisionToRelayError,
+  appendPolicyAudit,
+  sessionCreateCapability,
+} from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
 import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
 import {
@@ -32,6 +39,7 @@ export interface RepoFeatureRouterOptions {
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
 }
 
@@ -160,6 +168,31 @@ export function createRepoFeatureRouter(
         const target = findColdReopenTarget(reports, nodeId, body);
         if ('code' in target) {
           sendRelayError(res, target as RelayNodeError);
+          return;
+        }
+
+        const policyDecision = evaluateHubPolicy({
+          peer: { kind: 'hub' },
+          node,
+          nodeId,
+          intent: { action: 'sessions.create', target: nodeId },
+          scope: {
+            kind: target.worktree ? 'worktree' : 'repo',
+            nodeId,
+            cwd: target.worktree?.localPath ?? target.repo.localPath,
+            repoPath: target.repo.localPath,
+            ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
+          },
+          requiredCapabilities: [sessionCreateCapability(body['type'])],
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+          params: body,
+          now: reopenNow,
+        });
+        const auditedDecision = appendPolicyAudit(options.auditSink, policyDecision, {
+          params: body,
+        });
+        if (auditedDecision.decision !== 'allow') {
+          sendRelayError(res, policyDecisionToRelayError(auditedDecision));
           return;
         }
 

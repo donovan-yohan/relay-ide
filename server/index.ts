@@ -1161,6 +1161,7 @@ async function main(): Promise<void> {
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
       sessionEnvelopes: sessionEnvelopeRegistry,
+      ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
 

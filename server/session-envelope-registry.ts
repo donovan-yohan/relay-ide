@@ -188,6 +188,15 @@ export function lifecycleSummary(
   };
 }
 
+function revokeRecord(
+  record: SessionEnvelopeRecord,
+  options: { reason?: string; now?: Date } = {}
+): void {
+  const nowIso = nowDate(options.now).toISOString();
+  record.revokedAt = record.revokedAt ?? nowIso;
+  record.revokeReason = options.reason ?? record.revokeReason ?? 'operator-revoked';
+}
+
 export class InMemorySessionEnvelopeRegistry {
   private readonly records = new Map<string, SessionEnvelopeRecord>();
 
@@ -289,10 +298,23 @@ export class InMemorySessionEnvelopeRegistry {
       ? this.readRecord(sessionIdOrGlobalId, options.nodeId)
       : this.records.get(sessionIdOrGlobalId);
     if (!record) return undefined;
-    const nowIso = nowDate(options.now).toISOString();
-    record.revokedAt = record.revokedAt ?? nowIso;
-    record.revokeReason = options.reason ?? record.revokeReason ?? 'operator-revoked';
+    revokeRecord(record, options);
     return lifecycleSummary(record, nowDate(options.now));
+  }
+
+  revokeForNode(
+    nodeId: string,
+    options: { reason?: string; now?: Date } = {}
+  ): ScopedSessionSummary[] {
+    const revoked: ScopedSessionSummary[] = [];
+    const now = nowDate(options.now);
+    for (const record of Array.from(this.records.values())) {
+      if (record.envelope.nodeId !== nodeId) continue;
+      if (lifecycleState(record, now) !== 'active') continue;
+      revokeRecord(record, { ...options, now });
+      revoked.push(lifecycleSummary(record, now));
+    }
+    return revoked;
   }
 
   validate(context: SessionLifecycleValidationContext): SessionLifecycleValidation {

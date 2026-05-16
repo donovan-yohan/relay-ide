@@ -997,8 +997,14 @@ describe('hub node routes and link', () => {
       body: JSON.stringify({ nodeId: exchanged.node.nodeId, reason: 'operator-test' }),
     });
     expect(revokeRes.status).toBe(200);
-    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries).toHaveLength(2);
     expect(auditEntries[0]).toMatchObject({
+      eventType: 'grant',
+      decision: 'allow',
+      reasonCode: 'POLICY_ALLOWED',
+      intent: { action: 'sessions.create', target: exchanged.node.nodeId },
+    });
+    expect(auditEntries[1]).toMatchObject({
       eventType: 'revocation',
       decision: 'revoked',
       reasonCode: 'SESSION_REVOKED',

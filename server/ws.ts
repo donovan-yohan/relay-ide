@@ -30,6 +30,11 @@ import {
 } from './session-envelope-registry.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import type { RoutedSessionAuditSink } from './hub-node-router.js';
+import {
+  appendPolicyAudit,
+  evaluateHubPolicy,
+  policyDecisionToRelayError,
+} from './hub-policy-evaluator.js';
 
 const logger = createLogger('ws');
 
@@ -513,6 +518,40 @@ function setupWebSocket(
         socket.write(
           `HTTP/1.1 ${routedSessionStatus(denial.error.code)} ${denial.error.code}\r\n\r\n`
         );
+        socket.destroy();
+        return;
+      }
+      const node = hubNodeRegistry
+        ?.listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action: 'sessions.attach', target: nodeId },
+        scope: {
+          kind: validation.summary.scope.kind,
+          nodeId,
+          cwd: validation.summary.scope.cwd,
+          ...(validation.summary.scope.repoPath
+            ? { repoPath: validation.summary.scope.repoPath }
+            : {}),
+          ...(validation.summary.scope.worktreePath !== undefined
+            ? { worktreePath: validation.summary.scope.worktreePath }
+            : {}),
+        },
+        requiredCapabilities: ['session:attach'],
+        sessionId,
+        expiresAt: validation.summary.expiresAt,
+        ...(validation.summary.revokedAt ? { revokedAt: validation.summary.revokedAt } : {}),
+        ...(validation.summary.correlationId
+          ? { correlationId: validation.summary.correlationId }
+          : {}),
+      });
+      const auditedDecision = appendPolicyAudit(auditSink, policyDecision);
+      if (auditedDecision.decision !== 'allow') {
+        const error = policyDecisionToRelayError(auditedDecision);
+        socket.write(`HTTP/1.1 ${routedSessionStatus(error.code)} ${error.code}\r\n\r\n`);
         socket.destroy();
         return;
       }
