@@ -565,9 +565,14 @@ async function runSustainedEcho(input: {
 }> {
   let bytesFromBrowser = 0;
   let bytesObservedByNode = 0;
+  let stopInputPump = false;
   const deadline = Date.now() + STRESS_DURATION_MS;
   const inputPump = (async () => {
-    while (Date.now() < deadline || bytesFromBrowser < STRESS_TOTAL_BYTES) {
+    while (
+      !stopInputPump &&
+      input.browser.ws.readyState === WebSocket.OPEN &&
+      (Date.now() < deadline || bytesFromBrowser < STRESS_TOTAL_BYTES)
+    ) {
       const sequence = Math.floor(bytesFromBrowser / STRESS_CHUNK_BYTES);
       const prefix = `${input.marker}:${sequence}:`;
       const data = prefix.padEnd(STRESS_CHUNK_BYTES, input.marker[0]);
@@ -577,29 +582,87 @@ async function runSustainedEcho(input: {
     }
   })();
 
-  while (bytesObservedByNode < STRESS_TOTAL_BYTES) {
-    const ptyInput = await input.node.waitFor(
-      (message) =>
-        message.channel === 'pty' &&
-        message.type === 'pty.input' &&
-        message.streamId === input.streamId,
-      `${input.node.hostname} stress pty.input`,
+  try {
+    while (bytesObservedByNode < STRESS_TOTAL_BYTES) {
+      const ptyInput = await input.node.waitFor(
+        (message) => {
+          const data = (message.payload as { data?: unknown } | undefined)?.data;
+          return (
+            message.channel === 'pty' &&
+            message.type === 'pty.input' &&
+            message.streamId === input.streamId &&
+            typeof data === 'string' &&
+            data.includes(input.marker)
+          );
+        },
+        `${input.node.hostname} stress pty.input`,
+        4_000
+      );
+      const data = (ptyInput.payload as { data?: unknown } | undefined)?.data;
+      expect(typeof data).toBe('string');
+      expect(data as string).toContain(input.marker);
+      bytesObservedByNode += Buffer.byteLength(data as string);
+      input.node.sendPtyData(input.streamId, data as string);
+    }
+    const bytesToBrowser = await input.browser.waitForBytes(
+      (message) => message.includes(input.marker),
+      STRESS_TOTAL_BYTES,
+      `${input.marker} echoed browser bytes`,
       4_000
     );
-    const data = (ptyInput.payload as { data?: unknown } | undefined)?.data;
-    expect(typeof data).toBe('string');
-    expect(data as string).toContain(input.marker);
-    bytesObservedByNode += Buffer.byteLength(data as string);
-    input.node.sendPtyData(input.streamId, data as string);
+    await inputPump;
+    return { bytesFromBrowser, bytesObservedByNode, bytesToBrowser };
+  } finally {
+    stopInputPump = true;
+    await inputPump.catch(() => {});
   }
-  const bytesToBrowser = await input.browser.waitForBytes(
-    (message) => message.includes(input.marker),
-    STRESS_TOTAL_BYTES,
-    `${input.marker} echoed browser bytes`,
-    4_000
+}
+
+function browserBytes(browser: BrowserClient, marker: string): number {
+  return browser.messages.reduce(
+    (total, message) =>
+      message.includes(marker) ? total + Buffer.byteLength(message) : total,
+    0
   );
-  await inputPump;
-  return { bytesFromBrowser, bytesObservedByNode, bytesToBrowser };
+}
+
+function nodeInputBytes(node: SimulatedNode, streamId: string, marker: string): number {
+  return node.messages.reduce((total, message) => {
+    const data = (message.payload as { data?: unknown } | undefined)?.data;
+    if (
+      message.channel !== 'pty' ||
+      message.type !== 'pty.input' ||
+      message.streamId !== streamId ||
+      typeof data !== 'string' ||
+      !data.includes(marker)
+    ) {
+      return total;
+    }
+    return total + Buffer.byteLength(data);
+  }, 0);
+}
+
+async function waitForNodeInputBytes(input: {
+  node: SimulatedNode;
+  streamId: string;
+  marker: string;
+  expectedBytes: number;
+  label: string;
+  timeoutMs?: number;
+}): Promise<number> {
+  const deadline = Date.now() + (input.timeoutMs ?? 4_000);
+  while (Date.now() < deadline) {
+    const bytes = nodeInputBytes(input.node, input.streamId, input.marker);
+    if (bytes >= input.expectedBytes) return bytes;
+    await delay(25);
+  }
+  throw new Error(
+    `timed out waiting for ${input.expectedBytes} node input bytes for ${input.label}; received ${nodeInputBytes(
+      input.node,
+      input.streamId,
+      input.marker
+    )}`
+  );
 }
 
 describe('hub cross-node PTY smoke harness', () => {
@@ -686,19 +749,65 @@ describe('hub cross-node PTY smoke harness', () => {
     expect(browserA.messages.join('')).not.toContain('BBBB');
     expect(browserB.messages.join('')).not.toContain('AAAA');
 
+    const markerAThroughFailure = 'AAAA-through-node-b-failure';
+    const markerBInterrupted = 'BBBB-interrupted-by-node-link-close';
+    const nodeAThroughFailure = runSustainedEcho({
+      node: nodeA,
+      browser: browserA,
+      streamId: attachA.streamId!,
+      marker: markerAThroughFailure,
+    });
+    const nodeBInterrupted = runSustainedEcho({
+      node: nodeB,
+      browser: browserB,
+      streamId: attachB.streamId!,
+      marker: markerBInterrupted,
+    });
+
+    await Promise.all([
+      waitForNodeInputBytes({
+        node: nodeA,
+        streamId: attachA.streamId!,
+        marker: markerAThroughFailure,
+        expectedBytes: STRESS_CHUNK_BYTES,
+        label: 'node A in-flight before node B disconnect',
+      }),
+      waitForNodeInputBytes({
+        node: nodeB,
+        streamId: attachB.streamId!,
+        marker: markerBInterrupted,
+        expectedBytes: STRESS_CHUNK_BYTES,
+        label: 'node B in-flight before disconnect',
+      }),
+    ]);
+    const nodeABytesBeforeNodeBFailure = await browserA.waitForBytes(
+      (message) => message.includes(markerAThroughFailure),
+      STRESS_CHUNK_BYTES,
+      'node A echoed bytes before node B disconnect'
+    );
+    expect(nodeABytesBeforeNodeBFailure).toBeGreaterThan(0);
+    expect(nodeABytesBeforeNodeBFailure).toBeLessThan(STRESS_TOTAL_BYTES);
+
     const browserBClose = waitForClose(browserB.ws);
     nodeB.close();
     await expect(browserBClose).resolves.toMatchObject({
       code: 1011,
       reason: 'node link closed',
     });
+    await expect(nodeBInterrupted).rejects.toThrow(/node link closed/);
 
-    const nodeASurvives = browserA.waitFor(
-      (message) => message.includes('node-a-after-b-disconnect'),
-      'node A survives node B disconnect'
+    const nodeAAfterNodeBFailure = await nodeAThroughFailure;
+    expect(nodeAAfterNodeBFailure.bytesFromBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(nodeAAfterNodeBFailure.bytesObservedByNode).toBeGreaterThanOrEqual(
+      STRESS_TOTAL_BYTES
     );
-    nodeA.sendPtyData(attachA.streamId!, 'node-a-after-b-disconnect');
-    await expect(nodeASurvives).resolves.toBe('node-a-after-b-disconnect');
+    expect(nodeAAfterNodeBFailure.bytesToBrowser).toBeGreaterThanOrEqual(STRESS_TOTAL_BYTES);
+    expect(browserBytes(browserA, markerAThroughFailure)).toBeGreaterThanOrEqual(
+      STRESS_TOTAL_BYTES
+    );
+    expect(browserA.closes).toHaveLength(0);
+    expect(browserA.messages.join('')).not.toContain(markerBInterrupted);
+    expect(browserB.messages.join('')).not.toContain(markerAThroughFailure);
     expect(nodeA.ws.readyState).toBe(WebSocket.OPEN);
   });
 });
