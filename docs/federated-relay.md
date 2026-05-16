@@ -23,7 +23,7 @@ Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal
 Implemented/current:
 
 - Pairing: `POST /hub/pair-tokens`, `POST /hub/pairing/exchange`, credential storage, heartbeat, `GET /nodes`, and `DELETE /nodes/:nodeId` are implemented in `server/hub-node-router.ts` and `server/hub-node-registry.ts`.
-- Credential rotation: `POST /hub/nodes/:nodeId/credential-rotation` supports authenticated operator manual delivery and online reverse-link delivery; heartbeat proof swaps the active credential and writes a redacted rotation audit event. `POST /hub/nodes/:nodeId/credential-rotation/clear-failure` clears failed/non-stable rotations without accepting the unproved next credential.
+- Credential rotation: `POST /hub/nodes/:nodeId/credential-rotation` supports authenticated operator manual delivery and online reverse-link delivery; heartbeat proof swaps the active credential and writes a redacted rotation audit event. Failed/delivered rotations remain provable with the next credential until `POST /hub/nodes/:nodeId/credential-rotation/clear-failure` explicitly clears them without accepting the unproved next credential.
 - Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
 - Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
 - Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary; tmux-backed resume ships, raw fallback exists for future gates, and the hub currently requires tmux-capable nodes for routed sessions.
@@ -245,14 +245,14 @@ Content-Type: application/json
 
 Credential rotation is an authenticated operator action, not a node self-service endpoint. Manual delivery deliberately returns `credential.token` so the operator can move the new credential to the node out-of-band; online delivery sends the same credential over the node's active reverse link as `credential.rotate`. This bearer token is only exposed in that operator response or reverse-link payload. Node summaries, registry persistence, and audit rows use credential IDs/rotation IDs and SHA256 hashes, never the live token.
 
-A rotation is not stable when it is issued or delivered. The hub accepts both the previous and next credentials until the node proves possession by sending a heartbeat with `credentialId` equal to the rotation's `nextCredentialId` over either `POST /hub/node-heartbeat` or `/hub/node-link` `control.heartbeat`. Proof swaps the active hub credential, invalidates the previous token, updates the hub-owned ACL credential ID, and appends a redacted `rotation` / `rotated` audit row with `CREDENTIAL_ROTATION_PROVED`.
+A rotation is not stable when it is issued, delivered, or failed. The hub accepts both the previous and next credentials until the node proves possession by sending a heartbeat with `credentialId` equal to the rotation's `nextCredentialId` over either `POST /hub/node-heartbeat` or `/hub/node-link` `control.heartbeat`. Proof swaps the active hub credential, invalidates the previous token, updates the hub-owned ACL credential ID, and appends a redacted `rotation` / `rotated` audit row with `CREDENTIAL_ROTATION_PROVED`. Failed online delivery remains provable because the hub cannot distinguish "RPC never reached the node" from "node wrote the credential but the ACK was lost".
 
 ```http
 POST /hub/nodes/{nodeId}/credential-rotation/clear-failure
 Cookie: token={auth-cookie}
 ```
 
-The clear route is an operator recovery hatch for failed or otherwise non-stable rotations. It preserves the hub's current credential, removes the unproved next credential, and allows another rotation. It does not recover a node that already wrote the next credential but never proved it; that node must reconnect/prove with the next credential before clearing, or be re-paired.
+The clear route is an operator recovery hatch for failed or otherwise non-stable rotations. It preserves the hub's current credential, removes the unproved next credential, and allows another rotation. Do not clear a failed/delivered rotation while the node may already have written the next credential: reconnecting with that next credential can still prove possession until clear explicitly invalidates it.
 
 ACL/policy changes are independent of credential rotation: hub-owned ACL policy is evaluated on each routed decision and applies immediately without waiting for credentials to rotate. Scheduled/default rotation is not currently automatic; callers must invoke the operator route when they want a rotation.
 

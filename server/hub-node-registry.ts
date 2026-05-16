@@ -429,10 +429,10 @@ function credentialState(node: StoredNodeRecord): HubNodeCredentialState {
   return 'active';
 }
 
-function activeRotation(node: StoredNodeRecord): StoredCredentialRotation | undefined {
+function provableRotation(node: StoredNodeRecord): StoredCredentialRotation | undefined {
   const rotation = node.credentialRotation;
   if (!rotation) return undefined;
-  if (rotation.state === 'failed' || rotation.state === 'stable') return undefined;
+  if (rotation.state === 'stable' || !rotation.nextCredentialHash) return undefined;
   return rotation;
 }
 
@@ -674,7 +674,7 @@ export class HubNodeRegistry {
     const node = this.state.nodes.find(
       (candidate) => candidate.nodeId === nodeId
     );
-    const rotation = node ? activeRotation(node) : undefined;
+    const rotation = node ? provableRotation(node) : undefined;
     const matchesActive = node
       ? timingSafeEqualHex(node.credentialHash, tokenHash)
       : false;
@@ -801,7 +801,6 @@ export class HubNodeRegistry {
       rotation.state = 'failed';
       rotation.failedAt = this.now().toISOString();
       rotation.failureReason = reason;
-      delete rotation.nextCredentialHash;
       this.persist();
     }
     return { node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)), rotation: publicRotation(rotation)! };
@@ -843,7 +842,7 @@ export class HubNodeRegistry {
     credentialId: string,
     now: string
   ): void {
-    const rotation = activeRotation(node);
+    const rotation = provableRotation(node);
     if (!rotation || rotation.nextCredentialId !== credentialId) return;
     if (!rotation.nextCredentialHash) {
       throw new HubNodeRegistryError('INTERNAL', 'credential rotation is missing proof hash');

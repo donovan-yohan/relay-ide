@@ -1454,4 +1454,81 @@ describe('hub node routes and link', () => {
     expect(retryRes.status).toBe(201);
   });
 
+  it('keeps a failed online rotation provable after a lost delivery ACK', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const deliveries: unknown[] = [];
+    const nodeLinks = {
+      hasActiveNode: (nodeId: string) => nodeId === exchanged.node.nodeId,
+      request: async (_nodeId: string, _type: string, payload: unknown) => {
+        deliveries.push(payload);
+        throw new Error('rpc ack timeout');
+      },
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const rotateRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'online' }),
+      }
+    );
+    expect(rotateRes.status).toBe(502);
+    const rotate = (await rotateRes.json()) as {
+      rotation: { rotationId: string; state: string; failureReason?: string };
+      node: { credentialState: string };
+    };
+    expect(rotate.node.credentialState).toBe('rotation-failed');
+    expect(rotate.rotation.state).toBe('failed');
+    expect(rotate.rotation.failureReason).toBe('rpc ack timeout');
+    const deliveredCredential = (deliveries[0] as {
+      credential?: { nodeId?: string; token?: string; credentialId?: string };
+    }).credential;
+    expect(deliveredCredential?.token).toBeTruthy();
+
+    const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${deliveredCredential!.token}`,
+      },
+      body: JSON.stringify({
+        nodeId: deliveredCredential!.nodeId,
+        protocolVersion: '1.0',
+        manifest: manifest(),
+      }),
+    });
+    expect(heartbeatRes.status).toBe(200);
+    const heartbeat = (await heartbeatRes.json()) as {
+      node: { credentialId: string; credentialState: string; credentialRotation?: { state: string } };
+    };
+    expect(heartbeat.node).toMatchObject({
+      credentialId: deliveredCredential!.credentialId,
+      credentialState: 'active',
+      credentialRotation: { state: 'stable' },
+    });
+    expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+  });
+
 });

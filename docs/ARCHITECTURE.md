@@ -190,7 +190,7 @@ Implemented today:
 - `server/local-node.ts` makes the hub itself look like the default local node for existing sessions/events.
 - Hub-owned node ACL policy is enforced on each routed decision; ACL changes apply immediately in hub policy and do not wait for node credential rotation.
 - Credential rotation is shipped for explicit operator/manual and online reverse-link delivery. Manual delivery is an authenticated-operator route that deliberately returns `credential.token` so the operator can move it to the node out-of-band; node summaries and audit rows expose credential IDs/rotation IDs only, never bearer tokens. Online delivery sends `credential.rotate` over `/hub/node-link`; the node writes the new credential and the next HTTP or reverse-link heartbeat proves `nextCredentialId`, swaps the active credential, invalidates the previous token, and appends a redacted `rotation`/`rotated` audit event.
-- Clear-recovery is an operator escape hatch for failed or non-stable rotations: it preserves the current hub credential, invalidates the unproved next credential, and unblocks another rotation. It does not recover a node that already wrote the new credential; that node must prove possession or be re-paired.
+- Clear-recovery is an operator escape hatch for failed or non-stable rotations: it preserves the current hub credential, invalidates the unproved next credential, and unblocks another rotation. Until that clear action, failed or delivered rotations keep the next credential hash so a node that already wrote the next credential can reconnect and prove possession without manual credential surgery or re-pairing.
 
 Planned/deferred, not shipped:
 

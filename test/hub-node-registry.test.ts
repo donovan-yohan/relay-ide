@@ -900,6 +900,13 @@ describe('hub node registry', () => {
           failureReason: 'delivery failed',
         },
       });
+      expect(
+        registry.authenticateCredentialDetailed(rotation.credential.token)
+      ).toMatchObject({
+        ok: true,
+        credentialId: rotation.credential.credentialId,
+        node: { credentialState: 'rotation-failed' },
+      });
       expect(() =>
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).toThrow(/ROTATION_IN_PROGRESS/);
@@ -911,9 +918,49 @@ describe('hub node registry', () => {
         credentialId: exchanged.credential.credentialId,
       });
       expect(cleared.credentialRotation).toBeUndefined();
+      expect(registry.authenticateCredential(rotation.credential.token)).toBeNull();
       expect(() =>
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).not.toThrow();
+    });
+  });
+
+  it('proves a failed credential rotation when the node reconnects with the next credential', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+
+      registry.failCredentialRotation(
+        exchanged.node.nodeId,
+        rotation.rotation.rotationId,
+        'delivery timeout after node write'
+      );
+
+      const proved = registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        credentialId: rotation.credential.credentialId,
+        manifest: manifest(),
+      });
+
+      expect(proved).toMatchObject({
+        credentialState: 'active',
+        credentialId: rotation.credential.credentialId,
+        credentialRotation: {
+          state: 'stable',
+          previousCredentialId: exchanged.credential.credentialId,
+          nextCredentialId: rotation.credential.credentialId,
+          failureReason: 'delivery timeout after node write',
+        },
+      });
+      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+      expect(registry.authenticateCredential(rotation.credential.token)).toMatchObject({
+        credentialId: rotation.credential.credentialId,
+        credentialState: 'active',
+      });
     });
   });
 
