@@ -46,9 +46,50 @@ export interface TabModeChangedEvent extends TabControlEventBase {
   controlMode: ControlMode;
 }
 
+export type InterventionSource =
+  | 'pty-input'
+  | 'mode-action'
+  | 'auto-revert';
+
+export type InterventionKind =
+  | 'human-input'
+  | 'join'
+  | 'take-over'
+  | 'hand-back'
+  | 'auto-revert';
+
+export interface InterventionRedactionMetadata {
+  redacted: boolean;
+  byteCount: number;
+  charCount: number;
+  lineCount: number;
+  hashSha256: string;
+  classes: string[];
+}
+
+export interface InterventionRecord {
+  id: string;
+  sessionId: string;
+  tabId: string;
+  nodeId?: string;
+  globalSessionId?: string;
+  cwd?: string;
+  timestamp: string;
+  author: ControlActor;
+  source: InterventionSource;
+  kind: InterventionKind;
+  payloadPreview?: string;
+  redaction: InterventionRedactionMetadata;
+  modeBefore: ControlMode;
+  modeAfter?: ControlMode;
+  ackedBy?: ControlActor;
+  ackedAt?: string;
+}
+
 export interface TabInterventionEvent extends TabControlEventBase {
   type: 'tab.intervention';
   controlMode: ControlMode;
+  intervention: InterventionRecord;
 }
 
 export type TabControlEvent = TabModeChangedEvent | TabInterventionEvent;

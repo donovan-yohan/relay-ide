@@ -579,6 +579,10 @@ function setupWebSocket(
     }
   });
 
+  sessions.onControlEvent((event) => {
+    broadcastEvent('tab-control-event', { event });
+  });
+
   sessions.onBackendStateChange((sessionId, state, permissionType) => {
     broadcastEvent('session-backend-state-changed', {
       sessionId,

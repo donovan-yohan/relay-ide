@@ -67,6 +67,10 @@ import {
   flushAllPendingWrites as flushRelayStateWrites,
 } from './relay-state-db.js';
 import {
+  initInterventionLog,
+  closeInterventionLog,
+} from './intervention-log.js';
+import {
   createWorkspaceRouter,
   clearPrCache,
   clearFilesListCache,
@@ -1030,6 +1034,15 @@ async function main(): Promise<void> {
   }
 
   try {
+    initInterventionLog(configDir);
+  } catch (err) {
+    logger.warn(
+      'Intervention log disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  try {
     initAnalytics(configDir);
   } catch (err) {
     logger.warn(
@@ -1305,11 +1318,18 @@ async function main(): Promise<void> {
   sessions.onSessionEnd(() => rebuildRefWatcher());
 
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
-  sessions.configure({
+  const sessionConfig: Parameters<typeof sessions.configure>[0] = {
     port: startupConfig.port,
     forceOutputParser: startupConfig.forceOutputParser ?? false,
     configDir,
-  });
+  };
+  if (startupConfig.control?.interventionDebounceMs !== undefined) {
+    sessionConfig.interventionDebounceMs = startupConfig.control.interventionDebounceMs;
+  }
+  if (startupConfig.control?.coDrivenAutoRevertMs !== undefined) {
+    sessionConfig.coDrivenAutoRevertMs = startupConfig.control.coDrivenAutoRevertMs;
+  }
+  sessions.configure(sessionConfig);
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({
@@ -2675,6 +2695,7 @@ async function main(): Promise<void> {
         serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
+        closeInterventionLog();
         broadcastEvent('server-restarting');
       }
       res.json({ ok: true, restarting });
@@ -2752,6 +2773,7 @@ async function main(): Promise<void> {
     serializeAll(configDir, { reason: restartReason });
     flushRelayStateWrites();
     closeRelayStateDb();
+    closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
         sessions.detachForRestart(s.id);

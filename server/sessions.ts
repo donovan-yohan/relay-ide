@@ -59,12 +59,23 @@ import type { SessionLane } from '../shared/session-lane.js';
 import {
   normalizeControlStateSummary,
   type ControlStateSummary,
+  type ControlActor,
+  type TabControlEvent,
+  type InterventionRecord,
 } from '../shared/control-state.js';
 import {
   LOCAL_COMPATIBILITY_SESSION_INTENT,
   normalizeSessionEnvelope,
 } from '../shared/session-envelope.js';
 import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
+import {
+  acknowledgeHumanInput,
+  applyControlModeAction,
+  maybeAutoRevertToAgentDriven,
+  recordHumanPtyInput,
+  type ControlModeAction,
+} from './control-engine.js';
+import { listInterventions } from './intervention-log.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -142,15 +153,21 @@ const metaCache = new Map<string, SessionMeta>();
 let defaultPort: number | undefined;
 let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
+let defaultInterventionDebounceMs: number | undefined;
+let defaultCoDrivenAutoRevertMs: number | undefined;
 
 function configure(opts: {
   port?: number;
   forceOutputParser?: boolean;
   configDir?: string;
+  interventionDebounceMs?: number;
+  coDrivenAutoRevertMs?: number;
 }): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
   defaultConfigDir = opts.configDir;
+  defaultInterventionDebounceMs = opts.interventionDebounceMs;
+  defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -200,12 +217,36 @@ let agentCounter = 0;
 type StateChangeCallback = (sessionId: string, state: AgentState) => void;
 const stateChangeCallbacks: StateChangeCallback[] = [];
 
+type ControlEventCallback = (event: TabControlEvent) => void;
+const controlEventCallbacks: ControlEventCallback[] = [];
+
+function onControlEvent(cb: ControlEventCallback): void {
+  controlEventCallbacks.push(cb);
+}
+
+function fireControlEvent(event: TabControlEvent): void {
+  for (const cb of [...controlEventCallbacks]) cb(event);
+}
+
+function controlEngineOptions() {
+  return {
+    ...(defaultInterventionDebounceMs !== undefined
+      ? { inputDebounceMs: defaultInterventionDebounceMs }
+      : {}),
+    ...(defaultCoDrivenAutoRevertMs !== undefined
+      ? { autoRevertMs: defaultCoDrivenAutoRevertMs }
+      : {}),
+    emitEvent: fireControlEvent,
+  };
+}
+
 function onStateChange(cb: StateChangeCallback): void {
   stateChangeCallbacks.push(cb);
 }
 
 export function __resetStateChangeCallbacksForTests(): void {
   stateChangeCallbacks.length = 0;
+  controlEventCallbacks.length = 0;
 }
 
 type SessionCreateCallback = (
@@ -622,10 +663,46 @@ function write(id: string, data: string): void {
     throw new Error(`Session not found: ${id}`);
   }
   if (session.mode === 'pty') {
+    recordHumanPtyInput(session, data, controlEngineOptions());
     session.pty.write(data);
   } else {
     logger.warn(`write() called on web session ${id} — no-op`);
   }
+}
+
+function controlAction(id: string, action: ControlModeAction): TabControlEvent[] {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return applyControlModeAction(session, action, controlEngineOptions());
+}
+
+function acknowledgeInterventions(id: string, actor?: ControlActor): number {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return acknowledgeHumanInput(session, actor, controlEngineOptions());
+}
+
+function maybeAutoRevert(id: string, nodeConnected?: boolean) {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  return maybeAutoRevertToAgentDriven({
+    session,
+    ...(nodeConnected !== undefined ? { nodeConnected } : {}),
+    options: controlEngineOptions(),
+  });
+}
+
+function getInterventions(
+  id: string,
+  options: { nodeId?: string; limit?: number } = {}
+): InterventionRecord[] {
+  return listInterventions({ sessionId: id, ...options });
 }
 
 function tmuxTargetForSession(id: string): string {
@@ -1653,6 +1730,11 @@ export {
   captureTmuxPane,
   updateDisplayName,
   write,
+  controlAction,
+  acknowledgeInterventions,
+  maybeAutoRevert,
+  getInterventions,
+  onControlEvent,
   onStateChange,
   onSessionCreate,
   onSessionEnd,

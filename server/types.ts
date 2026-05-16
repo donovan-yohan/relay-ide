@@ -570,6 +570,7 @@ export interface Config {
       }
     | undefined;
   automations?: AutomationSettings | undefined;
+  control?: ControlSettings | undefined;
   filterPresets?: FilterPreset[] | undefined;
   github?:
     | {
@@ -589,6 +590,11 @@ export interface AutomationSettings {
   autoReviewOnCheckout?: boolean;
   pollIntervalMs?: number;
   lastPollTimestamp?: string;
+}
+
+export interface ControlSettings {
+  interventionDebounceMs?: number;
+  coDrivenAutoRevertMs?: number;
 }
 
 export interface FilterPreset {
