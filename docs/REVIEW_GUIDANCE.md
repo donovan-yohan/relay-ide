@@ -35,6 +35,11 @@ See `docs/references/review-agent-setup.md` for full config field reference.
 - Are PTY environment variables properly sanitized? (`CLAUDECODE` env var must be stripped to allow nesting Claude sessions)
 - Are WebSocket connections properly authenticated before PTY I/O is relayed?
 - Are `hooks.ts` endpoints still localhost-only with per-session token auth?
+- For capability/ACL changes, are node manifests treated only as availability/probe data while hub ACL state remains authoritative for grants?
+- Do unknown capability bits fail closed, including values loaded from persisted JSON?
+- Do trust-tier overlays preserve or tighten policy only, especially `prod` moving high-risk allowed bits to confirmation instead of silent allow?
+- Are legacy, null, or malformed ACL records migrated to persisted least-privilege defaults instead of normalized only in memory?
+- Are ACL identity fields pinned to the trusted node registry record rather than accepted from stored ACL JSON?
 
 ### Frontend
 
