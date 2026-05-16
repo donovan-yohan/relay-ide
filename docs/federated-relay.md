@@ -27,6 +27,7 @@ Implemented/current:
 - Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
 - Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
 - Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary; tmux-backed resume ships, raw fallback exists for future gates, and the hub currently requires tmux-capable nodes for routed sessions.
+- Multi-node routed PTY smoke: `test/hub-cross-node-pty.test.ts` is the canonical integration harness for hub + two simulated nodes, concurrent browser PTY streams, sustained byte flow, and one-node reverse-link failure isolation. Run it with `npm run test:smoke:multi-node`.
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
 - Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
 
@@ -444,7 +445,7 @@ A single hub UI can host terminal tabs attached to multiple paired nodes:
 - The PTY socket (`frontend/src/lib/ws.ts`) reads `nodeId` from the session (or parses it from a global session id) and opens `/nodes/{nodeId}/ws/sessions/{localSessionId}` instead of the local `/ws/{sessionId}` route.
 - Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
 
-Reload-resume is implemented as of #467: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node smoke harness remains a follow-up under sub-issues of #443.
+Reload-resume is implemented as of #467: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node routed PTY smoke harness is now the canonical integration coverage for concurrent cross-node streams and node-link failure isolation; run it with `npm run test:smoke:multi-node`.
 
 ### SessionAttachment Boundary
 
