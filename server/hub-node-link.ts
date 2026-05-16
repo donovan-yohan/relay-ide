@@ -26,6 +26,27 @@ interface PendingRpc {
   timer: NodeJS.Timeout;
 }
 
+interface PendingStream {
+  nodeId: string;
+  nodeWs: WebSocket;
+  requestId: string;
+  streamId: string;
+  opened: boolean;
+  resolve: (stream: HubNodeLinkStream) => void;
+  reject: (error: HubNodeLinkError) => void;
+  onChunk: (payload: unknown) => void;
+  onError?: (error: RelayNodeError) => void;
+  onEnd?: () => void;
+  timer: NodeJS.Timeout;
+}
+
+export interface HubNodeLinkStream {
+  requestId: string;
+  streamId: string;
+  payload: unknown;
+  close(): void;
+}
+
 interface BrowserPtyStream {
   nodeId: string;
   nodeWs: WebSocket;
@@ -188,6 +209,7 @@ export interface HubNodeLinkManagerOptions {
 export class HubNodeLinkManager {
   private readonly links = new Map<string, WebSocket>();
   private readonly pending = new Map<string, PendingRpc>();
+  private readonly streams = new Map<string, PendingStream>();
   private readonly ptyStreams = new Map<string, BrowserPtyStream>();
   private readonly eventHandlers = new Set<NodeEventHandler>();
   private readonly inventoryValidator?: HubNodeLinkInventoryValidator;
@@ -270,6 +292,82 @@ export class HubNodeLinkManager {
     });
   }
 
+  streamRequest(
+    nodeId: string,
+    type: string,
+    payload: unknown,
+    handlers: {
+      onChunk: (payload: unknown) => void;
+      onError?: (error: RelayNodeError) => void;
+      onEnd?: () => void;
+    }
+  ): Promise<HubNodeLinkStream> {
+    const ws = this.links.get(nodeId);
+    if (!ws || ws.readyState !== ws.OPEN) {
+      throw new HubNodeLinkError(
+        nodeOffline(`node ${nodeId} has no live reverse link`)
+      );
+    }
+    const requestId = crypto.randomUUID();
+    const streamId = crypto.randomUUID();
+    return new Promise<HubNodeLinkStream>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.streams.delete(streamId);
+        reject(
+          new HubNodeLinkError({
+            code: 'NODE_OFFLINE',
+            message: `node ${nodeId} did not start ${type}`,
+            retryable: true,
+          })
+        );
+      }, DEFAULT_RPC_TIMEOUT_MS);
+      timer.unref?.();
+      const pendingStream: PendingStream = {
+        nodeId,
+        nodeWs: ws,
+        requestId,
+        streamId,
+        opened: false,
+        resolve,
+        reject,
+        onChunk: handlers.onChunk,
+        timer,
+      };
+      if (handlers.onError !== undefined) {
+        pendingStream.onError = handlers.onError;
+      }
+      if (handlers.onEnd !== undefined) {
+        pendingStream.onEnd = handlers.onEnd;
+      }
+      this.streams.set(streamId, pendingStream);
+      sendJson(
+        ws,
+        envelope(nodeId, 'rpc', type, {
+          requestId,
+          streamId,
+          payload,
+        })
+      );
+    });
+  }
+
+  private closeStream(streamId: string): void {
+    const stream = this.streams.get(streamId);
+    if (!stream) return;
+    this.streams.delete(streamId);
+    clearTimeout(stream.timer);
+    if (stream.nodeWs.readyState === stream.nodeWs.OPEN) {
+      sendJson(
+        stream.nodeWs,
+        envelope(stream.nodeId, 'rpc', 'logs.tail.cancel', {
+          requestId: stream.requestId,
+          streamId,
+        })
+      );
+    }
+    stream.onEnd?.();
+  }
+
   attachPty(nodeId: string, sessionId: string, browserWs: WebSocket): void {
     const nodeWs = this.links.get(nodeId);
     if (!nodeWs || nodeWs.readyState !== nodeWs.OPEN) {
@@ -343,6 +441,10 @@ export class HubNodeLinkManager {
   }
 
   handleEnvelope(message: RelayNodeEnvelope): boolean {
+    if (message.channel === 'rpc' && message.streamId) {
+      return this.handleStreamEnvelope(message);
+    }
+
     if (message.channel === 'rpc' && message.requestId) {
       const pending = this.pending.get(message.requestId);
       if (pending && pending.nodeId === message.nodeId) {
@@ -369,6 +471,60 @@ export class HubNodeLinkManager {
   onNodeEvent(handler: NodeEventHandler): () => void {
     this.eventHandlers.add(handler);
     return () => this.eventHandlers.delete(handler);
+  }
+
+  private handleStreamEnvelope(message: RelayNodeEnvelope): boolean {
+    const stream = this.streams.get(message.streamId!);
+    if (!stream || stream.nodeId !== message.nodeId) return false;
+    if (message.error) {
+      this.handleStreamError(message.streamId!, stream, message.error);
+      return true;
+    }
+    if (message.type.endsWith('.result')) {
+      this.openStream(stream, message.payload);
+      return true;
+    }
+    if (message.type === 'logs.tail.chunk') {
+      stream.onChunk(message.payload);
+      return true;
+    }
+    if (message.type === 'logs.tail.error') {
+      const error = payloadRecord(message.payload)['error'];
+      if (typeof error === 'object' && error !== null) {
+        stream.onError?.(error as RelayNodeError);
+      }
+      return true;
+    }
+    if (message.type === 'logs.tail.end') {
+      this.closeStream(message.streamId!);
+      return true;
+    }
+    return false;
+  }
+
+  private handleStreamError(
+    streamId: string,
+    stream: PendingStream,
+    error: RelayNodeError
+  ): void {
+    clearTimeout(stream.timer);
+    if (!stream.opened) {
+      this.streams.delete(streamId);
+      stream.reject(new HubNodeLinkError(error));
+      return;
+    }
+    stream.onError?.(error);
+  }
+
+  private openStream(stream: PendingStream, payload: unknown): void {
+    clearTimeout(stream.timer);
+    stream.opened = true;
+    stream.resolve({
+      requestId: stream.requestId,
+      streamId: stream.streamId,
+      payload,
+      close: () => this.closeStream(stream.streamId),
+    });
   }
 
   private handlePtyEnvelope(message: RelayNodeEnvelope): boolean {
@@ -417,6 +573,15 @@ export class HubNodeLinkManager {
       pending.reject(
         new HubNodeLinkError(nodeOffline(`node ${nodeId} link closed`))
       );
+    }
+    for (const [streamId, stream] of Array.from(this.streams)) {
+      if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;
+      clearTimeout(stream.timer);
+      this.streams.delete(streamId);
+      const error = nodeOffline(`node ${nodeId} link closed`);
+      if (stream.opened) stream.onError?.(error);
+      else stream.reject(new HubNodeLinkError(error));
+      stream.onEnd?.();
     }
     for (const [streamId, stream] of Array.from(this.ptyStreams)) {
       if (stream.nodeId !== nodeId || stream.nodeWs !== ws) continue;

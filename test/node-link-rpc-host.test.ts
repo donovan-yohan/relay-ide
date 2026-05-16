@@ -1,4 +1,6 @@
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
 import type {
@@ -404,6 +406,67 @@ describe('node-link-rpc-host', () => {
 
     expect(sent).toHaveLength(0);
     expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('returns redacted bounded remote node log snapshots', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-rpc-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'relay-ide.log'),
+      'line one\nAuthorization: Bearer abc.def.secret\nline three\n',
+      'utf8'
+    );
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('logs.tail', { lines: 2 }), ctx);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('logs.tail.result');
+    const payload = sent[0]!.payload as { output: string; status: string };
+    expect(payload.status).toBe('ok');
+    expect(payload.output).toContain('line three');
+    expect(payload.output).not.toContain('abc.def.secret');
+    expect(payload.output).toContain('[REDACTED]');
+  });
+
+  it('starts and cancels remote node log followers by streamId', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-follow-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(path.join(logDir, 'relay-ide.log'), 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('logs.tail', { lines: 1, follow: true }, { streamId: 'stream-1' }),
+      ctx
+    );
+    expect(sent[0]!.type).toBe('logs.tail.result');
+
+    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'Authorization: Bearer abc.def.secret\n', 'utf8');
+    await vi.waitFor(() => {
+      expect(sent.some((entry) => entry.type === 'logs.tail.chunk')).toBe(true);
+    });
+    const chunk = sent.find((entry) => entry.type === 'logs.tail.chunk')!.payload as { chunk: string };
+    expect(chunk.chunk).not.toContain('abc.def.secret');
+
+    host.handle(envelope('logs.tail.cancel', {}, { streamId: 'stream-1' }), ctx);
+    const chunkCount = sent.filter((entry) => entry.type === 'logs.tail.chunk').length;
+    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'after cancel\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(sent.filter((entry) => entry.type === 'logs.tail.chunk')).toHaveLength(chunkCount);
   });
 });
 
