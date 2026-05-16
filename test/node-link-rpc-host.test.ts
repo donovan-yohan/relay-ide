@@ -1,4 +1,6 @@
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
 import type {
@@ -404,6 +406,128 @@ describe('node-link-rpc-host', () => {
 
     expect(sent).toHaveLength(0);
     expect(localRelayNode.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('returns redacted bounded remote node log snapshots', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-rpc-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const bearerFixture = 'Bearer relay_bearer_token_fixture_123';
+    const githubTokenFixture = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz';
+    const pinFixture = 'PIN=123456';
+    fs.writeFileSync(
+      path.join(logDir, 'relay-ide.log'),
+      [
+        'line one',
+        `Authorization: ${bearerFixture}`,
+        `githubToken=${githubTokenFixture}`,
+        pinFixture,
+        'line five',
+      ].join('\n'),
+      'utf8'
+    );
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('logs.tail', { lines: 5 }), ctx);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('logs.tail.result');
+    const payload = sent[0]!.payload as { output: string; status: string };
+    expect(payload.status).toBe('ok');
+    expect(payload.output).toContain('line five');
+    expect(payload.output).not.toContain(bearerFixture);
+    expect(payload.output).not.toContain(githubTokenFixture);
+    expect(payload.output).not.toContain(pinFixture);
+    expect(payload.output).toContain('[REDACTED]');
+  });
+
+  it('returns NOT_FOUND and empty snapshots for remote node log edge cases', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-edge-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const missing = context();
+
+    host.handle(envelope('logs.tail', { lines: 2 }), missing.ctx);
+
+    expect(missing.sent).toHaveLength(1);
+    expect(missing.sent[0]!.type).toBe('logs.tail.error');
+    expect((missing.sent[0]!.error as RelayNodeError).code).toBe('NOT_FOUND');
+
+    fs.writeFileSync(path.join(logDir, 'relay-ide.log'), '', 'utf8');
+    const empty = context();
+    host.handle(envelope('logs.tail', { lines: 2 }), empty.ctx);
+
+    expect(empty.sent).toHaveLength(1);
+    expect(empty.sent[0]!.type).toBe('logs.tail.result');
+    expect(empty.sent[0]!.payload).toMatchObject({ status: 'empty', output: '' });
+  });
+
+  it('rejects malformed logs.tail follow requests with one error envelope', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-follow-invalid-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(path.join(logDir, 'relay-ide.log'), 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const { sent, ctx } = context();
+
+    host.handle(envelope('logs.tail', { lines: 1, follow: true }), ctx);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('logs.tail.error');
+    expect(sent.some((entry) => entry.type === 'logs.tail.result')).toBe(false);
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('streamId');
+  });
+
+  it('starts and cancels remote node log followers by streamId', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-follow-'));
+    const logDir = path.join(tmp, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(path.join(logDir, 'relay-ide.log'), 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({
+      localRelayNode,
+      localLogConfigPath: path.join(tmp, 'config.json'),
+      localLogDir: logDir,
+    });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('logs.tail', { lines: 1, follow: true }, { streamId: 'stream-1' }),
+      ctx
+    );
+    expect(sent[0]!.type).toBe('logs.tail.result');
+
+    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'Authorization: Bearer abc.def.secret\n', 'utf8');
+    await vi.waitFor(() => {
+      expect(sent.some((entry) => entry.type === 'logs.tail.chunk')).toBe(true);
+    });
+    const chunk = sent.find((entry) => entry.type === 'logs.tail.chunk')!.payload as { chunk: string };
+    expect(chunk.chunk).not.toContain('abc.def.secret');
+
+    host.handle(envelope('logs.tail.cancel', {}, { streamId: 'stream-1' }), ctx);
+    const chunkCount = sent.filter((entry) => entry.type === 'logs.tail.chunk').length;
+    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'after cancel\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(sent.filter((entry) => entry.type === 'logs.tail.chunk')).toHaveLength(chunkCount);
   });
 });
 

@@ -29,6 +29,7 @@ import {
   resolveLocalLogPlan,
   type LocalLogRole,
 } from '../server/local-logs.js';
+import { parseCliNodeLogLineCount } from '../server/node-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
 import {
@@ -76,6 +77,8 @@ Commands:
     uninstall                         Stop and remove the hub background service
     status                            Show hub service status
     logs [--lines <n>] [--follow]     Print or follow local hub log files
+    node-logs <nodeId> [--lines <n>] [--follow]
+                                       Print or follow logs from a paired remote node
   install            Back-compat alias for relay-ide hub install
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
@@ -1409,6 +1412,105 @@ async function printHubLogs(commandArgs: string[]): Promise<void> {
   await printLocalLogs('hub', commandArgs);
 }
 
+async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
+  const nodeId = commandArgs[0];
+  if (!nodeId || nodeId.startsWith('-')) {
+    logger.error('Usage: relay-ide hub node-logs <nodeId> [--lines <n>] [--follow]');
+    process.exit(1);
+  }
+  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+  if (!token) {
+    logger.error(
+      'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.'
+    );
+    process.exit(1);
+  }
+  let lines: number;
+  try {
+    lines = parseCliNodeLogLineCount(getNodeArg(commandArgs, '--lines'));
+  } catch (error) {
+    logger.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  const follow = commandArgs.includes('--follow') || commandArgs.includes('-f');
+  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const url = new URL(
+    `/hub/nodes/${encodeURIComponent(nodeId)}/logs`,
+    `http://127.0.0.1:${port}`
+  );
+  url.searchParams.set('lines', String(lines));
+  if (follow) url.searchParams.set('follow', '1');
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-capabilities': 'session:read',
+      },
+    });
+  } catch (error) {
+    logger.error(
+      `could not connect to Relay hub on port ${port}: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(1);
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    try {
+      const body = JSON.parse(text) as Record<string, unknown>;
+      const message = gatewayErrorMessage(res.status, body);
+      logger.error(message);
+    } catch {
+      logger.error(text || `HTTP ${res.status}`);
+    }
+    process.exit(1);
+  }
+  if (!follow) {
+    const body = (await res.json()) as Record<string, unknown>;
+    const log = typeof body['log'] === 'object' && body['log'] !== null ? (body['log'] as Record<string, unknown>) : {};
+    const output = log['output'];
+    const message = log['message'];
+    if (typeof output === 'string' && output) process.stdout.write(output);
+    else if (typeof message === 'string') logger.info(message);
+    return;
+  }
+  logger.info(`Following remote Relay node logs for ${nodeId}; press Ctrl-C to stop.`);
+  const reader = res.body?.getReader();
+  if (!reader) {
+    logger.error('Remote log stream is unavailable.');
+    process.exit(1);
+  }
+  const decoder = new TextDecoder();
+  await new Promise<void>((resolve) => {
+    const stop = (): void => {
+      void reader.cancel().finally(resolve);
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    const pump = async (): Promise<void> => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+        }
+      } catch (error) {
+        logger.error(
+          `Log stream error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } finally {
+        const tail = decoder.decode();
+        if (tail) process.stdout.write(tail);
+        process.off('SIGINT', stop);
+        process.off('SIGTERM', stop);
+        resolve();
+      }
+    };
+    void pump();
+  });
+}
+
 async function printNodeStatus(): Promise<void> {
   const manifest = await getNodeManifest();
   const st = service.status();
@@ -1589,6 +1691,8 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
   const nodeLinkClient: { current?: ReturnType<typeof createNodeLinkClient> } = {};
   const rpcHost = createNodeLinkRpcHost({
     localRelayNode,
+    localLogConfigPath: configPath,
+    localLogDir: service.getServicePaths().logDir,
     rotateCredential: (rotatedCredential) => {
       if (rotatedCredential.nodeId !== credential.nodeId) {
         throw new Error('credential rotation nodeId mismatch');
@@ -1634,6 +1738,7 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
       // process exits, while keeping the 5s safety timer above as a
       // hard cap. Default close() leaves tmux sessions alive so a
       // reconnect can resume them.
+      rpcHost.closeAllLogFollowers();
       void Promise.allSettled([
         ptyHost.closeAll('node-link client stopping'),
         client.stop(),
@@ -1771,6 +1876,8 @@ if (command === 'hub') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
     await runAsyncCommand(() => printHubLogs(hubArgs.slice(1)));
+  } else if (subCommand === 'node-logs') {
+    await runAsyncCommand(() => printRemoteNodeLogs(hubArgs.slice(1)));
   } else if (
     hubArgs.includes('--bg') &&
     (!subCommand || subCommand.startsWith('-'))
@@ -1789,7 +1896,7 @@ if (command === 'hub') {
     // an alias preserves bare `relay-ide` while making the runtime role explicit.
   } else {
     logger.error(
-      'Usage: relay-ide hub [install|uninstall|status|logs] [--port <port>] [--host <host>] [--config <path>]'
+      'Usage: relay-ide hub [install|uninstall|status|logs|node-logs] [--port <port>] [--host <host>] [--config <path>]'
     );
     process.exit(1);
   }

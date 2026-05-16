@@ -82,6 +82,16 @@ import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-run
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
   request(nodeId: string, type: string, payload: unknown): Promise<unknown>;
+  streamRequest?(
+    nodeId: string,
+    type: string,
+    payload: unknown,
+    handlers: {
+      onChunk: (payload: unknown) => void;
+      onError?: (error: RelayNodeError) => void;
+      onEnd?: () => void;
+    }
+  ): Promise<{ payload: unknown; close(): void }>;
 }
 
 export interface RoutedSessionAuditSink {
@@ -1117,6 +1127,50 @@ function includeFlag(value: unknown): boolean {
   return value === '1' || value === 'true' || value === true;
 }
 
+function nodeLogLinesFromQuery(value: unknown): number | RelayNodeError {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined) return 100;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
+    return relayError('INVALID_REQUEST', 'lines must be a non-negative integer');
+  }
+  const lines = Number(raw);
+  if (lines > 2_000) return relayError('INVALID_REQUEST', 'lines must be <= 2000');
+  return lines;
+}
+
+function nodeLogOutput(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const output = payload['output'];
+  const message = payload['message'];
+  if (typeof output === 'string' && output.length > 0) return output;
+  if (typeof message === 'string') return `${message}\n`;
+  return '';
+}
+
+function nodeLogChunk(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const chunk = payload['chunk'];
+  return typeof chunk === 'string' ? chunk : '';
+}
+
+function relayErrorFromUnknown(error: unknown): RelayNodeError {
+  if (error instanceof HubNodeLinkError) return error.relayNodeError;
+  return relayError(
+    'INTERNAL',
+    error instanceof Error ? error.message : String(error ?? 'unknown'),
+    true
+  );
+}
+
+function protocolVersionRelayError(nodeProtocolVersion: string): RelayNodeError {
+  const [nodeMajor] = nodeProtocolVersion.split('.');
+  const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+  return relayError(
+    nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+    `relay-node-link protocol ${nodeProtocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+  );
+}
+
 function sessionCreatePolicyScope(
   nodeId: string,
   body: Record<string, unknown>
@@ -1481,6 +1535,117 @@ export function createHubNodeRouter(
 
   router.get('/nodes', cliGatewayAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
+  });
+
+  router.get('/hub/nodes/:nodeId/logs', cliGatewayAuth, async (req, res) => {
+    const { nodeId } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    const lines = nodeLogLinesFromQuery(req.query['lines']);
+    if (typeof lines !== 'number') {
+      sendRelayError(res, lines);
+      return;
+    }
+    const follow = includeFlag(req.query['follow']);
+    const requestPayload = { lines, follow };
+    const node = registry
+      .listNodes()
+      .find((candidate) => candidate.nodeId === nodeId);
+    if (!node || node.status === 'revoked') {
+      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+      return;
+    }
+    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+      sendRelayError(res, protocolVersionRelayError(node.protocolVersion));
+      return;
+    }
+    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
+      sendRelayError(
+        res,
+        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+      );
+      return;
+    }
+    const policyDecision = evaluateHubPolicy({
+      peer: { kind: 'hub' },
+      node,
+      nodeId,
+      intent: { action: 'rpc.fs.tail', target: nodeId },
+      scope: { kind: 'node', nodeId, cwd: '/' },
+      requiredCapabilities: requiredCapabilitiesForRpcIntent('rpc.fs.tail'),
+      params: requestPayload,
+      now: now(),
+    });
+    if (sendPolicyDecision(options.auditSink, res, policyDecision, requestPayload)) {
+      return;
+    }
+    if (!follow) {
+      try {
+        const payload = await options.nodeLinks.request(nodeId, 'logs.tail', requestPayload);
+        res.json({ log: payload });
+      } catch (error) {
+        sendRelayError(res, relayErrorFromUnknown(error));
+      }
+      return;
+    }
+    if (!options.nodeLinks.streamRequest) {
+      sendRelayError(
+        res,
+        relayError('NODE_UNSUPPORTED', 'hub node log streaming is not supported by this runtime')
+      );
+      return;
+    }
+
+    let closed = false;
+    let stream: { payload: unknown; close(): void } | undefined;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      stream?.close();
+    };
+    req.on('close', close);
+    try {
+      res.status(200);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
+      stream = await options.nodeLinks.streamRequest(nodeId, 'logs.tail', requestPayload, {
+        onChunk: (payload) => {
+          if (closed || res.destroyed) return;
+          const chunk = nodeLogChunk(payload);
+          if (chunk) res.write(chunk);
+        },
+        onError: (error) => {
+          if (closed || res.destroyed) return;
+          res.write(`\n[${error.code}] ${error.message}\n`);
+          res.end();
+        },
+        onEnd: () => {
+          if (closed || res.destroyed) return;
+          res.end();
+        },
+      });
+      if (closed || res.destroyed) {
+        stream.close();
+        return;
+      }
+      const output = nodeLogOutput(stream.payload);
+      if (output) res.write(output);
+    } catch (error) {
+      if (res.headersSent) {
+        const streamError = relayErrorFromUnknown(error);
+        if (!closed && !res.destroyed) {
+          res.write(`\n[${streamError.code}] ${streamError.message}\n`);
+          res.end();
+        }
+      } else {
+        res.removeHeader('Content-Type');
+        res.removeHeader('Cache-Control');
+        sendRelayError(res, relayErrorFromUnknown(error));
+      }
+    }
   });
 
   router.post('/hub/nodes/:nodeId/credential-rotation', requireAuth, async (req, res) => {
