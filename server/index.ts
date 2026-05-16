@@ -108,6 +108,7 @@ import {
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import { createHubNodeRouter } from './hub-node-router.js';
+import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
@@ -1166,6 +1167,7 @@ async function main(): Promise<void> {
       config: getConfig(),
       configPath: CONFIG_PATH,
     });
+  const confirmationChallenges = createConfirmationChallengeStore();
   app.use(
     createHubNodeRouter({
       registry: hubNodeRegistry,
@@ -1174,6 +1176,7 @@ async function main(): Promise<void> {
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
+      confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
@@ -1185,6 +1188,7 @@ async function main(): Promise<void> {
       requireAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
+      confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })

@@ -1,4 +1,8 @@
 import * as express from 'express';
+import {
+  createConfirmationChallengeStore,
+  type ConfirmationChallengeStore,
+} from '../confirmation-challenges.js';
 import { type HubNodeRegistry } from '../hub-node-registry.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -9,9 +13,11 @@ import {
   bodyRecord,
   coldReopenSessionPayload,
   findColdReopenTarget,
+  paramsWithoutConfirmation,
   recordField,
   relayError,
   scopedNodeSession,
+  sendPolicyDecision,
   sendRelayError,
   sendRegistryError,
   sessionFromPayload,
@@ -20,9 +26,7 @@ import {
 import {
   evaluateHubPolicy,
   isSessionCreateType,
-  policyDecisionToRelayError,
-  appendPolicyAudit,
-  sessionCreateCapability,
+  sessionCreateCapabilities,
   type SessionCreateType,
 } from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
@@ -41,6 +45,7 @@ export interface RepoFeatureRouterOptions {
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
   now?: () => Date;
 }
@@ -72,6 +77,7 @@ export function createRepoFeatureRouter(
   const router = express.Router();
   const { registry, requireAuth, repoInventoryFeature } = options;
   const sessionEnvelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
+  const confirmations = options.confirmations ?? createConfirmationChallengeStore();
   const now = () => options.now?.() ?? new Date();
 
   router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
@@ -143,7 +149,8 @@ export function createRepoFeatureRouter(
       }
 
       const body = bodyRecord(req);
-      const lifecycleError = lifecycleInputError(body);
+      const routedBody = paramsWithoutConfirmation(body);
+      const lifecycleError = lifecycleInputError(routedBody);
       if (lifecycleError) {
         sendRelayError(
           res,
@@ -155,7 +162,7 @@ export function createRepoFeatureRouter(
         return;
       }
       const reopenNow = now();
-      const expiresAt = expiresAtFromLifecycleInput(body, reopenNow);
+      const expiresAt = expiresAtFromLifecycleInput(routedBody, reopenNow);
       if (
         expiresAt !== undefined &&
         expiresAt !== null &&
@@ -172,7 +179,7 @@ export function createRepoFeatureRouter(
         );
         return;
       }
-      const sessionType = sessionCreateTypeFromBody(body);
+      const sessionType = sessionCreateTypeFromBody(routedBody);
       if (typeof sessionType !== 'string') {
         sendRelayError(res, sessionType);
         return;
@@ -200,20 +207,24 @@ export function createRepoFeatureRouter(
             repoPath: target.repo.localPath,
             ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
           },
-          requiredCapabilities: [sessionCreateCapability(sessionType)],
+          requiredCapabilities: sessionCreateCapabilities({
+            sessionType,
+            controlMode: routedBody['controlMode'],
+          }),
           ...(expiresAt !== undefined ? { expiresAt } : {}),
-          params: body,
+          params: routedBody,
           now: reopenNow,
         });
-        const auditedDecision = appendPolicyAudit(options.auditSink, policyDecision, {
-          params: body,
-        });
-        if (auditedDecision.decision !== 'allow') {
-          sendRelayError(res, policyDecisionToRelayError(auditedDecision));
-          return;
-        }
+        if (
+          sendPolicyDecision(options.auditSink, res, policyDecision, routedBody, {
+            confirmations,
+            req,
+            canonicalParams: routedBody,
+            now: reopenNow,
+          })
+        ) return;
 
-        const sessionPayload = coldReopenSessionPayload(body, target);
+        const sessionPayload = coldReopenSessionPayload(routedBody, target);
         const payload = await options.nodeLinks.request(
           nodeId,
           'sessions.create',
