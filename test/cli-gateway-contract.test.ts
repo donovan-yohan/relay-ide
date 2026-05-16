@@ -7,6 +7,7 @@ import {
   gatewayError,
   gatewayOk,
   stableCommandNames,
+  type RelayJsonSchema,
 } from '../shared/cli-gateway-contract.js';
 import {
   gatewayCliInvalidArgumentError,
@@ -17,6 +18,36 @@ import {
   validateAndSanitizeGatewayCreateInput,
   validateAndSanitizeLocalGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
+
+const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+function objectMatchesSchemaKeywords(schema: RelayJsonSchema, value: Record<string, unknown>): boolean {
+  const properties = schema.properties ?? {};
+  const required = schema.required ?? [];
+  if (schema.type === 'object' && (value === null || Array.isArray(value))) return false;
+  if (!required.every((key) => hasOwn(value, key))) return false;
+  if (schema.additionalProperties === false) {
+    for (const key of Object.keys(value)) {
+      if (!hasOwn(properties, key)) return false;
+    }
+  }
+  for (const [key, propertySchema] of Object.entries(properties)) {
+    if (!hasOwn(value, key)) continue;
+    if ('const' in propertySchema && value[key] !== propertySchema.const) return false;
+    if (propertySchema.type === 'string' && typeof value[key] !== 'string') return false;
+    if (propertySchema.type === 'boolean' && typeof value[key] !== 'boolean') return false;
+    if (propertySchema.type === 'number' && typeof value[key] !== 'number') return false;
+  }
+  return true;
+}
+
+function schemaAcceptsSessionInput(value: Record<string, unknown>): boolean {
+  const schema = commandSpec('sessions.input').inputSchema;
+  if (!objectMatchesSchemaKeywords(schema, value)) return false;
+  if (!schema.oneOf) return true;
+  return schema.oneOf.filter((branch) => objectMatchesSchemaKeywords(branch, value)).length === 1;
+}
 
 describe('CLI gateway contract', () => {
   it('exposes a stable versioned command manifest for node/session adapters', () => {
@@ -37,6 +68,8 @@ describe('CLI gateway contract', () => {
       'sessions.create',
       'sessions.attach',
       'sessions.detach',
+      'sessions.stream',
+      'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
       'files.list',
@@ -203,6 +236,8 @@ describe('CLI gateway contract', () => {
       'sessions.create',
       'sessions.attach',
       'sessions.detach',
+      'sessions.stream',
+      'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
       'files.list',
@@ -254,7 +289,7 @@ describe('CLI gateway contract', () => {
   });
 
 
-  it('advertises descriptor-only attach/detach and read-only file RPC commands', () => {
+  it('advertises descriptor-only attach/detach, session I/O, and read-only file RPC commands', () => {
     expect(commandSpec('sessions.attach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
@@ -262,6 +297,27 @@ describe('CLI gateway contract', () => {
     expect(commandSpec('sessions.detach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
+    });
+
+    const stream = commandSpec('sessions.stream');
+    expect(stream.capabilityHints).toEqual(['session:read', 'session:attach']);
+    expect(stream.outputSchema).toMatchObject({
+      properties: {
+        data: { properties: { event: { enum: ['data', 'closed'] } } },
+      },
+    });
+
+    const input = commandSpec('sessions.input');
+    expect(input.capabilityHints).toEqual(['session:read', 'session:attach']);
+    expect(input.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: { maxBytes: { maximum: 1048576 } },
+      oneOf: [
+        { required: ['id', 'data'], properties: { data: { type: 'string' } } },
+        { required: ['id', 'dataBase64'], properties: { dataBase64: { type: 'string' } } },
+        { required: ['id', 'stdin'], properties: { stdin: { const: true } } },
+      ],
     });
 
     const list = commandSpec('files.list');
@@ -292,6 +348,20 @@ describe('CLI gateway contract', () => {
     });
     expect(read.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'NOT_FOUND']));
     expect(commandSpec('files.stat').capabilityHints).toEqual(['session:read', 'rpc:fs:read']);
+  });
+
+  it('encodes sessions.input source exclusivity for schema-generated adapters', () => {
+    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', waitFor: 'hello' })).toBe(true);
+    expect(schemaAcceptsSessionInput({ id: 's1', dataBase64: 'aGVsbG8=' })).toBe(true);
+    expect(schemaAcceptsSessionInput({ id: 's1', stdin: true, timeoutMs: 1000 })).toBe(true);
+
+    expect(schemaAcceptsSessionInput({ id: 's1' })).toBe(false);
+    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', dataBase64: 'aGVsbG8=' })).toBe(
+      false
+    );
+    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', stdin: true })).toBe(false);
+    expect(schemaAcceptsSessionInput({ id: 's1', dataBase64: 'aGVsbG8=', stdin: true })).toBe(false);
+    expect(schemaAcceptsSessionInput({ id: 's1', stdin: false })).toBe(false);
   });
 
   it('does not expose raw intervention payloads as a gateway contract', () => {
