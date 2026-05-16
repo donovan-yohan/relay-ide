@@ -129,6 +129,9 @@ describe('confirmation challenge store', () => {
     expect(approved.confirmationToken).toBe('raw-token');
     expect(approved.challenge.tokenHash).not.toBe('raw-token');
     expect(approved.challenge.approverAuthSessionHash).toBe('approver-session');
+    expect(approved.audit.peer.principalHash).toBe('approver-session');
+    expect(approved.audit.peer.principalHash).not.toBe('requester-session');
+    expect(approved.audit.peer.displayName).toBe('second browser');
 
     const mismatch = store.redeemToken({
       token: 'raw-token',
@@ -142,7 +145,10 @@ describe('confirmation challenge store', () => {
       now: NOW,
     });
     expect(mismatch.ok).toBe(false);
-    if (!mismatch.ok) expect(mismatch.reasonCode).toBe('CONFIRMATION_PARAM_MISMATCH');
+    if (!mismatch.ok) {
+      expect(mismatch.reasonCode).toBe('CONFIRMATION_PARAM_MISMATCH');
+      expect(mismatch.audit?.peer.principalHash).toBe('requester-session');
+    }
 
     const redeemed = store.redeemToken({
       token: 'raw-token',
@@ -156,6 +162,9 @@ describe('confirmation challenge store', () => {
       now: NOW,
     });
     expect(redeemed.ok).toBe(true);
+    if (!redeemed.ok) throw new Error('expected redemption');
+    expect(redeemed.audit.peer.principalHash).toBe('requester-session');
+    expect(redeemed.audit.peer.principalHash).not.toBe('approver-session');
 
     const usedAgain = store.redeemToken({
       token: 'raw-token',
@@ -200,27 +209,27 @@ describe('confirmation challenge store', () => {
       requesterAuthSessionHash: 'requester-session',
       canonicalParams: challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>,
     });
-    expect(
-      store.approveChallenge({
-        challengeId: denied.challengeId,
-        approverAuthSessionHash: 'approver-session',
-        decision: 'deny',
-        now: NOW,
-      })
-    ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED' });
+    const deniedResult = store.approveChallenge({
+      challengeId: denied.challengeId,
+      approverAuthSessionHash: 'approver-session',
+      decision: 'deny',
+      now: NOW,
+    });
+    expect(deniedResult).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED' });
+    if (!deniedResult.ok) expect(deniedResult.audit?.peer.principalHash).toBe('approver-session');
 
     const revoked = store.createChallenge(challengeDecision(), {
       requesterAuthSessionHash: 'requester-session',
       canonicalParams: challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>,
     });
-    expect(
-      store.approveChallenge({
-        challengeId: revoked.challengeId,
-        approverAuthSessionHash: 'approver-session',
-        decision: 'deny_revoke',
-        now: NOW,
-      })
-    ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED_REVOKE' });
+    const revokedResult = store.approveChallenge({
+      challengeId: revoked.challengeId,
+      approverAuthSessionHash: 'approver-session',
+      decision: 'deny_revoke',
+      now: NOW,
+    });
+    expect(revokedResult).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED_REVOKE' });
+    if (!revokedResult.ok) expect(revokedResult.audit?.peer.principalHash).toBe('approver-session');
 
     const capped = store.createChallenge(challengeDecision(), {
       requesterAuthSessionHash: 'requester-session',
@@ -280,6 +289,66 @@ describe('confirmation challenge store', () => {
     const visible = store.listChallenges();
     expect(visible).toHaveLength(2);
     expect(visible.map((challenge) => challenge.challengeId)).not.toContain(first.challengeId);
+  });
+
+  it('preserves terminal outcomes after TTL expiry and never evicts live challenges for capacity', () => {
+    let current = NOW;
+    let nextId = 0;
+    const store = createConfirmationChallengeStore({
+      now: () => current,
+      randomId: () => `challenge-${++nextId}`,
+      randomToken: () => `raw-token-${nextId}`,
+      challengeTtlMs: 1_000,
+      tokenTtlMs: 5_000,
+      maxChallenges: 2,
+    });
+    const params = challengeDecision().params as ReturnType<typeof canonicalConfirmationParams>;
+    const first = store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    const approved = store.approveChallenge({
+      challengeId: first.challengeId,
+      approverAuthSessionHash: 'approver-session',
+      decision: 'approve',
+      now: current,
+    });
+    expect(approved.ok).toBe(true);
+    const second = store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    expect(() =>
+      store.createChallenge(challengeDecision(), {
+        requesterAuthSessionHash: 'requester-session',
+        canonicalParams: params,
+      })
+    ).toThrow('confirmation challenge capacity exhausted');
+    expect(store.listChallenges().map((challenge) => challenge.challengeId)).toEqual([
+      first.challengeId,
+      second.challengeId,
+    ]);
+
+    if (!approved.ok) throw new Error('expected approval');
+    const redeemed = store.redeemToken({
+      token: approved.confirmationToken,
+      requesterAuthSessionHash: 'requester-session',
+      decision: challengeDecision(),
+      canonicalParams: params,
+      now: current,
+    });
+    expect(redeemed.ok).toBe(true);
+    current = new Date(NOW.getTime() + 1_001);
+    expect(store.getChallenge(first.challengeId)?.status).toBe('redeemed');
+
+    const third = store.createChallenge(challengeDecision(), {
+      requesterAuthSessionHash: 'requester-session',
+      canonicalParams: params,
+    });
+    expect(store.listChallenges().map((challenge) => challenge.challengeId)).toEqual([
+      second.challengeId,
+      third.challengeId,
+    ]);
   });
 });
 

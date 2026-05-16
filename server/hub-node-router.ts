@@ -66,6 +66,7 @@ import {
   sessionCreateCapabilities,
 } from './hub-policy-evaluator.js';
 import {
+  ConfirmationChallengeCapacityError,
   canonicalConfirmationParams,
   createConfirmationChallengeStore,
   hashAuthSessionIdentity,
@@ -154,6 +155,8 @@ export function errorStatus(error: RelayNodeError): number {
     case 'NOT_FOUND':
     case 'NODE_OFFLINE':
       return 404;
+    case 'NODE_BUSY':
+      return 503;
     default:
       return 500;
   }
@@ -446,10 +449,26 @@ function resolveConfirmationForDecision(input: {
   if (auditedDecision.decision !== 'challenge') {
     return { ok: false, error: policyDecisionToRelayError(auditedDecision) };
   }
-  const challenge = input.confirmations.createChallenge(
-    decisionWithCanonicalParams,
-    confirmationCreateInput(input.req, requesterAuthSessionHash, canonicalParams)
-  );
+  let challenge: ReturnType<ConfirmationChallengeStore['createChallenge']>;
+  try {
+    challenge = input.confirmations.createChallenge(
+      decisionWithCanonicalParams,
+      confirmationCreateInput(input.req, requesterAuthSessionHash, canonicalParams)
+    );
+  } catch (error) {
+    if (error instanceof ConfirmationChallengeCapacityError) {
+      return {
+        ok: false,
+        error: relayError(
+          'NODE_BUSY',
+          'confirmation challenge capacity exhausted; retry after existing challenges resolve',
+          true,
+          { reasonCode: error.code, maxChallenges: error.maxChallenges }
+        ),
+      };
+    }
+    throw error;
+  }
   return {
     ok: false,
     error: relayError('CONFIRMATION_REQUIRED', challenge.message, false, {

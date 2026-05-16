@@ -1,7 +1,7 @@
 import http from 'node:http';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createConfirmationChallengeStore } from '../server/confirmation-challenges.js';
+import { createConfirmationChallengeStore, hashAuthSessionIdentity } from '../server/confirmation-challenges.js';
 import { createRepoFeatureRouter } from '../server/features/repo-router.js';
 import { createHubNodeRouter, type RoutedSessionAuditSink } from '../server/hub-node-router.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
@@ -344,6 +344,15 @@ describe('hub confirmation routing', () => {
     expect(auditEntries.map((entry) => entry.eventType)).toEqual(
       expect.arrayContaining(['challenge', 'same_session_approval_attempt', 'approval', 'failed_redemption', 'grant'])
     );
+    const requesterHash = hashAuthSessionIdentity('test-header:requester-browser');
+    const approverHash = hashAuthSessionIdentity('test-header:approver-browser');
+    const approvalAudit = auditEntries.find((entry) => entry.eventType === 'approval');
+    const failedRedemptionAudit = auditEntries.find((entry) => entry.eventType === 'failed_redemption');
+    const grantAudit = auditEntries.find((entry) => entry.eventType === 'grant');
+    expect(approvalAudit?.peer.principalHash).toBe(approverHash);
+    expect(approvalAudit?.peer.principalHash).not.toBe(requesterHash);
+    expect(failedRedemptionAudit?.peer.principalHash).toBe(requesterHash);
+    expect(grantAudit?.peer.principalHash).toBe(requesterHash);
   });
 
   it('ignores spoofable x-auth-session when an authenticated cookie is present', async () => {

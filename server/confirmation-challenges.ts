@@ -154,6 +154,15 @@ export interface ConfirmationChallengeStore {
   listChallenges(): ConfirmationChallengePublicView[];
 }
 
+export class ConfirmationChallengeCapacityError extends Error {
+  readonly code = 'CONFIRMATION_CAPACITY_EXHAUSTED';
+
+  constructor(readonly maxChallenges: number) {
+    super('confirmation challenge capacity exhausted');
+    this.name = 'ConfirmationChallengeCapacityError';
+  }
+}
+
 export function createConfirmationChallengeStore(
   options: ConfirmationChallengeStoreOptions = {}
 ): ConfirmationChallengeStore {
@@ -192,9 +201,16 @@ export function createConfirmationChallengeStore(
     }
     while (challenges.size > maxChallenges) {
       const terminal = Array.from(challenges.values()).find((challenge) => isTerminal(challenge.status));
-      const oldest = terminal ?? challenges.values().next().value;
-      if (!oldest) break;
-      challenges.delete(oldest.challengeId);
+      if (!terminal) break;
+      challenges.delete(terminal.challengeId);
+    }
+  }
+
+  function ensureCapacityForNewChallenge(): void {
+    while (challenges.size >= maxChallenges) {
+      const terminal = Array.from(challenges.values()).find((challenge) => isTerminal(challenge.status));
+      if (!terminal) throw new ConfirmationChallengeCapacityError(maxChallenges);
+      challenges.delete(terminal.challengeId);
     }
   }
 
@@ -208,6 +224,7 @@ export function createConfirmationChallengeStore(
   ): ConfirmationChallenge {
     const createdAt = now();
     pruneStoredChallenges(createdAt);
+    ensureCapacityForNewChallenge();
     const challenge: ConfirmationChallenge = {
       challengeId: randomId(),
       status: 'pending',
@@ -492,6 +509,7 @@ function expireIfNeeded(
   now: Date,
   includeToken = false
 ): ConfirmationFailure | null {
+  if (isTerminalChallengeStatus(challenge.status)) return null;
   const challengeExpired = Date.parse(challenge.expiresAt) <= now.getTime();
   const tokenExpired =
     includeToken && challenge.tokenExpiresAt
@@ -539,7 +557,7 @@ function auditForChallenge(
     eventType: input.eventType,
     decision: input.decision,
     reasonCode: input.reasonCode,
-    peer: { kind: 'user', principalHash: challenge.requesterAuthSessionHash },
+    peer: auditPeerForChallenge(challenge, input.eventType),
     node: {
       nodeId: challenge.nodeId,
       ...(policy.trustTier ? { trustTier: policy.trustTier } : {}),
@@ -559,6 +577,30 @@ function auditForChallenge(
     },
     ...(policy.correlationId ? { correlationId: policy.correlationId } : {}),
   };
+}
+
+function auditPeerForChallenge(
+  challenge: ConfirmationChallenge,
+  eventType: SecurityAuditEntryInput['eventType']
+): SecurityAuditEntryInput['peer'] {
+  const useApprover =
+    (eventType === 'approval' || eventType === 'denial' || eventType === 'revocation') &&
+    Boolean(challenge.approverAuthSessionHash);
+  const principalHash = useApprover
+    ? challenge.approverAuthSessionHash!
+    : challenge.requesterAuthSessionHash;
+  const displayName = useApprover
+    ? challenge.approverDisplayName
+    : challenge.requesterDisplayName;
+  return {
+    kind: 'user',
+    principalHash,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+function isTerminalChallengeStatus(status: ConfirmationChallengeStatus): boolean {
+  return status !== 'pending' && status !== 'approved';
 }
 
 function hashCanonicalParams(value: CanonicalConfirmationParams): string {
