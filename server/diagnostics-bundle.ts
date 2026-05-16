@@ -50,6 +50,11 @@ export interface DiagnosticsVersionInfo {
   arch: string;
 }
 
+export interface DiagnosticsRedactionRule {
+  id: string;
+  description: string;
+}
+
 interface RedactionResult<T> {
   value: T;
   counts: Record<string, number>;
@@ -91,19 +96,34 @@ interface NodeCredentialSummary {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REDACTED = '[REDACTED]';
 const DEFAULT_LOG_LINES = 200;
+const SENSITIVE_KEY_PATTERN =
+  'token|secret|password|passwd|pwd|pin|cookie|authorization|credential|private[_-]?key|privatekey|access[_-]?key|accesskey|api[_-]?key|apikey|webhook|hash';
 
-export const DIAGNOSTICS_REDACTION_RULES = [
-  'json keys matching token/secret/password/pin/cookie/authorization/credential/private-key/hash',
-  'private key PEM blocks',
-  'Bearer authorization header values',
-  'cookie header values',
-  'GitHub token formats',
-  'URL embedded credentials',
+export const DIAGNOSTICS_REDACTION_RULES: readonly DiagnosticsRedactionRule[] = [
+  {
+    id: 'sensitive-json-key',
+    description:
+      'JSON object keys matching token/secret/password/passwd/pwd/pin/cookie/authorization/credential/private-key/access-key/api-key/webhook/hash',
+  },
+  { id: 'private-key-block', description: 'private key PEM blocks' },
+  { id: 'authorization-header', description: 'full Authorization header values' },
+  { id: 'bearer-token', description: 'standalone Bearer token values' },
+  { id: 'cookie-header', description: 'cookie header values' },
+  { id: 'github-token', description: 'GitHub token formats' },
+  { id: 'url-credential', description: 'URL embedded credentials' },
+  {
+    id: 'secret-assignment',
+    description:
+      'text assignments for sensitive key terms, including quoted values',
+  },
 ] as const;
 
-const SENSITIVE_KEY_RE =
-  /token|secret|password|passwd|pwd|pin|cookie|authorization|credential|private[_-]?key|privatekey|access[_-]?key|accesskey|api[_-]?key|apikey|webhook|hash/i;
+const SENSITIVE_KEY_RE = new RegExp(SENSITIVE_KEY_PATTERN, 'i');
 const NON_SECRET_STATE_KEY_RE = /(configured|present|count|status|state)$/i;
+const SECRET_ASSIGNMENT_RE = new RegExp(
+  `\\b(${SENSITIVE_KEY_PATTERN})(["']?\\s*[:=]\\s*)("([^"\\r\\n]*)"|'([^'\\r\\n]*)'|[^"'\\s,}\\]\\[]+)`,
+  'gi'
+);
 const SAFE_ENV_KEYS = [
   'CI',
   'GITHUB_ACTIONS',
@@ -262,6 +282,13 @@ export async function createDiagnosticsBundle(
     reason: 'local diagnostics bundle only; remote node fan-in is intentionally out of scope',
   });
 
+  entries.push({
+    path: 'manifest.json',
+    source: 'diagnostics bundle manifest',
+    status: 'included',
+    redacted: false,
+  });
+
   const manifestPath = writeBundleFile(
     bundleDir,
     'manifest.json',
@@ -279,12 +306,6 @@ export async function createDiagnosticsBundle(
       2
     )}\n`
   );
-  entries.push({
-    path: 'manifest.json',
-    source: 'diagnostics bundle manifest',
-    status: 'included',
-    redacted: false,
-  });
 
   return { bundleDir, manifestPath, entries };
 }
@@ -564,6 +585,13 @@ export function redactText(value: string): RedactionResult<string> {
   );
   output = replaceAndCount(
     output,
+    /\b(authorization\s*[:=]\s*)[^\r\n]+/gi,
+    'authorization-header',
+    `$1${REDACTED}`,
+    counts
+  );
+  output = replaceAndCount(
+    output,
     /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
     'bearer-token',
     `Bearer ${REDACTED}`,
@@ -590,14 +618,21 @@ export function redactText(value: string): RedactionResult<string> {
     `$1${REDACTED}`,
     counts
   );
-  output = replaceAndCount(
+  output = replaceAndCountWith(
     output,
-    /\b(token|secret|password|passwd|pin|authorization|credential|private[_-]?key|access[_-]?key|api[_-]?key)(["']?\s*[:=]\s*["']?)([^"'\s,}\]]+)/gi,
+    SECRET_ASSIGNMENT_RE,
     'secret-assignment',
-    `$1$2${REDACTED}`,
+    (_match, key: string, separator: string, rawValue: string) =>
+      `${key}${separator}${redactAssignedValue(rawValue)}`,
     counts
   );
   return { value: output, counts };
+}
+
+function redactAssignedValue(rawValue: string): string {
+  if (rawValue.startsWith('"')) return `"${REDACTED}"`;
+  if (rawValue.startsWith("'")) return `'${REDACTED}'`;
+  return REDACTED;
 }
 
 function replaceAndCount(
@@ -610,6 +645,19 @@ function replaceAndCount(
   const matches = input.match(pattern);
   if (matches?.length) increment(counts, rule, matches.length);
   return input.replace(pattern, replacement);
+}
+
+function replaceAndCountWith(
+  input: string,
+  pattern: RegExp,
+  rule: string,
+  replacement: (...args: string[]) => string,
+  counts: Record<string, number>
+): string {
+  return input.replace(pattern, (...args: string[]) => {
+    increment(counts, rule);
+    return replacement(...args);
+  });
 }
 
 function increment(
@@ -625,7 +673,7 @@ function mergeCounts(
 function writeBundleFile(bundleDir: string, relativePath: string, content: string): string {
   const resolved = path.resolve(bundleDir, relativePath);
   const root = path.resolve(bundleDir);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+  if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
     throw new Error(`Refusing to write outside diagnostics bundle: ${relativePath}`);
   }
   fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
