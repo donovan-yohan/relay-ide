@@ -242,6 +242,12 @@ File commands remain read-only. They must surface unavailable node, missing path
 
 `sessions hand-back` requires the latest intervention event id observed by the caller before restoring agent-driven control. Stale, unknown, disconnected, or unacknowledged intervention state returns typed errors instead of resuming blindly.
 
+## First generated adapter smoke
+
+The first #430 proof intentionally stops at one generated Claude-style tool/function bundle in `shared/cli-gateway-claude-tools.ts`. It reads `shared/cli-gateway-contract.ts` / `relay-ide v1 schema --json` shape and emits Anthropic-compatible tool definitions (`name`, `description`, `input_schema`) for only the hello-world path: `nodes.list`, `sessions.create`, `files.read`, and `sessions.detach`.
+
+The smoke runner is deliberately thin: generated definitions select the stable v1 CLI command, Relay's existing CLI gateway does the hub/node/File RPC work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, streaming attach, subscriptions, write/delete/tail File RPC, arbitrary exec, and private node-link shortcuts remain deferred.
+
 ## Deferred work
 
 Event subscription beyond PTY output, multi-session fan-out, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
