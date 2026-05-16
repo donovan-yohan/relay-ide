@@ -38,6 +38,8 @@ import {
   type RelayCliGatewayEnvelope,
 } from '../shared/cli-gateway-contract.js';
 import {
+  gatewayCliInvalidArgumentError,
+  gatewayCliInvalidJsonError,
   gatewayErrorMessage,
   gatewayErrorRetryable,
   normalizeGatewayErrorCode,
@@ -202,15 +204,7 @@ function gatewayInvalid(
   message: string,
   details?: Record<string, unknown>
 ): never {
-  printGatewayEnvelope(
-    gatewayError(commandName, {
-      code: 'INVALID_ARGUMENT',
-      message,
-      retryable: false,
-      ...(details ? { details } : {}),
-    }),
-    1
-  );
+  printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidArgumentError(commandName, message, details)), 1);
 }
 
 function gatewayArg(commandArgs: string[], flag: string): string | undefined {
@@ -232,14 +226,7 @@ function parseGatewayJson(
     gatewayInvalid(commandName, 'input JSON must be an object');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    printGatewayEnvelope(
-      gatewayError(commandName, {
-        code: 'INVALID_JSON',
-        message: `invalid input JSON: ${message}`,
-        retryable: false,
-      }),
-      1
-    );
+    printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidJsonError(commandName, message)), 1);
   }
 }
 

@@ -345,7 +345,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: [],
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     outputSchema: okOutput('ContractListOutput', { $id: 'RelayCliGatewayContractManifest', type: 'object' }),
-    errorCodes: ['INTERNAL'],
+    errorCodes: ['INVALID_ARGUMENT', 'INTERNAL'],
   },
   {
     name: 'contract.schema',
@@ -386,7 +386,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: { nodes: { type: 'array', items: { type: 'object', additionalProperties: true } } },
       required: ['nodes'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
   },
   {
     name: 'sessions.list',
@@ -403,7 +403,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: { sessions: { type: 'array', items: sessionDescriptorSchema } },
       required: ['sessions'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
   },
   {
     name: 'sessions.get',
@@ -420,7 +420,14 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       required: ['id'],
     },
     outputSchema: okOutput('SessionsGetOutput', sessionDescriptorSchema),
-    errorCodes: ['UNAUTHORIZED', 'NOT_FOUND', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'sessions.create',
@@ -436,6 +443,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'UNAUTHORIZED',
       'FORBIDDEN',
       'INVALID_ARGUMENT',
+      'INVALID_JSON',
       'UNSUPPORTED',
       'SERVER_UNAVAILABLE',
       'CONFIRMATION_REQUIRED',
@@ -465,7 +473,14 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
         transcriptExportAvailable: { const: false },
       },
     }),
-    errorCodes: ['UNAUTHORIZED', 'NOT_FOUND', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'sessions.handBack',
@@ -494,6 +509,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput('SessionsHandBackOutput', { type: 'object', additionalProperties: true }),
     errorCodes: [
       'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
       'NOT_FOUND',
       'FORBIDDEN',
       'SESSION_CONFLICT',

@@ -126,6 +126,8 @@ import type {
   WorkspaceSettings,
 } from './types.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
+import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
 import {
@@ -1148,6 +1150,43 @@ async function main(): Promise<void> {
     const authHeader = req.header('authorization') ?? '';
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
     return match?.[1]?.trim() ?? '';
+  }
+
+  function isCliGatewayV1Request(req: express.Request): boolean {
+    return req.header('x-relay-cli-gateway') === 'v1';
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  function sendGatewayCreateValidationError(
+    res: express.Response,
+    error: RelayCliGatewayError
+  ): void {
+    res.status(400).json({ error });
+  }
+
+  function sessionCreateBodyFromRequest(
+    req: express.Request,
+    res: express.Response
+  ): Record<string, unknown> | null {
+    const body = req.body as unknown;
+    if (!isCliGatewayV1Request(req)) return isRecord(body) ? body : {};
+    if (!isRecord(body)) {
+      sendGatewayCreateValidationError(res, {
+        code: 'INVALID_ARGUMENT',
+        message: 'sessions.create input JSON must be an object',
+        retryable: false,
+      });
+      return null;
+    }
+    const validated = validateAndSanitizeLocalGatewayCreateInput(body);
+    if (validated.ok === false) {
+      sendGatewayCreateValidationError(res, validated.error);
+      return null;
+    }
+    return validated.input;
   }
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
@@ -2540,6 +2579,8 @@ async function main(): Promise<void> {
 
   // POST /sessions — unified endpoint for agent and terminal sessions
   app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
+    const createBody = sessionCreateBodyFromRequest(req, res);
+    if (!createBody) return;
     const {
       repoPath,
       worktreePath,
@@ -2560,7 +2601,7 @@ async function main(): Promise<void> {
       continuePolicy: explicitContinuePolicy,
       sessionLane,
       ticketContext,
-    } = req.body as {
+    } = createBody as {
       repoPath?: string;
       worktreePath?: string | null;
       type?: 'agent' | 'terminal';

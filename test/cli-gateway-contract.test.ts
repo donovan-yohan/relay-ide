@@ -9,10 +9,13 @@ import {
   stableCommandNames,
 } from '../shared/cli-gateway-contract.js';
 import {
+  gatewayCliInvalidArgumentError,
+  gatewayCliInvalidJsonError,
   gatewayErrorRetryable,
   normalizeGatewayErrorCode,
   sanitizedGatewayErrorDetails,
   validateAndSanitizeGatewayCreateInput,
+  validateAndSanitizeLocalGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
 
 describe('CLI gateway contract', () => {
@@ -147,6 +150,71 @@ describe('CLI gateway contract', () => {
       repoPath: '/tmp/repo',
       type: 'agent',
     });
+  });
+
+  it('applies the v1 create contract to direct local /sessions gateway bodies', () => {
+    const hidden = validateAndSanitizeLocalGatewayCreateInput({
+      repoPath: '/tmp/repo',
+      claudeArgs: ['--dangerously-skip-permissions'],
+    });
+    expect(hidden).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT', details: { field: 'claudeArgs' } },
+    });
+
+    const routedOnly = validateAndSanitizeLocalGatewayCreateInput({
+      nodeId: 'node-a',
+      repoPath: '/tmp/repo',
+    });
+    expect(routedOnly).toMatchObject({
+      ok: false,
+      error: { code: 'UNSUPPORTED', details: { field: 'nodeId' } },
+    });
+
+    const clean = validateAndSanitizeLocalGatewayCreateInput({
+      repoPath: '/tmp/repo',
+      worktreePath: null,
+      type: 'terminal',
+      cols: 120,
+    });
+    expect(clean).toMatchObject({
+      ok: true,
+      input: {
+        repoPath: '/tmp/repo',
+        worktreePath: null,
+        type: 'terminal',
+        cols: 120,
+      },
+      sessionType: 'terminal',
+    });
+  });
+
+  it('advertises CLI argument and JSON parse errors emitted by gateway commands', () => {
+    const invalidArgumentCommands = [
+      'contract.list',
+      'nodes.list',
+      'sessions.list',
+      'sessions.get',
+      'sessions.create',
+      'sessions.interventions',
+      'sessions.handBack',
+    ] as const;
+
+    for (const command of invalidArgumentCommands) {
+      const emitted = gatewayError(
+        command,
+        gatewayCliInvalidArgumentError(command, 'invalid gateway command arguments')
+      );
+      expect(emitted.error.code).toBe('INVALID_ARGUMENT');
+      expect(commandSpec(command).errorCodes).toContain(emitted.error.code);
+    }
+
+    const invalidJson = gatewayError(
+      'sessions.create',
+      gatewayCliInvalidJsonError('sessions.create', 'Unexpected end of JSON input')
+    );
+    expect(invalidJson.error.code).toBe('INVALID_JSON');
+    expect(commandSpec('sessions.create').errorCodes).toContain(invalidJson.error.code);
   });
 
   it('normalizes routed errors without exposing raw upstream bodies', () => {

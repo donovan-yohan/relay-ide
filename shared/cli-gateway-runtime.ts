@@ -1,4 +1,5 @@
 import type {
+  RelayCliGatewayCommand,
   RelayCliGatewayError,
   RelayCliGatewayErrorCode,
 } from './cli-gateway-contract.js';
@@ -90,6 +91,30 @@ function unsupportedCreateInput(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function gatewayCliInvalidArgumentError(
+  _commandName: RelayCliGatewayCommand,
+  message: string,
+  details?: Record<string, unknown>
+): RelayCliGatewayError {
+  return {
+    code: 'INVALID_ARGUMENT',
+    message,
+    retryable: false,
+    ...(details ? { details } : {}),
+  };
+}
+
+export function gatewayCliInvalidJsonError(
+  _commandName: RelayCliGatewayCommand,
+  message: string
+): RelayCliGatewayError {
+  return {
+    code: 'INVALID_JSON',
+    message: `invalid input JSON: ${message}`,
+    retryable: false,
+  };
 }
 
 function validateStringField(
@@ -313,6 +338,20 @@ export function validateAndSanitizeGatewayCreateInput(
   const sessionType = sanitized['type'] === 'terminal' ? 'terminal' : 'agent';
   sanitized['type'] = sessionType;
   return { ok: true, input: sanitized, ...(nodeId ? { nodeId } : {}), sessionType };
+}
+
+export function validateAndSanitizeLocalGatewayCreateInput(
+  rawInput: Record<string, unknown>
+): GatewayCreateValidationResult {
+  const validated = validateAndSanitizeGatewayCreateInput(rawInput);
+  if (validated.ok === false) return validated;
+  if (validated.nodeId) {
+    return unsupportedCreateInput(
+      'local /sessions gateway creation cannot accept nodeId; use routed node creation through /hub/nodes/:nodeId/sessions',
+      { field: 'nodeId', supported: ['repoPath', 'worktreePath'] }
+    );
+  }
+  return validated;
 }
 
 function upstreamErrorRecord(upstream: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
