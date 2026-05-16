@@ -18,6 +18,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
+import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -357,6 +358,69 @@ describe('hub-routed node session create and attach', () => {
       nodeId,
       globalSessionId: `${nodeId}:remote-session-1`,
       mode: 'pty',
+    });
+  });
+
+  it('forces routed-node envelope semantics when the node returns a local compatibility envelope', async () => {
+    const { base, wsBase } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'sessions.create.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session: {
+            ...remoteSession(nodeId),
+            sessionEnvelope: createLocalCompatibilitySessionEnvelope({
+              sessionId: 'remote-session-1',
+              nodeId,
+              cwd: '/srv/relay-ide',
+              repoPath: '/srv/relay-ide',
+              worktreePath: null,
+              issuedAt: '2026-01-02T03:04:05.000Z',
+            }),
+          },
+        },
+      })
+    );
+
+    const res = await createPromise;
+    expect(res.status).toBe(201);
+    const scoped = (await res.json()) as SessionSummary;
+    expect(scoped.sessionEnvelope).toMatchObject({
+      sessionId: 'remote-session-1',
+      nodeId,
+      globalSessionId: `${nodeId}:remote-session-1`,
+      intent: { kind: 'routed-node-session' },
+      peerIdentity: { kind: 'relay-node', nodeId },
+      scope: {
+        kind: 'repo',
+        nodeId,
+        cwd: '/srv/relay-ide',
+        repoPath: '/srv/relay-ide',
+        worktreePath: null,
+      },
     });
   });
 
