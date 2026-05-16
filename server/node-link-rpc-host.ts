@@ -430,8 +430,9 @@ export function createNodeLinkRpcHost(
           onError: (error) => {
             logger.warn(`fs.tail follow failed: ${error.message}`);
             sendStreamEnvelope(ctx, envelope, 'fs.tail.error', {
-              error: internalError(error.message),
+              error,
             });
+            closeFileFollower(streamId);
           },
         });
         fileFollowers.set(streamId, follower);

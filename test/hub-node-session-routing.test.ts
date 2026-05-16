@@ -1416,6 +1416,59 @@ describe('hub-routed node session create and attach', () => {
     expect(await res.json()).toMatchObject({ operation: 'tail', content: 'last line\n' });
   });
 
+  it('returns typed JSON errors for initial File RPC tail follow denials before opening text stream', async () => {
+    const { base, wsBase, sessionEnvelopes } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const tailPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1/files/tail`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ path: 'logs', follow: true }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'fs.tail',
+      payload: { follow: true, path: '/srv/relay-ide/logs' },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'fs.tail.error',
+        requestId: request.requestId,
+        streamId: request.streamId,
+        timestamp: new Date().toISOString(),
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'path is not a regular file',
+          retryable: false,
+          details: { reasonCode: 'FILE_RPC_NOT_FILE', path: '/srv/relay-ide/logs' },
+        },
+      })
+    );
+
+    const res = await tailPromise;
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', details: { reasonCode: 'FILE_RPC_NOT_FILE' } },
+    });
+  });
+
   it('denies File RPC traversal before it reaches the node link', async () => {
     const { base, wsBase, sessionEnvelopes } = await startHub();
     const { token, nodeId } = await pairNode(base);

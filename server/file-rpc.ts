@@ -564,11 +564,17 @@ export interface FileRpcFollower {
   close(): void;
 }
 
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
 export function createFileRpcFollower(options: {
   request: Pick<FileRpcTailRequest, 'path' | 'maxFollowChunkBytes'>;
   startOffset: number;
   write: (chunk: FileRpcTailChunk) => void;
-  onError?: (error: Error) => void;
+  onError?: (error: RelayNodeError) => void;
   pollIntervalMs?: number;
 }): FileRpcFollower {
   let offset = options.startOffset;
@@ -576,12 +582,26 @@ export function createFileRpcFollower(options: {
   let active = false;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
 
+  const closeWithError = (error: RelayNodeError): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    options.onError?.(error);
+  };
+
   const poll = async (): Promise<void> => {
     if (closed || active) return;
     active = true;
     try {
       const stats = await fs.stat(options.request.path);
-      if (!stats.isFile()) return;
+      if (!stats.isFile()) {
+        closeWithError(
+          invalidRequest('FILE_RPC_NOT_FILE', 'path is no longer a regular file', {
+            path: options.request.path,
+          })
+        );
+        return;
+      }
       if (stats.size < offset) offset = 0;
       if (stats.size <= offset) return;
       const appendedBytes = stats.size - offset;
@@ -622,9 +642,19 @@ export function createFileRpcFollower(options: {
         await handle.close();
       }
     } catch (error) {
-      options.onError?.(error instanceof Error ? error : new Error(String(error)));
-      closed = true;
-      clearInterval(timer);
+      if (nodeErrorCode(error) === 'ENOENT') {
+        closeWithError(
+          notFound('FILE_RPC_NOT_FOUND', 'followed file was not found', {
+            path: options.request.path,
+          })
+        );
+      } else {
+        closeWithError({
+          code: 'INTERNAL',
+          message: error instanceof Error ? error.message : String(error ?? 'unknown'),
+          retryable: false,
+        });
+      }
     } finally {
       active = false;
     }

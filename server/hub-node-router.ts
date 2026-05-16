@@ -79,6 +79,8 @@ import {
 import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 
+const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
+
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
   request(nodeId: string, type: string, payload: unknown): Promise<unknown>;
@@ -1165,6 +1167,10 @@ function fileTailChunk(payload: unknown): string {
   return typeof content === 'string' ? content : '';
 }
 
+function relayErrorText(error: RelayNodeError): string {
+  return `\n[${error.code}] ${error.message}\n`;
+}
+
 function relayErrorFromUnknown(error: unknown): RelayNodeError {
   if (error instanceof HubNodeLinkError) return error.relayNodeError;
   return relayError(
@@ -1190,47 +1196,96 @@ async function streamFileTailFollow(input: {
     return;
   }
   let closed = false;
+  let draining = false;
+  let bufferedBytes = 0;
+  const pendingChunks: string[] = [];
   let stream: { payload: unknown; close(): void } | undefined;
   const close = (): void => {
     if (closed) return;
     closed = true;
     stream?.close();
   };
+  const closeWithStreamError = (error: RelayNodeError): void => {
+    if (closed || res.destroyed) return;
+    const output = relayErrorText(error);
+    close();
+    if (!res.destroyed) res.end(output);
+  };
+  const flushBuffered = (): void => {
+    if (closed || res.destroyed || draining) return;
+    while (pendingChunks.length > 0) {
+      const chunk = pendingChunks.shift()!;
+      bufferedBytes -= Buffer.byteLength(chunk);
+      if (!res.write(chunk)) {
+        draining = true;
+        res.once('drain', () => {
+          draining = false;
+          flushBuffered();
+        });
+        return;
+      }
+    }
+  };
+  const writeBounded = (chunk: string): void => {
+    if (!chunk || closed || res.destroyed) return;
+    if (draining || pendingChunks.length > 0) {
+      const chunkBytes = Buffer.byteLength(chunk);
+      bufferedBytes += chunkBytes;
+      pendingChunks.push(chunk);
+      if (bufferedBytes > FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES) {
+        closeWithStreamError(
+          relayError(
+            'NODE_BUSY',
+            'file RPC tail follow output exceeded bounded response buffer; stream closed',
+            true,
+            {
+              reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE',
+              maxBufferedBytes: FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES,
+            }
+          )
+        );
+      }
+      return;
+    }
+    if (!res.write(chunk)) {
+      draining = true;
+      res.once('drain', () => {
+        draining = false;
+        flushBuffered();
+      });
+    }
+  };
   req.on('close', close);
   try {
-    res.status(200);
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.flushHeaders();
     stream = await nodeLinks.streamRequest(nodeId, 'fs.tail', request, {
       onChunk: (payload) => {
         if (closed || res.destroyed) return;
         const chunk = fileTailChunk(payload);
-        if (chunk) res.write(chunk);
+        writeBounded(chunk);
       },
       onError: (error) => {
         if (closed || res.destroyed) return;
-        res.write(`\n[${error.code}] ${error.message}\n`);
-        res.end();
+        closeWithStreamError(error);
       },
       onEnd: () => {
         if (closed || res.destroyed) return;
         res.end();
       },
     });
+    res.status(200);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
     if (closed || res.destroyed) {
       stream.close();
       return;
     }
     const output = fileTailOutput(stream.payload);
-    if (output) res.write(output);
+    writeBounded(output);
   } catch (error) {
     if (res.headersSent) {
       const streamError = relayErrorFromUnknown(error);
-      if (!closed && !res.destroyed) {
-        res.write(`\n[${streamError.code}] ${streamError.message}\n`);
-        res.end();
-      }
+      if (!closed && !res.destroyed) closeWithStreamError(streamError);
       return;
     }
     res.removeHeader('Content-Type');

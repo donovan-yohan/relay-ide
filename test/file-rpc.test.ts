@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { executeLocalFileRpc, normalizeHubFileRpcRequest } from '../server/file-rpc.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createFileRpcFollower, executeLocalFileRpc, normalizeHubFileRpcRequest } from '../server/file-rpc.js';
 import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 
@@ -258,6 +258,30 @@ describe('read-only File RPC foundation', () => {
     expect(denied).toMatchObject({
       code: 'INVALID_REQUEST',
       details: { reasonCode: 'FILE_RPC_ROOT_ESCAPE' },
+    });
+  });
+
+  it('emits a typed terminal error when a followed file is replaced by a directory', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'app.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const errors: unknown[] = [];
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: () => {},
+      onError: (error) => errors.push(error),
+      pollIntervalMs: 10,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.rmSync(target);
+    fs.mkdirSync(target);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { reasonCode: 'FILE_RPC_NOT_FILE', path: target },
     });
   });
 });
