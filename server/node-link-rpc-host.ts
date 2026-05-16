@@ -263,6 +263,7 @@ function sendResultEnvelope(
   ctx.send(
     ctx.buildEnvelope('rpc', `${envelope.type}.result`, {
       ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+      ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
       payload,
     })
   );
@@ -276,6 +277,7 @@ function sendErrorEnvelope(
   ctx.send(
     ctx.buildEnvelope('rpc', `${envelope.type}.error`, {
       ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+      ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
       error,
     })
   );
@@ -429,6 +431,14 @@ export function createNodeLinkRpcHost(
       sendErrorEnvelope(ctx, envelope, parsed);
       return;
     }
+    if (parsed.follow && !envelope.streamId) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('logs.tail follow requires envelope.streamId')
+      );
+      return;
+    }
     const snapshot = readNodeLogTailSnapshot({
       configPath: logConfigPath,
       serviceLogDir: logDir,
@@ -440,7 +450,8 @@ export function createNodeLinkRpcHost(
     }
     sendResultEnvelope(ctx, envelope, snapshot);
     if (!parsed.follow) return;
-    if (!envelope.streamId) {
+    const streamId = envelope.streamId;
+    if (!streamId) {
       sendErrorEnvelope(
         ctx,
         envelope,
@@ -448,7 +459,7 @@ export function createNodeLinkRpcHost(
       );
       return;
     }
-    closeLogFollower(envelope.streamId);
+    closeLogFollower(streamId);
     const follower = createNodeLogFollower({
       configPath: logConfigPath,
       serviceLogDir: logDir,
@@ -460,7 +471,7 @@ export function createNodeLinkRpcHost(
         });
       },
     });
-    logFollowers.set(envelope.streamId, follower);
+    logFollowers.set(streamId, follower);
   }
 
   function handleLogsTailCancel(envelope: RelayNodeEnvelope): void {

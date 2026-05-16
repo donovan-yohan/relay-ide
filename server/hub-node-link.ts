@@ -31,6 +31,7 @@ interface PendingStream {
   nodeWs: WebSocket;
   requestId: string;
   streamId: string;
+  cancelType: string;
   opened: boolean;
   resolve: (stream: HubNodeLinkStream) => void;
   reject: (error: HubNodeLinkError) => void;
@@ -327,6 +328,7 @@ export class HubNodeLinkManager {
         nodeWs: ws,
         requestId,
         streamId,
+        cancelType: `${type}.cancel`,
         opened: false,
         resolve,
         reject,
@@ -359,7 +361,7 @@ export class HubNodeLinkManager {
     if (stream.nodeWs.readyState === stream.nodeWs.OPEN) {
       sendJson(
         stream.nodeWs,
-        envelope(stream.nodeId, 'rpc', 'logs.tail.cancel', {
+        envelope(stream.nodeId, 'rpc', stream.cancelType, {
           requestId: stream.requestId,
           streamId,
         })

@@ -1437,7 +1437,10 @@ async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
   }
   logger.info(`Following remote Relay node logs for ${nodeId}; press Ctrl-C to stop.`);
   const reader = res.body?.getReader();
-  if (!reader) return;
+  if (!reader) {
+    logger.error('Remote log stream is unavailable.');
+    process.exit(1);
+  }
   const decoder = new TextDecoder();
   await new Promise<void>((resolve) => {
     const stop = (): void => {
@@ -1452,9 +1455,13 @@ async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
           if (done) break;
           if (value) process.stdout.write(decoder.decode(value, { stream: true }));
         }
+      } catch (error) {
+        logger.error(
+          `Log stream error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } finally {
         const tail = decoder.decode();
         if (tail) process.stdout.write(tail);
-      } finally {
         process.off('SIGINT', stop);
         process.off('SIGTERM', stop);
         resolve();

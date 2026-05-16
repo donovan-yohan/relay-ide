@@ -1053,6 +1053,15 @@ function relayErrorFromUnknown(error: unknown): RelayNodeError {
   );
 }
 
+function protocolVersionRelayError(nodeProtocolVersion: string): RelayNodeError {
+  const [nodeMajor] = nodeProtocolVersion.split('.');
+  const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+  return relayError(
+    nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+    `relay-node-link protocol ${nodeProtocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+  );
+}
+
 function sessionCreatePolicyScope(
   nodeId: string,
   body: Record<string, unknown>
@@ -1411,10 +1420,6 @@ export function createHubNodeRouter(
       sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
       return;
     }
-    if (!options.nodeLinks?.hasActiveNode(nodeId)) {
-      sendRelayError(res, relayError('NODE_OFFLINE', `node ${nodeId} is offline`, true));
-      return;
-    }
     const lines = nodeLogLinesFromQuery(req.query['lines']);
     if (typeof lines !== 'number') {
       sendRelayError(res, lines);
@@ -1422,6 +1427,37 @@ export function createHubNodeRouter(
     }
     const follow = includeFlag(req.query['follow']);
     const requestPayload = { lines, follow };
+    const node = registry
+      .listNodes()
+      .find((candidate) => candidate.nodeId === nodeId);
+    if (!node || node.status === 'revoked') {
+      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+      return;
+    }
+    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+      sendRelayError(res, protocolVersionRelayError(node.protocolVersion));
+      return;
+    }
+    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
+      sendRelayError(
+        res,
+        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+      );
+      return;
+    }
+    const policyDecision = evaluateHubPolicy({
+      peer: { kind: 'hub' },
+      node,
+      nodeId,
+      intent: { action: 'rpc.fs.tail', target: nodeId },
+      scope: { kind: 'node', nodeId, cwd: '/' },
+      requiredCapabilities: requiredCapabilitiesForRpcIntent('rpc.fs.tail'),
+      params: requestPayload,
+      now: now(),
+    });
+    if (sendPolicyDecision(options.auditSink, res, policyDecision, requestPayload)) {
+      return;
+    }
     if (!follow) {
       try {
         const payload = await options.nodeLinks.request(nodeId, 'logs.tail', requestPayload);
@@ -1448,6 +1484,10 @@ export function createHubNodeRouter(
     };
     req.on('close', close);
     try {
+      res.status(200);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
       stream = await options.nodeLinks.streamRequest(nodeId, 'logs.tail', requestPayload, {
         onChunk: (payload) => {
           if (closed || res.destroyed) return;
@@ -1464,13 +1504,24 @@ export function createHubNodeRouter(
           res.end();
         },
       });
-      res.status(200);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-store');
+      if (closed || res.destroyed) {
+        stream.close();
+        return;
+      }
       const output = nodeLogOutput(stream.payload);
       if (output) res.write(output);
     } catch (error) {
-      sendRelayError(res, relayErrorFromUnknown(error));
+      if (res.headersSent) {
+        const streamError = relayErrorFromUnknown(error);
+        if (!closed && !res.destroyed) {
+          res.write(`\n[${streamError.code}] ${streamError.message}\n`);
+          res.end();
+        }
+      } else {
+        res.removeHeader('Content-Type');
+        res.removeHeader('Cache-Control');
+        sendRelayError(res, relayErrorFromUnknown(error));
+      }
     }
   });
 
