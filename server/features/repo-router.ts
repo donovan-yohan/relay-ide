@@ -18,6 +18,12 @@ import {
 } from '../hub-node-router.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
 import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
+import {
+  expiresAtFromLifecycleInput,
+  lifecycleInputError,
+  sessionEnvelopeRegistry,
+  type InMemorySessionEnvelopeRegistry,
+} from '../session-envelope-registry.js';
 
 export interface RepoFeatureRouterOptions {
   registry: HubNodeRegistry;
@@ -25,6 +31,8 @@ export interface RepoFeatureRouterOptions {
   repoInventoryFeature: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
   nodeLinks?: HubNodeLinkManager;
+  sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  now?: () => Date;
 }
 
 // Repo-feature HTTP surface. These routes used to live in
@@ -43,6 +51,8 @@ export function createRepoFeatureRouter(
 ): express.Router {
   const router = express.Router();
   const { registry, requireAuth, repoInventoryFeature } = options;
+  const sessionEnvelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
+  const now = () => options.now?.() ?? new Date();
 
   router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
     try {
@@ -113,6 +123,35 @@ export function createRepoFeatureRouter(
       }
 
       const body = bodyRecord(req);
+      const lifecycleError = lifecycleInputError(body);
+      if (lifecycleError) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', lifecycleError.message, false, {
+            reasonCode: 'INVALID_LIFECYCLE_INPUT',
+            field: lifecycleError.field,
+          })
+        );
+        return;
+      }
+      const reopenNow = now();
+      const expiresAt = expiresAtFromLifecycleInput(body, reopenNow);
+      if (
+        expiresAt !== undefined &&
+        expiresAt !== null &&
+        Date.parse(expiresAt) <= reopenNow.getTime()
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'SESSION_EXPIRED',
+            'routed session envelope is already expired',
+            false,
+            { reasonCode: 'SESSION_EXPIRED', expiresAt }
+          )
+        );
+        return;
+      }
       try {
         const reports = [...repoInventoryFeature.listInventoryReports()];
         if (options.collectLocalRepoInventory) {
@@ -130,7 +169,10 @@ export function createRepoFeatureRouter(
           'sessions.create',
           sessionPayload
         );
-        const session = scopedNodeSession(nodeId, sessionFromPayload(payload));
+        const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+        });
+        if (session.sessionEnvelope) sessionEnvelopes.upsert(session.sessionEnvelope);
         res.status(201).json({
           session,
           transfer: {

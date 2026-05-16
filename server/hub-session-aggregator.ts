@@ -3,6 +3,10 @@ import { HubNodeLinkError } from './hub-node-link.js';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
+import {
+  sessionEnvelopeRegistry,
+  type InMemorySessionEnvelopeRegistry,
+} from './session-envelope-registry.js';
 import type { SessionSummary } from './types.js';
 import { scopedNodeSession, isSessionSummary } from './hub-node-router.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
@@ -34,6 +38,7 @@ export interface AggregateRemoteSessionsDeps {
   registry: HubNodeRegistry;
   nodeLinks: HubNodeLinkManager;
   logger?: Logger;
+  sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
   perNodeTimeoutMs?: number;
 }
 
@@ -54,6 +59,7 @@ export async function aggregateRemoteSessions(
 ): Promise<SessionSummary[]> {
   const logger = deps.logger ?? createLogger('hub-session-agg');
   const timeoutMs = deps.perNodeTimeoutMs ?? PER_NODE_TIMEOUT_MS;
+  const envelopes = deps.sessionEnvelopes ?? sessionEnvelopeRegistry;
 
   const candidates = deps.registry
     .listNodes()
@@ -94,7 +100,9 @@ export async function aggregateRemoteSessions(
       continue;
     }
     for (const session of result.value.sessions) {
-      aggregated.push(scopedNodeSession(result.value.nodeId, session));
+      const scoped = scopedNodeSession(result.value.nodeId, session);
+      envelopes.upsert(scoped.sessionEnvelope!);
+      aggregated.push(scoped);
     }
   }
 
