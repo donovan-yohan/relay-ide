@@ -43,6 +43,27 @@ async function execNode(args: string[], env: NodeJS.ProcessEnv): Promise<string>
   });
 }
 
+async function execNodeFailure(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ status: number | string | undefined; stdout: string; stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    execFile(
+      'node',
+      args,
+      { encoding: 'utf-8', env, timeout: 10_000 },
+      (error, stdout, stderr) => {
+        if (!error) {
+          reject(new Error(`expected command to fail: node ${args.join(' ')}`));
+          return;
+        }
+        const execError = error as { code?: number | string };
+        resolve({ status: execError.code, stdout, stderr });
+      }
+    );
+  });
+}
+
 function parseEnvelope<T = unknown>(stdout: string): {
   ok: boolean;
   command: string;
@@ -225,6 +246,65 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
   );
 });
 
+test('v1 files.read preserves its command envelope when session lookup fails', async () => {
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    captured.push({
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+    });
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/sessions/missing') {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'session not found' } }));
+      return;
+    }
+    res.statusCode = 500;
+    res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'unexpected route' } }));
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    const failure = await execNodeFailure(
+      [
+        'dist/bin/relay-ide.js',
+        'v1',
+        'files',
+        'read',
+        '--session-id',
+        'missing',
+        '--path',
+        'hello.txt',
+        '--json',
+      ],
+      env
+    );
+    const envelope = JSON.parse(failure.stdout) as {
+      ok: boolean;
+      command: string;
+      error: { code: string; message: string; details?: Record<string, unknown> };
+    };
+    expect(failure.status).not.toBe(0);
+    expect(envelope).toMatchObject({
+      ok: false,
+      command: 'files.read',
+      error: { code: 'NOT_FOUND' },
+    });
+    expect(envelope.error.message).toContain('session not found');
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual(['GET /sessions/missing']);
+});
+
 
 test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches without kill', async () => {
   const captured: CapturedGatewayRequest[] = [];
@@ -300,6 +380,25 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
             ],
             truncated: false,
             maxEntries: entry.body?.['maxEntries'] ?? 100,
+          })
+        );
+        return;
+      }
+      if (
+        req.method === 'POST' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1/files/stat'
+      ) {
+        res.end(
+          JSON.stringify({
+            operation: 'stat',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture/hello.txt',
+            name: 'hello.txt',
+            type: 'file',
+            size: 14,
+            mtimeMs: 1,
+            mode: 0o100644,
           })
         );
         return;
@@ -388,6 +487,25 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
     );
     expect(listed.data.entries[0]?.name).toBe('hello.txt');
 
+    const stat = parseEnvelope<{ name: string; type: string; size: number }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'stat',
+          '--session-id',
+          'remote-session-1',
+          '--path',
+          'hello.txt',
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(stat).toMatchObject({ ok: true, command: 'files.stat' });
+    expect(stat.data).toMatchObject({ name: 'hello.txt', type: 'file', size: 14 });
+
     const read = parseEnvelope<{ content: string; maxBytes: number; maxLines: number }>(
       await execNode(
         [
@@ -434,6 +552,7 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       'GET /nodes',
       'POST /hub/nodes/node-a/sessions',
       'POST /hub/nodes/node-a/sessions/remote-session-1/files/list',
+      'POST /hub/nodes/node-a/sessions/remote-session-1/files/stat',
       'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
       'GET /sessions/remote-session-1',
     ])

@@ -433,9 +433,12 @@ interface GatewaySessionDescriptor {
   globalSessionId?: string;
 }
 
-async function gatewaySessionDescriptor(id: string): Promise<GatewaySessionDescriptor> {
+async function gatewaySessionDescriptor(
+  id: string,
+  errorCommandName: RelayCliGatewayCommand = 'sessions.get'
+): Promise<GatewaySessionDescriptor> {
   const session = await gatewayHttpJson({
-    commandName: 'sessions.get',
+    commandName: errorCommandName,
     pathName: `/sessions/${encodeURIComponent(id)}`,
     capabilities: ['session:read'],
   });
@@ -713,7 +716,7 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   let nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : undefined;
   let sessionId = requestedSessionId;
   if (!nodeId) {
-    const session = await gatewaySessionDescriptor(requestedSessionId);
+    const session = await gatewaySessionDescriptor(requestedSessionId, commandName);
     nodeId = session.nodeId;
     sessionId = session.id ?? requestedSessionId;
   }
