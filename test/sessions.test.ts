@@ -422,6 +422,63 @@ describe('sessions', () => {
     expect(stored!.branchName).toBe('feature/branch');
   });
 
+  it('serializes control state separately from transport mode for PTY sessions', () => {
+    const result = sessions.create({
+      type: 'agent',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: null,
+      cwd: '/tmp/workspace',
+      command: '/bin/echo',
+      args: ['hello'],
+      controlState: {
+        controlMode: 'agent-driven',
+        activeActors: [{ kind: 'agent', id: 'worker-1' }],
+        activeWorker: { kind: 'agent', id: 'worker-1' },
+        lastInterventionAt: '2026-01-02T03:04:05.000Z',
+        lastInterventionBy: { kind: 'human', id: 'operator' },
+        lastInterventionEventId: 'evt-pty-1',
+        controlFreshness: 'fresh',
+      },
+    });
+    createdIds.push(result.id);
+
+    expect(result.mode).toBe('pty');
+    expect(result.controlMode).toBe('agent-driven');
+    expect(result.activeWorker).toEqual({ kind: 'agent', id: 'worker-1' });
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toMatchObject({
+      mode: 'pty',
+      controlMode: 'agent-driven',
+      controlFreshness: 'fresh',
+      lastInterventionEventId: 'evt-pty-1',
+    });
+  });
+
+  it('backfills missing PTY control state to human-driven unknown freshness', () => {
+    const result = sessions.create({
+      type: 'agent',
+      repoName: 'test-repo',
+      repoPath: '/tmp/workspace',
+      worktreePath: null,
+      cwd: '/tmp/workspace',
+      command: '/bin/echo',
+      args: ['hello'],
+    });
+    createdIds.push(result.id);
+
+    const listed = sessions.list().find((session) => session.id === result.id);
+    expect(listed).toMatchObject({
+      mode: 'pty',
+      controlMode: 'human-driven',
+      controlFreshness: 'unknown',
+      lastInterventionAt: null,
+      lastInterventionBy: null,
+      lastInterventionEventId: null,
+    });
+  });
+
   it('resolveTmuxSpawn returns correct tmux command and args', () => {
     const result = resolveTmuxSpawn('claude', ['--continue'], 'test-session');
     expect(result).toEqual({
@@ -930,7 +987,7 @@ describe('session persistence', () => {
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    expect(pending.version).toBe(6);
+    expect(pending.version).toBe(7);
     expect(pending.reason).toBe('dev-restart');
     expect(pending.timestamp).toBeTruthy();
     expect(pending.sessions.length).toBe(1);
@@ -1655,7 +1712,7 @@ describe('session persistence', () => {
     const pending = JSON.parse(
       fs.readFileSync(path.join(configDir, 'pending-sessions.json'), 'utf-8')
     );
-    expect(pending.version).toBe(6);
+    expect(pending.version).toBe(7);
     expect(pending.sessions[0].yolo).toBe(true);
 
     await restoreFromDisk(configDir);
@@ -1867,7 +1924,7 @@ describe('session persistence', () => {
     createdIds.push('v3-migration-test');
   });
 
-  it('serializeAll writes version 4 in pending-sessions.json', () => {
+  it('serializeAll writes version 7 in pending-sessions.json', () => {
     const configDir = createTmpDir();
 
     const s = sessions.create({
@@ -1885,7 +1942,7 @@ describe('session persistence', () => {
     const pendingPath = path.join(configDir, 'pending-sessions.json');
     expect(fs.existsSync(pendingPath)).toBeTruthy();
     const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    expect(pending.version).toBe(6);
+    expect(pending.version).toBe(7);
     expect(pending.sessions[0].repoPath).toBe('/tmp');
     expect('workspacePath' in pending.sessions[0]).toBe(false);
   });

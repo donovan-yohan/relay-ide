@@ -295,8 +295,48 @@ describe('createWebSession', () => {
 
     expect(session.mode).toBe('web');
     expect(session.adapterType).toBe('mock');
+    expect(session.controlState).toMatchObject({
+      controlMode: 'human-driven',
+      controlFreshness: 'unknown',
+    });
     expect(sessionsMap.has(session.id)).toBe(true);
     expect(sessionsMap.get(session.id)).toBe(session);
+  });
+
+  it('uses provided control state independently from web transport mode', async () => {
+    const { session } = await createWebSession(
+      {
+        agentType: 'mock',
+        cwd: '/repo',
+        repoPath: '/repo',
+        repoName: 'repo',
+        branchName: 'main',
+        displayName: 'Test Session',
+        port: 3000,
+        configDir: '/config',
+        controlState: {
+          controlMode: 'co-driven',
+          activeActors: [
+            { kind: 'human', id: 'operator' },
+            { kind: 'agent', id: 'mock-agent' },
+          ],
+          activeWorker: { kind: 'agent', id: 'mock-agent' },
+          lastInterventionAt: '2026-01-02T03:04:05.000Z',
+          lastInterventionBy: { kind: 'human', id: 'operator' },
+          lastInterventionEventId: 'evt-web-1',
+          controlFreshness: 'fresh',
+        },
+      },
+      sessionsMap,
+      onBackendStateChanged
+    );
+
+    expect(session.mode).toBe('web');
+    expect(session.controlState).toMatchObject({
+      controlMode: 'co-driven',
+      controlFreshness: 'fresh',
+      lastInterventionEventId: 'evt-web-1',
+    });
   });
 
   it('uses provided id if given', async () => {
