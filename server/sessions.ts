@@ -145,6 +145,7 @@ export type CreateResult = SessionSummary & { pid: number | undefined };
 
 // In-memory registry: id -> Session
 const sessions = new Map<string, Session>();
+const routedPtyControlSessions = new Map<string, Session>();
 
 // Session metadata cache: session ID or worktree path -> SessionMeta
 const metaCache = new Map<string, SessionMeta>();
@@ -668,6 +669,54 @@ function write(id: string, data: string): void {
   } else {
     logger.warn(`write() called on web session ${id} — no-op`);
   }
+}
+
+function routedPtyControlSession(nodeId: string, sessionId: string): Session {
+  const globalSessionId = createGlobalSessionId(nodeId, sessionId);
+  const existing = routedPtyControlSessions.get(globalSessionId);
+  if (existing) return existing;
+
+  const envelope = sessionEnvelopeRegistry.read(sessionId, nodeId);
+  const now = new Date().toISOString();
+  const session = {
+    id: sessionId,
+    nodeId,
+    type: 'terminal',
+    agent: 'terminal',
+    mode: 'pty',
+    pty: { write: () => {}, resize: () => {}, kill: () => {} },
+    scrollback: [],
+    useTmux: false,
+    tmuxSessionName: `routed-${globalSessionId}`,
+    onPtyReplacedCallbacks: [],
+    restored: false,
+    outputParser: 'codex',
+    hookToken: '',
+    hooksActive: false,
+    cleanedUp: false,
+    yolo: false,
+    claudeArgs: [],
+    continuePolicy: 'never',
+    cwd: envelope?.scope.cwd ?? '/',
+    repoPath: envelope?.scope.repoPath,
+    worktreePath: envelope?.scope.worktreePath,
+    displayName: `Remote ${nodeId}/${sessionId}`,
+    createdAt: envelope?.issuedAt ?? now,
+    lastActivity: now,
+    idle: true,
+    customCommand: null,
+    status: 'active',
+    needsBranchRename: false,
+    agentState: 'idle',
+  } as unknown as Session;
+  routedPtyControlSessions.set(globalSessionId, session);
+  return session;
+}
+
+function recordRoutedPtyInput(input: { nodeId: string; sessionId: string; data: string }): void {
+  const session = routedPtyControlSession(input.nodeId, input.sessionId);
+  session.lastActivity = new Date().toISOString();
+  recordHumanPtyInput(session, input.data, controlEngineOptions());
 }
 
 function controlAction(id: string, action: ControlModeAction): TabControlEvent[] {
@@ -1730,6 +1779,7 @@ export {
   captureTmuxPane,
   updateDisplayName,
   write,
+  recordRoutedPtyInput,
   controlAction,
   acknowledgeInterventions,
   maybeAutoRevert,

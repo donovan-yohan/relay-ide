@@ -35,12 +35,20 @@ export interface ControlEngineOptions {
   clearTimeoutFn?: typeof clearTimeout;
   emitEvent?: (event: TabControlEvent) => void;
   append?: (record: InterventionRecord) => void;
-  hasUnacked?: (sessionId: string) => boolean;
+  hasUnacked?: (scope: InterventionSessionScope) => boolean;
   ackHumanInput?: (input: {
     sessionId: string;
+    nodeId?: string;
+    globalSessionId?: string;
     actor: ControlActor;
     ackedAt?: string;
   }) => number;
+}
+
+export interface InterventionSessionScope {
+  sessionId: string;
+  nodeId?: string;
+  globalSessionId?: string;
 }
 
 export interface AutoRevertResult {
@@ -197,6 +205,20 @@ export function identityForSession(session: Session): TabControlIdentity {
   };
 }
 
+function scopeForSession(session: Session): InterventionSessionScope {
+  const identity = identityForSession(session);
+  return {
+    sessionId: identity.sessionId,
+    nodeId: identity.nodeId,
+    ...(identity.globalSessionId ? { globalSessionId: identity.globalSessionId } : {}),
+  };
+}
+
+function pendingBurstKey(session: Session): string {
+  const scope = scopeForSession(session);
+  return scope.globalSessionId ?? `${scope.nodeId ?? DEFAULT_LOCAL_NODE_ID}:${scope.sessionId}`;
+}
+
 function buildRecord(input: {
   session: Session;
   actor: ControlActor;
@@ -303,10 +325,12 @@ function emitIntervention(
   return event;
 }
 
-function flushBurst(sessionId: string, options?: ControlEngineOptions): void {
-  const pending = pendingBursts.get(sessionId);
+function flushBurst(key: string, options?: ControlEngineOptions): void {
+  const pending = pendingBursts.get(key);
   if (!pending) return;
-  pendingBursts.delete(sessionId);
+  pendingBursts.delete(key);
+  const clear = options?.clearTimeoutFn ?? clearTimeout;
+  clear(pending.timer);
 
   const payload = pending.chunks.join('');
   const redacted = redactInterventionPayload(payload);
@@ -337,40 +361,43 @@ function flushBurst(sessionId: string, options?: ControlEngineOptions): void {
   );
 }
 
+function flushBurstForSession(session: Session, options?: ControlEngineOptions): void {
+  flushBurst(pendingBurstKey(session), options);
+}
+
 export function recordHumanPtyInput(
   session: Session,
   data: string,
   options: ControlEngineOptions = {}
 ): void {
   if (session.mode !== 'pty' || data.length === 0) return;
-  const existing = pendingBursts.get(session.id);
+  const key = pendingBurstKey(session);
+  const existing = pendingBursts.get(key);
   if (existing) {
     existing.chunks.push(data);
+    updateControlState({
+      session: existing.session,
+      controlMode: existing.record.modeAfter ?? existing.record.modeBefore,
+      actor: existing.record.author,
+      eventId: existing.record.id,
+      occurredAt: nowIso(options),
+      reason: 'human input',
+    });
     const clear = options.clearTimeoutFn ?? clearTimeout;
     const set = options.setTimeoutFn ?? setTimeout;
     clear(existing.timer);
     existing.timer = set(
-      () => flushBurst(session.id, options),
+      () => flushBurst(key, options),
       options.inputDebounceMs ?? DEFAULT_INPUT_DEBOUNCE_MS
     );
     return;
   }
 
   const before = normalizeControlStateSummary(session.controlState);
-  if (before.controlMode !== 'agent-driven') return;
+  if (before.controlMode === 'human-driven') return;
 
   const actor = humanActor(session);
   const after: ControlMode = 'co-driven';
-  session.controlState = {
-    ...before,
-    controlMode: after,
-    activeActors: actorsForMode(session, after, actor),
-    activeWorker: agentActor(session),
-    controlFreshness: 'fresh',
-    controlReason: 'human input',
-  };
-  emitModeChanged(session, actor, before.controlMode, after, 'human input', options);
-
   const record = buildRecord({
     session,
     actor,
@@ -381,13 +408,25 @@ export function recordHumanPtyInput(
     modeAfter: after,
     options,
   });
+  updateControlState({
+    session,
+    controlMode: after,
+    actor,
+    eventId: record.id,
+    occurredAt: record.timestamp,
+    reason: 'human input',
+  });
+  if (before.controlMode !== after) {
+    emitModeChanged(session, actor, before.controlMode, after, 'human input', options);
+  }
+
   const set = options.setTimeoutFn ?? setTimeout;
-  pendingBursts.set(session.id, {
+  pendingBursts.set(key, {
     session,
     chunks: [data],
     record,
     timer: set(
-      () => flushBurst(session.id, options),
+      () => flushBurst(key, options),
       options.inputDebounceMs ?? DEFAULT_INPUT_DEBOUNCE_MS
     ),
   });
@@ -410,6 +449,7 @@ export function applyControlModeAction(
   action: ControlModeAction,
   options: ControlEngineOptions = {}
 ): TabControlEvent[] {
+  flushBurstForSession(session, options);
   const before = normalizeControlStateSummary(session.controlState);
   const actor = action === 'hand-back' ? humanActor(session) : humanActor(session);
   const modeAfter = targetModeForAction(action);
@@ -427,7 +467,7 @@ export function applyControlModeAction(
   append(record);
   if (action === 'hand-back') {
     const ack = options.ackHumanInput ?? ackSessionHumanInput;
-    ack({ sessionId: session.id, actor, ackedAt: record.timestamp });
+    ack({ ...scopeForSession(session), actor, ackedAt: record.timestamp });
   }
   updateControlState({
     session,
@@ -453,8 +493,9 @@ export function acknowledgeHumanInput(
   actor: ControlActor = SYSTEM_ACTOR,
   options: ControlEngineOptions = {}
 ): number {
+  flushBurstForSession(session, options);
   const ack = options.ackHumanInput ?? ackSessionHumanInput;
-  return ack({ sessionId: session.id, actor, ackedAt: nowIso(options) });
+  return ack({ ...scopeForSession(session), actor, ackedAt: nowIso(options) });
 }
 
 export function maybeAutoRevertToAgentDriven(input: {
@@ -474,7 +515,7 @@ export function maybeAutoRevertToAgentDriven(input: {
     return { reverted: false, reason: 'node-disconnected' };
   }
   const hasUnacked = options.hasUnacked ?? hasUnackedHumanInput;
-  if (hasUnacked(input.session.id)) {
+  if (hasUnacked(scopeForSession(input.session))) {
     return { reverted: false, reason: 'unacked-human-input' };
   }
   const last = summary.lastInterventionAt

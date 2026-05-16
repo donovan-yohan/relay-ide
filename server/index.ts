@@ -1014,6 +1014,7 @@ async function main(): Promise<void> {
   const repoInventoryFeature = createRepoInventoryFeature(hubNodeRegistry);
   const hubNodeLinks = createHubNodeLinkManager({
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,
+    ptyInputRecorder: sessions.recordRoutedPtyInput,
   });
 
   async function flushHubNodeHeartbeatsBestEffort(

@@ -8,6 +8,14 @@ import type {
 } from '../shared/control-state.js';
 import { createLogger } from './logger.js';
 
+export interface InterventionSessionScope {
+  sessionId: string;
+  nodeId?: string;
+  globalSessionId?: string;
+}
+
+export type InterventionSessionScopeInput = string | InterventionSessionScope;
+
 const logger = createLogger('intervention-log');
 
 let db: Database.Database | null = null;
@@ -42,6 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_interventions_node_session_time
   ON interventions(node_id, session_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_interventions_unacked_human
   ON interventions(session_id, kind, acked_at);
+CREATE INDEX IF NOT EXISTS idx_interventions_global_unacked_human
+  ON interventions(global_session_id, kind, acked_at);
 `;
 
 const APPEND_SQL = `
@@ -91,6 +101,8 @@ export function initInterventionLog(configDir: string): void {
   listUnackedBySessionStmt = db.prepare(
     `SELECT record_json FROM interventions
      WHERE session_id = @sessionId
+       AND (@globalSessionId IS NULL OR global_session_id = @globalSessionId)
+       AND (@nodeId IS NULL OR node_id = @nodeId)
        AND kind = 'human-input'
        AND acked_at IS NULL
      ORDER BY occurred_at ASC, id ASC`
@@ -101,6 +113,8 @@ export function initInterventionLog(configDir: string): void {
          acked_at = @ackedAt,
          record_json = json_set(record_json, '$.ackedBy', json(@ackedByJson), '$.ackedAt', @ackedAt)
      WHERE session_id = @sessionId
+       AND (@globalSessionId IS NULL OR global_session_id = @globalSessionId)
+       AND (@nodeId IS NULL OR node_id = @nodeId)
        AND kind = 'human-input'
        AND acked_at IS NULL`
   );
@@ -164,6 +178,23 @@ function parseRecord(value: unknown): InterventionRecord | null {
   }
 }
 
+function normalizeScope(scope: InterventionSessionScopeInput): InterventionSessionScope {
+  return typeof scope === 'string' ? { sessionId: scope } : scope;
+}
+
+function scopeParams(scope: InterventionSessionScopeInput): {
+  sessionId: string;
+  nodeId: string | null;
+  globalSessionId: string | null;
+} {
+  const normalized = normalizeScope(scope);
+  return {
+    sessionId: normalized.sessionId,
+    nodeId: normalized.nodeId ?? null,
+    globalSessionId: normalized.globalSessionId ?? null,
+  };
+}
+
 export function listInterventions(input: {
   sessionId: string;
   nodeId?: string;
@@ -180,9 +211,11 @@ export function listInterventions(input: {
     .filter((record): record is InterventionRecord => record !== null);
 }
 
-export function listUnackedHumanInput(sessionId: string): InterventionRecord[] {
+export function listUnackedHumanInput(
+  scope: InterventionSessionScopeInput
+): InterventionRecord[] {
   if (!listUnackedBySessionStmt) return [];
-  const rows = listUnackedBySessionStmt.all({ sessionId }) as Array<{
+  const rows = listUnackedBySessionStmt.all(scopeParams(scope)) as Array<{
     record_json: string;
   }>;
   return rows
@@ -190,12 +223,14 @@ export function listUnackedHumanInput(sessionId: string): InterventionRecord[] {
     .filter((record): record is InterventionRecord => record !== null);
 }
 
-export function hasUnackedHumanInput(sessionId: string): boolean {
-  return listUnackedHumanInput(sessionId).length > 0;
+export function hasUnackedHumanInput(scope: InterventionSessionScopeInput): boolean {
+  return listUnackedHumanInput(scope).length > 0;
 }
 
 export function ackSessionHumanInput(input: {
   sessionId: string;
+  nodeId?: string;
+  globalSessionId?: string;
   actor: ControlActor;
   ackedAt?: string;
 }): number {
@@ -203,7 +238,7 @@ export function ackSessionHumanInput(input: {
   const ackedAt = input.ackedAt ?? new Date().toISOString();
   try {
     const info = ackBySessionStmt.run({
-      sessionId: input.sessionId,
+      ...scopeParams(input),
       ackedByJson: JSON.stringify(input.actor),
       ackedAt,
     });

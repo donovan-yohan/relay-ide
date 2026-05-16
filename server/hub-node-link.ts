@@ -173,8 +173,15 @@ export type HubNodeLinkInventoryValidator = (
   ctx: { nodeId: string }
 ) => { ok: true; payload: unknown } | { ok: false; error: RelayNodeError };
 
+export type HubNodePtyInputRecorder = (input: {
+  nodeId: string;
+  sessionId: string;
+  data: string;
+}) => void;
+
 export interface HubNodeLinkManagerOptions {
   inventoryValidator?: HubNodeLinkInventoryValidator;
+  ptyInputRecorder?: HubNodePtyInputRecorder;
 }
 
 export class HubNodeLinkManager {
@@ -183,10 +190,14 @@ export class HubNodeLinkManager {
   private readonly ptyStreams = new Map<string, BrowserPtyStream>();
   private readonly eventHandlers = new Set<NodeEventHandler>();
   private readonly inventoryValidator?: HubNodeLinkInventoryValidator;
+  private readonly ptyInputRecorder?: HubNodePtyInputRecorder;
 
   constructor(options: HubNodeLinkManagerOptions = {}) {
     if (options.inventoryValidator) {
       this.inventoryValidator = options.inventoryValidator;
+    }
+    if (options.ptyInputRecorder) {
+      this.ptyInputRecorder = options.ptyInputRecorder;
     }
   }
 
@@ -305,6 +316,7 @@ export class HubNodeLinkManager {
       } catch {
         /* raw PTY input */
       }
+      this.ptyInputRecorder?.({ nodeId, sessionId, data: text });
       sendJson(
         nodeWs,
         envelope(nodeId, 'pty', 'pty.input', {

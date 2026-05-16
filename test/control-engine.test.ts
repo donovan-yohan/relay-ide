@@ -86,15 +86,23 @@ function captureOptions(records: InterventionRecord[], events: TabControlEvent[]
     inputDebounceMs: 100,
     autoRevertMs: 1_000,
     append: (record: InterventionRecord) => records.push(record),
-    hasUnacked: () => records.some((record) => record.kind === 'human-input' && !record.ackedAt),
-    ackHumanInput: ({ actor, ackedAt }: { sessionId: string; actor: ControlActor; ackedAt?: string }) => {
+    hasUnacked: (scope: { sessionId: string; nodeId?: string; globalSessionId?: string }) => records.some((record) => {
+      if (record.kind !== 'human-input' || record.ackedAt) return false;
+      if (record.sessionId !== scope.sessionId) return false;
+      if (scope.globalSessionId && record.globalSessionId !== scope.globalSessionId) return false;
+      if (scope.nodeId && record.nodeId !== scope.nodeId) return false;
+      return true;
+    }),
+    ackHumanInput: ({ sessionId, nodeId, globalSessionId, actor, ackedAt }: { sessionId: string; nodeId?: string; globalSessionId?: string; actor: ControlActor; ackedAt?: string }) => {
       let count = 0;
       for (const record of records) {
-        if (record.kind === 'human-input' && !record.ackedAt) {
-          record.ackedBy = actor;
-          record.ackedAt = ackedAt ?? baseNow.toISOString();
-          count += 1;
-        }
+        if (record.kind !== 'human-input' || record.ackedAt) continue;
+        if (record.sessionId !== sessionId) continue;
+        if (globalSessionId && record.globalSessionId !== globalSessionId) continue;
+        if (nodeId && record.nodeId !== nodeId) continue;
+        record.ackedBy = actor;
+        record.ackedAt = ackedAt ?? baseNow.toISOString();
+        count += 1;
       }
       return count;
     },
@@ -155,21 +163,51 @@ describe('control transition engine', () => {
     expect(events.map((event) => event.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
   });
 
-  it('does not record passive/non-driving activity as intervention input', () => {
+  it('does not record human-driven or empty PTY input as intervention input', () => {
     const records: InterventionRecord[] = [];
     const options = captureOptions(records);
 
-    const coDriven = makeSession({ id: 'co', controlState: controlState('co-driven') });
     const humanDriven = makeSession({ id: 'human', controlState: controlState('human-driven') });
 
-    recordHumanPtyInput(coDriven, 'scroll/resize/reconnect noise', options);
     recordHumanPtyInput(humanDriven, 'selection noise', options);
     recordHumanPtyInput(makeSession({ id: 'empty' }), '', options);
     vi.advanceTimersByTime(200);
 
     expect(records).toEqual([]);
-    expect(coDriven.controlState?.controlMode).toBe('co-driven');
     expect(humanDriven.controlState?.controlMode).toBe('human-driven');
+  });
+
+  it('refreshes the co-driven idle clock while a human is actively typing', () => {
+    const records: InterventionRecord[] = [];
+    const options = captureOptions(records);
+    const session = makeSession({
+      controlState: controlState('co-driven', {
+        lastInterventionAt: new Date(baseNow.getTime() - 2_000).toISOString(),
+      }),
+    });
+
+    recordHumanPtyInput(session, 'still here', options);
+
+    expect(session.controlState).toMatchObject({
+      controlMode: 'co-driven',
+      controlReason: 'human input',
+      lastInterventionAt: baseNow.toISOString(),
+    });
+    expect(maybeAutoRevertToAgentDriven({ session, options })).toMatchObject({
+      reverted: false,
+      reason: 'not-idle-long-enough',
+    });
+    vi.advanceTimersByTime(100);
+    expect(maybeAutoRevertToAgentDriven({ session, options })).toMatchObject({
+      reverted: false,
+      reason: 'unacked-human-input',
+    });
+    expect(records[0]).toMatchObject({
+      kind: 'human-input',
+      modeBefore: 'co-driven',
+      modeAfter: 'co-driven',
+      payloadPreview: 'still here',
+    });
   });
 
   it('redacts secret-like and control-sequence payload previews while retaining counts and hashes', () => {
@@ -204,6 +242,26 @@ describe('control transition engine', () => {
     expect(events.filter((event) => event.type === 'tab.intervention')).toHaveLength(3);
     expect(events.filter((event) => event.type === 'tab.mode-changed')).toHaveLength(3);
     expect(records.every((record) => record.ackedAt)).toBe(true);
+  });
+
+  it('flushes pending human-input bursts before explicit mode actions and acks', () => {
+    const session = makeSession();
+    const records: InterventionRecord[] = [];
+    const options = captureOptions(records);
+
+    recordHumanPtyInput(session, 'typed before hand-back', options);
+    applyControlModeAction(session, 'hand-back', options);
+
+    expect(session.controlState?.controlMode).toBe('agent-driven');
+    expect(records.map((record) => record.kind)).toEqual(['human-input', 'hand-back']);
+    expect(records[0]).toMatchObject({
+      kind: 'human-input',
+      ackedAt: records[1]?.timestamp,
+      modeAfter: 'co-driven',
+    });
+    vi.advanceTimersByTime(100);
+    expect(session.controlState?.controlMode).toBe('agent-driven');
+    expect(records.map((record) => record.kind)).toEqual(['human-input', 'hand-back']);
   });
 
   it('auto-reverts idle fresh co-driven sessions only after human input is acked', () => {
@@ -358,20 +416,32 @@ describe('persistent intervention log', () => {
     };
 
     appendIntervention(record);
+    appendIntervention({
+      ...record,
+      id: 'int-2',
+      tabId: 'node-b:sess-1',
+      nodeId: 'node-b',
+      globalSessionId: 'node-b:sess-1',
+    });
 
     expect(listInterventions({ sessionId: 'sess-1', nodeId: 'node-a' })).toEqual([record]);
     expect(listInterventions({ sessionId: 'sess-1', nodeId: 'other' })).toEqual([]);
     expect(hasUnackedHumanInput('sess-1')).toBe(true);
+    expect(hasUnackedHumanInput({ sessionId: 'sess-1', nodeId: 'node-a' })).toBe(true);
 
     expect(ackSessionHumanInput({
       sessionId: 'sess-1',
+      nodeId: 'node-a',
+      globalSessionId: 'node-a:sess-1',
       actor: { kind: 'agent', id: 'codex' },
       ackedAt: '2026-05-16T00:00:01.000Z',
     })).toBe(1);
 
-    const [acked] = listInterventions({ sessionId: 'sess-1' });
+    const [acked] = listInterventions({ sessionId: 'sess-1', nodeId: 'node-a' });
     expect(acked?.ackedAt).toBe('2026-05-16T00:00:01.000Z');
     expect(acked?.ackedBy).toMatchObject({ kind: 'agent', id: 'codex' });
-    expect(hasUnackedHumanInput('sess-1')).toBe(false);
+    expect(hasUnackedHumanInput({ sessionId: 'sess-1', nodeId: 'node-a' })).toBe(false);
+    expect(hasUnackedHumanInput({ sessionId: 'sess-1', nodeId: 'node-b' })).toBe(true);
+    expect(hasUnackedHumanInput('sess-1')).toBe(true);
   });
 });
