@@ -883,4 +883,38 @@ describe('hub node registry', () => {
       ).not.toThrow();
     });
   });
+
+  it('clears a delivered rotation without invalidating the previous credential', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+      registry.markCredentialRotationDelivered(
+        exchanged.node.nodeId,
+        rotation.rotation.rotationId
+      );
+
+      expect(() =>
+        registry.beginCredentialRotation(exchanged.node.nodeId)
+      ).toThrow(/ROTATION_IN_PROGRESS/);
+
+      const cleared = registry.clearCredentialRotationFailure(exchanged.node.nodeId);
+
+      expect(cleared).toMatchObject({
+        credentialState: 'active',
+        credentialId: exchanged.credential.credentialId,
+      });
+      expect(cleared.credentialRotation).toBeUndefined();
+      expect(registry.authenticateCredential(exchanged.credential.token)).toMatchObject({
+        credentialId: exchanged.credential.credentialId,
+        credentialState: 'active',
+      });
+      expect(registry.authenticateCredential(rotation.credential.token)).toBeNull();
+      expect(() =>
+        registry.beginCredentialRotation(exchanged.node.nodeId)
+      ).not.toThrow();
+    });
+  });
 });

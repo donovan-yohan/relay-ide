@@ -807,10 +807,16 @@ export class HubNodeRegistry {
     const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
     if (!node)
       throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
-    if (node.credentialRotation?.state !== 'failed') {
+    if (!node.credentialRotation) {
       throw new HubNodeRegistryError(
         'INVALID_REQUEST',
-        'node has no failed credential rotation to clear'
+        'node has no failed or in-progress credential rotation to clear'
+      );
+    }
+    if (node.credentialRotation.state === 'stable') {
+      throw new HubNodeRegistryError(
+        'INVALID_REQUEST',
+        'node has no failed or in-progress credential rotation to clear'
       );
     }
     delete node.credentialRotation;

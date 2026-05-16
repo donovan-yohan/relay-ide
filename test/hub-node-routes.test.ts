@@ -1324,4 +1324,101 @@ describe('hub node routes and link', () => {
     expect(clear.node.credentialRotation).toBeUndefined();
   });
 
+  it('lets operators clear a delivered online rotation that never proves possession', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const deliveries: unknown[] = [];
+    const nodeLinks = {
+      hasActiveNode: (nodeId: string) => nodeId === exchanged.node.nodeId,
+      request: async (_nodeId: string, _type: string, payload: unknown) => {
+        deliveries.push(payload);
+        return {};
+      },
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const rotateRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'online' }),
+      }
+    );
+    expect(rotateRes.status).toBe(202);
+    const rotate = (await rotateRes.json()) as {
+      rotation: { rotationId: string; state: string };
+      node: { credentialState: string };
+    };
+    expect(rotate.node.credentialState).toBe('rotating');
+    expect(rotate.rotation.state).toBe('delivered');
+    const deliveredCredential = (deliveries[0] as {
+      credential?: { token?: string; credentialId?: string };
+    }).credential;
+    expect(deliveredCredential?.token).toBeTruthy();
+
+    const collisionRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'manual' }),
+      }
+    );
+    expect(collisionRes.status).toBe(409);
+    const collision = (await collisionRes.json()) as {
+      error: { code: string; details?: { rotationId?: string } };
+    };
+    expect(collision.error.code).toBe('ROTATION_IN_PROGRESS');
+    expect(collision.error.details?.rotationId).toBe(rotate.rotation.rotationId);
+
+    const clearRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation/clear-failure`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+    expect(clearRes.status).toBe(200);
+    const clear = (await clearRes.json()) as {
+      node: { credentialState: string; credentialRotation?: unknown };
+    };
+    expect(clear.node.credentialState).toBe('active');
+    expect(clear.node.credentialRotation).toBeUndefined();
+    expect(registry.authenticateCredential(exchanged.credential.token)).toMatchObject({
+      credentialId: exchanged.credential.credentialId,
+      credentialState: 'active',
+    });
+    expect(registry.authenticateCredential(deliveredCredential!.token!)).toBeNull();
+
+    const retryRes = await fetch(
+      `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ delivery: 'manual' }),
+      }
+    );
+    expect(retryRes.status).toBe(201);
+  });
+
 });
