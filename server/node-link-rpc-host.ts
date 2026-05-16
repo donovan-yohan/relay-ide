@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as os from 'node:os';
-import { isFileRpcOperation } from '../shared/file-rpc.js';
-import { executeLocalFileRpc } from './file-rpc.js';
+import { isFileRpcOperation, type FileRpcTailResponse } from '../shared/file-rpc.js';
+import { createFileRpcFollower, executeLocalFileRpc, type FileRpcFollower } from './file-rpc.js';
 import type { LocalRelayNode } from './local-node.js';
 import {
   createNodeLogFollower,
@@ -292,6 +292,7 @@ export function createNodeLinkRpcHost(
   const logConfigPath = options.localLogConfigPath ?? defaultLogs.configPath;
   const logDir = options.localLogDir ?? defaultLogs.serviceLogDir;
   const logFollowers = new Map<string, NodeLogFollower>();
+  const fileFollowers = new Map<string, FileRpcFollower>();
 
   function closeLogFollower(streamId: string): void {
     const follower = logFollowers.get(streamId);
@@ -300,8 +301,16 @@ export function createNodeLinkRpcHost(
     follower.close();
   }
 
+  function closeFileFollower(streamId: string): void {
+    const follower = fileFollowers.get(streamId);
+    if (!follower) return;
+    fileFollowers.delete(streamId);
+    follower.close();
+  }
+
   function closeAllLogFollowers(): void {
     for (const streamId of Array.from(logFollowers.keys())) closeLogFollower(streamId);
+    for (const streamId of Array.from(fileFollowers.keys())) closeFileFollower(streamId);
   }
 
   async function handleSessionsCreate(
@@ -388,7 +397,7 @@ export function createNodeLinkRpcHost(
   }
 
   async function handleFileRpc(
-    operation: 'list' | 'stat' | 'read',
+    operation: 'list' | 'stat' | 'read' | 'tail',
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
   ): Promise<void> {
@@ -396,6 +405,36 @@ export function createNodeLinkRpcHost(
       const result = await executeLocalFileRpc(operation, envelope.payload);
       if ('code' in result) {
         sendErrorEnvelope(ctx, envelope, result);
+        return;
+      }
+      if (operation === 'tail' && (result as FileRpcTailResponse).follow) {
+        if (!envelope.streamId) {
+          sendErrorEnvelope(
+            ctx,
+            envelope,
+            invalidRequest('fs.tail follow requires envelope.streamId')
+          );
+          return;
+        }
+        const streamId = envelope.streamId;
+        closeFileFollower(streamId);
+        sendResultEnvelope(ctx, envelope, result);
+        const tailResult = result as FileRpcTailResponse;
+        const follower = createFileRpcFollower({
+          request: {
+            path: tailResult.path,
+            maxFollowChunkBytes: tailResult.maxFollowChunkBytes,
+          },
+          startOffset: tailResult.endOffset,
+          write: (chunk) => sendStreamEnvelope(ctx, envelope, 'fs.tail.chunk', chunk),
+          onError: (error) => {
+            logger.warn(`fs.tail follow failed: ${error.message}`);
+            sendStreamEnvelope(ctx, envelope, 'fs.tail.error', {
+              error: internalError(error.message),
+            });
+          },
+        });
+        fileFollowers.set(streamId, follower);
         return;
       }
       sendResultEnvelope(ctx, envelope, result);
@@ -536,6 +575,10 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'logs.tail.cancel') {
       handleLogsTailCancel(envelope);
+      return;
+    }
+    if (envelope.type === 'fs.tail.cancel') {
+      if (envelope.streamId) closeFileFollower(envelope.streamId);
       return;
     }
     const fsMatch = envelope.type.match(/^fs\.(.+)$/);

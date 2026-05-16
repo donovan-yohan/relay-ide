@@ -184,6 +184,62 @@ describe('read-only File RPC foundation', () => {
     }
   });
 
+  it('executes local tail from the end with byte and line bounds', async () => {
+    const root = fixtureRoot();
+    const logFile = path.join(root, 'app.log');
+    fs.writeFileSync(logFile, 'one\ntwo\nthree\nfour\nfive\n');
+
+    const tail = await executeLocalFileRpc('tail', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: logFile,
+      maxBytes: 18,
+      maxLines: 2,
+    });
+
+    expect(tail).toMatchObject({
+      operation: 'tail',
+      content: 'four\nfive\n',
+      bytesRead: 18,
+      truncatedBytes: true,
+      truncatedLines: true,
+      follow: false,
+      maxBytes: 18,
+      maxLines: 2,
+      maxFollowChunkBytes: 16384,
+    });
+    expect('startOffset' in tail && tail.startOffset).toBeGreaterThan(0);
+  });
+
+  it('denies tail for directories and missing files with typed File RPC reasons', async () => {
+    const root = fixtureRoot();
+
+    await expect(
+      executeLocalFileRpc('tail', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: path.join(root, 'src'),
+      })
+    ).resolves.toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { reasonCode: 'FILE_RPC_NOT_FILE' },
+    });
+
+    await expect(
+      executeLocalFileRpc('tail', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: path.join(root, 'missing.log'),
+      })
+    ).resolves.toMatchObject({
+      code: 'NOT_FOUND',
+      details: { reasonCode: 'FILE_RPC_NOT_FOUND' },
+    });
+  });
+
   it('denies realpath symlink escapes from the scoped root', async () => {
     const root = fixtureRoot();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-rpc-outside-'));

@@ -1346,6 +1346,76 @@ describe('hub-routed node session create and attach', () => {
     expect(await res.json()).toMatchObject({ operation: 'read', content: '# Relay' });
   });
 
+  it('routes read-only File RPC tail requests with scoped root and follow bounds', async () => {
+    const { base, wsBase, sessionEnvelopes } = await startHub();
+    const { token, nodeId } = await pairNode(base);
+    seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanup.push(() => nodeWs.close());
+    await waitForOpen(nodeWs);
+
+    const tailPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions/remote-session-1/files/tail`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ path: 'logs/app.log', maxBytes: 999_999, maxLines: 1 }),
+      }
+    );
+
+    const request = await nextJson(nodeWs);
+    expect(request).toMatchObject({
+      nodeId,
+      channel: 'rpc',
+      type: 'fs.tail',
+      payload: {
+        sessionId: 'remote-session-1',
+        root: '/srv/relay-ide',
+        cwd: '/srv/relay-ide',
+        path: '/srv/relay-ide/logs/app.log',
+        maxBytes: 65536,
+        maxLines: 1,
+        follow: false,
+        maxFollowChunkBytes: 16384,
+      },
+    });
+    nodeWs.send(
+      JSON.stringify({
+        protocol: request.protocol,
+        protocolVersion: request.protocolVersion,
+        nodeId,
+        channel: 'rpc',
+        type: 'fs.tail.result',
+        requestId: request.requestId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          operation: 'tail',
+          root: '/srv/relay-ide',
+          cwd: '/srv/relay-ide',
+          path: '/srv/relay-ide/logs/app.log',
+          encoding: 'utf8',
+          content: 'last line\n',
+          bytesRead: 10,
+          startOffset: 100,
+          endOffset: 110,
+          fileSize: 110,
+          truncatedBytes: true,
+          truncatedLines: false,
+          follow: false,
+          maxBytes: 65536,
+          maxLines: 1,
+          maxFollowChunkBytes: 16384,
+        },
+      })
+    );
+
+    const res = await tailPromise;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ operation: 'tail', content: 'last line\n' });
+  });
+
   it('denies File RPC traversal before it reaches the node link', async () => {
     const { base, wsBase, sessionEnvelopes } = await startHub();
     const { token, nodeId } = await pairNode(base);

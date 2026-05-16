@@ -313,10 +313,11 @@ describe('hub policy evaluator', () => {
     });
   });
 
-  it('maps read-only File RPC intents to read/list capability bits', () => {
+  it('maps read-only File RPC intents to read/list/tail capability bits', () => {
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.list')).toEqual(['rpc:fs:list']);
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.stat')).toEqual(['rpc:fs:read']);
     expect(requiredCapabilitiesForRpcIntent('rpc.fs.read')).toEqual(['rpc:fs:read']);
+    expect(requiredCapabilitiesForRpcIntent('rpc.fs.tail')).toEqual(['rpc:fs:tail']);
   });
 
   it('separates tab intervention/control capabilities from file/git/exec powers', () => {

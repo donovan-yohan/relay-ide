@@ -486,18 +486,18 @@ export class HubNodeLinkManager {
       this.openStream(stream, message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.chunk') {
+    if (message.type === 'logs.tail.chunk' || message.type === 'fs.tail.chunk') {
       stream.onChunk(message.payload);
       return true;
     }
-    if (message.type === 'logs.tail.error') {
+    if (message.type === 'logs.tail.error' || message.type === 'fs.tail.error') {
       const error = payloadRecord(message.payload)['error'];
       if (typeof error === 'object' && error !== null) {
         stream.onError?.(error as RelayNodeError);
       }
       return true;
     }
-    if (message.type === 'logs.tail.end') {
+    if (message.type === 'logs.tail.end' || message.type === 'fs.tail.end') {
       this.closeStream(message.streamId!);
       return true;
     }
