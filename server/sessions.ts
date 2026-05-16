@@ -56,6 +56,10 @@ import {
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import {
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -85,6 +89,7 @@ interface SerializedPtySession {
   continuePolicy?: ContinuePolicy;
   workspaceId?: string;
   additionalDirs?: string[];
+  controlState?: ControlStateSummary;
   pendingSince?: string;
 }
 
@@ -98,7 +103,7 @@ type RestartReason =
   | 'unspecified';
 
 interface PendingSessionsFile {
-  version: number; // now 6 — web sessions moved to relay-state.db
+  version: number; // now 7 — control-state summaries are serialized
   timestamp: string;
   reason?: RestartReason | string;
   sessions: SerializedPtySession[];
@@ -426,6 +431,7 @@ function list(): SessionSummary[] {
           needsBranchRename: !!s.needsBranchRename,
           agentState: s.agentState,
           currentActivity: s.currentActivity,
+          ...normalizeControlStateSummary(s.controlState),
           ...(s.mode === 'pty'
             ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
             : {}),
@@ -775,6 +781,7 @@ function serializePtySession(
     ...(session.additionalDirs?.length
       ? { additionalDirs: session.additionalDirs }
       : {}),
+    controlState: normalizeControlStateSummary(session.controlState),
   };
 }
 
@@ -813,7 +820,7 @@ function serializeAll(configDir: string, options: SerializeOptions = {}): void {
 
   const reason = options.reason ?? 'unspecified';
   const pending: PendingSessionsFile = {
-    version: Math.max(6, preservedFailures?.version ?? 6),
+    version: Math.max(7, preservedFailures?.version ?? 7),
     timestamp: serializedAt,
     reason,
     sessions: sessionsToWrite,
@@ -1052,6 +1059,7 @@ function restoreSession(
       : {}),
     ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
     ...(s.additionalDirs?.length ? { additionalDirs: s.additionalDirs } : {}),
+    controlState: normalizeControlStateSummary(s.controlState),
   };
   if (spawn.command) createParams.command = spawn.command;
   if (initialScrollback) createParams.initialScrollback = initialScrollback;
@@ -1087,6 +1095,7 @@ async function restoreWebSessionFromDb(
     ...(row.meta.additionalDirs !== undefined
       ? { additionalDirs: row.meta.additionalDirs }
       : {}),
+    controlState: normalizeControlStateSummary(row.meta.controlState),
     ...(persistedConfig.model !== undefined
       ? { model: persistedConfig.model }
       : {}),

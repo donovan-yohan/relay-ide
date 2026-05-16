@@ -32,6 +32,12 @@ import {
   createRepoInstanceId,
   createWorktreeInstanceId,
 } from '../shared/identity.js';
+import {
+  isControlFreshness,
+  isControlMode,
+  normalizeControlActor,
+  normalizeControlStateSummary,
+} from '../shared/control-state.js';
 
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
@@ -45,6 +51,32 @@ function bearerToken(req: Request): string | null {
   const header = req.header('authorization') ?? '';
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() || null;
+}
+
+function optionalControlActorOk(value: unknown): boolean {
+  return value === undefined || value === null || normalizeControlActor(value) !== undefined;
+}
+
+function optionalControlStringOk(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
+  const activeActorsOk =
+    session.activeActors === undefined ||
+    (Array.isArray(session.activeActors) &&
+      session.activeActors.every((actor) => normalizeControlActor(actor)));
+  return (
+    (session.controlMode === undefined || isControlMode(session.controlMode)) &&
+    activeActorsOk &&
+    optionalControlActorOk(session.activeWorker) &&
+    optionalControlStringOk(session.lastInterventionAt) &&
+    optionalControlActorOk(session.lastInterventionBy) &&
+    optionalControlStringOk(session.lastInterventionEventId) &&
+    (session.controlFreshness === undefined ||
+      isControlFreshness(session.controlFreshness)) &&
+    (session.controlReason === undefined || typeof session.controlReason === 'string')
+  );
 }
 
 // Shared utilities exported for the repo feature router (and any other
@@ -118,6 +150,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof session.cwd === 'string' &&
     repoNameOk &&
     branchNameOk &&
+    controlSummaryFieldsOk(session) &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
@@ -142,6 +175,7 @@ export function scopedNodeSession(
 
   return {
     ...scoped,
+    ...normalizeControlStateSummary(scoped),
     nodeId,
     globalSessionId: createGlobalSessionId(nodeId, scoped.id),
     ...(scoped.repoPath

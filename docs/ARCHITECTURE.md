@@ -116,6 +116,7 @@ Compiled by both `tsconfig.json` (server build) and `frontend/tsconfig.json` (Vi
 | Module                     | Role                                                                                                                                                 |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `chat-events.ts`           | `ChatEvent` discriminated union and type guards — the wire protocol for web-chat transcripts                                                         |
+| `control-state.ts`         | Product control-state summary and tab intervention event contracts; keeps `controlMode` independent from transport `mode`                             |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input — consumed by the React `MobileInput` component; unit-tested via JSON fixtures |
 | `node-manifest.ts`         | Shared `NodeManifest` / `NodeCapabilities` schema for platform, service manager, WSL, and tool/agent capability probes                               |
 | `bootstrap-diagnostics.ts` | Relay-node bootstrap command generation, redaction helpers, and diagnostics taxonomy for local/SSH/Tailscale pairing                                 |

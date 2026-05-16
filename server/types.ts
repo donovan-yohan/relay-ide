@@ -19,6 +19,12 @@ import type {
   AgentPatchV2,
   AgentSessionV2,
 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  ControlActor,
+  ControlFreshness,
+  ControlMode,
+  ControlStateSummary,
+} from '../shared/control-state.js';
 
 export type AgentState =
   | 'initializing'
@@ -279,6 +285,8 @@ interface BaseSession {
   additionalDirs?: string[];
   // Shared mutable state (used by both PTY and web sessions)
   currentActivity?: { tool: string; detail?: string } | undefined;
+  /** Product control state; separate from transport `mode` (`pty` | `web`). */
+  controlState?: ControlStateSummary | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
   _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
   lastAttentionNotifiedAt?: number | undefined;
@@ -398,6 +406,15 @@ export interface SessionSummary {
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;
+  /** Product control state; separate from transport `mode` (`pty` | `web`). */
+  controlMode?: ControlMode;
+  activeActors?: ControlActor[];
+  activeWorker?: ControlActor;
+  lastInterventionAt?: string | null;
+  lastInterventionBy?: ControlActor | null;
+  lastInterventionEventId?: string | null;
+  controlFreshness?: ControlFreshness;
+  controlReason?: string;
   workspaceId?: string;
   additionalDirs?: string[];
   /** PTY sessions only — tracks data quality of telemetry source */

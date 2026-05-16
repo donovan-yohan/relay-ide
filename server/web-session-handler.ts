@@ -13,6 +13,11 @@ import {
 import { upsertWebSessionNow } from './relay-state-db.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import {
+  createLegacyControlStateSummary,
+  normalizeControlStateSummary,
+  type ControlStateSummary,
+} from '../shared/control-state.js';
 
 const logger = createLogger('web-session');
 const MESSAGE_BUFFER_MAX = 1000;
@@ -35,6 +40,7 @@ export interface CreateWebParams {
   additionalDirs?: string[];
   runtimeOwnership?: 'spawned' | 'attached';
   hookToken?: string;
+  controlState?: ControlStateSummary;
   /** Additional agent-specific configuration passed through to the protocol adapter */
   extra?: Record<string, unknown>;
 }
@@ -72,6 +78,9 @@ export async function createWebSession(
   );
   const activeRuntime = adapterV2;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
+  const normalizedControlState = normalizeControlStateSummary(
+    params.controlState ?? createLegacyControlStateSummary()
+  );
 
   const session: WebSession = {
     mode: 'web',
@@ -122,6 +131,7 @@ export async function createWebSession(
     runtimeOwnership: params.runtimeOwnership ?? activeRuntime.runtimeOwnership,
     hookToken,
     hooksActive: true,
+    controlState: normalizedControlState,
   };
 
   sessionsMap.set(id, session);

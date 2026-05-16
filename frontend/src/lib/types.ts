@@ -13,6 +13,11 @@ import type {
   DisplayState,
   BackendDisplayState,
 } from './state/display-state.js';
+import type {
+  ControlActor,
+  ControlFreshness,
+  ControlMode,
+} from '../../../shared/control-state.js';
 export type {
   AggregatedRepoInventoryGroup,
   AggregatedRepoInventoryResponse,
@@ -170,6 +175,15 @@ export interface SessionSummary {
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
   currentActivity?: CurrentActivity | undefined;
+  /** Product control state; separate from transport `mode` (`pty` | `web`). */
+  controlMode?: ControlMode;
+  activeActors?: ControlActor[];
+  activeWorker?: ControlActor;
+  lastInterventionAt?: string | null;
+  lastInterventionBy?: ControlActor | null;
+  lastInterventionEventId?: string | null;
+  controlFreshness?: ControlFreshness;
+  controlReason?: string;
   dataQuality?: EventSourceType | undefined;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
