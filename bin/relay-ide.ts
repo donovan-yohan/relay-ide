@@ -46,6 +46,7 @@ import {
   sanitizedGatewayErrorDetails,
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
+import { isFileRpcOperation, type FileRpcOperation } from '../shared/file-rpc.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -76,7 +77,7 @@ Commands:
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
-  v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions
+  v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
   diag               Collect local diagnostics
     bundle [--output <dir>] [--lines <n>] [--json]
                                        Write a timestamped redacted diagnostics directory
@@ -373,7 +374,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions interventions|sessions hand-back) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions attach|sessions detach|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
   );
   process.exit(1);
 }
@@ -425,6 +426,164 @@ async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk('sessions.get', session), 0);
 }
 
+
+interface GatewaySessionDescriptor {
+  id?: string;
+  nodeId?: string;
+  globalSessionId?: string;
+}
+
+async function gatewaySessionDescriptor(id: string): Promise<GatewaySessionDescriptor> {
+  const session = await gatewayHttpJson({
+    commandName: 'sessions.get',
+    pathName: `/sessions/${encodeURIComponent(id)}`,
+    capabilities: ['session:read'],
+  });
+  return typeof session === 'object' && session !== null
+    ? (session as GatewaySessionDescriptor)
+    : {};
+}
+
+const gatewayFileStringFields = [
+  'nodeId',
+  'sessionId',
+  'id',
+  'path',
+  'cwd',
+  'confirmationToken',
+] as const;
+
+const gatewayFileAllowedFields = new Set<string>([
+  ...gatewayFileStringFields,
+  'maxEntries',
+  'maxBytes',
+  'maxLines',
+]);
+
+function gatewayFileInputFromArgs(
+  commandName: RelayCliGatewayCommand,
+  fileArgs: string[]
+): Record<string, unknown> {
+  const inputJson = gatewayArg(fileArgs, '--input-json');
+  if (inputJson) return parseGatewayJson(commandName, inputJson);
+  const inputFile = gatewayArg(fileArgs, '--input-file');
+  if (!inputFile) return gatewayFileInputFromFlags(fileArgs);
+  try {
+    return parseGatewayJson(commandName, fs.readFileSync(path.resolve(inputFile), 'utf8'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    gatewayInvalid(commandName, `could not read --input-file: ${message}`);
+  }
+}
+
+function gatewayFileInputFromFlags(fileArgs: string[]): Record<string, unknown> {
+  const input: Record<string, unknown> = {};
+  const sessionId = gatewayArg(fileArgs, '--session-id') ?? gatewayArg(fileArgs, '--id') ?? fileArgs[0];
+  if (sessionId && !sessionId.startsWith('--')) input['sessionId'] = sessionId;
+  for (const [flag, field] of [
+    ['--node-id', 'nodeId'],
+    ['--path', 'path'],
+    ['--cwd', 'cwd'],
+    ['--confirmation-token', 'confirmationToken'],
+  ] as const) {
+    const value = gatewayArg(fileArgs, flag);
+    if (value) input[field] = value;
+  }
+  return input;
+}
+
+function assertGatewayFileStringFields(
+  commandName: RelayCliGatewayCommand,
+  input: Record<string, unknown>
+): void {
+  for (const field of gatewayFileStringFields) {
+    if (input[field] !== undefined && typeof input[field] !== 'string') {
+      gatewayInvalid(commandName, `${field} must be a string`, { field });
+    }
+  }
+}
+
+function normalizeGatewayFileRequiredFields(
+  commandName: RelayCliGatewayCommand,
+  input: Record<string, unknown>
+): void {
+  if (input['sessionId'] === undefined && typeof input['id'] === 'string') {
+    input['sessionId'] = input['id'];
+  }
+  if (typeof input['sessionId'] !== 'string' || !input['sessionId'].trim()) {
+    gatewayInvalid(commandName, '--session-id is required', { field: 'sessionId' });
+  }
+  if (input['path'] === undefined) input['path'] = '.';
+  if (typeof input['path'] !== 'string' || !input['path'].trim()) {
+    gatewayInvalid(commandName, '--path must be a non-empty string', { field: 'path' });
+  }
+}
+
+function gatewayBoundedNumber(
+  commandName: RelayCliGatewayCommand,
+  field: string,
+  value: unknown,
+  max: number
+): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
+    gatewayInvalid(commandName, `${field} must be a positive integer <= ${max}`, {
+      field,
+      value,
+      max,
+    });
+  }
+  return parsed;
+}
+
+function applyGatewayFileCaps(
+  operation: FileRpcOperation,
+  commandName: RelayCliGatewayCommand,
+  input: Record<string, unknown>,
+  fileArgs: string[]
+): void {
+  if (operation === 'list') {
+    const value = input['maxEntries'] ?? gatewayArg(fileArgs, '--max-entries');
+    if (value !== undefined) input['maxEntries'] = gatewayBoundedNumber(commandName, 'maxEntries', value, 500);
+  }
+  if (operation !== 'read') return;
+  const caps = [
+    ['maxBytes', '--max-bytes', 65536],
+    ['maxLines', '--max-lines', 2000],
+  ] as const;
+  for (const [field, flag, max] of caps) {
+    const value = input[field] ?? gatewayArg(fileArgs, flag);
+    if (value !== undefined) input[field] = gatewayBoundedNumber(commandName, field, value, max);
+  }
+}
+
+function assertGatewayFileAllowedFields(
+  commandName: RelayCliGatewayCommand,
+  operation: FileRpcOperation,
+  input: Record<string, unknown>
+): void {
+  for (const field of Object.keys(input)) {
+    if (!gatewayFileAllowedFields.has(field)) {
+      gatewayInvalid(commandName, `files.${operation} field is not in the v1 contract: ${field}`, {
+        field,
+      });
+    }
+  }
+}
+
+function parseGatewayFileInput(
+  operation: FileRpcOperation,
+  fileArgs: string[]
+): Record<string, unknown> {
+  const commandName = `files.${operation}` as RelayCliGatewayCommand;
+  const input = gatewayFileInputFromArgs(commandName, fileArgs);
+  assertGatewayFileStringFields(commandName, input);
+  normalizeGatewayFileRequiredFields(commandName, input);
+  applyGatewayFileCaps(operation, commandName, input, fileArgs);
+  assertGatewayFileAllowedFields(commandName, operation, input);
+  return input;
+}
+
 async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
   const input = parseGatewayCreateInput(sessionArgs);
   const validated = validateAndSanitizeGatewayCreateInput(input);
@@ -449,6 +608,46 @@ async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
     ],
   });
   printGatewayEnvelope(gatewayOk('sessions.create', session), 0);
+}
+
+async function runGatewaySessionAttach(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.attach', sessionArgs);
+  const session = await gatewayHttpJson({
+    commandName: 'sessions.attach',
+    pathName: `/sessions/${encodeURIComponent(id)}`,
+    capabilities: ['session:read', 'session:attach'],
+  });
+  printGatewayEnvelope(
+    gatewayOk('sessions.attach', {
+      session,
+      attach: {
+        streaming: false,
+        mode: 'descriptor',
+        message:
+          'resolved session descriptor only; v1 attach does not start an adapter runtime or PTY stream',
+      },
+    }),
+    0
+  );
+}
+
+async function runGatewaySessionDetach(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.detach', sessionArgs);
+  const session = await gatewayHttpJson({
+    commandName: 'sessions.detach',
+    pathName: `/sessions/${encodeURIComponent(id)}`,
+    capabilities: ['session:read', 'session:attach'],
+  });
+  printGatewayEnvelope(
+    gatewayOk('sessions.detach', {
+      detached: true,
+      killed: false,
+      session,
+      message:
+        'detached CLI gateway handle only; underlying Relay session/process was left running',
+    }),
+    0
+  );
 }
 
 async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<never> {
@@ -491,6 +690,8 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'list') return runGatewaySessionList();
   if (sessionSubcommand === 'get') return runGatewaySessionGet(sessionArgs);
   if (sessionSubcommand === 'create') return runGatewaySessionCreate(sessionArgs);
+  if (sessionSubcommand === 'attach') return runGatewaySessionAttach(sessionArgs);
+  if (sessionSubcommand === 'detach') return runGatewaySessionDetach(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
   }
@@ -498,6 +699,50 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionHandBack(sessionArgs);
   }
   gatewayInvalid('sessions.list', 'unknown sessions command', { args: gatewayArgs });
+}
+
+
+async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
+  const operation = gatewayArgs[1];
+  if (!isFileRpcOperation(operation)) {
+    gatewayInvalid('files.list', 'unknown files command', { args: gatewayArgs });
+  }
+  const commandName = `files.${operation}` as RelayCliGatewayCommand;
+  const input = parseGatewayFileInput(operation, gatewayArgs.slice(2));
+  const requestedSessionId = input['sessionId'] as string;
+  let nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : undefined;
+  let sessionId = requestedSessionId;
+  if (!nodeId) {
+    const session = await gatewaySessionDescriptor(requestedSessionId);
+    nodeId = session.nodeId;
+    sessionId = session.id ?? requestedSessionId;
+  }
+  if (!nodeId) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UNSUPPORTED',
+        message:
+          'files commands require a routed session with nodeId; pass --node-id or use a session descriptor that includes nodeId',
+        retryable: false,
+        details: { field: 'nodeId', sessionId: requestedSessionId },
+      }),
+      1
+    );
+  }
+  const body: Record<string, unknown> = {};
+  for (const field of ['path', 'cwd', 'maxEntries', 'maxBytes', 'maxLines', 'confirmationToken']) {
+    if (input[field] !== undefined) body[field] = input[field];
+  }
+  const result = await gatewayHttpJson({
+    commandName,
+    pathName: `/hub/nodes/${encodeURIComponent(nodeId)}/sessions/${encodeURIComponent(
+      sessionId
+    )}/files/${operation}`,
+    method: 'POST',
+    body,
+    capabilities: ['session:read', operation === 'list' ? 'rpc:fs:list' : 'rpc:fs:read'],
+  });
+  printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
 
 async function runGatewayV1(): Promise<never> {
@@ -520,6 +765,7 @@ async function runGatewayV1(): Promise<never> {
   if (!json) gatewayUsage();
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
+  if (top === 'files') return runGatewayFiles(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', { args: gatewayArgs });
 }
 
