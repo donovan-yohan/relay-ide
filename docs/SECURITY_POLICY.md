@@ -38,6 +38,8 @@ relay-ide audit verify --db ~/.config/relay-ide/security-audit.db --json
 
 The verifier replays rows in sequence order and recomputes `prevHash` / `entryHash`. It reports the exact first break location for gaps, row tamper, insert/reorder attacks, and corrupt/partial storage. Hash chaining detects accidental corruption and post-hoc edits against the current DB file, but it is not remote attestation: a compromised hub/root account can still rewrite the whole history and recompute hashes unless future slices add external shipping or trusted timestamping. External SIEM, third-party timestamping, full PTY transcript recording, credential rotation, confirmation registries, and evaluator gates are intentionally outside this slice.
 
+Audit storage is intentionally unbounded in this slice: Relay does not yet enforce retention, rotation, or a maximum `security-audit.db` size. Operators must provision and monitor the config-directory storage accordingly; manual pruning or rotation will break the contiguous sequence/hash chain unless a future retention design preserves verifier semantics.
+
 Audit write failure policy is fail-closed for prod trust tier or destructive/high-risk capability scope. Low-tier read-only degradation is allowed only as an explicit visible degraded state; silent audit bypasses are not acceptable.
 
 ## Hub ACL authority
