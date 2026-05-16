@@ -76,6 +76,37 @@ describe('local Relay logs', () => {
     expect(snapshot.output).toBe('three\nfour\n');
   });
 
+  it('skips unreadable local log files while reading other logs', () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+
+    const dir = makeTempDir();
+    const logDir = path.join(dir, 'logs');
+    const serviceLogDir = path.join(dir, 'service-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.mkdirSync(serviceLogDir, { recursive: true });
+    const unreadableLog = path.join(logDir, 'relay-ide.log');
+    fs.writeFileSync(unreadableLog, 'do-not-read\n');
+    fs.chmodSync(unreadableLog, 0o000);
+    fs.writeFileSync(path.join(serviceLogDir, 'stdout.log'), 'service-log\n');
+
+    const snapshot = (() => {
+      try {
+        return readLocalLogSnapshot({
+          role: 'hub',
+          configPath: path.join(dir, 'config.json'),
+          serviceLogDir,
+          lines: 10,
+        });
+      } finally {
+        fs.chmodSync(unreadableLog, 0o600);
+      }
+    })();
+
+    expect(snapshot.status).toBe('ok');
+    expect(snapshot.files).not.toContain(unreadableLog);
+    expect(snapshot.output).toBe('service-log\n');
+  });
+
   it('reports missing local logs without invoking platform log systems', () => {
     const dir = makeTempDir();
     const snapshot = readLocalLogSnapshot({

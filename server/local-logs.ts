@@ -71,17 +71,33 @@ export function readLocalLogSnapshot(options: {
     };
   }
 
-  const chunks = readableFiles
-    .map((file) => ({ file, text: readLastLines(file, lines) }))
-    .filter((entry) => entry.text.length > 0);
+  const chunks: Array<{ file: string; text: string }> = [];
+  const readFiles: string[] = [];
+
+  for (const file of readableFiles) {
+    const text = safeReadLastLines(file, lines);
+    if (text === undefined) continue;
+    readFiles.push(file);
+    if (text.length > 0) chunks.push({ file, text });
+  }
+
+  if (readFiles.length === 0) {
+    return {
+      status: 'missing',
+      logDir: plan.logDir,
+      files: plan.files,
+      output: '',
+      message: missingLogsMessage(options.role, plan),
+    };
+  }
 
   if (chunks.length === 0) {
     return {
       status: 'empty',
       logDir: plan.logDir,
-      files: readableFiles,
+      files: readFiles,
       output: '',
-      message: emptyLogsMessage(options.role, readableFiles),
+      message: emptyLogsMessage(options.role, readFiles),
     };
   }
 
@@ -150,18 +166,28 @@ function readLastLines(filePath: string, lines: number): string {
     let position = size;
     let newlineCount = 0;
 
-    while (position > 0 && newlineCount <= lines) {
+    while (position > 0 && newlineCount < lines) {
       const length = Math.min(TAIL_CHUNK_SIZE, position);
       position -= length;
       const buffer = Buffer.allocUnsafe(length);
-      fs.readSync(fd, buffer, 0, length, position);
-      chunks.unshift(buffer);
-      newlineCount += countNewlines(buffer);
+      const bytesRead = fs.readSync(fd, buffer, 0, length, position);
+      if (bytesRead === 0) continue;
+      const chunk = bytesRead === length ? buffer : buffer.subarray(0, bytesRead);
+      chunks.unshift(chunk);
+      newlineCount += countNewlines(chunk);
     }
 
     return takeLastLines(Buffer.concat(chunks).toString('utf8'), lines);
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+function safeReadLastLines(filePath: string, lines: number): string | undefined {
+  try {
+    return readLastLines(filePath, lines);
+  } catch {
+    return undefined;
   }
 }
 
@@ -184,7 +210,9 @@ function countNewlines(buffer: Buffer): number {
 
 function isReadableFile(filePath: string): boolean {
   try {
-    return fs.statSync(filePath).isFile();
+    if (!fs.statSync(filePath).isFile()) return false;
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
   } catch {
     return false;
   }
