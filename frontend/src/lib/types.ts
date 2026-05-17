@@ -19,6 +19,11 @@ import type {
   ControlFreshness,
   ControlMode,
 } from '../../../shared/control-state.js';
+import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
+import type {
+  WorkContext,
+  WorkContextTabKind,
+} from '../../../shared/work-context.js';
 export type {
   AggregatedRepoInventoryGroup,
   AggregatedRepoInventoryResponse,
@@ -190,6 +195,53 @@ export interface SessionSummary {
   permissionType?: 'approval' | 'question';
   /** Typed intent/scope envelope. New server responses include this; old cached sessions may omit it. */
   sessionEnvelope?: SessionEnvelope | undefined;
+}
+
+export interface WorkContextSessionSummary {
+  id: string;
+  nodeId: NodeId;
+  globalSessionId?: GlobalSessionId;
+  tabKind: WorkContextTabKind;
+  type?: SessionSummary['type'];
+  mode?: SessionSummary['mode'];
+  agent?: SessionSummary['agent'];
+  cwd: string;
+  repoPath?: string;
+  worktreePath?: string | null;
+  repoName?: string;
+  branchName?: string;
+  displayName?: string;
+  status?: SessionSummary['status'];
+  agentState?: SessionSummary['agentState'];
+  currentActivity?: SessionSummary['currentActivity'];
+  controlMode?: ControlMode;
+  activeActors?: ControlActor[];
+  activeWorker?: ControlActor;
+  lastInterventionAt?: string | null;
+  lastInterventionBy?: ControlActor | null;
+  lastInterventionEventId?: string | null;
+  controlFreshness?: ControlFreshness;
+  controlReason?: string;
+  lastActivity?: string;
+  relationship: string;
+  associatedAt: string;
+  live: boolean;
+}
+
+export interface WorkContextNodeState {
+  nodeId: NodeId;
+  status: HubNodeStatus | 'unknown';
+  displayName?: string;
+  lastSeenAt?: string;
+  kind?: 'local' | 'remote';
+}
+
+export interface WorkContextActiveGroup {
+  id: string;
+  context: WorkContext | null;
+  node: WorkContextNodeState;
+  sessions: WorkContextSessionSummary[];
+  staleReadModel: boolean;
 }
 
 export interface WorktreeInfo {

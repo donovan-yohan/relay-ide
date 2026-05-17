@@ -15,6 +15,7 @@ import type {
   FilterPreset,
 } from '../lib/types.js';
 import TicketsPanel from './TicketsPanel.js';
+import ActiveWorkSurface from './ActiveWorkSurface.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { TuiButton } from './TuiButton.js';
 import { PrRow } from './PrRow.js';
@@ -27,7 +28,7 @@ export interface OrgDashboardProps {
   onPrAction: (pr: PullRequest) => void;
 }
 
-type ActiveTab = 'prs' | 'tickets';
+type ActiveTab = 'active-work' | 'prs' | 'tickets';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -396,7 +397,7 @@ export function OrgDashboard({
   onOpenPrSession,
   onPrAction,
 }: OrgDashboardProps) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('prs');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('active-work');
 
   return (
     <div className="org-dashboard">
@@ -406,12 +407,23 @@ export function OrgDashboard({
       {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">
         <button
+          className={[
+            'tab-btn',
+            activeTab === 'active-work' ? 'tab-btn--active' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => setActiveTab('active-work')}
+        >
+          active work
+        </button>
+        <button
           className={['tab-btn', activeTab === 'prs' ? 'tab-btn--active' : '']
             .filter(Boolean)
             .join(' ')}
           onClick={() => setActiveTab('prs')}
         >
-          PRs
+          prs
         </button>
         <button
           className={[
@@ -422,9 +434,10 @@ export function OrgDashboard({
             .join(' ')}
           onClick={() => setActiveTab('tickets')}
         >
-          Tickets
+          tickets
         </button>
       </div>
+      {activeTab === 'active-work' && <ActiveWorkSurface />}
       {activeTab === 'prs' && (
         <PrsTab onOpenPrSession={onOpenPrSession} onPrAction={onPrAction} />
       )}
