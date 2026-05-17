@@ -2,6 +2,7 @@ import * as express from 'express';
 import { isFileRpcOperation } from '../shared/file-rpc.js';
 import { normalizeHubFileRpcRequest } from './file-rpc.js';
 import type { Request, Response } from 'express';
+import type { WorkContextStore } from './work-contexts.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import type {
   RepoInventoryDirtySummary,
@@ -116,6 +117,7 @@ interface HubNodeRouterOptions {
   }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
   confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
+  workContextStore?: WorkContextStore;
   now?: () => Date;
 }
 
@@ -131,6 +133,34 @@ function optionalControlActorOk(value: unknown): boolean {
 
 function optionalControlStringOk(value: unknown): boolean {
   return value === undefined || value === null || typeof value === 'string';
+}
+
+function optionalStringFieldOk(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function optionalNullableStringFieldOk(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function sessionAssociationFieldsOk(session: Partial<SessionSummary>): boolean {
+  // repo/worktree/branch/work-context bindings are optional: a non-repo
+  // routed session (e.g. raw shell on a paired node) carries no repo
+  // binding. Validate them only when present.
+  return (
+    optionalStringFieldOk(session.repoPath) &&
+    optionalNullableStringFieldOk(session.worktreePath) &&
+    optionalStringFieldOk(session.repoName) &&
+    optionalStringFieldOk(session.branchName) &&
+    optionalStringFieldOk(session.workContextId)
+  );
+}
+
+function sessionEnvelopeOk(session: Partial<SessionSummary>): boolean {
+  return (
+    session.sessionEnvelope === undefined ||
+    isSessionEnvelope(session.sessionEnvelope)
+  );
 }
 
 function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
@@ -210,31 +240,14 @@ export function sendRelayError(res: Response, error: RelayNodeError): void {
 export function isSessionSummary(value: unknown): value is SessionSummary {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionSummary>;
-  // repoPath / worktreePath / branchName are optional: a non-repo
-  // routed session (e.g. raw shell on a paired node) carries no repo
-  // binding. Validate them only when present.
-  const repoPathOk =
-    session.repoPath === undefined || typeof session.repoPath === 'string';
-  const worktreePathOk =
-    session.worktreePath === undefined ||
-    session.worktreePath === null ||
-    typeof session.worktreePath === 'string';
-  const branchNameOk =
-    session.branchName === undefined || typeof session.branchName === 'string';
-  const repoNameOk =
-    session.repoName === undefined || typeof session.repoName === 'string';
   return (
     typeof session.id === 'string' &&
     (session.type === 'agent' || session.type === 'terminal') &&
     (session.mode === 'pty' || session.mode === 'web') &&
-    repoPathOk &&
-    worktreePathOk &&
+    sessionAssociationFieldsOk(session) &&
     typeof session.cwd === 'string' &&
-    repoNameOk &&
-    branchNameOk &&
     controlSummaryFieldsOk(session) &&
-    (session.sessionEnvelope === undefined ||
-      isSessionEnvelope(session.sessionEnvelope)) &&
+    sessionEnvelopeOk(session) &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
@@ -257,6 +270,10 @@ export function scopedNodeSession(
   delete scoped.globalSessionId;
   delete scoped.repoInstanceId;
   delete scoped.worktreeInstanceId;
+  // WorkContext identity is hub-owned metadata. A paired node can report
+  // arbitrary session fields, but the hub must only surface a WorkContext id
+  // after validating the routed create request or resolving a stored link.
+  delete scoped.workContextId;
 
   const existingEnvelope = isSessionEnvelope(scoped.sessionEnvelope)
     ? scoped.sessionEnvelope
@@ -303,6 +320,57 @@ export function scopedNodeSession(
       ...(existingEnvelope?.auditId ? { auditId: existingEnvelope.auditId } : {}),
     }),
   };
+}
+
+function routedWorkContextId(body: Record<string, unknown>): string | undefined {
+  const value = body['workContextId'];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function validateRoutedWorkContext(
+  store: WorkContextStore | undefined,
+  workContextId: string | undefined
+): RelayNodeError | null {
+  if (!workContextId) return null;
+  if (!store) {
+    return relayError(
+      'NODE_UNSUPPORTED',
+      'workContextId is not supported by this hub runtime',
+      false,
+      { reasonCode: 'WORK_CONTEXT_UNSUPPORTED', workContextId }
+    );
+  }
+  if (store.get(workContextId)) return null;
+  return relayError('NOT_FOUND', 'work context was not found', false, {
+    reasonCode: 'WORK_CONTEXT_NOT_FOUND',
+    workContextId,
+  });
+}
+
+function associateRoutedWorkContext(
+  store: WorkContextStore | undefined,
+  workContextId: string | undefined,
+  session: SessionSummary
+): string | null {
+  if (!workContextId || !store) return null;
+  try {
+    store.associateSession(workContextId, { session });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : 'work_context_association_failed';
+  }
+}
+
+function withTrustedWorkContextId(
+  store: WorkContextStore | undefined,
+  session: SessionSummary,
+  workContextId: string | undefined
+): SessionSummary {
+  const trustedWorkContextId =
+    workContextId ?? store?.findSessionWorkContextIds(session)[0];
+  return trustedWorkContextId
+    ? { ...session, workContextId: trustedWorkContextId }
+    : session;
 }
 
 export function sessionFromPayload(payload: unknown): SessionSummary {
@@ -2104,6 +2172,15 @@ export function createHubNodeRouter(
     }
     const routedBody = routedGatewayCreateBodyFromRequest(req, res, nodeId);
     if (!routedBody) return;
+    const workContextId = routedWorkContextId(routedBody);
+    const workContextError = validateRoutedWorkContext(
+      options.workContextStore,
+      workContextId
+    );
+    if (workContextError) {
+      sendRelayError(res, workContextError);
+      return;
+    }
     const node = registry
       .listNodes()
       .find((candidate) => candidate.nodeId === nodeId);
@@ -2257,7 +2334,21 @@ export function createHubNodeRouter(
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
       envelopes.upsert(session.sessionEnvelope!);
-      res.status(201).json(session);
+      const associationError = associateRoutedWorkContext(
+        options.workContextStore,
+        workContextId,
+        session
+      );
+      const responseSession = withTrustedWorkContextId(
+        options.workContextStore,
+        session,
+        workContextId
+      );
+      res.status(201).json(
+        associationError
+          ? { ...responseSession, workContextAssociationError: associationError }
+          : responseSession
+      );
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
         sendRelayError(res, error.relayNodeError);

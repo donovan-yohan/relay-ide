@@ -11,6 +11,7 @@ import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import type { SessionSummary } from '../server/types.js';
+import type { WorkContextStore } from '../server/work-contexts.js';
 
 function summary(
   nodeId: string,
@@ -134,6 +135,56 @@ describe('aggregateRemoteSessions', () => {
     for (const session of result) {
       expect(session.globalSessionId).toMatch(/^node-(a|b):(s1|s2)$/);
     }
+  });
+
+  it('strips node-provided WorkContext ids from remote session aggregation without a hub link', async () => {
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => ({
+        sessions: [
+          {
+            ...localSession('s-untrusted', nodeId),
+            workContextId: 'node-owned-context',
+          },
+        ],
+      }),
+    });
+
+    const result = await aggregateRemoteSessions({ registry, nodeLinks });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.workContextId).toBeUndefined();
+  });
+
+  it('hydrates remote session WorkContext ids only from the hub store', async () => {
+    const workContextStore = {
+      findSessionWorkContextIds: vi.fn(() => ['hub-owned-context']),
+    } as unknown as WorkContextStore;
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => ({
+        sessions: [
+          {
+            ...localSession('s-linked', nodeId),
+            workContextId: 'node-owned-context',
+          },
+        ],
+      }),
+    });
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      workContextStore,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.workContextId).toBe('hub-owned-context');
+    expect(workContextStore.findSessionWorkContextIds).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 's-linked', nodeId: 'node-a' })
+    );
   });
 
   it('registers listed remote session envelopes for later routed attach validation', async () => {
