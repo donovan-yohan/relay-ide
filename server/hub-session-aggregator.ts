@@ -10,6 +10,7 @@ import {
 import type { SessionSummary } from './types.js';
 import { scopedNodeSession, isSessionSummary } from './hub-node-router.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import type { RelayNodeErrorCode } from '../shared/relay-node-protocol.js';
 import type { WorkContextStore } from './work-contexts.js';
 
 /**
@@ -34,6 +35,10 @@ export function isLocallyOwnedSession(session: SessionSummary): boolean {
 // browser refresh path and slow nodes must not block the response.
 const PER_NODE_TIMEOUT_MS = 3_000;
 const REMOTE_SESSION_CACHE_TTL_MS = 60_000;
+const CACHEABLE_TYPED_SESSION_LIST_FAILURE_CODES = new Set<RelayNodeErrorCode>([
+  'NODE_BUSY',
+  'INTERNAL',
+]);
 
 export interface RemoteSessionReadModelCache {
   get(nodeId: string, nowMs: number, maxAgeMs: number): SessionSummary[] | null;
@@ -87,9 +92,11 @@ export interface AggregateRemoteSessionsDeps {
  * node with an active reverse link. Returns a flat array of
  * `SessionSummary` stamped with `nodeId`. Per-node failures (offline,
  * RPC timeout, malformed payload) are logged; callers that supply a
- * read-model cache get the last recent successful list for transient
- * failures, otherwise the failed node is dropped. Typed NODE_OFFLINE
- * failures are not masked by the cache. The aggregate never throws.
+ * read-model cache get the last recent successful list for true transient
+ * failures, otherwise the failed node is dropped. Non-cacheable typed
+ * HubNodeLinkError failures such as NODE_OFFLINE, auth/credential errors,
+ * revoked nodes/sessions, version skew, and malformed requests are not masked
+ * by the cache. The aggregate never throws.
  *
  * Offline / stale / revoked nodes are skipped entirely and their cached
  * read model is cleared. Successful empty session lists replace the
@@ -193,10 +200,16 @@ function getCachedSessionsForFailure(
   nowMs: number,
   cacheTtlMs: number
 ): SessionSummary[] | null {
-  if (reason instanceof HubNodeLinkError && reason.relayNodeError.code === 'NODE_OFFLINE') {
+  if (!isCacheableSessionListFailure(reason)) {
     return null;
   }
   return deps.readModelCache?.get(nodeId, nowMs, cacheTtlMs) ?? null;
+}
+
+function isCacheableSessionListFailure(reason: unknown): boolean {
+  if (!(reason instanceof HubNodeLinkError)) return true;
+  const { code, retryable } = reason.relayNodeError;
+  return retryable && CACHEABLE_TYPED_SESSION_LIST_FAILURE_CODES.has(code);
 }
 
 function withWorkContextMetadata(
