@@ -108,12 +108,12 @@ function parseInitialControlMode(
 ): Pick<SessionsCreateInput, 'controlMode'> | RelayNodeError {
   const controlMode = asString(record['controlMode']);
   if (controlMode === undefined) return {};
-  if (controlMode !== 'agent-driven') {
+  if (controlMode !== 'agent-driven' && controlMode !== 'human-driven') {
     return invalidRequest(
-      'sessions.create payload.controlMode must be "agent-driven" when set'
+      'sessions.create payload.controlMode must be "agent-driven" or "human-driven" when set'
     );
   }
-  if (type !== 'agent') {
+  if (controlMode === 'agent-driven' && type !== 'agent') {
     return invalidRequest(
       'sessions.create payload.controlMode="agent-driven" is only supported for agent sessions'
     );
@@ -125,7 +125,7 @@ interface SessionsCreateInput {
   id?: string;
   type: 'agent' | 'terminal';
   mode?: 'pty' | 'web';
-  controlMode?: 'agent-driven';
+  controlMode?: 'agent-driven' | 'human-driven';
   agent?: string;
   repoPath?: string;
   worktreePath?: string | null;
@@ -337,8 +337,10 @@ export function createNodeLinkRpcHost(
       const { controlMode, ...createInput } = parsed;
       const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
       createInput.id = sessionId;
+      const effectiveControlMode =
+        controlMode ?? (createInput.type === 'agent' ? 'agent-driven' : 'human-driven');
       (createInput as CreateParams).controlState =
-        controlMode === 'agent-driven'
+        effectiveControlMode === 'agent-driven'
           ? createAgentDrivenInitialControlState({
               workerId: sessionId,
               ...(createInput.displayName ? { displayName: createInput.displayName } : {}),

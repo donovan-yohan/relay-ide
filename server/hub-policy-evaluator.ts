@@ -116,7 +116,9 @@ export function sessionCreateCapabilities(input: {
   controlMode?: unknown;
 }): RelayCapabilityBit[] {
   const capabilities = [sessionCreateCapability(input.sessionType)];
-  if (input.controlMode === 'agent-driven') capabilities.push('tab:mode:set-agent');
+  const effectiveControlMode =
+    input.controlMode ?? (input.sessionType === 'agent' ? 'agent-driven' : 'human-driven');
+  if (effectiveControlMode === 'agent-driven') capabilities.push('tab:mode:set-agent');
   return capabilities;
 }
 

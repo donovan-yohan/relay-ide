@@ -181,6 +181,95 @@ describe('node-link-rpc-host', () => {
     expect(sent[0]!.type).toBe('sessions.create.result');
   });
 
+  it('defaults routed agent creates without controlMode to agent-driven control state', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        id: 'worker-session-2',
+        type: 'agent',
+        cwd: '/home/user/project',
+        displayName: 'Remote Codex worker',
+      }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall).toMatchObject({
+      id: 'worker-session-2',
+      type: 'agent',
+      cwd: '/home/user/project',
+      controlState: {
+        controlMode: 'agent-driven',
+        activeActors: [
+          {
+            kind: 'agent',
+            id: 'worker-session-2',
+            displayName: 'Remote Codex worker',
+          },
+        ],
+        activeWorker: {
+          kind: 'agent',
+          id: 'worker-session-2',
+          displayName: 'Remote Codex worker',
+        },
+        controlFreshness: 'fresh',
+        controlReason: 'requested-initial-agent-driven',
+      },
+    });
+    expect(createCall).not.toHaveProperty('controlMode');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.result');
+  });
+
+  it('keeps explicit human-driven agent creates human-driven before dispatch', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        id: 'operator-session-1',
+        type: 'agent',
+        cwd: '/home/user/project',
+        displayName: 'Remote terminal-like agent tab',
+        controlMode: 'human-driven',
+      }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall).toMatchObject({
+      id: 'operator-session-1',
+      type: 'agent',
+      cwd: '/home/user/project',
+      controlState: {
+        controlMode: 'human-driven',
+        activeActors: [
+          {
+            kind: 'human',
+            id: 'browser-user',
+            displayName: 'Remote terminal-like agent tab',
+            sessionId: 'operator-session-1',
+          },
+        ],
+        controlFreshness: 'fresh',
+        controlReason: 'routed-session-created',
+      },
+    });
+    expect(createCall).not.toHaveProperty('controlMode');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.create.result');
+  });
+
   it('rejects requested agent-driven initial control for terminal sessions', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
