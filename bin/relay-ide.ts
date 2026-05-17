@@ -734,10 +734,15 @@ function gatewayWsErrorCode(message: string): RelayCliGatewayErrorCode {
   return 'UPSTREAM_ERROR';
 }
 
-function gatewayOpenPtyWebSocket(
+interface GatewayPtyWebSocketHandle {
+  ws: WebSocket;
+  opened: Promise<WebSocket>;
+}
+
+function gatewayCreatePtyWebSocket(
   commandName: RelayCliGatewayCommand,
   target: GatewayPtyTarget
-): Promise<WebSocket> {
+): GatewayPtyWebSocketHandle {
   const token = gatewayRequiredToken(commandName);
   const port = gatewayWsPort();
   const ws = new WebSocket(`ws://127.0.0.1:${port}${target.wsPath}`, {
@@ -746,14 +751,14 @@ function gatewayOpenPtyWebSocket(
       'x-relay-cli-gateway': 'v1',
     },
   });
-  return new Promise((resolve) => {
-    let opened = false;
+  const opened = new Promise<WebSocket>((resolve) => {
+    let isOpen = false;
     ws.once('open', () => {
-      opened = true;
+      isOpen = true;
       resolve(ws);
     });
     ws.once('error', (error) => {
-      if (opened) return;
+      if (isOpen) return;
       const message = error instanceof Error ? error.message : String(error);
       printGatewayEnvelope(
         gatewayError(commandName, {
@@ -769,6 +774,7 @@ function gatewayOpenPtyWebSocket(
       );
     });
   });
+  return { ws, opened };
 }
 
 function gatewayTargetPayload(target: GatewayPtyTarget): Record<string, unknown> {
@@ -799,7 +805,7 @@ async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
     300000
   );
   const target = await resolveGatewayPtyTarget(id, 'sessions.stream');
-  const ws = await gatewayOpenPtyWebSocket('sessions.stream', target);
+  const { ws, opened } = gatewayCreatePtyWebSocket('sessions.stream', target);
   let sequence = 0;
   let frames = 0;
   let bytesReceived = 0;
@@ -877,6 +883,7 @@ async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
       })
     );
   });
+  await opened;
   await new Promise(() => {});
   process.exit(0);
 }
@@ -903,7 +910,7 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   const maxBytes =
     gatewayOptionalPositiveInt('sessions.input', sessionArgs, '--max-bytes', 1048576) ?? 65536;
   const target = await resolveGatewayPtyTarget(id, 'sessions.input');
-  const ws = await gatewayOpenPtyWebSocket('sessions.input', target);
+  const { ws, opened } = gatewayCreatePtyWebSocket('sessions.input', target);
   const bytesSent = Buffer.byteLength(input, 'utf8');
   let output = '';
   let bytesReceived = 0;
@@ -990,6 +997,7 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
     fail(`PTY input stream error: ${message}`);
   });
 
+  await opened;
   ws.send(input, (error) => {
     if (error) {
       const message = error instanceof Error ? error.message : String(error);
