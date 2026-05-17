@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   aggregateRemoteSessions,
+  createRemoteSessionReadModelCache,
   isLocallyOwnedSession,
 } from '../server/hub-session-aggregator.js';
 import { HubNodeLinkError } from '../server/hub-node-link.js';
@@ -34,7 +35,7 @@ function summary(
     pairedAt: '2026-01-01T00:00:00.000Z',
     lastSeenAt: '2026-01-02T00:00:00.000Z',
     capabilities: undefined as never,
-  } as HubNodeSummary;
+  } as unknown as HubNodeSummary;
 }
 
 function localSession(id: string, nodeId: string): SessionSummary {
@@ -271,6 +272,138 @@ describe('aggregateRemoteSessions', () => {
     const result = await aggregateRemoteSessions({ registry, nodeLinks });
     expect(result).toHaveLength(1);
     expect(result[0]?.nodeId).toBe('node-good');
+  });
+
+  it('falls back to the recent remote session read model when a listed node times out', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    let call = 0;
+    const workContextStore = {
+      findSessionWorkContextIds: vi.fn(() => ['hub-owned-context']),
+    } as unknown as WorkContextStore;
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => {
+        call += 1;
+        if (call > 1) throw new Error('simulated sessions.list timeout');
+        return { sessions: [localSession('s-live', nodeId)] };
+      },
+    });
+
+    const fresh = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      workContextStore,
+      readModelCache,
+      now: () => 1_000,
+    });
+    expect(fresh[0]).toMatchObject({
+      id: 's-live',
+      nodeId: 'node-a',
+      workContextId: 'hub-owned-context',
+      status: 'active',
+    });
+
+    const fallback = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      workContextStore,
+      readModelCache,
+      now: () => 2_000,
+    });
+
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]).toMatchObject({
+      id: 's-live',
+      nodeId: 'node-a',
+      workContextId: 'hub-owned-context',
+      status: 'active',
+    });
+  });
+
+  it('does not mask typed NODE_OFFLINE failures with the cached read model', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    let offline = false;
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => {
+        if (offline) {
+          throw new HubNodeLinkError({
+            code: 'NODE_OFFLINE',
+            message: 'node link is offline',
+            retryable: true,
+          });
+        }
+        return { sessions: [localSession('s-live', nodeId)] };
+      },
+    });
+
+    await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 1_000,
+    });
+    offline = true;
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 2_000,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does not use expired cached remote sessions after a sessions.list failure', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    let fail = false;
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => {
+        if (fail) throw new Error('simulated sessions.list timeout');
+        return { sessions: [localSession('s-live', nodeId)] };
+      },
+    });
+
+    await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 1_000,
+    });
+    fail = true;
+
+    const expired = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      readModelCacheTtlMs: 500,
+      now: () => 2_000,
+    });
+
+    expect(expired).toEqual([]);
+  });
+
+  it('clears cached remote sessions when the owning node no longer has a live link', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    const activeNodeIds = new Set(['node-a']);
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds,
+      requestImpl: async (nodeId) => ({ sessions: [localSession('s-live', nodeId)] }),
+    });
+
+    await aggregateRemoteSessions({ registry, nodeLinks, readModelCache });
+    activeNodeIds.clear();
+
+    const result = await aggregateRemoteSessions({ registry, nodeLinks, readModelCache });
+
+    expect(result).toEqual([]);
+    expect(readModelCache.get('node-a', Date.now(), 60_000)).toBeNull();
   });
 
   it('treats a malformed payload as an empty list rather than throwing', async () => {

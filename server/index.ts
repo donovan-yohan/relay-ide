@@ -117,6 +117,7 @@ import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
+  createRemoteSessionReadModelCache,
   isLocallyOwnedSession,
 } from './hub-session-aggregator.js';
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
@@ -1120,6 +1121,7 @@ async function main(): Promise<void> {
     inventoryValidator: repoInventoryFeature.validateInventoryPayload,
     ptyInputRecorder: sessions.recordRoutedPtyInput,
   });
+  const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
 
   async function flushHubNodeHeartbeatsBestEffort(
     context: string
@@ -1679,6 +1681,7 @@ async function main(): Promise<void> {
             logger,
             sessionEnvelopes: sessionEnvelopeRegistry,
             workContextStore,
+            readModelCache: remoteSessionReadModelCache,
           }),
         ]);
         return [...localSessions, ...remoteSessions];
@@ -2096,6 +2099,7 @@ async function main(): Promise<void> {
         logger,
         sessionEnvelopes: sessionEnvelopeRegistry,
         workContextStore,
+        readModelCache: remoteSessionReadModelCache,
       }),
     ]);
     const allSessions = [...localSessions, ...remoteSessions];
@@ -2172,6 +2176,7 @@ async function main(): Promise<void> {
       logger,
       sessionEnvelopes: sessionEnvelopeRegistry,
       workContextStore,
+      readModelCache: remoteSessionReadModelCache,
     });
     const remote = remoteSessions.find(
       (candidate) => candidate.id === id || candidate.globalSessionId === id
