@@ -251,10 +251,17 @@ Reports the same service manager state, but from the generic `install`/`uninstal
 ### Hub-side node list
 
 ```bash
+# Human table from the hub host
+relay-ide hub nodes
+
+# Machine-readable parity for scripts
+relay-ide hub nodes --json
+
+# Raw API equivalent
 curl https://hub.example.com/nodes -b "token=<auth-cookie>"
 ```
 
-Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, and capability summary.
+Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, protocol/version state, and capability summary. The CLI reads the local hub port/config and requires `RELAY_IDE_BROWSER_TOKEN` for the same scoped hub API access as other CLI-gateway operations.
 
 ## Update
 
@@ -311,6 +318,18 @@ relay-ide uninstall
 > There is no `relay-ide node unpair` CLI command. Unpairing is always hub-driven. The node cannot revoke itself.
 
 ## Troubleshooting
+
+### Diagnose from the hub
+
+```bash
+# Human pass/fail checklist from the hub host
+relay-ide hub doctor
+
+# Machine-readable diagnostics for automation
+relay-ide hub doctor --json
+```
+
+Hub doctor is intentionally cheap and read-only. It checks local config readability, scoped CLI auth token presence, hub `/version` reachability, paired node registry shape, node availability, protocol/version compatibility, required terminal capability (`tmux`), and hub-mediated node-log snapshot support. It reports typed reasons such as `CONFIG_MISSING`, `AUTH_TOKEN_MISSING`, `HUB_UNREACHABLE`, `NODE_OFFLINE`, `NODE_STALE`, `NODE_REVOKED`, `VERSION_SKEW`, `PROTOCOL_INCOMPATIBLE`, `UNSUPPORTED_CAPABILITY`, `MISSING_LOG_SUPPORT`, and `CHECK_SKIPPED`. It does not remediate nodes, mutate files, run arbitrary commands, or prove multi-machine topology.
 
 ### Diagnose from the node
 
