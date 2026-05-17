@@ -126,6 +126,67 @@ describe('Hermes metadata event ingestion spike contract', () => {
     expect(result.errors.join('\n')).toContain('$.tool.authorization');
   });
 
+  it('rejects nested profile path and raw output smuggling under allowed metadata objects', () => {
+    const smugglingCases: Array<{
+      name: string;
+      mutate: (fixture: Record<string, unknown>) => void;
+      expectedPath: string;
+    }> = [
+      {
+        name: 'source.profilePath',
+        mutate: (fixture) => {
+          fixture.source = {
+            ...(fixture.source as Record<string, unknown>),
+            profilePath: '/Users/me/.hermes/profiles/ebi/config.yaml',
+          };
+        },
+        expectedPath: '$.source.profilePath',
+      },
+      {
+        name: 'audit.profilePath',
+        mutate: (fixture) => {
+          fixture.audit = {
+            correlationId: 'corr-556-repro',
+            profilePath: '/Users/me/.hermes/profiles/ebi/config.yaml',
+          };
+        },
+        expectedPath: '$.audit.profilePath',
+      },
+      {
+        name: 'audit.hermesProfilePath',
+        mutate: (fixture) => {
+          fixture.audit = {
+            correlationId: 'corr-556-repro',
+            hermesProfilePath: '/Users/me/.hermes/profiles/ebi',
+          };
+        },
+        expectedPath: '$.audit.hermesProfilePath',
+      },
+      {
+        name: 'tool.output',
+        mutate: (fixture) => {
+          fixture.tool = {
+            ...(fixture.tool as Record<string, unknown>),
+            output: 'full command output secret-ish',
+          };
+        },
+        expectedPath: '$.tool.output',
+      },
+    ];
+
+    for (const smugglingCase of smugglingCases) {
+      const fixture = cloneFixture(loadFixture('tool-summary.json'));
+      smugglingCase.mutate(fixture);
+
+      const result = ingestHermesMetadataEventCandidate(fixture);
+
+      expect(result.accepted, smugglingCase.name).toBe(false);
+      expect(result.errors.join('\n'), smugglingCase.name).toContain(
+        smugglingCase.expectedPath
+      );
+    }
+  });
+
   it('rejects transcript/message-shaped payloads even when an artifact calls itself a ref', () => {
     const fixture = cloneFixture(loadFixture('artifact-recorded.json'));
     fixture.artifacts = [

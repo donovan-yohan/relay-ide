@@ -234,6 +234,136 @@ const TOP_LEVEL_KEYS = new Set<string>([
   'privacy',
   'audit',
 ]);
+const SOURCE_KEYS = new Set<string>([
+  'kind',
+  'profile',
+  'runtime',
+  'provider',
+  'model',
+  'runId',
+  'sessionId',
+  'pluginVersion',
+]);
+const ACTOR_KEYS = new Set<string>([
+  'kind',
+  'id',
+  'displayName',
+  'providerId',
+  'nodeId',
+  'sessionId',
+  'profile',
+  'runtime',
+  'model',
+]);
+const WORK_CONTEXT_KEYS = new Set<string>([
+  'workContextId',
+  'taskRefs',
+  'anchors',
+  'relatedContextRefs',
+]);
+const TASK_REF_KEYS = new Set<string>([
+  'kind',
+  'id',
+  'title',
+  'url',
+  'status',
+  'parentRef',
+  'privacy',
+]);
+const ANCHORS_KEYS = new Set<string>([
+  'node',
+  'session',
+  'project',
+  'repo',
+  'worktree',
+]);
+const NODE_ANCHOR_KEYS = new Set<string>([
+  'nodeId',
+  'kind',
+  'displayName',
+  'online',
+]);
+const SESSION_ANCHOR_KEYS = new Set<string>([
+  'nodeId',
+  'sessionId',
+  'globalSessionId',
+  'tabId',
+  'tabKind',
+  'cwd',
+]);
+const PROJECT_ANCHOR_KEYS = new Set<string>([
+  'workspaceId',
+  'projectId',
+  'instanceId',
+  'benchId',
+]);
+const REPO_ANCHOR_KEYS = new Set<string>([
+  'repoIdentity',
+  'repoInstanceId',
+  'ownerRepo',
+  'remoteUrl',
+  'localPath',
+  'branchName',
+]);
+const WORKTREE_ANCHOR_KEYS = new Set<string>([
+  'worktreeInstanceId',
+  'localPath',
+  'branchName',
+]);
+const CHILD_SESSION_KEYS = new Set<string>([
+  'sessionId',
+  'runtime',
+  'profile',
+  'runId',
+  'parentSessionId',
+  'nodeId',
+  'cwd',
+  'status',
+]);
+const TOOL_KEYS = new Set<string>([
+  'name',
+  'category',
+  'status',
+  'durationMs',
+  'summary',
+  'errorSummary',
+  'artifactIds',
+]);
+const ARTIFACT_KEYS = new Set<string>([
+  'id',
+  'kind',
+  'title',
+  'uri',
+  'path',
+  'mediaType',
+  'producedByActorId',
+  'producedAt',
+  'summary',
+  'privacy',
+]);
+const PRIVACY_KEYS = new Set<string>([
+  'classification',
+  'retention',
+  'rawPayloadStored',
+  'redaction',
+  'policyRefs',
+]);
+const REDACTION_KEYS = new Set<string>([
+  'redacted',
+  'strategy',
+  'classes',
+  'byteCount',
+  'charCount',
+  'lineCount',
+  'hashSha256',
+  'preview',
+]);
+const AUDIT_HINT_KEYS = new Set<string>([
+  'correlationId',
+  'emittedByPluginVersion',
+  'retentionExpiresAt',
+  'recommendedNextStep',
+]);
 const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
   'apikey',
   'api_key',
@@ -242,10 +372,13 @@ const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
   'conversation',
   'environment',
   'env',
+  'hermesprofilepath',
   'hermesdbpath',
   'log',
   'messages',
+  'output',
   'processenv',
+  'profilepath',
   'providerauth',
   'rawcontent',
   'rawlog',
@@ -317,6 +450,128 @@ function hasOnlyTopLevelKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).every((key) => TOP_LEVEL_KEYS.has(key));
 }
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>
+): boolean {
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function collectUnknownKeys(
+  value: unknown,
+  allowedKeys: ReadonlySet<string>,
+  path: string
+): string[] {
+  if (!isRecord(value)) return [];
+  return Object.keys(value)
+    .filter((key) => !allowedKeys.has(key))
+    .map((key) => `unknown metadata key: ${path}.${key}`);
+}
+
+function collectPrivacyUnknownKeyErrors(value: unknown, path: string): string[] {
+  if (!isRecord(value)) return [];
+  return [
+    ...collectUnknownKeys(value, PRIVACY_KEYS, path),
+    ...collectUnknownKeys(value.redaction, REDACTION_KEYS, `${path}.redaction`),
+  ];
+}
+
+function collectAnchorUnknownKeyErrors(value: unknown, path: string): string[] {
+  if (!isRecord(value)) return [];
+  return [
+    ...collectUnknownKeys(value, ANCHORS_KEYS, path),
+    ...collectUnknownKeys(value.node, NODE_ANCHOR_KEYS, `${path}.node`),
+    ...collectUnknownKeys(value.session, SESSION_ANCHOR_KEYS, `${path}.session`),
+    ...collectUnknownKeys(value.project, PROJECT_ANCHOR_KEYS, `${path}.project`),
+    ...collectUnknownKeys(value.repo, REPO_ANCHOR_KEYS, `${path}.repo`),
+    ...collectUnknownKeys(value.worktree, WORKTREE_ANCHOR_KEYS, `${path}.worktree`),
+  ];
+}
+
+function collectNestedUnknownKeyErrors(
+  value: Record<string, unknown>
+): string[] {
+  const workContext = isRecord(value.workContext) ? value.workContext : undefined;
+  const errors = [
+    ...collectUnknownKeys(value.source, SOURCE_KEYS, '$.source'),
+    ...collectUnknownKeys(value.actor, ACTOR_KEYS, '$.actor'),
+    ...collectUnknownKeys(value.workContext, WORK_CONTEXT_KEYS, '$.workContext'),
+    ...collectAnchorUnknownKeyErrors(
+      workContext?.anchors,
+      '$.workContext.anchors'
+    ),
+    ...collectUnknownKeys(value.parent, CHILD_SESSION_KEYS, '$.parent'),
+    ...collectUnknownKeys(value.tool, TOOL_KEYS, '$.tool'),
+    ...collectPrivacyUnknownKeyErrors(value.privacy, '$.privacy'),
+    ...collectUnknownKeys(value.audit, AUDIT_HINT_KEYS, '$.audit'),
+  ];
+
+  if (Array.isArray(workContext?.taskRefs)) {
+    workContext.taskRefs.forEach((taskRef, index) => {
+      errors.push(
+        ...collectUnknownKeys(
+          taskRef,
+          TASK_REF_KEYS,
+          `$.workContext.taskRefs[${index}]`
+        )
+      );
+      if (isRecord(taskRef)) {
+        errors.push(
+          ...collectPrivacyUnknownKeyErrors(
+            taskRef.privacy,
+            `$.workContext.taskRefs[${index}].privacy`
+          )
+        );
+      }
+    });
+  }
+
+  if (Array.isArray(value.childSessions)) {
+    value.childSessions.forEach((childSession, index) => {
+      errors.push(
+        ...collectUnknownKeys(
+          childSession,
+          CHILD_SESSION_KEYS,
+          `$.childSessions[${index}]`
+        )
+      );
+    });
+  }
+
+  if (Array.isArray(value.artifacts)) {
+    value.artifacts.forEach((artifact, index) => {
+      errors.push(
+        ...collectUnknownKeys(
+          artifact,
+          ARTIFACT_KEYS,
+          `$.artifacts[${index}]`
+        )
+      );
+      if (isRecord(artifact)) {
+        errors.push(
+          ...collectPrivacyUnknownKeyErrors(
+            artifact.privacy,
+            `$.artifacts[${index}].privacy`
+          )
+        );
+      }
+    });
+  }
+
+  return errors;
+}
+
+function isHermesPrivacyMetadata(
+  value: unknown
+): value is WorkContextPrivacyMetadata {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, PRIVACY_KEYS) &&
+    (!isRecord(value.redaction) || hasOnlyKeys(value.redaction, REDACTION_KEYS)) &&
+    isWorkContextPrivacyMetadata(value)
+  );
+}
+
 function isStringMap(value: unknown): boolean {
   if (value === undefined) return true;
   if (!isRecord(value)) return false;
@@ -326,7 +581,7 @@ function isStringMap(value: unknown): boolean {
 }
 
 function isTaskRef(value: unknown): value is TaskRef {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, TASK_REF_KEYS)) return false;
   return (
     isEnumValue(value.kind, TASK_KINDS) &&
     hasString(value.id) &&
@@ -334,12 +589,12 @@ function isTaskRef(value: unknown): value is TaskRef {
     isOptionalString(value.url) &&
     isOptionalString(value.status) &&
     isOptionalString(value.parentRef) &&
-    (value.privacy === undefined || isWorkContextPrivacyMetadata(value.privacy))
+    (value.privacy === undefined || isHermesPrivacyMetadata(value.privacy))
   );
 }
 
 function isNodeAnchor(value: unknown): boolean {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, NODE_ANCHOR_KEYS)) return false;
   return (
     hasString(value.nodeId) &&
     isEnumValue(value.kind, NODE_KINDS) &&
@@ -349,7 +604,7 @@ function isNodeAnchor(value: unknown): boolean {
 }
 
 function isSessionAnchor(value: unknown): boolean {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, SESSION_ANCHOR_KEYS)) return false;
   return (
     hasString(value.nodeId) &&
     hasString(value.sessionId) &&
@@ -361,18 +616,27 @@ function isSessionAnchor(value: unknown): boolean {
 }
 
 function isWorkContextAnchors(value: unknown): value is WorkContextAnchors {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ANCHORS_KEYS)) return false;
   return (
     (value.node === undefined || isNodeAnchor(value.node)) &&
     (value.session === undefined || isSessionAnchor(value.session)) &&
-    isStringMap(value.project) &&
-    isStringMap(value.repo) &&
-    isStringMap(value.worktree)
+    (value.project === undefined ||
+      (isRecord(value.project) &&
+        hasOnlyKeys(value.project, PROJECT_ANCHOR_KEYS) &&
+        isStringMap(value.project))) &&
+    (value.repo === undefined ||
+      (isRecord(value.repo) &&
+        hasOnlyKeys(value.repo, REPO_ANCHOR_KEYS) &&
+        isStringMap(value.repo))) &&
+    (value.worktree === undefined ||
+      (isRecord(value.worktree) &&
+        hasOnlyKeys(value.worktree, WORKTREE_ANCHOR_KEYS) &&
+        isStringMap(value.worktree)))
   );
 }
 
 function isArtifactRef(value: unknown): value is ArtifactRef {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ARTIFACT_KEYS)) return false;
   return (
     hasString(value.id) &&
     isEnumValue(value.kind, ARTIFACT_KINDS) &&
@@ -383,13 +647,13 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
     isOptionalString(value.producedByActorId) &&
     isOptionalString(value.producedAt) &&
     isOptionalString(value.summary) &&
-    isWorkContextPrivacyMetadata(value.privacy) &&
+    isHermesPrivacyMetadata(value.privacy) &&
     value.privacy.rawPayloadStored === false
   );
 }
 
 function isMetadataSource(value: unknown): value is HermesMetadataSource {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, SOURCE_KEYS)) return false;
   return (
     value.kind === 'hermes-agent' &&
     hasString(value.profile) &&
@@ -403,7 +667,7 @@ function isMetadataSource(value: unknown): value is HermesMetadataSource {
 }
 
 function isMetadataActor(value: unknown): value is HermesMetadataActor {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ACTOR_KEYS)) return false;
   return (
     isEnumValue(value.kind, ACTOR_KINDS) &&
     hasString(value.id) &&
@@ -420,7 +684,7 @@ function isMetadataActor(value: unknown): value is HermesMetadataActor {
 function isWorkContextLink(
   value: unknown
 ): value is HermesMetadataWorkContextLink {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, WORK_CONTEXT_KEYS)) return false;
   return (
     isOptionalString(value.workContextId) &&
     Array.isArray(value.taskRefs) &&
@@ -432,7 +696,7 @@ function isWorkContextLink(
 }
 
 function isChildSession(value: unknown): value is HermesChildSessionRef {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, CHILD_SESSION_KEYS)) return false;
   return (
     hasString(value.sessionId) &&
     isEnumValue(value.runtime, RUNTIMES) &&
@@ -446,7 +710,7 @@ function isChildSession(value: unknown): value is HermesChildSessionRef {
 }
 
 function isToolSummary(value: unknown): value is HermesToolSummary {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, TOOL_KEYS)) return false;
   return (
     hasString(value.name) &&
     isEnumValue(value.category, TOOL_CATEGORIES) &&
@@ -461,7 +725,7 @@ function isToolSummary(value: unknown): value is HermesToolSummary {
 
 function isAuditHint(value: unknown): value is HermesMetadataEventAuditHint {
   if (value === undefined) return true;
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, AUDIT_HINT_KEYS)) return false;
   return (
     isOptionalString(value.correlationId) &&
     isOptionalString(value.emittedByPluginVersion) &&
@@ -473,6 +737,7 @@ function isAuditHint(value: unknown): value is HermesMetadataEventAuditHint {
 function collectShapeErrors(value: Record<string, unknown>): string[] {
   const errors: string[] = [];
   if (!hasOnlyTopLevelKeys(value)) errors.push('unknown top-level key');
+  errors.push(...collectNestedUnknownKeyErrors(value));
   if (value.schemaVersion !== HERMES_METADATA_EVENT_SCHEMA_VERSION) {
     errors.push('schemaVersion must be 1');
   }
@@ -504,7 +769,7 @@ function collectShapeErrors(value: Record<string, unknown>): string[] {
     errors.push('artifacts are invalid');
   }
   if (
-    !isWorkContextPrivacyMetadata(value.privacy) ||
+    !isHermesPrivacyMetadata(value.privacy) ||
     value.privacy.rawPayloadStored !== false
   ) {
     errors.push('privacy must be valid and rawPayloadStored=false');
