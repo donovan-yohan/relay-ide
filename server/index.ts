@@ -1315,6 +1315,7 @@ async function main(): Promise<void> {
       sessionEnvelopes: sessionEnvelopeRegistry,
       renewLocalSession: localRelayNode.sessions.renew,
       workContextStore,
+      readModelCache: remoteSessionReadModelCache,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
