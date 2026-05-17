@@ -7,6 +7,7 @@ export const RELAY_CAPABILITY_BITS = [
   'session:create:terminal',
   'session:create:agent',
   'session:attach',
+  'session:control:kill',
   'tab:mode:set-agent',
   'tab:intervention:read',
   'rpc:fs:list',
@@ -39,6 +40,7 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
 ] as const satisfies readonly RelayCapabilityBit[];
 
 export const HIGH_RISK_CAPABILITIES = [
+  'session:control:kill',
   'rpc:fs:write',
   'rpc:fs:delete',
   'rpc:git:write',

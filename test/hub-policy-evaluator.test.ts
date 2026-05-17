@@ -151,6 +151,29 @@ describe('hub policy evaluator', () => {
     });
   });
 
+  it('maps routed session kill to the explicit high-risk control capability', () => {
+    expect(requiredCapabilitiesForRpcIntent('sessions.kill')).toEqual([
+      'session:control:kill',
+    ]);
+
+    expect(evaluateHubPolicy(baseInput({ requiredCapabilities: ['session:attach'] }))).toMatchObject({
+      decision: 'allow',
+      grantedBits: ['session:attach'],
+    });
+    expect(
+      evaluateHubPolicy(
+        baseInput({
+          intent: { action: 'sessions.kill', target: 'node_a' },
+          requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.kill'),
+        })
+      )
+    ).toMatchObject({
+      decision: 'deny',
+      reasonCode: 'POLICY_CAPABILITY_DENIED',
+      deniedBits: ['session:control:kill'],
+    });
+  });
+
   it('canonicalizes path ACL comparisons before checking prefixes', () => {
     const node = nodeSummary({
       scope: { kind: 'path', pathPrefixes: ['/srv/allowed'] },

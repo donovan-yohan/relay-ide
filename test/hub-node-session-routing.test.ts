@@ -24,6 +24,7 @@ import {
   createRoutedNodeSessionEnvelope,
 } from '../shared/session-envelope.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -225,6 +226,35 @@ function seedRemoteSessionEnvelope(
       issuedAt: '2026-01-02T03:04:05.000Z',
     })
   );
+}
+
+function grantNodeCapabilitiesForTest(
+  registry: ReturnType<typeof createHubNodeRegistry>,
+  nodeId: string,
+  capabilities: RelayCapabilityBit[]
+): void {
+  const state = (registry as unknown as {
+    state: {
+      nodes: Array<{
+        nodeId: string;
+        acl?: {
+          grants: {
+            allowed: RelayCapabilityBit[];
+            requiresConfirmation: RelayCapabilityBit[];
+          };
+          lifecycle: { updatedAt: string };
+        };
+      }>;
+    };
+  }).state;
+  const node = state.nodes.find((candidate) => candidate.nodeId === nodeId);
+  expect(node?.acl).toBeDefined();
+  for (const capability of capabilities) {
+    if (!node!.acl!.grants.allowed.includes(capability)) {
+      node!.acl!.grants.allowed.push(capability);
+    }
+  }
+  node!.acl!.lifecycle.updatedAt = '2026-01-02T03:04:05.000Z';
 }
 
 describe('hub-routed node session create and attach', () => {
@@ -826,8 +856,9 @@ describe('hub-routed node session create and attach', () => {
   });
 
   it('routes remote session delete to the selected connected node', async () => {
-    const { base, wsBase, sessionEnvelopes } = await startHub();
+    const { base, wsBase, sessionEnvelopes, registry } = await startHub();
     const { token, nodeId } = await pairNode(base);
+    grantNodeCapabilitiesForTest(registry, nodeId, ['session:control:kill']);
     seedRemoteSessionEnvelope(sessionEnvelopes, nodeId);
     const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
       headers: { authorization: `Bearer ${token}` },

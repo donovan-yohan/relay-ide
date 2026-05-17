@@ -6,11 +6,13 @@ import { createRepoFeatureRouter } from '../server/features/repo-router.js';
 import { createHubNodeRouter, type RoutedSessionAuditSink } from '../server/hub-node-router.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
+import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
 import {
   createLegacyDefaultNodeAcl,
   summarizeAcl,
   type RelayCapabilityBit,
   type RelayNodeAcl,
+  type RelayTrustTier,
 } from '../shared/security-policy.js';
 import type { HubNodeSummary, RelayNodeError } from '../shared/relay-node-protocol.js';
 
@@ -19,12 +21,14 @@ const NOW = new Date('2026-01-02T03:04:05.000Z');
 function nodeSummary(input: {
   allowed?: RelayCapabilityBit[];
   requiresConfirmation?: RelayCapabilityBit[];
+  trustTier?: RelayTrustTier;
 } = {}): HubNodeSummary {
+  const trustTier = input.trustTier ?? 'prod';
   const acl: RelayNodeAcl = {
     ...createLegacyDefaultNodeAcl({
       nodeId: 'node_prod',
       credentialId: 'cred_prod',
-      trustTier: 'prod',
+      trustTier,
       createdAt: NOW.toISOString(),
     }),
     grants: {
@@ -42,7 +46,7 @@ function nodeSummary(input: {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'reverse-link', status: 'connected' },
-    trust: { state: 'active', level: 'prod', tier: 'prod', policy: summarizeAcl(acl) },
+    trust: { state: 'active', level: trustTier, tier: trustTier, policy: summarizeAcl(acl) },
     credentialState: 'active',
     version: { state: 'compatible', nodeProtocolVersion: '1.0', hubProtocolVersion: '1.0' },
     capabilities: {
@@ -113,7 +117,9 @@ describe('hub confirmation routing', () => {
     while (cleanup.length > 0) await cleanup.pop()?.();
   });
 
-  async function startHub(options: { auditSink?: RoutedSessionAuditSink } = {}) {
+  async function startHub(
+    options: { auditSink?: RoutedSessionAuditSink; node?: HubNodeSummary } = {}
+  ) {
     const nodeLinks = {
       requests: [] as Array<{ nodeId: string; type: string; payload: unknown }>,
       hasActiveNode: () => true,
@@ -124,6 +130,7 @@ describe('hub confirmation routing', () => {
     };
     const auditEntries: Parameters<RoutedSessionAuditSink['append']>[0][] = [];
     const auditSink = options.auditSink ?? { append: (entry) => auditEntries.push(entry) };
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
     const app = express();
     app.use((req, _res, next) => {
       const cookie = req.header('cookie') ?? '';
@@ -135,16 +142,16 @@ describe('hub confirmation routing', () => {
     app.use(
       createHubNodeRouter({
         registry: {
-          listNodes: () => [nodeSummary()],
+          listNodes: () => [options.node ?? nodeSummary()],
           errorBody: (error: unknown) => ({
             error: error instanceof Error
               ? ({ code: 'INTERNAL', message: error.message, retryable: false } satisfies RelayNodeError)
               : ({ code: 'INTERNAL', message: 'unknown error', retryable: false } satisfies RelayNodeError),
           }),
-          revokeNode: () => nodeSummary(),
+          revokeNode: () => options.node ?? nodeSummary(),
         } as unknown as HubNodeRegistry,
         nodeLinks,
-        sessionEnvelopes: createSessionEnvelopeRegistry(),
+        sessionEnvelopes,
         confirmations: createConfirmationChallengeStore({
           now: () => NOW,
           randomId: () => 'challenge-1',
@@ -161,7 +168,7 @@ describe('hub confirmation routing', () => {
     const server = http.createServer(app);
     const port = await listen(server);
     cleanup.push(() => close(server));
-    return { base: `http://127.0.0.1:${port}`, nodeLinks, auditEntries };
+    return { base: `http://127.0.0.1:${port}`, nodeLinks, auditEntries, sessionEnvelopes };
   }
 
   async function startColdReopenHub() {
@@ -429,6 +436,51 @@ describe('hub confirmation routing', () => {
       error: { code: 'INTERNAL', details: { reasonCode: 'POLICY_AUDIT_WRITE_FAILED_CLOSED' } },
     });
     expect(nodeLinks.requests).toHaveLength(0);
+  });
+
+  it('denies routed session kill when ACL only grants attach', async () => {
+    const { base, nodeLinks, auditEntries, sessionEnvelopes } = await startHub({
+      node: nodeSummary({
+        trustTier: 'dev',
+        allowed: ['session:read', 'session:attach'],
+        requiresConfirmation: [],
+      }),
+    });
+    sessionEnvelopes.upsert(
+      createRoutedNodeSessionEnvelope({
+        nodeId: 'node_prod',
+        sessionId: 'remote-session-1',
+        cwd: '/srv/relay-ide',
+        repoPath: '/srv/relay-ide',
+        issuedAt: NOW.toISOString(),
+      })
+    );
+
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions/remote-session-1`, {
+      method: 'DELETE',
+      headers: {
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: 'UNAUTHORIZED',
+        details: {
+          reasonCode: 'POLICY_CAPABILITY_DENIED',
+          deniedBits: ['session:control:kill'],
+        },
+      },
+    });
+    expect(nodeLinks.requests).toHaveLength(0);
+    expect(auditEntries.at(-1)).toMatchObject({
+      eventType: 'denial',
+      reasonCode: 'POLICY_CAPABILITY_DENIED',
+      requiredBits: ['session:control:kill'],
+      deniedBits: ['session:control:kill'],
+    });
   });
 
   it('invalidates an approved requester token when approval audit append fails closed', async () => {
