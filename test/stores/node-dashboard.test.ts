@@ -289,9 +289,9 @@ describe('hub node dashboard state', () => {
     );
 
     expect(rows.map((row) => [row.security.trustTier, row.security.postureLabel])).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 14'],
-      ['dev', 'allow 8 · challenge 0 · deny 7'],
-      ['prod', 'allow 1 · challenge 2 · deny 12'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 15'],
+      ['dev', 'allow 8 · challenge 0 · deny 8'],
+      ['prod', 'allow 1 · challenge 2 · deny 13'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

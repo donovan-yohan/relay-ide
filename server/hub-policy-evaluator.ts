@@ -123,6 +123,7 @@ export function sessionCreateCapabilities(input: {
 export function requiredCapabilitiesForRpcIntent(action: string): string[] {
   if (action === 'sessions.interventions.read') return ['session:read', 'tab:intervention:read'];
   if (action === 'sessions.control.set-agent') return ['session:attach', 'tab:mode:set-agent'];
+  if (action === 'sessions.kill') return ['session:control:kill'];
   switch (action) {
     case 'sessions.create.terminal':
       return ['session:create:terminal'];

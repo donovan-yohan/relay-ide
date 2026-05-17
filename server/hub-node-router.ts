@@ -2513,7 +2513,7 @@ export function createHubNodeRouter(
                 : {}),
             }
           : { kind: 'node', nodeId, cwd: '/' },
-        requiredCapabilities: ['session:attach'],
+        requiredCapabilities: ['session:control:kill'],
         sessionId,
         ...(scoped?.correlationId ? { correlationId: scoped.correlationId } : {}),
         ...(scoped?.expiresAt !== undefined ? { expiresAt: scoped.expiresAt } : {}),
