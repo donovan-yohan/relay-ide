@@ -68,6 +68,11 @@ import {
   flushAllPendingWrites as flushRelayStateWrites,
 } from './relay-state-db.js';
 import {
+  createWorkContextRouter,
+  initWorkContextStore,
+  type WorkContextStore,
+} from './work-contexts.js';
+import {
   initInterventionLog,
   closeInterventionLog,
 } from './intervention-log.js';
@@ -122,6 +127,7 @@ import type {
   AutomationSettings,
   Config,
   ContinuePolicy,
+  SessionSummary,
   TicketContext,
   WorkspaceSettings,
 } from './types.js';
@@ -822,6 +828,34 @@ function sendSessionCreateError(
   });
 }
 
+function validateSessionCreateRequest(
+  repoPath: string | undefined,
+  workContextStore: WorkContextStore,
+  workContextId: string | undefined,
+  res: express.Response
+): boolean {
+  if (!repoPath) {
+    res.status(400).json({ error: 'repoPath is required' });
+    return false;
+  }
+  if (!workContextId) return true;
+  if (workContextStore.get(workContextId)) return true;
+  res.status(404).json({ error: 'work_context_not_found' });
+  return false;
+}
+
+function sessionNameFromRepoPath(repoPath: string): string {
+  return repoPath.split('/').filter(Boolean).pop() || 'session';
+}
+
+function associateSessionWithWorkContext(
+  store: WorkContextStore,
+  workContextId: string | undefined,
+  session: SessionSummary
+): void {
+  if (workContextId) store.associateSession(workContextId, { session });
+}
+
 function sessionCreateFailureMessage(err: unknown): string {
   if (!(err instanceof Error)) return 'Failed to create session.';
   // Surface the underlying message so failures (codex spawn, app-server
@@ -1087,6 +1121,8 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err
     );
   }
+
+  const workContextStore = initWorkContextStore(configDir);
 
   try {
     initInterventionLog(configDir);
@@ -1593,6 +1629,26 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
+  app.use(
+    '/work-contexts',
+    createWorkContextRouter({
+      store: workContextStore,
+      requireAuth,
+      getSessions: async () => {
+        const [localSessions, remoteSessions] = await Promise.all([
+          Promise.resolve(localRelayNode.sessions.list()),
+          aggregateRemoteSessions({
+            registry: hubNodeRegistry,
+            nodeLinks: hubNodeLinks,
+            logger,
+            sessionEnvelopes: sessionEnvelopeRegistry,
+          }),
+        ]);
+        return [...localSessions, ...remoteSessions];
+      },
+      getNodes: () => hubNodeRegistry.listNodes(),
+    })
+  );
 
   // POST /api/frontend-log — relay frontend logs to the server log file
   app.post('/api/frontend-log', requireAuth, (req, res) => {
@@ -2602,6 +2658,7 @@ async function main(): Promise<void> {
       continuePolicy: explicitContinuePolicy,
       sessionLane,
       ticketContext,
+      workContextId,
     } = createBody as {
       repoPath?: string;
       worktreePath?: string | null;
@@ -2621,6 +2678,7 @@ async function main(): Promise<void> {
       continue?: boolean;
       continuePolicy?: ContinuePolicy;
       sessionLane?: SessionLane;
+      workContextId?: string;
       ticketContext?: {
         ticketId: string;
         title: string;
@@ -2632,22 +2690,30 @@ async function main(): Promise<void> {
       };
     };
 
-    if (!repoPath) {
-      res.status(400).json({ error: 'repoPath is required' });
+    if (
+      !validateSessionCreateRequest(
+        repoPath,
+        workContextStore,
+        workContextId,
+        res
+      )
+    ) {
       return;
     }
+
+    const checkedRepoPath = repoPath ?? '';
 
     // Read config once for the lifetime of this request
     const freshConfig = getConfig();
 
     // Validate repoPath is a configured workspace
     const configuredWorkspaces = freshConfig.repos ?? [];
-    if (!configuredWorkspaces.includes(repoPath)) {
+    if (!configuredWorkspaces.includes(checkedRepoPath)) {
       res.status(400).json({ error: 'repoPath is not a configured workspace' });
       return;
     }
 
-    const cwd = worktreePath ?? repoPath;
+    const cwd = worktreePath ?? checkedRepoPath;
 
     // Validate cwd directory exists
     if (!fs.existsSync(cwd)) {
@@ -2658,8 +2724,8 @@ async function main(): Promise<void> {
     const safeCols = clampDimension(cols, 1, 500);
     const safeRows = clampDimension(rows, 1, 200);
 
-    const name = repoPath.split('/').filter(Boolean).pop() || 'session';
-    const portVariables = getRepoPortVariables(freshConfig, repoPath);
+    const name = sessionNameFromRepoPath(checkedRepoPath);
+    const portVariables = getRepoPortVariables(freshConfig, checkedRepoPath);
     const capacityResponse = buildPtyCapacityResponse(
       activePtySessionCount(),
       freshConfig.maxPtySessions
@@ -2672,7 +2738,7 @@ async function main(): Promise<void> {
       try {
         session = createTerminalSessionRecord({
           repoName: name,
-          repoPath,
+          repoPath: checkedRepoPath,
           worktreePath: worktreePath ?? null,
           cwd,
           safeCols,
@@ -2685,6 +2751,7 @@ async function main(): Promise<void> {
         return;
       }
       gitWatcher.watch(session.cwd);
+      associateSessionWithWorkContext(workContextStore, workContextId, session);
       res.status(201).json(session);
       return;
     }
@@ -2697,7 +2764,7 @@ async function main(): Promise<void> {
       newWorktree ?? false
     );
 
-    const resolved = resolveSessionSettings(freshConfig, repoPath, {
+    const resolved = resolveSessionSettings(freshConfig, checkedRepoPath, {
       agent,
       yolo,
       useTmux,
@@ -2732,7 +2799,7 @@ async function main(): Promise<void> {
         const { session } = await localRelayNode.sessions.createWeb({
           agentType: resolvedAgent,
           cwd,
-          repoPath,
+          repoPath: checkedRepoPath,
           repoName: name,
           worktreePath: worktreePath ?? null,
           branchName: requestBranchName ?? '',
@@ -2742,6 +2809,7 @@ async function main(): Promise<void> {
           sessionLane,
         });
         gitWatcher.watch(session.cwd);
+        associateSessionWithWorkContext(workContextStore, workContextId, session);
         res.status(201).json(session);
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
@@ -2785,7 +2853,7 @@ async function main(): Promise<void> {
     try {
       session = createAgentSessionRecord({
         repoName: name,
-        repoPath,
+        repoPath: checkedRepoPath,
         worktreePath,
         cwd,
         requestBranchName,
@@ -2818,6 +2886,8 @@ async function main(): Promise<void> {
         logger.error('[index] transition on session create failed:', err);
       });
     }
+
+    associateSessionWithWorkContext(workContextStore, workContextId, session);
 
     res.status(201).json(session);
   });
@@ -2954,6 +3024,7 @@ async function main(): Promise<void> {
         serializeAll(configDir, { reason: 'update' });
         flushRelayStateWrites();
         closeRelayStateDb();
+        workContextStore.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -3032,6 +3103,7 @@ async function main(): Promise<void> {
     serializeAll(configDir, { reason: restartReason });
     flushRelayStateWrites();
     closeRelayStateDb();
+    workContextStore.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
