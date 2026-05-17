@@ -357,6 +357,42 @@ describe('aggregateRemoteSessions', () => {
     expect(result).toEqual([]);
   });
 
+  it('does not mask non-retryable typed HubNodeLinkError failures with the cached read model', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    let unauthorized = false;
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [summary('node-a')],
+      activeNodeIds: new Set(['node-a']),
+      requestImpl: async (nodeId) => {
+        if (unauthorized) {
+          throw new HubNodeLinkError({
+            code: 'UNAUTHORIZED',
+            message: 'node credential was rejected',
+            retryable: false,
+          });
+        }
+        return { sessions: [localSession('s-live', nodeId)] };
+      },
+    });
+
+    await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 1_000,
+    });
+    unauthorized = true;
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 2_000,
+    });
+
+    expect(result).toEqual([]);
+  });
+
   it('does not use expired cached remote sessions after a sessions.list failure', async () => {
     const readModelCache = createRemoteSessionReadModelCache();
     let fail = false;

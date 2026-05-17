@@ -97,6 +97,11 @@ interface HubNodeSessionTransport {
   ): Promise<{ payload: unknown; close(): void }>;
 }
 
+interface RoutedSessionReadModelCache {
+  set(nodeId: string, sessions: SessionSummary[], observedAtMs: number): void;
+  upsert(nodeId: string, session: SessionSummary, observedAtMs: number): void;
+}
+
 export interface RoutedSessionAuditSink {
   append(input: SecurityAuditEntryInput): unknown;
 }
@@ -118,6 +123,7 @@ interface HubNodeRouterOptions {
   confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
   workContextStore?: WorkContextStore;
+  readModelCache?: RoutedSessionReadModelCache;
   now?: () => Date;
 }
 
@@ -2344,6 +2350,7 @@ export function createHubNodeRouter(
         session,
         workContextId
       );
+      options.readModelCache?.upsert(nodeId, session, createNow.getTime());
       res.status(201).json(
         associationError
           ? { ...responseSession, workContextAssociationError: associationError }
