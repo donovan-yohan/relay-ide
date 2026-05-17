@@ -517,6 +517,7 @@ const createSessionInputSchema: RelayJsonSchema = {
     branchName: stringSchema,
     initialPrompt: stringSchema,
     continuePolicy: { type: 'string', enum: ['always', 'never'] },
+    workContextId: stringSchema,
     controlMode: {
       type: 'string',
       enum: ['agent-driven', 'human-driven'],

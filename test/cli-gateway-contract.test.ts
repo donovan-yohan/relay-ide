@@ -132,6 +132,7 @@ describe('CLI gateway contract', () => {
 
     const createProperties = create.inputSchema.properties ?? {};
     expect(createProperties['sessionEnvelope']).toBeDefined();
+    expect(createProperties['workContextId']).toBeDefined();
     expect(JSON.stringify(create.inputSchema)).not.toContain('"kind":{"const":"agent"}');
     expect(JSON.stringify(create.inputSchema)).not.toContain('"adapter"');
   });
@@ -215,6 +216,7 @@ describe('CLI gateway contract', () => {
       worktreePath: null,
       type: 'terminal',
       cols: 120,
+      workContextId: 'wc:handoff',
     });
     expect(clean).toMatchObject({
       ok: true,
@@ -223,6 +225,7 @@ describe('CLI gateway contract', () => {
         worktreePath: null,
         type: 'terminal',
         cols: 120,
+        workContextId: 'wc:handoff',
       },
       sessionType: 'terminal',
     });

@@ -270,6 +270,7 @@ function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown>
     ['--branch-name', 'branchName'],
     ['--initial-prompt', 'initialPrompt'],
     ['--continue-policy', 'continuePolicy'],
+    ['--work-context-id', 'workContextId'],
     ['--control-mode', 'controlMode'],
     ['--confirmation-token', 'confirmationToken'],
     ['--expires-at', 'expiresAt'],

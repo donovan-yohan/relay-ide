@@ -13,8 +13,11 @@ import {
   WORK_CONTEXT_SCHEMA_VERSION,
   createWorkContextPrivacyMetadata,
   isWorkContext,
+  type ArtifactRef,
+  type AuditEventRef,
   type NodeRefKind,
   type SessionRef,
+  type TaskRef,
   type WorkContext,
   type WorkContextId,
   type WorkContextTabKind,
@@ -25,6 +28,19 @@ const logger = createLogger('work-contexts');
 const SCHEMA_VERSION = 1;
 const DEFAULT_SOURCE = 'relay-api';
 const DEFAULT_RELATIONSHIP = 'associated';
+const MAX_RESUME_ARTIFACTS = 20;
+const MAX_RESUME_AUDIT_REFS = 50;
+const MAX_RESUME_SESSIONS = 20;
+const LIFECYCLE_EVENT_TYPES = new Set([
+  'handoff.created',
+  'session.associated',
+  'session.started',
+  'session.resumed',
+  'operator.intervened',
+  'artifact.recorded',
+  'summary.recorded',
+  'handoff.closed',
+]);
 
 const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set([
   'rawContent',
@@ -148,6 +164,48 @@ export interface SessionAssociationInput {
   relationship?: string;
 }
 
+export interface WorkContextLifecycleEventInput {
+  eventId?: string;
+  type?: string;
+  actorId?: string;
+  occurredAt?: string;
+  correlationId?: string;
+  logRef?: string;
+  artifacts?: ArtifactRef[];
+  summary?: string;
+}
+
+export interface WorkContextFromTaskRefInput extends WorkContextCreateInput {
+  taskRef?: TaskRef;
+  existingWorkContextId?: string;
+  relationship?: string;
+}
+
+export interface WorkContextResumeSnapshot {
+  workContext: Pick<
+    WorkContext,
+    | 'id'
+    | 'title'
+    | 'source'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'anchors'
+    | 'actors'
+    | 'tasks'
+    | 'relatedContextRefs'
+  >;
+  node: WorkContextNodeState;
+  sessions: WorkContextSessionSummary[];
+  artifacts: ArtifactRef[];
+  auditRefs: AuditEventRef[];
+  privacy: {
+    mode: 'compact-refs';
+    rawPayloadAvailable: false;
+    transcriptExportAvailable: false;
+    rawTranscriptIncluded: false;
+  };
+}
+
 export interface WorkContextSessionSummary {
   id: string;
   nodeId: string;
@@ -201,6 +259,8 @@ export interface WorkContextStore {
   update(id: WorkContextId, patch: WorkContextPatchInput): WorkContext;
   linkContexts(sourceId: WorkContextId, targetId: WorkContextId, relationship?: string): WorkContext;
   associateSession(id: WorkContextId, input: SessionAssociationInput): WorkContext;
+  recordLifecycleEvent(id: WorkContextId, input: WorkContextLifecycleEventInput): WorkContext;
+  getResumeSnapshot(id: WorkContextId, input: ListActiveWorkInput): WorkContextResumeSnapshot;
   listActiveWork(input: ListActiveWorkInput): WorkContextActiveGroup[];
 }
 
@@ -373,7 +433,11 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
         throw new WorkContextStoreError(400, 'session_ref_required');
       }
       assertValidSessionRef(sessionRef);
-      const updated = contextWithSessionAnchor(existing, sessionRef, associatedAt);
+      const updated = contextWithSessionAssociationEvent(
+        contextWithSessionAnchor(existing, sessionRef, associatedAt),
+        sessionRef,
+        associatedAt
+      );
       db.transaction(() => {
         write(updated);
         upsertSessionLink.run({
@@ -387,6 +451,31 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
         });
       })();
       return updated;
+    },
+
+    recordLifecycleEvent(id: WorkContextId, input: WorkContextLifecycleEventInput) {
+      const existing = mustGet(id);
+      const updated = contextWithLifecycleEvent(existing, input, new Date().toISOString());
+      return write(updated);
+    },
+
+    getResumeSnapshot(id: WorkContextId, input: ListActiveWorkInput) {
+      const context = mustGet(id);
+      const groups = buildActiveGroups(
+        [context],
+        selectSessionLinks.all() as SessionLinkRow[],
+        input.sessions,
+        input.nodes ?? []
+      );
+      return resumeSnapshotFromGroup(
+        groups[0] ?? {
+          id: context.id,
+          context,
+          node: nodeStateForNodeId(DEFAULT_LOCAL_NODE_ID, new Map()),
+          sessions: [],
+          staleReadModel: true,
+        }
+      );
     },
 
     listActiveWork(input: ListActiveWorkInput) {
@@ -426,11 +515,71 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     }
   });
 
+  router.post('/from-task-ref', auth, (req, res) => {
+    const input = req.body as WorkContextFromTaskRefInput;
+    if (!input.taskRef) {
+      res.status(400).json({ error: 'taskRef is required' });
+      return;
+    }
+    try {
+      if (input.existingWorkContextId) {
+        const existing = deps.store.get(input.existingWorkContextId);
+        if (!existing) {
+          res.status(404).json({ error: 'work_context_not_found' });
+          return;
+        }
+        const context = deps.store.update(existing.id, {
+          ...pickWorkContextPatch(input),
+          tasks: dedupeById([...existing.tasks, input.taskRef]),
+        });
+        deps.store.recordLifecycleEvent(context.id, {
+          type: 'handoff.created',
+          summary: `Linked task ${input.taskRef.kind}:${input.taskRef.id}`,
+        });
+        res.json({ workContext: deps.store.get(context.id) ?? context });
+        return;
+      }
+      const context = deps.store.create({
+        ...input,
+        tasks: dedupeById([...(input.tasks ?? []), input.taskRef]),
+      });
+      deps.store.recordLifecycleEvent(context.id, {
+        type: 'handoff.created',
+        summary: `Created handoff context for ${input.taskRef.kind}:${input.taskRef.id}`,
+      });
+      res.status(201).json({ workContext: deps.store.get(context.id) ?? context });
+    } catch (err) {
+      sendStoreError(res, err);
+    }
+  });
+
   router.get('/active', auth, async (_req, res) => {
     try {
       const sessions = await deps.getSessions();
       const nodes = deps.getNodes?.() ?? [];
       res.json({ groups: deps.store.listActiveWork({ sessions, nodes }) });
+    } catch (err) {
+      sendStoreError(res, err);
+    }
+  });
+
+  router.get('/:id/resume', auth, async (req, res) => {
+    try {
+      const sessions = await deps.getSessions();
+      const nodes = deps.getNodes?.() ?? [];
+      res.json({ resume: deps.store.getResumeSnapshot(req.params['id'] ?? '', { sessions, nodes }) });
+    } catch (err) {
+      sendStoreError(res, err);
+    }
+  });
+
+  router.post('/:id/events', auth, (req, res) => {
+    try {
+      const context = deps.store.recordLifecycleEvent(
+        req.params['id'] ?? '',
+        req.body as WorkContextLifecycleEventInput
+      );
+      res.status(201).json({ workContext: context });
     } catch (err) {
       sendStoreError(res, err);
     }
@@ -483,6 +632,8 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
       tabId?: string;
       tabKind?: WorkContextTabKind;
       cwd?: string;
+      agent?: string;
+      controlMode?: SessionSummary['controlMode'];
       relationship?: string;
     };
     if (!body.sessionId) {
@@ -516,6 +667,8 @@ interface SessionRefBody {
   tabId?: string;
   tabKind?: WorkContextTabKind;
   cwd?: string;
+  agent?: string;
+  controlMode?: SessionSummary['controlMode'];
 }
 
 function buildContextFromInput(
@@ -665,6 +818,8 @@ function pickAnchors(anchors: WorkContext['anchors']): WorkContext['anchors'] {
         tabId: anchors.session.tabId,
         tabKind: anchors.session.tabKind,
         cwd: anchors.session.cwd,
+        agent: anchors.session.agent,
+        controlMode: anchors.session.controlMode,
       })
     : undefined;
   const project = anchors.project
@@ -833,6 +988,108 @@ function contextWithSessionAnchor(
   };
 }
 
+function contextWithSessionAssociationEvent(
+  context: WorkContext,
+  sessionRef: SessionRef,
+  associatedAt: string
+): WorkContext {
+  return contextWithLifecycleEvent(
+    context,
+    {
+      eventId: `session:${sessionRef.nodeId}:${sessionRef.sessionId}:associated`,
+      type: 'session.associated',
+      occurredAt: associatedAt,
+      summary: `Associated ${sessionRef.agent ?? sessionRef.tabKind} session ${sessionRef.sessionId} on ${sessionRef.nodeId}`,
+    },
+    associatedAt
+  );
+}
+
+function contextWithLifecycleEvent(
+  context: WorkContext,
+  input: WorkContextLifecycleEventInput,
+  now: string
+): WorkContext {
+  if (input.type !== undefined && !LIFECYCLE_EVENT_TYPES.has(input.type)) {
+    throw new WorkContextStoreError(400, 'invalid_lifecycle_event_type');
+  }
+  const occurredAt = input.occurredAt ?? now;
+  if (Number.isNaN(Date.parse(occurredAt))) {
+    throw new WorkContextStoreError(400, 'invalid_lifecycle_occurred_at');
+  }
+  const eventId = input.eventId ?? `work-context:${context.id}:${crypto.randomBytes(8).toString('hex')}`;
+  const auditRef: AuditEventRef = {
+    id: `audit-ref:${eventId}`,
+    eventId,
+    ...(input.type ? { type: input.type } : {}),
+    occurredAt,
+    ...(input.actorId ? { actorId: input.actorId } : {}),
+    ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+    ...(input.logRef ? { logRef: input.logRef } : {}),
+    privacy: createWorkContextPrivacyMetadata({
+      classification: 'internal',
+      retention: 'audit',
+      redaction: {
+        redacted: true,
+        strategy: 'summary',
+        classes: ['payload', 'transcript', 'log'],
+      },
+    }),
+  };
+  const artifacts = [...context.artifacts, ...safeLifecycleArtifacts(input, eventId, occurredAt)];
+  const auditRefs = upsertAuditRef(context.auditRefs, auditRef);
+  const updated: WorkContext = {
+    ...context,
+    artifacts: dedupeById(artifacts),
+    auditRefs,
+    updatedAt: now,
+  };
+  return updated;
+}
+
+function safeLifecycleArtifacts(
+  input: WorkContextLifecycleEventInput,
+  eventId: string,
+  occurredAt: string
+): ArtifactRef[] {
+  const artifacts = input.artifacts ?? [];
+  const summaryArtifact: ArtifactRef[] = input.summary
+    ? [
+        {
+          id: `artifact-ref:${eventId}:summary`,
+          kind: 'report',
+          title: 'Lifecycle summary',
+          summary: input.summary,
+          ...(input.actorId ? { producedByActorId: input.actorId } : {}),
+          producedAt: occurredAt,
+          privacy: createWorkContextPrivacyMetadata({
+            classification: 'internal',
+            retention: 'session',
+            redaction: {
+              redacted: true,
+              strategy: 'summary',
+              classes: ['payload', 'transcript', 'log'],
+            },
+          }),
+        },
+      ]
+    : [];
+  return [...artifacts, ...summaryArtifact];
+}
+
+function upsertAuditRef(
+  refs: AuditEventRef[],
+  ref: AuditEventRef
+): AuditEventRef[] {
+  return dedupeById([...refs, ref]);
+}
+
+function dedupeById<T extends { id: string }>(items: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const item of items) byId.set(item.id, item);
+  return Array.from(byId.values());
+}
+
 export function sessionSummaryToRef(session: SessionSummary): SessionRef {
   const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   const globalSessionId = session.globalSessionId ?? createGlobalSessionId(nodeId, session.id);
@@ -843,6 +1100,8 @@ export function sessionSummaryToRef(session: SessionSummary): SessionRef {
     globalSessionId,
     tabKind,
     cwd: session.cwd,
+    ...(session.agent ? { agent: session.agent } : {}),
+    ...(session.controlMode ? { controlMode: session.controlMode } : {}),
   };
 }
 
@@ -856,6 +1115,8 @@ function sessionRefFromBody(body: SessionRefBody): SessionRef {
     ...(body.tabId ? { tabId: body.tabId } : {}),
     tabKind: body.tabKind ?? 'terminal',
     cwd: body.cwd,
+    ...(body.agent ? { agent: body.agent } : {}),
+    ...(body.controlMode ? { controlMode: body.controlMode } : {}),
   };
 }
 
@@ -932,6 +1193,34 @@ function buildActiveGroups(
   return groups;
 }
 
+function resumeSnapshotFromGroup(group: WorkContextActiveGroup): WorkContextResumeSnapshot {
+  if (!group.context) throw new WorkContextStoreError(404, 'work_context_not_found');
+  const context = group.context;
+  return {
+    workContext: {
+      id: context.id,
+      ...(context.title ? { title: context.title } : {}),
+      source: context.source,
+      createdAt: context.createdAt,
+      updatedAt: context.updatedAt,
+      anchors: context.anchors,
+      actors: context.actors,
+      tasks: context.tasks,
+      ...(context.relatedContextRefs ? { relatedContextRefs: context.relatedContextRefs } : {}),
+    },
+    node: group.node,
+    sessions: group.sessions.slice(0, MAX_RESUME_SESSIONS),
+    artifacts: context.artifacts.slice(-MAX_RESUME_ARTIFACTS),
+    auditRefs: context.auditRefs.slice(-MAX_RESUME_AUDIT_REFS),
+    privacy: {
+      mode: 'compact-refs',
+      rawPayloadAvailable: false,
+      transcriptExportAvailable: false,
+      rawTranscriptIncluded: false,
+    },
+  };
+}
+
 function buildSessionLookup(sessions: SessionSummary[]): Map<string, SessionSummary> {
   const lookup = new Map<string, SessionSummary>();
   for (const session of sessions) {
@@ -993,7 +1282,9 @@ function summarizeLinkedSession(
     nodeId: ref.nodeId,
     ...(ref.globalSessionId ? { globalSessionId: ref.globalSessionId } : {}),
     tabKind: ref.tabKind,
+    ...(ref.agent ? { agent: ref.agent } : {}),
     cwd: ref.cwd,
+    ...(ref.controlMode ? { controlMode: ref.controlMode } : {}),
     relationship: link.relationship,
     associatedAt: link.associated_at,
     live: false,
