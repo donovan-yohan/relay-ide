@@ -360,6 +360,14 @@ describe('hub policy evaluator', () => {
       'tab:mode:set-agent',
     ]);
     expect(
+      evaluateHubPolicy(
+        baseInput({ requiredCapabilities: sessionCreateCapabilities({ sessionType: 'agent' }) })
+      )
+    ).toMatchObject({
+      decision: 'allow',
+      grantedBits: ['session:create:agent', 'tab:mode:set-agent'],
+    });
+    expect(
       sessionCreateCapabilities({ sessionType: 'agent', controlMode: 'human-driven' })
     ).toEqual(['session:create:agent']);
     expect(
