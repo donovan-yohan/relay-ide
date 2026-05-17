@@ -100,6 +100,84 @@ function resetCliLogDir(): void {
   fs.rmSync('/tmp/relay-ide-test-config', { recursive: true, force: true });
 }
 
+function writeHubConfig(pathName = '/tmp/relay-ide-test-config/config.json'): string {
+  fs.mkdirSync(path.dirname(pathName), { recursive: true });
+  fs.writeFileSync(pathName, JSON.stringify({ port: 3456 }));
+  return pathName;
+}
+
+function sampleHubNode(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    nodeId: 'node_alpha',
+    displayName: 'Alpha MacBook',
+    hostname: 'alpha.local',
+    platform: 'darwin',
+    arch: 'arm64',
+    relayVersion: '0.1.0',
+    protocolVersion: '1.0',
+    status: 'online',
+    connection: { route: 'reverse-link', status: 'connected' },
+    trust: { state: 'trusted', level: 'standard' },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
+    capabilities: {
+      totals: { available: 3, degraded: 0, unavailable: 0, unknown: 0 },
+      core: {
+        shell: 'available',
+        tmux: 'available',
+        git: 'available',
+        browserAutomation: 'unknown',
+        clipboardImage: 'unknown',
+        ssh: 'unknown',
+        tailscale: 'unknown',
+      },
+      agents: { claude: 'available' },
+      serviceManager: 'launchd',
+      wsl: false,
+      sessionResume: 'tmux',
+    },
+    createdAt: '2026-01-01T00:00:00.000Z',
+    pairedAt: '2026-01-01T00:00:00.000Z',
+    lastSeenAt: '2026-01-01T00:00:10.000Z',
+    credentialId: 'cred_alpha',
+    ...overrides,
+  };
+}
+
+interface FetchFixture {
+  pathName: string;
+  status?: number;
+  body: unknown;
+}
+
+function stubHubFetch(fixtures: FetchFixture[]): string[] {
+  const paths: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      const fixture = fixtures.find((candidate) => candidate.pathName === `${url.pathname}${url.search}`)
+        ?? fixtures.find((candidate) => candidate.pathName === url.pathname);
+      paths.push(`${url.pathname}${url.search}`);
+      if (!fixture) {
+        return new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'missing fixture' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(fixture.body), {
+        status: fixture.status ?? 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    })
+  );
+  return paths;
+}
+
 describe('hub/node packaging decision', () => {
   it('keeps hub and node roles in the single relay-ide npm package', () => {
     const packageJson = JSON.parse(readRepoFile('package.json')) as {
@@ -219,6 +297,143 @@ describe('hub/node packaging decision', () => {
     expect(loggerMocks.error).toHaveBeenCalledWith(
       expect.stringContaining('Usage: relay-ide hub')
     );
+  });
+
+  it('prints a useful hub nodes table and keeps --json parity', async () => {
+    resetCliLogDir();
+    const configPath = writeHubConfig();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
+    const node = sampleHubNode();
+    const requests = stubHubFetch([{ pathName: '/nodes', body: { nodes: [node] } }]);
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const tableResult = await runCli(['hub', 'nodes', '--config', configPath]);
+      expect(tableResult.exitCode).toBe(0);
+      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('STATUS'));
+      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('node_alpha'));
+      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('tmux:available'));
+
+      loggerMocks.info.mockClear();
+      const jsonResult = await runCli(['hub', 'nodes', '--json', '--config', configPath]);
+      expect(jsonResult.exitCode).toBe(0);
+      const payload = JSON.parse(stdout) as { count: number; nodes: Array<Record<string, unknown>> };
+      expect(payload.count).toBe(1);
+      expect(payload.nodes[0]?.['nodeId']).toBe('node_alpha');
+      expect(requests).toEqual(['/nodes', '/nodes']);
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
+  });
+
+  it('reports missing config/auth and hub unreachable as typed hub doctor failures', async () => {
+    resetCliLogDir();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('connection refused token=super-secret');
+      })
+    );
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const result = await runCli(['hub', 'doctor', '--json']);
+      expect(result.exitCode).toBe(1);
+      const payload = JSON.parse(stdout) as { ok: boolean; checks: Array<{ reason?: string }> };
+      expect(payload.ok).toBe(false);
+      expect(payload.checks.map((check) => check.reason)).toEqual(
+        expect.arrayContaining(['CONFIG_MISSING', 'AUTH_TOKEN_MISSING', 'HUB_UNREACHABLE', 'CHECK_SKIPPED'])
+      );
+      expect(stdout).not.toContain('super-secret');
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
+  });
+
+  it('reports node availability, version, capability, and log support diagnostics', async () => {
+    resetCliLogDir();
+    const configPath = writeHubConfig();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
+    const baseCapabilities = sampleHubNode()['capabilities'] as {
+      core: Record<string, string>;
+    };
+    const nodes = [
+      sampleHubNode({ nodeId: 'node_stale', displayName: 'Stale Node', status: 'stale' }),
+      sampleHubNode({
+        nodeId: 'node_skew',
+        displayName: 'Skew Node',
+        version: {
+          state: 'version-skew',
+          nodeProtocolVersion: '0.9',
+          hubProtocolVersion: '1.0',
+        },
+      }),
+      sampleHubNode({
+        nodeId: 'node_no_tmux',
+        displayName: 'No Tmux Node',
+        capabilities: {
+          ...baseCapabilities,
+          core: { ...baseCapabilities.core, tmux: 'unavailable' },
+        },
+      }),
+      sampleHubNode({ nodeId: 'node_no_logs', displayName: 'No Logs Node' }),
+    ];
+    stubHubFetch([
+      { pathName: '/version', body: { version: '0.1.0' } },
+      { pathName: '/nodes', body: { nodes } },
+      { pathName: '/hub/nodes/node_no_tmux/logs?lines=0', body: { log: { message: 'ok' } } },
+      {
+        pathName: '/hub/nodes/node_no_logs/logs?lines=0',
+        status: 404,
+        body: { error: { code: 'NODE_UNSUPPORTED', message: 'logs.tail missing', token: 'node-secret' } },
+      },
+    ]);
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const result = await runCli(['hub', 'doctor', '--json', '--config', configPath]);
+      expect(result.exitCode).toBe(1);
+      const payload = JSON.parse(stdout) as { checks: Array<{ reason?: string }> };
+      const reasons = payload.checks.map((check) => check.reason);
+      expect(reasons).toEqual(
+        expect.arrayContaining(['NODE_STALE', 'VERSION_SKEW', 'UNSUPPORTED_CAPABILITY', 'MISSING_LOG_SUPPORT'])
+      );
+      expect(stdout).not.toContain('browser-secret-token');
+      expect(stdout).not.toContain('node-secret');
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
   });
 
   it('tails local hub logs with --lines without platform log commands', async () => {

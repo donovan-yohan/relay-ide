@@ -265,5 +265,7 @@ export function redactBootstrapSecrets(value: string): string {
     .replace(/\bnode_[A-Za-z0-9._~+/=-]+\.secret_[A-Za-z0-9._~+/=-]+\b/g, 'node_…redacted.secret_…redacted')
     .replace(/\bsecret_[A-Za-z0-9._~+/=-]+\b/g, 'secret_…redacted')
     .replace(/(Authorization:\s*Bearer\s+)\S+/gi, '$1…redacted')
-    .replace(/(Bearer\s+)\S+/gi, '$1…redacted');
+    .replace(/(Bearer\s+)\S+/gi, '$1…redacted')
+    .replace(/("(?:token|pairToken|pin|password|secret)"\s*:\s*)"[^"]*"/gi, '$1"…redacted"')
+    .replace(/\b(token|pin|password|secret)=([^\s&"',}]+)/gi, '$1=…redacted');
 }

@@ -14,7 +14,10 @@ import {
   BOOTSTRAP_DIAGNOSTICS,
   redactBootstrapSecrets,
 } from '../shared/bootstrap-diagnostics.js';
-import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import {
+  RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type HubNodeSummary,
+} from '../shared/relay-node-protocol.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { Config } from '../server/types.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
@@ -77,6 +80,8 @@ Commands:
     uninstall                         Stop and remove the hub background service
     status                            Show hub service status
     logs [--lines <n>] [--follow]     Print or follow local hub log files
+    nodes [--json]                    List paired nodes with status/capability summary
+    doctor [--json]                   Run bounded hub/node diagnostics
     node-logs <nodeId> [--lines <n>] [--follow]
                                        Print or follow logs from a paired remote node
   install            Back-compat alias for relay-ide hub install
@@ -1420,6 +1425,358 @@ async function printHubLogs(commandArgs: string[]): Promise<void> {
   await printLocalLogs('hub', commandArgs);
 }
 
+type HubDoctorStatus = 'pass' | 'fail' | 'warn' | 'skip';
+type HubDoctorReason =
+  | 'CONFIG_MISSING'
+  | 'CONFIG_UNREADABLE'
+  | 'CONFIG_INVALID'
+  | 'AUTH_TOKEN_MISSING'
+  | 'HUB_UNREACHABLE'
+  | 'HUB_HTTP_ERROR'
+  | 'UNAUTHORIZED'
+  | 'NODE_REGISTRY_INVALID'
+  | 'NODE_OFFLINE'
+  | 'NODE_STALE'
+  | 'NODE_REVOKED'
+  | 'VERSION_SKEW'
+  | 'PROTOCOL_INCOMPATIBLE'
+  | 'UNSUPPORTED_CAPABILITY'
+  | 'MISSING_LOG_SUPPORT'
+  | 'CHECK_SKIPPED';
+
+interface HubDoctorCheck {
+  name: string;
+  status: HubDoctorStatus;
+  message: string;
+  reason?: HubDoctorReason;
+  details?: Record<string, unknown>;
+}
+
+interface HubNodesPayload {
+  generatedAt: string;
+  hub: { url: string };
+  count: number;
+  nodes: HubNodeSummary[];
+}
+
+function hubCliPort(): string {
+  return getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+}
+
+function hubCliBaseUrl(): string {
+  return `http://127.0.0.1:${hubCliPort()}`;
+}
+
+function redactForCli<T>(value: T): T {
+  return JSON.parse(redactBootstrapSecrets(JSON.stringify(value))) as T;
+}
+
+function hubCliToken(): string {
+  return process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+}
+
+async function hubFetchJson(
+  pathName: string,
+  capabilities: readonly string[] = []
+): Promise<
+  | { ok: true; status: number; body: unknown }
+  | { ok: false; status?: number; reason: HubDoctorReason; message: string; body?: unknown }
+> {
+  const token = hubCliToken();
+  const headers: Record<string, string> = { 'x-relay-cli-gateway': 'v1' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (capabilities.length) headers['x-relay-capabilities'] = capabilities.join(',');
+  let res: Response;
+  try {
+    res = await fetch(`${hubCliBaseUrl()}${pathName}`, { headers });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: 'HUB_UNREACHABLE',
+      message: `could not connect to Relay hub on port ${hubCliPort()}: ${message}`,
+    };
+  }
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  if (res.ok) return { ok: true, status: res.status, body: redactForCli(body) };
+  const upstream = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : undefined;
+  const reason = normalizeGatewayErrorCode(res.status, upstream) === 'UNAUTHORIZED'
+    ? 'UNAUTHORIZED'
+    : 'HUB_HTTP_ERROR';
+  return {
+    ok: false,
+    status: res.status,
+    reason,
+    message: gatewayErrorMessage(res.status, upstream),
+    body: redactForCli(body),
+  };
+}
+
+function hubConfigCheck(): HubDoctorCheck {
+  const configPath = resolveConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return {
+      name: 'config.read',
+      status: 'fail',
+      reason: 'CONFIG_MISSING',
+      message: `config file is missing: ${configPath}`,
+      details: { configPath },
+    };
+  }
+  try {
+    JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return {
+      name: 'config.read',
+      status: 'pass',
+      message: `config file is readable: ${configPath}`,
+      details: { configPath },
+    };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      name: 'config.read',
+      status: 'fail',
+      reason: code ? 'CONFIG_UNREADABLE' : 'CONFIG_INVALID',
+      message: `could not read config ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      details: { configPath },
+    };
+  }
+}
+
+function hubAuthCheck(): HubDoctorCheck {
+  if (hubCliToken()) {
+    return {
+      name: 'auth.token',
+      status: 'pass',
+      message: 'RELAY_IDE_BROWSER_TOKEN is set for scoped hub API checks.',
+    };
+  }
+  return {
+    name: 'auth.token',
+    status: 'fail',
+    reason: 'AUTH_TOKEN_MISSING',
+    message: 'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+  };
+}
+
+function nodesFromBody(body: unknown): HubNodeSummary[] | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const nodes = (body as { nodes?: unknown }).nodes;
+  return Array.isArray(nodes) ? (nodes as HubNodeSummary[]) : undefined;
+}
+
+async function fetchHubNodes(): Promise<
+  | { ok: true; nodes: HubNodeSummary[] }
+  | { ok: false; check: HubDoctorCheck }
+> {
+  const result = await hubFetchJson('/nodes', ['session:read']);
+  if ('reason' in result) {
+    return {
+      ok: false,
+      check: {
+        name: 'nodes.registry',
+        status: 'fail',
+        reason: result.reason,
+        message: result.message,
+        details: { status: result.status, body: result.body },
+      },
+    };
+  }
+  const nodes = nodesFromBody(result.body);
+  if (!nodes) {
+    return {
+      ok: false,
+      check: {
+        name: 'nodes.registry',
+        status: 'fail',
+        reason: 'NODE_REGISTRY_INVALID',
+        message: 'hub /nodes did not return a nodes array',
+      },
+    };
+  }
+  return { ok: true, nodes };
+}
+
+function nodeCapabilityChecks(node: HubNodeSummary): HubDoctorCheck[] {
+  const checks: HubDoctorCheck[] = [];
+  const tmuxStatus = node.capabilities.core.tmux;
+  if (tmuxStatus !== 'available') {
+    checks.push({
+      name: `node.${node.nodeId}.capability.tmux`,
+      status: 'fail',
+      reason: 'UNSUPPORTED_CAPABILITY',
+      message: `${node.displayName} reports tmux capability ${tmuxStatus}; routed terminal sessions require tmux support.`,
+      details: { nodeId: node.nodeId, capability: 'tmux', status: tmuxStatus },
+    });
+  }
+  if (node.version.state !== 'compatible') {
+    checks.push({
+      name: `node.${node.nodeId}.version`,
+      status: 'fail',
+      reason: node.version.state === 'version-skew' ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+      message: `${node.displayName} protocol ${node.version.nodeProtocolVersion} does not match hub ${node.version.hubProtocolVersion}.`,
+      details: { nodeId: node.nodeId, version: node.version },
+    });
+  }
+  return checks;
+}
+
+function nodeAvailabilityCheck(node: HubNodeSummary): HubDoctorCheck {
+  if (node.status === 'online') {
+    return {
+      name: `node.${node.nodeId}.availability`,
+      status: 'pass',
+      message: `${node.displayName} is online via ${node.connection.route}.`,
+      details: { nodeId: node.nodeId, lastSeenAt: node.lastSeenAt },
+    };
+  }
+  const reason: HubDoctorReason = node.status === 'stale' ? 'NODE_STALE' : node.status === 'revoked' ? 'NODE_REVOKED' : 'NODE_OFFLINE';
+  return {
+    name: `node.${node.nodeId}.availability`,
+    status: 'fail',
+    reason,
+    message: `${node.displayName} is ${node.status}; last seen ${node.lastSeenAt}.`,
+    details: { nodeId: node.nodeId, status: node.status, lastSeenAt: node.lastSeenAt },
+  };
+}
+
+async function nodeLogSupportCheck(node: HubNodeSummary): Promise<HubDoctorCheck> {
+  if (node.status !== 'online' || node.version.state !== 'compatible') {
+    return {
+      name: `node.${node.nodeId}.logs`,
+      status: 'skip',
+      reason: 'CHECK_SKIPPED',
+      message: `${node.displayName} log support check skipped because the node is not online and protocol-compatible.`,
+      details: { nodeId: node.nodeId, status: node.status, version: node.version.state },
+    };
+  }
+  const result = await hubFetchJson(
+    `/hub/nodes/${encodeURIComponent(node.nodeId)}/logs?lines=0`,
+    ['session:read']
+  );
+  if (!('reason' in result)) {
+    return {
+      name: `node.${node.nodeId}.logs`,
+      status: 'pass',
+      message: `${node.displayName} supports hub node-log snapshots.`,
+      details: { nodeId: node.nodeId },
+    };
+  }
+  return {
+    name: `node.${node.nodeId}.logs`,
+    status: 'fail',
+    reason: result.reason === 'HUB_HTTP_ERROR' ? 'MISSING_LOG_SUPPORT' : result.reason,
+    message: `${node.displayName} node-log check failed: ${result.message}`,
+    details: { nodeId: node.nodeId, status: result.status, body: result.body },
+  };
+}
+
+function boundedNodeRow(value: string | undefined, max = 24): string {
+  const text = value || '-';
+  return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text;
+}
+
+function formatNodeTable(nodes: HubNodeSummary[]): string[] {
+  if (nodes.length === 0) return ['No paired Relay nodes.'];
+  const rows = nodes.slice(0, 100).map((node) => [
+    node.status,
+    boundedNodeRow(node.nodeId, 20),
+    boundedNodeRow(node.displayName, 24),
+    boundedNodeRow(`${node.hostname} ${node.platform}/${node.arch}`, 30),
+    boundedNodeRow(node.relayVersion, 14),
+    boundedNodeRow(node.version.state, 16),
+    `tmux:${node.capabilities.core.tmux}`,
+    node.lastSeenAt,
+  ]);
+  const header = ['STATUS', 'NODE ID', 'NAME', 'HOST', 'VERSION', 'PROTO', 'CAPS', 'LAST SEEN'];
+  const widths = header.map((heading, index) => Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0)));
+  const render = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join('  ').trimEnd();
+  const output = [render(header), render(widths.map((width) => '-'.repeat(width))), ...rows.map(render)];
+  if (nodes.length > rows.length) output.push(`… ${nodes.length - rows.length} more nodes omitted from human output; use --json for the full list.`);
+  return output;
+}
+
+async function printHubNodes(commandArgs: string[]): Promise<void> {
+  const jsonOutput = commandArgs.includes('--json');
+  const fetched = await fetchHubNodes();
+  if ('check' in fetched) {
+    if (jsonOutput) console.log(JSON.stringify(redactForCli(fetched.check), null, 2));
+    else logger.error(redactBootstrapSecrets(`${fetched.check.reason}: ${fetched.check.message}`));
+    process.exit(1);
+  }
+  const payload = redactForCli<HubNodesPayload>({
+    generatedAt: new Date().toISOString(),
+    hub: { url: hubCliBaseUrl() },
+    count: fetched.nodes.length,
+    nodes: fetched.nodes,
+  });
+  if (jsonOutput) console.log(JSON.stringify(payload, null, 2));
+  else for (const line of formatNodeTable(payload.nodes)) logger.info(redactBootstrapSecrets(line));
+}
+
+async function runHubDoctor(commandArgs: string[]): Promise<void> {
+  const jsonOutput = commandArgs.includes('--json');
+  const checks: HubDoctorCheck[] = [hubConfigCheck(), hubAuthCheck()];
+  const reachable = await hubFetchJson('/version');
+  const hubReachable = !('reason' in reachable);
+  checks.push(
+    hubReachable
+      ? { name: 'hub.reachable', status: 'pass', message: `hub answered /version at ${hubCliBaseUrl()}.` }
+      : { name: 'hub.reachable', status: 'fail', reason: reachable.reason, message: reachable.message }
+  );
+  let nodes: HubNodeSummary[] = [];
+  if (hubCliToken() && hubReachable) {
+    const fetched = await fetchHubNodes();
+    if (!('check' in fetched)) {
+      nodes = fetched.nodes;
+      checks.push({
+        name: 'nodes.registry',
+        status: 'pass',
+        message: `hub returned ${nodes.length} paired node(s).`,
+        details: { count: nodes.length },
+      });
+      for (const node of nodes) checks.push(nodeAvailabilityCheck(node), ...nodeCapabilityChecks(node));
+      for (const node of nodes) checks.push(await nodeLogSupportCheck(node));
+    } else {
+      checks.push(fetched.check);
+    }
+  } else {
+    checks.push({
+      name: 'nodes.registry',
+      status: 'skip',
+      reason: 'CHECK_SKIPPED',
+      message: 'authenticated node registry checks skipped because hub reachability or auth token failed.',
+    });
+  }
+  const failed = checks.filter((check) => check.status === 'fail');
+  const payload = redactForCli({
+    ok: failed.length === 0,
+    generatedAt: new Date().toISOString(),
+    hub: { url: hubCliBaseUrl(), protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION },
+    checks,
+    nodes,
+  });
+  if (jsonOutput) {
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    logger.info(`Hub doctor ${payload.ok ? 'OK' : 'FAILED'} (${failed.length} failure(s))`);
+    for (const check of checks) {
+      const label = check.status.toUpperCase().padEnd(4);
+      const reason = check.reason ? ` ${check.reason}` : '';
+      const line = `[${label}] ${check.name}${reason}: ${check.message}`;
+      if (check.status === 'fail') logger.error(redactBootstrapSecrets(line));
+      else logger.info(redactBootstrapSecrets(line));
+    }
+  }
+  process.exit(payload.ok ? 0 : 1);
+}
+
 async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
   const nodeId = commandArgs[0];
   if (!nodeId || nodeId.startsWith('-')) {
@@ -1884,6 +2241,10 @@ if (command === 'hub') {
     runServiceCommand(printHubStatus);
   } else if (subCommand === 'logs') {
     await runAsyncCommand(() => printHubLogs(hubArgs.slice(1)));
+  } else if (subCommand === 'nodes') {
+    await runAsyncCommand(() => printHubNodes(hubArgs.slice(1)));
+  } else if (subCommand === 'doctor') {
+    await runHubDoctor(hubArgs.slice(1));
   } else if (subCommand === 'node-logs') {
     await runAsyncCommand(() => printRemoteNodeLogs(hubArgs.slice(1)));
   } else if (
@@ -1904,7 +2265,7 @@ if (command === 'hub') {
     // an alias preserves bare `relay-ide` while making the runtime role explicit.
   } else {
     logger.error(
-      'Usage: relay-ide hub [install|uninstall|status|logs|node-logs] [--port <port>] [--host <host>] [--config <path>]'
+      'Usage: relay-ide hub [install|uninstall|status|logs|nodes|doctor|node-logs] [--port <port>] [--host <host>] [--config <path>]'
     );
     process.exit(1);
   }
