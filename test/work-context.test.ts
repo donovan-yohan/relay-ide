@@ -261,6 +261,24 @@ describe('work-context contract', () => {
     expect(context.anchors.project).toBeUndefined();
   });
 
+  it('rejects capability grant scopes with malformed string arrays', () => {
+    const context = baseContext({
+      id: 'wc:bad-capability-scope',
+      capabilityGrants: [
+        {
+          id: 'grant:bad-scope',
+          ref: 'acl:local:1.0',
+          capability: 'rpc:git:read',
+          policyClass: 'read-only',
+          scope: { kind: 'repo', repoIds: [42] },
+          privacy: basePrivacy(),
+        } as unknown as WorkContext['capabilityGrants'][number],
+      ],
+    });
+
+    expect(isWorkContext(context)).toBe(false);
+  });
+
   it('rejects artifact shapes that try to inline raw transcripts/logs/content blobs', () => {
     const context = baseContext({
       id: 'wc:bad-raw-payload',

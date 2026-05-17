@@ -315,6 +315,12 @@ const CAPABILITY_POLICY_CLASSES = new Set<string>([
   'privileged',
   'unknown',
 ]);
+const POLICY_SCOPE_KINDS = new Set<string>([
+  'node',
+  'workspace',
+  'repo',
+  'path',
+]);
 const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
   'rawContent',
   'rawPayload',
@@ -499,6 +505,16 @@ function hasValidCapabilityGrantBits(value: Record<string, unknown>): boolean {
   return singleCapabilityValid && capabilitiesValid;
 }
 
+function isRelayPolicyScope(value: unknown): value is RelayPolicyScope {
+  if (!isRecord(value)) return false;
+  return (
+    isEnumValue(value.kind, POLICY_SCOPE_KINDS) &&
+    (value.workspaceIds === undefined || isStringArray(value.workspaceIds)) &&
+    (value.repoIds === undefined || isStringArray(value.repoIds)) &&
+    (value.pathPrefixes === undefined || isStringArray(value.pathPrefixes))
+  );
+}
+
 function isCapabilityGrantRef(value: unknown): value is CapabilityGrantRef {
   if (!isRecord(value)) return false;
   return (
@@ -508,6 +524,7 @@ function isCapabilityGrantRef(value: unknown): value is CapabilityGrantRef {
     (value.decision === undefined ||
       isEnumValue(value.decision, CAPABILITY_DECISIONS)) &&
     isEnumValue(value.policyClass, CAPABILITY_POLICY_CLASSES) &&
+    (value.scope === undefined || isRelayPolicyScope(value.scope)) &&
     isOptionalString(value.actorId) &&
     isOptionalString(value.auditEventId) &&
     isWorkContextPrivacyMetadata(value.privacy)

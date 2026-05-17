@@ -7,6 +7,8 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 Relay IDE is a remote web interface for interacting with agent and terminal sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a tmux-backed process running either on the hub machine or on a paired Relay node. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state.
 
+Product boundary: Relay is a federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails across existing tools. It is not a replacement for Hermes Agent, GitHub, Kanban, tmux, or native Claude/Codex/OpenCode/Hermes CLIs, and it must not scrape raw Hermes profile databases, provider auth, env, or unbounded transcripts/logs. `docs/WORKBENCH_BOUNDARY.md` is the canonical source for #552 workbench nouns (`WorkContext`, `Actor`, `TaskRef`, `Artifact`, `AuditEvent`, `CapabilityGrant`, etc.) and mobile/pair/dogfood journey acceptance criteria.
+
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
 
@@ -15,6 +17,8 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 ## Six-Layer Vocabulary Contract (#444)
 
 Relay's product information architecture is now described as **View -> Workspace -> Project -> Instance -> Bench -> Tab**. This vocabulary is a source-of-truth for docs and implementation planning; it does not mean every layer must be visible in every UI state. The single-repo golden path should stay compact, while remote, non-repo, and multi-node states expose the layer needed to avoid false repo/worktree assumptions.
+
+The #552 workbench/control-plane nouns in `docs/WORKBENCH_BOUNDARY.md` are compatible with this tree rather than a replacement for it: `WorkContext` is the cross-cutting work envelope, `RepoInstance` maps to a git-specific Instance, `WorktreeInstance` maps to a git-specific Bench, and `Session`/browser Tab remain separate process/surface concepts.
 
 | Layer         | What it answers                                       | Current / compatibility boundary                                                                                                                                                                                       |
 | ------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
