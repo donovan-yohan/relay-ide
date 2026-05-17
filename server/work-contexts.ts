@@ -549,9 +549,13 @@ function rowToContext(row: WorkContextRow): WorkContext | null {
   try {
     const value = JSON.parse(row.context_json) as unknown;
     if (!isWorkContext(value)) return null;
-    return value;
+    return canonicalizePersistableContext(value);
   } catch (err) {
-    logger.warn('failed to parse work context %s: %s', row.id, err);
+    if (err instanceof WorkContextStoreError) {
+      logger.warn('dropped unsafe work context %s: %s', row.id, err.code);
+    } else {
+      logger.warn('failed to parse work context %s: %s', row.id, err);
+    }
     return null;
   }
 }

@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+import Database from 'better-sqlite3';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -22,10 +23,31 @@ import {
 
 const tmpDirs: string[] = [];
 
-function makeStore(): WorkContextStore {
+function makeStoreHandle(): { store: WorkContextStore; dbPath: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-work-context-test-'));
   tmpDirs.push(dir);
-  return createWorkContextStore(path.join(dir, 'work-contexts.db'));
+  const dbPath = path.join(dir, 'work-contexts.db');
+  return { store: createWorkContextStore(dbPath), dbPath };
+}
+
+function makeStore(): WorkContextStore {
+  return makeStoreHandle().store;
+}
+
+function replacePersistedContextJson(
+  dbPath: string,
+  id: string,
+  context: Record<string, unknown>
+): void {
+  const db = new Database(dbPath);
+  try {
+    db.prepare('UPDATE work_contexts SET context_json = ? WHERE id = ?').run(
+      JSON.stringify(context),
+      id
+    );
+  } finally {
+    db.close();
+  }
 }
 
 async function startWorkContextApi(
@@ -392,6 +414,143 @@ describe('WorkContext store', () => {
           .messages
       ).toBeUndefined();
     } finally {
+      store.close();
+    }
+  });
+
+  it('canonicalizes stale context_json rows on read and drops raw payload rows from API responses', async () => {
+    const { store, dbPath } = makeStoreHandle();
+    const live = session({
+      id: 'sess-stale-row',
+      nodeId: 'node-remote',
+      globalSessionId: createGlobalSessionId('node-remote', 'sess-stale-row'),
+      cwd: '/remote/project',
+      repoPath: undefined,
+      worktreePath: undefined,
+      repoName: undefined,
+      branchName: undefined,
+    });
+    const api = await startWorkContextApi(store, [live], [
+      node({ nodeId: 'node-remote', status: 'online', displayName: 'remote node' }),
+    ]);
+    try {
+      store.create({ id: 'wc:stale-canonical', title: 'Stale canonical row' });
+      store.associateSession('wc:stale-canonical', { session: live });
+      replacePersistedContextJson(
+        dbPath,
+        'wc:stale-canonical',
+        {
+          ...fullContext({
+            id: 'wc:stale-canonical',
+            title: 'Stale canonical row',
+            anchors: {
+              node: {
+                nodeId: 'node-remote',
+                kind: 'remote',
+                displayName: 'remote node',
+                debugPayload: 'hidden node payload must not leave the read path',
+              } as WorkContext['anchors']['node'],
+              session: {
+                nodeId: 'node-remote',
+                sessionId: live.id,
+                globalSessionId: live.globalSessionId,
+                tabKind: 'agent',
+                cwd: live.cwd,
+                debugPayload: 'hidden session payload must not leave the read path',
+              } as WorkContext['anchors']['session'],
+            },
+            artifacts: [
+              {
+                id: 'artifact:stale-summary',
+                kind: 'report',
+                summary: 'safe stale summary',
+                privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
+                debugPayload: 'hidden artifact payload must not leave the read path',
+              } as WorkContext['artifacts'][number],
+            ],
+          }),
+          debugPayload: 'hidden top-level payload must not leave the read path',
+        } as unknown as Record<string, unknown>
+      );
+
+      store.create({ id: 'wc:raw-stale', title: 'Raw stale row' });
+      replacePersistedContextJson(
+        dbPath,
+        'wc:raw-stale',
+        {
+          ...fullContext({
+            id: 'wc:raw-stale',
+            title: 'Raw stale row',
+            artifacts: [
+              {
+                id: 'artifact:raw-transcript',
+                kind: 'transcript-ref',
+                summary: 'unsafe raw transcript row',
+                privacy: createWorkContextPrivacyMetadata({ retention: 'audit' }),
+                rawTranscript: 'raw transcript secret must not leak',
+              } as WorkContext['artifacts'][number],
+            ],
+          }),
+          hermesProfileState: { token: 'profile payload secret must not leak' },
+        } as unknown as Record<string, unknown>
+      );
+
+      store.create({ id: 'wc:raw-flag-stale', title: 'Raw flag stale row' });
+      replacePersistedContextJson(
+        dbPath,
+        'wc:raw-flag-stale',
+        {
+          ...fullContext({
+            id: 'wc:raw-flag-stale',
+            title: 'Raw flag stale row',
+            privacy: {
+              ...createWorkContextPrivacyMetadata({ retention: 'project' }),
+              rawPayloadStored: true,
+            },
+          }),
+        } as unknown as Record<string, unknown>
+      );
+
+      const canonicalGet = await jsonRequest(
+        api.baseUrl,
+        'GET',
+        '/work-contexts/wc:stale-canonical'
+      );
+      expect(canonicalGet.status).toBe(200);
+      expect(canonicalGet.body.workContext.id).toBe('wc:stale-canonical');
+      expect(JSON.stringify(canonicalGet.body)).not.toContain('hidden');
+
+      const rawGet = await jsonRequest(api.baseUrl, 'GET', '/work-contexts/wc:raw-stale');
+      expect(rawGet.status).toBe(404);
+      const rawFlagGet = await jsonRequest(
+        api.baseUrl,
+        'GET',
+        '/work-contexts/wc:raw-flag-stale'
+      );
+      expect(rawFlagGet.status).toBe(404);
+
+      const listed = await jsonRequest(api.baseUrl, 'GET', '/work-contexts');
+      const listedIds = listed.body.workContexts.map((context: WorkContext) => context.id);
+      const listJson = JSON.stringify(listed.body);
+      expect(listedIds).toContain('wc:stale-canonical');
+      expect(listedIds).not.toContain('wc:raw-stale');
+      expect(listedIds).not.toContain('wc:raw-flag-stale');
+      expect(listJson).not.toContain('hidden');
+      expect(listJson).not.toContain('raw transcript secret');
+      expect(listJson).not.toContain('profile payload secret');
+
+      const active = await jsonRequest(api.baseUrl, 'GET', '/work-contexts/active');
+      const activeIds = active.body.groups.map((group: { id: string }) => group.id);
+      const activeJson = JSON.stringify(active.body);
+      expect(active.status).toBe(200);
+      expect(activeIds).toContain('wc:stale-canonical');
+      expect(activeIds).not.toContain('wc:raw-stale');
+      expect(activeIds).not.toContain('wc:raw-flag-stale');
+      expect(activeJson).not.toContain('hidden');
+      expect(activeJson).not.toContain('raw transcript secret');
+      expect(activeJson).not.toContain('profile payload secret');
+    } finally {
+      await api.close();
       store.close();
     }
   });
