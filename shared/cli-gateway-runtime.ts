@@ -34,6 +34,7 @@ const createSessionAllowedFields = new Set([
   'branchName',
   'initialPrompt',
   'continuePolicy',
+  'workContextId',
   'controlMode',
   'sessionEnvelope',
   'ttlSeconds',
@@ -48,6 +49,7 @@ const stringFields = [
   'agent',
   'branchName',
   'initialPrompt',
+  'workContextId',
   'expiresAt',
   'confirmationToken',
 ] as const;

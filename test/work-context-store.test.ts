@@ -355,6 +355,113 @@ describe('WorkContext store', () => {
     }
   });
 
+  it('creates handoff contexts from task refs and exposes compact resume refs', async () => {
+    const store = makeStore();
+    const pairSession = session({
+      id: 'pair-1',
+      nodeId: 'node-remote',
+      globalSessionId: createGlobalSessionId('node-remote', 'pair-1'),
+      agent: 'codex',
+      cwd: '/remote/relay-ide/.worktrees/560-pair-handoff',
+      controlMode: 'co-driven',
+      displayName: 'Pair session',
+    });
+    const api = await startWorkContextApi(store, [pairSession], [node({ nodeId: 'node-remote' })]);
+    try {
+      const created = await jsonRequest(api.baseUrl, 'POST', '/work-contexts/from-task-ref', {
+        id: 'wc:handoff',
+        title: 'Pair handoff',
+        source: 'assistant',
+        taskRef: {
+          kind: 'github-issue',
+          id: '560',
+          title: 'assistant-to-pair-session handoff',
+          url: 'https://github.com/donovan-yohan/relay-ide/issues/560',
+          privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
+        },
+        actors: [
+          {
+            kind: 'agent',
+            id: 'assistant:kani',
+            displayName: 'Kani backend',
+          },
+        ],
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.workContext.tasks).toHaveLength(1);
+      expect(created.body.workContext.auditRefs).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'handoff.created' })])
+      );
+
+      const associated = await jsonRequest(
+        api.baseUrl,
+        'POST',
+        '/work-contexts/wc:handoff/sessions',
+        { sessionId: 'pair-1', nodeId: 'node-remote' }
+      );
+      expect(associated.status).toBe(200);
+      expect(associated.body.workContext.anchors.session).toMatchObject({
+        nodeId: 'node-remote',
+        sessionId: 'pair-1',
+        agent: 'codex',
+        controlMode: 'co-driven',
+        cwd: '/remote/relay-ide/.worktrees/560-pair-handoff',
+      });
+
+      const event = await jsonRequest(api.baseUrl, 'POST', '/work-contexts/wc:handoff/events', {
+        type: 'summary.recorded',
+        actorId: 'assistant:kani',
+        summary: 'implementation is ready for pair resume; raw transcript omitted',
+        artifacts: [
+          {
+            id: 'artifact:diff-summary',
+            kind: 'report',
+            title: 'Diff summary',
+            summary: 'server/work-contexts.ts adds compact resume refs',
+            privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
+          },
+        ],
+      });
+      expect(event.status).toBe(201);
+
+      const resume = await jsonRequest(api.baseUrl, 'GET', '/work-contexts/wc:handoff/resume');
+      expect(resume.status).toBe(200);
+      expect(resume.body.resume).toMatchObject({
+        workContext: {
+          id: 'wc:handoff',
+          tasks: [expect.objectContaining({ id: '560', kind: 'github-issue' })],
+        },
+        node: expect.objectContaining({ nodeId: 'node-remote', status: 'online' }),
+        sessions: [
+          expect.objectContaining({
+            id: 'pair-1',
+            nodeId: 'node-remote',
+            agent: 'codex',
+            controlMode: 'co-driven',
+            live: true,
+          }),
+        ],
+        privacy: {
+          mode: 'compact-refs',
+          rawPayloadAvailable: false,
+          transcriptExportAvailable: false,
+          rawTranscriptIncluded: false,
+        },
+      });
+      expect(resume.body.resume.artifacts).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'artifact:diff-summary' })])
+      );
+      expect(resume.body.resume.auditRefs).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'session.associated' })])
+      );
+      expect(JSON.stringify(resume.body.resume)).not.toContain('terminalTranscript');
+      expect(JSON.stringify(resume.body.resume)).not.toContain('providerToken');
+    } finally {
+      await api.close();
+      store.close();
+    }
+  });
+
   it('persists create/read/list/update/link records using the shared schema', () => {
     const store = makeStore();
     try {
