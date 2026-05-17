@@ -103,8 +103,15 @@ export interface HubPolicyDecision {
 
 export type SessionCreateType = 'agent' | 'terminal';
 
+type SessionCreateControlMode = 'agent-driven' | 'human-driven';
+
 export function isSessionCreateType(value: unknown): value is SessionCreateType {
   return value === 'agent' || value === 'terminal';
+}
+
+function normalizeSessionCreateControlMode(value: unknown): SessionCreateControlMode | undefined {
+  if (value === 'agent-driven' || value === 'human-driven') return value;
+  return undefined;
 }
 
 export function sessionCreateCapability(sessionType: SessionCreateType): RelayCapabilityBit {
@@ -117,7 +124,8 @@ export function sessionCreateCapabilities(input: {
 }): RelayCapabilityBit[] {
   const capabilities = [sessionCreateCapability(input.sessionType)];
   const effectiveControlMode =
-    input.controlMode ?? (input.sessionType === 'agent' ? 'agent-driven' : 'human-driven');
+    normalizeSessionCreateControlMode(input.controlMode) ??
+    (input.sessionType === 'agent' ? 'agent-driven' : 'human-driven');
   if (effectiveControlMode === 'agent-driven') capabilities.push('tab:mode:set-agent');
   return capabilities;
 }
