@@ -4,25 +4,26 @@ This index separates current source-of-truth docs from historical plans and spik
 
 ## Current source of truth
 
-| Area                  | File                          | Use it for                                                             |
-| --------------------- | ----------------------------- | ---------------------------------------------------------------------- |
-| Top-level agent map   | `../AGENTS.md`                | Repo conventions, command quick reference, compact docs map            |
-| User onboarding       | `../README.md`                | Install, run, CLI, config, hub/node overview                           |
-| Product/design system | `../DESIGN.md`                | Product positioning, visual language, spacing/color/button rules       |
-| Architecture          | `ARCHITECTURE.md`             | Module boundaries, API routes, data flow, ADR index                    |
-| Workbench boundary    | `WORKBENCH_BOUNDARY.md`       | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys |
-| Backend design notes  | `DESIGN.md`                   | Backend patterns, auth/session/PTY behavior                            |
-| Frontend              | `FRONTEND.md`                 | React components, frontend state, UI entrypoints                       |
-| Quality               | `QUALITY.md`                  | Test strategy, isolation rules, known gate behavior                    |
-| Review                | `REVIEW_GUIDANCE.md`          | Reviewer prompts, risk areas, escape log                               |
-| Deployment            | `references/deployment.md`    | Branching, npm channels, publishing flow                               |
-| Self-hosting          | `SELF_HOSTING.md`             | Running Relay from inside Relay with isolated config/ports             |
-| Security policy       | `SECURITY_POLICY.md`          | Trust tiers, capability bits, hub ACL defaults                         |
-| Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md` | Hub/node command shape and npm packaging decisions                     |
-| Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair flows and diagnostics                       |
-| Federated dev         | `FEDERATED_DEV.md`            | Multi-machine dev workflow and version-skew handling                   |
-| Federated Relay       | `federated-relay.md`          | Hub/node architecture, pairing, routing, ADR history                   |
-| Learnings             | `LEARNINGS.md`                | Durable repo learnings gathered across sessions                        |
+| Area                  | File                              | Use it for                                                                              |
+| --------------------- | --------------------------------- | --------------------------------------------------------------------------------------- |
+| Top-level agent map   | `../AGENTS.md`                    | Repo conventions, command quick reference, compact docs map                             |
+| User onboarding       | `../README.md`                    | Install, run, CLI, config, hub/node overview                                            |
+| Product/design system | `../DESIGN.md`                    | Product positioning, visual language, spacing/color/button rules                        |
+| Architecture          | `ARCHITECTURE.md`                 | Module boundaries, API routes, data flow, ADR index                                     |
+| Workbench boundary    | `WORKBENCH_BOUNDARY.md`           | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys                  |
+| Backend design notes  | `DESIGN.md`                       | Backend patterns, auth/session/PTY behavior                                             |
+| Frontend              | `FRONTEND.md`                     | React components, frontend state, UI entrypoints                                        |
+| Quality               | `QUALITY.md`                      | Test strategy, isolation rules, known gate behavior                                     |
+| Review                | `REVIEW_GUIDANCE.md`              | Reviewer prompts, risk areas, escape log                                                |
+| Deployment            | `references/deployment.md`        | Branching, npm channels, publishing flow                                                |
+| Devbox deploy         | `references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene |
+| Self-hosting          | `SELF_HOSTING.md`                 | Running Relay from inside Relay with isolated config/ports                              |
+| Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults                                          |
+| Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`     | Hub/node command shape and npm packaging decisions                                      |
+| Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair flows and diagnostics                                        |
+| Federated dev         | `FEDERATED_DEV.md`                | Multi-machine dev workflow and version-skew handling                                    |
+| Federated Relay       | `federated-relay.md`              | Hub/node architecture, pairing, routing, ADR history                                    |
+| Learnings             | `LEARNINGS.md`                    | Durable repo learnings gathered across sessions                                         |
 
 ## Vocabulary baseline
 

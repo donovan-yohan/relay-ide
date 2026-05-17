@@ -11,6 +11,12 @@ documented in [`RELAY_NODE_BOOTSTRAP.md`](./RELAY_NODE_BOOTSTRAP.md) and
 are the production shape. Federated dev uses the same package, different
 source.
 
+For the shared dogfood topology and operator proof loop, see the
+[`devbox hub deploy runbook`](./references/devbox-hub-deploy.md). It covers
+when local/self-host evidence is enough, when devbox hub proof is required,
+how to restart the Mac node link, and how to clean stale local processes
+without killing the wrong Relay service.
+
 ## TL;DR
 
 - One package: `relay-ide`. Hub vs node is a subcommand role, not a separate
@@ -166,6 +172,9 @@ dist-tag.
 
 - [`SELF_HOSTING.md`](./SELF_HOSTING.md) — single-machine self-host (Relay
   inside Relay).
+- [`references/devbox-hub-deploy.md`](./references/devbox-hub-deploy.md) —
+  devbox hub deploy, Mac node-link restart, verification evidence, and safe
+  process cleanup.
 - [`RELAY_NODE_BOOTSTRAP.md`](./RELAY_NODE_BOOTSTRAP.md) — pair / install /
   doctor flows for nodes (npm-installed shape).
 - [`RELAY_HUB_NODE_PACKAGING.md`](./RELAY_HUB_NODE_PACKAGING.md) — packaging
