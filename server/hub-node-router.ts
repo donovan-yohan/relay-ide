@@ -135,6 +135,34 @@ function optionalControlStringOk(value: unknown): boolean {
   return value === undefined || value === null || typeof value === 'string';
 }
 
+function optionalStringFieldOk(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function optionalNullableStringFieldOk(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function sessionAssociationFieldsOk(session: Partial<SessionSummary>): boolean {
+  // repo/worktree/branch/work-context bindings are optional: a non-repo
+  // routed session (e.g. raw shell on a paired node) carries no repo
+  // binding. Validate them only when present.
+  return (
+    optionalStringFieldOk(session.repoPath) &&
+    optionalNullableStringFieldOk(session.worktreePath) &&
+    optionalStringFieldOk(session.repoName) &&
+    optionalStringFieldOk(session.branchName) &&
+    optionalStringFieldOk(session.workContextId)
+  );
+}
+
+function sessionEnvelopeOk(session: Partial<SessionSummary>): boolean {
+  return (
+    session.sessionEnvelope === undefined ||
+    isSessionEnvelope(session.sessionEnvelope)
+  );
+}
+
 function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
   const activeActorsOk =
     session.activeActors === undefined ||
@@ -212,34 +240,14 @@ export function sendRelayError(res: Response, error: RelayNodeError): void {
 export function isSessionSummary(value: unknown): value is SessionSummary {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionSummary>;
-  // repoPath / worktreePath / branchName are optional: a non-repo
-  // routed session (e.g. raw shell on a paired node) carries no repo
-  // binding. Validate them only when present.
-  const repoPathOk =
-    session.repoPath === undefined || typeof session.repoPath === 'string';
-  const worktreePathOk =
-    session.worktreePath === undefined ||
-    session.worktreePath === null ||
-    typeof session.worktreePath === 'string';
-  const branchNameOk =
-    session.branchName === undefined || typeof session.branchName === 'string';
-  const repoNameOk =
-    session.repoName === undefined || typeof session.repoName === 'string';
-  const workContextIdOk =
-    session.workContextId === undefined || typeof session.workContextId === 'string';
   return (
     typeof session.id === 'string' &&
     (session.type === 'agent' || session.type === 'terminal') &&
     (session.mode === 'pty' || session.mode === 'web') &&
-    repoPathOk &&
-    worktreePathOk &&
+    sessionAssociationFieldsOk(session) &&
     typeof session.cwd === 'string' &&
-    repoNameOk &&
-    branchNameOk &&
-    workContextIdOk &&
     controlSummaryFieldsOk(session) &&
-    (session.sessionEnvelope === undefined ||
-      isSessionEnvelope(session.sessionEnvelope)) &&
+    sessionEnvelopeOk(session) &&
     typeof session.displayName === 'string' &&
     typeof session.createdAt === 'string' &&
     typeof session.lastActivity === 'string' &&
