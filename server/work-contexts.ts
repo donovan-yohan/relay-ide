@@ -7,8 +7,14 @@ import type { RequestHandler } from 'express';
 
 import { createLogger } from './logger.js';
 import type { SessionSummary } from './types.js';
-import { DEFAULT_LOCAL_NODE_ID, createGlobalSessionId } from '../shared/identity.js';
-import type { HubNodeStatus, HubNodeSummary } from '../shared/relay-node-protocol.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createGlobalSessionId,
+} from '../shared/identity.js';
+import type {
+  HubNodeStatus,
+  HubNodeSummary,
+} from '../shared/relay-node-protocol.js';
 import {
   WORK_CONTEXT_SCHEMA_VERSION,
   createWorkContextPrivacyMetadata,
@@ -222,8 +228,15 @@ export interface WorkContextSessionSummary {
   displayName?: string;
   status?: SessionSummary['status'];
   agentState?: SessionSummary['agentState'];
+  currentActivity?: SessionSummary['currentActivity'];
   controlMode?: SessionSummary['controlMode'];
+  activeActors?: SessionSummary['activeActors'];
+  activeWorker?: SessionSummary['activeWorker'];
+  lastInterventionAt?: SessionSummary['lastInterventionAt'];
+  lastInterventionBy?: SessionSummary['lastInterventionBy'];
+  lastInterventionEventId?: SessionSummary['lastInterventionEventId'];
   controlFreshness?: SessionSummary['controlFreshness'];
+  controlReason?: SessionSummary['controlReason'];
   lastActivity?: string;
   relationship: string;
   associatedAt: string;
@@ -257,10 +270,23 @@ export interface WorkContextStore {
   get(id: WorkContextId): WorkContext | null;
   list(): WorkContext[];
   update(id: WorkContextId, patch: WorkContextPatchInput): WorkContext;
-  linkContexts(sourceId: WorkContextId, targetId: WorkContextId, relationship?: string): WorkContext;
-  associateSession(id: WorkContextId, input: SessionAssociationInput): WorkContext;
-  recordLifecycleEvent(id: WorkContextId, input: WorkContextLifecycleEventInput): WorkContext;
-  getResumeSnapshot(id: WorkContextId, input: ListActiveWorkInput): WorkContextResumeSnapshot;
+  linkContexts(
+    sourceId: WorkContextId,
+    targetId: WorkContextId,
+    relationship?: string
+  ): WorkContext;
+  associateSession(
+    id: WorkContextId,
+    input: SessionAssociationInput
+  ): WorkContext;
+  recordLifecycleEvent(
+    id: WorkContextId,
+    input: WorkContextLifecycleEventInput
+  ): WorkContext;
+  getResumeSnapshot(
+    id: WorkContextId,
+    input: ListActiveWorkInput
+  ): WorkContextResumeSnapshot;
   listActiveWork(input: ListActiveWorkInput): WorkContextActiveGroup[];
 }
 
@@ -280,7 +306,9 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
-  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
+  );
   const row = db.prepare('SELECT version FROM schema_version').get() as
     | { version: number }
     | undefined;
@@ -292,7 +320,9 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
       if (hadRow) {
         db.prepare('UPDATE schema_version SET version = ?').run(SCHEMA_VERSION);
       } else {
-        db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+        db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+          SCHEMA_VERSION
+        );
       }
     })();
   }
@@ -355,7 +385,8 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
 
   function mustGet(id: WorkContextId): WorkContext {
     const context = getById(id);
-    if (!context) throw new WorkContextStoreError(404, 'work_context_not_found');
+    if (!context)
+      throw new WorkContextStoreError(404, 'work_context_not_found');
     return context;
   }
 
@@ -402,9 +433,16 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
       return write(updated);
     },
 
-    linkContexts(sourceId: WorkContextId, targetId: WorkContextId, relationship = 'related') {
+    linkContexts(
+      sourceId: WorkContextId,
+      targetId: WorkContextId,
+      relationship = 'related'
+    ) {
       if (sourceId === targetId) {
-        throw new WorkContextStoreError(400, 'work_context_self_link_not_allowed');
+        throw new WorkContextStoreError(
+          400,
+          'work_context_self_link_not_allowed'
+        );
       }
       const source = mustGet(sourceId);
       mustGet(targetId);
@@ -417,7 +455,12 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
       };
       db.transaction(() => {
         write(updated);
-        upsertContextLink.run(sourceId, targetId, relationship, updated.updatedAt);
+        upsertContextLink.run(
+          sourceId,
+          targetId,
+          relationship,
+          updated.updatedAt
+        );
       })();
       return updated;
     },
@@ -481,7 +524,12 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
     listActiveWork(input: ListActiveWorkInput) {
       const contexts = this.list();
       const allLinks = selectSessionLinks.all() as SessionLinkRow[];
-      return buildActiveGroups(contexts, allLinks, input.sessions, input.nodes ?? []);
+      return buildActiveGroups(
+        contexts,
+        allLinks,
+        input.sessions,
+        input.nodes ?? []
+      );
     },
   };
 }
@@ -607,7 +655,10 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
   });
 
   router.post('/:id/link', auth, (req, res) => {
-    const body = req.body as { targetContextId?: string; relationship?: string };
+    const body = req.body as {
+      targetContextId?: string;
+      relationship?: string;
+    };
     if (!body.targetContextId) {
       res.status(400).json({ error: 'targetContextId is required' });
       return;
@@ -688,8 +739,12 @@ function buildContextFromInput(
     artifacts: input.artifacts ?? [],
     auditRefs: input.auditRefs ?? [],
     capabilityGrants: input.capabilityGrants ?? [],
-    ...(input.relatedContextRefs ? { relatedContextRefs: input.relatedContextRefs } : {}),
-    privacy: input.privacy ?? createWorkContextPrivacyMetadata({ retention: 'project' }),
+    ...(input.relatedContextRefs
+      ? { relatedContextRefs: input.relatedContextRefs }
+      : {}),
+    privacy:
+      input.privacy ??
+      createWorkContextPrivacyMetadata({ retention: 'project' }),
   };
   return context;
 }
@@ -749,7 +804,9 @@ function canonicalizePersistableContext(context: WorkContext): WorkContext {
   return canonical;
 }
 
-function pickWorkContextPatch(patch: WorkContextPatchInput): WorkContextPatchInput {
+function pickWorkContextPatch(
+  patch: WorkContextPatchInput
+): WorkContextPatchInput {
   return {
     ...(patch.title !== undefined ? { title: patch.title } : {}),
     ...(patch.source !== undefined ? { source: patch.source } : {}),
@@ -795,7 +852,9 @@ function pickPrivacy(privacy: WorkContext['privacy']): WorkContext['privacy'] {
       ...(privacy.redaction.hashSha256
         ? { hashSha256: privacy.redaction.hashSha256 }
         : {}),
-      ...(privacy.redaction.preview ? { preview: privacy.redaction.preview } : {}),
+      ...(privacy.redaction.preview
+        ? { preview: privacy.redaction.preview }
+        : {}),
     },
     ...(privacy.policyRefs ? { policyRefs: [...privacy.policyRefs] } : {}),
   };
@@ -847,10 +906,18 @@ function pickAnchors(anchors: WorkContext['anchors']): WorkContext['anchors'] {
         branchName: anchors.worktree.branchName,
       })
     : undefined;
-  return withoutUndefined({ node, session, project, repo, worktree }) as WorkContext['anchors'];
+  return withoutUndefined({
+    node,
+    session,
+    project,
+    repo,
+    worktree,
+  }) as WorkContext['anchors'];
 }
 
-function pickActor(actor: WorkContext['actors'][number]): WorkContext['actors'][number] {
+function pickActor(
+  actor: WorkContext['actors'][number]
+): WorkContext['actors'][number] {
   return {
     kind: actor.kind,
     id: actor.id,
@@ -862,7 +929,9 @@ function pickActor(actor: WorkContext['actors'][number]): WorkContext['actors'][
   };
 }
 
-function pickTask(task: WorkContext['tasks'][number]): WorkContext['tasks'][number] {
+function pickTask(
+  task: WorkContext['tasks'][number]
+): WorkContext['tasks'][number] {
   return {
     kind: task.kind,
     id: task.id,
@@ -902,7 +971,9 @@ function pickAuditRef(
     ...(auditRef.type ? { type: auditRef.type } : {}),
     ...(auditRef.occurredAt ? { occurredAt: auditRef.occurredAt } : {}),
     ...(auditRef.actorId ? { actorId: auditRef.actorId } : {}),
-    ...(auditRef.correlationId ? { correlationId: auditRef.correlationId } : {}),
+    ...(auditRef.correlationId
+      ? { correlationId: auditRef.correlationId }
+      : {}),
     ...(auditRef.chainHash ? { chainHash: auditRef.chainHash } : {}),
     ...(auditRef.logRef ? { logRef: auditRef.logRef } : {}),
     privacy: pickPrivacy(auditRef.privacy),
@@ -926,7 +997,9 @@ function pickCapabilityGrant(
             ...(grant.scope.workspaceIds
               ? { workspaceIds: [...grant.scope.workspaceIds] }
               : {}),
-            ...(grant.scope.repoIds ? { repoIds: [...grant.scope.repoIds] } : {}),
+            ...(grant.scope.repoIds
+              ? { repoIds: [...grant.scope.repoIds] }
+              : {}),
             ...(grant.scope.pathPrefixes
               ? { pathPrefixes: [...grant.scope.pathPrefixes] }
               : {}),
@@ -1092,8 +1165,10 @@ function dedupeById<T extends { id: string }>(items: T[]): T[] {
 
 export function sessionSummaryToRef(session: SessionSummary): SessionRef {
   const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
-  const globalSessionId = session.globalSessionId ?? createGlobalSessionId(nodeId, session.id);
-  const tabKind: WorkContextTabKind = session.type === 'terminal' ? 'terminal' : 'agent';
+  const globalSessionId =
+    session.globalSessionId ?? createGlobalSessionId(nodeId, session.id);
+  const tabKind: WorkContextTabKind =
+    session.type === 'terminal' ? 'terminal' : 'agent';
   return {
     nodeId,
     sessionId: session.id,
@@ -1106,7 +1181,11 @@ export function sessionSummaryToRef(session: SessionSummary): SessionRef {
 }
 
 function sessionRefFromBody(body: SessionRefBody): SessionRef {
-  if (!body.cwd) throw new WorkContextStoreError(400, 'cwd is required for offline session refs');
+  if (!body.cwd)
+    throw new WorkContextStoreError(
+      400,
+      'cwd is required for offline session refs'
+    );
   const nodeId = body.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   return {
     nodeId,
@@ -1128,7 +1207,10 @@ function findLiveSessionForAssociation(
   return sessions.find((session) => {
     const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
     if (body.nodeId && nodeId !== body.nodeId) return false;
-    return session.id === body.sessionId || session.globalSessionId === body.sessionId;
+    return (
+      session.id === body.sessionId ||
+      session.globalSessionId === body.sessionId
+    );
   });
 }
 
@@ -1161,8 +1243,11 @@ function buildActiveGroups(
     const groupSessions = contextLinks.map((link) => {
       const key = sessionKey(link.node_id, link.session_id);
       linkedSessionKeys.add(key);
-      const live = sessionsByKey.get(key) ??
-        (link.global_session_id ? sessionsByKey.get(link.global_session_id) : undefined);
+      const live =
+        sessionsByKey.get(key) ??
+        (link.global_session_id
+          ? sessionsByKey.get(link.global_session_id)
+          : undefined);
       return summarizeLinkedSession(link, live);
     });
 
@@ -1172,7 +1257,8 @@ function buildActiveGroups(
       context,
       node,
       sessions: groupSessions,
-      staleReadModel: node.status !== 'online' || groupSessions.some((s) => !s.live),
+      staleReadModel:
+        node.status !== 'online' || groupSessions.some((s) => !s.live),
     });
   }
 
@@ -1193,7 +1279,9 @@ function buildActiveGroups(
   return groups;
 }
 
-function resumeSnapshotFromGroup(group: WorkContextActiveGroup): WorkContextResumeSnapshot {
+function resumeSnapshotFromGroup(
+  group: WorkContextActiveGroup
+): WorkContextResumeSnapshot {
   if (!group.context) throw new WorkContextStoreError(404, 'work_context_not_found');
   const context = group.context;
   return {
@@ -1221,7 +1309,9 @@ function resumeSnapshotFromGroup(group: WorkContextActiveGroup): WorkContextResu
   };
 }
 
-function buildSessionLookup(sessions: SessionSummary[]): Map<string, SessionSummary> {
+function buildSessionLookup(
+  sessions: SessionSummary[]
+): Map<string, SessionSummary> {
   const lookup = new Map<string, SessionSummary>();
   for (const session of sessions) {
     const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
@@ -1231,7 +1321,9 @@ function buildSessionLookup(sessions: SessionSummary[]): Map<string, SessionSumm
   return lookup;
 }
 
-function groupLinksByContext(links: SessionLinkRow[]): Map<string, SessionLinkRow[]> {
+function groupLinksByContext(
+  links: SessionLinkRow[]
+): Map<string, SessionLinkRow[]> {
   const grouped = new Map<string, SessionLinkRow[]>();
   for (const link of links) {
     const existing = grouped.get(link.work_context_id);
@@ -1299,21 +1391,42 @@ function summarizeLiveSession(
   const summary: WorkContextSessionSummary = {
     id: session.id,
     nodeId,
-    ...(session.globalSessionId ? { globalSessionId: session.globalSessionId } : {}),
+    ...(session.globalSessionId
+      ? { globalSessionId: session.globalSessionId }
+      : {}),
     tabKind: session.type === 'terminal' ? 'terminal' : 'agent',
     type: session.type,
     mode: session.mode,
     agent: session.agent,
     cwd: session.cwd,
     ...(session.repoPath ? { repoPath: session.repoPath } : {}),
-    ...(session.worktreePath !== undefined ? { worktreePath: session.worktreePath } : {}),
+    ...(session.worktreePath !== undefined
+      ? { worktreePath: session.worktreePath }
+      : {}),
     ...(session.repoName ? { repoName: session.repoName } : {}),
     ...(session.branchName ? { branchName: session.branchName } : {}),
     displayName: session.displayName,
     status: session.status,
     agentState: session.agentState,
+    ...(session.currentActivity
+      ? { currentActivity: session.currentActivity }
+      : {}),
     ...(session.controlMode ? { controlMode: session.controlMode } : {}),
-    ...(session.controlFreshness ? { controlFreshness: session.controlFreshness } : {}),
+    ...(session.activeActors ? { activeActors: session.activeActors } : {}),
+    ...(session.activeWorker ? { activeWorker: session.activeWorker } : {}),
+    ...(session.lastInterventionAt !== undefined
+      ? { lastInterventionAt: session.lastInterventionAt }
+      : {}),
+    ...(session.lastInterventionBy !== undefined
+      ? { lastInterventionBy: session.lastInterventionBy }
+      : {}),
+    ...(session.lastInterventionEventId !== undefined
+      ? { lastInterventionEventId: session.lastInterventionEventId }
+      : {}),
+    ...(session.controlFreshness
+      ? { controlFreshness: session.controlFreshness }
+      : {}),
+    ...(session.controlReason ? { controlReason: session.controlReason } : {}),
     lastActivity: session.lastActivity,
     relationship: link.relationship,
     associatedAt: link.associated_at,
@@ -1334,7 +1447,9 @@ function nodeStateForContext(
   nodesById: Map<string, HubNodeSummary>
 ): WorkContextNodeState {
   const nodeId =
-    context.anchors.node?.nodeId ?? sessions[0]?.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+    context.anchors.node?.nodeId ??
+    sessions[0]?.nodeId ??
+    DEFAULT_LOCAL_NODE_ID;
   const state = nodeStateForNodeId(nodeId, nodesById);
   if (context.anchors.node?.displayName || context.anchors.node?.kind) {
     return {
@@ -1363,7 +1478,12 @@ function nodeStateForNodeId(
     };
   }
   if (nodeId === DEFAULT_LOCAL_NODE_ID) {
-    return { nodeId, status: 'online', displayName: 'Local node', kind: 'local' };
+    return {
+      nodeId,
+      status: 'online',
+      displayName: 'Local node',
+      kind: 'local',
+    };
   }
   return { nodeId, status: 'unknown', kind: 'remote' };
 }
