@@ -1,5 +1,8 @@
 import { expect, test } from 'vitest';
 import * as http from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import {
   CLI_GATEWAY_CODEX_SMOKE_COMMANDS,
@@ -139,7 +142,7 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
             path: '/fixture/hello.txt',
             encoding: 'utf8',
             content: 'hello codex gateway\n',
-            bytesRead: 21,
+            bytesRead: 20,
             truncatedBytes: false,
             truncatedLines: false,
             maxBytes: entry.body?.['maxBytes'] ?? 32768,
@@ -211,6 +214,15 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
     if (Array.isArray(read) || !read.ok) throw new Error('expected files.read to succeed');
     expect(read.data).toMatchObject({ content: 'hello codex gateway\n', maxBytes: 64, maxLines: 2 });
 
+    const defaultPathRead = await runner.callTool('relay_codex_gateway_files_read', {
+      sessionId: 'remote-session-1',
+    });
+    expect(defaultPathRead).toMatchObject({ ok: true, command: 'files.read' });
+    if (Array.isArray(defaultPathRead) || !defaultPathRead.ok) {
+      throw new Error('expected files.read with omitted path to succeed');
+    }
+    expect(defaultPathRead.data).toMatchObject({ content: 'hello codex gateway\n' });
+
     const stream = await runner.callTool('relay_codex_gateway_sessions_stream', {
       id: 'remote-session-1',
       maxEvents: 1,
@@ -225,6 +237,23 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
       ok: true,
       command: 'sessions.stream',
       data: { event: 'closed', frames: 1, truncated: false },
+    });
+
+    const defaultBoundedStream = await runner.callTool('relay_codex_gateway_sessions_stream', {
+      id: 'remote-session-1',
+    });
+    if (!Array.isArray(defaultBoundedStream)) {
+      throw new Error('expected default sessions.stream to return NDJSON envelopes');
+    }
+    expect(defaultBoundedStream.at(-1)).toMatchObject({
+      ok: true,
+      command: 'sessions.stream',
+      data: {
+        event: 'closed',
+        frames: 1,
+        truncated: false,
+        maxBytes: 65536,
+      },
     });
 
     const input = await runner.callTool('relay_codex_gateway_sessions_input', {
@@ -258,6 +287,9 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
     'GET /sessions/remote-session-1',
     'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
     'GET /sessions/remote-session-1',
+    'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
+    'GET /sessions/remote-session-1',
+    'GET /sessions/remote-session-1',
     'GET /sessions/remote-session-1',
     'GET /sessions/remote-session-1',
   ]);
@@ -267,10 +299,16 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
     marker: 'v1',
     capabilities: 'session:read',
   });
-  expect(captured.find((entry) => entry.url?.endsWith('/files/read'))?.body).toMatchObject({
+  const readBodies = captured
+    .filter((entry) => entry.url?.endsWith('/files/read'))
+    .map((entry) => entry.body);
+  expect(readBodies[0]).toMatchObject({
     path: 'hello.txt',
     maxBytes: 64,
     maxLines: 2,
+  });
+  expect(readBodies[1]).toMatchObject({
+    path: '.',
   });
   expect(upgrades).toEqual(
     expect.arrayContaining([
@@ -282,5 +320,75 @@ test('generated Codex CLI gateway tools run the fake hub/node adapter smoke over
     ])
   );
   expect(inputs).toContain('marker-input\n');
+});
+
+test('Codex sessions.stream runner has stdout buffer headroom for schema-valid maxBytes', async () => {
+  const tools = generateRelayCodexGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
+  const largePayload = 'x'.repeat(1024 * 1024);
+  const dataEnvelope = {
+    ok: true,
+    contract: 'v1',
+    contractVersion: '1.0',
+    command: 'sessions.stream',
+    data: {
+      event: 'data',
+      sessionId: 'large-session-1',
+      encoding: 'utf8',
+      data: largePayload,
+      bytes: largePayload.length,
+      sequence: 0,
+    },
+  };
+  const closedEnvelope = {
+    ok: true,
+    contract: 'v1',
+    contractVersion: '1.0',
+    command: 'sessions.stream',
+    data: {
+      event: 'closed',
+      sessionId: 'large-session-1',
+      frames: 1,
+      bytesReceived: largePayload.length,
+      truncated: false,
+      maxBytes: largePayload.length,
+      backpressureClosed: false,
+    },
+  };
+  const tempDir = mkdtempSync(join(tmpdir(), 'relay-codex-buffer-'));
+  const scriptPath = join(tempDir, 'large-stdout.mjs');
+  writeFileSync(
+    scriptPath,
+    `process.stdout.write(${JSON.stringify(`${JSON.stringify(dataEnvelope)}\n${JSON.stringify(closedEnvelope)}\n`)});\n`
+  );
+
+  try {
+    const runner = new RelayCodexGatewayToolRunner(tools, {
+      command: process.execPath,
+      commandArgsPrefix: [scriptPath],
+    });
+
+    const stream = await runner.callTool('relay_codex_gateway_sessions_stream', {
+      id: 'large-session-1',
+      maxBytes: 1024 * 1024,
+    });
+    if (!Array.isArray(stream)) throw new Error('expected sessions.stream to return NDJSON envelopes');
+    expect(stream[0]).toMatchObject({
+      ok: true,
+      command: 'sessions.stream',
+      data: { event: 'data', bytes: largePayload.length },
+    });
+    expect(stream.at(-1)).toMatchObject({
+      ok: true,
+      command: 'sessions.stream',
+      data: {
+        event: 'closed',
+        frames: 1,
+        bytesReceived: largePayload.length,
+        maxBytes: largePayload.length,
+      },
+    });
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 

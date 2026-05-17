@@ -16,6 +16,12 @@ export const CLI_GATEWAY_CODEX_SMOKE_COMMANDS = [
   'sessions.detach',
 ] as const satisfies readonly RelayCliGatewayCommand[];
 
+const CODEX_SMOKE_DEFAULT_FILE_PATH = '.';
+const CODEX_SMOKE_DEFAULT_STREAM_MAX_EVENTS = 1;
+const CODEX_SMOKE_DEFAULT_STREAM_MAX_BYTES = 65536;
+const CODEX_SMOKE_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 1000;
+const CODEX_SMOKE_EXEC_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
 export type RelayCodexGatewaySmokeCommand = (typeof CLI_GATEWAY_CODEX_SMOKE_COMMANDS)[number];
 
 export interface RelayCodexGatewayMcpDescriptor {
@@ -184,7 +190,8 @@ function gatewayArgsForGeneratedTool(
     return replaceCliPlaceholder(cliArgs, '<json>', JSON.stringify(input));
   }
   if (tool.relay.command === 'files.read') {
-    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
+    const fileInput = { path: CODEX_SMOKE_DEFAULT_FILE_PATH, ...input };
+    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, fileInput), fileInput, [
       ['nodeId', '--node-id'],
       ['cwd', '--cwd'],
       ['maxBytes', '--max-bytes'],
@@ -193,7 +200,13 @@ function gatewayArgsForGeneratedTool(
     ]);
   }
   if (tool.relay.command === 'sessions.stream') {
-    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
+    const streamInput = {
+      maxEvents: CODEX_SMOKE_DEFAULT_STREAM_MAX_EVENTS,
+      maxBytes: CODEX_SMOKE_DEFAULT_STREAM_MAX_BYTES,
+      idleTimeoutMs: CODEX_SMOKE_DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+      ...input,
+    };
+    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, streamInput), streamInput, [
       ['maxEvents', '--max-events'],
       ['maxBytes', '--max-bytes'],
       ['idleTimeoutMs', '--idle-timeout-ms'],
@@ -294,6 +307,7 @@ async function execRelayGatewayTool(
   const execOptions = {
     encoding: 'utf8' as const,
     env: { ...process.env, ...options.env },
+    maxBuffer: CODEX_SMOKE_EXEC_MAX_BUFFER_BYTES,
     timeout: options.timeoutMs,
     ...(options.cwd ? { cwd: options.cwd } : {}),
   };
