@@ -26,6 +26,10 @@ describe('security policy schema', () => {
       known: false,
       decision: 'deny',
     });
+    expect(resolveAclCapability(acl, 'session:control:kill')).toMatchObject({
+      known: true,
+      decision: 'deny',
+    });
   });
 
   it('moves prod high-risk silent grants to confirmation without granting denied bits', () => {
@@ -37,7 +41,7 @@ describe('security policy schema', () => {
     const acl: RelayNodeAcl = {
       ...base,
       grants: {
-        allowed: ['session:read', 'rpc:fs:write', 'rpc:git:write'],
+        allowed: ['session:read', 'session:control:kill', 'rpc:fs:write', 'rpc:git:write'],
         requiresConfirmation: ['rpc:fs:delete'],
       },
     };
@@ -46,7 +50,12 @@ describe('security policy schema', () => {
 
     expect(overlaid.grants.allowed).toEqual(['session:read']);
     expect(overlaid.grants.requiresConfirmation).toEqual(
-      expect.arrayContaining(['rpc:fs:write', 'rpc:git:write', 'rpc:fs:delete'])
+      expect.arrayContaining([
+        'session:control:kill',
+        'rpc:fs:write',
+        'rpc:git:write',
+        'rpc:fs:delete',
+      ])
     );
     expect(resolveAclCapability(overlaid, 'preview:port-forward')).toMatchObject({
       decision: 'deny',
