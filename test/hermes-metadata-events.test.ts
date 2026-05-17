@@ -187,6 +187,90 @@ describe('Hermes metadata event ingestion spike contract', () => {
     }
   });
 
+  it('rejects normalized credential key variants nested under metadata objects', () => {
+    const credentialKeyCases: Array<{
+      name: string;
+      mutate: (fixture: Record<string, unknown>) => void;
+      expectedPath: string;
+    }> = [
+      {
+        name: 'source.accessToken',
+        mutate: (fixture) => {
+          fixture.source = {
+            ...(fixture.source as Record<string, unknown>),
+            accessToken: 'tok-nope',
+          };
+        },
+        expectedPath: '$.source.accessToken',
+      },
+      {
+        name: 'actor.clientSecret',
+        mutate: (fixture) => {
+          fixture.actor = {
+            ...(fixture.actor as Record<string, unknown>),
+            clientSecret: 'secret-nope',
+          };
+        },
+        expectedPath: '$.actor.clientSecret',
+      },
+      {
+        name: 'tool.access_token',
+        mutate: (fixture) => {
+          fixture.tool = {
+            ...(fixture.tool as Record<string, unknown>),
+            access_token: 'tok-nope',
+          };
+        },
+        expectedPath: '$.tool.access_token',
+      },
+      {
+        name: 'workContext.secret_key',
+        mutate: (fixture) => {
+          fixture.workContext = {
+            ...(fixture.workContext as Record<string, unknown>),
+            secret_key: 'secret-nope',
+          };
+        },
+        expectedPath: '$.workContext.secret_key',
+      },
+      {
+        name: 'workContext.anchors.repo.OPENAI_API_KEY',
+        mutate: (fixture) => {
+          const workContext = fixture.workContext as Record<string, unknown>;
+          const anchors = workContext.anchors as Record<string, unknown>;
+          anchors.repo = {
+            ...(anchors.repo as Record<string, unknown>),
+            OPENAI_API_KEY: 'sk-nope',
+          };
+        },
+        expectedPath: '$.workContext.anchors.repo.OPENAI_API_KEY',
+      },
+      {
+        name: 'artifacts[0].API Key',
+        mutate: (fixture) => {
+          const artifacts = fixture.artifacts as Array<Record<string, unknown>>;
+          artifacts[0] = {
+            ...artifacts[0],
+            'API Key': 'sk-nope',
+          };
+        },
+        expectedPath: '$.artifacts[0].API Key',
+      },
+    ];
+
+    for (const credentialKeyCase of credentialKeyCases) {
+      const fixture = cloneFixture(loadFixture('tool-summary.json'));
+      credentialKeyCase.mutate(fixture);
+
+      const result = ingestHermesMetadataEventCandidate(fixture);
+
+      expect(result.accepted, credentialKeyCase.name).toBe(false);
+      expect(result.errors.join('\n'), credentialKeyCase.name).toContain(
+        credentialKeyCase.expectedPath
+      );
+    }
+  });
+
   it('rejects transcript/message-shaped payloads even when an artifact calls itself a ref', () => {
     const fixture = cloneFixture(loadFixture('artifact-recorded.json'));
     fixture.artifacts = [

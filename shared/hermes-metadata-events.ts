@@ -365,10 +365,11 @@ const AUDIT_HINT_KEYS = new Set<string>([
   'recommendedNextStep',
 ]);
 const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
+  'accesstoken',
   'apikey',
-  'api_key',
   'authorization',
   'bearer',
+  'clientsecret',
   'conversation',
   'environment',
   'env',
@@ -376,6 +377,7 @@ const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
   'hermesdbpath',
   'log',
   'messages',
+  'openaiapikey',
   'output',
   'processenv',
   'profilepath',
@@ -384,10 +386,10 @@ const FORBIDDEN_RAW_PAYLOAD_KEYS = new Set<string>([
   'rawlog',
   'rawpayload',
   'rawtranscript',
-  'refresh_token',
   'refreshtoken',
   'scrollback',
   'secret',
+  'secretkey',
   'secrets',
   'sqlitedbpath',
   'stderr',
@@ -423,7 +425,7 @@ function isIsoTimestamp(value: unknown): value is string {
 }
 
 function normalizedKey(key: string): string {
-  return key.replace(/[-_]/g, '').toLowerCase();
+  return key.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
 function findUnsafePayloadKey(value: unknown, path = '$'): string | undefined {
