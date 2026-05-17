@@ -2,6 +2,8 @@
 
 Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal machines running Relay as execution hosts. From any browser connected to the hub, a user sees which nodes are online, what repositories each node has checked out, and can start terminal/agent sessions on the chosen node. This document describes the architecture, pairing lifecycle, steady-state reverse WebSocket model, session routing, security model, operator runbook, and explicitly out-of-scope items.
 
+Relay's product boundary is broader than terminal routing but narrower than an IDE/runtime clone: Relay is the federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails. It connects existing agent CLIs, Hermes/Kanban/GitHub refs, tmux sessions, node-local repos/worktrees, and artifacts without replacing those source systems or scraping raw profile/transcript state. See `docs/WORKBENCH_BOUNDARY.md` for the canonical #552 nouns and mobile/pair/dogfood acceptance criteria.
+
 > Terminology is deliberate: `hub` (control plane + UI), `node` (execution host), `client` (browser). A hub is just a `relay-ide` server that has accepted node registrations; a node is just a `relay-ide` install on another host.
 
 ## Overview
@@ -40,15 +42,17 @@ Planned/deferred:
 
 ## Hub/Node/Client Terminology
 
-| Term                  | Definition                                                                                                                                                                                                                                            |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Hub**               | A `relay-ide` server configured to accept node registrations. May also host its own local sessions (the hub can act as its own node).                                                                                                                 |
-| **Node**              | A Relay install on a machine that pairs with a hub and executes sessions locally.                                                                                                                                                                     |
-| **Client UI**         | The React 19 frontend running in a browser connected to the hub.                                                                                                                                                                                      |
-| **Repo identity**     | Canonical repository identity derived from git remotes (e.g. `github.com/donovan-yohan/relay-ide`). Same repo cloned on different nodes shares one identity.                                                                                          |
-| **Repo instance**     | A node-local checkout of a repo, identified by `(nodeId, repoPath)`.                                                                                                                                                                                  |
-| **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`.                                                                                                                                                                                    |
-| **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. |
+`docs/WORKBENCH_BOUNDARY.md` is the canonical definition point for `Node`, `Actor`, `WorkContext`, `Session`, `TaskRef`, `RepoInstance`, `WorktreeInstance`, `Artifact`, `AuditEvent`, and `CapabilityGrant`. This section maps those workbench nouns onto the existing federated hub/node implementation without redefining them as a different model.
+
+| Term                  | Definition                                                                                                                                                                                                                                            | Workbench mapping                                                          |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **Hub**               | A `relay-ide` server configured to accept node registrations. May also host its own local sessions (the hub can act as its own node).                                                                                                                 | Control-plane host for workbench routing and policy.                       |
+| **Node**              | A Relay install on a machine that pairs with a hub and executes sessions locally.                                                                                                                                                                     | `Node`.                                                                    |
+| **Client UI**         | The React 19 frontend running in a browser connected to the hub.                                                                                                                                                                                      | Device-specific view over WorkContexts, Sessions, Nodes, and Artifacts.    |
+| **Repo identity**     | Canonical repository identity derived from git remotes (e.g. `github.com/donovan-yohan/relay-ide`). Same repo cloned on different nodes shares one identity.                                                                                          | Repo-kind Project identity.                                                |
+| **Repo instance**     | A node-local checkout of a repo, identified by `(nodeId, repoPath)`.                                                                                                                                                                                  | `RepoInstance`; git-specific Instance compatibility shape.                 |
+| **Worktree instance** | A node-local git worktree, identified by `(nodeId, worktreePath)`.                                                                                                                                                                                    | `WorktreeInstance`; git-specific Bench compatibility shape.                |
+| **Global session ID** | A node-scoped session identifier produced by `createGlobalSessionId` in `shared/identity.ts`: `{encodeURIComponent(nodeId)}:{encodeURIComponent(localSessionId)}`. No prefix — the node ID and local ID are URL-encoded and joined by a single colon. | Internal routing identity for a `Session`, not a user-facing work context. |
 
 ## Six-Layer Vocabulary Mapping (#444)
 
@@ -307,8 +311,8 @@ The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) wit
 | Comparison                           | `crypto.timingSafeEqual` on hex buffers                           |
 | Pair token lifetime                  | Default 10 minutes; single-use; consumed on exchange              |
 | Registry file                        | Written with `0600` mode; atomic write via temp+rename            |
-| Rotation audit                      | Proof writes `rotation` / `rotated` with credential IDs only     |
-| ACL policy updates                  | Hub policy decisions apply immediately; no rotation wait         |
+| Rotation audit                       | Proof writes `rotation` / `rotated` with credential IDs only      |
+| ACL policy updates                   | Hub policy decisions apply immediately; no rotation wait          |
 | Revocation                           | Immediate; active links are killed; no grace period               |
 
 This table is the implemented security boundary. Control-state fields from #490 are renderable state only; they are not policy decisions and do not imply additional capability gates beyond the hub policy evaluator, trust-tier overrides outside the ACL schema, or raw/control payload duplication into hash-chained audit logging.
@@ -576,11 +580,11 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) before
 
 Trust tiers describe blast radius, not vague safety:
 
-| Tier | Blast radius |
-| ---- | ------------ |
-| `sandbox` | Experimental/constrained node. Keep grants narrow. |
-| `dev` | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
-| `prod` | Sensitive node. High-risk allowed bits may be elevated to confirmation-required, never silently widened. |
+| Tier      | Blast radius                                                                                                   |
+| --------- | -------------------------------------------------------------------------------------------------------------- |
+| `sandbox` | Experimental/constrained node. Keep grants narrow.                                                             |
+| `dev`     | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
+| `prod`    | Sensitive node. High-risk allowed bits may be elevated to confirmation-required, never silently widened.       |
 
 The hub owns ACL policy. Node manifests report availability/probe data only — e.g. `git` availability says whether the node can run git, not whether `rpc:git:write` is granted. Legacy paired nodes are migrated to a default `dev` ACL with session/read bits on and file write/delete, git write, arbitrary exec, and preview/port-forward off unless explicitly granted. See `docs/SECURITY_POLICY.md` and `shared/security-policy.ts`.
 
@@ -635,9 +639,14 @@ These were considered during design but are **not implemented** and should not b
 - **Cross-host tmux session transfer** — Sessions are node-local; re-creating on another node is a cold start.
 - **Real-time workspace state sync** — No conflict-free replicated worktree state.
 - **Full #444 IA migration** — This document maps federation terms to the six-layer vocabulary, but it does not implement Workspace/Project/Instance/Bench CRUD, #473 right-rail migration, #428 file RPC, or a Worker tree node.
+- **Raw Hermes state sync** — Relay should receive bounded Hermes plugin/integration metadata; it must not scrape or sync raw Hermes profile DBs, memory stores, provider auth, env, or unbounded transcripts/logs.
+- **Hermes/GitHub/Kanban/native-agent replacement** — Relay links and controls existing systems through scoped refs and adapters; it does not clone their dashboards or become their storage/runtime owner.
+- **Phone IDE** — Mobile control prioritizes status, approvals, small input, artifacts, attach, and safe pause/kill/retry. Bulk editing, broad file navigation, and high-risk write flows are out of scope for the v1 workbench loop.
+- **Capability probe as permission** — Node manifest availability never grants authority by itself; hub policy and scoped capability grants decide whether an action may run.
 
 ## See Also
 
+- `docs/WORKBENCH_BOUNDARY.md` — Product boundary, #552 canonical workbench nouns, and mobile/pair/dogfood acceptance criteria
 - `docs/RELAY_NODE_BOOTSTRAP.md` — Detailed pairing commands, per-platform service setup, and bootstrap diagnostics
 - `docs/ARCHITECTURE.md` — Module boundaries, REST/WebSocket API tables, composition-root invariants
 - `docs/DESIGN.md` — Backend patterns, PTY management, session types, config precedence

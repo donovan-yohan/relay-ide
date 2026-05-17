@@ -7,6 +7,8 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 Relay IDE is a remote web interface for interacting with agent and terminal sessions from any device. A user opens the web UI in a browser, authenticates with a PIN, and gets a terminal connected to a tmux-backed process running either on the hub machine or on a paired Relay node. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state.
 
+Product boundary: Relay is a federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails across existing tools. It is not a replacement for Hermes Agent, GitHub, Kanban, tmux, or native Claude/Codex/OpenCode/Hermes CLIs, and it must not scrape raw Hermes profile databases, provider auth, env, or unbounded transcripts/logs. `docs/WORKBENCH_BOUNDARY.md` is the canonical source for #552 workbench nouns (`WorkContext`, `Actor`, `TaskRef`, `Artifact`, `AuditEvent`, `CapabilityGrant`, etc.) and mobile/pair/dogfood journey acceptance criteria.
+
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
 
@@ -15,6 +17,8 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 ## Six-Layer Vocabulary Contract (#444)
 
 Relay's product information architecture is now described as **View -> Workspace -> Project -> Instance -> Bench -> Tab**. This vocabulary is a source-of-truth for docs and implementation planning; it does not mean every layer must be visible in every UI state. The single-repo golden path should stay compact, while remote, non-repo, and multi-node states expose the layer needed to avoid false repo/worktree assumptions.
+
+The #552 workbench/control-plane nouns in `docs/WORKBENCH_BOUNDARY.md` are compatible with this tree rather than a replacement for it: `WorkContext` is the cross-cutting work envelope, `RepoInstance` maps to a git-specific Instance, `WorktreeInstance` maps to a git-specific Bench, and `Session`/browser Tab remain separate process/surface concepts.
 
 | Layer         | What it answers                                       | Current / compatibility boundary                                                                                                                                                                                       |
 | ------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -101,8 +105,8 @@ Keep these names precise where they describe implemented plumbing:
 | `node-manifest.ts`                      | Local node capability manifest: probes platform/arch/hostname/version, WSL, service manager, tmux/git/clipboard/browser/gh/tailscale/ssh, and agent tool availability non-fatally                                                                                  |
 | `local-node.ts`                         | Local node state: identity, manifest, repo inventory, credential storage, and heartbeat sender for the current machine when acting as a node                                                                                                                       |
 | `hub-node-router.ts`                    | Express Router for hub/node REST API: pair tokens, pairing exchange, node heartbeat, node listing, direct session creation routing, manual/online credential rotation, rotation clear-recovery, node revocation                                                    |
-| `hub-node-registry.ts`                  | Pair-token lifecycle, SHA256-hashed credential storage, timing-safe authentication, hub-owned ACL policy/default migration, heartbeat state tracking, credential rotation proof/audit, offline/stale/revoked status, registry persistence with debounced writes |
-| `security-audit-log.ts`                 | Hash-chained security audit persistence: append-only SQLite table, atomic inserts, verifier for gaps/tamper/corruption, and CLI-facing verification result shape                                                                                       |
+| `hub-node-registry.ts`                  | Pair-token lifecycle, SHA256-hashed credential storage, timing-safe authentication, hub-owned ACL policy/default migration, heartbeat state tracking, credential rotation proof/audit, offline/stale/revoked status, registry persistence with debounced writes    |
+| `security-audit-log.ts`                 | Hash-chained security audit persistence: append-only SQLite table, atomic inserts, verifier for gaps/tamper/corruption, and CLI-facing verification result shape                                                                                                   |
 | `hub-node-link.ts`                      | Reverse WebSocket link manager: node link registration, RPC request/response, PTY stream proxy between browser and node, node event broadcast, cleanup on disconnect/revocation                                                                                    |
 | `repo-inventory.ts`                     | Local repo inventory collection: workspace scanning, git remote normalization, capability-gated repo identity resolution                                                                                                                                           |
 | `features/repo-inventory.ts`            | Repo inventory feature service: stores node-reported inventory snapshots and aggregates local + remote reports by canonical repo identity                                                                                                                          |
@@ -117,7 +121,7 @@ Compiled by both `tsconfig.json` (server build) and `frontend/tsconfig.json` (Vi
 | Module                     | Role                                                                                                                                                 |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `chat-events.ts`           | `ChatEvent` discriminated union and type guards — the wire protocol for web-chat transcripts                                                         |
-| `control-state.ts`         | Product control-state summary and tab intervention event contracts; keeps `controlMode` independent from transport `mode`                             |
+| `control-state.ts`         | Product control-state summary and tab intervention event contracts; keeps `controlMode` independent from transport `mode`                            |
 | `mobile-input-pipeline.ts` | Pure-function event-intent pipeline for mobile virtual keyboard input — consumed by the React `MobileInput` component; unit-tested via JSON fixtures |
 | `node-manifest.ts`         | Shared `NodeManifest` / `NodeCapabilities` schema for platform, service manager, WSL, and tool/agent capability probes                               |
 | `bootstrap-diagnostics.ts` | Relay-node bootstrap command generation, redaction helpers, and diagnostics taxonomy for local/SSH/Tailscale pairing                                 |
@@ -259,7 +263,7 @@ This makes Tab and pane customization (#263) viable without losing process owner
 | `POST`   | `/hub/pair-tokens`                       | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                        |
 | `POST`   | `/hub/pairing/exchange`                  | Exchange a one-time pair token for a persistent revocable node credential                                                                           |
 | `POST`   | `/hub/node-heartbeat`                    | Authenticated relay-node heartbeat using the persistent node credential                                                                             |
-| `GET`    | `/nodes`                                 | List paired nodes with heartbeat status, reverse-link connection state, manifest capability summary, and hub-owned ACL policy summary                 |
+| `GET`    | `/nodes`                                 | List paired nodes with heartbeat status, reverse-link connection state, manifest capability summary, and hub-owned ACL policy summary               |
 | `GET`    | `/hub/repo-inventory`                    | Aggregate local + node-reported repo inventory by canonical git remote identity                                                                     |
 | `POST`   | `/hub/nodes/:nodeId/sessions`            | Route terminal/agent session creation to an online node over reverse-link RPC; RPC body uses `repoPath`, `worktreePath`, and `cwd`                  |
 | `DELETE` | `/hub/nodes/:nodeId/sessions/:sessionId` | Kill a node-local session through reverse-link RPC                                                                                                  |
