@@ -198,19 +198,21 @@ function useTerminalDerivedState() {
     [activeSessionId, sessions]
   );
 
-  const allWorkspaceSessions = useMemo(
-    () =>
-      activeRepoPath
-        ? sessions
-            .filter((session) => session.repoPath === activeRepoPath)
-            .toSorted(
-              (a, b) =>
-                new Date(a.createdAt).getTime() -
-                new Date(b.createdAt).getTime()
-            )
-        : [],
-    [activeRepoPath, sessions]
-  );
+  const allWorkspaceSessions = useMemo(() => {
+    const scopedSessions = activeRepoPath
+      ? sessions.filter((session) => session.repoPath === activeRepoPath)
+      : activeSession
+        ? sessions.filter(
+            (session) =>
+              session.cwd === activeSession.cwd &&
+              (session.nodeId ?? 'local') === (activeSession.nodeId ?? 'local')
+          )
+        : [];
+    return scopedSessions.toSorted(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+  }, [activeRepoPath, activeSession, sessions]);
 
   const workspaceSessions = useMemo(
     () =>
@@ -223,8 +225,7 @@ function useTerminalDerivedState() {
   const hasActiveSession = useMemo(
     () =>
       !!activeSession &&
-      !!activeRepoPath &&
-      activeSession.repoPath === activeRepoPath,
+      (activeRepoPath ? activeSession.repoPath === activeRepoPath : true),
     [activeSession, activeRepoPath]
   );
 
@@ -247,10 +248,10 @@ function useTerminalDerivedState() {
     'empty' | 'org' | 'dashboard' | 'session' | 'analytics'
   >(() => {
     if (analyticsView !== null) return 'analytics';
+    if (hasActiveSession) return 'session';
     if (!repos.length) return 'empty';
     if (!activeRepoPath) return 'org';
-    if (!hasActiveSession) return 'dashboard';
-    return 'session';
+    return 'dashboard';
   }, [analyticsView, repos.length, activeRepoPath, hasActiveSession]);
 
   return {
@@ -602,7 +603,9 @@ function TerminalAreaContent({
       if (relative !== null) {
         const currentActiveRepoPath = useUiStore.getState().activeRepoPath;
         const currentWorkspace = currentActiveRepoPath
-          ? sessionsState.repos.find((repo) => repo.path === currentActiveRepoPath)
+          ? sessionsState.repos.find(
+              (repo) => repo.path === currentActiveRepoPath
+            )
           : undefined;
         const currentRailContext = deriveUtilityRailContext({
           activeRepoPath: currentActiveRepoPath,
@@ -666,7 +669,10 @@ function TerminalAreaContent({
   }, [saveUtilityRailState, utilityRailResizable, utilityRailStateKey]);
 
   const handleToggleUtilityRail = useCallback(() => {
-    toggleUtilityRailForWorkspace(utilityRailStateKey, toggleUtilityRailVisible);
+    toggleUtilityRailForWorkspace(
+      utilityRailStateKey,
+      toggleUtilityRailVisible
+    );
   }, [toggleUtilityRailVisible, utilityRailStateKey]);
 
   const {
@@ -748,14 +754,16 @@ function TerminalAreaContent({
 
       {viewMode === 'session' && (
         <>
-          <PrTopBar
-            workspacePath={activeRepoPath ?? ''}
-            utilityRailWorkspacePath={utilityRailStateKey}
-            branchName={activeSession?.branchName ?? ''}
-            sessionId={activeSessionId}
-            agentRunning={activeSession?.agentState === 'processing'}
-            onArchive={onArchive}
-          />
+          {activeRepoPath && activeSession?.repoPath === activeRepoPath && (
+            <PrTopBar
+              workspacePath={activeRepoPath}
+              utilityRailWorkspacePath={utilityRailStateKey}
+              branchName={activeSession?.branchName ?? ''}
+              sessionId={activeSessionId}
+              agentRunning={activeSession?.agentState === 'processing'}
+              onArchive={onArchive}
+            />
+          )}
           <SplitPaneLayout
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}

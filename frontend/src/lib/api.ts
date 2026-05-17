@@ -30,6 +30,7 @@ import type {
   FrameworkInfo,
   BranchDivergenceSummary,
   AggregatedRepoInventoryResponse,
+  WorkContextActiveGroup,
 } from './types.js';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
 import {
@@ -38,7 +39,10 @@ import {
   type NodeId,
 } from '../../../shared/identity.js';
 import type { SessionLane } from '../../../shared/session-lane.js';
-import type { ControlActor, InterventionRecord } from '../../../shared/control-state.js';
+import type {
+  ControlActor,
+  InterventionRecord,
+} from '../../../shared/control-state.js';
 import { registerConfirmationRetry } from './confirmation-retries.js';
 
 export class ConflictError extends Error {
@@ -111,7 +115,13 @@ export interface ConfirmationChallenge {
 export class ConfirmationRequiredError extends HttpError {
   challenge: ConfirmationChallenge;
   constructor(error: HttpError, challenge: ConfirmationChallenge) {
-    super(error.status, error.message, error.code, error.retryable, error.details);
+    super(
+      error.status,
+      error.message,
+      error.code,
+      error.retryable,
+      error.details
+    );
     this.name = 'ConfirmationRequiredError';
     this.challenge = challenge;
   }
@@ -175,7 +185,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isConfirmationChallenge(value: unknown): value is ConfirmationChallenge {
+function isConfirmationChallenge(
+  value: unknown
+): value is ConfirmationChallenge {
   if (!isRecord(value)) return false;
   return (
     typeof value['challengeId'] === 'string' &&
@@ -190,7 +202,9 @@ function isConfirmationChallenge(value: unknown): value is ConfirmationChallenge
   );
 }
 
-function confirmationChallengeFromError(error: HttpError): ConfirmationChallenge | undefined {
+function confirmationChallengeFromError(
+  error: HttpError
+): ConfirmationChallenge | undefined {
   const challenge = error.details?.['challenge'];
   return isConfirmationChallenge(challenge) ? challenge : undefined;
 }
@@ -258,8 +272,12 @@ export async function checkAuthStatus(): Promise<{
   return { hasPIN: data.hasPIN === true, noPin: data.noPin === true };
 }
 
-export async function fetchConfirmationChallenges(): Promise<ConfirmationChallenge[]> {
-  const data = await json<{ challenges?: unknown[] }>(await fetch('/hub/confirmations'));
+export async function fetchConfirmationChallenges(): Promise<
+  ConfirmationChallenge[]
+> {
+  const data = await json<{ challenges?: unknown[] }>(
+    await fetch('/hub/confirmations')
+  );
   return Array.isArray(data.challenges)
     ? data.challenges.filter(isConfirmationChallenge)
     : [];
@@ -282,8 +300,11 @@ export async function approveConfirmationChallenge(
   decision: ConfirmationDecision,
   approverSession?: string
 ): Promise<{ confirmationToken?: string; challenge: ConfirmationChallenge }> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (approverSession?.trim()) headers['x-auth-session'] = approverSession.trim();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (approverSession?.trim())
+    headers['x-auth-session'] = approverSession.trim();
   const res = await fetch(
     '/hub/confirmations/' + encodeURIComponent(challengeId) + '/approve',
     {
@@ -292,8 +313,12 @@ export async function approveConfirmationChallenge(
       body: JSON.stringify({ decision }),
     }
   );
-  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to approve confirmation');
-  const data = await jsonEither<{ confirmationToken?: unknown; challenge?: unknown }>(res);
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to approve confirmation');
+  const data = await jsonEither<{
+    confirmationToken?: unknown;
+    challenge?: unknown;
+  }>(res);
   if (!isConfirmationChallenge(data.challenge)) {
     throw new Error('confirmation approval response was malformed');
   }
@@ -309,15 +334,30 @@ export async function fetchConfirmationRequesterToken(
   challengeId: string
 ): Promise<{ confirmationToken: string; challenge: ConfirmationChallenge }> {
   const res = await fetch(
-    '/hub/confirmations/' + encodeURIComponent(challengeId) + '/requester-token',
+    '/hub/confirmations/' +
+      encodeURIComponent(challengeId) +
+      '/requester-token',
     { method: 'POST' }
   );
-  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to fetch confirmation token');
-  const data = await jsonEither<{ confirmationToken?: unknown; challenge?: unknown }>(res);
-  if (typeof data.confirmationToken !== 'string' || !isConfirmationChallenge(data.challenge)) {
+  if (!res.ok)
+    throw await httpErrorFromResponse(
+      res,
+      'Failed to fetch confirmation token'
+    );
+  const data = await jsonEither<{
+    confirmationToken?: unknown;
+    challenge?: unknown;
+  }>(res);
+  if (
+    typeof data.confirmationToken !== 'string' ||
+    !isConfirmationChallenge(data.challenge)
+  ) {
     throw new Error('confirmation requester-token response was malformed');
   }
-  return { confirmationToken: data.confirmationToken, challenge: data.challenge };
+  return {
+    confirmationToken: data.confirmationToken,
+    challenge: data.challenge,
+  };
 }
 
 export async function setupPin(pin: string, confirm: string): Promise<void> {
@@ -365,22 +405,40 @@ export async function handBackSessionControl(input: {
   sessionId: string;
   latestSeenInterventionEventId: string;
   actor?: ControlActor;
-}): Promise<{ ok: true; events: unknown[]; ackedHumanInterventions: InterventionRecord[] }> {
-  return json<{ ok: true; events: unknown[]; ackedHumanInterventions: InterventionRecord[] }>(
-    await fetch(`/sessions/${encodeURIComponent(input.sessionId)}/control/hand-back`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        latestSeenInterventionEventId: input.latestSeenInterventionEventId,
-        ...(input.actor ? { actor: input.actor } : {}),
-      }),
-    })
+}): Promise<{
+  ok: true;
+  events: unknown[];
+  ackedHumanInterventions: InterventionRecord[];
+}> {
+  return json<{
+    ok: true;
+    events: unknown[];
+    ackedHumanInterventions: InterventionRecord[];
+  }>(
+    await fetch(
+      `/sessions/${encodeURIComponent(input.sessionId)}/control/hand-back`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          latestSeenInterventionEventId: input.latestSeenInterventionEventId,
+          ...(input.actor ? { actor: input.actor } : {}),
+        }),
+      }
+    )
   );
 }
 
 export async function fetchHubNodes(): Promise<HubNodeSummary[]> {
   const data = await json<{ nodes?: HubNodeSummary[] }>(await fetch('/nodes'));
   return Array.isArray(data.nodes) ? data.nodes : [];
+}
+
+export async function fetchActiveWork(): Promise<WorkContextActiveGroup[]> {
+  const data = await json<{ groups?: WorkContextActiveGroup[] }>(
+    await fetch('/work-contexts/active')
+  );
+  return Array.isArray(data.groups) ? data.groups : [];
 }
 
 function normalizeTelemetryMapEntry(
@@ -815,13 +873,18 @@ async function parseSessionCreateResponse(
   throw error;
 }
 
-export async function createSession(body: CreateSessionBody): Promise<SessionSummary> {
+export async function createSession(
+  body: CreateSessionBody
+): Promise<SessionSummary> {
   const { nodeId, ...sessionBody } = body;
   const sessionPath = sessionCreatePath(nodeId);
-  return parseSessionCreateResponse(await postSessionCreate(sessionPath, sessionBody), {
-    sessionPath,
-    sessionBody,
-  });
+  return parseSessionCreateResponse(
+    await postSessionCreate(sessionPath, sessionBody),
+    {
+      sessionPath,
+      sessionBody,
+    }
+  );
 }
 
 export async function killSession(
@@ -847,7 +910,11 @@ export async function killSession(
           method: 'DELETE',
           headers: { 'x-confirmation-token': confirmationToken },
         });
-        if (!retryRes.ok) throw await httpErrorFromResponse(retryRes, 'Failed to close session');
+        if (!retryRes.ok)
+          throw await httpErrorFromResponse(
+            retryRes,
+            'Failed to close session'
+          );
       },
     });
     throw new ConfirmationRequiredError(error, challenge);
