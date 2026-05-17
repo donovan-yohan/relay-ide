@@ -44,7 +44,7 @@ Audit write failure policy is fail-closed for prod trust tier or destructive/hig
 
 ## Operator visibility
 
-The hub UI surfaces each paired node's trust tier, ACL posture, scope, capability readiness, and high-risk summary from the node summary returned by `/hub/nodes`. Confirmation prompts also show the selected node, trust tier, policy ref, required bits grouped by allow/challenge/deny posture, and keep canonical params behind a details disclosure instead of making raw JSON the only security context.
+The hub UI surfaces each paired node's trust tier, ACL allow/challenge/deny capability posture, scope, capability availability, and high-risk summary from the node summary returned by `/hub/nodes`. Confirmation prompts also show the selected node, trust tier, policy ref, required bits grouped by allow/challenge/deny/unknown posture, and keep canonical params behind a details disclosure instead of making raw JSON the only security context.
 
 Audit visibility is intentionally minimal in this slice: the UI advertises the safe CLI verification path (`relay-ide audit verify --db ~/.config/relay-ide/security-audit.db`) rather than inventing a broad audit browser. There is no web audit dashboard, SIEM export, retention policy, or remote attestation claim yet.
 

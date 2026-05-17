@@ -18,6 +18,14 @@
   border-color: var(--status-error);
 }
 
+.confirmation-prompt--warning {
+  border-color: var(--status-warning);
+}
+
+.confirmation-prompt--muted {
+  border-color: var(--border);
+}
+
 .confirmation-prompt--safe {
   border-color: color-mix(in srgb, var(--status-success) 55%, var(--border));
 }

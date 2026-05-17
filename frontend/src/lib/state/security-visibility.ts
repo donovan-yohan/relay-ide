@@ -31,6 +31,7 @@ export interface ConfirmationSecurityVisibility {
   allowedBits: string[];
   challengeBits: string[];
   deniedBits: string[];
+  unknownBits: string[];
   tone: SecurityPostureTone;
 }
 
@@ -48,6 +49,13 @@ function sortedKnownBits(values: readonly string[] | undefined): RelayCapability
 
 function trustTierForNode(node: HubNodeSummary): RelayTrustTier | 'unknown' {
   return node.trust?.tier ?? node.trust?.policy?.trustTier ?? 'unknown';
+}
+
+function policyLifecycleDenyLabel(policy: HubNodeSummary['trust']['policy']): string | null {
+  if (!policy) return null;
+  if (policy.revokedAt) return 'policy revoked';
+  if (policy.supersededBy) return 'policy superseded';
+  return null;
 }
 
 export function formatPolicyScope(scope: RelayPolicyScope | undefined): string {
@@ -87,6 +95,21 @@ export function deriveNodeSecurityVisibility(node: HubNodeSummary): NodeSecurity
 
   const allowedBits = sortedKnownBits(policy.allowed);
   const challengeBits = sortedKnownBits(policy.requiresConfirmation);
+  const lifecycleDenyLabel = policyLifecycleDenyLabel(policy);
+  if (lifecycleDenyLabel) {
+    return {
+      trustTier,
+      policyRef: policy.ref,
+      scopeLabel: formatPolicyScope(policy.scope),
+      allowedBits: [],
+      challengeBits: [],
+      denyBits: [...RELAY_CAPABILITY_BITS],
+      postureLabel: `${lifecycleDenyLabel} · deny ${RELAY_CAPABILITY_BITS.length}`,
+      highRiskLabel: `${lifecycleDenyLabel}: backend denies all capabilities`,
+      tone: 'danger',
+      auditLabel: 'audit visibility: cli only · relay-ide audit verify',
+    };
+  }
   const handled = new Set<string>([...allowedBits, ...challengeBits]);
   const denyBits = RELAY_CAPABILITY_BITS.filter((bit) => !handled.has(bit));
   const highRiskAllowed = allowedBits.filter((bit) => HIGH_RISK_SET.has(bit));
@@ -123,23 +146,50 @@ export function deriveConfirmationSecurityVisibility(
   challenge: ConfirmationChallenge,
   node?: HubNodeSummary
 ): ConfirmationSecurityVisibility {
-  const policy = node?.trust.policy;
+  const policy = node?.trust?.policy;
   const trustTier = node ? trustTierForNode(node) : 'unknown';
   const challengeBits = unique([...challenge.challengeBits]);
   const requiredBits = unique([...challenge.requiredBits]);
+  const requiredNonChallengedBits = requiredBits.filter((bit) => !challengeBits.includes(bit));
+  const lifecycleDenyLabel = policyLifecycleDenyLabel(policy);
+  if (lifecycleDenyLabel) {
+    return {
+      nodeLabel: node?.displayName ? `${node.displayName} (${challenge.nodeId})` : challenge.nodeId,
+      trustTier,
+      policyRef: policy?.ref ?? null,
+      postureLabel: `${lifecycleDenyLabel} · deny ${requiredBits.length}`,
+      allowedBits: [],
+      challengeBits: [],
+      deniedBits: requiredBits,
+      unknownBits: [],
+      tone: 'danger',
+    };
+  }
   const allowedByPolicy = new Set<string>(policy?.allowed ?? []);
   const challenged = new Set<string>(challengeBits);
   const allowedBits = requiredBits.filter((bit) => allowedByPolicy.has(bit) && !challenged.has(bit));
   const deniedBits = policy
     ? requiredBits.filter((bit) => !allowedByPolicy.has(bit) && !challenged.has(bit))
     : [];
-  const postureLabel = challengeBits.length > 0
-    ? `challenge required · allow ${allowedBits.length} · challenge ${challengeBits.length} · deny ${deniedBits.length}`
-    : deniedBits.length > 0
-      ? `denied by policy · allow ${allowedBits.length} · deny ${deniedBits.length}`
-      : `allowed by policy · allow ${allowedBits.length}`;
+  const unknownBits = policy ? [] : requiredNonChallengedBits;
+  const postureLabel = !policy
+    ? `policy unavailable · challenge ${challengeBits.length} · unknown ${unknownBits.length}`
+    : challengeBits.length > 0
+      ? `challenge required · allow ${allowedBits.length} · challenge ${challengeBits.length} · deny ${deniedBits.length}`
+      : deniedBits.length > 0
+        ? `denied by policy · allow ${allowedBits.length} · deny ${deniedBits.length}`
+        : `allowed by policy · allow ${allowedBits.length}`;
   const highRiskChallenge = challengeBits.some((bit) => HIGH_RISK_SET.has(bit));
-  const tone: SecurityPostureTone = trustTier === 'prod' || highRiskChallenge ? 'danger' : challengeBits.length > 0 ? 'warning' : 'safe';
+  const highRiskUnknown = unknownBits.some((bit) => HIGH_RISK_SET.has(bit));
+  const tone: SecurityPostureTone = !policy
+    ? highRiskChallenge || highRiskUnknown
+      ? 'danger'
+      : 'warning'
+    : trustTier === 'prod' || highRiskChallenge
+      ? 'danger'
+      : challengeBits.length > 0
+        ? 'warning'
+        : 'safe';
 
   return {
     nodeLabel: node?.displayName ? `${node.displayName} (${challenge.nodeId})` : challenge.nodeId,
@@ -149,6 +199,7 @@ export function deriveConfirmationSecurityVisibility(
     allowedBits,
     challengeBits,
     deniedBits,
+    unknownBits,
     tone,
   };
 }

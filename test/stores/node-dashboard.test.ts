@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { HubNodeSummary } from '../../shared/relay-node-protocol.js';
 import {
   createLegacyDefaultNodeAcl,
+  RELAY_CAPABILITY_BITS,
   summarizeAcl,
   type RelayCapabilityBit,
   type RelayTrustTier,
@@ -321,6 +322,43 @@ describe('hub node dashboard state', () => {
     });
   });
 
+  it('treats revoked and superseded policy summaries as backend-denied posture', () => {
+    const rows = deriveHubNodeDashboardRows(
+      [
+        node({
+          nodeId: 'revoked-node',
+          trust: {
+            state: 'trusted',
+            level: 'dev',
+            tier: 'dev',
+            policy: { ...policy('revoked-node'), revokedAt: createdAt },
+          },
+        }),
+        node({
+          nodeId: 'superseded-node',
+          trust: {
+            state: 'trusted',
+            level: 'dev',
+            tier: 'dev',
+            policy: { ...policy('superseded-node'), supersededBy: 'acl:superseding:1.0' },
+          },
+        }),
+      ],
+      { now }
+    );
+
+    expect(rows.map((row) => row.disabledReason)).toEqual([
+      'work disabled: policy revoked',
+      'work disabled: policy superseded',
+    ]);
+    expect(rows.map((row) => row.security.postureLabel)).toEqual([
+      `policy revoked · deny ${RELAY_CAPABILITY_BITS.length}`,
+      `policy superseded · deny ${RELAY_CAPABILITY_BITS.length}`,
+    ]);
+    expect(rows.map((row) => row.security.tone)).toEqual(['danger', 'danger']);
+    expect(rows.every((row) => row.security.denyBits.length === RELAY_CAPABILITY_BITS.length)).toBe(true);
+  });
+
   it('summarizes which machines can currently do work', () => {
     const summary = hubNodeDashboardSummary(
       [
@@ -371,6 +409,55 @@ describe('confirmation security visibility state', () => {
       allowedBits: ['session:read'],
       challengeBits: ['rpc:fs:delete'],
       deniedBits: ['rpc:git:write'],
+      unknownBits: [],
+      tone: 'danger',
+    });
+  });
+
+  it('preserves every required bit when the policy summary is unavailable', () => {
+    const view = deriveConfirmationSecurityVisibility(
+      confirmationChallenge({
+        requiredBits: ['session:read', 'rpc:fs:delete', 'rpc:git:write'],
+        challengeBits: ['rpc:fs:delete'],
+      })
+    );
+
+    expect(view).toMatchObject({
+      nodeLabel: 'node-1',
+      trustTier: 'unknown',
+      policyRef: null,
+      postureLabel: 'policy unavailable · challenge 1 · unknown 2',
+      allowedBits: [],
+      challengeBits: ['rpc:fs:delete'],
+      deniedBits: [],
+      unknownBits: ['session:read', 'rpc:git:write'],
+      tone: 'danger',
+    });
+  });
+
+  it('fails closed when a confirmation sees a revoked policy summary', () => {
+    const view = deriveConfirmationSecurityVisibility(
+      confirmationChallenge({
+        requiredBits: ['session:read', 'rpc:fs:delete'],
+        challengeBits: ['rpc:fs:delete'],
+      }),
+      node({
+        trust: {
+          state: 'trusted',
+          level: 'dev',
+          tier: 'dev',
+          policy: { ...policy('node-1'), revokedAt: createdAt },
+        },
+      })
+    );
+
+    expect(view).toMatchObject({
+      policyRef: 'acl:node-1:1.0',
+      postureLabel: 'policy revoked · deny 2',
+      allowedBits: [],
+      challengeBits: [],
+      deniedBits: ['session:read', 'rpc:fs:delete'],
+      unknownBits: [],
       tone: 'danger',
     });
   });

@@ -348,6 +348,14 @@ export const ConfirmationPrompt: React.FC = () => {
             ))}
           </div>
         )}
+        {security.unknownBits.length > 0 && (
+          <div className="confirmation-prompt__bit-group posture-warning">
+            <span className="confirmation-prompt__bit-group-label">unknown</span>
+            {security.unknownBits.map((bit) => (
+              <span key={`unknown-${bit}`}>{bit}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       <label className="confirmation-prompt__field">

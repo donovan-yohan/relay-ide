@@ -224,6 +224,11 @@
   color: var(--status-error);
 }
 
+.hub-node-policy-posture.posture-muted,
+.hub-node-high-risk.posture-muted {
+  color: var(--text-muted);
+}
+
 .hub-node-security-ref {
   overflow: hidden;
   text-overflow: ellipsis;

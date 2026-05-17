@@ -93,6 +93,8 @@ function disabledReason(
   if (node.status === 'revoked') return 'not attachable: node was revoked';
   if (node.status === 'offline') return 'not attachable: node is offline';
   if (node.status === 'stale') return 'not attachable: heartbeat is stale';
+  if (node.trust?.policy?.revokedAt) return 'work disabled: policy revoked';
+  if (node.trust?.policy?.supersededBy) return 'work disabled: policy superseded';
 
   const blockers = readinessCapabilities.flatMap((key) => {
     const hint = capabilityHints.find((candidate) => candidate.key === key);
