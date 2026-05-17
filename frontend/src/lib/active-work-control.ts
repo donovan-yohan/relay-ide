@@ -1,4 +1,7 @@
-import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createGlobalSessionId,
+} from '../../../shared/identity.js';
 import type {
   WorkContextActiveGroup,
   WorkContextSessionSummary,
@@ -11,6 +14,14 @@ export interface ActiveWorkMobileControlState {
   promptKind: 'approval' | 'input' | null;
   smallInputLabel: string;
   smallInputPlaceholder: string;
+}
+
+export function activeWorkSessionActivationKey(
+  session: WorkContextSessionSummary
+): string {
+  const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+  if (nodeId === DEFAULT_LOCAL_NODE_ID) return session.id;
+  return session.globalSessionId ?? createGlobalSessionId(nodeId, session.id);
 }
 
 export function activeWorkAttentionPriority(
@@ -80,8 +91,6 @@ export function activeWorkMobileControlState(
 ): ActiveWorkMobileControlState {
   const liveReason = liveControlDisabledReason(group, session);
   const freshReason = freshControlDisabledReason(session);
-  const isLocal =
-    (session?.nodeId ?? DEFAULT_LOCAL_NODE_ID) === DEFAULT_LOCAL_NODE_ID;
   const promptKind =
     session?.agentState === 'permission-prompt'
       ? 'approval'
@@ -90,10 +99,6 @@ export function activeWorkMobileControlState(
         : null;
 
   let smallInputDisabledReason = liveReason ?? freshReason;
-  if (!smallInputDisabledReason && !isLocal) {
-    smallInputDisabledReason =
-      'remote small input awaits routed control endpoint';
-  }
   if (!smallInputDisabledReason && session?.mode === 'web') {
     smallInputDisabledReason = 'web session input is unsupported here';
   }

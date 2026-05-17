@@ -33,6 +33,7 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'session:create:terminal',
   'session:create:agent',
   'session:attach',
+  'tab:mode:set-agent',
   'rpc:fs:list',
   'rpc:fs:read',
   'rpc:fs:tail',

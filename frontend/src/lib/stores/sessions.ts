@@ -615,7 +615,9 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     );
     const workspace = workspaceGroups.find((w) => w.id === workspaceId);
     if (!workspace) return directSessions;
-    const repoSet = new Set(workspace.repos);
+    const repoSet = new Set(
+      Array.isArray(workspace.repos) ? workspace.repos : []
+    );
     const repoSessions = sessions.filter(
       (s) => !s.workspaceId && !!s.repoPath && repoSet.has(s.repoPath)
     );

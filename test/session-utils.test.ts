@@ -178,4 +178,20 @@ describe('createSessionWithoutActivation', () => {
     expect(result).toEqual({ session: undefined, error: createError });
     expect(refreshAll).not.toHaveBeenCalled();
   });
+
+  it('does not throw when legacy workspace groups omit repos', () => {
+    useSessionsStore.setState({
+      sessions: [
+        { ...session('direct'), workspaceId: 'legacy' },
+        { ...session('repo'), workspaceId: undefined },
+      ],
+      workspaceGroups: [{ id: 'legacy', name: 'Legacy', order: 0 } as any],
+    });
+
+    const result = useSessionsStore
+      .getState()
+      .getSessionsForWorkspaceGroup('legacy');
+
+    expect(result.map((s) => s.id)).toEqual(['direct']);
+  });
 });

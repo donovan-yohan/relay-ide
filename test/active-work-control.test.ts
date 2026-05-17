@@ -7,6 +7,7 @@ import type {
 import {
   activeWorkAttentionPriority,
   activeWorkMobileControlState,
+  activeWorkSessionActivationKey,
   activeWorkStateLabel,
 } from '../frontend/src/lib/active-work-control.js';
 
@@ -80,7 +81,7 @@ describe('active work mobile control helpers', () => {
     expect(activeWorkStateLabel(mixed)).toBe('error');
   });
 
-  it('allows audited small input only for fresh live local pty sessions', () => {
+  it('allows audited small input for fresh live local and routed pty sessions', () => {
     const state = activeWorkMobileControlState(
       group({ sessions: [session({ agentState: 'permission-prompt' })] }),
       session({ agentState: 'permission-prompt' })
@@ -89,6 +90,15 @@ describe('active work mobile control helpers', () => {
     expect(state.smallInputDisabledReason).toBeNull();
     expect(state.promptKind).toBe('approval');
     expect(state.smallInputLabel).toBe('reply to approval');
+
+    const routed = activeWorkMobileControlState(
+      group({
+        node: { nodeId: 'remote-a', status: 'online', kind: 'remote' },
+        sessions: [session({ nodeId: 'remote-a' })],
+      }),
+      session({ nodeId: 'remote-a' })
+    );
+    expect(routed.smallInputDisabledReason).toBeNull();
   });
 
   it('disables controls for stale/offline read models and reports last-known state reasons', () => {
@@ -114,16 +124,33 @@ describe('active work mobile control helpers', () => {
     expect(state.destructiveDisabledReason).toContain('session:control:kill');
   });
 
-  it('does not route remote small input through local-only control paths', () => {
+  it('keeps unknown control state disabled but scopes routed attach/input keys', () => {
     const state = activeWorkMobileControlState(
       group({
         node: { nodeId: 'remote-a', status: 'online', kind: 'remote' },
-        sessions: [session({ nodeId: 'remote-a' })],
+        sessions: [session({ nodeId: 'remote-a', controlFreshness: 'unknown' })],
       }),
-      session({ nodeId: 'remote-a' })
+      session({ nodeId: 'remote-a', controlFreshness: 'unknown' })
     );
-    expect(state.smallInputDisabledReason).toBe(
-      'remote small input awaits routed control endpoint'
-    );
+    expect(state.smallInputDisabledReason).toBe('unknown control state');
+    expect(
+      activeWorkSessionActivationKey(
+        session({ id: 'remote-session-1', nodeId: 'remote-a' })
+      )
+    ).toBe('remote-a:remote-session-1');
+    expect(
+      activeWorkSessionActivationKey(
+        session({
+          id: 'remote-session-1',
+          nodeId: 'remote-a',
+          globalSessionId: 'remote-a:known-global',
+        })
+      )
+    ).toBe('remote-a:known-global');
+    expect(
+      activeWorkSessionActivationKey(
+        session({ id: 'local-session-1', nodeId: DEFAULT_LOCAL_NODE_ID })
+      )
+    ).toBe('local-session-1');
   });
 });

@@ -316,6 +316,39 @@ export function createAgentDrivenInitialControlState(input: {
   };
 }
 
+export function createHumanDrivenInitialControlState(input: {
+  actorId?: string;
+  displayName?: string;
+  nodeId?: string;
+  sessionId?: string;
+  reason?: string;
+} = {}): {
+  controlMode: 'human-driven';
+  activeActors: ControlActor[];
+  lastInterventionAt: null;
+  lastInterventionBy: null;
+  lastInterventionEventId: null;
+  controlFreshness: 'fresh';
+  controlReason: string;
+} {
+  const activeHuman: ControlActor = {
+    kind: 'human',
+    id: input.actorId ?? 'browser-user',
+    displayName: input.displayName ?? 'Browser user',
+    ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  };
+  return {
+    controlMode: 'human-driven',
+    activeActors: [activeHuman],
+    lastInterventionAt: null,
+    lastInterventionBy: null,
+    lastInterventionEventId: null,
+    controlFreshness: 'fresh',
+    controlReason: input.reason ?? 'routed-session-created',
+  };
+}
+
 export function actorFromRequestBody(value: unknown): ControlActor | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return undefined;

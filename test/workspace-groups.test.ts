@@ -105,6 +105,22 @@ test('GET returns workspaces sorted by order', async () => {
   expect(body[1].id).toBe('id2');
 });
 
+test('GET normalizes legacy workspaces without repos', async () => {
+  writeConfig({
+    configVersion: 4,
+    repos: ['/a'],
+    workspaces: [
+      { id: 'legacy', name: 'Legacy', order: 0 },
+      { id: 'valid', name: 'Valid', repos: ['/a'], order: 1 },
+    ],
+  });
+  await startServer(configPath);
+  const { status, body } = await req('GET', '/workspace-groups');
+  expect(status).toBe(200);
+  expect(body[0]).toMatchObject({ id: 'legacy', repos: [] });
+  expect(body[1]).toMatchObject({ id: 'valid', repos: ['/a'] });
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // POST /workspace-groups
 // ────────────────────────────────────────────────────────────────────────────

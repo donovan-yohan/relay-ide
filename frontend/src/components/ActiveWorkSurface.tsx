@@ -1,4 +1,11 @@
-import { useMemo, useCallback, useRef, useState, type FormEvent } from 'react';
+import {
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type {
@@ -8,10 +15,10 @@ import type {
 import { fetchActiveWork, sendSessionInput } from '../lib/api.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
-import { scopedSessionKey } from '../lib/session-keys.js';
 import {
   activeWorkAttentionPriority,
   activeWorkMobileControlState,
+  activeWorkSessionActivationKey,
   activeWorkStateLabel,
 } from '../lib/active-work-control.js';
 import { TuiButton } from './TuiButton.js';
@@ -164,7 +171,7 @@ function sessionMeta(
 
 function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const queryClient = useQueryClient();
-  const sessions = useSessionsStore((s) => s.sessions);
+  const refreshAll = useSessionsStore((s) => s.refreshAll);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
   const [inputValue, setInputValue] = useState('');
@@ -187,23 +194,16 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
 
   const handleAttach = useCallback(() => {
     if (!primarySession || controlState.attachDisabledReason) return;
-    const live = sessions.find(
-      (session) =>
-        session.id === primarySession.id &&
-        (session.nodeId ?? DEFAULT_LOCAL_NODE_ID) === primarySession.nodeId
-    );
+    const activationKey = activeWorkSessionActivationKey(primarySession);
     const nodeId = primarySession.nodeId ?? DEFAULT_LOCAL_NODE_ID;
     const isLocal = nodeId === DEFAULT_LOCAL_NODE_ID;
     setActiveRepoPath(isLocal ? (primarySession.repoPath ?? null) : null);
-    setActiveSessionId(
-      live
-        ? scopedSessionKey(live)
-        : (primarySession.globalSessionId ?? primarySession.id)
-    );
+    setActiveSessionId(activationKey);
+    void refreshAll().then(() => setActiveSessionId(activationKey));
   }, [
     controlState.attachDisabledReason,
     primarySession,
-    sessions,
+    refreshAll,
     setActiveRepoPath,
     setActiveSessionId,
   ]);
@@ -224,7 +224,11 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
       setIsSubmittingInput(true);
       setInputStatus('sending...');
       try {
-        await sendSessionInput(primarySession.id, `${value}\r`);
+        await sendSessionInput(
+          activeWorkSessionActivationKey(primarySession),
+          `${value}\r`,
+          primarySession.nodeId
+        );
         setInputValue('');
         setInputStatus('sent · recorded as control intervention');
         void queryClient.invalidateQueries({ queryKey: ['active-work'] });
@@ -451,6 +455,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
 }
 
 export default function ActiveWorkSurface() {
+  const queryClient = useQueryClient();
   const {
     data = [],
     isLoading,
@@ -462,6 +467,16 @@ export default function ActiveWorkSurface() {
     staleTime: 5_000,
     refetchInterval: ACTIVE_WORK_REFETCH_MS,
   });
+
+  useEffect(() => {
+    const invalidateActiveWork = () => {
+      void queryClient.invalidateQueries({ queryKey: ['active-work'] });
+    };
+    window.addEventListener('relay-active-work-changed', invalidateActiveWork);
+    return () => {
+      window.removeEventListener('relay-active-work-changed', invalidateActiveWork);
+    };
+  }, [queryClient]);
 
   const groups = useMemo(
     () =>

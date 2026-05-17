@@ -319,12 +319,13 @@ function WorkspaceGroupsList({
   return (
     <>
       {sortedGroups.map((ws) => {
-        const wsRepos = ws.repos
+        const repoPaths = Array.isArray(ws.repos) ? ws.repos : [];
+        const wsRepos = repoPaths
           .map((p: string) => reposByPath.get(p))
           .filter((r): r is Repo => r !== undefined);
         const wsSessions = getSessionsForWorkspaceGroup(ws.id);
         const wsWorktrees = worktrees.filter((wt) =>
-          ws.repos.includes(wt.repoPath)
+          repoPaths.includes(wt.repoPath)
         );
         return (
           <WorkspaceGroup
