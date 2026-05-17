@@ -351,6 +351,20 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
      FROM work_context_session_links
      ORDER BY associated_at ASC`
   );
+  const selectSessionLinksBySession = db.prepare(
+    `SELECT work_context_id, node_id, session_id, global_session_id,
+            relationship, session_ref_json, associated_at
+     FROM work_context_session_links
+     WHERE node_id = ? AND session_id = ?
+     ORDER BY associated_at ASC`
+  );
+  const selectSessionLinksByGlobal = db.prepare(
+    `SELECT work_context_id, node_id, session_id, global_session_id,
+            relationship, session_ref_json, associated_at
+     FROM work_context_session_links
+     WHERE global_session_id = ?
+     ORDER BY associated_at ASC`
+  );
   const upsertSessionLink = db.prepare(
     `INSERT INTO work_context_session_links (
        work_context_id, node_id, session_id, global_session_id,
@@ -535,15 +549,19 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
 
     findSessionWorkContextIds(session: SessionSummary) {
       const ref = sessionSummaryToRef(session);
-      const allLinks = selectSessionLinks.all() as SessionLinkRow[];
+      const rows = [
+        ...(selectSessionLinksBySession.all(
+          ref.nodeId,
+          ref.sessionId
+        ) as SessionLinkRow[]),
+        ...(ref.globalSessionId
+          ? (selectSessionLinksByGlobal.all(
+              ref.globalSessionId
+            ) as SessionLinkRow[])
+          : []),
+      ].sort((a, b) => a.associated_at.localeCompare(b.associated_at));
       const ids = new Set<WorkContextId>();
-      for (const link of allLinks) {
-        const sameLocalId =
-          link.node_id === ref.nodeId && link.session_id === ref.sessionId;
-        const sameGlobalId =
-          ref.globalSessionId && link.global_session_id === ref.globalSessionId;
-        if (sameLocalId || sameGlobalId) ids.add(link.work_context_id);
-      }
+      for (const link of rows) ids.add(link.work_context_id);
       return Array.from(ids);
     },
   };

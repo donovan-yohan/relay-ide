@@ -126,6 +126,7 @@ describe('hub confirmation routing', () => {
       auditSink?: RoutedSessionAuditSink;
       node?: HubNodeSummary;
       workContextStore?: WorkContextStore;
+      sessionPayload?: unknown;
     } = {}
   ) {
     const nodeLinks = {
@@ -133,7 +134,7 @@ describe('hub confirmation routing', () => {
       hasActiveNode: () => true,
       request: async (nodeId: string, type: string, payload: unknown): Promise<unknown> => {
         nodeLinks.requests.push({ nodeId, type, payload });
-        return sessionPayload();
+        return options.sessionPayload ?? sessionPayload();
       },
     };
     const auditEntries: Parameters<RoutedSessionAuditSink['append']>[0][] = [];
@@ -456,6 +457,32 @@ describe('hub confirmation routing', () => {
       nodeId: 'node_prod',
       live: true,
     });
+  });
+
+  it('strips unvalidated node-provided WorkContext ids from routed session creates', async () => {
+    const spoofedWorkContextId = 'node-owned-untrusted-context';
+    const payload = sessionPayload();
+    (payload.session as typeof payload.session & { workContextId?: string }).workContextId =
+      spoofedWorkContextId;
+    const node = nodeSummary({
+      allowed: ['session:read', 'session:create:terminal'],
+      requiresConfirmation: [],
+    });
+    const { base } = await startHub({ node, sessionPayload: payload });
+
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+    });
+
+    expect(response.status).toBe(201);
+    const session = await response.json();
+    expect(session).toMatchObject({ id: 'remote-session-1', nodeId: 'node_prod' });
+    expect(session.workContextId).toBeUndefined();
   });
 
   it('ignores spoofable x-auth-session when an authenticated cookie is present', async () => {

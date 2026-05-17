@@ -117,8 +117,10 @@ function withWorkContextMetadata(
   store: WorkContextStore | undefined,
   session: SessionSummary
 ): SessionSummary {
-  const workContextId = store?.findSessionWorkContextIds(session)[0];
-  return workContextId ? { ...session, workContextId } : session;
+  const trustedSession = { ...session };
+  delete trustedSession.workContextId;
+  const workContextId = store?.findSessionWorkContextIds(trustedSession)[0];
+  return workContextId ? { ...trustedSession, workContextId } : trustedSession;
 }
 
 async function requestSessionsWithTimeout(

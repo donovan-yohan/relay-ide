@@ -270,6 +270,10 @@ export function scopedNodeSession(
   delete scoped.globalSessionId;
   delete scoped.repoInstanceId;
   delete scoped.worktreeInstanceId;
+  // WorkContext identity is hub-owned metadata. A paired node can report
+  // arbitrary session fields, but the hub must only surface a WorkContext id
+  // after validating the routed create request or resolving a stored link.
+  delete scoped.workContextId;
 
   const existingEnvelope = isSessionEnvelope(scoped.sessionEnvelope)
     ? scoped.sessionEnvelope
@@ -357,11 +361,16 @@ function associateRoutedWorkContext(
   }
 }
 
-function withWorkContextId(
+function withTrustedWorkContextId(
+  store: WorkContextStore | undefined,
   session: SessionSummary,
   workContextId: string | undefined
 ): SessionSummary {
-  return workContextId ? { ...session, workContextId } : session;
+  const trustedWorkContextId =
+    workContextId ?? store?.findSessionWorkContextIds(session)[0];
+  return trustedWorkContextId
+    ? { ...session, workContextId: trustedWorkContextId }
+    : session;
 }
 
 export function sessionFromPayload(payload: unknown): SessionSummary {
@@ -2330,7 +2339,11 @@ export function createHubNodeRouter(
         workContextId,
         session
       );
-      const responseSession = withWorkContextId(session, workContextId);
+      const responseSession = withTrustedWorkContextId(
+        options.workContextStore,
+        session,
+        workContextId
+      );
       res.status(201).json(
         associationError
           ? { ...responseSession, workContextAssociationError: associationError }
