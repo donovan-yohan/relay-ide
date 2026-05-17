@@ -100,38 +100,37 @@ relay-ide node link --hub <devbox-hub-url>
 
 `relay-ide node link` is the persistent reverse WebSocket used for routed sessions. `relay-ide node connect` and `relay-ide node install` are bootstrap steps; they do not by themselves prove routed sessions are available.
 
-If the node link is supervised by launchd or another wrapper, restart that exact wrapper. On macOS, first inspect the Relay label before touching it:
+If the node link is supervised by launchd or another wrapper, restart that exact wrapper. On macOS, first inspect the Relay label before touching it; prefer `kickstart -k` over a manual stop/start because `KeepAlive` agents can immediately restart between commands:
 
 ```bash
 relay-ide node status
 launchctl print gui/$(id -u)/com.relay-ide
-launchctl stop com.relay-ide
-launchctl start com.relay-ide
+launchctl kickstart -k gui/$(id -u)/com.relay-ide
 relay-ide node logs
 ```
 
 ## Verification checklist
 
-Run the applicable checks and record redacted evidence.
+Run the applicable checks and record redacted evidence. Run service-manager and package-version commands on the host being verified: use SSH for devbox hub service checks, and run Mac launchd/node-link checks on the Mac. Remote HTTP health can be checked from any trusted operator machine. If you run hub CLI checks locally against the devbox instead of over SSH, pass the devbox hub URL through the supported CLI flag/env for that command rather than accidentally querying a local Relay daemon.
 
 ### Hub health and version
 
 ```bash
 DEVBOX_HUB=http://100.77.36.51:3456
 curl -fsS "$DEVBOX_HUB/health"
-relay-ide --version
-relay-ide hub status
-relay-ide hub doctor
+ssh dev 'relay-ide --version'
+ssh dev 'systemctl --user status relay-ide --no-pager'
+ssh dev 'relay-ide hub doctor'
 ```
 
-`/health` is unauthenticated and should return `{"status":"ok"}`. `hub doctor` may require the local scoped CLI/browser token for authenticated hub checks; do not paste that token or any auth-bearing URL.
+`/health` is unauthenticated and should return `{"status":"ok"}`. `hub doctor` may require the scoped CLI/browser token available in the target environment for authenticated hub checks; do not paste that token or any auth-bearing URL.
 
 ### Node registry and protocol state
 
 ```bash
-relay-ide hub nodes
-relay-ide hub nodes --json
-relay-ide hub doctor
+ssh dev 'relay-ide hub nodes'
+ssh dev 'relay-ide hub nodes --json'
+ssh dev 'relay-ide hub doctor'
 ```
 
 Confirm `macbook-relay-node` is online/current and protocol-compatible. If `VERSION_SKEW` or `PROTOCOL_INCOMPATIBLE` appears, update both hub and node to the same source SHA or package channel before debugging higher-level behavior.
@@ -207,13 +206,13 @@ Devbox deploy evidence for <PR/issue>:
 
 - Scope: <local/self-host/devbox source/nightly package; hub-only/node-only/protocol>
 - Hub host: dev / 100.77.36.51:3456
-- Hub deploy path: <source SHA + branch OR relay-ide@nightly version>
+- Hub deploy path: <source branch + Git SHA OR relay-ide@nightly version>
 - Hub restart: <command run; status/log result>
 - Hub health: `curl /health` -> <status/body>
-- Hub version: `relay-ide --version` -> <redacted output>
+- Hub version: `relay-ide --version` -> <version and source SHA if available>
 - Hub doctor: <pass/fail summary; include typed failure names only>
 - Node update/restart: <not required OR command run + reason>
-- Node version: <Mac `relay-ide --version` output if checked>
+- Node version: <Mac `relay-ide --version` output, including source SHA if available>
 - Node registry: `macbook-relay-node` <online/stale/offline>, protocol <compatible/skew/incompatible>
 - Routed session proof: <safe command + where it ran; no secrets>
 - Process hygiene: <listeners/tmux checked; stale PID/session killed or none found>
