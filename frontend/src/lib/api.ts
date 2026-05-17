@@ -429,6 +429,24 @@ export async function handBackSessionControl(input: {
   );
 }
 
+export async function sendSessionInput(
+  sessionId: string,
+  data: string
+): Promise<{ ok: true }> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/input`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data }),
+    }
+  );
+  if (!res.ok) {
+    throw await httpErrorFromResponse(res, 'Failed to send session input');
+  }
+  return jsonEither<{ ok: true }>(res);
+}
+
 export async function fetchHubNodes(): Promise<HubNodeSummary[]> {
   const data = await json<{ nodes?: HubNodeSummary[] }>(await fetch('/nodes'));
   return Array.isArray(data.nodes) ? data.nodes : [];
