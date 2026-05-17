@@ -51,6 +51,7 @@ export function HubNodeDashboard({
               'hub-node-card',
               `status-${row.statusTone}`,
               row.attachable ? 'attachable' : 'blocked',
+              `security-${row.security.tone}`,
             ]
               .filter(Boolean)
               .join(' ')}
@@ -63,6 +64,9 @@ export function HubNodeDashboard({
               <div className="hub-node-card-text">
                 <div className="hub-node-card-title-row">
                   <span className="hub-node-card-title">{row.displayName}</span>
+                  <span className={`hub-node-trust-tier trust-${row.security.trustTier}`}>
+                    {row.security.trustTier}
+                  </span>
                   <span className="hub-node-status-label">{row.status}</span>
                 </div>
                 <div className="hub-node-card-meta">{row.hostLabel}</div>
@@ -78,6 +82,26 @@ export function HubNodeDashboard({
             {row.versionWarning && (
               <div className="hub-node-warning">{row.versionWarning}</div>
             )}
+
+            <div className="hub-node-security" aria-label={`${row.displayName} security posture`}>
+              <div className="hub-node-security-row">
+                <span className={`hub-node-policy-posture posture-${row.security.tone}`}>
+                  {row.security.postureLabel}
+                </span>
+                <span>{row.security.scopeLabel}</span>
+              </div>
+              <div className="hub-node-security-row">
+                <span className={`hub-node-high-risk posture-${row.security.tone}`}>
+                  {row.security.highRiskLabel}
+                </span>
+                <span>{row.security.auditLabel}</span>
+              </div>
+              {row.security.policyRef && (
+                <div className="hub-node-security-ref" title={row.security.policyRef}>
+                  policy {row.security.policyRef}
+                </div>
+              )}
+            </div>
 
             <div className="hub-node-capabilities" aria-label={`${row.displayName} capabilities`}>
               {row.capabilityHints.map((hint) => (
