@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import type { HubNodeSummary } from '../../shared/relay-node-protocol.js';
 import {
+  createLegacyDefaultNodeAcl,
+  summarizeAcl,
+  type RelayCapabilityBit,
+  type RelayTrustTier,
+} from '../../shared/security-policy.js';
+import {
   deriveHubNodeDashboardRows,
   hubNodeDashboardSummary,
 } from '../../frontend/src/lib/state/node-dashboard.js';
+import { deriveConfirmationSecurityVisibility } from '../../frontend/src/lib/state/security-visibility.js';
+import type { ConfirmationChallenge } from '../../frontend/src/lib/api.js';
 
 const now = new Date('2026-01-02T03:05:00.000Z');
+const createdAt = '2026-01-02T03:00:00.000Z';
+
+function policy(
+  nodeId: string,
+  trustTier: RelayTrustTier = 'dev',
+  overrides: Partial<{ allowed: RelayCapabilityBit[]; requiresConfirmation: RelayCapabilityBit[] }> = {}
+) {
+  const acl = createLegacyDefaultNodeAcl({ nodeId, trustTier, createdAt });
+  return summarizeAcl({
+    ...acl,
+    grants: {
+      allowed: overrides.allowed ?? acl.grants.allowed,
+      requiresConfirmation: overrides.requiresConfirmation ?? acl.grants.requiresConfirmation,
+    },
+  });
+}
 
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
@@ -33,10 +57,44 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       serviceManager: 'launchd',
       wsl: false,
     },
+    trust: {
+      state: 'trusted',
+      level: 'dev',
+      tier: 'dev',
+      policy: policy('node-1'),
+    },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     createdAt: '2026-01-02T03:00:00.000Z',
     pairedAt: '2026-01-02T03:00:00.000Z',
     lastSeenAt: '2026-01-02T03:04:30.000Z',
     credentialId: 'cred-1',
+    ...overrides,
+  };
+}
+
+function confirmationChallenge(
+  overrides: Partial<ConfirmationChallenge> = {}
+): ConfirmationChallenge {
+  return {
+    challengeId: 'challenge-1',
+    status: 'pending',
+    nodeId: 'node-1',
+    intent: { action: 'rpc.fs.delete', target: '/tmp/nope' },
+    requiredBits: ['session:read', 'rpc:fs:delete'],
+    challengeBits: ['rpc:fs:delete'],
+    canonicalParams: { action: 'rpc.fs.delete', path: '/tmp/nope' },
+    canonicalParamsHash: 'abc123',
+    createdAt,
+    expiresAt: '2026-01-02T03:10:00.000Z',
+    failedRedemptions: 0,
+    maxFailedRedemptions: 3,
+    reasonCode: 'POLICY_CONFIRMATION_REQUIRED',
+    message: 'confirmation required',
     ...overrides,
   };
 }
@@ -186,6 +244,83 @@ describe('hub node dashboard state', () => {
     expect(row.versionWarning).toBe('protocol 1.1 != hub 1.0');
   });
 
+  it('summarizes sandbox, dev, and prod policy posture with prod high-risk challenge distinct', () => {
+    const rows = deriveHubNodeDashboardRows(
+      [
+        node({
+          nodeId: 'sandbox-node',
+          displayName: 'sandbox node',
+          trust: {
+            state: 'trusted',
+            level: 'sandbox',
+            tier: 'sandbox',
+            policy: policy('sandbox-node', 'sandbox', {
+              allowed: ['session:read'],
+              requiresConfirmation: [],
+            }),
+          },
+        }),
+        node({
+          nodeId: 'dev-node',
+          displayName: 'dev node',
+          trust: {
+            state: 'trusted',
+            level: 'dev',
+            tier: 'dev',
+            policy: policy('dev-node', 'dev'),
+          },
+        }),
+        node({
+          nodeId: 'prod-node',
+          displayName: 'prod node',
+          trust: {
+            state: 'trusted',
+            level: 'prod',
+            tier: 'prod',
+            policy: policy('prod-node', 'prod', {
+              allowed: ['session:read'],
+              requiresConfirmation: ['rpc:fs:delete', 'pty:exec:arbitrary'],
+            }),
+          },
+        }),
+      ],
+      { now }
+    );
+
+    expect(rows.map((row) => [row.security.trustTier, row.security.postureLabel])).toEqual([
+      ['sandbox', 'allow 1 · challenge 0 · deny 14'],
+      ['dev', 'allow 8 · challenge 0 · deny 7'],
+      ['prod', 'allow 1 · challenge 2 · deny 12'],
+    ]);
+    expect(rows[2].security).toMatchObject({
+      tone: 'danger',
+      highRiskLabel: 'prod high-risk: 2 require challenge',
+    });
+  });
+
+  it('shows an honest audit cli affordance when policy visibility is unavailable', () => {
+    const [row] = deriveHubNodeDashboardRows(
+      [
+        node({
+          trust: {
+            state: 'paired',
+            level: 'standard',
+            warning: 'legacy pairing without acl summary',
+          },
+        }),
+      ],
+      { now }
+    );
+
+    expect(row.security).toMatchObject({
+      trustTier: 'unknown',
+      policyRef: null,
+      postureLabel: 'policy unavailable · capability grants hidden',
+      highRiskLabel: 'audit: cli only · relay-ide audit verify',
+      auditLabel: 'audit visibility: run relay-ide audit verify --db ~/.config/relay-ide/security-audit.db',
+    });
+  });
+
   it('summarizes which machines can currently do work', () => {
     const summary = hubNodeDashboardSummary(
       [
@@ -203,7 +338,40 @@ describe('hub node dashboard state', () => {
     );
 
     expect(summary).toBe(
-      '1/3 nodes ready · 1 blocked by capabilities · 1 offline/stale'
+      '1/3 nodes ready · 1 blocked by capabilities · 1 offline/stale · 0 policy unavailable · 0 prod high-risk'
     );
+  });
+});
+
+describe('confirmation security visibility state', () => {
+  it('groups allow, challenge, and deny posture from challenge plus node policy', () => {
+    const view = deriveConfirmationSecurityVisibility(
+      confirmationChallenge({
+        requiredBits: ['session:read', 'rpc:fs:delete', 'rpc:git:write'],
+        challengeBits: ['rpc:fs:delete'],
+      }),
+      node({
+        trust: {
+          state: 'trusted',
+          level: 'prod',
+          tier: 'prod',
+          policy: policy('node-1', 'prod', {
+            allowed: ['session:read'],
+            requiresConfirmation: ['rpc:fs:delete'],
+          }),
+        },
+      })
+    );
+
+    expect(view).toMatchObject({
+      nodeLabel: 'dev mac (node-1)',
+      trustTier: 'prod',
+      policyRef: 'acl:node-1:1.0',
+      postureLabel: 'challenge required · allow 1 · challenge 1 · deny 1',
+      allowedBits: ['session:read'],
+      challengeBits: ['rpc:fs:delete'],
+      deniedBits: ['rpc:git:write'],
+      tone: 'danger',
+    });
   });
 });

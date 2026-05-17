@@ -4,6 +4,10 @@ import {
   type HubNodeSummary,
   type NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
+import {
+  deriveNodeSecurityVisibility,
+  type NodeSecurityVisibility,
+} from './security-visibility.js';
 
 type CapabilityTone = NodeCapabilityStatus;
 
@@ -26,6 +30,7 @@ export interface HubNodeDashboardRow {
   protocolVersion: string;
   versionWarning: string | null;
   capabilityHints: HubNodeCapabilityHint[];
+  security: NodeSecurityVisibility;
   attachable: boolean;
   workReadiness: string;
   disabledReason: string | null;
@@ -161,6 +166,7 @@ export function deriveHubNodeDashboardRows(
 
   return nodes.map((node) => {
     const hints = capabilityHints(node);
+    const security = deriveNodeSecurityVisibility(node);
     const reason = disabledReason(node, hints);
     const route = node.connection?.route ?? 'unknown';
     const routeStatus = node.connection?.status ?? node.status;
@@ -182,6 +188,7 @@ export function deriveHubNodeDashboardRows(
       protocolVersion: node.protocolVersion,
       versionWarning,
       capabilityHints: hints,
+      security,
       attachable: reason === null,
       workReadiness: reason === null ? 'ready to work' : 'blocked',
       disabledReason: reason,
@@ -204,6 +211,10 @@ export function hubNodeDashboardSummary(
   const blockedByCapabilities = rows.filter(
     (row) => !row.attachable && row.disabledReason?.startsWith('work disabled:')
   ).length;
+  const policyUnavailable = rows.filter((row) => row.security.policyRef === null).length;
+  const prodHighRisk = rows.filter(
+    (row) => row.security.trustTier === 'prod' && row.security.tone === 'danger'
+  ).length;
 
-  return `${ready}/${rows.length} nodes ready · ${blockedByCapabilities} blocked by capabilities · ${offlineOrStale} offline/stale`;
+  return `${ready}/${rows.length} nodes ready · ${blockedByCapabilities} blocked by capabilities · ${offlineOrStale} offline/stale · ${policyUnavailable} policy unavailable · ${prodHighRisk} prod high-risk`;
 }

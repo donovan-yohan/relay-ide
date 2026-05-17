@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   approveConfirmationChallenge,
   fetchConfirmationChallenges,
   fetchConfirmationRequesterToken,
+  fetchHubNodes,
   type ConfirmationChallenge,
   type ConfirmationDecision,
 } from '../lib/api.js';
@@ -12,6 +14,7 @@ import {
   subscribeConfirmationRetries,
 } from '../lib/confirmation-retries.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { deriveConfirmationSecurityVisibility } from '../lib/state/security-visibility.js';
 import TuiButton from './TuiButton.js';
 import './ConfirmationPrompt.css';
 
@@ -81,6 +84,13 @@ export const ConfirmationPrompt: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
   const autoRetryingIds = useRef<Set<string>>(new Set());
+  const { data: nodes } = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
+    retry: false,
+  });
 
   const refresh = async (): Promise<void> => {
     const next = await fetchConfirmationChallenges();
@@ -133,6 +143,7 @@ export const ConfirmationPrompt: React.FC = () => {
   const selected =
     visibleChallenges.find((challenge) => challenge.challengeId === selectedId) ?? visibleChallenges[0];
   const retryRegistration = selected ? getConfirmationRetry(selected.challengeId) : undefined;
+  const selectedNode = selected ? nodes?.find((node) => node.nodeId === selected.nodeId) : undefined;
 
   useEffect(() => {
     const approvedRetry = visibleChallenges.find(
@@ -174,6 +185,8 @@ export const ConfirmationPrompt: React.FC = () => {
   }, [visibleChallenges, retryVersion]);
 
   if (!selected) return null;
+
+  const security = deriveConfirmationSecurityVisibility(selected, selectedNode);
 
   const handleDecision = async (decision: ConfirmationDecision) => {
     setLoading(decision);
@@ -236,7 +249,11 @@ export const ConfirmationPrompt: React.FC = () => {
   const canonicalJson = JSON.stringify(selected.canonicalParams, null, 2);
 
   return (
-    <aside className="confirmation-prompt" aria-live="polite" aria-label="confirmation challenge prompt">
+    <aside
+      className={`confirmation-prompt confirmation-prompt--${security.tone}`}
+      aria-live="polite"
+      aria-label="confirmation challenge prompt"
+    >
       <div className="confirmation-prompt__header">
         <div>
           <div className="confirmation-prompt__eyebrow">operator confirmation</div>
@@ -266,7 +283,21 @@ export const ConfirmationPrompt: React.FC = () => {
       <dl className="confirmation-prompt__meta">
         <div>
           <dt>node</dt>
-          <dd>{selected.nodeId}</dd>
+          <dd title={security.nodeLabel}>{security.nodeLabel}</dd>
+        </div>
+        <div>
+          <dt>trust tier</dt>
+          <dd className={`confirmation-prompt__trust trust-${security.trustTier}`}>{security.trustTier}</dd>
+        </div>
+        <div>
+          <dt>policy posture</dt>
+          <dd className={`confirmation-prompt__posture posture-${security.tone}`}>{security.postureLabel}</dd>
+        </div>
+        <div>
+          <dt>policy ref</dt>
+          <dd title={security.policyRef ?? 'policy summary unavailable'}>
+            {security.policyRef ?? 'policy unavailable'}
+          </dd>
         </div>
         <div>
           <dt>intent</dt>
@@ -292,10 +323,31 @@ export const ConfirmationPrompt: React.FC = () => {
         </div>
       </dl>
 
-      <div className="confirmation-prompt__bits" aria-label="required capability bits">
-        {[...new Set([...selected.requiredBits, ...selected.challengeBits])].map((bit) => (
-          <span key={bit}>{bit}</span>
-        ))}
+      <div className="confirmation-prompt__bits" aria-label="capability policy posture">
+        {security.allowedBits.length > 0 && (
+          <div className="confirmation-prompt__bit-group posture-safe">
+            <span className="confirmation-prompt__bit-group-label">allow</span>
+            {security.allowedBits.map((bit) => (
+              <span key={`allow-${bit}`}>{bit}</span>
+            ))}
+          </div>
+        )}
+        {security.challengeBits.length > 0 && (
+          <div className="confirmation-prompt__bit-group posture-warning">
+            <span className="confirmation-prompt__bit-group-label">challenge</span>
+            {security.challengeBits.map((bit) => (
+              <span key={`challenge-${bit}`}>{bit}</span>
+            ))}
+          </div>
+        )}
+        {security.deniedBits.length > 0 && (
+          <div className="confirmation-prompt__bit-group posture-danger">
+            <span className="confirmation-prompt__bit-group-label">deny</span>
+            {security.deniedBits.map((bit) => (
+              <span key={`deny-${bit}`}>{bit}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       <label className="confirmation-prompt__field">
