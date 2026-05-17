@@ -2,6 +2,11 @@
 
 Use this runbook when developing Relay IDE from inside an already-running Relay IDE instance. The goal is to run the source checkout with isolated config, ports, and tmux sessions so it does not collide with the installed/global daemon that is hosting your work.
 
+Self-host mode proves local source behavior only. When a change needs proof on
+the shared devbox hub or the `macbook-relay-node` link, use the
+[`devbox hub deploy runbook`](./references/devbox-hub-deploy.md) instead of
+treating a local self-host run as federated evidence.
+
 ## Recommended loop
 
 Start from a real Relay worktree, not the main checkout:
