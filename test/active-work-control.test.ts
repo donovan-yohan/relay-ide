@@ -53,7 +53,11 @@ describe('active work mobile control helpers', () => {
         group({ sessions: [session({ agentState: 'permission-prompt' })] })
       )
     ).toBe(0);
-    expect(activeWorkStateLabel(group({ sessions: [session({ agentState: 'waiting-for-input' })] }))).toBe('needs input');
+    expect(
+      activeWorkStateLabel(
+        group({ sessions: [session({ agentState: 'waiting-for-input' })] })
+      )
+    ).toBe('needs input');
     expect(
       activeWorkAttentionPriority(
         group({
@@ -62,6 +66,18 @@ describe('active work mobile control helpers', () => {
         })
       )
     ).toBe(1);
+  });
+
+  it('surfaces error before processing when a work group has mixed session states', () => {
+    const mixed = group({
+      sessions: [
+        session({ id: 'processing-session', agentState: 'processing' }),
+        session({ id: 'errored-session', agentState: 'error', live: false }),
+      ],
+    });
+
+    expect(activeWorkAttentionPriority(mixed)).toBe(3);
+    expect(activeWorkStateLabel(mixed)).toBe('error');
   });
 
   it('allows audited small input only for fresh live local pty sessions', () => {

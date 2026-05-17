@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, type FormEvent } from 'react';
+import { useMemo, useCallback, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type {
@@ -169,6 +169,8 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
   const [inputValue, setInputValue] = useState('');
   const [inputStatus, setInputStatus] = useState<string | null>(null);
+  const [isSubmittingInput, setIsSubmittingInput] = useState(false);
+  const isSubmittingInputRef = useRef(false);
   const primarySession =
     group.sessions.find(
       (session) =>
@@ -210,9 +212,16 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const value = inputValue.trimEnd();
-      if (!primarySession || controlState.smallInputDisabledReason || !value) {
+      if (
+        !primarySession ||
+        controlState.smallInputDisabledReason ||
+        !value ||
+        isSubmittingInputRef.current
+      ) {
         return;
       }
+      isSubmittingInputRef.current = true;
+      setIsSubmittingInput(true);
       setInputStatus('sending...');
       try {
         await sendSessionInput(primarySession.id, `${value}\r`);
@@ -222,6 +231,9 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setInputStatus(`failed: ${message}`);
+      } finally {
+        isSubmittingInputRef.current = false;
+        setIsSubmittingInput(false);
       }
     },
     [
@@ -359,13 +371,18 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
             size="sm"
             variant="info"
             disabled={!!controlState.attachDisabledReason}
-            title={controlState.attachDisabledReason ?? 'attach to live session'}
+            title={
+              controlState.attachDisabledReason ?? 'attach to live session'
+            }
             onClick={handleAttach}
           >
             attach
           </TuiButton>
           <form className="active-work-input" onSubmit={handleSmallInput}>
-            <label className="active-work-label" htmlFor={`active-work-input-${group.id}`}>
+            <label
+              className="active-work-label"
+              htmlFor={`active-work-input-${group.id}`}
+            >
               {controlState.smallInputLabel}
             </label>
             <input
@@ -383,7 +400,8 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
               type="submit"
               disabled={
                 !!controlState.smallInputDisabledReason ||
-                inputValue.trim().length === 0
+                inputValue.trim().length === 0 ||
+                isSubmittingInput
               }
               title={
                 controlState.smallInputDisabledReason ??
@@ -448,12 +466,13 @@ export default function ActiveWorkSurface() {
   const groups = useMemo(
     () =>
       [...data].sort(
-        (a, b) => activeWorkAttentionPriority(a) - activeWorkAttentionPriority(b)
+        (a, b) =>
+          activeWorkAttentionPriority(a) - activeWorkAttentionPriority(b)
       ),
     [data]
   );
   const attentionCount = groups.filter(
-    (group) => activeWorkAttentionPriority(group) <= 2
+    (group) => activeWorkAttentionPriority(group) <= 3
   ).length;
 
   if (isLoading)

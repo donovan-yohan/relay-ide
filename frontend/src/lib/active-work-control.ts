@@ -25,10 +25,12 @@ export function activeWorkAttentionPriority(
   if (group.node.status === 'offline' || group.node.status === 'revoked')
     return 1;
   if (group.node.status === 'stale' || group.staleReadModel) return 2;
-  if (group.sessions.some((session) => session.agentState === 'processing'))
+  if (group.sessions.some((session) => session.agentState === 'error'))
     return 3;
-  if (group.sessions.some((session) => session.live)) return 4;
-  return 5;
+  if (group.sessions.some((session) => session.agentState === 'processing'))
+    return 4;
+  if (group.sessions.some((session) => session.live)) return 5;
+  return 6;
 }
 
 export function activeWorkStateLabel(group: WorkContextActiveGroup): string {
@@ -44,10 +46,10 @@ export function activeWorkStateLabel(group: WorkContextActiveGroup): string {
     return 'offline';
   if (group.node.status === 'stale') return 'stale';
   if (group.staleReadModel) return 'stale read model';
-  if (group.sessions.some((session) => session.agentState === 'processing'))
-    return 'running';
   if (group.sessions.some((session) => session.agentState === 'error'))
     return 'error';
+  if (group.sessions.some((session) => session.agentState === 'processing'))
+    return 'running';
   if (group.sessions.some((session) => session.live)) return 'live';
   return 'inactive';
 }
@@ -78,7 +80,8 @@ export function activeWorkMobileControlState(
 ): ActiveWorkMobileControlState {
   const liveReason = liveControlDisabledReason(group, session);
   const freshReason = freshControlDisabledReason(session);
-  const isLocal = (session?.nodeId ?? DEFAULT_LOCAL_NODE_ID) === DEFAULT_LOCAL_NODE_ID;
+  const isLocal =
+    (session?.nodeId ?? DEFAULT_LOCAL_NODE_ID) === DEFAULT_LOCAL_NODE_ID;
   const promptKind =
     session?.agentState === 'permission-prompt'
       ? 'approval'
@@ -103,7 +106,8 @@ export function activeWorkMobileControlState(
       freshReason ??
       'requires explicit session:control:kill grant; no mobile allow decision is present',
     promptKind,
-    smallInputLabel: promptKind === 'approval' ? 'reply to approval' : 'send input',
+    smallInputLabel:
+      promptKind === 'approval' ? 'reply to approval' : 'send input',
     smallInputPlaceholder:
       promptKind === 'approval'
         ? 'approval reply (example: y, n, or exact prompt text)'
