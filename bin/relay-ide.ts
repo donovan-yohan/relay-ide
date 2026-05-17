@@ -1475,6 +1475,12 @@ function hubCliToken(): string {
   return process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
 }
 
+const HUB_CLI_FETCH_TIMEOUT_MS = 2500;
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+}
+
 async function hubFetchJson(
   pathName: string,
   capabilities: readonly string[] = []
@@ -1486,18 +1492,26 @@ async function hubFetchJson(
   const headers: Record<string, string> = { 'x-relay-cli-gateway': 'v1' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   if (capabilities.length) headers['x-relay-capabilities'] = capabilities.join(',');
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), HUB_CLI_FETCH_TIMEOUT_MS);
   let res: Response;
+  let text: string;
   try {
-    res = await fetch(`${hubCliBaseUrl()}${pathName}`, { headers });
+    res = await fetch(`${hubCliBaseUrl()}${pathName}`, { headers, signal: abortController.signal });
+    text = await res.text();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const timeoutMessage = isAbortError(error) || abortController.signal.aborted
+      ? `timed out after ${HUB_CLI_FETCH_TIMEOUT_MS}ms`
+      : message;
     return {
       ok: false,
       reason: 'HUB_UNREACHABLE',
-      message: `could not connect to Relay hub on port ${hubCliPort()}: ${message}`,
+      message: `could not reach Relay hub on port ${hubCliPort()}: ${timeoutMessage}`,
     };
+  } finally {
+    clearTimeout(timeout);
   }
-  const text = await res.text();
   let body: unknown;
   try {
     body = text ? JSON.parse(text) : {};

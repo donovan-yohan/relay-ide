@@ -395,6 +395,62 @@ describe('hub/node packaging decision', () => {
     }
   });
 
+  it('bounds hub doctor probes that connect but never answer', async () => {
+    resetCliLogDir();
+    const configPath = writeHubConfig();
+    const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
+    delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_input: URL | RequestInfo, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        expect(signal).toBeInstanceOf(AbortSignal);
+        signal?.addEventListener(
+          'abort',
+          () => {
+            const error = new Error('abort should not leak token=timeout-secret');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true }
+        );
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    let stdout = '';
+    const stdoutSpy = vi
+      .spyOn(globalThis.console, 'log')
+      .mockImplementation((message?: unknown) => {
+        stdout += `${String(message ?? '')}\n`;
+      });
+
+    try {
+      const resultPromise = runCli(['hub', 'doctor', '--json', '--config', configPath]);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(2500);
+      const result = await resultPromise;
+      expect(result.exitCode).toBe(1);
+      const payload = JSON.parse(stdout) as {
+        ok: boolean;
+        checks: Array<{ name: string; reason?: string; message: string }>;
+      };
+      const reachability = payload.checks.find((check) => check.name === 'hub.reachable');
+      expect(payload.ok).toBe(false);
+      expect(reachability).toMatchObject({
+        reason: 'HUB_UNREACHABLE',
+        message: expect.stringContaining('timed out after 2500ms'),
+      });
+      expect(stdout).not.toContain('timeout-secret');
+    } finally {
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+      resetCliLogDir();
+      if (oldToken === undefined) delete process.env['RELAY_IDE_BROWSER_TOKEN'];
+      else process.env['RELAY_IDE_BROWSER_TOKEN'] = oldToken;
+    }
+  });
+
   it('reports node availability, version, capability, and log support diagnostics', async () => {
     resetCliLogDir();
     const configPath = writeHubConfig();
