@@ -19,7 +19,9 @@ Capability bits are a closed, protocol-versioned enum in `shared/security-policy
 Default legacy grants are intentionally boring:
 
 - allowed: `session:read`, `session:create:terminal`, `session:create:agent`, `session:attach`, `rpc:fs:list`, `rpc:fs:read`, `rpc:fs:tail`, `rpc:git:read`
-- off unless explicitly granted: `rpc:fs:write`, `rpc:fs:delete`, `rpc:git:write`, `pty:exec:arbitrary`, `preview:port-forward`
+- off unless explicitly granted: `session:control:kill`, `rpc:fs:write`, `rpc:fs:delete`, `rpc:git:write`, `pty:exec:arbitrary`, `preview:port-forward`
+
+`session:control:kill` is intentionally separate from `session:attach`: attaching or streaming a session is not authority to terminate it. Pause/retry controls are not routed in this slice; when added, they need explicit high-risk control bits instead of reusing attach.
 
 The schema exists before the full policy evaluator. Current routed surfaces still have their existing route-level checks; this slice adds the policy authority data model and legacy defaults so later gates have a safe source of truth.
 
