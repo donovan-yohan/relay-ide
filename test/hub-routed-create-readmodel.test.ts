@@ -223,4 +223,102 @@ describe('routed create remote session read model', () => {
       status: 'active',
     });
   });
+
+  it('keeps a freshly routed WorkContext session live through an immediate empty sessions.list read model', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-routed-create-empty-list-'));
+    const workContextStore: WorkContextStore = createWorkContextStore(
+      path.join(tmp, 'work-contexts.db')
+    );
+    cleanup.push(() => {
+      workContextStore.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    });
+    const workContextId = 'github-issue-580-active-work-routed-session';
+    workContextStore.create({ id: workContextId, title: 'Issue #580', source: 'test' });
+
+    const node = nodeSummary();
+    const registry = {
+      listNodes: () => [node],
+      errorBody: (error: unknown) => ({
+        error:
+          error instanceof Error
+            ? ({ code: 'INTERNAL', message: error.message, retryable: false } satisfies RelayNodeError)
+            : ({ code: 'INTERNAL', message: 'unknown error', retryable: false } satisfies RelayNodeError),
+      }),
+      revokeNode: () => node,
+    } as unknown as HubNodeRegistry;
+    const nodeLinks = {
+      hasActiveNode: () => true,
+      request: vi.fn(async (_nodeId: string, type: string) => {
+        if (type === 'sessions.create') {
+          return { session: remoteSession('remote-session-580') };
+        }
+        if (type === 'sessions.list') {
+          return { sessions: [] };
+        }
+        throw new Error(`unexpected ${type}`);
+      }),
+    };
+    const sessionEnvelopes = createSessionEnvelopeRegistry();
+    const readModelCache = createRemoteSessionReadModelCache();
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        nodeLinks,
+        sessionEnvelopes,
+        workContextStore,
+        readModelCache,
+        now: () => NOW,
+        requireAuth: (_req, _res, next) => next(),
+      })
+    );
+    const server = http.createServer(app);
+    cleanup.push(
+      () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+    );
+    const base = `http://127.0.0.1:${await listen(server)}`;
+
+    const created = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal', workContextId }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      id: 'remote-session-580',
+      nodeId: 'node_prod',
+      workContextId,
+    });
+
+    const sessions = await aggregateRemoteSessions({
+      registry,
+      nodeLinks: nodeLinks as unknown as HubNodeLinkManager,
+      workContextStore,
+      sessionEnvelopes,
+      readModelCache,
+      now: () => NOW.getTime() + 100,
+    });
+    const groups = workContextStore.listActiveWork({ sessions, nodes: [node] });
+    const group = groups.find((candidate) => candidate.id === workContextId);
+
+    expect(group).toBeDefined();
+    expect(group).toMatchObject({ staleReadModel: false });
+    expect(group?.sessions[0]).toMatchObject({
+      id: 'remote-session-580',
+      nodeId: 'node_prod',
+      live: true,
+    });
+
+    const afterGrace = await aggregateRemoteSessions({
+      registry,
+      nodeLinks: nodeLinks as unknown as HubNodeLinkManager,
+      workContextStore,
+      sessionEnvelopes,
+      readModelCache,
+      now: () => NOW.getTime() + 11_000,
+    });
+    expect(afterGrace).toEqual([]);
+  });
 });
