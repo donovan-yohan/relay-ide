@@ -22,7 +22,8 @@ export type FileRpcDenialReason =
   | 'FILE_RPC_NOT_FOUND'
   | 'FILE_RPC_NOT_DIRECTORY'
   | 'FILE_RPC_NOT_FILE'
-  | 'FILE_RPC_SIZE_LIMIT_EXCEEDED';
+  | 'FILE_RPC_SIZE_LIMIT_EXCEEDED'
+  | 'FILE_RPC_FOLLOW_BACKPRESSURE';
 
 export type FileRpcEntryType = 'file' | 'directory' | 'symlink' | 'other';
 

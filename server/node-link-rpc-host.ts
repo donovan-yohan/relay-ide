@@ -426,7 +426,7 @@ export function createNodeLinkRpcHost(
             maxFollowChunkBytes: tailResult.maxFollowChunkBytes,
           },
           startOffset: tailResult.endOffset,
-          write: (chunk) => sendStreamEnvelope(ctx, envelope, 'fs.tail.chunk', chunk),
+          write: (chunk) => sendStreamEnvelopeWithBackpressure(ctx, envelope, 'fs.tail.chunk', chunk),
           onError: (error) => {
             logger.warn(`fs.tail follow failed: ${error.message}`);
             sendStreamEnvelope(ctx, envelope, 'fs.tail.error', {
@@ -460,6 +460,24 @@ export function createNodeLinkRpcHost(
         ...(payload !== undefined ? { payload } : {}),
       })
     );
+  }
+
+  async function sendStreamEnvelopeWithBackpressure(
+    ctx: NodeLinkEnvelopeHandlerContext,
+    envelope: RelayNodeEnvelope,
+    type: string,
+    payload?: unknown
+  ): Promise<void> {
+    const next = ctx.buildEnvelope('rpc', type, {
+      ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+      ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
+      ...(payload !== undefined ? { payload } : {}),
+    });
+    if (ctx.sendWithBackpressure) {
+      await ctx.sendWithBackpressure(next);
+      return;
+    }
+    ctx.send(next);
   }
 
   function handleLogsTail(

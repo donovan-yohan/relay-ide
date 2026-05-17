@@ -608,6 +608,56 @@ describe('node-link-rpc-host', () => {
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect(sent.filter((entry) => entry.type === 'fs.tail.chunk')).toHaveLength(chunkCount);
   });
+
+  it('closes fs.tail followers with a typed retryable error when node-link writes backpressure', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-backpressure-'));
+    const target = path.join(tmp, 'app.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+    const backpressureError: RelayNodeError = {
+      code: 'NODE_BUSY',
+      message: 'node link websocket send buffer stayed saturated',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE' },
+    };
+    const sendWithBackpressure = vi.fn().mockRejectedValue(backpressureError);
+    const backpressureCtx = { ...ctx, sendWithBackpressure };
+
+    host.handle(
+      envelope(
+        'fs.tail',
+        {
+          sessionId: 'sess-1',
+          root: tmp,
+          cwd: tmp,
+          path: target,
+          maxBytes: 64,
+          follow: true,
+          maxFollowChunkBytes: 64,
+        },
+        { streamId: 'file-stream-slow' }
+      ),
+      backpressureCtx
+    );
+
+    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true));
+    fs.appendFileSync(target, 'blocked\n', 'utf8');
+
+    await vi.waitFor(() => expect(sendWithBackpressure).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.error')).toBe(true));
+    const errorEnvelope = sent.find((entry) => entry.type === 'fs.tail.error')!;
+    expect((errorEnvelope.payload as { error: RelayNodeError }).error).toMatchObject({
+      code: 'NODE_BUSY',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE' },
+    });
+
+    fs.appendFileSync(target, 'after close\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sendWithBackpressure).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Surface unused CreateParams/CreateWebParams type imports so the

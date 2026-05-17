@@ -284,6 +284,63 @@ describe('read-only File RPC foundation', () => {
     });
   });
 
+  it('does not poll or enqueue more follow chunks while an async writer is backpressured', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'slow-writer.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const writes: unknown[] = [];
+    let releaseWrite: (() => void) | undefined;
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: (chunk) => {
+        writes.push(chunk);
+        return new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        });
+      },
+      pollIntervalMs: 10,
+      writeTimeoutMs: 1_000,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.appendFileSync(target, 'first\n', 'utf8');
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+
+    fs.appendFileSync(target, 'second\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes).toHaveLength(1);
+
+    releaseWrite?.();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toMatchObject({ content: 'second\n' });
+  });
+
+  it('closes follow streams with a typed retryable error when writes stay backpressured', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'stuck-writer.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const errors: unknown[] = [];
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: () => new Promise<void>(() => {}),
+      onError: (error) => errors.push(error),
+      pollIntervalMs: 10,
+      writeTimeoutMs: 20,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.appendFileSync(target, 'blocked\n', 'utf8');
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toMatchObject({
+      code: 'NODE_BUSY',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE', path: target },
+    });
+  });
+
   it('emits a typed terminal error when a followed file is replaced by a directory', async () => {
     const root = fixtureRoot();
     const target = path.join(root, 'app.log');

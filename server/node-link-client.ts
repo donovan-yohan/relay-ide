@@ -16,6 +16,7 @@ export interface NodeLinkCredential {
 
 export interface NodeLinkEnvelopeHandlerContext {
   send: (envelope: RelayNodeEnvelope) => void;
+  sendWithBackpressure?: (envelope: RelayNodeEnvelope) => Promise<void>;
   buildEnvelope: (
     channel: RelayNodeEnvelope['channel'],
     type: string,
@@ -37,6 +38,9 @@ export interface NodeLinkClientDeps {
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   reconnectJitterMs?: number;
+  maxSendBufferedBytes?: number;
+  sendBackpressureTimeoutMs?: number;
+  sendBackpressurePollMs?: number;
   webSocketFactory?: NodeLinkWebSocketFactory;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -51,10 +55,11 @@ export interface NodeLinkWebSocketLike {
   on(event: 'message', listener: (data: RawData) => void): void;
   on(event: 'close', listener: (code: number, reason: Buffer) => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
-  send(data: string): void;
+  send(data: string, cb?: (err?: Error) => void): void;
   close(code?: number, reason?: string): void;
   readonly readyState: number;
   readonly OPEN: number;
+  readonly bufferedAmount?: number;
 }
 
 export type NodeLinkWebSocketFactory = (
@@ -81,6 +86,9 @@ const DEFAULTS = {
   initialReconnectDelayMs: 1_000,
   maxReconnectDelayMs: 60_000,
   reconnectJitterMs: 500,
+  maxSendBufferedBytes: 1_048_576,
+  sendBackpressureTimeoutMs: 5_000,
+  sendBackpressurePollMs: 25,
 };
 
 const TERMINAL_ERROR_CODES = new Set<RelayNodeError['code']>([
@@ -115,6 +123,10 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     deps.maxReconnectDelayMs ?? DEFAULTS.maxReconnectDelayMs;
   const reconnectJitterMs =
     deps.reconnectJitterMs ?? DEFAULTS.reconnectJitterMs;
+  const maxSendBufferedBytes = deps.maxSendBufferedBytes ?? DEFAULTS.maxSendBufferedBytes;
+  const sendBackpressureTimeoutMs =
+    deps.sendBackpressureTimeoutMs ?? DEFAULTS.sendBackpressureTimeoutMs;
+  const sendBackpressurePollMs = deps.sendBackpressurePollMs ?? DEFAULTS.sendBackpressurePollMs;
   const webSocketFactory = deps.webSocketFactory ?? defaultWebSocketFactory;
   const setTimer = deps.setTimeoutFn ?? setTimeout;
   const clearTimer = deps.clearTimeoutFn ?? clearTimeout;
@@ -161,6 +173,79 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
         `send failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  function nodeLinkBackpressureError(
+    message: string,
+    details: Record<string, unknown> = {}
+  ): RelayNodeError {
+    return {
+      code: 'NODE_BUSY',
+      message,
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE', ...details },
+    };
+  }
+
+  async function waitForBufferedRoom(socket: NodeLinkWebSocketLike): Promise<void> {
+    const startedAt = Date.now();
+    while ((socket.bufferedAmount ?? 0) > maxSendBufferedBytes) {
+      if (stopped || ws !== socket || socket.readyState !== socket.OPEN) {
+        throw nodeLinkBackpressureError('node link websocket closed before send drained', {
+          bufferedAmount: socket.bufferedAmount ?? 0,
+          maxSendBufferedBytes,
+        });
+      }
+      if (Date.now() - startedAt >= sendBackpressureTimeoutMs) {
+        throw nodeLinkBackpressureError('node link websocket send buffer stayed saturated', {
+          bufferedAmount: socket.bufferedAmount ?? 0,
+          maxSendBufferedBytes,
+          timeoutMs: sendBackpressureTimeoutMs,
+        });
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimer(resolve, sendBackpressurePollMs);
+        (timer as unknown as { unref?: () => void }).unref?.();
+      });
+    }
+  }
+
+  async function sendWithBackpressure(payload: RelayNodeEnvelope): Promise<void> {
+    const socket = ws;
+    if (!socket || socket.readyState !== socket.OPEN) {
+      throw nodeLinkBackpressureError('node link websocket is not open');
+    }
+    await waitForBufferedRoom(socket);
+    const data = JSON.stringify(payload);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimer(() => {
+        if (settled) return;
+        settled = true;
+        reject(
+          nodeLinkBackpressureError('node link websocket send did not drain before timeout', {
+            bufferedAmount: socket.bufferedAmount ?? 0,
+            timeoutMs: sendBackpressureTimeoutMs,
+            bytes: Buffer.byteLength(data),
+          })
+        );
+      }, sendBackpressureTimeoutMs);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      try {
+        socket.send(data, (err?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimer(timer);
+          if (err) reject(err);
+          else resolve();
+        });
+      } catch (error) {
+        if (settled) return;
+        settled = true;
+        clearTimer(timer);
+        reject(error);
+      }
+    });
   }
 
   async function buildControlPayload(): Promise<Record<string, unknown>> {
@@ -285,6 +370,7 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
       if (deps.onPtyEnvelope) {
         deps.onPtyEnvelope(env, {
           send,
+          sendWithBackpressure,
           buildEnvelope: envelope,
         });
         return;
@@ -296,6 +382,7 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
       if (deps.onRpcEnvelope) {
         deps.onRpcEnvelope(env, {
           send,
+          sendWithBackpressure,
           buildEnvelope: envelope,
         });
         return;

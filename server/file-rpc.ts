@@ -564,23 +564,74 @@ export interface FileRpcFollower {
   close(): void;
 }
 
+const FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS = 5_000;
+
 function nodeErrorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code)
     : undefined;
 }
 
+function isRelayNodeError(error: unknown): error is RelayNodeError {
+  const record = asRecord(error);
+  return (
+    typeof record?.['code'] === 'string' &&
+    typeof record['message'] === 'string' &&
+    typeof record['retryable'] === 'boolean'
+  );
+}
+
+function followBackpressureError(
+  message: string,
+  details: Record<string, unknown> = {}
+): RelayNodeError {
+  return {
+    code: 'NODE_BUSY',
+    message,
+    retryable: true,
+    details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE', ...details },
+  };
+}
+
+async function withFileRpcWriteTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  details: Record<string, unknown>
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            followBackpressureError('file follow writer did not drain before timeout', {
+              timeoutMs,
+              ...details,
+            })
+          );
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function createFileRpcFollower(options: {
   request: Pick<FileRpcTailRequest, 'path' | 'maxFollowChunkBytes'>;
   startOffset: number;
-  write: (chunk: FileRpcTailChunk) => void;
+  write: (chunk: FileRpcTailChunk) => void | Promise<void>;
   onError?: (error: RelayNodeError) => void;
   pollIntervalMs?: number;
+  writeTimeoutMs?: number;
 }): FileRpcFollower {
   let offset = options.startOffset;
   let closed = false;
   let active = false;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const writeTimeoutMs = options.writeTimeoutMs ?? FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS;
 
   const closeWithError = (error: RelayNodeError): void => {
     if (closed) return;
@@ -622,9 +673,8 @@ export function createFileRpcFollower(options: {
           if (read.bytesRead === 0) break;
           bytesRead += read.bytesRead;
         }
-        offset = stats.size;
         if (bytesRead > 0 && !closed) {
-          options.write({
+          const chunk: FileRpcTailChunk = {
             operation: 'tail',
             path: options.request.path,
             encoding: 'utf8',
@@ -636,12 +686,23 @@ export function createFileRpcFollower(options: {
             truncatedBytes: skippedBytes > 0,
             skippedBytes,
             maxFollowChunkBytes: options.request.maxFollowChunkBytes,
+          };
+          await withFileRpcWriteTimeout(Promise.resolve(options.write(chunk)), writeTimeoutMs, {
+            path: options.request.path,
+            startOffset,
+            endOffset: startOffset + bytesRead,
+            bytesRead,
           });
         }
+        offset = stats.size;
       } finally {
         await handle.close();
       }
     } catch (error) {
+      if (isRelayNodeError(error)) {
+        closeWithError(error);
+        return;
+      }
       if (nodeErrorCode(error) === 'ENOENT') {
         closeWithError(
           notFound('FILE_RPC_NOT_FOUND', 'followed file was not found', {
