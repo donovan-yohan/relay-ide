@@ -43,6 +43,7 @@ const CACHEABLE_TYPED_SESSION_LIST_FAILURE_CODES = new Set<RelayNodeErrorCode>([
 export interface RemoteSessionReadModelCache {
   get(nodeId: string, nowMs: number, maxAgeMs: number): SessionSummary[] | null;
   set(nodeId: string, sessions: SessionSummary[], observedAtMs: number): void;
+  upsert(nodeId: string, session: SessionSummary, observedAtMs: number): void;
   clear(nodeId: string): void;
 }
 
@@ -68,6 +69,22 @@ export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache
         observedAtMs,
         sessions: sessions.map((session) => ({ ...session })),
       });
+    },
+    upsert(nodeId, session, observedAtMs) {
+      const cached = entries.get(nodeId);
+      const nextSession = { ...session };
+      const sessions = cached
+        ? cached.sessions.map((cachedSession) => ({ ...cachedSession }))
+        : [];
+      const existingIndex = sessions.findIndex(
+        (cachedSession) => cachedSession.id === nextSession.id
+      );
+      if (existingIndex >= 0) {
+        sessions[existingIndex] = nextSession;
+      } else {
+        sessions.push(nextSession);
+      }
+      entries.set(nodeId, { observedAtMs, sessions });
     },
     clear(nodeId) {
       entries.delete(nodeId);

@@ -99,6 +99,7 @@ interface HubNodeSessionTransport {
 
 interface RoutedSessionReadModelCache {
   set(nodeId: string, sessions: SessionSummary[], observedAtMs: number): void;
+  upsert(nodeId: string, session: SessionSummary, observedAtMs: number): void;
 }
 
 export interface RoutedSessionAuditSink {
@@ -2349,7 +2350,7 @@ export function createHubNodeRouter(
         session,
         workContextId
       );
-      options.readModelCache?.set(nodeId, [session], createNow.getTime());
+      options.readModelCache?.upsert(nodeId, session, createNow.getTime());
       res.status(201).json(
         associationError
           ? { ...responseSession, workContextAssociationError: associationError }

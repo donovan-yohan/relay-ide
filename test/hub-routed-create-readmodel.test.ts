@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHubNodeRouter } from '../server/hub-node-router.js';
+import { createHubNodeRouter, scopedNodeSession } from '../server/hub-node-router.js';
 import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
@@ -68,9 +68,12 @@ function nodeSummary(
   };
 }
 
-function remoteSession(): SessionSummary {
+function remoteSession(
+  id = 'remote-session-1',
+  overrides: Partial<SessionSummary> = {}
+): SessionSummary {
   return {
-    id: 'remote-session-1',
+    id,
     type: 'terminal',
     agent: 'claude',
     mode: 'pty',
@@ -79,7 +82,7 @@ function remoteSession(): SessionSummary {
     cwd: '/srv/relay-ide',
     repoName: 'relay-ide',
     branchName: 'nightly',
-    displayName: 'relay-ide terminal',
+    displayName: `${id} terminal`,
     createdAt: NOW.toISOString(),
     lastActivity: NOW.toISOString(),
     idle: false,
@@ -89,6 +92,7 @@ function remoteSession(): SessionSummary {
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',
+    ...overrides,
   };
 }
 
@@ -104,7 +108,7 @@ describe('routed create remote session read model', () => {
     while (cleanup.length > 0) await cleanup.pop()?.();
   });
 
-  it('keeps a just-created WorkContext session visible through an immediate transient sessions.list failure', async () => {
+  it('merges a just-created WorkContext session into cached remote sessions through an immediate transient sessions.list failure', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-routed-create-readmodel-'));
     const workContextStore: WorkContextStore = createWorkContextStore(
       path.join(tmp, 'work-contexts.db')
@@ -130,7 +134,13 @@ describe('routed create remote session read model', () => {
     const nodeLinks = {
       hasActiveNode: () => true,
       request: vi.fn(async (_nodeId: string, type: string) => {
-        if (type === 'sessions.create') return { session: remoteSession() };
+        if (type === 'sessions.create') {
+          return {
+            session: remoteSession('remote-session-2', {
+              workContextId: 'node-owned-context-must-not-leak',
+            }),
+          };
+        }
         if (type === 'sessions.list') {
           throw new Error('transient sessions.list failure immediately after create');
         }
@@ -139,6 +149,18 @@ describe('routed create remote session read model', () => {
     };
     const sessionEnvelopes = createSessionEnvelopeRegistry();
     const readModelCache = createRemoteSessionReadModelCache();
+    readModelCache.set(
+      node.nodeId,
+      [
+        scopedNodeSession(
+          node.nodeId,
+          remoteSession('remote-session-1', {
+            workContextId: 'node-owned-context-must-not-leak',
+          })
+        ),
+      ],
+      NOW.getTime() - 1_000
+    );
     const app = express();
     app.use(express.json());
     app.use(
@@ -166,7 +188,7 @@ describe('routed create remote session read model', () => {
     expect(created.status).toBe(201);
     const createdSession = (await created.json()) as SessionSummary;
     expect(createdSession).toMatchObject({
-      id: 'remote-session-1',
+      id: 'remote-session-2',
       nodeId: 'node_prod',
       workContextId,
     });
@@ -180,9 +202,22 @@ describe('routed create remote session read model', () => {
       now: () => NOW.getTime() + 100,
     });
 
-    expect(afterTransientFailure).toHaveLength(1);
-    expect(afterTransientFailure[0]).toMatchObject({
+    expect(afterTransientFailure).toHaveLength(2);
+    const sessionsById = new Map(
+      afterTransientFailure.map((session) => [session.id, session])
+    );
+    expect([...sessionsById.keys()].sort()).toEqual([
+      'remote-session-1',
+      'remote-session-2',
+    ]);
+    expect(sessionsById.get('remote-session-1')).toMatchObject({
       id: 'remote-session-1',
+      nodeId: 'node_prod',
+      status: 'active',
+    });
+    expect(sessionsById.get('remote-session-1')?.workContextId).toBeUndefined();
+    expect(sessionsById.get('remote-session-2')).toMatchObject({
+      id: 'remote-session-2',
       nodeId: 'node_prod',
       workContextId,
       status: 'active',
