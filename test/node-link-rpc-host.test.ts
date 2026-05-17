@@ -529,6 +529,135 @@ describe('node-link-rpc-host', () => {
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect(sent.filter((entry) => entry.type === 'logs.tail.chunk')).toHaveLength(chunkCount);
   });
+
+  it('rejects malformed fs.tail follow requests with one error envelope', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-invalid-'));
+    fs.writeFileSync(path.join(tmp, 'app.log'), 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('fs.tail', {
+        sessionId: 'sess-1',
+        root: tmp,
+        cwd: tmp,
+        path: path.join(tmp, 'app.log'),
+        follow: true,
+      }),
+      ctx
+    );
+
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.type).toBe('fs.tail.error');
+    expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(false);
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+    expect(err.message).toContain('streamId');
+  });
+
+  it('starts and cancels bounded fs.tail followers by streamId', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-follow-'));
+    const target = path.join(tmp, 'app.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope(
+        'fs.tail',
+        {
+          sessionId: 'sess-1',
+          root: tmp,
+          cwd: tmp,
+          path: target,
+          maxBytes: 64,
+          maxLines: 1,
+          follow: true,
+          maxFollowChunkBytes: 8,
+        },
+        { streamId: 'file-stream-1' }
+      ),
+      ctx
+    );
+
+    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true));
+    expect(sent[0]!.payload).toMatchObject({
+      operation: 'tail',
+      content: 'initial\n',
+      follow: true,
+    });
+
+    fs.appendFileSync(target, '123456789abcdef\n', 'utf8');
+    await vi.waitFor(() => {
+      expect(sent.some((entry) => entry.type === 'fs.tail.chunk')).toBe(true);
+    });
+    const chunk = sent.find((entry) => entry.type === 'fs.tail.chunk')!.payload as {
+      content: string;
+      truncatedBytes: boolean;
+      skippedBytes: number;
+    };
+    expect(chunk.content).toBe('9abcdef\n');
+    expect(chunk.truncatedBytes).toBe(true);
+    expect(chunk.skippedBytes).toBeGreaterThan(0);
+
+    host.handle(envelope('fs.tail.cancel', {}, { streamId: 'file-stream-1' }), ctx);
+    const chunkCount = sent.filter((entry) => entry.type === 'fs.tail.chunk').length;
+    fs.appendFileSync(target, 'after cancel\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(sent.filter((entry) => entry.type === 'fs.tail.chunk')).toHaveLength(chunkCount);
+  });
+
+  it('closes fs.tail followers with a typed retryable error when node-link writes backpressure', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-backpressure-'));
+    const target = path.join(tmp, 'app.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+    const backpressureError: RelayNodeError = {
+      code: 'NODE_BUSY',
+      message: 'node link websocket send buffer stayed saturated',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE' },
+    };
+    const sendWithBackpressure = vi.fn().mockRejectedValue(backpressureError);
+    const backpressureCtx = { ...ctx, sendWithBackpressure };
+
+    host.handle(
+      envelope(
+        'fs.tail',
+        {
+          sessionId: 'sess-1',
+          root: tmp,
+          cwd: tmp,
+          path: target,
+          maxBytes: 64,
+          follow: true,
+          maxFollowChunkBytes: 64,
+        },
+        { streamId: 'file-stream-slow' }
+      ),
+      backpressureCtx
+    );
+
+    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true));
+    fs.appendFileSync(target, 'blocked\n', 'utf8');
+
+    await vi.waitFor(() => expect(sendWithBackpressure).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.error')).toBe(true));
+    const errorEnvelope = sent.find((entry) => entry.type === 'fs.tail.error')!;
+    expect((errorEnvelope.payload as { error: RelayNodeError }).error).toMatchObject({
+      code: 'NODE_BUSY',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE' },
+    });
+
+    fs.appendFileSync(target, 'after close\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sendWithBackpressure).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Surface unused CreateParams/CreateWebParams type imports so the

@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { executeLocalFileRpc, normalizeHubFileRpcRequest } from '../server/file-rpc.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createFileRpcFollower, executeLocalFileRpc, normalizeHubFileRpcRequest } from '../server/file-rpc.js';
 import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 
@@ -184,6 +184,85 @@ describe('read-only File RPC foundation', () => {
     }
   });
 
+  it('executes local tail from the end with byte and line bounds', async () => {
+    const root = fixtureRoot();
+    const logFile = path.join(root, 'app.log');
+    fs.writeFileSync(logFile, 'one\ntwo\nthree\nfour\nfive\n');
+
+    const tail = await executeLocalFileRpc('tail', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: logFile,
+      maxBytes: 18,
+      maxLines: 2,
+    });
+
+    expect(tail).toMatchObject({
+      operation: 'tail',
+      content: 'four\nfive\n',
+      bytesRead: 18,
+      truncatedBytes: true,
+      truncatedLines: true,
+      follow: false,
+      maxBytes: 18,
+      maxLines: 2,
+      maxFollowChunkBytes: 16384,
+    });
+    expect('startOffset' in tail && tail.startOffset).toBeGreaterThan(0);
+  });
+
+  it('preserves a trailing empty line when tailing one line from a blank final line', async () => {
+    const root = fixtureRoot();
+    const logFile = path.join(root, 'blank-final-line.log');
+    fs.writeFileSync(logFile, 'one\ntwo\n\n');
+
+    const tail = await executeLocalFileRpc('tail', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: logFile,
+      maxBytes: 64,
+      maxLines: 1,
+    });
+
+    expect(tail).toMatchObject({
+      operation: 'tail',
+      content: '\n',
+      truncatedBytes: false,
+      truncatedLines: true,
+      maxLines: 1,
+    });
+  });
+
+  it('denies tail for directories and missing files with typed File RPC reasons', async () => {
+    const root = fixtureRoot();
+
+    await expect(
+      executeLocalFileRpc('tail', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: path.join(root, 'src'),
+      })
+    ).resolves.toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { reasonCode: 'FILE_RPC_NOT_FILE' },
+    });
+
+    await expect(
+      executeLocalFileRpc('tail', {
+        sessionId: 'session_a',
+        root,
+        cwd: root,
+        path: path.join(root, 'missing.log'),
+      })
+    ).resolves.toMatchObject({
+      code: 'NOT_FOUND',
+      details: { reasonCode: 'FILE_RPC_NOT_FOUND' },
+    });
+  });
+
   it('denies realpath symlink escapes from the scoped root', async () => {
     const root = fixtureRoot();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-rpc-outside-'));
@@ -202,6 +281,87 @@ describe('read-only File RPC foundation', () => {
     expect(denied).toMatchObject({
       code: 'INVALID_REQUEST',
       details: { reasonCode: 'FILE_RPC_ROOT_ESCAPE' },
+    });
+  });
+
+  it('does not poll or enqueue more follow chunks while an async writer is backpressured', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'slow-writer.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const writes: unknown[] = [];
+    let releaseWrite: (() => void) | undefined;
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: (chunk) => {
+        writes.push(chunk);
+        return new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        });
+      },
+      pollIntervalMs: 10,
+      writeTimeoutMs: 1_000,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.appendFileSync(target, 'first\n', 'utf8');
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+
+    fs.appendFileSync(target, 'second\n', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes).toHaveLength(1);
+
+    releaseWrite?.();
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toMatchObject({ content: 'second\n' });
+  });
+
+  it('closes follow streams with a typed retryable error when writes stay backpressured', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'stuck-writer.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const errors: unknown[] = [];
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: () => new Promise<void>(() => {}),
+      onError: (error) => errors.push(error),
+      pollIntervalMs: 10,
+      writeTimeoutMs: 20,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.appendFileSync(target, 'blocked\n', 'utf8');
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toMatchObject({
+      code: 'NODE_BUSY',
+      retryable: true,
+      details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE', path: target },
+    });
+  });
+
+  it('emits a typed terminal error when a followed file is replaced by a directory', async () => {
+    const root = fixtureRoot();
+    const target = path.join(root, 'app.log');
+    fs.writeFileSync(target, 'initial\n', 'utf8');
+    const errors: unknown[] = [];
+    const follower = createFileRpcFollower({
+      request: { path: target, maxFollowChunkBytes: 64 },
+      startOffset: fs.statSync(target).size,
+      write: () => {},
+      onError: (error) => errors.push(error),
+      pollIntervalMs: 10,
+    });
+    cleanup.push(() => follower.close());
+
+    fs.rmSync(target);
+    fs.mkdirSync(target);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { reasonCode: 'FILE_RPC_NOT_FILE', path: target },
     });
   });
 });

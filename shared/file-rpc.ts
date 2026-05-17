@@ -3,10 +3,15 @@ export const FILE_RPC_DEFAULT_LIST_ENTRIES = 100;
 export const FILE_RPC_MAX_READ_BYTES = 64 * 1024;
 export const FILE_RPC_DEFAULT_READ_BYTES = 32 * 1024;
 export const FILE_RPC_MAX_READ_LINES = 2_000;
+export const FILE_RPC_MAX_TAIL_BYTES = 64 * 1024;
+export const FILE_RPC_DEFAULT_TAIL_BYTES = 32 * 1024;
+export const FILE_RPC_MAX_TAIL_LINES = 2_000;
+export const FILE_RPC_MAX_FOLLOW_CHUNK_BYTES = 64 * 1024;
+export const FILE_RPC_DEFAULT_FOLLOW_CHUNK_BYTES = 16 * 1024;
 
-export type FileRpcOperation = 'list' | 'stat' | 'read';
+export type FileRpcOperation = 'list' | 'stat' | 'read' | 'tail';
 
-export const FILE_RPC_OPERATIONS = ['list', 'stat', 'read'] as const satisfies readonly FileRpcOperation[];
+export const FILE_RPC_OPERATIONS = ['list', 'stat', 'read', 'tail'] as const satisfies readonly FileRpcOperation[];
 
 export type FileRpcDenialReason =
   | 'FILE_RPC_INVALID_REQUEST'
@@ -17,7 +22,8 @@ export type FileRpcDenialReason =
   | 'FILE_RPC_NOT_FOUND'
   | 'FILE_RPC_NOT_DIRECTORY'
   | 'FILE_RPC_NOT_FILE'
-  | 'FILE_RPC_SIZE_LIMIT_EXCEEDED';
+  | 'FILE_RPC_SIZE_LIMIT_EXCEEDED'
+  | 'FILE_RPC_FOLLOW_BACKPRESSURE';
 
 export type FileRpcEntryType = 'file' | 'directory' | 'symlink' | 'other';
 
@@ -39,7 +45,18 @@ export interface FileRpcReadRequest extends FileRpcBaseRequest {
   maxLines?: number;
 }
 
-export type FileRpcRequest = FileRpcListRequest | FileRpcStatRequest | FileRpcReadRequest;
+export interface FileRpcTailRequest extends FileRpcBaseRequest {
+  maxBytes: number;
+  maxLines?: number;
+  follow: boolean;
+  maxFollowChunkBytes: number;
+}
+
+export type FileRpcRequest =
+  | FileRpcListRequest
+  | FileRpcStatRequest
+  | FileRpcReadRequest
+  | FileRpcTailRequest;
 
 export interface FileRpcStat {
   path: string;
@@ -82,8 +99,45 @@ export interface FileRpcReadResponse {
   maxLines?: number;
 }
 
-export type FileRpcResponse = FileRpcListResponse | FileRpcStatResponse | FileRpcReadResponse;
+export interface FileRpcTailResponse {
+  operation: 'tail';
+  root: string;
+  cwd: string;
+  path: string;
+  encoding: 'utf8';
+  content: string;
+  bytesRead: number;
+  startOffset: number;
+  endOffset: number;
+  fileSize: number;
+  truncatedBytes: boolean;
+  truncatedLines: boolean;
+  follow: boolean;
+  maxBytes: number;
+  maxLines?: number;
+  maxFollowChunkBytes: number;
+}
+
+export interface FileRpcTailChunk {
+  operation: 'tail';
+  path: string;
+  encoding: 'utf8';
+  content: string;
+  bytesRead: number;
+  startOffset: number;
+  endOffset: number;
+  fileSize: number;
+  truncatedBytes: boolean;
+  skippedBytes: number;
+  maxFollowChunkBytes: number;
+}
+
+export type FileRpcResponse =
+  | FileRpcListResponse
+  | FileRpcStatResponse
+  | FileRpcReadResponse
+  | FileRpcTailResponse;
 
 export function isFileRpcOperation(value: unknown): value is FileRpcOperation {
-  return value === 'list' || value === 'stat' || value === 'read';
+  return value === 'list' || value === 'stat' || value === 'read' || value === 'tail';
 }

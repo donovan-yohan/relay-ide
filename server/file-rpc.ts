@@ -10,13 +10,21 @@ import type {
   FileRpcResponse,
   FileRpcStat,
   FileRpcStatResponse,
+  FileRpcTailChunk,
+  FileRpcTailRequest,
+  FileRpcTailResponse,
 } from '../shared/file-rpc.js';
 import {
+  FILE_RPC_DEFAULT_FOLLOW_CHUNK_BYTES,
   FILE_RPC_DEFAULT_LIST_ENTRIES,
   FILE_RPC_DEFAULT_READ_BYTES,
+  FILE_RPC_DEFAULT_TAIL_BYTES,
+  FILE_RPC_MAX_FOLLOW_CHUNK_BYTES,
   FILE_RPC_MAX_LIST_ENTRIES,
   FILE_RPC_MAX_READ_BYTES,
   FILE_RPC_MAX_READ_LINES,
+  FILE_RPC_MAX_TAIL_BYTES,
+  FILE_RPC_MAX_TAIL_LINES,
 } from '../shared/file-rpc.js';
 import type { RelayNodeError } from '../shared/relay-node-protocol.js';
 import type { ScopedSessionSummary } from './session-envelope-registry.js';
@@ -112,6 +120,16 @@ function optionalBoundedInteger(
   return Math.min(value, max);
 }
 
+function optionalBoolean(value: unknown, field: string): boolean | RelayNodeError {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'boolean') {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', `${field} must be boolean when set`, {
+      field,
+    });
+  }
+  return value;
+}
+
 function pathApiForPlatform(platform?: string): PathApi {
   return platform === 'win32' ? path.win32 : path.posix;
 }
@@ -143,6 +161,78 @@ function resolveRoot(summary: ScopedSessionSummary): string | RelayNodeError {
     'scoped session does not expose a filesystem root',
     { sessionId: summary.sessionId, scope: scope.kind }
   );
+}
+
+function buildOperationRequest(
+  operation: FileRpcOperation,
+  base: FileRpcRequest,
+  fields: Record<string, unknown>
+): FileRpcRequest | RelayNodeError {
+  if (operation === 'list') return buildListRequest(base, fields);
+  if (operation === 'read') return buildReadRequest(base, fields);
+  if (operation === 'tail') return buildTailRequest(base, fields);
+  return base;
+}
+
+function buildListRequest(
+  base: FileRpcRequest,
+  fields: Record<string, unknown>
+): FileRpcRequest | RelayNodeError {
+  const maxEntries = boundedInteger(
+    fields['maxEntries'],
+    FILE_RPC_DEFAULT_LIST_ENTRIES,
+    FILE_RPC_MAX_LIST_ENTRIES,
+    'maxEntries'
+  );
+  if (typeof maxEntries !== 'number') return maxEntries;
+  return { ...base, maxEntries };
+}
+
+function buildReadRequest(
+  base: FileRpcRequest,
+  fields: Record<string, unknown>
+): FileRpcRequest | RelayNodeError {
+  const maxBytes = boundedInteger(
+    fields['maxBytes'],
+    FILE_RPC_DEFAULT_READ_BYTES,
+    FILE_RPC_MAX_READ_BYTES,
+    'maxBytes'
+  );
+  if (typeof maxBytes !== 'number') return maxBytes;
+  const maxLines = optionalBoundedInteger(fields['maxLines'], FILE_RPC_MAX_READ_LINES, 'maxLines');
+  if (maxLines !== undefined && typeof maxLines !== 'number') return maxLines;
+  return { ...base, maxBytes, ...(maxLines !== undefined ? { maxLines } : {}) };
+}
+
+function buildTailRequest(
+  base: FileRpcRequest,
+  fields: Record<string, unknown>
+): FileRpcRequest | RelayNodeError {
+  const maxBytes = boundedInteger(
+    fields['maxBytes'],
+    FILE_RPC_DEFAULT_TAIL_BYTES,
+    FILE_RPC_MAX_TAIL_BYTES,
+    'maxBytes'
+  );
+  if (typeof maxBytes !== 'number') return maxBytes;
+  const maxLines = optionalBoundedInteger(fields['maxLines'], FILE_RPC_MAX_TAIL_LINES, 'maxLines');
+  if (maxLines !== undefined && typeof maxLines !== 'number') return maxLines;
+  const follow = optionalBoolean(fields['follow'], 'follow');
+  if (typeof follow !== 'boolean') return follow;
+  const maxFollowChunkBytes = boundedInteger(
+    fields['maxFollowChunkBytes'],
+    FILE_RPC_DEFAULT_FOLLOW_CHUNK_BYTES,
+    FILE_RPC_MAX_FOLLOW_CHUNK_BYTES,
+    'maxFollowChunkBytes'
+  );
+  if (typeof maxFollowChunkBytes !== 'number') return maxFollowChunkBytes;
+  return {
+    ...base,
+    maxBytes,
+    ...(maxLines !== undefined ? { maxLines } : {}),
+    follow,
+    maxFollowChunkBytes,
+  };
 }
 
 export function normalizeHubFileRpcRequest(input: {
@@ -195,40 +285,14 @@ export function normalizeHubFileRpcRequest(input: {
     };
   }
 
-  const base = {
+  const base: FileRpcRequest = {
     sessionId: input.session.sessionId,
     root,
     cwd,
     path: target,
   };
-  let request: FileRpcRequest;
-  if (input.operation === 'list') {
-    const maxEntries = boundedInteger(
-      input.body['maxEntries'],
-      FILE_RPC_DEFAULT_LIST_ENTRIES,
-      FILE_RPC_MAX_LIST_ENTRIES,
-      'maxEntries'
-    );
-    if (typeof maxEntries !== 'number') return { ok: false, error: maxEntries };
-    request = { ...base, maxEntries };
-  } else if (input.operation === 'read') {
-    const maxBytes = boundedInteger(
-      input.body['maxBytes'],
-      FILE_RPC_DEFAULT_READ_BYTES,
-      FILE_RPC_MAX_READ_BYTES,
-      'maxBytes'
-    );
-    if (typeof maxBytes !== 'number') return { ok: false, error: maxBytes };
-    const maxLines = optionalBoundedInteger(
-      input.body['maxLines'],
-      FILE_RPC_MAX_READ_LINES,
-      'maxLines'
-    );
-    if (maxLines && typeof maxLines !== 'number') return { ok: false, error: maxLines };
-    request = { ...base, maxBytes, ...(maxLines ? { maxLines } : {}) };
-  } else {
-    request = base;
-  }
+  const request = buildOperationRequest(input.operation, base, input.body);
+  if ('code' in request) return { ok: false, error: request };
 
   return {
     ok: true,
@@ -248,7 +312,7 @@ export function normalizeHubFileRpcRequest(input: {
   };
 }
 
-function parseFileRpcRequest(raw: unknown): FileRpcRequest | RelayNodeError {
+function parseFileRpcRequest(raw: unknown, operation: FileRpcOperation): FileRpcRequest | RelayNodeError {
   const record = asRecord(raw);
   if (!record) return invalidRequest('FILE_RPC_INVALID_REQUEST', 'file RPC payload must be an object');
   const sessionId = nonEmptyString(record['sessionId']);
@@ -264,34 +328,8 @@ function parseFileRpcRequest(raw: unknown): FileRpcRequest | RelayNodeError {
   if (hasNul(sessionId) || hasNul(root) || hasNul(cwd) || hasNul(requestPath)) {
     return invalidRequest('FILE_RPC_INVALID_REQUEST', 'file RPC payload paths must not contain NUL bytes');
   }
-  const base = { sessionId, root, cwd, path: requestPath };
-  if (typeof record['maxEntries'] === 'number') {
-    const maxEntries = boundedInteger(
-      record['maxEntries'],
-      FILE_RPC_DEFAULT_LIST_ENTRIES,
-      FILE_RPC_MAX_LIST_ENTRIES,
-      'maxEntries'
-    );
-    if (typeof maxEntries !== 'number') return maxEntries;
-    return { ...base, maxEntries };
-  }
-  if (typeof record['maxBytes'] === 'number') {
-    const maxBytes = boundedInteger(
-      record['maxBytes'],
-      FILE_RPC_DEFAULT_READ_BYTES,
-      FILE_RPC_MAX_READ_BYTES,
-      'maxBytes'
-    );
-    if (typeof maxBytes !== 'number') return maxBytes;
-    const maxLines = optionalBoundedInteger(
-      record['maxLines'],
-      FILE_RPC_MAX_READ_LINES,
-      'maxLines'
-    );
-    if (maxLines && typeof maxLines !== 'number') return maxLines;
-    return { ...base, maxBytes, ...(maxLines ? { maxLines } : {}) };
-  }
-  return base;
+  const base: FileRpcRequest = { sessionId, root, cwd, path: requestPath };
+  return buildOperationRequest(operation, base, record);
 }
 
 function entryType(stats: Stats): FileRpcStat['type'] {
@@ -323,8 +361,8 @@ async function realpathOrError(target: string, reasonCode: FileRpcDenialReason):
   }
 }
 
-async function normalizeNodeRequest(raw: unknown): Promise<FileRpcRequest | RelayNodeError> {
-  const parsed = parseFileRpcRequest(raw);
+async function normalizeNodeRequest(raw: unknown, operation: FileRpcOperation): Promise<FileRpcRequest | RelayNodeError> {
+  const parsed = parseFileRpcRequest(raw, operation);
   if ('code' in parsed) return parsed;
   const root = path.resolve(parsed.root);
   const cwd = path.resolve(parsed.cwd);
@@ -453,13 +491,254 @@ async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse
   }
 }
 
+function tailTextByLines(content: string, maxLines: number | undefined): {
+  content: string;
+  truncatedLines: boolean;
+} {
+  if (maxLines === undefined) return { content, truncatedLines: false };
+  const endsWithNewline = content.endsWith('\n');
+  const lines = content.split('\n');
+  if (endsWithNewline) lines.pop();
+  if (lines.length <= maxLines) return { content, truncatedLines: false };
+  const selected = lines.slice(-maxLines).join('\n');
+  return {
+    content: `${selected}${endsWithNewline ? '\n' : ''}`,
+    truncatedLines: true,
+  };
+}
+
+function isTailRequest(request: FileRpcRequest): request is FileRpcTailRequest {
+  return 'follow' in request && 'maxFollowChunkBytes' in request;
+}
+
+async function executeTail(request: FileRpcRequest): Promise<FileRpcTailResponse | RelayNodeError> {
+  if (!isTailRequest(request)) {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'tail request requires follow bounds');
+  }
+  let stats: Stats;
+  try {
+    stats = await fs.stat(request.path);
+  } catch {
+    return notFound('FILE_RPC_NOT_FOUND', 'file was not found', { path: request.path });
+  }
+  if (!stats.isFile()) {
+    return invalidRequest('FILE_RPC_NOT_FILE', 'path is not a regular file', { path: request.path });
+  }
+  const bytesToRead = Math.min(request.maxBytes, stats.size);
+  const startOffset = Math.max(0, stats.size - bytesToRead);
+  const handle = await fs.open(request.path, 'r');
+  try {
+    const buffer = Buffer.alloc(bytesToRead);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const read = await handle.read(buffer, bytesRead, buffer.length - bytesRead, startOffset + bytesRead);
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
+    const visible = buffer.subarray(0, bytesRead);
+    const lineResult = tailTextByLines(visible.toString('utf8'), request.maxLines);
+    return {
+      operation: 'tail',
+      root: request.root,
+      cwd: request.cwd,
+      path: request.path,
+      encoding: 'utf8',
+      content: lineResult.content,
+      bytesRead,
+      startOffset,
+      endOffset: startOffset + bytesRead,
+      fileSize: stats.size,
+      truncatedBytes: startOffset > 0,
+      truncatedLines: lineResult.truncatedLines,
+      follow: request.follow,
+      maxBytes: request.maxBytes,
+      ...(request.maxLines !== undefined ? { maxLines: request.maxLines } : {}),
+      maxFollowChunkBytes: request.maxFollowChunkBytes,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+export interface FileRpcFollower {
+  close(): void;
+}
+
+const FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS = 5_000;
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function isRelayNodeError(error: unknown): error is RelayNodeError {
+  const record = asRecord(error);
+  return (
+    typeof record?.['code'] === 'string' &&
+    typeof record['message'] === 'string' &&
+    typeof record['retryable'] === 'boolean'
+  );
+}
+
+function followBackpressureError(
+  message: string,
+  details: Record<string, unknown> = {}
+): RelayNodeError {
+  return {
+    code: 'NODE_BUSY',
+    message,
+    retryable: true,
+    details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE', ...details },
+  };
+}
+
+async function withFileRpcWriteTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  details: Record<string, unknown>
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            followBackpressureError('file follow writer did not drain before timeout', {
+              timeoutMs,
+              ...details,
+            })
+          );
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function createFileRpcFollower(options: {
+  request: Pick<FileRpcTailRequest, 'path' | 'maxFollowChunkBytes'>;
+  startOffset: number;
+  write: (chunk: FileRpcTailChunk) => void | Promise<void>;
+  onError?: (error: RelayNodeError) => void;
+  pollIntervalMs?: number;
+  writeTimeoutMs?: number;
+}): FileRpcFollower {
+  let offset = options.startOffset;
+  let closed = false;
+  let active = false;
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const writeTimeoutMs = options.writeTimeoutMs ?? FILE_RPC_FOLLOW_WRITE_TIMEOUT_MS;
+
+  const closeWithError = (error: RelayNodeError): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    options.onError?.(error);
+  };
+
+  const poll = async (): Promise<void> => {
+    if (closed || active) return;
+    active = true;
+    try {
+      const stats = await fs.stat(options.request.path);
+      if (!stats.isFile()) {
+        closeWithError(
+          invalidRequest('FILE_RPC_NOT_FILE', 'path is no longer a regular file', {
+            path: options.request.path,
+          })
+        );
+        return;
+      }
+      if (stats.size < offset) offset = 0;
+      if (stats.size <= offset) return;
+      const appendedBytes = stats.size - offset;
+      const skippedBytes = Math.max(0, appendedBytes - options.request.maxFollowChunkBytes);
+      const startOffset = offset + skippedBytes;
+      const bytesToRead = stats.size - startOffset;
+      const handle = await fs.open(options.request.path, 'r');
+      try {
+        const buffer = Buffer.alloc(bytesToRead);
+        let bytesRead = 0;
+        while (bytesRead < buffer.length) {
+          const read = await handle.read(
+            buffer,
+            bytesRead,
+            buffer.length - bytesRead,
+            startOffset + bytesRead
+          );
+          if (read.bytesRead === 0) break;
+          bytesRead += read.bytesRead;
+        }
+        if (bytesRead > 0 && !closed) {
+          const chunk: FileRpcTailChunk = {
+            operation: 'tail',
+            path: options.request.path,
+            encoding: 'utf8',
+            content: buffer.subarray(0, bytesRead).toString('utf8'),
+            bytesRead,
+            startOffset,
+            endOffset: startOffset + bytesRead,
+            fileSize: stats.size,
+            truncatedBytes: skippedBytes > 0,
+            skippedBytes,
+            maxFollowChunkBytes: options.request.maxFollowChunkBytes,
+          };
+          await withFileRpcWriteTimeout(Promise.resolve(options.write(chunk)), writeTimeoutMs, {
+            path: options.request.path,
+            startOffset,
+            endOffset: startOffset + bytesRead,
+            bytesRead,
+          });
+        }
+        offset = stats.size;
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (isRelayNodeError(error)) {
+        closeWithError(error);
+        return;
+      }
+      if (nodeErrorCode(error) === 'ENOENT') {
+        closeWithError(
+          notFound('FILE_RPC_NOT_FOUND', 'followed file was not found', {
+            path: options.request.path,
+          })
+        );
+      } else {
+        closeWithError({
+          code: 'INTERNAL',
+          message: error instanceof Error ? error.message : String(error ?? 'unknown'),
+          retryable: false,
+        });
+      }
+    } finally {
+      active = false;
+    }
+  };
+
+  const timer = setInterval(() => void poll(), pollIntervalMs);
+  timer.unref?.();
+  return {
+    close() {
+      closed = true;
+      clearInterval(timer);
+    },
+  };
+}
+
 export async function executeLocalFileRpc(
   operation: FileRpcOperation,
   raw: unknown
 ): Promise<FileRpcResponse | RelayNodeError> {
-  const request = await normalizeNodeRequest(raw);
+  const request = await normalizeNodeRequest(raw, operation);
   if ('code' in request) return request;
   if (operation === 'list') return await executeList(request);
   if (operation === 'stat') return await executeStat(request);
+  if (operation === 'tail') return await executeTail(request);
   return await executeRead(request);
 }

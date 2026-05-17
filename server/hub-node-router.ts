@@ -79,6 +79,8 @@ import {
 import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 
+const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
+
 interface HubNodeSessionTransport {
   hasActiveNode(nodeId: string): boolean;
   request(nodeId: string, type: string, payload: unknown): Promise<unknown>;
@@ -1153,6 +1155,22 @@ function nodeLogChunk(payload: unknown): string {
   return typeof chunk === 'string' ? chunk : '';
 }
 
+function fileTailOutput(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const content = payload['content'];
+  return typeof content === 'string' ? content : '';
+}
+
+function fileTailChunk(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const content = payload['content'];
+  return typeof content === 'string' ? content : '';
+}
+
+function relayErrorText(error: RelayNodeError): string {
+  return `\n[${error.code}] ${error.message}\n`;
+}
+
 function relayErrorFromUnknown(error: unknown): RelayNodeError {
   if (error instanceof HubNodeLinkError) return error.relayNodeError;
   return relayError(
@@ -1160,6 +1178,120 @@ function relayErrorFromUnknown(error: unknown): RelayNodeError {
     error instanceof Error ? error.message : String(error ?? 'unknown'),
     true
   );
+}
+
+async function streamFileTailFollow(input: {
+  req: Request;
+  res: Response;
+  nodeLinks: HubNodeSessionTransport;
+  nodeId: string;
+  request: unknown;
+}): Promise<void> {
+  const { req, res, nodeLinks, nodeId, request } = input;
+  if (!nodeLinks.streamRequest) {
+    sendRelayError(
+      res,
+      relayError('NODE_UNSUPPORTED', 'file RPC tail follow is not supported by this runtime')
+    );
+    return;
+  }
+  let closed = false;
+  let draining = false;
+  let bufferedBytes = 0;
+  const pendingChunks: string[] = [];
+  let stream: { payload: unknown; close(): void } | undefined;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    stream?.close();
+  };
+  const closeWithStreamError = (error: RelayNodeError): void => {
+    if (closed || res.destroyed) return;
+    const output = relayErrorText(error);
+    close();
+    if (!res.destroyed) res.end(output);
+  };
+  const flushBuffered = (): void => {
+    if (closed || res.destroyed || draining) return;
+    while (pendingChunks.length > 0) {
+      const chunk = pendingChunks.shift()!;
+      bufferedBytes -= Buffer.byteLength(chunk);
+      if (!res.write(chunk)) {
+        draining = true;
+        res.once('drain', () => {
+          draining = false;
+          flushBuffered();
+        });
+        return;
+      }
+    }
+  };
+  const writeBounded = (chunk: string): void => {
+    if (!chunk || closed || res.destroyed) return;
+    if (draining || pendingChunks.length > 0) {
+      const chunkBytes = Buffer.byteLength(chunk);
+      bufferedBytes += chunkBytes;
+      pendingChunks.push(chunk);
+      if (bufferedBytes > FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES) {
+        closeWithStreamError(
+          relayError(
+            'NODE_BUSY',
+            'file RPC tail follow output exceeded bounded response buffer; stream closed',
+            true,
+            {
+              reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE',
+              maxBufferedBytes: FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES,
+            }
+          )
+        );
+      }
+      return;
+    }
+    if (!res.write(chunk)) {
+      draining = true;
+      res.once('drain', () => {
+        draining = false;
+        flushBuffered();
+      });
+    }
+  };
+  req.on('close', close);
+  try {
+    stream = await nodeLinks.streamRequest(nodeId, 'fs.tail', request, {
+      onChunk: (payload) => {
+        if (closed || res.destroyed) return;
+        const chunk = fileTailChunk(payload);
+        writeBounded(chunk);
+      },
+      onError: (error) => {
+        if (closed || res.destroyed) return;
+        closeWithStreamError(error);
+      },
+      onEnd: () => {
+        if (closed || res.destroyed) return;
+        res.end();
+      },
+    });
+    res.status(200);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
+    if (closed || res.destroyed) {
+      stream.close();
+      return;
+    }
+    const output = fileTailOutput(stream.payload);
+    writeBounded(output);
+  } catch (error) {
+    if (res.headersSent) {
+      const streamError = relayErrorFromUnknown(error);
+      if (!closed && !res.destroyed) closeWithStreamError(streamError);
+      return;
+    }
+    res.removeHeader('Content-Type');
+    res.removeHeader('Cache-Control');
+    sendRelayError(res, relayErrorFromUnknown(error));
+  }
 }
 
 function protocolVersionRelayError(nodeProtocolVersion: string): RelayNodeError {
@@ -2151,7 +2283,7 @@ export function createHubNodeRouter(
       if (!isFileRpcOperation(operation)) {
         sendRelayError(
           res,
-          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, or read', false, {
+          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, read, or tail', false, {
             reasonCode: 'FILE_RPC_INVALID_REQUEST',
             operation,
           })
@@ -2257,6 +2389,21 @@ export function createHubNodeRouter(
           now: now(),
         })
       ) {
+        return;
+      }
+
+      const follow =
+        operation === 'tail' &&
+        'follow' in normalized.value.request &&
+        normalized.value.request.follow === true;
+      if (follow) {
+        await streamFileTailFollow({
+          req,
+          res,
+          nodeLinks: options.nodeLinks,
+          nodeId,
+          request: normalized.value.request,
+        });
         return;
       }
 
