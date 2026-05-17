@@ -285,6 +285,7 @@ export function useEventSocket({
         useSessionsStore.getState().refreshAll();
       },
       'session-backend-state-changed': (msg) => {
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
         useSessionsStore
           .getState()
           .handleBackendStateChanged(
@@ -314,6 +315,7 @@ export function useEventSocket({
         if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
       },
       'session-ended': (msg) => {
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
         const scope = eventSessionScope(msg);
         const repoPaths = resolveRepoPaths([
           msg.cwd ?? '',
@@ -354,6 +356,7 @@ export function useEventSocket({
         }
       },
       'session-activity-changed': (msg) => {
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
         useSessionsStore
           .getState()
           .handleActivityChanged(
@@ -375,9 +378,11 @@ export function useEventSocket({
       'tab-control-event': (msg) => {
         useSessionsStore.getState().handleTabControlEvent(msg.event);
         queryClient.invalidateQueries({ queryKey: ['session-interventions'] });
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
       },
       'node.status': (msg) => {
         applyHubNodeStatusEvent(queryClient, msg);
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
       },
       'account-telemetry': (msg) => {
         useTelemetryStore

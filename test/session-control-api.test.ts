@@ -3,6 +3,7 @@ import type { InterventionRecord } from '../shared/control-state.js';
 import {
   clampInterventionLimit,
   createAgentDrivenInitialControlState,
+  createHumanDrivenInitialControlState,
   evaluateControlCapabilityPlaceholder,
   toInterventionReadResponse,
   validateAgentHandBackAck,
@@ -60,6 +61,30 @@ describe('session control API helpers', () => {
       lastInterventionEventId: null,
       controlFreshness: 'fresh',
       controlReason: 'requested-initial-agent-driven',
+    });
+  });
+
+  it('creates fresh human-driven control state for routed terminal sessions', () => {
+    expect(
+      createHumanDrivenInitialControlState({
+        sessionId: 'remote-session-1',
+        displayName: 'mac node terminal',
+      })
+    ).toEqual({
+      controlMode: 'human-driven',
+      activeActors: [
+        {
+          kind: 'human',
+          id: 'browser-user',
+          displayName: 'mac node terminal',
+          sessionId: 'remote-session-1',
+        },
+      ],
+      lastInterventionAt: null,
+      lastInterventionBy: null,
+      lastInterventionEventId: null,
+      controlFreshness: 'fresh',
+      controlReason: 'routed-session-created',
     });
   });
 

@@ -429,10 +429,62 @@ export async function handBackSessionControl(input: {
   );
 }
 
-export async function sendSessionInput(
+function sendRoutedSessionInput(
+  nodeId: NodeId | string,
   sessionId: string,
   data: string
 ): Promise<{ ok: true }> {
+  return new Promise((resolve, reject) => {
+    const parsed = parseGlobalSessionId(sessionId);
+    const localSessionId = parsed?.localSessionId ?? sessionId;
+    const path =
+      '/nodes/' +
+      encodeURIComponent(nodeId) +
+      '/ws/sessions/' +
+      encodeURIComponent(localSessionId);
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(protocol + '//' + location.host + path);
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.close();
+      reject(new Error('timed out opening routed session input socket'));
+    }, 5_000);
+
+    socket.onopen = () => {
+      socket.send(data);
+      window.setTimeout(() => socket.close(1000, 'small input sent'), 25);
+      window.clearTimeout(timeout);
+      if (!settled) {
+        settled = true;
+        resolve({ ok: true });
+      }
+    };
+    socket.onerror = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      reject(new Error('failed to open routed session input socket'));
+    };
+    socket.onclose = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      reject(new Error('routed session input socket closed before sending'));
+    };
+  });
+}
+
+export async function sendSessionInput(
+  sessionId: string,
+  data: string,
+  nodeId?: NodeId | string
+): Promise<{ ok: true }> {
+  if (nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID) {
+    return sendRoutedSessionInput(nodeId, sessionId, data);
+  }
+
   const res = await fetch(
     `/sessions/${encodeURIComponent(sessionId)}/input`,
     {
@@ -896,13 +948,21 @@ export async function createSession(
 ): Promise<SessionSummary> {
   const { nodeId, ...sessionBody } = body;
   const sessionPath = sessionCreatePath(nodeId);
-  return parseSessionCreateResponse(
+  const session = await parseSessionCreateResponse(
     await postSessionCreate(sessionPath, sessionBody),
     {
       sessionPath,
       sessionBody,
     }
   );
+  if (typeof window !== 'undefined' && session.workContextId) {
+    window.dispatchEvent(
+      new CustomEvent('relay-active-work-changed', {
+        detail: { workContextId: session.workContextId, sessionId: session.id },
+      })
+    );
+  }
+  return session;
 }
 
 export async function killSession(

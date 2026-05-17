@@ -13,7 +13,10 @@ import {
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
-import { createAgentDrivenInitialControlState } from './session-control-api.js';
+import {
+  createAgentDrivenInitialControlState,
+  createHumanDrivenInitialControlState,
+} from './session-control-api.js';
 import type {
   NodeLinkChannelHandler,
   NodeLinkEnvelopeHandlerContext,
@@ -332,14 +335,18 @@ export function createNodeLinkRpcHost(
         return;
       }
       const { controlMode, ...createInput } = parsed;
-      if (controlMode === 'agent-driven') {
-        const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
-        createInput.id = sessionId;
-        (createInput as CreateParams).controlState = createAgentDrivenInitialControlState({
-          workerId: sessionId,
-          ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
-        });
-      }
+      const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
+      createInput.id = sessionId;
+      (createInput as CreateParams).controlState =
+        controlMode === 'agent-driven'
+          ? createAgentDrivenInitialControlState({
+              workerId: sessionId,
+              ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
+            })
+          : createHumanDrivenInitialControlState({
+              sessionId,
+              ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
+            });
       const result = localRelayNode.sessions.create(createInput as CreateParams);
       sendResultEnvelope(ctx, envelope, {
         session: sessionSummaryFromCreateResult(result),
