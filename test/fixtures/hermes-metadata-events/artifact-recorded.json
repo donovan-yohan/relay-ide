@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "eventId": "hmevt_556_artifact_pr",
+  "timestamp": "2026-05-17T08:05:00.000Z",
+  "source": {
+    "kind": "hermes-agent",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "runId": "run_1009",
+    "sessionId": "hermes_session_556"
+  },
+  "eventKind": "artifact.recorded",
+  "status": "completed",
+  "workContext": {
+    "workContextId": "wc:relay-ide:556",
+    "taskRefs": [
+      { "kind": "github-issue", "id": "556", "parentRef": "552", "status": "in-progress" },
+      { "kind": "github-pr", "id": "TBD", "status": "open" },
+      { "kind": "kanban-task", "id": "t_5a0c16a8", "status": "running" }
+    ],
+    "anchors": {
+      "node": { "nodeId": "local", "kind": "local", "online": true },
+      "session": {
+        "nodeId": "local",
+        "sessionId": "hermes_session_556",
+        "tabKind": "agent",
+        "cwd": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion"
+      },
+      "repo": {
+        "ownerRepo": "donovan-yohan/relay-ide",
+        "remoteUrl": "git@github.com:donovan-yohan/relay-ide.git",
+        "branchName": "spike/556-hermes-event-ingestion"
+      },
+      "worktree": {
+        "localPath": "/Users/donovanyohan/Documents/Programs/personal/relay-ide/.worktrees/556-hermes-event-ingestion",
+        "branchName": "spike/556-hermes-event-ingestion"
+      }
+    }
+  },
+  "actor": {
+    "kind": "agent",
+    "id": "kani-backend",
+    "profile": "kani-backend",
+    "runtime": "hermes",
+    "sessionId": "hermes_session_556"
+  },
+  "artifacts": [
+    {
+      "id": "artifact:556-pr",
+      "kind": "external",
+      "title": "Hermes metadata event ingestion spike PR",
+      "uri": "https://github.com/donovan-yohan/relay-ide/pull/TBD",
+      "mediaType": "text/html",
+      "producedByActorId": "kani-backend",
+      "producedAt": "2026-05-17T08:05:00.000Z",
+      "summary": "PR handle only; GitHub remains source of truth.",
+      "privacy": {
+        "classification": "public",
+        "retention": "project",
+        "rawPayloadStored": false,
+        "redaction": { "redacted": false, "strategy": "none", "classes": [] }
+      }
+    },
+    {
+      "id": "artifact:556-diagnostics",
+      "kind": "log-ref",
+      "title": "Build and test diagnostics pointer",
+      "path": ".relay/artifacts/556/verification-summary.txt",
+      "summary": "Pointer to bounded verification summary, not raw command output.",
+      "privacy": {
+        "classification": "internal",
+        "retention": "session",
+        "rawPayloadStored": false,
+        "redaction": { "redacted": true, "strategy": "summary", "classes": ["log", "path"] }
+      }
+    }
+  ],
+  "privacy": {
+    "classification": "internal",
+    "retention": "audit",
+    "rawPayloadStored": false,
+    "redaction": { "redacted": true, "strategy": "summary", "classes": ["artifact", "payload"] }
+  }
+}
