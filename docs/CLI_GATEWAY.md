@@ -248,7 +248,9 @@ The first #430 proof intentionally stops at one generated Claude-style tool/func
 
 The Hermes-facing smoke in `shared/cli-gateway-hermes-tools.ts` uses the same contract manifest to emit Hermes tool descriptors (`name`, `description`, `parameters`), MCP descriptors (`name`, `description`, `inputSchema`), and OpenAI-style function descriptors (`type: "function"`, `function.parameters`). Its smoke path adds the now-stable PTY exchange commands: `nodes.list`, `sessions.create`, `files.read`, `sessions.stream`, `sessions.input`, and `sessions.detach`.
 
-Both smoke runners are deliberately thin: generated definitions select stable v1 CLI commands, Relay's existing CLI gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, event subscriptions beyond PTY output, multi-session orchestration, File RPC write/delete/tail, arbitrary exec, stdin-backed adapter streaming, and private node-link shortcuts remain deferred.
+The Codex-facing smoke in `shared/cli-gateway-codex-tools.ts` derives the same command subset from the v1 manifest and emits Codex/OpenAI-compatible function descriptors in both common shapes: Chat Completions-style nested tools (`type: "function"`, `function.parameters`) and Responses-style flat function tools (`type: "function"`, `name`, `parameters`). Its fake hub/node example runs only public `relay-ide v1 ... --json` commands: `nodes.list`, scoped `sessions.create`, read-only `files.read`, bounded `sessions.stream`, `sessions.input`, and descriptor-only `sessions.detach`.
+
+These smoke runners are deliberately thin: generated definitions select stable v1 CLI commands, Relay's existing CLI gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, Codex runtime packaging, event subscriptions beyond PTY output, multi-session orchestration, File RPC write/delete/tail, arbitrary exec, stdin-backed adapter streaming, and private node-link shortcuts remain deferred.
 
 ## Deferred work
 
