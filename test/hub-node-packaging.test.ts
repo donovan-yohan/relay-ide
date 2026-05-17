@@ -304,7 +304,16 @@ describe('hub/node packaging decision', () => {
     const configPath = writeHubConfig();
     const oldToken = process.env['RELAY_IDE_BROWSER_TOKEN'];
     process.env['RELAY_IDE_BROWSER_TOKEN'] = 'browser-secret-token';
-    const node = sampleHubNode();
+    const node = sampleHubNode({
+      debug: {
+        authHeader: 'Bearer upstream-bearer-secret',
+        token: 'node-token-secret',
+        pin: '123456',
+        pairToken: 'pair_node_secret',
+        password: 'password-secret',
+        secret: 'secret_should-not-log',
+      },
+    });
     const requests = stubHubFetch([{ pathName: '/nodes', body: { nodes: [node] } }]);
     let stdout = '';
     const stdoutSpy = vi
@@ -324,8 +333,23 @@ describe('hub/node packaging decision', () => {
       const jsonResult = await runCli(['hub', 'nodes', '--json', '--config', configPath]);
       expect(jsonResult.exitCode).toBe(0);
       const payload = JSON.parse(stdout) as { count: number; nodes: Array<Record<string, unknown>> };
+      const parsedNode = payload.nodes[0] as { debug?: Record<string, unknown> };
       expect(payload.count).toBe(1);
       expect(payload.nodes[0]?.['nodeId']).toBe('node_alpha');
+      expect(parsedNode.debug).toMatchObject({
+        authHeader: 'Bearer …redacted',
+        token: '…redacted',
+        pin: '…redacted',
+        pairToken: '…redacted',
+        password: '…redacted',
+        secret: '…redacted',
+      });
+      expect(stdout).not.toContain('browser-secret-token');
+      expect(stdout).not.toContain('upstream-bearer-secret');
+      expect(stdout).not.toContain('node-token-secret');
+      expect(stdout).not.toContain('pair_node_secret');
+      expect(stdout).not.toContain('password-secret');
+      expect(stdout).not.toContain('secret_should-not-log');
       expect(requests).toEqual(['/nodes', '/nodes']);
     } finally {
       stdoutSpy.mockRestore();
@@ -407,7 +431,18 @@ describe('hub/node packaging decision', () => {
       {
         pathName: '/hub/nodes/node_no_logs/logs?lines=0',
         status: 404,
-        body: { error: { code: 'NODE_UNSUPPORTED', message: 'logs.tail missing', token: 'node-secret' } },
+        body: {
+          error: {
+            code: 'NODE_UNSUPPORTED',
+            message: 'logs.tail missing',
+            authHeader: 'Bearer upstream-doctor-bearer-secret',
+            token: 'node-secret',
+            pin: '654321',
+            pairToken: 'pair_doctor_secret',
+            password: 'doctor-password-secret',
+            secret: 'secret_doctor_should-not-log',
+          },
+        },
       },
     ]);
     let stdout = '';
@@ -420,13 +455,33 @@ describe('hub/node packaging decision', () => {
     try {
       const result = await runCli(['hub', 'doctor', '--json', '--config', configPath]);
       expect(result.exitCode).toBe(1);
-      const payload = JSON.parse(stdout) as { checks: Array<{ reason?: string }> };
+      const payload = JSON.parse(stdout) as {
+        checks: Array<{
+          reason?: string;
+          details?: { body?: { error?: Record<string, unknown> } };
+        }>;
+      };
       const reasons = payload.checks.map((check) => check.reason);
+      const missingLogError = payload.checks.find(
+        (check) => check.reason === 'MISSING_LOG_SUPPORT'
+      )?.details?.body?.error;
       expect(reasons).toEqual(
         expect.arrayContaining(['NODE_STALE', 'VERSION_SKEW', 'UNSUPPORTED_CAPABILITY', 'MISSING_LOG_SUPPORT'])
       );
+      expect(missingLogError).toMatchObject({
+        authHeader: 'Bearer …redacted',
+        token: '…redacted',
+        pin: '…redacted',
+        pairToken: '…redacted',
+        password: '…redacted',
+        secret: '…redacted',
+      });
       expect(stdout).not.toContain('browser-secret-token');
+      expect(stdout).not.toContain('upstream-doctor-bearer-secret');
       expect(stdout).not.toContain('node-secret');
+      expect(stdout).not.toContain('pair_doctor_secret');
+      expect(stdout).not.toContain('doctor-password-secret');
+      expect(stdout).not.toContain('secret_doctor_should-not-log');
     } finally {
       stdoutSpy.mockRestore();
       vi.unstubAllGlobals();

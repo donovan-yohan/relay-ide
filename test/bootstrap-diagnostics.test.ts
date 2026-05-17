@@ -141,6 +141,39 @@ describe('bootstrap command generation and diagnostics', () => {
     expect(redacted).toContain('Bearer …redacted');
   });
 
+  it('keeps JSON string redaction parseable for embedded bearer and named secret values', () => {
+    const raw = JSON.stringify({
+      authHeader: 'Bearer upstream-bearer-secret',
+      nested: {
+        token: 'plain-token-secret',
+        pin: '123456',
+        pairToken: 'pair_json_token',
+        password: 'password-secret',
+        secret: 'secret_should-not-log',
+      },
+    });
+
+    const redacted = redactBootstrapSecrets(raw);
+    const parsed = JSON.parse(redacted) as {
+      authHeader: string;
+      nested: Record<string, string>;
+    };
+
+    expect(parsed.authHeader).toBe('Bearer …redacted');
+    expect(Object.values(parsed.nested)).toEqual([
+      '…redacted',
+      '…redacted',
+      '…redacted',
+      '…redacted',
+      '…redacted',
+    ]);
+    expect(redacted).not.toContain('upstream-bearer-secret');
+    expect(redacted).not.toContain('plain-token-secret');
+    expect(redacted).not.toContain('pair_json_token');
+    expect(redacted).not.toContain('password-secret');
+    expect(redacted).not.toContain('secret_should-not-log');
+  });
+
   it('defines the diagnostics taxonomy required for bootstrap triage', () => {
     expect(BOOTSTRAP_DIAGNOSTICS.map((diagnostic) => diagnostic.code)).toEqual([
       'BOOTSTRAP_UNREACHABLE',
