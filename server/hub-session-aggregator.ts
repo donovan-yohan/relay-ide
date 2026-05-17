@@ -31,9 +31,44 @@ export function isLocallyOwnedSession(session: SessionSummary): boolean {
 
 // Per-node RPC timeout for sessions.list aggregation. Tighter than the
 // 10s HubNodeLinkManager default because GET /sessions is on the
-// browser refresh path and slow nodes must not block the response —
-// we drop them instead of stalling every other tab.
+// browser refresh path and slow nodes must not block the response.
 const PER_NODE_TIMEOUT_MS = 3_000;
+const REMOTE_SESSION_CACHE_TTL_MS = 60_000;
+
+export interface RemoteSessionReadModelCache {
+  get(nodeId: string, nowMs: number, maxAgeMs: number): SessionSummary[] | null;
+  set(nodeId: string, sessions: SessionSummary[], observedAtMs: number): void;
+  clear(nodeId: string): void;
+}
+
+interface CachedRemoteSessions {
+  observedAtMs: number;
+  sessions: SessionSummary[];
+}
+
+export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache {
+  const entries = new Map<string, CachedRemoteSessions>();
+  return {
+    get(nodeId, nowMs, maxAgeMs) {
+      const cached = entries.get(nodeId);
+      if (!cached) return null;
+      if (nowMs - cached.observedAtMs > maxAgeMs) {
+        entries.delete(nodeId);
+        return null;
+      }
+      return cached.sessions.map((session) => ({ ...session }));
+    },
+    set(nodeId, sessions, observedAtMs) {
+      entries.set(nodeId, {
+        observedAtMs,
+        sessions: sessions.map((session) => ({ ...session })),
+      });
+    },
+    clear(nodeId) {
+      entries.delete(nodeId);
+    },
+  };
+}
 
 export interface AggregateRemoteSessionsDeps {
   registry: HubNodeRegistry;
@@ -41,34 +76,46 @@ export interface AggregateRemoteSessionsDeps {
   logger?: Logger;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
   workContextStore?: WorkContextStore;
+  readModelCache?: RemoteSessionReadModelCache;
   perNodeTimeoutMs?: number;
+  readModelCacheTtlMs?: number;
+  now?: () => number;
 }
 
 /**
  * Fetch and aggregate `sessions.list` results from every online paired
  * node with an active reverse link. Returns a flat array of
  * `SessionSummary` stamped with `nodeId`. Per-node failures (offline,
- * RPC timeout, malformed payload) are logged and dropped from the
- * result; the aggregate never throws.
+ * RPC timeout, malformed payload) are logged; callers that supply a
+ * read-model cache get the last recent successful list for transient
+ * failures, otherwise the failed node is dropped. Typed NODE_OFFLINE
+ * failures are not masked by the cache. The aggregate never throws.
  *
- * Offline / stale / revoked nodes are skipped entirely. Sessions from
- * a node that drops mid-fetch effectively disappear from the next
- * `GET /sessions` cycle, matching how routed PTY sockets close on
- * node-link loss.
+ * Offline / stale / revoked nodes are skipped entirely and their cached
+ * read model is cleared. Successful empty session lists replace the
+ * cache, so ended sessions stop appearing once the owning node can answer
+ * authoritatively.
  */
 export async function aggregateRemoteSessions(
   deps: AggregateRemoteSessionsDeps
 ): Promise<SessionSummary[]> {
   const logger = deps.logger ?? createLogger('hub-session-agg');
   const timeoutMs = deps.perNodeTimeoutMs ?? PER_NODE_TIMEOUT_MS;
+  const cacheTtlMs = deps.readModelCacheTtlMs ?? REMOTE_SESSION_CACHE_TTL_MS;
+  const nowMs = deps.now?.() ?? Date.now();
   const envelopes = deps.sessionEnvelopes ?? sessionEnvelopeRegistry;
 
-  const candidates = deps.registry
-    .listNodes()
-    .filter(
-      (node) =>
-        node.status === 'online' && deps.nodeLinks.hasActiveNode(node.nodeId)
-    );
+  const nodes = deps.registry.listNodes();
+  const candidates = nodes.filter(
+    (node) =>
+      node.status === 'online' && deps.nodeLinks.hasActiveNode(node.nodeId)
+  );
+  if (deps.readModelCache) {
+    const candidateIds = new Set(candidates.map((node) => node.nodeId));
+    for (const node of nodes) {
+      if (!candidateIds.has(node.nodeId)) deps.readModelCache.clear(node.nodeId);
+    }
+  }
 
   if (candidates.length === 0) return [];
 
@@ -90,27 +137,66 @@ export async function aggregateRemoteSessions(
     const result = results[i];
     if (!result) continue;
     if (result.status === 'rejected') {
-      const reason =
-        result.reason instanceof HubNodeLinkError
-          ? `${result.reason.relayNodeError.code}: ${result.reason.relayNodeError.message}`
-          : result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason ?? 'unknown');
-      logger.warn(
-        `sessions.list failed for node ${candidate.nodeId}: ${reason}`
+      const reason = formatSessionListFailure(result.reason);
+      const cached = getCachedSessionsForFailure(
+        deps,
+        candidate.nodeId,
+        result.reason,
+        nowMs,
+        cacheTtlMs
       );
+      if (cached) {
+        logger.warn(
+          `sessions.list failed for node ${candidate.nodeId}: ${reason}; using cached read model`
+        );
+        aggregated.push(
+          ...cached.map((session) =>
+            withWorkContextMetadata(deps.workContextStore, session)
+          )
+        );
+      } else {
+        logger.warn(
+          `sessions.list failed for node ${candidate.nodeId}: ${reason}`
+        );
+      }
       continue;
     }
+    const scopedSessions: SessionSummary[] = [];
     for (const session of result.value.sessions) {
       const scoped = scopedNodeSession(result.value.nodeId, session);
       const sessionEnvelope = envelopes.upsert(scoped.sessionEnvelope!);
-      aggregated.push(
-        withWorkContextMetadata(deps.workContextStore, { ...scoped, sessionEnvelope })
-      );
+      scopedSessions.push({ ...scoped, sessionEnvelope });
     }
+    deps.readModelCache?.set(candidate.nodeId, scopedSessions, nowMs);
+    aggregated.push(
+      ...scopedSessions.map((session) =>
+        withWorkContextMetadata(deps.workContextStore, session)
+      )
+    );
   }
 
   return aggregated;
+}
+
+function formatSessionListFailure(reason: unknown): string {
+  if (reason instanceof HubNodeLinkError) {
+    return `${reason.relayNodeError.code}: ${reason.relayNodeError.message}`;
+  }
+  if (reason instanceof Error) return reason.message;
+  return String(reason ?? 'unknown');
+}
+
+function getCachedSessionsForFailure(
+  deps: AggregateRemoteSessionsDeps,
+  nodeId: string,
+  reason: unknown,
+  nowMs: number,
+  cacheTtlMs: number
+): SessionSummary[] | null {
+  if (reason instanceof HubNodeLinkError && reason.relayNodeError.code === 'NODE_OFFLINE') {
+    return null;
+  }
+  return deps.readModelCache?.get(nodeId, nowMs, cacheTtlMs) ?? null;
 }
 
 function withWorkContextMetadata(
