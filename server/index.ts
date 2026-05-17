@@ -2230,6 +2230,107 @@ async function main(): Promise<void> {
     res.json({ ok: true, events: result.events, ackedHumanInterventions: result.ackedHumanInterventions });
   });
 
+  app.post('/sessions/:id/input', requireScopedSessionAuth, (req, res) => {
+    const decision = capabilityDecisionFromRequest(req, CONTROL_SESSION_CAPABILITY);
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+
+    const id = req.params['id'] as string;
+    const body =
+      typeof req.body === 'object' && req.body !== null
+        ? (req.body as Record<string, unknown>)
+        : {};
+    const data = body['data'];
+    if (typeof data !== 'string' || data.length === 0) {
+      res.status(400).json({ error: 'data must be a non-empty string' });
+      return;
+    }
+    if (data.length > 1000) {
+      res.status(413).json({ error: 'small input is limited to 1000 characters' });
+      return;
+    }
+
+    const session = localRelayNode.sessions
+      .list()
+      .find((candidate) => candidate.id === id);
+    if (!session) {
+      res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          reasonCode: 'SESSION_NOT_FOUND',
+          message: 'session was not found or is not locally writable',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    if (session.status === 'disconnected') {
+      res.status(409).json({
+        error: {
+          code: 'SESSION_CONFLICT',
+          reasonCode: 'SESSION_DISCONNECTED',
+          message: 'cannot send input to a disconnected session',
+          retryable: false,
+          details: { sessionId: id },
+        },
+      });
+      return;
+    }
+    if (session.controlFreshness === 'stale') {
+      res.status(409).json({
+        error: {
+          code: 'SESSION_CONFLICT',
+          reasonCode: 'CONTROL_STATE_STALE',
+          message: 'cannot send input from stale control state',
+          retryable: false,
+          details: { sessionId: id },
+        },
+      });
+      return;
+    }
+    if (session.controlFreshness !== 'fresh') {
+      res.status(409).json({
+        error: {
+          code: 'SESSION_CONFLICT',
+          reasonCode: 'CONTROL_STATE_UNKNOWN',
+          message: 'cannot send input from unknown control state',
+          retryable: false,
+          details: { sessionId: id },
+        },
+      });
+      return;
+    }
+    if (session.mode === 'web') {
+      res.status(409).json({
+        error: {
+          code: 'SESSION_CONFLICT',
+          reasonCode: 'CONTROL_STATE_UNKNOWN',
+          message: 'small input is only supported for PTY sessions',
+          retryable: false,
+          details: { sessionId: id },
+        },
+      });
+      return;
+    }
+
+    try {
+      localRelayNode.sessions.write(id, data);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          reasonCode: 'SESSION_NOT_FOUND',
+          message: err instanceof Error ? err.message : 'session was not found',
+          retryable: false,
+        },
+      });
+    }
+  });
+
   // GET /repos — scan root dirs for repos
   app.get('/repos', requireAuth, async (_req, res) => {
     const freshConfig = getConfig();

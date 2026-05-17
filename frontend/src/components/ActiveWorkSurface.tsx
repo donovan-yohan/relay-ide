@@ -1,14 +1,19 @@
-import { useMemo, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useCallback, useState, type FormEvent } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type {
   WorkContextActiveGroup,
   WorkContextSessionSummary,
 } from '../lib/types.js';
-import { fetchActiveWork } from '../lib/api.js';
+import { fetchActiveWork, sendSessionInput } from '../lib/api.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
+import {
+  activeWorkAttentionPriority,
+  activeWorkMobileControlState,
+  activeWorkStateLabel,
+} from '../lib/active-work-control.js';
 import { TuiButton } from './TuiButton.js';
 import './ActiveWorkSurface.css';
 
@@ -34,7 +39,7 @@ function dateLabel(value?: string): string {
 
 function taskLabel(group: WorkContextActiveGroup): string {
   const context = group.context;
-  const firstTask = context?.tasks[0];
+  const firstTask = context?.tasks?.[0];
   return (
     context?.title ??
     firstTask?.title ??
@@ -83,38 +88,22 @@ function actorLabels(group: WorkContextActiveGroup): string[] {
   return labels;
 }
 
-function statusPriority(group: WorkContextActiveGroup): number {
-  const hasPrompt = group.sessions.some(
-    (session) => session.agentState === 'permission-prompt'
-  );
-  if (hasPrompt) return 0;
-  if (group.node.status === 'offline' || group.node.status === 'revoked')
-    return 1;
-  if (group.node.status === 'stale' || group.staleReadModel) return 2;
-  if (group.sessions.some((session) => session.agentState === 'processing'))
-    return 3;
-  if (group.sessions.some((session) => session.live)) return 4;
-  return 5;
-}
-
-function stateLabel(group: WorkContextActiveGroup): string {
-  if (
-    group.sessions.some((session) => session.agentState === 'permission-prompt')
-  )
-    return 'needs approval';
-  if (group.node.status === 'offline' || group.node.status === 'revoked')
-    return 'offline';
-  if (group.node.status === 'stale') return 'stale';
-  if (group.staleReadModel) return 'stale read model';
-  if (group.sessions.some((session) => session.agentState === 'processing'))
-    return 'running';
-  if (group.sessions.some((session) => session.agentState === 'error'))
-    return 'error';
-  if (group.sessions.some((session) => session.live)) return 'live';
-  return 'inactive';
-}
-
 function latestStatus(group: WorkContextActiveGroup): string {
+  const prompt = group.sessions.find(
+    (session) =>
+      session.agentState === 'permission-prompt' ||
+      session.agentState === 'waiting-for-input'
+  );
+  if (prompt?.agentState === 'permission-prompt') {
+    return prompt.currentActivity?.detail
+      ? `approval requested · ${prompt.currentActivity.detail}`
+      : 'approval requested';
+  }
+  if (prompt?.agentState === 'waiting-for-input') {
+    return prompt.currentActivity?.detail
+      ? `waiting for input · ${prompt.currentActivity.detail}`
+      : 'waiting for input';
+  }
   const active = group.sessions.find((session) => session.currentActivity);
   if (active?.currentActivity) {
     const detail = active.currentActivity.detail
@@ -133,7 +122,7 @@ function latestStatus(group: WorkContextActiveGroup): string {
       'human';
     return `latest intervention by ${by} · ${dateLabel(intervention.lastInterventionAt)}`;
   }
-  const artifact = group.context?.artifacts[0];
+  const artifact = group.context?.artifacts?.[0];
   if (artifact?.summary) return artifact.summary;
   const session = group.sessions[0];
   if (session?.agentState)
@@ -143,25 +132,14 @@ function latestStatus(group: WorkContextActiveGroup): string {
     : 'session has no work context yet';
 }
 
-function controlDisabledReason(
-  group: WorkContextActiveGroup,
-  session?: WorkContextSessionSummary
-): string | null {
-  if (!session) return 'no session selected';
-  if (!session.live) return 'last-known session only';
-  if (group.node.status !== 'online') return `${group.node.status} node`;
-  if (group.staleReadModel) return 'stale read model';
-  return null;
-}
-
 function repoBindingLabel(
   group: WorkContextActiveGroup,
   session: WorkContextSessionSummary
 ): string | null {
-  const repo = session.repoName ?? group.context?.anchors.repo?.ownerRepo;
-  const repoPath = session.repoPath ?? group.context?.anchors.repo?.localPath;
+  const repo = session.repoName ?? group.context?.anchors?.repo?.ownerRepo;
+  const repoPath = session.repoPath ?? group.context?.anchors?.repo?.localPath;
   if (!repo && !repoPath) return null;
-  const branch = session.branchName ?? group.context?.anchors.repo?.branchName;
+  const branch = session.branchName ?? group.context?.anchors?.repo?.branchName;
   return [repo ?? repoPath, branch].filter(Boolean).join(' · ');
 }
 
@@ -185,18 +163,28 @@ function sessionMeta(
 }
 
 function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
+  const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
+  const [inputValue, setInputValue] = useState('');
+  const [inputStatus, setInputStatus] = useState<string | null>(null);
   const primarySession =
-    group.sessions.find((session) => session.live) ?? group.sessions[0];
-  const disabledReason = controlDisabledReason(group, primarySession);
+    group.sessions.find(
+      (session) =>
+        session.live &&
+        (session.agentState === 'permission-prompt' ||
+          session.agentState === 'waiting-for-input')
+    ) ??
+    group.sessions.find((session) => session.live) ??
+    group.sessions[0];
+  const controlState = activeWorkMobileControlState(group, primarySession);
   const actors = actorLabels(group);
   const refs = taskRefs(group);
   const artifacts = group.context?.artifacts ?? [];
 
   const handleAttach = useCallback(() => {
-    if (!primarySession || disabledReason) return;
+    if (!primarySession || controlState.attachDisabledReason) return;
     const live = sessions.find(
       (session) =>
         session.id === primarySession.id &&
@@ -211,12 +199,38 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
         : (primarySession.globalSessionId ?? primarySession.id)
     );
   }, [
-    disabledReason,
+    controlState.attachDisabledReason,
     primarySession,
     sessions,
     setActiveRepoPath,
     setActiveSessionId,
   ]);
+
+  const handleSmallInput = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const value = inputValue.trimEnd();
+      if (!primarySession || controlState.smallInputDisabledReason || !value) {
+        return;
+      }
+      setInputStatus('sending...');
+      try {
+        await sendSessionInput(primarySession.id, `${value}\r`);
+        setInputValue('');
+        setInputStatus('sent · recorded as control intervention');
+        void queryClient.invalidateQueries({ queryKey: ['active-work'] });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setInputStatus(`failed: ${message}`);
+      }
+    },
+    [
+      controlState.smallInputDisabledReason,
+      inputValue,
+      primarySession,
+      queryClient,
+    ]
+  );
 
   return (
     <article className="active-work-card" data-node-status={group.node.status}>
@@ -224,7 +238,9 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
       <div className="active-work-card__main">
         <div className="active-work-card__header">
           <div>
-            <div className="active-work-card__eyebrow">{stateLabel(group)}</div>
+            <div className="active-work-card__eyebrow">
+              {activeWorkStateLabel(group)}
+            </div>
             <h3>{taskLabel(group)}</h3>
           </div>
           <div className="active-work-node">
@@ -342,31 +358,72 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
           <TuiButton
             size="sm"
             variant="info"
-            disabled={!!disabledReason}
-            title={disabledReason ?? 'attach to live session'}
+            disabled={!!controlState.attachDisabledReason}
+            title={controlState.attachDisabledReason ?? 'attach to live session'}
             onClick={handleAttach}
           >
             attach
+          </TuiButton>
+          <form className="active-work-input" onSubmit={handleSmallInput}>
+            <label className="active-work-label" htmlFor={`active-work-input-${group.id}`}>
+              {controlState.smallInputLabel}
+            </label>
+            <input
+              id={`active-work-input-${group.id}`}
+              value={inputValue}
+              onChange={(event) => setInputValue(event.target.value)}
+              disabled={!!controlState.smallInputDisabledReason}
+              placeholder={controlState.smallInputPlaceholder}
+              maxLength={1000}
+              aria-describedby={`active-work-input-status-${group.id}`}
+            />
+            <TuiButton
+              size="sm"
+              variant="primary"
+              type="submit"
+              disabled={
+                !!controlState.smallInputDisabledReason ||
+                inputValue.trim().length === 0
+              }
+              title={
+                controlState.smallInputDisabledReason ??
+                'send audited small input to the live PTY session'
+              }
+            >
+              send
+            </TuiButton>
+          </form>
+          <TuiButton
+            size="sm"
+            variant="danger"
+            disabled
+            title={controlState.destructiveDisabledReason}
+          >
+            kill
           </TuiButton>
           <TuiButton
             size="sm"
             variant="ghost"
             disabled
-            title={disabledReason ?? 'small input is #559 scope'}
+            title="pause/retry require explicit control capability contracts before mobile can route them"
           >
-            small input
+            pause/retry
           </TuiButton>
-          <TuiButton
-            size="sm"
-            variant="danger"
-            disabled
-            title={disabledReason ?? 'pause/kill requires capability contract'}
-          >
-            interrupt
-          </TuiButton>
-          {disabledReason && (
+          {(controlState.attachDisabledReason ||
+            controlState.smallInputDisabledReason) && (
             <span className="active-work-disabled-reason">
-              controls disabled: {disabledReason}
+              controls disabled:{' '}
+              {controlState.attachDisabledReason ??
+                controlState.smallInputDisabledReason}
+            </span>
+          )}
+          {inputStatus && (
+            <span
+              id={`active-work-input-status-${group.id}`}
+              className="active-work-disabled-reason"
+              role="status"
+            >
+              {inputStatus}
             </span>
           )}
         </div>
@@ -389,11 +446,14 @@ export default function ActiveWorkSurface() {
   });
 
   const groups = useMemo(
-    () => [...data].sort((a, b) => statusPriority(a) - statusPriority(b)),
+    () =>
+      [...data].sort(
+        (a, b) => activeWorkAttentionPriority(a) - activeWorkAttentionPriority(b)
+      ),
     [data]
   );
   const attentionCount = groups.filter(
-    (group) => statusPriority(group) <= 2
+    (group) => activeWorkAttentionPriority(group) <= 2
   ).length;
 
   if (isLoading)

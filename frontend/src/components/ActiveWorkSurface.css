@@ -248,6 +248,41 @@
   padding-top: 2px;
 }
 
+.active-work-input {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  min-width: min(100%, 320px);
+  flex: 1 1 320px;
+}
+
+.active-work-input .active-work-label {
+  grid-column: 1 / -1;
+}
+
+.active-work-input input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 0 8px;
+}
+
+.active-work-input input:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+.active-work-input input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .active-work-disabled-reason {
   min-height: 24px;
   display: inline-flex;
@@ -273,15 +308,30 @@
 
   .active-work-grid {
     grid-template-columns: minmax(0, 1fr);
+    order: 2;
   }
 
   .active-work-controls {
     position: sticky;
     bottom: 0;
+    order: 3;
     padding-top: 8px;
     padding-bottom: 8px;
     background: var(--bg);
     border-top: 1px solid var(--border);
+  }
+
+  .active-work-artifacts {
+    order: 4;
+  }
+
+  .active-work-sessions {
+    order: 5;
+  }
+
+  .active-work-input {
+    grid-template-columns: minmax(0, 1fr);
+    flex-basis: 100%;
   }
 
   .active-work-controls .tui-btn {
