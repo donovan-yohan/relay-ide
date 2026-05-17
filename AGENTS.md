@@ -28,6 +28,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | --------------- | ---------------------------------- | --------------------------------------------------------------------------- |
 | Docs index      | `docs/README.md`                   | Current source-of-truth docs vs historical plans/spikes                     |
 | Architecture    | `docs/ARCHITECTURE.md`             | Module boundaries, data flow, API routes, ADR rules                         |
+| Workbench       | `docs/WORKBENCH_BOUNDARY.md`       | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance          |
 | Visual Design   | `DESIGN.md`                        | Product framing, TUI aesthetic, colors, spacing, buttons                    |
 | Design          | `docs/DESIGN.md`                   | Backend patterns, auth flow, PTY management, session types                  |
 | Frontend        | `docs/FRONTEND.md`                 | React 19 components, state management (Zustand + TanStack Query)            |
@@ -39,7 +40,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Hub/node pkg    | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands    |
 | Node bootstrap  | `docs/RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
 | Federated dev   | `docs/FEDERATED_DEV.md`            | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
-| Federated Relay | `docs/federated-relay.md`           | Hub/node architecture, pairing, routing, ADRs                               |
+| Federated Relay | `docs/federated-relay.md`          | Hub/node architecture, pairing, routing, ADRs                               |
 | CLI gateway     | `docs/CLI_GATEWAY.md`              | Versioned `relay-ide v1 ... --json` contract for external agent adapters    |
 | Learnings       | `docs/LEARNINGS.md`                | Persistent cross-session learnings                                          |
 | Project skills  | `.chalk/skills/<name>/SKILL.md`    | Repo-local skills (see §Skills)                                             |
