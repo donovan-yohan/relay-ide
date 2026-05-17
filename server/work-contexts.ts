@@ -281,16 +281,16 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
   );
 
   function write(context: WorkContext): WorkContext {
-    assertValidPersistableContext(context);
+    const persistable = canonicalizePersistableContext(context);
     upsertContext.run({
-      id: context.id,
-      title: context.title ?? null,
-      source: context.source,
-      contextJson: JSON.stringify(context),
-      createdAt: context.createdAt,
-      updatedAt: context.updatedAt,
+      id: persistable.id,
+      title: persistable.title ?? null,
+      source: persistable.source,
+      contextJson: JSON.stringify(persistable),
+      createdAt: persistable.createdAt,
+      updatedAt: persistable.updatedAt,
     });
-    return context;
+    return persistable;
   }
 
   function mustGet(id: WorkContextId): WorkContext {
@@ -312,7 +312,10 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
     create(input: WorkContextCreateInput = {}) {
       const now = new Date().toISOString();
       const context = input.context
-        ? { ...input.context, updatedAt: input.context.updatedAt || now }
+        ? canonicalizePersistableContext({
+            ...input.context,
+            updatedAt: input.context.updatedAt || now,
+          })
         : buildContextFromInput(input, now);
       return write(context);
     },
@@ -327,9 +330,10 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
 
     update(id: WorkContextId, patch: WorkContextPatchInput) {
       const existing = mustGet(id);
+      const allowedPatch = pickWorkContextPatch(patch);
       const updated: WorkContext = {
         ...existing,
-        ...patch,
+        ...allowedPatch,
         id: existing.id,
         schemaVersion: existing.schemaVersion,
         createdAt: existing.createdAt,
@@ -339,6 +343,9 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
     },
 
     linkContexts(sourceId: WorkContextId, targetId: WorkContextId, relationship = 'related') {
+      if (sourceId === targetId) {
+        throw new WorkContextStoreError(400, 'work_context_self_link_not_allowed');
+      }
       const source = mustGet(sourceId);
       mustGet(targetId);
       const related = new Set(source.relatedContextRefs ?? []);
@@ -442,7 +449,7 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     try {
       const context = deps.store.update(
         req.params['id'] ?? '',
-        req.body as WorkContextPatchInput
+        pickWorkContextPatch(req.body as WorkContextPatchInput)
       );
       res.json({ workContext: context });
     } catch (err) {
@@ -483,10 +490,7 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
       return;
     }
     const sessions = await deps.getSessions();
-    const liveSession = sessions.find(
-      (session) =>
-        session.id === body.sessionId || session.globalSessionId === body.sessionId
-    );
+    const liveSession = findLiveSessionForAssociation(sessions, body);
     const association: SessionAssociationInput = liveSession
       ? { session: liveSession }
       : { sessionRef: sessionRefFromBody(body as SessionRefBody) };
@@ -564,6 +568,218 @@ function assertValidPersistableContext(context: WorkContext): void {
   }
 }
 
+function canonicalizePersistableContext(context: WorkContext): WorkContext {
+  assertValidPersistableContext(context);
+  const canonical: WorkContext = {
+    schemaVersion: context.schemaVersion,
+    id: context.id,
+    ...(context.title ? { title: context.title } : {}),
+    createdAt: context.createdAt,
+    updatedAt: context.updatedAt,
+    source: context.source,
+    anchors: pickAnchors(context.anchors),
+    actors: context.actors.map(pickActor),
+    tasks: context.tasks.map(pickTask),
+    artifacts: context.artifacts.map(pickArtifact),
+    auditRefs: context.auditRefs.map(pickAuditRef),
+    capabilityGrants: context.capabilityGrants.map(pickCapabilityGrant),
+    ...(context.relatedContextRefs
+      ? { relatedContextRefs: [...context.relatedContextRefs] }
+      : {}),
+    privacy: pickPrivacy(context.privacy),
+  };
+  assertValidPersistableContext(canonical);
+  return canonical;
+}
+
+function pickWorkContextPatch(patch: WorkContextPatchInput): WorkContextPatchInput {
+  return {
+    ...(patch.title !== undefined ? { title: patch.title } : {}),
+    ...(patch.source !== undefined ? { source: patch.source } : {}),
+    ...(patch.anchors !== undefined ? { anchors: patch.anchors } : {}),
+    ...(patch.actors !== undefined ? { actors: patch.actors } : {}),
+    ...(patch.tasks !== undefined ? { tasks: patch.tasks } : {}),
+    ...(patch.artifacts !== undefined ? { artifacts: patch.artifacts } : {}),
+    ...(patch.auditRefs !== undefined ? { auditRefs: patch.auditRefs } : {}),
+    ...(patch.capabilityGrants !== undefined
+      ? { capabilityGrants: patch.capabilityGrants }
+      : {}),
+    ...(patch.relatedContextRefs !== undefined
+      ? { relatedContextRefs: patch.relatedContextRefs }
+      : {}),
+    ...(patch.privacy !== undefined ? { privacy: patch.privacy } : {}),
+  };
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, child]) => child !== undefined)
+  ) as T;
+}
+
+function pickPrivacy(privacy: WorkContext['privacy']): WorkContext['privacy'] {
+  return {
+    classification: privacy.classification,
+    retention: privacy.retention,
+    rawPayloadStored: privacy.rawPayloadStored,
+    redaction: {
+      redacted: privacy.redaction.redacted,
+      strategy: privacy.redaction.strategy,
+      classes: [...privacy.redaction.classes],
+      ...(privacy.redaction.byteCount !== undefined
+        ? { byteCount: privacy.redaction.byteCount }
+        : {}),
+      ...(privacy.redaction.charCount !== undefined
+        ? { charCount: privacy.redaction.charCount }
+        : {}),
+      ...(privacy.redaction.lineCount !== undefined
+        ? { lineCount: privacy.redaction.lineCount }
+        : {}),
+      ...(privacy.redaction.hashSha256
+        ? { hashSha256: privacy.redaction.hashSha256 }
+        : {}),
+      ...(privacy.redaction.preview ? { preview: privacy.redaction.preview } : {}),
+    },
+    ...(privacy.policyRefs ? { policyRefs: [...privacy.policyRefs] } : {}),
+  };
+}
+
+function pickAnchors(anchors: WorkContext['anchors']): WorkContext['anchors'] {
+  const node = anchors.node
+    ? withoutUndefined({
+        nodeId: anchors.node.nodeId,
+        kind: anchors.node.kind,
+        displayName: anchors.node.displayName,
+        online: anchors.node.online,
+      })
+    : undefined;
+  const session = anchors.session
+    ? withoutUndefined({
+        nodeId: anchors.session.nodeId,
+        sessionId: anchors.session.sessionId,
+        globalSessionId: anchors.session.globalSessionId,
+        tabId: anchors.session.tabId,
+        tabKind: anchors.session.tabKind,
+        cwd: anchors.session.cwd,
+      })
+    : undefined;
+  const project = anchors.project
+    ? withoutUndefined({
+        workspaceId: anchors.project.workspaceId,
+        projectId: anchors.project.projectId,
+        instanceId: anchors.project.instanceId,
+        benchId: anchors.project.benchId,
+      })
+    : undefined;
+  const repo = anchors.repo
+    ? withoutUndefined({
+        repoIdentity: anchors.repo.repoIdentity,
+        repoInstanceId: anchors.repo.repoInstanceId,
+        ownerRepo: anchors.repo.ownerRepo,
+        remoteUrl: anchors.repo.remoteUrl,
+        localPath: anchors.repo.localPath,
+        branchName: anchors.repo.branchName,
+      })
+    : undefined;
+  const worktree = anchors.worktree
+    ? withoutUndefined({
+        worktreeInstanceId: anchors.worktree.worktreeInstanceId,
+        localPath: anchors.worktree.localPath,
+        branchName: anchors.worktree.branchName,
+      })
+    : undefined;
+  return withoutUndefined({ node, session, project, repo, worktree }) as WorkContext['anchors'];
+}
+
+function pickActor(actor: WorkContext['actors'][number]): WorkContext['actors'][number] {
+  return {
+    kind: actor.kind,
+    id: actor.id,
+    ...(actor.displayName ? { displayName: actor.displayName } : {}),
+    ...(actor.providerId ? { providerId: actor.providerId } : {}),
+    ...(actor.nodeId ? { nodeId: actor.nodeId } : {}),
+    ...(actor.sessionId ? { sessionId: actor.sessionId } : {}),
+    ...(actor.privacy ? { privacy: pickPrivacy(actor.privacy) } : {}),
+  };
+}
+
+function pickTask(task: WorkContext['tasks'][number]): WorkContext['tasks'][number] {
+  return {
+    kind: task.kind,
+    id: task.id,
+    ...(task.title ? { title: task.title } : {}),
+    ...(task.url ? { url: task.url } : {}),
+    ...(task.status ? { status: task.status } : {}),
+    ...(task.parentRef ? { parentRef: task.parentRef } : {}),
+    ...(task.privacy ? { privacy: pickPrivacy(task.privacy) } : {}),
+  };
+}
+
+function pickArtifact(
+  artifact: WorkContext['artifacts'][number]
+): WorkContext['artifacts'][number] {
+  return {
+    id: artifact.id,
+    kind: artifact.kind,
+    ...(artifact.title ? { title: artifact.title } : {}),
+    ...(artifact.uri ? { uri: artifact.uri } : {}),
+    ...(artifact.path ? { path: artifact.path } : {}),
+    ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+    ...(artifact.producedByActorId
+      ? { producedByActorId: artifact.producedByActorId }
+      : {}),
+    ...(artifact.producedAt ? { producedAt: artifact.producedAt } : {}),
+    ...(artifact.summary ? { summary: artifact.summary } : {}),
+    privacy: pickPrivacy(artifact.privacy),
+  };
+}
+
+function pickAuditRef(
+  auditRef: WorkContext['auditRefs'][number]
+): WorkContext['auditRefs'][number] {
+  return {
+    id: auditRef.id,
+    eventId: auditRef.eventId,
+    ...(auditRef.type ? { type: auditRef.type } : {}),
+    ...(auditRef.occurredAt ? { occurredAt: auditRef.occurredAt } : {}),
+    ...(auditRef.actorId ? { actorId: auditRef.actorId } : {}),
+    ...(auditRef.correlationId ? { correlationId: auditRef.correlationId } : {}),
+    ...(auditRef.chainHash ? { chainHash: auditRef.chainHash } : {}),
+    ...(auditRef.logRef ? { logRef: auditRef.logRef } : {}),
+    privacy: pickPrivacy(auditRef.privacy),
+  };
+}
+
+function pickCapabilityGrant(
+  grant: WorkContext['capabilityGrants'][number]
+): WorkContext['capabilityGrants'][number] {
+  return {
+    id: grant.id,
+    ref: grant.ref,
+    ...(grant.capability ? { capability: grant.capability } : {}),
+    ...(grant.capabilities ? { capabilities: [...grant.capabilities] } : {}),
+    ...(grant.decision ? { decision: grant.decision } : {}),
+    policyClass: grant.policyClass,
+    ...(grant.scope
+      ? {
+          scope: {
+            kind: grant.scope.kind,
+            ...(grant.scope.workspaceIds
+              ? { workspaceIds: [...grant.scope.workspaceIds] }
+              : {}),
+            ...(grant.scope.repoIds ? { repoIds: [...grant.scope.repoIds] } : {}),
+            ...(grant.scope.pathPrefixes
+              ? { pathPrefixes: [...grant.scope.pathPrefixes] }
+              : {}),
+          },
+        }
+      : {}),
+    ...(grant.actorId ? { actorId: grant.actorId } : {}),
+    ...(grant.auditEventId ? { auditEventId: grant.auditEventId } : {}),
+    privacy: pickPrivacy(grant.privacy),
+  };
+}
+
 function containsForbiddenRawPayloadKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsForbiddenRawPayloadKey);
   if (!isRecord(value)) return false;
@@ -637,6 +853,18 @@ function sessionRefFromBody(body: SessionRefBody): SessionRef {
     tabKind: body.tabKind ?? 'terminal',
     cwd: body.cwd,
   };
+}
+
+function findLiveSessionForAssociation(
+  sessions: SessionSummary[],
+  body: { sessionId?: string; nodeId?: string }
+): SessionSummary | undefined {
+  if (!body.sessionId) return undefined;
+  return sessions.find((session) => {
+    const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+    if (body.nodeId && nodeId !== body.nodeId) return false;
+    return session.id === body.sessionId || session.globalSessionId === body.sessionId;
+  });
 }
 
 function buildActiveGroups(
@@ -813,10 +1041,15 @@ function nodeStateForContext(
   const nodeId =
     context.anchors.node?.nodeId ?? sessions[0]?.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   const state = nodeStateForNodeId(nodeId, nodesById);
-  if (context.anchors.node?.displayName && !state.displayName) {
-    return { ...state, displayName: context.anchors.node.displayName };
+  if (context.anchors.node?.displayName || context.anchors.node?.kind) {
+    return {
+      ...state,
+      ...(context.anchors.node.displayName
+        ? { displayName: context.anchors.node.displayName }
+        : {}),
+      ...(context.anchors.node.kind ? { kind: context.anchors.node.kind } : {}),
+    };
   }
-  if (context.anchors.node?.kind) return { ...state, kind: context.anchors.node.kind };
   return state;
 }
 

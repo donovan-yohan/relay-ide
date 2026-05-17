@@ -201,6 +201,12 @@ describe('WorkContext store', () => {
       });
       expect(linked.body.workContext.relatedContextRefs).toContain('wc:linked');
 
+      const selfLink = await jsonRequest(api.baseUrl, 'POST', '/work-contexts/wc:api/link', {
+        targetContextId: 'wc:api',
+      });
+      expect(selfLink.status).toBe(400);
+      expect(selfLink.body.error).toBe('work_context_self_link_not_allowed');
+
       const liveAssociation = await jsonRequest(
         api.baseUrl,
         'POST',
@@ -239,6 +245,40 @@ describe('WorkContext store', () => {
           }),
         ])
       );
+    } finally {
+      await api.close();
+      store.close();
+    }
+  });
+
+  it('matches live session associations by nodeId when supplied', async () => {
+    const store = makeStore();
+    const local = session({ id: 'shared-session-id', nodeId: DEFAULT_LOCAL_NODE_ID });
+    const remote = session({
+      id: 'shared-session-id',
+      nodeId: 'node-remote',
+      globalSessionId: createGlobalSessionId('node-remote', 'shared-session-id'),
+      cwd: '/remote/cwd',
+      displayName: 'Remote collision session',
+    });
+    const api = await startWorkContextApi(store, [local, remote]);
+    try {
+      await jsonRequest(api.baseUrl, 'POST', '/work-contexts', {
+        id: 'wc:node-match',
+        title: 'Node match',
+      });
+      const associated = await jsonRequest(
+        api.baseUrl,
+        'POST',
+        '/work-contexts/wc:node-match/sessions',
+        { sessionId: 'shared-session-id', nodeId: 'node-remote' }
+      );
+
+      expect(associated.status).toBe(200);
+      expect(associated.body.workContext.anchors.session).toMatchObject({
+        nodeId: 'node-remote',
+        cwd: '/remote/cwd',
+      });
     } finally {
       await api.close();
       store.close();
@@ -309,6 +349,85 @@ describe('WorkContext store', () => {
         })
       ).toThrow(/invalid_work_context|raw_payload_storage_not_allowed/);
     } finally {
+      store.close();
+    }
+  });
+
+  it('canonicalizes persisted contexts to the shared WorkContext schema', () => {
+    const store = makeStore();
+    try {
+      const created = store.create({
+        context: fullContext({
+          id: 'wc:canonical',
+          anchors: {
+            node: {
+              nodeId: 'node-remote',
+              kind: 'remote',
+              displayName: 'Remote node',
+              messages: ['hidden node payload'],
+            } as WorkContext['anchors']['node'],
+          },
+          artifacts: [
+            {
+              id: 'artifact:summary',
+              kind: 'report',
+              summary: 'safe summary',
+              privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
+              messages: ['raw terminal transcript can hide here'],
+            } as WorkContext['artifacts'][number],
+          ],
+          messages: ['raw terminal transcript can hide here'],
+        } as Partial<WorkContext>),
+      });
+
+      const reloaded = store.get('wc:canonical') as WorkContext;
+      expect((created as WorkContext & { messages?: unknown }).messages).toBeUndefined();
+      expect((reloaded as WorkContext & { messages?: unknown }).messages).toBeUndefined();
+      expect(
+        (reloaded.anchors.node as WorkContext['anchors']['node'] & { messages?: unknown })
+          .messages
+      ).toBeUndefined();
+      expect(
+        (reloaded.artifacts[0] as WorkContext['artifacts'][number] & { messages?: unknown })
+          .messages
+      ).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('filters PATCH payloads before persistence', async () => {
+    const store = makeStore();
+    const api = await startWorkContextApi(store);
+    try {
+      await jsonRequest(api.baseUrl, 'POST', '/work-contexts', {
+        id: 'wc:patch-filter',
+        title: 'Patch filter',
+      });
+      const patched = await jsonRequest(api.baseUrl, 'PATCH', '/work-contexts/wc:patch-filter', {
+        title: 'Patched',
+        messages: ['top-level raw transcript'],
+        artifacts: [
+          {
+            id: 'artifact:patch',
+            kind: 'report',
+            summary: 'safe patch summary',
+            privacy: createWorkContextPrivacyMetadata({ retention: 'project' }),
+            messages: ['nested raw transcript'],
+          },
+        ],
+      });
+
+      expect(patched.status).toBe(200);
+      const context = patched.body.workContext as WorkContext & { messages?: unknown };
+      expect(context.title).toBe('Patched');
+      expect(context.messages).toBeUndefined();
+      expect(
+        (context.artifacts[0] as WorkContext['artifacts'][number] & { messages?: unknown })
+          .messages
+      ).toBeUndefined();
+    } finally {
+      await api.close();
       store.close();
     }
   });

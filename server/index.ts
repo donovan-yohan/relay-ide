@@ -852,8 +852,26 @@ function associateSessionWithWorkContext(
   store: WorkContextStore,
   workContextId: string | undefined,
   session: SessionSummary
+): string | null {
+  if (!workContextId) return null;
+  try {
+    store.associateSession(workContextId, { session });
+    return null;
+  } catch (err) {
+    const code = err instanceof Error ? err.message : 'work_context_association_failed';
+    logger.warn('[sessions] failed to associate session with work context %s: %s', workContextId, err);
+    return code || 'work_context_association_failed';
+  }
+}
+
+function sendSessionCreateSuccess(
+  res: express.Response,
+  session: SessionSummary,
+  associationError: string | null
 ): void {
-  if (workContextId) store.associateSession(workContextId, { session });
+  res.status(201).json(
+    associationError ? { ...session, workContextAssociationError: associationError } : session
+  );
 }
 
 function sessionCreateFailureMessage(err: unknown): string {
@@ -2751,8 +2769,12 @@ async function main(): Promise<void> {
         return;
       }
       gitWatcher.watch(session.cwd);
-      associateSessionWithWorkContext(workContextStore, workContextId, session);
-      res.status(201).json(session);
+      const associationError = associateSessionWithWorkContext(
+        workContextStore,
+        workContextId,
+        session
+      );
+      sendSessionCreateSuccess(res, session, associationError);
       return;
     }
 
@@ -2809,8 +2831,12 @@ async function main(): Promise<void> {
           sessionLane,
         });
         gitWatcher.watch(session.cwd);
-        associateSessionWithWorkContext(workContextStore, workContextId, session);
-        res.status(201).json(session);
+        const associationError = associateSessionWithWorkContext(
+          workContextStore,
+          workContextId,
+          session
+        );
+        sendSessionCreateSuccess(res, session, associationError);
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
       }
@@ -2887,9 +2913,13 @@ async function main(): Promise<void> {
       });
     }
 
-    associateSessionWithWorkContext(workContextStore, workContextId, session);
+    const associationError = associateSessionWithWorkContext(
+      workContextStore,
+      workContextId,
+      session
+    );
 
-    res.status(201).json(session);
+    sendSessionCreateSuccess(res, session, associationError);
   });
 
   // DELETE /sessions/:id
