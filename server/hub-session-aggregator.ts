@@ -45,6 +45,7 @@ export interface RemoteSessionReadModelCache {
   set(nodeId: string, sessions: SessionSummary[], observedAtMs: number): void;
   upsert(nodeId: string, session: SessionSummary, observedAtMs: number): void;
   clear(nodeId: string): void;
+  prune(keepNodeIds: ReadonlySet<string>): void;
 }
 
 interface CachedRemoteSessions {
@@ -88,6 +89,11 @@ export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache
     },
     clear(nodeId) {
       entries.delete(nodeId);
+    },
+    prune(keepNodeIds) {
+      entries.forEach((_cached, nodeId) => {
+        if (!keepNodeIds.has(nodeId)) entries.delete(nodeId);
+      });
     },
   };
 }
@@ -136,9 +142,7 @@ export async function aggregateRemoteSessions(
   );
   if (deps.readModelCache) {
     const candidateIds = new Set(candidates.map((node) => node.nodeId));
-    for (const node of nodes) {
-      if (!candidateIds.has(node.nodeId)) deps.readModelCache.clear(node.nodeId);
-    }
+    deps.readModelCache.prune(candidateIds);
   }
 
   if (candidates.length === 0) return [];
