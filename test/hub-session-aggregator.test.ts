@@ -442,6 +442,28 @@ describe('aggregateRemoteSessions', () => {
     expect(readModelCache.get('node-a', Date.now(), 60_000)).toBeNull();
   });
 
+  it('prunes cached remote sessions when the owning node is removed from the registry', async () => {
+    const readModelCache = createRemoteSessionReadModelCache();
+    readModelCache.set('node-deleted', [localSession('s-stale', 'node-deleted')], 1_000);
+    const requestImpl = vi.fn(async () => ({ sessions: [] }));
+    const { registry, nodeLinks } = buildDeps({
+      nodes: [],
+      activeNodeIds: new Set(),
+      requestImpl,
+    });
+
+    const result = await aggregateRemoteSessions({
+      registry,
+      nodeLinks,
+      readModelCache,
+      now: () => 2_000,
+    });
+
+    expect(result).toEqual([]);
+    expect(requestImpl).not.toHaveBeenCalled();
+    expect(readModelCache.get('node-deleted', 2_000, 60_000)).toBeNull();
+  });
+
   it('treats a malformed payload as an empty list rather than throwing', async () => {
     const { registry, nodeLinks } = buildDeps({
       nodes: [summary('node-a')],
