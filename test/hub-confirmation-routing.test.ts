@@ -1,4 +1,7 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createConfirmationChallengeStore, hashAuthSessionIdentity } from '../server/confirmation-challenges.js';
@@ -7,6 +10,7 @@ import { createHubNodeRouter, type RoutedSessionAuditSink } from '../server/hub-
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
+import { createWorkContextStore, type WorkContextStore } from '../server/work-contexts.js';
 import {
   createLegacyDefaultNodeAcl,
   summarizeAcl,
@@ -118,7 +122,11 @@ describe('hub confirmation routing', () => {
   });
 
   async function startHub(
-    options: { auditSink?: RoutedSessionAuditSink; node?: HubNodeSummary } = {}
+    options: {
+      auditSink?: RoutedSessionAuditSink;
+      node?: HubNodeSummary;
+      workContextStore?: WorkContextStore;
+    } = {}
   ) {
     const nodeLinks = {
       requests: [] as Array<{ nodeId: string; type: string; payload: unknown }>,
@@ -158,6 +166,7 @@ describe('hub confirmation routing', () => {
           randomToken: () => 'raw-confirmation-token',
         }),
         auditSink,
+        workContextStore: options.workContextStore,
         now: () => NOW,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
@@ -391,6 +400,62 @@ describe('hub confirmation routing', () => {
     expect(approvalAudit?.peer.principalHash).not.toBe(requesterHash);
     expect(failedRedemptionAudit?.peer.principalHash).toBe(requesterHash);
     expect(grantAudit?.peer.principalHash).toBe(requesterHash);
+  });
+
+  it('associates routed session creates with existing WorkContext metadata and Active Work groups', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-work-context-test-'));
+    const workContextStore = createWorkContextStore(path.join(tmp, 'work-contexts.db'));
+    cleanup.push(() => {
+      workContextStore.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    });
+    const workContextId = 'github-issue-572-safe-relay-development';
+    workContextStore.create({
+      id: workContextId,
+      title: 'Issue #572 dogfood routed session',
+      source: 'test',
+    });
+    const node = nodeSummary({
+      allowed: ['session:read', 'session:create:terminal'],
+      requiresConfirmation: [],
+    });
+    const { base, nodeLinks } = await startHub({ workContextStore, node });
+
+    const body = {
+      repoPath: '/srv/relay-ide',
+      type: 'terminal',
+      workContextId,
+    };
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(201);
+    const session = await response.json();
+    expect(session).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node_prod',
+      workContextId,
+    });
+    expect(nodeLinks.requests[0]).toMatchObject({
+      type: 'sessions.create',
+      payload: body,
+    });
+    expect(workContextStore.findSessionWorkContextIds(session)).toEqual([workContextId]);
+
+    const groups = workContextStore.listActiveWork({ sessions: [session], nodes: [node] });
+    const group = groups.find((candidate) => candidate.id === workContextId);
+    expect(group).toBeDefined();
+    expect(group?.sessions[0]).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node_prod',
+      live: true,
+    });
   });
 
   it('ignores spoofable x-auth-session when an authenticated cookie is present', async () => {

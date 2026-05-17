@@ -424,6 +424,8 @@ export interface SessionSummary {
   dataQuality?: EventSourceType;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
+  /** WorkContext linked to this session, when the create/list surface can resolve one. */
+  workContextId?: string;
   /** Typed intent/scope envelope. Present on new responses; legacy callers should normalize when absent. */
   sessionEnvelope?: SessionEnvelope | undefined;
 }

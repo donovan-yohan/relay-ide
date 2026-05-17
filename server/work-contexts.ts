@@ -288,6 +288,7 @@ export interface WorkContextStore {
     input: ListActiveWorkInput
   ): WorkContextResumeSnapshot;
   listActiveWork(input: ListActiveWorkInput): WorkContextActiveGroup[];
+  findSessionWorkContextIds(session: SessionSummary): WorkContextId[];
 }
 
 export interface WorkContextRouterDeps {
@@ -530,6 +531,20 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
         input.sessions,
         input.nodes ?? []
       );
+    },
+
+    findSessionWorkContextIds(session: SessionSummary) {
+      const ref = sessionSummaryToRef(session);
+      const allLinks = selectSessionLinks.all() as SessionLinkRow[];
+      const ids = new Set<WorkContextId>();
+      for (const link of allLinks) {
+        const sameLocalId =
+          link.node_id === ref.nodeId && link.session_id === ref.sessionId;
+        const sameGlobalId =
+          ref.globalSessionId && link.global_session_id === ref.globalSessionId;
+        if (sameLocalId || sameGlobalId) ids.add(link.work_context_id);
+      }
+      return Array.from(ids);
     },
   };
 }

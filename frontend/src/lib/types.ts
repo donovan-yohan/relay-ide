@@ -193,6 +193,8 @@ export interface SessionSummary {
   dataQuality?: EventSourceType | undefined;
   /** Tracks whether permission-prompt is for approval or question — preserves needs-answer state across refresh */
   permissionType?: 'approval' | 'question';
+  /** WorkContext linked to this session, when the backend can resolve one. */
+  workContextId?: string;
   /** Typed intent/scope envelope. New server responses include this; old cached sessions may omit it. */
   sessionEnvelope?: SessionEnvelope | undefined;
 }

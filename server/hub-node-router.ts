@@ -2,6 +2,7 @@ import * as express from 'express';
 import { isFileRpcOperation } from '../shared/file-rpc.js';
 import { normalizeHubFileRpcRequest } from './file-rpc.js';
 import type { Request, Response } from 'express';
+import type { WorkContextStore } from './work-contexts.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import type {
   RepoInventoryDirtySummary,
@@ -116,6 +117,7 @@ interface HubNodeRouterOptions {
   }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
   confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
+  workContextStore?: WorkContextStore;
   now?: () => Date;
 }
 
@@ -223,6 +225,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     session.branchName === undefined || typeof session.branchName === 'string';
   const repoNameOk =
     session.repoName === undefined || typeof session.repoName === 'string';
+  const workContextIdOk =
+    session.workContextId === undefined || typeof session.workContextId === 'string';
   return (
     typeof session.id === 'string' &&
     (session.type === 'agent' || session.type === 'terminal') &&
@@ -232,6 +236,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof session.cwd === 'string' &&
     repoNameOk &&
     branchNameOk &&
+    workContextIdOk &&
     controlSummaryFieldsOk(session) &&
     (session.sessionEnvelope === undefined ||
       isSessionEnvelope(session.sessionEnvelope)) &&
@@ -303,6 +308,52 @@ export function scopedNodeSession(
       ...(existingEnvelope?.auditId ? { auditId: existingEnvelope.auditId } : {}),
     }),
   };
+}
+
+function routedWorkContextId(body: Record<string, unknown>): string | undefined {
+  const value = body['workContextId'];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function validateRoutedWorkContext(
+  store: WorkContextStore | undefined,
+  workContextId: string | undefined
+): RelayNodeError | null {
+  if (!workContextId) return null;
+  if (!store) {
+    return relayError(
+      'NODE_UNSUPPORTED',
+      'workContextId is not supported by this hub runtime',
+      false,
+      { reasonCode: 'WORK_CONTEXT_UNSUPPORTED', workContextId }
+    );
+  }
+  if (store.get(workContextId)) return null;
+  return relayError('NOT_FOUND', 'work context was not found', false, {
+    reasonCode: 'WORK_CONTEXT_NOT_FOUND',
+    workContextId,
+  });
+}
+
+function associateRoutedWorkContext(
+  store: WorkContextStore | undefined,
+  workContextId: string | undefined,
+  session: SessionSummary
+): string | null {
+  if (!workContextId || !store) return null;
+  try {
+    store.associateSession(workContextId, { session });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : 'work_context_association_failed';
+  }
+}
+
+function withWorkContextId(
+  session: SessionSummary,
+  workContextId: string | undefined
+): SessionSummary {
+  return workContextId ? { ...session, workContextId } : session;
 }
 
 export function sessionFromPayload(payload: unknown): SessionSummary {
@@ -2104,6 +2155,15 @@ export function createHubNodeRouter(
     }
     const routedBody = routedGatewayCreateBodyFromRequest(req, res, nodeId);
     if (!routedBody) return;
+    const workContextId = routedWorkContextId(routedBody);
+    const workContextError = validateRoutedWorkContext(
+      options.workContextStore,
+      workContextId
+    );
+    if (workContextError) {
+      sendRelayError(res, workContextError);
+      return;
+    }
     const node = registry
       .listNodes()
       .find((candidate) => candidate.nodeId === nodeId);
@@ -2257,7 +2317,17 @@ export function createHubNodeRouter(
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
       envelopes.upsert(session.sessionEnvelope!);
-      res.status(201).json(session);
+      const associationError = associateRoutedWorkContext(
+        options.workContextStore,
+        workContextId,
+        session
+      );
+      const responseSession = withWorkContextId(session, workContextId);
+      res.status(201).json(
+        associationError
+          ? { ...responseSession, workContextAssociationError: associationError }
+          : responseSession
+      );
     } catch (error) {
       if (error instanceof HubNodeLinkError) {
         sendRelayError(res, error.relayNodeError);

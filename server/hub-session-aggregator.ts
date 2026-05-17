@@ -10,6 +10,7 @@ import {
 import type { SessionSummary } from './types.js';
 import { scopedNodeSession, isSessionSummary } from './hub-node-router.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import type { WorkContextStore } from './work-contexts.js';
 
 /**
  * Returns true when a session is owned by this hub host (local node).
@@ -39,6 +40,7 @@ export interface AggregateRemoteSessionsDeps {
   nodeLinks: HubNodeLinkManager;
   logger?: Logger;
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
+  workContextStore?: WorkContextStore;
   perNodeTimeoutMs?: number;
 }
 
@@ -102,11 +104,21 @@ export async function aggregateRemoteSessions(
     for (const session of result.value.sessions) {
       const scoped = scopedNodeSession(result.value.nodeId, session);
       const sessionEnvelope = envelopes.upsert(scoped.sessionEnvelope!);
-      aggregated.push({ ...scoped, sessionEnvelope });
+      aggregated.push(
+        withWorkContextMetadata(deps.workContextStore, { ...scoped, sessionEnvelope })
+      );
     }
   }
 
   return aggregated;
+}
+
+function withWorkContextMetadata(
+  store: WorkContextStore | undefined,
+  session: SessionSummary
+): SessionSummary {
+  const workContextId = store?.findSessionWorkContextIds(session)[0];
+  return workContextId ? { ...session, workContextId } : session;
 }
 
 async function requestSessionsWithTimeout(

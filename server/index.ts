@@ -864,13 +864,25 @@ function associateSessionWithWorkContext(
   }
 }
 
+function withWorkContextMetadata(
+  store: WorkContextStore,
+  session: SessionSummary
+): SessionSummary {
+  const workContextId = store.findSessionWorkContextIds(session)[0];
+  return workContextId ? { ...session, workContextId } : session;
+}
+
 function sendSessionCreateSuccess(
   res: express.Response,
   session: SessionSummary,
-  associationError: string | null
+  associationError: string | null,
+  workContextId?: string
 ): void {
+  const responseSession = workContextId ? { ...session, workContextId } : session;
   res.status(201).json(
-    associationError ? { ...session, workContextAssociationError: associationError } : session
+    associationError
+      ? { ...responseSession, workContextAssociationError: associationError }
+      : responseSession
   );
 }
 
@@ -1300,6 +1312,7 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       renewLocalSession: localRelayNode.sessions.renew,
+      workContextStore,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
@@ -1654,12 +1667,18 @@ async function main(): Promise<void> {
       requireAuth,
       getSessions: async () => {
         const [localSessions, remoteSessions] = await Promise.all([
-          Promise.resolve(localRelayNode.sessions.list()),
+          Promise.resolve(
+            localRelayNode
+              .sessions
+              .list()
+              .map((session) => withWorkContextMetadata(workContextStore, session))
+          ),
           aggregateRemoteSessions({
             registry: hubNodeRegistry,
             nodeLinks: hubNodeLinks,
             logger,
             sessionEnvelopes: sessionEnvelopeRegistry,
+            workContextStore,
           }),
         ]);
         return [...localSessions, ...remoteSessions];
@@ -2065,12 +2084,18 @@ async function main(): Promise<void> {
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
   app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
-      Promise.resolve(localRelayNode.sessions.list()),
+      Promise.resolve(
+        localRelayNode
+          .sessions
+          .list()
+          .map((session) => withWorkContextMetadata(workContextStore, session))
+      ),
       aggregateRemoteSessions({
         registry: hubNodeRegistry,
         nodeLinks: hubNodeLinks,
         logger,
         sessionEnvelopes: sessionEnvelopeRegistry,
+        workContextStore,
       }),
     ]);
     const allSessions = [...localSessions, ...remoteSessions];
@@ -2138,7 +2163,7 @@ async function main(): Promise<void> {
         });
         return;
       }
-      res.json(session);
+      res.json(withWorkContextMetadata(workContextStore, session));
       return;
     }
     const remoteSessions = await aggregateRemoteSessions({
@@ -2146,6 +2171,7 @@ async function main(): Promise<void> {
       nodeLinks: hubNodeLinks,
       logger,
       sessionEnvelopes: sessionEnvelopeRegistry,
+      workContextStore,
     });
     const remote = remoteSessions.find(
       (candidate) => candidate.id === id || candidate.globalSessionId === id
@@ -2875,7 +2901,7 @@ async function main(): Promise<void> {
         workContextId,
         session
       );
-      sendSessionCreateSuccess(res, session, associationError);
+      sendSessionCreateSuccess(res, session, associationError, workContextId);
       return;
     }
 
@@ -2937,7 +2963,7 @@ async function main(): Promise<void> {
           workContextId,
           session
         );
-        sendSessionCreateSuccess(res, session, associationError);
+        sendSessionCreateSuccess(res, session, associationError, workContextId);
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
       }
@@ -3020,7 +3046,7 @@ async function main(): Promise<void> {
       session
     );
 
-    sendSessionCreateSuccess(res, session, associationError);
+    sendSessionCreateSuccess(res, session, associationError, workContextId);
   });
 
   // DELETE /sessions/:id
