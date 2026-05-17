@@ -14,6 +14,22 @@
   font-family: var(--font-mono);
 }
 
+.confirmation-prompt--danger {
+  border-color: var(--status-error);
+}
+
+.confirmation-prompt--warning {
+  border-color: var(--status-warning);
+}
+
+.confirmation-prompt--muted {
+  border-color: var(--border);
+}
+
+.confirmation-prompt--safe {
+  border-color: color-mix(in srgb, var(--status-success) 55%, var(--border));
+}
+
 .confirmation-prompt__header {
   display: flex;
   align-items: flex-start;
@@ -81,18 +97,62 @@
   white-space: nowrap;
 }
 
+.confirmation-prompt__trust.trust-sandbox {
+  color: var(--status-info);
+}
+
+.confirmation-prompt__posture.posture-safe,
+.confirmation-prompt__trust.trust-dev {
+  color: var(--status-success);
+}
+
+.confirmation-prompt__trust.trust-prod,
+.confirmation-prompt__posture.posture-danger {
+  color: var(--status-error);
+}
+
+.confirmation-prompt__posture.posture-warning {
+  color: var(--status-warning);
+}
+
 .confirmation-prompt__bits {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   margin: 10px 0 12px;
 }
 
-.confirmation-prompt__bits span {
+.confirmation-prompt__bit-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.confirmation-prompt__bit-group span {
   padding: 2px 6px;
-  border: 1px solid color-mix(in srgb, var(--status-warning) 50%, transparent);
-  color: var(--status-warning);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   font-size: var(--font-size-xs);
+}
+
+.confirmation-prompt__bit-group .confirmation-prompt__bit-group-label {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.confirmation-prompt__bit-group.posture-safe span {
+  border-color: color-mix(in srgb, var(--status-success) 50%, var(--border));
+  color: var(--status-success);
+}
+
+.confirmation-prompt__bit-group.posture-warning span {
+  border-color: color-mix(in srgb, var(--status-warning) 50%, var(--border));
+  color: var(--status-warning);
+}
+
+.confirmation-prompt__bit-group.posture-danger span {
+  border-color: color-mix(in srgb, var(--status-error) 50%, var(--border));
+  color: var(--status-error);
 }
 
 .confirmation-prompt__field {

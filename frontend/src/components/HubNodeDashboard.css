@@ -44,6 +44,14 @@
   border-color: color-mix(in srgb, var(--status-success) 35%, var(--border));
 }
 
+.hub-node-card.security-danger {
+  border-color: color-mix(in srgb, var(--status-error) 55%, var(--border));
+}
+
+.hub-node-card.security-warning:not(.security-danger) {
+  border-color: color-mix(in srgb, var(--status-warning) 45%, var(--border));
+}
+
 .hub-node-card.status-stale,
 .hub-node-card.status-revoked {
   border-color: color-mix(in srgb, var(--status-warning) 35%, var(--border));
@@ -113,6 +121,31 @@
   text-transform: lowercase;
 }
 
+.hub-node-trust-tier {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  text-transform: lowercase;
+}
+
+.hub-node-trust-tier.trust-sandbox {
+  border-color: color-mix(in srgb, var(--status-info) 45%, var(--border));
+  color: var(--status-info);
+}
+
+.hub-node-trust-tier.trust-dev {
+  border-color: color-mix(in srgb, var(--status-success) 40%, var(--border));
+  color: var(--status-success);
+}
+
+.hub-node-trust-tier.trust-prod {
+  border-color: color-mix(in srgb, var(--status-error) 65%, var(--border));
+  color: var(--status-error);
+}
+
 .hub-node-card-meta {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
@@ -152,6 +185,54 @@
   gap: 4px;
   padding-left: var(--icon-slot-width);
   margin-top: 8px;
+}
+
+.hub-node-security {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: var(--icon-slot-width);
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.hub-node-security-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hub-node-policy-posture,
+.hub-node-high-risk {
+  color: var(--text);
+}
+
+.hub-node-policy-posture.posture-safe,
+.hub-node-high-risk.posture-safe {
+  color: var(--status-success);
+}
+
+.hub-node-policy-posture.posture-warning,
+.hub-node-high-risk.posture-warning {
+  color: var(--status-warning);
+}
+
+.hub-node-policy-posture.posture-danger,
+.hub-node-high-risk.posture-danger {
+  color: var(--status-error);
+}
+
+.hub-node-policy-posture.posture-muted,
+.hub-node-high-risk.posture-muted {
+  color: var(--text-muted);
+}
+
+.hub-node-security-ref {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hub-node-capability {
