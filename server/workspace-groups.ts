@@ -35,6 +35,20 @@ const execFileAsync = promisify(execFile);
 const logger = createLogger('workspace-groups');
 const ERR_FAILED_READ_CONFIG = 'Failed to read config';
 
+function normalizeWorkspaceForResponse(
+  workspace: Workspace,
+  fallbackOrder: number
+): Workspace {
+  const raw = workspace as Workspace & { repos?: unknown; order?: unknown };
+  return {
+    ...workspace,
+    repos: Array.isArray(raw.repos)
+      ? raw.repos.filter((repo): repo is string => typeof repo === 'string')
+      : [],
+    order: typeof raw.order === 'number' ? raw.order : fallbackOrder,
+  };
+}
+
 interface SessionDeps {
   sessions: {
     create: (params: CreateParams) => CreateResult;
@@ -153,7 +167,9 @@ export function createWorkspaceGroupsRouter(
       return;
     }
     const workspaces = config.workspaces ?? [];
-    const sorted = [...workspaces].sort((a, b) => a.order - b.order);
+    const sorted = workspaces
+      .map((workspace, index) => normalizeWorkspaceForResponse(workspace, index))
+      .sort((a, b) => a.order - b.order);
     res.json(sorted);
   });
 

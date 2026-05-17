@@ -1451,8 +1451,22 @@ export async function updateConfigAutoProvision(
 
 // ── Workspace groups ──────────────────────────────────────────────────────────
 
+function normalizeWorkspaceGroup(value: Workspace, index: number): Workspace {
+  const raw = value as Workspace & { repos?: unknown; order?: unknown };
+  return {
+    ...value,
+    repos: Array.isArray(raw.repos)
+      ? raw.repos.filter((repo): repo is string => typeof repo === 'string')
+      : [],
+    order: typeof raw.order === 'number' ? raw.order : index,
+  };
+}
+
 export async function fetchWorkspaceGroups(): Promise<Workspace[]> {
-  return json<Workspace[]>(await fetch('/workspace-groups'));
+  const data = await json<Workspace[]>(await fetch('/workspace-groups'));
+  return Array.isArray(data)
+    ? data.map((workspace, index) => normalizeWorkspaceGroup(workspace, index))
+    : [];
 }
 
 export async function createWorkspaceGroup(data: {
