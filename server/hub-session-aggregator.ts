@@ -35,6 +35,10 @@ export function isLocallyOwnedSession(session: SessionSummary): boolean {
 // browser refresh path and slow nodes must not block the response.
 const PER_NODE_TIMEOUT_MS = 3_000;
 const REMOTE_SESSION_CACHE_TTL_MS = 60_000;
+// A routed create can return before the owning node's sessions.list read model
+// has caught up. Keep that hub-observed session attachable briefly, but let a
+// later authoritative empty list prune it so ended sessions do not linger.
+const OPTIMISTIC_ROUTED_CREATE_GRACE_MS = 10_000;
 const CACHEABLE_TYPED_SESSION_LIST_FAILURE_CODES = new Set<RelayNodeErrorCode>([
   'NODE_BUSY',
   'INTERNAL',
@@ -51,6 +55,7 @@ export interface RemoteSessionReadModelCache {
 interface CachedRemoteSessions {
   observedAtMs: number;
   sessions: SessionSummary[];
+  optimisticUpsertedAtById: Map<string, number>;
 }
 
 export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache {
@@ -66,9 +71,28 @@ export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache
       return cached.sessions.map((session) => ({ ...session }));
     },
     set(nodeId, sessions, observedAtMs) {
+      const cached = entries.get(nodeId);
+      const nextSessions = sessions.map((session) => ({ ...session }));
+      const nextSessionIds = new Set(nextSessions.map((session) => session.id));
+      const optimisticUpsertedAtById = new Map<string, number>();
+      if (cached) {
+        cached.optimisticUpsertedAtById.forEach((upsertedAtMs, sessionId) => {
+          if (nextSessionIds.has(sessionId)) return;
+          if (observedAtMs - upsertedAtMs > OPTIMISTIC_ROUTED_CREATE_GRACE_MS) {
+            return;
+          }
+          const optimisticSession = cached.sessions.find(
+            (session) => session.id === sessionId
+          );
+          if (!optimisticSession) return;
+          nextSessions.push({ ...optimisticSession });
+          optimisticUpsertedAtById.set(sessionId, upsertedAtMs);
+        });
+      }
       entries.set(nodeId, {
         observedAtMs,
-        sessions: sessions.map((session) => ({ ...session })),
+        sessions: nextSessions,
+        optimisticUpsertedAtById,
       });
     },
     upsert(nodeId, session, observedAtMs) {
@@ -85,7 +109,11 @@ export function createRemoteSessionReadModelCache(): RemoteSessionReadModelCache
       } else {
         sessions.push(nextSession);
       }
-      entries.set(nodeId, { observedAtMs, sessions });
+      const optimisticUpsertedAtById = new Map(
+        cached?.optimisticUpsertedAtById ?? []
+      );
+      optimisticUpsertedAtById.set(nextSession.id, observedAtMs);
+      entries.set(nodeId, { observedAtMs, sessions, optimisticUpsertedAtById });
     },
     clear(nodeId) {
       entries.delete(nodeId);
@@ -196,8 +224,10 @@ export async function aggregateRemoteSessions(
       scopedSessions.push({ ...scoped, sessionEnvelope });
     }
     deps.readModelCache?.set(candidate.nodeId, scopedSessions, nowMs);
+    const sessionsForAggregate =
+      deps.readModelCache?.get(candidate.nodeId, nowMs, cacheTtlMs) ?? scopedSessions;
     aggregated.push(
-      ...scopedSessions.map((session) =>
+      ...sessionsForAggregate.map((session) =>
         withWorkContextMetadata(deps.workContextStore, session)
       )
     );
