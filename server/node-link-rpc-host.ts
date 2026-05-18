@@ -111,8 +111,13 @@ function parseSessionCommand(
   record: Record<string, unknown>,
   type: SessionsCreateInput['type']
 ): string | undefined {
-  return asString(record['command']) ??
-    (type === 'terminal' ? defaultTerminalCommand() : undefined);
+  if (type === 'agent') {
+    // Routed native agent sessions must spawn the selected framework command
+    // on the node. Do not let a hub/browser shell fallback sneak through as
+    // `command` while metadata still says `type: agent` / `agent: codex`.
+    return undefined;
+  }
+  return asString(record['command']) ?? defaultTerminalCommand();
 }
 
 function parseInitialControlMode(

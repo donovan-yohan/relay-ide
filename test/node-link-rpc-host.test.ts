@@ -165,6 +165,38 @@ describe('node-link-rpc-host', () => {
     });
   });
 
+  it('routes native agent creates to the selected runtime instead of a shell fallback', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        type: 'agent',
+        agent: 'codex',
+        cwd: '/Users/ebi/project',
+        command: process.env.SHELL ?? '/bin/sh',
+        displayName: 'Remote Codex worker',
+      }),
+      ctx
+    );
+
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall).toMatchObject({
+      type: 'agent',
+      agent: 'codex',
+      cwd: '/Users/ebi/project',
+      controlState: {
+        controlMode: 'agent-driven',
+        controlFreshness: 'fresh',
+        controlReason: 'requested-initial-agent-driven',
+      },
+    });
+    expect(createCall).not.toHaveProperty('command');
+  });
+
   it('turns requested initial agent-driven control mode into fresh control state before dispatch', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
