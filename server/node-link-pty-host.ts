@@ -12,6 +12,8 @@ import {
   createTmuxAttachmentFactory,
 } from './session-attachment.js';
 import type { NodeSessionResumeKind } from '../shared/node-manifest.js';
+import type { LocalRelayNode } from './local-node.js';
+import type { PtySession } from './types.js';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -37,6 +39,7 @@ export interface NodeLinkPtyHostDeps {
   defaultShell?: string;
   defaultCwd?: string;
   defaultEnv?: NodeJS.ProcessEnv;
+  localRelayNode?: LocalRelayNode;
   logger?: Logger;
   inputRecorder?: (input: { sessionId: string; data: string }) => void;
   /**
@@ -134,12 +137,81 @@ function resolveFactory(opts: NodeLinkPtyHostDeps): SessionAttachmentFactory {
   return createRawAttachmentFactory();
 }
 
+function createLiveSessionAttachment(session: PtySession): SessionAttachment {
+  let state: 'attached' | 'closed' = 'attached';
+  let exitEmitted = false;
+  const disposables: Array<{ dispose(): void }> = [];
+  const exitHandlers = new Set<(event: { exitCode: number; signal?: number }) => void>();
+
+  function emitExit(event: { exitCode: number; signal?: number }): void {
+    if (exitEmitted) return;
+    exitEmitted = true;
+    state = 'closed';
+    for (const disposable of disposables.splice(0)) disposable.dispose();
+    for (const handler of Array.from(exitHandlers)) handler(event);
+  }
+
+  const realExit = session.pty.onExit(({ exitCode, signal }) => {
+    const event: { exitCode: number; signal?: number } = {
+      exitCode: exitCode ?? 0,
+    };
+    if (signal !== undefined && signal !== null) event.signal = signal;
+    emitExit(event);
+  });
+  disposables.push(realExit);
+
+  return {
+    sessionId: session.id,
+    mode: 'raw',
+    onData(handler) {
+      if (state === 'closed') return { dispose: () => {} };
+      for (const chunk of session.scrollback) {
+        handler(Buffer.from(chunk, 'utf8'));
+      }
+      const disposable = session.pty.onData((chunk) => {
+        if (state === 'closed') return;
+        handler(Buffer.from(chunk, 'utf8'));
+      });
+      disposables.push(disposable);
+      return {
+        dispose: () => {
+          disposable.dispose();
+          const index = disposables.indexOf(disposable);
+          if (index >= 0) disposables.splice(index, 1);
+        },
+      };
+    },
+    onExit(handler) {
+      exitHandlers.add(handler);
+      return { dispose: () => void exitHandlers.delete(handler) };
+    },
+    write(bytes) {
+      if (state === 'closed') return;
+      session.pty.write(bytes.toString('utf8'));
+    },
+    resize(cols, rows) {
+      if (state === 'closed') return;
+      session.pty.resize(cols, rows);
+    },
+    async close() {
+      // Browser detach must not kill the node-local session that was created
+      // via sessions.create. It only closes this stream and leaves the real
+      // Codex/Claude/etc process running for later reattach.
+      emitExit({ exitCode: 0 });
+    },
+    status() {
+      return state;
+    },
+  };
+}
+
 export function createNodeLinkPtyHost(
   options: NodeLinkPtyHostOptions
 ): NodeLinkPtyHost {
   const logger = options.logger ?? createLogger('node-link-pty');
   const factory = resolveFactory(options);
   const inputRecorder = options.inputRecorder;
+  const localRelayNode = options.localRelayNode;
   const defaultShell = options.defaultShell ?? defaultLoginShell();
   const defaultCwd = options.defaultCwd ?? process.cwd();
   const defaultEnv = options.defaultEnv ?? process.env;
@@ -206,15 +278,19 @@ export function createNodeLinkPtyHost(
 
       let attachment: SessionAttachment;
       try {
-        attachment = await factory.open({
-          sessionId,
-          command,
-          args,
-          cwd,
-          env,
-          cols,
-          rows,
-        });
+        const liveSession = localRelayNode?.sessions.get(sessionId);
+        attachment =
+          liveSession?.mode === 'pty'
+            ? createLiveSessionAttachment(liveSession)
+            : await factory.open({
+                sessionId,
+                command,
+                args,
+                cwd,
+                env,
+                cols,
+                rows,
+              });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error(`pty attach failed (${streamId}): ${message}`);
