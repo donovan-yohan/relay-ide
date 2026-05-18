@@ -24,27 +24,28 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 
 ## Documentation Map
 
-| Category        | Path                               | When to look here                                                           |
-| --------------- | ---------------------------------- | --------------------------------------------------------------------------- |
-| Docs index      | `docs/README.md`                   | Current source-of-truth docs vs historical plans/spikes                     |
-| Architecture    | `docs/ARCHITECTURE.md`             | Module boundaries, data flow, API routes, ADR rules                         |
-| Workbench       | `docs/WORKBENCH_BOUNDARY.md`       | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance          |
-| Visual Design   | `DESIGN.md`                        | Product framing, TUI aesthetic, colors, spacing, buttons                    |
-| Design          | `docs/DESIGN.md`                   | Backend patterns, auth flow, PTY management, session types                  |
-| Frontend        | `docs/FRONTEND.md`                 | React 19 components, state management (Zustand + TanStack Query)            |
-| Quality         | `docs/QUALITY.md`                  | Test runner, test files, isolation patterns                                 |
-| Review          | `docs/REVIEW_GUIDANCE.md`          | Review agent config, question bank, escape log                              |
-| Deployment      | `docs/references/deployment.md`    | Publishing + branching (nightly/master + tags)                              |
-| Self-hosting    | `docs/SELF_HOSTING.md`             | Build Relay with Relay using isolated dev config/ports/tmux                 |
-| Security policy | `docs/SECURITY_POLICY.md`          | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary |
-| Hub/node pkg    | `docs/RELAY_HUB_NODE_PACKAGING.md` | Hub vs node command shape, npm package decision, install/update commands    |
-| Node bootstrap  | `docs/RELAY_NODE_BOOTSTRAP.md`     | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
-| Federated dev   | `docs/FEDERATED_DEV.md`            | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
-| Federated Relay | `docs/federated-relay.md`          | Hub/node architecture, pairing, routing, ADRs                               |
-| CLI gateway     | `docs/CLI_GATEWAY.md`              | Versioned `relay-ide v1 ... --json` contract for external agent adapters    |
-| Learnings       | `docs/LEARNINGS.md`                | Persistent cross-session learnings                                          |
-| Project skills  | `.chalk/skills/<name>/SKILL.md`    | Repo-local skills (see §Skills)                                             |
-| Work tracking   | GitHub Issues                      | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                     |
+| Category         | Path                                  | When to look here                                                           |
+| ---------------- | ------------------------------------- | --------------------------------------------------------------------------- |
+| Docs index       | `docs/README.md`                      | Current source-of-truth docs vs historical plans/spikes                     |
+| Architecture     | `docs/ARCHITECTURE.md`                | Module boundaries, data flow, API routes, ADR rules                         |
+| Workbench        | `docs/WORKBENCH_BOUNDARY.md`          | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance          |
+| Visual Design    | `DESIGN.md`                           | Product framing, TUI aesthetic, colors, spacing, buttons                    |
+| Design           | `docs/DESIGN.md`                      | Backend patterns, auth flow, PTY management, session types                  |
+| Frontend         | `docs/FRONTEND.md`                    | React 19 components, state management (Zustand + TanStack Query)            |
+| Quality          | `docs/QUALITY.md`                     | Test runner, test files, isolation patterns                                 |
+| Review           | `docs/REVIEW_GUIDANCE.md`             | Review agent config, question bank, escape log                              |
+| Deployment       | `docs/references/deployment.md`       | Publishing + branching (nightly/master + tags)                              |
+| Dogfood recovery | `docs/references/dogfood-recovery.md` | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate |
+| Self-hosting     | `docs/SELF_HOSTING.md`                | Build Relay with Relay using isolated dev config/ports/tmux                 |
+| Security policy  | `docs/SECURITY_POLICY.md`             | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary |
+| Hub/node pkg     | `docs/RELAY_HUB_NODE_PACKAGING.md`    | Hub vs node command shape, npm package decision, install/update commands    |
+| Node bootstrap   | `docs/RELAY_NODE_BOOTSTRAP.md`        | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
+| Federated dev    | `docs/FEDERATED_DEV.md`               | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
+| Federated Relay  | `docs/federated-relay.md`             | Hub/node architecture, pairing, routing, ADRs                               |
+| CLI gateway      | `docs/CLI_GATEWAY.md`                 | Versioned `relay-ide v1 ... --json` contract for external agent adapters    |
+| Learnings        | `docs/LEARNINGS.md`                   | Persistent cross-session learnings                                          |
+| Project skills   | `.chalk/skills/<name>/SKILL.md`       | Repo-local skills (see §Skills)                                             |
+| Work tracking    | GitHub Issues                         | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                     |
 
 ## Product Vocabulary
 

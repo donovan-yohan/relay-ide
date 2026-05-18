@@ -117,6 +117,8 @@ A v1 Relay-develops-Relay dogfood is acceptable only when this loop works end-to
 7. The assistant can resume from Relay `WorkContext` after the pair session with a compact summary, artifact refs, and audit refs sufficient to continue or close the task.
 8. Dogfood uses isolated Relay config/ports and has an operator recovery path for stuck sessions, bad node links, broken plugin events, and audit/diagnostics collection.
 
+The operator runbook for proving and recovering this loop is [`references/dogfood-recovery.md`](./references/dogfood-recovery.md). Keep that runbook evidence-based: a local self-host run proves only the isolated local instance, while live dogfood claims require current devbox hub, node registry, WorkContext, browser/mobile Active Work, redaction, and release-gate evidence.
+
 ## Hermes Agent integration boundary
 
 Relay needs a Hermes Agent plugin or integration layer that emits Relay-useful metadata without making Relay scrape raw Hermes profile state.
@@ -159,6 +161,7 @@ Non-goals for this integration:
 ## Sources
 
 - GitHub issue #552 body and product/planner comments.
+- GitHub issue #562 dogfood/recovery lane and deployed QA proof.
 - GitHub issue #553 acceptance criteria.
 - `docs/ARCHITECTURE.md` for hub/node, six-layer vocabulary, current/deferred implementation state.
 - `docs/federated-relay.md` for node/session routing, stale/offline states, and control/audit boundaries.
