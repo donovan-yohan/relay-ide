@@ -102,6 +102,19 @@ function asNullableString(value: unknown): string | null | undefined {
   return undefined;
 }
 
+function defaultTerminalCommand(): string {
+  if (process.env.SHELL) return process.env.SHELL;
+  return process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
+}
+
+function parseSessionCommand(
+  record: Record<string, unknown>,
+  type: SessionsCreateInput['type']
+): string | undefined {
+  return asString(record['command']) ??
+    (type === 'terminal' ? defaultTerminalCommand() : undefined);
+}
+
 function parseInitialControlMode(
   record: Record<string, unknown>,
   type: SessionsCreateInput['type']
@@ -183,7 +196,7 @@ function parseSessionsCreateInput(
   // node host's home directory so spawn() never receives undefined.
   const cwd = asString(record['cwd']) ?? os.homedir();
   input.cwd = cwd;
-  const command = asString(record['command']);
+  const command = parseSessionCommand(record, typeRaw);
   if (command !== undefined) input.command = command;
   const args = asStringArray(record['args']);
   if (args !== undefined) input.args = args;

@@ -134,6 +134,37 @@ describe('node-link-rpc-host', () => {
     expect(replyPayload.session).not.toHaveProperty('pid');
   });
 
+  it('defaults routed terminal creates to a shell command instead of the agent command', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { ctx } = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/Users/ebi/project',
+        workContextId: 'wc:issue-584',
+      }),
+      ctx
+    );
+
+    const createCall = (
+      localRelayNode.sessions.create as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as CreateParams;
+    expect(createCall).toMatchObject({
+      type: 'terminal',
+      cwd: '/Users/ebi/project',
+      command:
+        process.env.SHELL ??
+        (process.platform === 'win32' ? 'powershell.exe' : '/bin/sh'),
+      controlState: {
+        controlMode: 'human-driven',
+        controlFreshness: 'fresh',
+        controlReason: 'routed-session-created',
+      },
+    });
+  });
+
   it('turns requested initial agent-driven control mode into fresh control state before dispatch', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
