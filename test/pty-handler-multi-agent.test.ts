@@ -207,6 +207,45 @@ describe('PTY multi-agent hook/plugin wiring', () => {
     expect(output).toMatch(/HAS_HOOKS_JSON=true/);
   });
 
+  it('uses the selected agent framework command when no custom command is provided', async () => {
+    const codexStub = path.join(testHome, 'codex-stub.sh');
+    fs.writeFileSync(
+      codexStub,
+      `#!/bin/sh
+printf 'SELECTED_RUNTIME=codex\\n'
+sleep 10
+`,
+      'utf-8'
+    );
+    fs.chmodSync(codexStub, 0o755);
+
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      agent: 'codex',
+      args: [],
+      tmuxAttach: true,
+      frameworks: {
+        codex: {
+          commandOverride: codexStub,
+          eventSource: 'parser',
+        },
+      },
+    });
+    createdIds.push(result.id);
+
+    const output = await waitForScrollbackContains(
+      result.id,
+      'SELECTED_RUNTIME=codex'
+    );
+    expect(output).toContain('SELECTED_RUNTIME=codex');
+    const session = sessions.get(result.id) as PtySession;
+    expect(session.agent).toBe('codex');
+    expect(session.customCommand).toBeNull();
+  });
+
   it('resolves framework from config.frameworks overrides', () => {
     const result = sessions.create({
       repoName: 'test-repo',
