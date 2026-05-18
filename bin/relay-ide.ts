@@ -2059,15 +2059,18 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
   } catch {
     config = undefined;
   }
+  const localRelayNode = createLocalRelayNode({ nodeId: credential.nodeId });
   // #467: ask the manifest probe which resume mode this host supports
-  // so the pty host can pick tmux vs raw without re-probing.
+  // so the pty host can pick tmux vs raw without re-probing. The host also
+  // gets the local session boundary so routed browser attaches bind to the
+  // already-created native PTY session instead of spawning a fallback shell.
   const initialManifest = await getNodeManifest();
   const sessionResume = initialManifest.capabilities.sessionResume ?? 'none';
   const ptyHost = createNodeLinkPtyHost({
     nodeId: credential.nodeId,
     sessionResume,
+    localRelayNode,
   });
-  const localRelayNode = createLocalRelayNode({ nodeId: credential.nodeId });
   const nodeLinkClient: { current?: ReturnType<typeof createNodeLinkClient> } = {};
   const rpcHost = createNodeLinkRpcHost({
     localRelayNode,

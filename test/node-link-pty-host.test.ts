@@ -53,6 +53,67 @@ async function waitFor<T>(
   throw new Error('waitFor timed out');
 }
 
+function fakeLivePtySession(id = 'session-a') {
+  const dataHandlers: Array<(data: string) => void> = [];
+  const exitHandlers: Array<
+    (event: { exitCode: number | null; signal?: number }) => void
+  > = [];
+  const writes: string[] = [];
+  const resizes: Array<{ cols: number; rows: number }> = [];
+  const pty = {
+    pid: 123,
+    process: 'codex',
+    handleFlowControl: false,
+    onData(handler: (data: string) => void) {
+      dataHandlers.push(handler);
+      return {
+        dispose: () => {
+          const index = dataHandlers.indexOf(handler);
+          if (index >= 0) dataHandlers.splice(index, 1);
+        },
+      };
+    },
+    onExit(
+      handler: (event: { exitCode: number | null; signal?: number }) => void
+    ) {
+      exitHandlers.push(handler);
+      return {
+        dispose: () => {
+          const index = exitHandlers.indexOf(handler);
+          if (index >= 0) exitHandlers.splice(index, 1);
+        },
+      };
+    },
+    write(data: string) {
+      writes.push(data);
+    },
+    resize(cols: number, rows: number) {
+      resizes.push({ cols, rows });
+    },
+    clear() {},
+    pause() {},
+    resume() {},
+    kill() {},
+    emit(data: string) {
+      for (const handler of dataHandlers.slice()) handler(data);
+    },
+    exit(exitCode = 0) {
+      for (const handler of exitHandlers.slice()) handler({ exitCode });
+    },
+  };
+  return {
+    session: {
+      id,
+      mode: 'pty',
+      pty,
+      scrollback: ['selected runtime: codex\n'],
+    },
+    pty,
+    writes,
+    resizes,
+  };
+}
+
 describe('node link pty host (unit)', () => {
   it('opens attachment on pty.attach, forwards data, closes on detach', async () => {
     const sent: RelayNodeEnvelope[] = [];
@@ -111,6 +172,56 @@ describe('node link pty host (unit)', () => {
     expect(factory.records[0]!.closed).toBe(true);
     const exit = sent.find((e) => e.type === 'pty.exit');
     expect(exit).toBeDefined();
+  });
+
+  it('attaches routed streams to an existing node-local PTY session instead of spawning a shell fallback', async () => {
+    const sent: RelayNodeEnvelope[] = [];
+    const factory: MockAttachmentFactory = createMockAttachmentFactory();
+    const live = fakeLivePtySession('native-codex-session');
+    const host = createNodeLinkPtyHost({
+      nodeId: 'node-1',
+      attachmentFactory: factory,
+      defaultShell: '/bin/zsh',
+      localRelayNode: {
+        sessions: { get: () => live.session },
+      } as never,
+    });
+    const build = envelopeBuilder('node-1');
+    const ctx = {
+      send: (env: RelayNodeEnvelope) => sent.push(env),
+      buildEnvelope: build,
+    };
+
+    host.handle(
+      build('pty', 'pty.attach', {
+        streamId: 's1',
+        payload: { sessionId: 'native-codex-session', cols: 100, rows: 30 },
+      }),
+      ctx
+    );
+
+    const data = await waitFor(() => sent.find((e) => e.type === 'pty.data'));
+    expect(factory.attachments).toHaveLength(0);
+    expect((data.payload as { data: string }).data).toBe(
+      'selected runtime: codex\n'
+    );
+
+    live.pty.emit('codex live output\n');
+    await flush();
+    expect(
+      sent
+        .filter((e) => e.type === 'pty.data')
+        .map((e) => (e.payload as { data: string }).data)
+    ).toContain('codex live output\n');
+
+    host.handle(
+      build('pty', 'pty.input', {
+        streamId: 's1',
+        payload: { data: 'hello codex\n' },
+      }),
+      ctx
+    );
+    expect(live.writes).toEqual(['hello codex\n']);
   });
 
   it('emits pty.exit when the underlying attachment exits', async () => {
