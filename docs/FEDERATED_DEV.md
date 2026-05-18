@@ -17,6 +17,12 @@ when local/self-host evidence is enough, when devbox hub proof is required,
 how to restart the Mac node link, and how to clean stale local processes
 without killing the wrong Relay service.
 
+For Relay-develops-Relay closeout and recovery, see the
+[`dogfood and recovery runbook`](./references/dogfood-recovery.md). It covers
+the browser/mobile Active Work proof loop, stuck-session recovery, offline
+nodes, bad `WorkContext` metadata, plugin/event ingestion failures,
+diagnostics capture, and the no-force-merge release gate policy.
+
 ## TL;DR
 
 - One package: `relay-ide`. Hub vs node is a subcommand role, not a separate
@@ -175,6 +181,9 @@ dist-tag.
 - [`references/devbox-hub-deploy.md`](./references/devbox-hub-deploy.md) —
   devbox hub deploy, Mac node-link restart, verification evidence, and safe
   process cleanup.
+- [`references/dogfood-recovery.md`](./references/dogfood-recovery.md) —
+  Relay-develops-Relay proof loop, recovery matrix, diagnostics, and release
+  gate policy.
 - [`RELAY_NODE_BOOTSTRAP.md`](./RELAY_NODE_BOOTSTRAP.md) — pair / install /
   doctor flows for nodes (npm-installed shape).
 - [`RELAY_HUB_NODE_PACKAGING.md`](./RELAY_HUB_NODE_PACKAGING.md) — packaging

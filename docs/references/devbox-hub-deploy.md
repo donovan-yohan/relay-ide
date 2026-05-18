@@ -222,6 +222,7 @@ Devbox deploy evidence for <PR/issue>:
 ## See also
 
 - [`../FEDERATED_DEV.md`](../FEDERATED_DEV.md) — source dev across hub/node checkouts and protocol skew handling.
+- [`dogfood-recovery.md`](./dogfood-recovery.md) — Relay-develops-Relay proof loop, stuck-session/node/work-context/plugin recovery, diagnostics capture, and no-force-merge release gate policy.
 - [`../SELF_HOSTING.md`](../SELF_HOSTING.md) — isolated local self-host mode for testing Relay inside Relay.
 - [`../RELAY_NODE_BOOTSTRAP.md`](../RELAY_NODE_BOOTSTRAP.md) — node pairing, persistent node link, status, logs, and diagnostics.
 - [`deployment.md`](./deployment.md) — branch model, `@nightly` publish flow, and release verification.

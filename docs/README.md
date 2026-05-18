@@ -17,6 +17,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Review                | `REVIEW_GUIDANCE.md`              | Reviewer prompts, risk areas, escape log                                                |
 | Deployment            | `references/deployment.md`        | Branching, npm channels, publishing flow                                                |
 | Devbox deploy         | `references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene |
+| Dogfood recovery      | `references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate      |
 | Self-hosting          | `SELF_HOSTING.md`                 | Running Relay from inside Relay with isolated config/ports                              |
 | Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults                                          |
 | Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`     | Hub/node command shape and npm packaging decisions                                      |
