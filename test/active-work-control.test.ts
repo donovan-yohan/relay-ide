@@ -98,7 +98,28 @@ describe('active work mobile control helpers', () => {
       }),
       session({ nodeId: 'remote-a' })
     );
+    expect(routed.attachDisabledReason).toBeNull();
     expect(routed.smallInputDisabledReason).toBeNull();
+
+    const routedHumanTerminal = session({
+      id: 'remote-terminal-584',
+      nodeId: 'mac-node',
+      type: 'terminal',
+      agent: 'claude',
+      controlMode: 'human-driven',
+      agentState: 'idle',
+      cwd: '/Users/ebi/project',
+      globalSessionId: 'mac-node:remote-terminal-584',
+    });
+    const routedHumanTerminalState = activeWorkMobileControlState(
+      group({
+        node: { nodeId: 'mac-node', status: 'online', kind: 'remote' },
+        sessions: [routedHumanTerminal],
+      }),
+      routedHumanTerminal
+    );
+    expect(routedHumanTerminalState.attachDisabledReason).toBeNull();
+    expect(routedHumanTerminalState.smallInputDisabledReason).toBeNull();
   });
 
   it('disables controls for stale/offline read models and reports last-known state reasons', () => {
