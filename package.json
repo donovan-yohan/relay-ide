@@ -15,7 +15,8 @@
   "scripts": {
     "clean": "rm -rf dist/",
     "lint": "eslint .",
-    "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json && npm run lint",
+    "typecheck:test": "tsc --noEmit -p test/tsconfig.json",
+    "check": "tsc --noEmit && tsc --noEmit -p frontend/tsconfig.json && npm run typecheck:test && npm run lint",
     "build": "npm run clean && tsc && chmod +x dist/bin/relay-ide.js dist/scripts/agent-browser-cli.js && vite build --config frontend/vite.config.ts",
     "build:server": "tsc",
     "build:frontend": "vite build --config frontend/vite.config.ts",
