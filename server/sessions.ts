@@ -58,6 +58,10 @@ import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
+  deriveSessionDurability,
+  type SessionDurabilityState,
+} from '../shared/session-durability.js';
+import {
   isControlStateSummary,
   normalizeControlStateSummary,
   type ControlStateSummary,
@@ -457,6 +461,48 @@ export function fireStateChange(sessionId: string, state: AgentState): void {
   for (const cb of [...stateChangeCallbacks]) cb(sessionId, state);
 }
 
+type DurabilityChangeCallback = (event: {
+  sessionId: string;
+  from: SessionDurabilityState | undefined;
+  to: SessionDurabilityState;
+  at: string;
+}) => void;
+const durabilityChangeCallbacks: DurabilityChangeCallback[] = [];
+
+function onSessionDurabilityChanged(cb: DurabilityChangeCallback): () => void {
+  durabilityChangeCallbacks.push(cb);
+  return () => {
+    const idx = durabilityChangeCallbacks.indexOf(cb);
+    if (idx >= 0) durabilityChangeCallbacks.splice(idx, 1);
+  };
+}
+
+function emitDurabilityIfChanged(session: Session): SessionDurabilityState {
+  const next = deriveSessionDurability({
+    status: session.status,
+    agentState: session.agentState,
+    idle: session.idle,
+    ...(session.mode === 'pty' && session.cleanedUp ? { cleanedUp: true } : {}),
+  });
+  const previous = session._lastEmittedDurability;
+  if (previous === next) return next;
+  session._lastEmittedDurability = next;
+  const event = {
+    sessionId: session.id,
+    from: previous,
+    to: next,
+    at: new Date().toISOString(),
+  };
+  for (const cb of [...durabilityChangeCallbacks]) {
+    try {
+      cb(event);
+    } catch (err) {
+      logger.error('durabilityChange callback error:', err);
+    }
+  }
+  return next;
+}
+
 export function computeBackendState(session: {
   agentState: AgentState;
   idle: boolean;
@@ -683,6 +729,7 @@ function renew(input: {
 function list(): SessionSummary[] {
   const summaries = Array.from(sessions.values())
     .map((s): SessionSummary => {
+      const durability = emitDurabilityIfChanged(s);
       const summary = withLocalIdentity({
         id: s.id,
         type: s.type,
@@ -701,6 +748,7 @@ function list(): SessionSummary[] {
         idle: s.idle,
         customCommand: s.customCommand,
         status: s.status,
+        durability,
         needsBranchRename: !!s.needsBranchRename,
         agentState: s.agentState,
         currentActivity: s.currentActivity,
@@ -2134,6 +2182,7 @@ export {
   onStateChange,
   onSessionCreate,
   onSessionEnd,
+  onSessionDurabilityChanged,
   nextTerminalName,
   nextAgentName,
   serializeAll,

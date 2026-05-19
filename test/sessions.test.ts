@@ -192,6 +192,64 @@ describe('sessions', () => {
     expect(listed).not.toHaveProperty('branchName');
   });
 
+  it('list populates durability and emits a transition event on change', () => {
+    const transitions: Array<{
+      sessionId: string;
+      from: string | undefined;
+      to: string;
+    }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({
+        sessionId: event.sessionId,
+        from: event.from,
+        to: event.to,
+      });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-repo',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // First list() call must populate `durability` and emit the
+      // initial transition (undefined -> running-attached).
+      let summary = sessions.list().find((session) => session.id === result.id);
+      expect(summary?.durability).toBe('running-attached');
+      const initial = transitions.filter((t) => t.sessionId === result.id);
+      expect(initial).toHaveLength(1);
+      expect(initial[0]).toMatchObject({
+        from: undefined,
+        to: 'running-attached',
+      });
+
+      // No change between calls: emit must not refire.
+      sessions.list();
+      expect(transitions.filter((t) => t.sessionId === result.id)).toHaveLength(
+        1
+      );
+
+      // Flip the underlying session to `disconnected` and recompute.
+      const session = sessions.get(result.id);
+      expect(session).toBeTruthy();
+      session!.status = 'disconnected';
+      summary = sessions.list().find((entry) => entry.id === result.id);
+      expect(summary?.durability).toBe('running-detached');
+      const after = transitions.filter((t) => t.sessionId === result.id);
+      expect(after).toHaveLength(2);
+      expect(after[1]).toMatchObject({
+        from: 'running-attached',
+        to: 'running-detached',
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('get returns session by id', () => {
     const result = sessions.create({
       repoName: 'test-repo',
