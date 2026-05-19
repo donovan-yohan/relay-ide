@@ -235,13 +235,14 @@ A series of routed-PTY fixes landed against the dogfood loop. After a hub redepl
 ### #585 — routed terminal shell liveness (commit `7fdfc3b4`)
 
 - Failure mode on devbox: routed terminal creates from the browser arrived at the node-link RPC host without an explicit `command`. node-pty would spawn with no shell, exit immediately, and Active Work would fall back to last-known-only. Mobile users saw a dead tab almost instantly after creation.
-- Verification: create a routed terminal from the browser with no custom command; confirm `relay-ide hub nodes --json` still shows the session as live, and the PTY shows the user's shell prompt (or `/bin/sh` on hosts without `SHELL`). The session must stay `controlFreshness: fresh` after the first PTY frame.
-- Mac node-link sequence: this fix is hub-side parsing only; do not restart the node-link unless you actually changed node code. If you did, follow the standard launchd sequence:
+- Verification: create a routed terminal from the browser with no custom command; confirm `relay-ide v1 sessions list --json` (versioned CLI gateway, requires `RELAY_IDE_BROWSER_TOKEN`) still shows the session as live, and the PTY shows the user's shell prompt (or `/bin/sh` on hosts without `SHELL`). The session must stay `controlFreshness: fresh` after the first PTY frame.
+- Mac node-link sequence: the fallback (`defaultTerminalCommand()`) is implemented in `server/node-link-rpc-host.ts`, which runs inside `relay-ide node link` on the Mac node — not on the hub. A hub-only redeploy leaves an old node-link without the fix, so the liveness regression persists. Update the node package and restart the node-link before validating:
 
   ```bash
-  relay-ide node status
-  launchctl print gui/$(id -u)/com.relay-ide
+  npm install -g relay-ide@nightly   # or scripts/dev-resync.sh for source mode
+  relay-ide --version                # confirm node SHA matches the hub
   launchctl kickstart -k gui/$(id -u)/com.relay-ide
+  relay-ide node status
   relay-ide node logs
   ```
 
@@ -252,7 +253,7 @@ A series of routed-PTY fixes landed against the dogfood loop. After a hub redepl
   - POST a routed agent create against `macbook-relay-node` (`type: agent`, `agent: codex` — substitute whichever agent `relay-ide hub doctor` reports as `available` for that node).
   - Confirm Active Work shows `type: agent`, `controlMode: agent-driven`, `controlFreshness: fresh`, with a WorkContext linked.
   - Attach from desktop AND mobile. The bounded PTY frame must be the agent runtime UI (Codex/Hermes/Claude banner), not a shell prompt. Re-attach from a second client and confirm both clients see the same live session — that exercises the `node-link-pty-host` "attach to live native sessions" path.
-- Mac node-link sequence: #587/#588 split between hub and node. `node-link-rpc-host` command suppression for agent creates lives on the hub; `node-link-pty-host` live-session attach lives on the node. If the Mac node is on an older nightly than the hub, the routed agent will spawn a shell again. Update and restart the node-link:
+- Mac node-link sequence: both halves of #587/#588 live on the Mac node. `node-link-rpc-host` command suppression for agent creates is in `server/node-link-rpc-host.ts`; `node-link-pty-host` live-session attach is in `server/node-link-pty-host.ts`. Both run inside `relay-ide node link`, so a hub-only redeploy is insufficient. If the Mac node is on an older nightly than the hub, the routed agent will spawn a shell again. Update and restart the node-link:
 
   ```bash
   npm install -g relay-ide@nightly   # or scripts/dev-resync.sh for source mode
