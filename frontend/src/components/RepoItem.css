@@ -421,6 +421,19 @@
   color: var(--accent);
 }
 
+.repo-kind-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 1px 4px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
 .repo-divider {
   height: 1px;
   background: var(--border);

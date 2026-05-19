@@ -705,14 +705,14 @@ function TerminalAreaContent({
 
       {viewMode === 'empty' && (
         <EmptyState
-          heading="add a repo to get started"
+          heading="add a project to get started"
           description="point to any folder on your machine. git repos get pr tracking and branch management."
-          actionLabel="+ add repo"
+          actionLabel="+ add project"
           onAction={onAddWorkspace}
           hint={
             onboardingHints.showNoReposHint ? (
               <Hint id={HINT_NO_REPOS} variant="inline-text">
-                relay-ide manages claude code sessions across your repos.
+                relay-ide manages agents and terminals across your projects.
               </Hint>
             ) : undefined
           }
@@ -755,7 +755,9 @@ function TerminalAreaContent({
 
       {viewMode === 'session' && (
         <>
-          {activeRepoPath && activeSession?.repoPath === activeRepoPath && (
+          {activeRepoPath &&
+            activeSession?.repoPath === activeRepoPath &&
+            activeWorkspace?.kind === 'repo' && (
             <PrTopBar
               workspacePath={activeRepoPath}
               utilityRailWorkspacePath={utilityRailStateKey}

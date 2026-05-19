@@ -41,7 +41,7 @@ import './CustomizeSessionDialog.css';
 
 export interface CustomizeSessionDialogHandle {
   open(
-    workspace: { name: string; path: string },
+    workspace: { name: string; path: string; isGitRepo?: boolean },
     worktreePath?: string | null,
     preselectedFramework?: AgentType
   ): Promise<void>;
@@ -146,8 +146,9 @@ export interface EnvironmentPickerInput {
   selectedGroupId: string | null;
   selectedNodeId: NodeId | null;
   selectedCheckoutId: string | null;
-  fallbackWorkspace: { name: string; path: string };
+  fallbackWorkspace: { name: string; path: string; isGitRepo?: boolean };
   fallbackWorktreePath: string | null;
+  sessionType?: 'agent' | 'terminal';
 }
 
 const CHECKOUT_ROOT_PREFIX = 'repo:';
@@ -199,20 +200,23 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
 }
 
 function fallbackGroupFor(
-  workspace: { name: string; path: string },
+  workspace: { name: string; path: string; isGitRepo?: boolean },
   worktreePath: string | null
 ): AggregatedRepoInventoryGroup {
   const repoInstanceId = `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(workspace.path)}`;
-  const worktrees = worktreePath
-    ? [
-        {
-          worktreeInstanceId: `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(worktreePath)}`,
-          localPath: worktreePath,
-          branchName: null,
-          displayName: worktreePath.split('/').pop() || worktreePath,
-        } satisfies RepoInventoryWorktreeInstance,
-      ]
-    : [];
+  // Only include worktree entries for git repos — non-git directories have no branches
+  const isGit = workspace.isGitRepo !== false;
+  const worktrees =
+    isGit && worktreePath
+      ? [
+          {
+            worktreeInstanceId: `${DEFAULT_LOCAL_NODE_ID}:${encodeURIComponent(worktreePath)}`,
+            localPath: worktreePath,
+            branchName: null,
+            displayName: worktreePath.split('/').pop() || worktreePath,
+          } satisfies RepoInventoryWorktreeInstance,
+        ]
+      : [];
   return {
     groupId: repoInstanceId,
     repoIdentity: null,
@@ -226,7 +230,7 @@ function fallbackGroupFor(
         nodeId: DEFAULT_LOCAL_NODE_ID,
         localPath: workspace.path,
         name: workspace.name,
-        isGitRepo: true,
+        isGitRepo: isGit,
         defaultBranch: null,
         currentBranch: null,
         repoIdentity: null,
@@ -260,9 +264,13 @@ function findGroupForPath(
 }
 
 function labelForRepo(group: AggregatedRepoInventoryGroup): string {
-  return group.repoIdentity
-    ? `${group.displayName} — ${group.repoIdentity}`
-    : `${group.displayName} — unidentified repo`;
+  if (group.repoIdentity) return `${group.displayName} — ${group.repoIdentity}`;
+  // If every instance in the group is a non-git directory, label it accordingly
+  const allNonGit =
+    group.instances.length > 0 &&
+    group.instances.every((inst) => !inst.isGitRepo);
+  if (allNonGit) return `${group.displayName} — non-git directory`;
+  return `${group.displayName} — unidentified repo`;
 }
 
 function capabilityProblem(
@@ -274,23 +282,42 @@ function capabilityProblem(
   return `${name} ${capability}`;
 }
 
-function nodeBlockReason(
-  node: HubNodeSummary | null,
-  selectedAgent: AgentType
+export function nodeShellBlockReason(
+  node: HubNodeSummary | null
 ): string | null {
   if (!node) return 'node availability unknown';
   if (node.status === 'offline') return 'node is offline';
   if (node.status === 'stale') return 'heartbeat is stale';
   if (node.status === 'revoked') return 'node is revoked';
+  const versionState = node.version?.state;
+  if (versionState === 'incompatible') return 'node protocol is incompatible';
+  if (versionState === 'version-skew') return 'node has version skew';
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
   const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');
   if (tmuxProblem) return `${tmuxProblem} on ${node.displayName}`;
+  return null;
+}
+
+export function nodeAgentBlockReason(
+  node: HubNodeSummary | null,
+  agent: AgentType
+): string | null {
+  const shellReason = nodeShellBlockReason(node);
+  if (shellReason) return shellReason;
+  if (!node) return null;
   const agentProblem = capabilityProblem(
-    node.capabilities.agents[selectedAgent],
-    selectedAgent
+    node.capabilities.agents[agent],
+    agent
   );
   return agentProblem ? `${agentProblem} on ${node.displayName}` : null;
+}
+
+function nodeBlockReason(
+  node: HubNodeSummary | null,
+  selectedAgent: AgentType
+): string | null {
+  return nodeAgentBlockReason(node, selectedAgent);
 }
 
 function uniqueInstancesByNode(
@@ -384,14 +411,18 @@ function nodeChoiceIdsFor(
 function nodeChoicesFor(
   selectedGroup: AggregatedRepoInventoryGroup,
   input: EnvironmentPickerInput,
-  nodeById: Map<NodeId, HubNodeSummary>
+  nodeById: Map<NodeId, HubNodeSummary>,
+  sessionType: 'agent' | 'terminal' = 'agent'
 ): EnvironmentChoice[] {
   const seenNodeChoices = new Set<NodeId>();
   return nodeChoiceIdsFor(selectedGroup, input.nodes).flatMap((nodeId) => {
     if (seenNodeChoices.has(nodeId)) return [];
     seenNodeChoices.add(nodeId);
     const node = nodeById.get(nodeId) ?? null;
-    const reason = nodeBlockReason(node, input.selectedAgent);
+    const reason =
+      sessionType === 'terminal'
+        ? nodeShellBlockReason(node)
+        : nodeBlockReason(node, input.selectedAgent);
     return [
       {
         value: nodeId,
@@ -478,10 +509,11 @@ function shouldShowEnvironmentPicker(
 export function buildEnvironmentPickerModel(
   input: EnvironmentPickerInput
 ): EnvironmentPickerModel {
+  const sessionType = input.sessionType ?? 'agent';
   const groups = environmentGroupsFor(input);
   const selectedGroup = selectedEnvironmentGroup(groups, input);
   const nodeById = nodeMapFor(input);
-  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById);
+  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById, sessionType);
   const selectedNodeChoice = selectedNodeChoiceFor(
     nodeChoices,
     input.selectedNodeId
@@ -518,12 +550,15 @@ export function buildEnvironmentPickerModel(
   };
 }
 
+type DialogSessionType = 'agent' | 'terminal';
+
 interface FormState {
   claudeArgsInput: string;
   selectedAgent: AgentType;
   sessionMode: SessionLaunchMode;
   yoloMode: boolean;
   continueExisting: boolean;
+  dialogSessionType: DialogSessionType;
 }
 
 function defaultForm(): FormState {
@@ -533,7 +568,19 @@ function defaultForm(): FormState {
     sessionMode: 'pty',
     yoloMode: false,
     continueExisting: false,
+    dialogSessionType: 'agent',
   };
+}
+
+export function getSessionModeOptionsForType(
+  frameworks: FrameworkInfo[],
+  selectedAgent: AgentType,
+  dialogSessionType: DialogSessionType
+): SessionModeOption[] {
+  if (dialogSessionType === 'terminal') {
+    return [{ value: 'pty', label: 'shell' }];
+  }
+  return getSessionModeOptions(frameworks, selectedAgent);
 }
 
 async function createSessionFromForm(
@@ -542,14 +589,37 @@ async function createSessionFromForm(
   sessionLane: SessionLane,
   remoteCwd?: string
 ) {
-  const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
   const remoteNodeSelected = environment.nodeId !== DEFAULT_LOCAL_NODE_ID;
-  const sessionMode: SessionLaunchMode = remoteNodeSelected
-    ? 'pty'
-    : form.sessionMode;
   const { cols, rows } = estimateTerminalDimensions(
     useUiStore.getState().terminalFontSize
   );
+
+  if (form.dialogSessionType === 'terminal') {
+    const baseOptions = {
+      nodeId: environment.nodeId,
+      type: 'terminal' as const,
+      mode: 'pty' as const,
+      sessionLane,
+      cols,
+      rows,
+    };
+    if (remoteNodeSelected) {
+      return createAgentSession({
+        ...baseOptions,
+        cwd: cleanCwd(remoteCwd),
+      });
+    }
+    return createAgentSession({
+      ...baseOptions,
+      repoPath: environment.repoPath || undefined,
+      cwd: environment.repoPath || undefined,
+    });
+  }
+
+  const claudeArgs = form.claudeArgsInput.trim().split(/\s+/).filter(Boolean);
+  const sessionMode: SessionLaunchMode = remoteNodeSelected
+    ? 'pty'
+    : form.sessionMode;
   const baseOptions = {
     nodeId: environment.nodeId,
     type: 'agent' as const,
@@ -584,6 +654,7 @@ interface BodyProps {
   onFormChange: (patch: Partial<FormState>) => void;
   onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
   onRemoteCwdChange: (cwd: string) => void;
+  onDialogSessionTypeChange: (t: DialogSessionType) => void;
 }
 
 interface EnvironmentSelection {
@@ -601,6 +672,7 @@ function CustomizeSessionBody({
   onFormChange,
   onEnvironmentChange,
   onRemoteCwdChange,
+  onDialogSessionTypeChange,
 }: BodyProps) {
   const frameworks = useConfigStore((state) => state.frameworks);
   const frameworkOptions =
@@ -622,17 +694,21 @@ function CustomizeSessionBody({
           } satisfies FrameworkInfo,
         ];
 
+  const isTerminal = form.dialogSessionType === 'terminal';
   const remoteNodeSelected =
     environmentModel.selectedNodeId !== DEFAULT_LOCAL_NODE_ID;
-  const modeOptions = remoteNodeSelected
-    ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
-    : getSessionModeOptions(frameworkOptions, form.selectedAgent);
+  const modeOptions = isTerminal
+    ? ([{ value: 'pty', label: 'shell' }] satisfies SessionModeOption[])
+    : remoteNodeSelected
+      ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
+      : getSessionModeOptions(frameworkOptions, form.selectedAgent);
   const selectedFramework = frameworkOptions.find(
     (framework) => framework.id === form.selectedAgent
   );
   const selectedUnavailable =
-    selectedFramework && !isFrameworkAvailable(selectedFramework);
+    !isTerminal && selectedFramework && !isFrameworkAvailable(selectedFramework);
   const selectedWebUnavailable =
+    !isTerminal &&
     selectedFramework &&
     form.sessionMode === 'web' &&
     !isFrameworkWebAvailable(selectedFramework);
@@ -642,6 +718,24 @@ function CustomizeSessionBody({
 
   return (
     <div className="customize-session-body-fields">
+      <div className="customize-session-dialog-field">
+        <label className="customize-session-dialog-label" htmlFor="cs-session-type">
+          mode
+        </label>
+        <select
+          id="cs-session-type"
+          className="customize-session-dialog-select"
+          data-track="dialog.customize-session.session-type"
+          value={form.dialogSessionType}
+          onChange={(e) => {
+            const next = e.currentTarget.value as DialogSessionType;
+            onDialogSessionTypeChange(next);
+          }}
+        >
+          <option value="agent">agent</option>
+          <option value="terminal">terminal</option>
+        </select>
+      </div>
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
       )}
@@ -651,8 +745,8 @@ function CustomizeSessionBody({
           aria-label="environment picker"
         >
           <div className="customize-session-environment-copy">
-            choose repo identity, execution node, then node-local checkout. no
-            live cross-host pty migration or automatic filesystem sync.
+            choose execution node, then directory or git checkout on that node.
+            agents are configured separately below.
           </div>
           {environmentModel.repoChoices.length > 1 && (
             <div className="customize-session-dialog-field">
@@ -660,7 +754,7 @@ function CustomizeSessionBody({
                 className="customize-session-dialog-label"
                 htmlFor="cs-repo"
               >
-                repo identity
+                project
               </label>
               <select
                 id="cs-repo"
@@ -780,9 +874,45 @@ function CustomizeSessionBody({
             )}
         </section>
       )}
+      {!isTerminal && (
+        <AgentOnlyFields
+          form={form}
+          frameworkOptions={frameworkOptions}
+          modeOptions={modeOptions}
+          selectedFramework={selectedFramework}
+          selectedUnavailable={!!selectedUnavailable}
+          selectedWebUnavailable={!!selectedWebUnavailable}
+          onFormChange={onFormChange}
+        />
+      )}
+    </div>
+  );
+}
+
+interface AgentOnlyFieldsProps {
+  form: FormState;
+  frameworkOptions: FrameworkInfo[];
+  modeOptions: SessionModeOption[];
+  selectedFramework: FrameworkInfo | undefined;
+  selectedUnavailable: boolean;
+  selectedWebUnavailable: boolean;
+  onFormChange: (patch: Partial<FormState>) => void;
+}
+
+function AgentOnlyFields({
+  form,
+  frameworkOptions,
+  modeOptions,
+  selectedFramework,
+  selectedUnavailable,
+  selectedWebUnavailable,
+  onFormChange,
+}: AgentOnlyFieldsProps) {
+  return (
+    <>
       <div className="customize-session-dialog-field">
         <label className="customize-session-dialog-label" htmlFor="cs-agent">
-          coding agent
+          agent
         </label>
         <select
           id="cs-agent"
@@ -811,7 +941,7 @@ function CustomizeSessionBody({
             </option>
           ))}
         </select>
-        {selectedUnavailable && (
+        {selectedUnavailable && selectedFramework && (
           <div className="customize-session-field-note">
             {selectedFramework.availability?.reason ??
               `${selectedFramework.displayName} is not installed`}
@@ -844,7 +974,7 @@ function CustomizeSessionBody({
               </option>
             ))}
           </select>
-          {selectedWebUnavailable && (
+          {selectedWebUnavailable && selectedFramework && (
             <div className="customize-session-field-note">
               {selectedFramework.webAvailability?.reason ??
                 `${selectedFramework.displayName} web runtime is not available`}
@@ -880,8 +1010,33 @@ function CustomizeSessionBody({
           autoComplete="off"
         />
       </div>
-    </div>
+    </>
   );
+}
+
+function validateAgentFramework(
+  frameworks: FrameworkInfo[],
+  form: FormState
+): string | null {
+  if (form.dialogSessionType !== 'agent') return null;
+  const selectedFramework = frameworks.find((f) => f.id === form.selectedAgent);
+  if (selectedFramework && !isFrameworkAvailable(selectedFramework)) {
+    return (
+      selectedFramework.availability?.reason ??
+      `${selectedFramework.displayName} is not installed`
+    );
+  }
+  if (
+    selectedFramework &&
+    form.sessionMode === 'web' &&
+    !isFrameworkWebAvailable(selectedFramework)
+  ) {
+    return (
+      selectedFramework.webAvailability?.reason ??
+      `${selectedFramework.displayName} web runtime is not available`
+    );
+  }
+  return null;
 }
 
 const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
@@ -892,6 +1047,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [workspacePath, setWorkspacePath] = useState('');
     const [worktreePath, setWorktreePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState('');
+    const [workspaceIsGitRepo, setWorkspaceIsGitRepo] = useState<boolean | undefined>(undefined);
     const [form, setForm] = useState<FormState>(defaultForm());
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -916,18 +1072,25 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           selectedGroupId: environmentSelection.selectedGroupId,
           selectedNodeId: environmentSelection.selectedNodeId,
           selectedCheckoutId: environmentSelection.selectedCheckoutId,
-          fallbackWorkspace: { name: workspaceName, path: workspacePath },
+          fallbackWorkspace: {
+            name: workspaceName,
+            path: workspacePath,
+            ...(workspaceIsGitRepo !== undefined ? { isGitRepo: workspaceIsGitRepo } : {}),
+          },
           fallbackWorktreePath: worktreePath,
+          sessionType: form.dialogSessionType,
         }),
       [
         inventory,
         nodes,
         form.selectedAgent,
+        form.dialogSessionType,
         environmentSelection.selectedGroupId,
         environmentSelection.selectedNodeId,
         environmentSelection.selectedCheckoutId,
         workspaceName,
         workspacePath,
+        workspaceIsGitRepo,
         worktreePath,
       ]
     );
@@ -967,7 +1130,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
 
     useImperativeHandle(ref, () => ({
       async open(
-        workspace: { name: string; path: string },
+        workspace: { name: string; path: string; isGitRepo?: boolean },
         nextWorktreePath?: string | null,
         preselectedFramework?: AgentType
       ) {
@@ -985,6 +1148,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setWorkspacePath(workspace.path);
         setWorktreePath(nextWorktreePath ?? null);
         setWorkspaceName(workspace.name);
+        setWorkspaceIsGitRepo(workspace.isGitRepo);
         const [inventoryResult, nodesResult] = await Promise.allSettled([
           fetchRepoInventory(),
           fetchHubNodes(),
@@ -1013,6 +1177,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           ),
           yoloMode: config.defaultYolo,
           continueExisting: config.defaultContinue,
+          dialogSessionType: 'agent',
         });
         shellRef.current?.open();
       },
@@ -1026,25 +1191,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       rememberCwd = true
     ) {
       if (!workspacePath || creating) return;
-      const selectedFramework = frameworks.find(
-        (framework) => framework.id === form.selectedAgent
-      );
-      if (selectedFramework && !isFrameworkAvailable(selectedFramework)) {
-        setError(
-          selectedFramework.availability?.reason ??
-            `${selectedFramework.displayName} is not installed`
-        );
-        return;
-      }
-      if (
-        selectedFramework &&
-        form.sessionMode === 'web' &&
-        !isFrameworkWebAvailable(selectedFramework)
-      ) {
-        setError(
-          selectedFramework.webAvailability?.reason ??
-            `${selectedFramework.displayName} web runtime is not available`
-        );
+      const frameworkError = validateAgentFramework(frameworks, form);
+      if (frameworkError) {
+        setError(frameworkError);
         return;
       }
       if (environmentModel.selectedNodeReason) {
@@ -1123,13 +1272,14 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             Boolean(environmentModel.selectedNodeReason) ||
             (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
             creating ||
-            frameworks.some(
-              (framework) =>
-                framework.id === form.selectedAgent &&
-                (!isFrameworkAvailable(framework) ||
-                  (form.sessionMode === 'web' &&
-                    !isFrameworkWebAvailable(framework)))
-            )
+            (form.dialogSessionType === 'agent' &&
+              frameworks.some(
+                (framework) =>
+                  framework.id === form.selectedAgent &&
+                  (!isFrameworkAvailable(framework) ||
+                    (form.sessionMode === 'web' &&
+                      !isFrameworkWebAvailable(framework)))
+              ))
           }
         >
           {creating ? 'Creating...' : 'Start Session'}
@@ -1160,6 +1310,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             setEnvironmentSelection((selection) => ({ ...selection, ...patch }))
           }
           onRemoteCwdChange={setRemoteCwd}
+          onDialogSessionTypeChange={(t) =>
+            setForm((f) => ({ ...f, dialogSessionType: t }))
+          }
         />
       </DialogShell>
     );

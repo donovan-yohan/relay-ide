@@ -178,6 +178,14 @@
   flex-shrink: 0;
 }
 
+.non-git-error {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--status-error);
+  margin: 4px 0 0 0;
+  padding: 0;
+}
+
 .skeleton {
   pointer-events: none;
 }

@@ -834,15 +834,28 @@ function sendSessionCreateError(
   });
 }
 
-function validateSessionCreateRequest(
+export function validateSessionCreateRequest(
   repoPath: string | undefined,
+  cwd: string | undefined,
+  type: 'agent' | 'terminal' | undefined,
+  config: Config,
   workContextStore: WorkContextStore,
   workContextId: string | undefined,
   res: express.Response
 ): boolean {
-  if (!repoPath) {
-    res.status(400).json({ error: 'repoPath is required' });
-    return false;
+  const configured = new Set(config.repos ?? []);
+  const sessionType = type ?? 'agent';
+  if (sessionType === 'agent') {
+    if (!repoPath || !configured.has(repoPath)) {
+      res.status(400).json({ error: 'repoPath is required for agent sessions' });
+      return false;
+    }
+  } else {
+    const anchor = repoPath ?? cwd ?? '';
+    if (!configured.has(anchor)) {
+      res.status(400).json({ error: 'terminal sessions require a cwd that is a configured project path' });
+      return false;
+    }
   }
   if (!workContextId) return true;
   if (workContextStore.get(workContextId)) return true;
@@ -2939,26 +2952,24 @@ async function main(): Promise<void> {
       };
     };
 
+    // Read config once for the lifetime of this request
+    const freshConfig = getConfig();
+
+    // For terminal sessions where only cwd/worktreePath is set, fall back to that as repoPath
+    // Use repoPath if set; for terminal-only sessions the validated anchor was cwd/worktreePath
+    const checkedRepoPath = repoPath || worktreePath || '';
+
     if (
       !validateSessionCreateRequest(
         repoPath,
+        checkedRepoPath,
+        type,
+        freshConfig,
         workContextStore,
         workContextId,
         res
       )
     ) {
-      return;
-    }
-
-    const checkedRepoPath = repoPath ?? '';
-
-    // Read config once for the lifetime of this request
-    const freshConfig = getConfig();
-
-    // Validate repoPath is a configured workspace
-    const configuredWorkspaces = freshConfig.repos ?? [];
-    if (!configuredWorkspaces.includes(checkedRepoPath)) {
-      res.status(400).json({ error: 'repoPath is not a configured workspace' });
       return;
     }
 
@@ -3086,7 +3097,7 @@ async function main(): Promise<void> {
     if (ticketContext) {
       const ticketErr = validateTicketContext(
         ticketContext,
-        configuredWorkspaces
+        freshConfig.repos ?? []
       );
       if (ticketErr) {
         res.status(400).json({ error: ticketErr });
