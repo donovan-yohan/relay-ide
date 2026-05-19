@@ -23,6 +23,7 @@
 
 import type { JSX } from 'react';
 
+import type { RelayCapabilityBit } from './security-policy.js';
 import type {
   ArtifactRef,
   CapabilityGrantRef,
@@ -124,11 +125,12 @@ interface WorkbenchBlockDescriptorBase {
   /** User-visible title shown in the block's title bar. */
   title: string;
   /**
-   * Capability strings the block requires before it may render.
+   * Capability bits the block requires before it may render.
    * Evaluated against `WorkbenchBlockContext.capabilityGrants` by the
-   * renderer host (slice 2).  Examples: `'pty:attach'`, `'rpc:fs:read'`.
+   * renderer host (slice 2).  Examples: `'session:attach'`, `'rpc:fs:read'`.
+   * Typed as `RelayCapabilityBit` (closed enum) to prevent invalid bit strings.
    */
-  capabilityRequirements: ReadonlyArray<string>;
+  capabilityRequirements: ReadonlyArray<RelayCapabilityBit>;
 }
 
 /** Renders a PTY-backed terminal session. */
@@ -259,8 +261,16 @@ export type WorkbenchBlockAuditEmitter = (event: {
 
 /**
  * Runtime context provided by the Workbench host to every block renderer.
- * All fields are optional because a block may render before context is fully
- * hydrated (e.g. the node is offline, or the WorkContext hasn't loaded yet).
+ *
+ * Field optionality:
+ *   - Optional (`?`): resource refs that depend on which context shape is
+ *     active — `workContext`, `session`, `node`, `artifact`. A block may
+ *     render before these are hydrated (e.g. the node is offline, or the
+ *     WorkContext hasn't loaded yet).
+ *   - Always present (required): host-provided service helpers —
+ *     `capabilityGrants` (non-null, at least an empty array),
+ *     `requestCapability`, `close`, and `emitAuditEvent`. The host always
+ *     supplies these regardless of hydration state.
  */
 export interface WorkbenchBlockContext {
   /** The active WorkContext envelope for this block, if one is bound. */
@@ -282,7 +292,8 @@ export interface WorkbenchBlockContext {
   artifact?: ArtifactRef;
   /**
    * Scoped capability grants authorising this block's operations.
-   * Evaluated by the renderer host before mounting the component.
+   * Always present (may be empty). Evaluated by the renderer host before
+   * mounting the component.
    * Reuses `CapabilityGrantRef` from shared/work-context.ts.
    */
   capabilityGrants: ReadonlyArray<CapabilityGrantRef>;
@@ -292,10 +303,12 @@ export interface WorkbenchBlockContext {
   /**
    * Request a capability at runtime.  Returns `true` if the grant is
    * allowed (either silently or after user confirmation), `false` if denied.
+   * Accepts only known `RelayCapabilityBit` values (closed enum) to prevent
+   * requesting non-existent capabilities.
    *
    * NOT implemented in this slice — type definition only.
    */
-  requestCapability: (name: string) => Promise<boolean>;
+  requestCapability: (name: RelayCapabilityBit) => Promise<boolean>;
 
   /**
    * Signal to the Workbench host that this block should be closed and
@@ -323,11 +336,15 @@ export interface WorkbenchBlockContext {
  * Props for a Workbench block renderer component.
  * The generic `K` constraint narrows `descriptor` to the variant matching the
  * registered kind, enabling type-safe registration in slice 2.
+ *
+ * Renderers signal close via `context.close()` — there is no separate `onClose`
+ * prop. Consolidating onto `context.close` keeps the close signal in the
+ * environmental service alongside the other host-provided helpers, avoiding
+ * a redundant prop with identical semantics.
  */
 export interface WorkbenchBlockRendererProps<K extends WorkbenchBlockKind> {
   descriptor: Extract<WorkbenchBlockDescriptor, { kind: K }>;
   context: WorkbenchBlockContext;
-  onClose: () => void;
 }
 
 /**
@@ -335,8 +352,9 @@ export interface WorkbenchBlockRendererProps<K extends WorkbenchBlockKind> {
  *
  * Usage:
  * ```ts
- * const TerminalBlock: WorkbenchBlockRenderer<'terminal'> = ({ descriptor, context, onClose }) => {
+ * const TerminalBlock: WorkbenchBlockRenderer<'terminal'> = ({ descriptor, context }) => {
  *   // descriptor.meta.sessionRef is SessionRef
+ *   // Call context.close() to signal the host to remove this block.
  *   return <XtermRenderer session={descriptor.meta.sessionRef} />;
  * };
  * ```

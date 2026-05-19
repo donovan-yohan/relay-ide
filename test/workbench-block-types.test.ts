@@ -15,6 +15,7 @@ import type {
   ArtifactBlockDescriptor,
   CustomBlockDescriptor,
   FileBlockDescriptor,
+  JsonValue,
   MarkdownBlockDescriptor,
   TerminalBlockDescriptor,
   WorkContextBlockDescriptor,
@@ -23,6 +24,8 @@ import type {
   WorkbenchBlockRenderer,
   WorkbenchBlockRendererProps,
 } from '../shared/workbench-block-types.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import type { WorkContextRedactionClass } from '../shared/work-context.js';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -45,9 +48,12 @@ function assertType<Expected>(_value: Expected): void {
 function makeContext() {
   return {
     capabilityGrants: [],
-    requestCapability: async (_name: string) => true,
+    requestCapability: async (_name: RelayCapabilityBit) => true,
     close: () => {},
-    emitAuditEvent: (_event: { type: string }) => {},
+    emitAuditEvent: (_event: {
+      type: string;
+      payload?: Record<string, JsonValue>;
+    }) => {},
   } as const;
 }
 
@@ -63,7 +69,7 @@ function makePrivacy() {
     redaction: {
       redacted: false,
       strategy: 'none' as const,
-      classes: [] as string[],
+      classes: [] as WorkContextRedactionClass[],
     },
   };
 }
@@ -96,7 +102,7 @@ describe('WorkbenchBlockDescriptor discriminated union narrowing', () => {
       kind: 'terminal',
       id: 'b-1',
       title: 'My Terminal',
-      capabilityRequirements: ['pty:attach'],
+      capabilityRequirements: ['session:attach'],
       meta: {
         sessionRef: {
           nodeId: 'local',
@@ -217,7 +223,6 @@ describe('WorkbenchBlockRenderer generic constraint', () => {
     const _TerminalRenderer: WorkbenchBlockRenderer<'terminal'> = ({
       descriptor,
       context: _ctx,
-      onClose: _onClose,
     }) => {
       // The discriminated union is already narrowed via the generic.
       assertType<'terminal'>(descriptor.kind);
@@ -257,14 +262,14 @@ describe('WorkbenchBlockRenderer generic constraint', () => {
     const terminalProps: WorkbenchBlockRendererProps<'terminal'> = {
       descriptor: terminalDesc,
       context: makeContext(),
-      onClose: () => {},
     };
 
-    // @ts-expect-error — agentDesc is NOT assignable to TerminalBlockDescriptor.
+    // agentDesc is NOT assignable to WorkbenchBlockRendererProps<'terminal'>.
+    // The @ts-expect-error sits on the line directly above the failing property.
     const _bad: WorkbenchBlockRendererProps<'terminal'> = {
+      // @ts-expect-error — Type '"agent"' is not assignable to type '"terminal"'.
       descriptor: agentDesc,
       context: makeContext(),
-      onClose: () => {},
     };
 
     expect(terminalProps.descriptor.kind).toBe('terminal');
@@ -304,7 +309,7 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
       kind: 'terminal',
       id: 'rt-terminal',
       title: 'Terminal',
-      capabilityRequirements: ['pty:attach', 'session:read'],
+      capabilityRequirements: ['session:attach', 'session:read'],
       meta: {
         sessionRef: {
           nodeId: 'local',
