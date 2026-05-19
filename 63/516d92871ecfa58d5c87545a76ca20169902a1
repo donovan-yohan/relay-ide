@@ -1,0 +1,47 @@
+server/index.ts
+  s_afc3e94f2d047a::t_893f1456e6ef79 1339-1341
+  s_afc3e94f2d047a::t_ff95c1d9f96213 1335-1338,1342-1345
+  s_afc3e94f2d047a::t_cd1207330a9402 116
+docs/CLI_GATEWAY.md
+  s_afc3e94f2d047a::t_9898907ca495ce 256-291,294
+  s_afc3e94f2d047a::t_6c9866f3858c60 20
+bin/relay-ide.ts
+  s_afc3e94f2d047a::t_9a7c9988c340e7 39,43
+  s_afc3e94f2d047a::t_4ab4396bc19ad6 391
+  s_afc3e94f2d047a::t_616d40927e7cda 1158-1403,1425
+test/cli-gateway/events.test.ts
+  s_afc3e94f2d047a::t_783ee01e4601b4 203-229,238
+  s_afc3e94f2d047a::t_f3ff9006c73a26 1-3,5-151,182-191,193-195,197-202,230,235,240-250,255-408,415-452
+  s_afc3e94f2d047a::t_f48b28b4901938 4
+  s_afc3e94f2d047a::t_09aad134203dc6 152-181,192,196,231-234,236-237,239,251-254
+  s_afc3e94f2d047a::t_71d4c2b608a6e2 409-414
+shared/cli-gateway-contract.ts
+  s_afc3e94f2d047a::t_ffce0e9245fe49 24-25
+  s_afc3e94f2d047a::t_92f8f426a7b95c 597-643
+  s_afc3e94f2d047a::t_a585a0d7a803e1 1079-1106
+server/cli-gateway-events.ts
+  s_afc3e94f2d047a::t_ee578f45e3b14c 1-280
+server/sessions.ts
+  s_afc3e94f2d047a::t_d26a0c4521ba10 331,333-336
+  s_afc3e94f2d047a::t_f9892950329074 242,244-247
+  s_afc3e94f2d047a::t_e603f7fe8adc79 302,304-307
+test/cli-gateway-contract.test.ts
+  s_afc3e94f2d047a::t_6998da1c8c8750 252
+  s_afc3e94f2d047a::t_fd13dcd9d539fc 79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "63516d92871ecfa58d5c87545a76ca20169902a1",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
