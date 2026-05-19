@@ -1,0 +1,28 @@
+test/credential-rotation-scheduler.test.ts
+  s_8e47e58ef792e1::t_10bb432d33d724 165-169,171,174
+  s_8e47e58ef792e1::t_7522ccbefbd757 247-276
+server/credential-rotation-scheduler.ts
+  s_8e47e58ef792e1::t_ce77bc0737b83f 120-123
+  s_8e47e58ef792e1::t_08e61593812043 187-190,203-217
+server/hub-node-registry.ts
+  s_8e47e58ef792e1::t_52e4d2c1abae5c 471-475
+  s_8e47e58ef792e1::t_50c1cc92a1c10c 1004
+  s_8e47e58ef792e1::t_b012a625e12059 723
+  s_8e47e58ef792e1::t_04e9802656e4ab 65-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "e0b5d5b8ebb7a3a12ebbb66f826be2387ae1e7c4",
+  "prompts": {},
+  "sessions": {
+    "s_8e47e58ef792e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8c96e46-a41f-4160-8319-11ffa90ca8ee",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
