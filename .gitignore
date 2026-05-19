@@ -38,6 +38,7 @@ tmp-*.json
 .omc/
 .omo/
 .gstack/
+.hermes/
 .worktrees/
 relay-ide-tmp/
 worktree-meta/

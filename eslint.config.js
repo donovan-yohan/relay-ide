@@ -82,6 +82,7 @@ export default [
       '.worktrees/**',
       '.agents/**',
       '.chalk/**',
+      '.hermes/**',
       'docs/**',
       'relay-ide-tmp/**',
       '*.config.js',
