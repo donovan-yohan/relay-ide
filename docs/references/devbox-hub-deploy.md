@@ -235,7 +235,7 @@ A series of routed-PTY fixes landed against the dogfood loop. After a hub redepl
 ### #585 — routed terminal shell liveness (commit `7fdfc3b4`)
 
 - Failure mode on devbox: routed terminal creates from the browser arrived at the node-link RPC host without an explicit `command`. node-pty would spawn with no shell, exit immediately, and Active Work would fall back to last-known-only. Mobile users saw a dead tab almost instantly after creation.
-- Verification: create a routed terminal from the browser with no custom command; confirm `relay-ide hub sessions --json` still shows the session as live, and the PTY shows the user's shell prompt (or `/bin/sh` on hosts without `SHELL`). The session must stay `controlFreshness: fresh` after the first PTY frame.
+- Verification: create a routed terminal from the browser with no custom command; confirm `relay-ide v1 sessions list --json` (versioned CLI gateway, requires `RELAY_IDE_BROWSER_TOKEN`) still shows the session as live, and the PTY shows the user's shell prompt (or `/bin/sh` on hosts without `SHELL`). The session must stay `controlFreshness: fresh` after the first PTY frame.
 - Mac node-link sequence: the fallback (`defaultTerminalCommand()`) is implemented in `server/node-link-rpc-host.ts`, which runs inside `relay-ide node link` on the Mac node — not on the hub. A hub-only redeploy leaves an old node-link without the fix, so the liveness regression persists. Update the node package and restart the node-link before validating:
 
   ```bash
