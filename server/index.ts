@@ -847,13 +847,20 @@ export function validateSessionCreateRequest(
   const sessionType = type ?? 'agent';
   if (sessionType === 'agent') {
     if (!repoPath || !configured.has(repoPath)) {
-      res.status(400).json({ error: 'repoPath is required for agent sessions' });
+      res
+        .status(400)
+        .json({ error: 'repoPath is required for agent sessions' });
       return false;
     }
   } else {
     const anchor = repoPath ?? cwd ?? '';
     if (!configured.has(anchor)) {
-      res.status(400).json({ error: 'terminal sessions require a cwd that is a configured project path' });
+      res
+        .status(400)
+        .json({
+          error:
+            'terminal sessions require a cwd that is a configured project path',
+        });
       return false;
     }
   }
@@ -1628,6 +1635,33 @@ async function main(): Promise<void> {
   rebuildRefWatcher();
   sessions.onSessionCreate(() => rebuildRefWatcher());
   sessions.onSessionEnd(() => rebuildRefWatcher());
+
+  // Wire session durability (#614) to hub-side node link health:
+  //   resolver maps a session's owning nodeId to the hub's view of that
+  //   node's connection state, so derivation can surface `stale-node`
+  //   without bothering local-only sessions.
+  sessions.setSessionNodeStatusResolver((nodeId) => {
+    if (!nodeId || nodeId === 'local') return null;
+    const node = hubNodeRegistry
+      .listNodes()
+      .find((candidate) => candidate.nodeId === nodeId);
+    if (!node) return null;
+    const status = node.status;
+    if (
+      status === 'online' ||
+      status === 'stale' ||
+      status === 'offline' ||
+      status === 'revoked'
+    ) {
+      return status;
+    }
+    return null;
+  });
+  hubNodeRegistry.onNodeStatus(() => {
+    // Node status changed — re-derive every session so attach-safety
+    // consumers see `stale-node` transitions without waiting on `list()`.
+    sessions.refreshDurability();
+  });
 
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
   sessions.configure(

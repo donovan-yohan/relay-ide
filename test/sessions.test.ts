@@ -250,6 +250,81 @@ describe('sessions', () => {
     }
   });
 
+  it('emits durability transitions pushed from fireStateChange without list()', () => {
+    const transitions: Array<{ from: string | undefined; to: string }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({ from: event.from, to: event.to });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-push',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // Initial list() warms `_lastEmittedDurability` so subsequent state
+      // changes have a baseline to compare against.
+      sessions.list();
+      const baselineCount = transitions.length;
+
+      const session = sessions.get(result.id);
+      expect(session).toBeTruthy();
+      session!.agentState = 'permission-prompt';
+      sessions.fireStateChange(result.id, 'permission-prompt');
+
+      // No list() call between the state change and now — the event must
+      // have fired directly from fireStateChange.
+      expect(transitions.length).toBeGreaterThan(baselineCount);
+      expect(transitions[transitions.length - 1]).toMatchObject({
+        to: 'permission-needed',
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('surfaces stale-node when the hub reports the owning node is offline', () => {
+    const transitions: Array<{ to: string }> = [];
+    const unsubscribe = sessions.onSessionDurabilityChanged((event) => {
+      transitions.push({ to: event.to });
+    });
+    try {
+      const result = sessions.create({
+        repoName: 'durability-stale',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        command: '/bin/echo',
+        args: ['hi'],
+      });
+      createdIds.push(result.id);
+
+      // Treat this session as belonging to a remote node so the resolver
+      // is consulted. Without a resolver, the field is null and the
+      // session resolves to `running-attached`.
+      const session = sessions.get(result.id);
+      session!.nodeId = 'remote-test' as typeof session.nodeId;
+
+      let reportedStatus: 'online' | 'offline' = 'online';
+      sessions.setSessionNodeStatusResolver(() => reportedStatus);
+      try {
+        sessions.list(); // emits running-attached
+        reportedStatus = 'offline';
+        sessions.refreshDurability([result.id]);
+        const last = transitions[transitions.length - 1];
+        expect(last?.to).toBe('stale-node');
+      } finally {
+        sessions.setSessionNodeStatusResolver(null);
+      }
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('get returns session by id', () => {
     const result = sessions.create({
       repoName: 'test-repo',
