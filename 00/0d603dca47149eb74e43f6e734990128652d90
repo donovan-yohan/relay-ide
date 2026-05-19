@@ -1,0 +1,39 @@
+shared/workbench-block-types.ts
+  s_3e9de69a56e5c0::t_ce7eaf6a798e13 306-307,311
+  s_3e9de69a56e5c0::t_74a1f06408be8c 26
+  s_3e9de69a56e5c0::t_dfa0bdcea28ae1 339-343,355,357
+  s_3e9de69a56e5c0::t_317d8f7a1d96e6 264-273,295-296
+  s_3e9de69a56e5c0::t_3498ee23b8cb8a 128,130-131,133
+test/workbench-block-types.test.ts
+  s_3e9de69a56e5c0::t_8ebeed25e3ffcf 312
+  s_3e9de69a56e5c0::t_b56476f275d64b 105
+  s_3e9de69a56e5c0::t_7cad2eb566052c 51
+  s_3e9de69a56e5c0::t_c9738039478401 18
+  s_3e9de69a56e5c0::t_49f75855c1ce4f 27
+  s_3e9de69a56e5c0::t_0e5f5883038570 53-54,56
+  s_3e9de69a56e5c0::t_de5bf3c643ad3e 28
+  s_3e9de69a56e5c0::t_363805a6d0f1cb 267-268,270
+  s_3e9de69a56e5c0::t_9f8769de14e636 72
+package.json
+  s_3e9de69a56e5c0::t_72e2503cf57b7a 18-19
+test/tsconfig.json
+  s_3e9de69a56e5c0::t_3a08b3dbcf54ac 7
+  s_3e9de69a56e5c0::t_d4dd4a6251d8e8 8
+  s_3e9de69a56e5c0::t_98ce9b75e1158d 1-6,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "000d603dca47149eb74e43f6e734990128652d90",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
