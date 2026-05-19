@@ -1,0 +1,43 @@
+server/sessions.ts
+  s_3e9de69a56e5c0::t_54c1d6c33b707a 1932-1968
+  s_3e9de69a56e5c0::t_b251ae6f37e4d4 2003
+  s_3e9de69a56e5c0::t_e6fa551abbd02b 35
+server/web-session-handler.ts
+  s_3e9de69a56e5c0::t_1a10878a72fad1 7-8,10
+  s_3e9de69a56e5c0::t_f768be94cecfea 252-333
+shared/agent-chat-protocol-v2.ts
+  s_3e9de69a56e5c0::t_bc8e96bd1ccbc2 478
+  s_3e9de69a56e5c0::t_a669e7425a7641 937
+  s_3e9de69a56e5c0::t_5447dd3cd15b9f 293-304
+  s_3e9de69a56e5c0::t_2c8acdc6a87430 359
+frontend/src/components/chat/ChatView.tsx
+  s_3e9de69a56e5c0::t_6bdc2c24f42a5b 34-40,42
+  s_3e9de69a56e5c0::t_a9d1ff2c8d03b9 101-112,117-119
+  s_3e9de69a56e5c0::t_32d14f5e5ea2d5 158,160-182,186,188
+frontend/src/hooks/useAgentChatSocket.ts
+  s_3e9de69a56e5c0::t_0c594be1d655af 32-39
+  s_3e9de69a56e5c0::t_250897110b70aa 335
+  s_3e9de69a56e5c0::t_ec4a76888c7c09 126-129
+test/web-session-handler.test.ts
+  s_3e9de69a56e5c0::t_1f2c47b710ebc5 540-719
+  s_3e9de69a56e5c0::t_3e5d3818c7d845 6,12-15,17
+server/ws.ts
+  s_3e9de69a56e5c0::t_d1bef8bdf3daed 167-169
+  s_3e9de69a56e5c0::t_f8b5f23659f329 333-342
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6d7e2f4ca663aa1cd90fa1a25f6a72d10899d634",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
