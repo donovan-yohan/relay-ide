@@ -29,6 +29,15 @@ export interface AgentChatSocketState {
    */
   resume: (providerSessionId?: string) => void;
   /**
+   * Request the server to start a fresh provider session, discarding the
+   * stale vendor session ID. The Relay session ID stays stable. A synthetic
+   * `sessionBreak` divider is appended to the transcript at the recovery
+   * point so the UI can mark the model-context boundary.
+   *
+   * Intended for use after `resume` fails — shows the "Continue here" button.
+   */
+  continueHere: () => void;
+  /**
    * Append a synthetic client-source error to the timeline. Used by the
    * composer for leading-trigger validation and client-dispatch failures
    * — keeps all error UX inside the chat window, never as toast/banner.
@@ -113,6 +122,10 @@ export function useAgentChatSocket(
     },
     [send]
   );
+
+  const continueHere = useCallback(() => {
+    send({ type: 'agent-continue-here-v2' });
+  }, [send]);
 
   const connect = useCallback(
     (sid: string) => {
@@ -269,49 +282,46 @@ export function useAgentChatSocket(
     };
   }, [clearPing, connect, sessionId]);
 
-  const pushClientError = useCallback(
-    (message: string, context?: string) => {
-      setSession((current) => {
-        if (!current) return current;
-        const timestamp = new Date().toISOString();
-        const errorItem = {
-          type: 'errorMessage' as const,
-          id: `error-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
-          message,
-          source: 'client' as const,
-          status: 'completed' as const,
-          startedAt: timestamp,
-          completedAt: timestamp,
-          ...(context !== undefined ? { context } : {}),
-        };
-        const lastTurn = current.turns[current.turns.length - 1];
-        if (!lastTurn) {
-          return {
-            ...current,
-            turns: [
-              {
-                id: `synthetic-${timestamp}`,
-                status: 'failed' as const,
-                startedAt: timestamp,
-                completedAt: timestamp,
-                items: [errorItem],
-                inputMessageId: '',
-              },
-            ],
-          };
-        }
+  const pushClientError = useCallback((message: string, context?: string) => {
+    setSession((current) => {
+      if (!current) return current;
+      const timestamp = new Date().toISOString();
+      const errorItem = {
+        type: 'errorMessage' as const,
+        id: `error-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        message,
+        source: 'client' as const,
+        status: 'completed' as const,
+        startedAt: timestamp,
+        completedAt: timestamp,
+        ...(context !== undefined ? { context } : {}),
+      };
+      const lastTurn = current.turns[current.turns.length - 1];
+      if (!lastTurn) {
         return {
           ...current,
-          turns: current.turns.map((turn, idx) =>
-            idx === current.turns.length - 1
-              ? { ...turn, items: [...turn.items, errorItem] }
-              : turn
-          ),
+          turns: [
+            {
+              id: `synthetic-${timestamp}`,
+              status: 'failed' as const,
+              startedAt: timestamp,
+              completedAt: timestamp,
+              items: [errorItem],
+              inputMessageId: '',
+            },
+          ],
         };
-      });
-    },
-    []
-  );
+      }
+      return {
+        ...current,
+        turns: current.turns.map((turn, idx) =>
+          idx === current.turns.length - 1
+            ? { ...turn, items: [...turn.items, errorItem] }
+            : turn
+        ),
+      };
+    });
+  }, []);
 
   return {
     session,
@@ -322,6 +332,7 @@ export function useAgentChatSocket(
     approve,
     answer,
     resume,
+    continueHere,
     pushClientError,
   };
 }

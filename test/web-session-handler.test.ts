@@ -3,13 +3,18 @@ import {
   pushToBuffer,
   createWebSession,
   reconnectWebSession,
+  continueHereWebSession,
 } from '../server/web-session-handler.js';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { Session, WebSession } from '../server/types.js';
 import type { ChatEvent, ApprovalRequestEvent } from '../shared/chat-events.js';
-import type { AgentCapabilitySetV2, AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentCapabilitySetV2,
+  AgentSessionV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type { AdapterConfig } from '../server/protocol-adapter.js';
 import {
   makeWebSession,
   makeBaseEvent,
@@ -524,14 +529,191 @@ describe('reconnectWebSession', () => {
 
   it('falls back to reconnect() when adapterType has no known providerSession key', async () => {
     const { session, resumeSessionSpy, reconnectSpy } =
-      makeWebSessionWithV2Adapter(
-        { resume: true },
-        { someOtherId: 'value' }
-      );
+      makeWebSessionWithV2Adapter({ resume: true }, { someOtherId: 'value' });
     // 'mock' is not in the known key lookup table
     await reconnectWebSession(session);
 
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
     expect(resumeSessionSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── continueHereWebSession ────────────────────────────────────────────────────
+
+/**
+ * Build a minimal WebSession with a MockProtocolAdapterV2 whose resumeSession
+ * rejects (simulating an expired vendor session). Used to verify the
+ * "Continue here" recovery path.
+ */
+function makeWebSessionForContinueHere(opts: {
+  providerSession?: Record<string, string>;
+  priorTurns?: boolean;
+}): {
+  session: WebSession;
+  adapter: MockProtocolAdapterV2;
+  connectSpy: ReturnType<typeof vi.fn>;
+  disconnectSpy: ReturnType<typeof vi.fn>;
+} {
+  const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+
+  // Override resumeSession to reject so the "resume failed" path is exercised
+  const resumeSessionSpy = vi
+    .fn()
+    .mockRejectedValue(new Error('vendor session expired'));
+  (adapter as unknown as Record<string, unknown>)['resumeSession'] =
+    resumeSessionSpy;
+
+  // Spy on connect and disconnect
+  const connectSpy = vi.fn().mockResolvedValue(undefined);
+  const disconnectSpy = vi.fn().mockResolvedValue(undefined);
+  (adapter as unknown as Record<string, unknown>)['connect'] = connectSpy;
+  (adapter as unknown as Record<string, unknown>)['disconnect'] = disconnectSpy;
+
+  const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+    id: 'sess-continue',
+    provider: 'mock',
+    cwd: '/repo',
+    capabilities: adapter.capabilities,
+    ...(opts.providerSession !== undefined
+      ? { providerSession: opts.providerSession }
+      : {}),
+  });
+
+  // Optionally add a prior turn to the transcript
+  if (opts.priorTurns) {
+    const now = new Date().toISOString();
+    agentSessionV2.turns = [
+      {
+        id: 'turn-old-1',
+        status: 'completed',
+        inputMessageId: 'msg-1',
+        items: [
+          {
+            type: 'userMessage',
+            id: 'item-old-1',
+            text: 'hello',
+            status: 'completed',
+            startedAt: now,
+            completedAt: now,
+          },
+        ],
+        startedAt: now,
+        completedAt: now,
+      },
+    ];
+  }
+
+  const session = makeWebSession({
+    id: 'sess-continue',
+    adapterType: 'mock',
+    adapterV2: adapter,
+    agentSessionV2,
+    agentPatchesV2: [],
+    runtimeOwnership: 'spawned',
+    hookToken: 'tok',
+    hooksActive: true,
+    protocolVersion: 2,
+  });
+
+  return { session, adapter, connectSpy, disconnectSpy };
+}
+
+const CONTINUE_HERE_CONFIG: AdapterConfig = {
+  cwd: '/repo',
+  port: 3000,
+  sessionId: 'sess-continue',
+  hookToken: 'tok',
+  configDir: '/config',
+};
+
+describe('continueHereWebSession', () => {
+  it('disconnects the current adapter', async () => {
+    const { session, disconnectSpy } = makeWebSessionForContinueHere({});
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls connect() fresh (no resume arg)', async () => {
+    const { session, connectSpy } = makeWebSessionForContinueHere({});
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(connectSpy).toHaveBeenCalledWith(CONTINUE_HERE_CONFIG);
+  });
+
+  it('clears the stored vendor session ID before reconnecting', async () => {
+    const { session } = makeWebSessionForContinueHere({
+      providerSession: { claudeSessionId: 'stale-vendor-id' },
+    });
+
+    expect(session.agentSessionV2.providerSession).toEqual({
+      claudeSessionId: 'stale-vendor-id',
+    });
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    // After continueHere the stale vendor ID must be cleared
+    expect(session.agentSessionV2.providerSession).toEqual({});
+  });
+
+  it('appends a sessionBreak divider item to the last turn', async () => {
+    const { session } = makeWebSessionForContinueHere({ priorTurns: true });
+
+    const turnsBefore = session.agentSessionV2.turns.length;
+    expect(turnsBefore).toBe(1);
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    // Turns count unchanged — divider appended inside the last turn
+    const turns = session.agentSessionV2.turns;
+    expect(turns.length).toBe(1);
+
+    const lastTurnItems = turns[turns.length - 1]!.items;
+    const breakItem = lastTurnItems.find(
+      (item) => item.type === 'sessionBreak'
+    );
+    expect(breakItem).toBeDefined();
+    expect(breakItem?.type).toBe('sessionBreak');
+    if (breakItem?.type === 'sessionBreak') {
+      expect(breakItem.reason).toBe('continue-here');
+    }
+  });
+
+  it('preserves all prior turns in the transcript', async () => {
+    const { session } = makeWebSessionForContinueHere({ priorTurns: true });
+
+    const priorTurnIds = session.agentSessionV2.turns.map((t) => t.id);
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    const turnIds = session.agentSessionV2.turns.map((t) => t.id);
+    expect(turnIds).toEqual(priorTurnIds);
+  });
+
+  it('proceeds even if disconnect throws (adapter already dead)', async () => {
+    const { session, connectSpy, disconnectSpy } =
+      makeWebSessionForContinueHere({});
+    disconnectSpy.mockRejectedValue(new Error('already disconnected'));
+
+    // Should not throw — disconnect errors are non-fatal
+    await expect(
+      continueHereWebSession(session, CONTINUE_HERE_CONFIG)
+    ).resolves.toBeUndefined();
+
+    // connect() still called after disconnect error
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not append a sessionBreak when there are no prior turns', async () => {
+    // No priorTurns — empty transcript
+    const { session } = makeWebSessionForContinueHere({});
+
+    await continueHereWebSession(session, CONTINUE_HERE_CONFIG);
+
+    // No turn created — transcript stays empty
+    expect(session.agentSessionV2.turns.length).toBe(0);
   });
 });

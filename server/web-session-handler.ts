@@ -4,7 +4,10 @@ import type { AgentType } from './types.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 import { createAdapterV2 } from './protocol-adapters/index.js';
 import type { AdapterConfig, ProtocolAdapter } from './protocol-adapter.js';
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentPatchV2,
+  AgentSessionBreakItemV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import { createLogger } from './logger.js';
 import {
   applyWebSessionPatchV2,
@@ -244,6 +247,88 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
     );
     await adapterV2.reconnect();
   }
+}
+
+/**
+ * "Continue here" recovery: force-start a fresh adapter session without resume.
+ *
+ * Steps:
+ * 1. Disconnect the current adapter.
+ * 2. Clear the stored vendor session ID from the in-memory session so that
+ *    a subsequent `reconnectWebSession` (or any DB read) sees no stale ID.
+ * 3. Call `adapter.connect()` with the same config but no resume argument.
+ * 4. Append a synthetic `sessionBreak` divider to the transcript at the
+ *    recovery point so the UI can mark the model-context boundary.
+ *
+ * The Relay session ID (`session.id`) is never changed — all URLs and
+ * external refs remain stable.
+ */
+export async function continueHereWebSession(
+  session: WebSession,
+  config: AdapterConfig
+): Promise<void> {
+  const adapterV2 = session.adapterV2;
+
+  logger.info('continue-here: disconnecting current adapter', {
+    id: session.id,
+    agentType: session.adapterType,
+  });
+
+  await adapterV2.disconnect().catch((err: unknown) => {
+    // Non-fatal: adapter may already be in a bad state after resume failure.
+    logger.warn('continue-here: disconnect error (continuing anyway)', {
+      id: session.id,
+      err: String(err),
+    });
+  });
+
+  // Clear vendor session ID so no stale resume ID remains in memory.
+  if (session.agentSessionV2.providerSession !== undefined) {
+    session.agentSessionV2 = {
+      ...session.agentSessionV2,
+      providerSession: {},
+    };
+  }
+
+  // Append a sessionBreak divider before the fresh connect so the UI can
+  // render a visible boundary between old and new model context.
+  const timestamp = new Date().toISOString();
+  const breakItem: AgentSessionBreakItemV2 = {
+    type: 'sessionBreak',
+    id: `session-break-${timestamp}`,
+    reason: 'continue-here',
+    startedAt: timestamp,
+    completedAt: timestamp,
+    status: 'completed',
+  };
+
+  const turns = session.agentSessionV2.turns;
+  const lastTurn = turns[turns.length - 1];
+
+  if (lastTurn) {
+    // Append the divider to the last existing turn so it renders at the bottom
+    // of the transcript, clearly separating old and new model context.
+    const itemPatch: AgentPatchV2 = {
+      type: 'agent-item-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turnId: lastTurn.id,
+      item: breakItem,
+    };
+    applyWebSessionPatchV2(session, itemPatch);
+  }
+
+  logger.info('continue-here: connecting fresh adapter session', {
+    id: session.id,
+    agentType: session.adapterType,
+  });
+
+  await adapterV2.connect(config);
+
+  // Persist: fresh connect may assign a new vendor session ID; the debounced
+  // upsert in the adapter's patch handler will capture it. Persist now to
+  // ensure the cleared vendor ID hits the DB before the new one arrives.
+  upsertWebSessionNow(session);
 }
 
 function createV2OnlyLegacyAdapter(
