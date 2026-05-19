@@ -1,0 +1,65 @@
+frontend/src/workbench/blocks/artifact.tsx
+  s_3e9de69a56e5c0::t_37a6876a28dd7a 1-20,22-138
+frontend/src/workbench/blocks/custom.tsx
+  s_3e9de69a56e5c0::t_eb1aa70396d3c4 1-21,23-76
+frontend/src/workbench/blocks/file.tsx
+  s_3e9de69a56e5c0::t_77bb3bfcc9ed5d 1-22,24-78
+frontend/src/workbench/blocks/terminal.css
+  s_3e9de69a56e5c0::t_16c2066ff58770 1-10
+frontend/src/workbench/blocks/markdown.tsx
+  s_3e9de69a56e5c0::t_8b2e4e29f3a489 1-18,20-51
+frontend/src/workbench/blocks/markdown.css
+  s_3e9de69a56e5c0::t_1e7fda2905d1cc 1-48
+frontend/src/workbench/block-registry.ts
+  s_3e9de69a56e5c0::t_94afb61bd6f2ea 82
+  s_3e9de69a56e5c0::t_5c0e0ae67ec4da 8-11,14,17-19,31-33,44,81,83-86
+  s_3e9de69a56e5c0::t_c2e80466d84156 50-52
+  s_3e9de69a56e5c0::t_89b613858ec10f 12
+  s_3e9de69a56e5c0::t_efea7048ded0f2 1-7,13,15-16,20-30,34-43,45-49,53-80,87-107
+frontend/src/workbench/block-host.css
+  s_3e9de69a56e5c0::t_16c893882abc8d 1-102
+frontend/src/workbench/blocks/custom.css
+  s_3e9de69a56e5c0::t_1cf614d7b8c119 1-73
+test/workbench-block-registry.test.ts
+  s_3e9de69a56e5c0::t_7d98471eb3bcea 1-4,7,14-25,27-28,31,35,40,44-45,67,69,121-122,126-128,147,155-246,248-254,256-283,285-288,290-292,294-390,433-434
+  s_3e9de69a56e5c0::t_74a81fa65a1dce 5-6,8-13,26,29-30,32-34,36-39,41-43,46-64,66,68,70-80,82-83,85-112,115-120,123-125,129-146,148-154,247,255,289,293,391-416,418-432
+  s_3e9de69a56e5c0::t_de8851b45bbe4b 113-114
+  s_3e9de69a56e5c0::t_20de4fa9205175 81,84
+frontend/src/workbench/blocks/terminal.tsx
+  s_3e9de69a56e5c0::t_6450d7e57b687e 1-14,16-52
+frontend/src/workbench/blocks/agent.css
+  s_3e9de69a56e5c0::t_2cc3d3325005a0 1-33
+test/tsconfig.json
+  s_3e9de69a56e5c0::t_31d06c90bf15e5 7-12
+frontend/src/workbench/blocks/agent.tsx
+  s_3e9de69a56e5c0::t_2ff3ee5b53a640 1-16,18-42
+frontend/src/workbench/BlockHost.tsx
+  s_3e9de69a56e5c0::t_75416a7918cff9 1-107,109-199,201-249
+test/workbench-block-renderers.test.ts
+  s_3e9de69a56e5c0::t_2aa48afc864889 320-322
+  s_3e9de69a56e5c0::t_f82de9c2ac0b8d 1-319,323-515,517-529
+frontend/src/workbench/blocks/work-context.tsx
+  s_3e9de69a56e5c0::t_159fbfd2901d1a 1-18,20-35,37-162
+frontend/src/workbench/blocks/work-context.css
+  s_3e9de69a56e5c0::t_0d52f1b8ac0d3d 1-114
+frontend/src/workbench/blocks/file.css
+  s_3e9de69a56e5c0::t_042813c2b51056 1-84
+frontend/src/workbench/blocks/artifact.css
+  s_3e9de69a56e5c0::t_586219e397d837 1-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6912ba74088d0e79f9936ce9f73eda04acc0d34a",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
