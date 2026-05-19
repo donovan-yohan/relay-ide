@@ -267,6 +267,9 @@ function clearEventPongTimeout(): void {
 
 // ── Per-session PTY connection registry ──────────────────────────────────────
 
+// 256 KB ring buffer cap for inactive terminal tabs (matches scrollback cap).
+const INACTIVE_BUFFER_CAP = 256 * 1024;
+
 interface PtyConnection {
   /** Scoped registry key for the mounted frontend terminal. */
   sessionId: string;
@@ -293,6 +296,13 @@ interface PtyConnection {
   paused: boolean;
   rafHandle: number | null;
   bgTimer: ReturnType<typeof setTimeout> | null;
+
+  /** True while the terminal tab is inactive — incoming data is buffered instead of painted. */
+  renderPaused: boolean;
+  /** Ring buffer for bytes received while renderPaused is true. */
+  pauseBuffer: string[];
+  /** Total byte count of pauseBuffer content. */
+  pauseBufferSize: number;
 }
 
 const ptyConnections = new Map<string, PtyConnection>();
@@ -424,11 +434,40 @@ function flushWriteQueue(conn: PtyConnection): void {
 }
 
 function scheduleFlush(conn: PtyConnection): void {
+  if (conn.renderPaused) return;
   if (conn.rafHandle !== null || conn.bgTimer !== null) return;
   if (document.hidden) {
     conn.bgTimer = setTimeout(() => flushWriteQueue(conn), BG_FLUSH_INTERVAL);
   } else {
     conn.rafHandle = requestAnimationFrame(() => flushWriteQueue(conn));
+  }
+}
+
+/**
+ * Append data to the ring buffer for an inactive terminal, trimming oldest
+ * bytes from the front when the cap is exceeded (FIFO eviction).
+ */
+function appendToPauseBuffer(conn: PtyConnection, data: string): void {
+  conn.pauseBuffer.push(data);
+  conn.pauseBufferSize += data.length;
+
+  // Trim from the front until we're within the cap.
+  while (
+    conn.pauseBufferSize > INACTIVE_BUFFER_CAP &&
+    conn.pauseBuffer.length > 0
+  ) {
+    const oldest = conn.pauseBuffer[0]!;
+    if (conn.pauseBufferSize - oldest.length >= INACTIVE_BUFFER_CAP) {
+      // Drop entire chunk.
+      conn.pauseBuffer.shift();
+      conn.pauseBufferSize -= oldest.length;
+    } else {
+      // Partially trim the oldest chunk.
+      const excess = conn.pauseBufferSize - INACTIVE_BUFFER_CAP;
+      conn.pauseBuffer[0] = oldest.slice(excess);
+      conn.pauseBufferSize -= excess;
+      break;
+    }
   }
 }
 
@@ -479,6 +518,9 @@ export function connectPtySocket(
     paused: false,
     rafHandle: null,
     bgTimer: null,
+    renderPaused: false,
+    pauseBuffer: [],
+    pauseBufferSize: 0,
   };
   ptyConnections.set(registryKey, conn);
 
@@ -511,6 +553,13 @@ function openPtySocket(conn: PtyConnection): void {
     const str = event.data as string;
     if (conn.pongPending) clearPtyPongTimeout(conn);
     if (str === PONG_MSG) return;
+
+    // While the terminal tab is inactive, route data to the pause ring buffer
+    // instead of the xterm write queue so we don't paint invisible frames.
+    if (conn.renderPaused) {
+      appendToPauseBuffer(conn, str);
+      return;
+    }
 
     if (conn.queueSize + str.length > MAX_QUEUE_SIZE) {
       if (!conn.paused) {
@@ -769,6 +818,47 @@ export function isPtyConnected(sessionId?: string): boolean {
     ? (ptyConnections.get(resolvePtyTarget(sessionId).registryKey) ?? null)
     : getActiveConnection();
   return !!conn?.ws && conn.ws.readyState === WebSocket.OPEN;
+}
+
+/**
+ * Pause xterm rendering for a terminal tab that is now inactive.
+ * Incoming PTY bytes are buffered in a 256 KB ring buffer instead of painted.
+ * The WebSocket connection stays open.
+ */
+export function pausePtyFeed(sessionId: string): void {
+  const conn = ptyConnections.get(resolvePtyTarget(sessionId).registryKey);
+  if (!conn || conn.renderPaused) return;
+  conn.renderPaused = true;
+  // Cancel any pending flush so we don't paint after pausing.
+  if (conn.rafHandle !== null) {
+    cancelAnimationFrame(conn.rafHandle);
+    conn.rafHandle = null;
+  }
+  if (conn.bgTimer !== null) {
+    clearTimeout(conn.bgTimer);
+    conn.bgTimer = null;
+  }
+}
+
+/**
+ * Resume xterm rendering for a terminal tab that has become active.
+ * Flushes all buffered bytes to xterm in the next animation frame, then
+ * the caller should invoke fit() once the frame has painted.
+ */
+export function resumePtyFeed(sessionId: string): void {
+  const conn = ptyConnections.get(resolvePtyTarget(sessionId).registryKey);
+  if (!conn || !conn.renderPaused) return;
+  conn.renderPaused = false;
+
+  if (conn.pauseBuffer.length > 0) {
+    const flushed = conn.pauseBuffer.join('');
+    conn.pauseBuffer = [];
+    conn.pauseBufferSize = 0;
+    // Push buffered data into the normal write queue and schedule a flush.
+    conn.writeQueue.push(flushed);
+    conn.queueSize += flushed.length;
+    if (!conn.paused) scheduleFlush(conn);
+  }
 }
 
 // ── Test-only helpers ────────────────────────────────────────────────────────

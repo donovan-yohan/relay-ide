@@ -154,7 +154,7 @@ export function WorkspaceLayoutDemo() {
     []
   );
 
-  const renderTab = (tab: WorkspaceTab) => {
+  const renderTab = (tab: WorkspaceTab, _isActive: boolean) => {
     if (tab.kind === 'session') {
       const session = MOCK_SESSIONS.find((s) => s.id === tab.sessionId);
       if (!session) return <div className="ws-demo-mock">unknown session</div>;

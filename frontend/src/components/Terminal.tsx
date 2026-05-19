@@ -16,6 +16,8 @@ import '@xterm/xterm/css/xterm.css';
 import {
   connectPtySocket,
   disconnectPtySocket,
+  pausePtyFeed,
+  resumePtyFeed,
   sendPtyData,
   sendPtyResize,
 } from '../lib/ws.js';
@@ -54,6 +56,14 @@ export interface TerminalProps {
   onCopyModeChange?: (active: boolean) => void;
   onFilePathClick?: (path: string) => void;
   companionMode?: boolean;
+  /**
+   * Whether this terminal tab is the active (visible) tab in its pane.
+   * When false, xterm rendering is paused and incoming PTY bytes are buffered
+   * in a 256 KB ring buffer. On reactivation the buffer is flushed and fit()
+   * is called. The PTY WebSocket connection stays open regardless.
+   * Defaults to true (no pausing) if not provided.
+   */
+  isActive?: boolean;
 }
 
 // ── File path link provider ───────────────────────────────────────────────────
@@ -949,6 +959,45 @@ function useTerminalSetup(
   return { termRef, fitAddonRef, fit };
 }
 
+// ── usePtyPause hook ──────────────────────────────────────────────────────────
+
+/**
+ * Pauses xterm rendering while this terminal tab is inactive, buffering
+ * incoming PTY bytes in a 256 KB ring buffer. On reactivation flushes the
+ * buffer to xterm in the next animation frame and calls fit(). The PTY
+ * WebSocket stays open throughout.
+ */
+function usePtyPause(
+  ptySessionKey: string | null,
+  isActive: boolean,
+  fit: () => void,
+  companionMode: boolean
+): void {
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+
+  useEffect(() => {
+    if (!ptySessionKey || companionMode) return undefined;
+
+    if (!isActive) {
+      pausePtyFeed(ptySessionKey);
+      return () => {
+        // On unmount while inactive, resume so the connection doesn't stay
+        // permanently paused if the tab is later re-added to the layout.
+        resumePtyFeed(ptySessionKey);
+      };
+    }
+
+    // Becoming active: flush buffered bytes and re-fit once painted.
+    resumePtyFeed(ptySessionKey);
+    requestAnimationFrame(() => {
+      fitRef.current();
+    });
+
+    return undefined;
+  }, [ptySessionKey, isActive, companionMode]);
+}
+
 // ── useImageUpload hook ───────────────────────────────────────────────────────
 
 function useImageUpload(
@@ -1064,6 +1113,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       onCopyModeChange,
       onFilePathClick,
       companionMode = false,
+      isActive = true,
     },
     ref
   ) {
@@ -1132,6 +1182,8 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       handleDragLeave,
       handleDrop,
     } = useTerminalInteractions(termRef, applyZoom, handleImageUpload);
+
+    usePtyPause(ptySessionKey, isActive, fit, companionMode);
 
     const handle = useMemo<TerminalHandle>(
       () => ({
