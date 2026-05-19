@@ -416,8 +416,12 @@ export type CreatePtyParams = {
           (sessionId: string, cwd: string, branchName?: string) => void
         >;
         fireBackendStateIfChanged?: (session: Session) => void;
-        /** Called after each scrollback append so the global cap can be enforced. */
-        onScrollbackAppend?: () => void;
+        /**
+         * Called after each scrollback append so the global cap can be enforced.
+         * Receives the ID of the session that just appended and the size of the
+         * appended chunk in bytes so callers can maintain an incremental total.
+         */
+        onScrollbackAppend?: (sessionId: string, appendedBytes: number) => void;
       }
     | undefined;
 };
@@ -901,7 +905,9 @@ type ResolvedPtyCallbacks = {
     (sessionId: string, cwd: string, branchName?: string) => void
   >;
   fireBackendStateIfChanged: ((session: Session) => void) | undefined;
-  onScrollbackAppend: (() => void) | undefined;
+  onScrollbackAppend:
+    | ((sessionId: string, appendedBytes: number) => void)
+    | undefined;
 };
 
 function resolveCallbacks(
@@ -1110,7 +1116,9 @@ export function createPtySession(
         scrollbackRef.bytes -= (scrollback.shift() as string).length;
       }
       // Notify sessions layer so global cap can be enforced.
-      onScrollbackAppend?.();
+      // Pass the session id and chunk size so the caller can maintain an
+      // incremental total and skip the O(N) walk when still under cap.
+      onScrollbackAppend?.(id, data.length);
       if (configPath && worktreePath && !metaFlushTimer) {
         metaFlushTimer = setTimeout(() => {
           metaFlushTimer = null;

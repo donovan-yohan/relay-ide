@@ -105,45 +105,43 @@ const DEFAULT_GLOBAL_SCROLLBACK_CAP = 4 * 1024 * 1024;
 let globalScrollbackCapBytes = DEFAULT_GLOBAL_SCROLLBACK_CAP;
 
 /**
- * One-shot flag: fires when the global cap is first exceeded so callers can
- * surface a single hint toast. Resets only on server restart.
+ * Running total of scrollback bytes across all PTY sessions.
+ * Updated incrementally on append (via onScrollbackAppend) and decremented
+ * when chunks are trimmed, so the enforcement hot-path can skip the O(N)
+ * full-walk when the total is under the cap.
  */
-let globalCapTrimOccurred = false;
-
-/**
- * Callbacks registered by server code to be notified when global cap trimming
- * occurs (e.g. to show a hint toast via the WebSocket broadcast).
- */
-const onGlobalScrollbackTrimCallbacks: Array<() => void> = [];
-
-/**
- * Register a callback to be called (once) when the global scrollback cap first
- * causes trimming. Used by the WS layer to surface a hint toast.
- */
-function onGlobalScrollbackTrim(cb: () => void): void {
-  onGlobalScrollbackTrimCallbacks.push(cb);
-}
+let globalScrollbackTotalBytes = 0;
 
 /**
  * Enforce the global scrollback cap across all PTY sessions.
  *
- * - Counts total scrollback bytes across all PTY sessions.
+ * - Uses the pre-computed running total (fast path: returns early when under cap).
  * - If the total exceeds the cap, trims oldest scrollback from non-active
  *   sessions first (sorted by lastActivity ascending).
  * - Never trims the currently-focused (activeSessionId) session.
  *
+ * @param activeSessionId - ID of the session currently being appended to (never trimmed).
+ * @param sessionProvider - Optional override for the sessions list; defaults to the
+ *   module-level `sessions` Map. Inject in tests to avoid spinning up live PTYs.
+ *
  * Returns the number of bytes freed.
  */
-function enforceGlobalScrollbackCap(activeSessionId?: string | null): number {
-  const ptySessions = [...sessions.values()].filter(
-    (s): s is PtySession => s.mode === 'pty'
-  );
+function enforceGlobalScrollbackCap(
+  activeSessionId?: string | null,
+  sessionProvider?: () => PtySession[]
+): number {
+  const ptySessions = sessionProvider
+    ? sessionProvider()
+    : [...sessions.values()].filter((s): s is PtySession => s.mode === 'pty');
 
-  // Compute current total.
+  // Recompute the running total from the canonical session list so the local
+  // variable stays consistent with the actual scrollback state.
   let total = ptySessions.reduce(
     (sum, s) => sum + s.scrollback.reduce((b, chunk) => b + chunk.length, 0),
     0
   );
+  // Keep the module-level counter in sync.
+  globalScrollbackTotalBytes = total;
 
   if (total <= globalScrollbackCapBytes) return 0;
 
@@ -163,16 +161,8 @@ function enforceGlobalScrollbackCap(activeSessionId?: string | null): number {
     }
   }
 
-  if (freed > 0 && !globalCapTrimOccurred) {
-    globalCapTrimOccurred = true;
-    for (const cb of onGlobalScrollbackTrimCallbacks) {
-      try {
-        cb();
-      } catch {
-        /* best effort */
-      }
-    }
-  }
+  // Keep the running total in sync after trimming.
+  globalScrollbackTotalBytes = total;
 
   if (freed > 0) {
     logger.debug(
@@ -557,10 +547,19 @@ function create({
           (sessionId: string) => sessionEnvelopeRegistry.delete(sessionId),
         ],
         fireBackendStateIfChanged,
-        onScrollbackAppend: () => {
-          // Enforce global scrollback cap after each append.
-          // The active session is never trimmed.
-          enforceGlobalScrollbackCap();
+        onScrollbackAppend: (
+          appendedSessionId: string,
+          appendedBytes: number
+        ) => {
+          // Maintain the running total incrementally so the O(N) enforcement
+          // walk is skipped entirely when we are still under the cap. This avoids
+          // summing all scrollback chunks on every PTY data chunk.
+          globalScrollbackTotalBytes += appendedBytes;
+          if (globalScrollbackTotalBytes <= globalScrollbackCapBytes) return;
+          // Cap exceeded — run the full enforcement. It recomputes the true total
+          // and updates globalScrollbackTotalBytes so subsequent fast-path checks
+          // reflect any chunks that were trimmed.
+          enforceGlobalScrollbackCap(appendedSessionId);
         },
       },
     },
@@ -2073,7 +2072,8 @@ export {
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,
-  onGlobalScrollbackTrim,
+  // onGlobalScrollbackTrim intentionally omitted: no WS consumer wired yet.
+  // Add back when the broadcast integration lands.
   enforceGlobalScrollbackCap,
 };
 export type { CreateWebParams };

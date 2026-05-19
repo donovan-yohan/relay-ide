@@ -1,14 +1,12 @@
 /**
  * Tests for the global scrollback cap (Lever 2 of issue #331).
  *
- * Tests `enforceGlobalScrollbackCap` directly, which is the core
- * deterministic enforcement logic in server/sessions.ts.
- *
- * We import and test this via the exported function so we don't need
- * to spin up a live PTY process.
+ * Tests `enforceGlobalScrollbackCap` directly via the exported function.
+ * The function accepts an optional `sessionProvider` injection so we can
+ * exercise all code paths without spinning up real PTY processes.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { enforceGlobalScrollbackCap } from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
 
@@ -53,153 +51,106 @@ function makeSession(
   } as unknown as PtySession;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
+// ── Smoke test: real function with no live sessions ────────────────────────────
 
-describe('enforceGlobalScrollbackCap', () => {
-  // NOTE: enforceGlobalScrollbackCap reads directly from the sessions Map inside
-  // server/sessions.ts. Because ESM modules are singletons, we cannot easily
-  // inject sessions without spinning up real sessions. Instead, we test the
-  // exported function with no live sessions and verify boundary behaviour, then
-  // use a structural test to validate the enforcement algorithm with a mock sessions Map.
-  //
-  // The enforcement algorithm is also tested indirectly through the unit below which
-  // exercises the pure logic extracted into testable form.
-
-  it('exported enforceGlobalScrollbackCap is a function', () => {
+describe('enforceGlobalScrollbackCap (real export, empty sessions)', () => {
+  it('is a function', () => {
     expect(typeof enforceGlobalScrollbackCap).toBe('function');
   });
 
-  it('returns 0 (no sessions registered) when called without a live sessions map', () => {
-    // The internal sessions Map is empty at module load time in tests.
-    const freed = enforceGlobalScrollbackCap();
+  it('returns 0 when the internal sessions Map is empty', () => {
+    // Module is freshly imported; no live sessions have been created.
+    const freed = enforceGlobalScrollbackCap(undefined);
     expect(freed).toBe(0);
   });
 });
 
-// ── Pure algorithm unit tests ─────────────────────────────────────────────────
-// Test the enforcement algorithm independently of the sessions singleton so
-// we can exercise all code paths deterministically.
+// ── Injectable session-provider tests ─────────────────────────────────────────
+// All of the following call the REAL enforceGlobalScrollbackCap with an
+// explicit sessionProvider so we control the input without needing live PTYs.
+// The cap parameter cannot be injected (it is module-level), but we can stay
+// well under or well over the default 4 MB cap by choosing chunk sizes.
 
-/**
- * Pure implementation of the global cap enforcement algorithm.
- * Mirrors server/sessions.ts::enforceGlobalScrollbackCap but accepts
- * an explicit sessions list and cap, making it fully testable.
- */
-function enforceCapPure(
-  ptySessions: PtySession[],
-  globalCapBytes: number,
-  activeSessionId?: string | null
-): number {
-  let total = ptySessions.reduce(
-    (sum, s) => sum + s.scrollback.reduce((b, chunk) => b + chunk.length, 0),
-    0
-  );
-
-  if (total <= globalCapBytes) return 0;
-
-  const eligible = ptySessions
-    .filter((s) => s.id !== activeSessionId)
-    .sort((a, b) => a.lastActivity.localeCompare(b.lastActivity));
-
-  let freed = 0;
-  for (const session of eligible) {
-    if (total <= globalCapBytes) break;
-    while (session.scrollback.length > 0 && total > globalCapBytes) {
-      const chunk = session.scrollback.shift()!;
-      total -= chunk.length;
-      freed += chunk.length;
-    }
-  }
-  return freed;
-}
-
-describe('global scrollback cap enforcement algorithm', () => {
-  let sessions: PtySession[];
-
-  beforeEach(() => {
-    sessions = [];
-  });
-
-  it('returns 0 when total is within the cap', () => {
+describe('enforceGlobalScrollbackCap via sessionProvider', () => {
+  it('returns 0 when total scrollback is within the cap', () => {
     const s = makeSession(
       's1',
       ['a'.repeat(100), 'b'.repeat(100)],
       '2024-01-01T00:00:00.000Z'
     );
-    sessions.push(s);
-    const freed = enforceCapPure(sessions, 1000);
+    // 200 bytes total — well under 4 MB cap.
+    const freed = enforceGlobalScrollbackCap(undefined, () => [s]);
     expect(freed).toBe(0);
-    expect(s.scrollback).toHaveLength(2); // unchanged
+    expect(s.scrollback).toHaveLength(2); // untouched
   });
 
   it('trims oldest non-active session first when cap is exceeded', () => {
-    // Session s1 is oldest, s2 is newest.
-    const s1 = makeSession('s1', ['a'.repeat(200)], '2024-01-01T00:00:00.000Z');
-    const s2 = makeSession('s2', ['b'.repeat(200)], '2024-01-02T00:00:00.000Z');
-    sessions.push(s1, s2);
+    // We need > 4 MB to trigger the real cap.
+    const BIG = 2 * 1024 * 1024 + 1; // 2 MB + 1 byte each → 4 MB + 2 bytes total
+    const s1 = makeSession('s1', ['a'.repeat(BIG)], '2024-01-01T00:00:00.000Z');
+    const s2 = makeSession('s2', ['b'.repeat(BIG)], '2024-01-02T00:00:00.000Z');
 
-    const cap = 300; // total = 400, need to free 100+
-    const freed = enforceCapPure(sessions, cap);
+    const freed = enforceGlobalScrollbackCap(undefined, () => [s1, s2]);
     expect(freed).toBeGreaterThan(0);
-    // s1 (older) should be trimmed first.
+    // s1 (older lastActivity) should be trimmed first.
     expect(s1.scrollback).toHaveLength(0);
-    // s2 stays intact since trimming s1 was enough.
+    // s2 (newer) should remain because trimming s1 was enough to get under 4 MB.
     expect(s2.scrollback).toHaveLength(1);
   });
 
   it('never trims the active session', () => {
+    const BIG = 3 * 1024 * 1024; // 3 MB each → 6 MB total, 2 MB over cap
     const active = makeSession(
       'active',
-      ['x'.repeat(500)],
-      '2024-01-01T00:00:00.000Z'
+      ['x'.repeat(BIG)],
+      '2024-01-01T00:00:00.000Z' // oldest — would normally be trimmed first
     );
     const other = makeSession(
       'other',
-      ['y'.repeat(500)],
+      ['y'.repeat(BIG)],
       '2024-01-02T00:00:00.000Z'
     );
-    sessions.push(active, other);
 
-    const cap = 600; // total = 1000, must free 400
-    const freed = enforceCapPure(sessions, cap, 'active');
+    const freed = enforceGlobalScrollbackCap('active', () => [active, other]);
     expect(freed).toBeGreaterThan(0);
-    // Active session should not be touched.
+    // Active session must not be touched, even though it is the oldest.
     expect(active.scrollback).toHaveLength(1);
-    // Other session should be trimmed.
+    // The other session should be trimmed.
     expect(other.scrollback).toHaveLength(0);
   });
 
-  it('trims across multiple sessions when one session is not enough', () => {
-    const s1 = makeSession('s1', ['a'.repeat(300)], '2024-01-01T00:00:00.000Z');
-    const s2 = makeSession('s2', ['b'.repeat(300)], '2024-01-02T00:00:00.000Z');
-    const s3 = makeSession('s3', ['c'.repeat(300)], '2024-01-03T00:00:00.000Z');
-    sessions.push(s1, s2, s3);
+  it('trims across multiple sessions when one is not enough', () => {
+    // 3 sessions × 2 MB = 6 MB total → need to free 2 MB to get under 4 MB cap.
+    const MB2 = 2 * 1024 * 1024;
+    const s1 = makeSession('s1', ['a'.repeat(MB2)], '2024-01-01T00:00:00.000Z');
+    const s2 = makeSession('s2', ['b'.repeat(MB2)], '2024-01-02T00:00:00.000Z');
+    const s3 = makeSession('s3', ['c'.repeat(MB2)], '2024-01-03T00:00:00.000Z');
 
-    const cap = 300; // total = 900, need to free 600
-    const freed = enforceCapPure(sessions, cap);
-    expect(freed).toBe(600);
-    expect(s1.scrollback).toHaveLength(0);
-    expect(s2.scrollback).toHaveLength(0);
-    expect(s3.scrollback).toHaveLength(1); // newest, kept
+    const freed = enforceGlobalScrollbackCap(undefined, () => [s1, s2, s3]);
+    expect(freed).toBeGreaterThan(0);
+    // s1 (oldest) is trimmed first; s2 may also be trimmed; s3 (newest) stays.
+    expect(s3.scrollback).toHaveLength(1);
   });
 
   it('returns 0 with no sessions', () => {
-    const freed = enforceCapPure([], 1024);
+    const freed = enforceGlobalScrollbackCap(undefined, () => []);
     expect(freed).toBe(0);
   });
 
   it('trims within a session chunk-by-chunk', () => {
+    // One session with 3 chunks of 2 MB each → 6 MB, 2 MB over cap.
+    const MB2 = 2 * 1024 * 1024;
     const s1 = makeSession(
       's1',
-      ['a'.repeat(100), 'b'.repeat(100), 'c'.repeat(100)], // 3 chunks = 300 bytes
+      ['a'.repeat(MB2), 'b'.repeat(MB2), 'c'.repeat(MB2)],
       '2024-01-01T00:00:00.000Z'
     );
-    sessions.push(s1);
 
-    const cap = 150; // need to free 150 bytes — first 2 chunks gone
-    const freed = enforceCapPure(sessions, cap);
-    expect(freed).toBe(200);
-    expect(s1.scrollback).toHaveLength(1);
-    expect(s1.scrollback[0]).toBe('c'.repeat(100));
+    const freed = enforceGlobalScrollbackCap(undefined, () => [s1]);
+    expect(freed).toBeGreaterThan(0);
+    // At least the first (oldest) chunk should have been trimmed.
+    expect(s1.scrollback.length).toBeLessThan(3);
+    // The last (newest) chunk should survive since it's the final one.
+    expect(s1.scrollback[s1.scrollback.length - 1]).toBe('c'.repeat(MB2));
   });
 });

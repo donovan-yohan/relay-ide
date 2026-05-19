@@ -175,9 +175,9 @@ export const useShikiGcStore = create<ShikiGcState>((set, get) => ({
     }
 
     if (evicted > 0) {
-      set((state) => ({
+      set(() => ({
         entries: next,
-        hasEvictedOnce: state.hasEvictedOnce || true,
+        hasEvictedOnce: true,
       }));
     }
 

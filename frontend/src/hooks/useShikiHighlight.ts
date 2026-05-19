@@ -42,10 +42,12 @@ export function useShikiHighlight(
   // Track the current tokenization generation to discard stale results.
   const genRef = useRef(0);
 
-  // Touch the tab on every render so GC knows it's actively viewed.
+  // Touch the tab on mount and whenever the key changes so the GC last-view
+  // clock is refreshed. No dep-less effect — that would re-run on every render
+  // triggered by touchTab's own store mutation, causing an infinite loop.
   useEffect(() => {
     touchTab(key);
-  });
+  }, [key, touchTab]);
 
   // Kick off highlighting when:
   //   (a) the entry doesn't exist yet, or

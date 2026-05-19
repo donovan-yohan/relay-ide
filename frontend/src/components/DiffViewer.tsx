@@ -316,10 +316,12 @@ function useDiffTokenizer(
   const touchTab = useShikiGcStore((s) => s.touchTab);
   const gcEntry = useShikiGcStore((s) => s.entries.get(cacheKey));
 
-  // Refresh last-viewed timestamp on every render.
+  // Refresh last-viewed timestamp on mount and whenever the cache key changes.
+  // No dep-less effect — that would re-run on every render triggered by
+  // touchTab's own store mutation, causing an infinite loop.
   useEffect(() => {
     touchTab(cacheKey);
-  });
+  }, [cacheKey, touchTab]);
 
   useEffect(() => {
     const { rawLines, hunkHeaderMap, lang } = parsed;
