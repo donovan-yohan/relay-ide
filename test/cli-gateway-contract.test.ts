@@ -76,6 +76,7 @@ describe('CLI gateway contract', () => {
       'files.list',
       'files.stat',
       'files.read',
+      'events.subscribe',
     ]);
 
     for (const spec of RELAY_CLI_GATEWAY_CONTRACT.commandSchemas) {
@@ -248,6 +249,7 @@ describe('CLI gateway contract', () => {
       'files.list',
       'files.stat',
       'files.read',
+      'events.subscribe',
     ] as const;
 
     for (const command of invalidArgumentCommands) {

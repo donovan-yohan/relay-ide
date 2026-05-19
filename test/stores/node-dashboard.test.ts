@@ -288,10 +288,12 @@ describe('hub node dashboard state', () => {
       { now }
     );
 
+    // #597 added `logs:read` to the capability bit set; counts shift by 1
+    // in every tier (denied in sandbox, allowed in dev, denied in prod).
     expect(rows.map((row) => [row.security.trustTier, row.security.postureLabel])).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 15'],
-      ['dev', 'allow 9 · challenge 0 · deny 7'],
-      ['prod', 'allow 1 · challenge 2 · deny 13'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 16'],
+      ['dev', 'allow 10 · challenge 0 · deny 7'],
+      ['prod', 'allow 1 · challenge 2 · deny 14'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

@@ -62,6 +62,11 @@ interface StoredNodeRecord {
   nodeId: string;
   credentialId: string;
   credentialHash: string;
+  // Timestamp of the currently-active credential. Set on pair and updated
+  // when a rotation proves. Optional for backward compatibility with
+  // registry files written before this field existed; consumers fall back
+  // to derived logic when missing.
+  credentialIssuedAt?: string;
   displayName: string;
   hostname: string;
   homeDir?: string;
@@ -118,6 +123,13 @@ export interface CredentialRotationPublicResult {
   rotation: HubNodeCredentialRotationSummary;
 }
 
+export interface ScheduledRotationCandidate {
+  nodeId: string;
+  credentialId: string;
+  activeCredentialIssuedAt: string;
+  ageMs: number;
+}
+
 export interface InventoryPayloadRecord {
   nodeId: string;
   payload: unknown;
@@ -139,10 +151,15 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
 const PRIVILEGED_NODE_WARNING =
-  'A paired Relay node runs with that machine\'s local OS-user blast radius; hub ACL policy grants individual capability bits.';
+  "A paired Relay node runs with that machine's local OS-user blast radius; hub ACL policy grants individual capability bits.";
 
 export type CredentialAuthResult =
-  | { ok: true; node: HubNodeSummary; credentialId: string; rotationId?: string }
+  | {
+      ok: true;
+      node: HubNodeSummary;
+      credentialId: string;
+      rotationId?: string;
+    }
   | { ok: false; error: RelayNodeError };
 
 export interface HubNodeStatusEvent {
@@ -165,7 +182,12 @@ class HubNodeRegistryError extends Error {
   ) {
     super(`${code}: ${message}`);
     this.name = 'HubNodeRegistryError';
-    this.relayNodeError = { code, message, retryable, ...(details ? { details } : {}) };
+    this.relayNodeError = {
+      code,
+      message,
+      retryable,
+      ...(details ? { details } : {}),
+    };
   }
 }
 
@@ -284,7 +306,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hasOnlyKnownCapabilityBits(value: unknown): boolean {
-  return Array.isArray(value) && value.every((item) => isRelayCapabilityBit(item));
+  return (
+    Array.isArray(value) && value.every((item) => isRelayCapabilityBit(item))
+  );
 }
 
 function nodeNeedsAclMigration(node: StoredNodeRecord): boolean {
@@ -428,30 +452,54 @@ function publicRotation(
     ...(rotation.provedAt ? { provedAt: rotation.provedAt } : {}),
     ...(rotation.stableAt ? { stableAt: rotation.stableAt } : {}),
     ...(rotation.failedAt ? { failedAt: rotation.failedAt } : {}),
-    ...(rotation.failureReason ? { failureReason: rotation.failureReason } : {}),
+    ...(rotation.failureReason
+      ? { failureReason: rotation.failureReason }
+      : {}),
   };
 }
 
 function credentialState(node: StoredNodeRecord): HubNodeCredentialState {
   if (node.revokedAt) return 'revoked';
   if (node.credentialRotation?.state === 'failed') return 'rotation-failed';
-  if (
-    node.credentialRotation &&
-    node.credentialRotation.state !== 'stable'
-  ) {
+  if (node.credentialRotation && node.credentialRotation.state !== 'stable') {
     return 'rotating';
   }
   return 'active';
 }
 
-function provableRotation(node: StoredNodeRecord): StoredCredentialRotation | undefined {
+function activeCredentialIssuedAt(node: StoredNodeRecord): string {
+  // Prefer the persisted credentialIssuedAt so the value survives in-flight
+  // rotation windows where `credentialRotation` is overwritten before proof.
+  // Fall back to derived logic for legacy records that predate the field
+  // (pair time, or the most recent stable rotation if later).
+  if (node.credentialIssuedAt) return node.credentialIssuedAt;
+  const pairedMs = Date.parse(node.pairedAt);
+  const rotation = node.credentialRotation;
+  if (!rotation || rotation.state !== 'stable' || !rotation.stableAt) {
+    return node.pairedAt;
+  }
+  const stableMs = Date.parse(rotation.stableAt);
+  if (!Number.isFinite(stableMs)) return node.pairedAt;
+  if (!Number.isFinite(pairedMs) || stableMs > pairedMs)
+    return rotation.stableAt;
+  return node.pairedAt;
+}
+
+function provableRotation(
+  node: StoredNodeRecord
+): StoredCredentialRotation | undefined {
   const rotation = node.credentialRotation;
   if (!rotation) return undefined;
-  if (rotation.state === 'stable' || !rotation.nextCredentialHash) return undefined;
+  if (rotation.state === 'stable' || !rotation.nextCredentialHash)
+    return undefined;
   return rotation;
 }
 
-function updateAclCredential(node: StoredNodeRecord, credentialId: string, now: string): void {
+function updateAclCredential(
+  node: StoredNodeRecord,
+  credentialId: string,
+  now: string
+): void {
   const acl = ensureNodeAcl(node);
   node.acl = {
     ...acl,
@@ -466,7 +514,11 @@ function updateAclCredential(node: StoredNodeRecord, credentialId: string, now: 
   };
 }
 
-function credentialToken(nodeId: string): { token: string; credentialId: string; hash: string } {
+function credentialToken(nodeId: string): {
+  token: string;
+  credentialId: string;
+  hash: string;
+} {
   const credentialId = randomToken('cred');
   const secret = randomToken('secret');
   const token = `${nodeId}.${secret}`;
@@ -548,7 +600,9 @@ export class HubNodeRegistry {
   private heartbeatPersistTimer: NodeJS.Timeout | null = null;
   private heartbeatPersistDirty = false;
   private heartbeatPersistError: unknown = null;
-  private readonly auditSink: { append(input: SecurityAuditEntryInput): unknown } | undefined;
+  private readonly auditSink:
+    | { append(input: SecurityAuditEntryInput): unknown }
+    | undefined;
   private readonly nodeStatusListeners = new Set<NodeStatusListener>();
   private readonly lastNotifiedStatuses = new Map<string, HubNodeStatus>();
 
@@ -666,6 +720,7 @@ export class HubNodeRegistry {
         ),
         createdAt: timestamp,
       }),
+      credentialIssuedAt: timestamp,
       createdAt: timestamp,
       pairedAt: timestamp,
       lastSeenAt: timestamp,
@@ -732,7 +787,9 @@ export class HubNodeRegistry {
         node,
         statusForNode(node, this.now(), this.staleMs, this.offlineMs)
       ),
-      credentialId: matchesRotation ? rotation!.nextCredentialId : node.credentialId,
+      credentialId: matchesRotation
+        ? rotation!.nextCredentialId
+        : node.credentialId,
       ...(matchesRotation ? { rotationId: rotation!.rotationId } : {}),
     };
   }
@@ -750,7 +807,12 @@ export class HubNodeRegistry {
     if (input.credentialId) {
       this.proveCredentialRotation(node, input.credentialId, now);
     }
-    const previousStatus = statusForNode(node, this.now(), this.staleMs, this.offlineMs);
+    const previousStatus = statusForNode(
+      node,
+      this.now(),
+      this.staleMs,
+      this.offlineMs
+    );
     node.lastSeenAt = now;
     delete node.linkDisconnectedAt;
     node.protocolVersion = input.protocolVersion;
@@ -767,7 +829,12 @@ export class HubNodeRegistry {
       node.repoInventory = input.repoInventory;
     }
     this.scheduleHeartbeatPersist();
-    this.notifyNodeStatusIfChanged(node, 'online', input.manifest, previousStatus);
+    this.notifyNodeStatusIfChanged(
+      node,
+      'online',
+      input.manifest,
+      previousStatus
+    );
     return publicNode(node, 'online');
   }
 
@@ -792,7 +859,9 @@ export class HubNodeRegistry {
   }
 
   beginCredentialRotation(nodeId: string): CredentialRotationResult {
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
     if (!node)
       throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
     if (node.revokedAt)
@@ -810,7 +879,10 @@ export class HubNodeRegistry {
     };
     this.persist();
     return {
-      node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)),
+      node: publicNode(
+        node,
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+      ),
       credential: {
         protocol: RELAY_NODE_LINK_PROTOCOL,
         protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -834,7 +906,13 @@ export class HubNodeRegistry {
       rotation.deliveredAt = this.now().toISOString();
       this.persist();
     }
-    return { node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)), rotation: publicRotation(rotation)! };
+    return {
+      node: publicNode(
+        node,
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+      ),
+      rotation: publicRotation(rotation)!,
+    };
   }
 
   failCredentialRotation(
@@ -850,11 +928,19 @@ export class HubNodeRegistry {
       rotation.failureReason = reason;
       this.persist();
     }
-    return { node: publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs)), rotation: publicRotation(rotation)! };
+    return {
+      node: publicNode(
+        node,
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+      ),
+      rotation: publicRotation(rotation)!,
+    };
   }
 
   clearCredentialRotationFailure(nodeId: string): HubNodeSummary {
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
     if (!node)
       throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
     if (!node.credentialRotation) {
@@ -871,15 +957,29 @@ export class HubNodeRegistry {
     }
     delete node.credentialRotation;
     this.persist();
-    return publicNode(node, statusForNode(node, this.now(), this.staleMs, this.offlineMs));
+    return publicNode(
+      node,
+      statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+    );
   }
 
-  private requireRotationNode(nodeId: string, rotationId: string): StoredNodeRecord {
-    const node = this.state.nodes.find((candidate) => candidate.nodeId === nodeId);
+  private requireRotationNode(
+    nodeId: string,
+    rotationId: string
+  ): StoredNodeRecord {
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
     if (!node)
       throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
-    if (!node.credentialRotation || node.credentialRotation.rotationId !== rotationId) {
-      throw new HubNodeRegistryError('NOT_FOUND', 'credential rotation was not found');
+    if (
+      !node.credentialRotation ||
+      node.credentialRotation.rotationId !== rotationId
+    ) {
+      throw new HubNodeRegistryError(
+        'NOT_FOUND',
+        'credential rotation was not found'
+      );
     }
     return node;
   }
@@ -892,12 +992,16 @@ export class HubNodeRegistry {
     const rotation = provableRotation(node);
     if (!rotation || rotation.nextCredentialId !== credentialId) return;
     if (!rotation.nextCredentialHash) {
-      throw new HubNodeRegistryError('INTERNAL', 'credential rotation is missing proof hash');
+      throw new HubNodeRegistryError(
+        'INTERNAL',
+        'credential rotation is missing proof hash'
+      );
     }
     rotation.state = 'proved';
     rotation.provedAt = now;
     node.credentialId = rotation.nextCredentialId;
     node.credentialHash = rotation.nextCredentialHash;
+    node.credentialIssuedAt = now;
     updateAclCredential(node, rotation.nextCredentialId, now);
     delete rotation.nextCredentialHash;
     rotation.state = 'stable';
@@ -957,6 +1061,31 @@ export class HubNodeRegistry {
     return this.state.nodes.map((node) =>
       publicNode(node, statusForNode(node, now, this.staleMs, this.offlineMs))
     );
+  }
+
+  listScheduledRotationCandidates(
+    intervalMs: number
+  ): ScheduledRotationCandidate[] {
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return [];
+    const nowMs = this.now().getTime();
+    const candidates: ScheduledRotationCandidate[] = [];
+    for (const node of this.state.nodes) {
+      if (node.revokedAt) continue;
+      const rotation = node.credentialRotation;
+      if (rotation && rotation.state !== 'stable') continue;
+      const issuedAtIso = activeCredentialIssuedAt(node);
+      const issuedAtMs = Date.parse(issuedAtIso);
+      if (!Number.isFinite(issuedAtMs)) continue;
+      const ageMs = nowMs - issuedAtMs;
+      if (ageMs < intervalMs) continue;
+      candidates.push({
+        nodeId: node.nodeId,
+        credentialId: node.credentialId,
+        activeCredentialIssuedAt: issuedAtIso,
+        ageMs,
+      });
+    }
+    return candidates;
   }
 
   refreshNodeStatuses(): HubNodeStatusEvent[] {
@@ -1028,7 +1157,9 @@ export class HubNodeRegistry {
     node: StoredNodeRecord,
     status: HubNodeStatus,
     manifest?: NodeManifest,
-    previousStatus: HubNodeStatus | undefined = this.lastNotifiedStatuses.get(node.nodeId)
+    previousStatus: HubNodeStatus | undefined = this.lastNotifiedStatuses.get(
+      node.nodeId
+    )
   ): HubNodeStatusEvent | null {
     if (previousStatus === status) return null;
     this.lastNotifiedStatuses.set(node.nodeId, status);

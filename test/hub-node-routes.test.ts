@@ -1621,7 +1621,8 @@ describe('hub node routes and link', () => {
     mutateStoredNode(tmpDir, exchanged.node.nodeId, (node) => {
       node['protocolVersion'] = '1.0';
       const acl = node['acl'] as { grants: { allowed: string[] } };
-      acl.grants.allowed = acl.grants.allowed.filter((bit) => bit !== 'rpc:fs:tail');
+      // #597: logs.tail is gated on `logs:read` now (was `rpc:fs:tail`).
+      acl.grants.allowed = acl.grants.allowed.filter((bit) => bit !== 'logs:read');
     });
     const deniedRegistry = createHubNodeRegistry({
       storagePath: path.join(tmpDir, 'nodes.json'),
@@ -1658,7 +1659,8 @@ describe('hub node routes and link', () => {
 
     mutateStoredNode(tmpDir, exchanged.node.nodeId, (node) => {
       const acl = node['acl'] as { grants: { allowed: string[] } };
-      acl.grants.allowed.push('rpc:fs:tail');
+      // Restore the bit that #597 added to the legacy default.
+      acl.grants.allowed.push('logs:read');
     });
     const routeRegistry = createHubNodeRegistry({
       storagePath: path.join(tmpDir, 'nodes.json'),

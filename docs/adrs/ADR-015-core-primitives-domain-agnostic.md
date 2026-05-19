@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-12
-- **Refs:** #420, #103, #317
+- **Refs:** #420, #103, #317, #423, #425, ADR-017
 - **Supersedes:** none
 
 ## Context
@@ -18,8 +18,8 @@ Future work depends on this generality:
 - A CLI gateway exposing primitives to arbitrary agents (Claude tool-use,
   Codex function-calls, Hermes, scripts).
 - File RPC for fleet-wide remote file inspection.
-- Workspaces / multi-repo groupings (#103) as a feature-layer concept rather
-  than a core requirement.
+- Workspaces[^workspace] / multi-repo groupings (#103) as a feature-layer concept
+  rather than a core requirement.
 - Hosts that participate in the fleet without serving a programming use case
   at all (build farms, content boxes, home automation, future).
 
@@ -30,8 +30,14 @@ Today the core makes implicit assumptions that block that future:
   defaults.
 - Worktree scanning, divergence summaries, and git status are wired into
   manifest probes.
-- "Workspace" is used to mean both "a paired node's set of repos" and "a
-  grouping of repos for the IDE UI."
+- "Workspace"[^workspace] is used to mean both "a paired node's set of repos"
+  and "a grouping of repos for the IDE UI."
+
+[^workspace]: "Workspace" in this ADR refers to the IDE-layer grouping of repos
+    surfaced in the frontend. The workbench vocabulary in
+    `docs/WORKBENCH_BOUNDARY.md` (View → Workspace → Project → Instance → Bench →
+    Tab) is the canonical product taxonomy; consult that doc to avoid conflating
+    the two senses.
 
 Each assumption is fine for the IDE use case but constrains the broader
 platform story and bleeds repo/IDE semantics into modules that should be
@@ -53,32 +59,32 @@ core; the core does not depend on them.
   currently mixed.
 - `server/node-manifest.ts` (capability probes for tmux, git binary
   availability, agent CLIs — *availability*, not repo state)
-- `shared/relay-node-protocol.ts`
-- `shared/node-manifest.ts`
+- `shared/relay-node-protocol.ts`, `shared/node-manifest.ts`
 - Session, node, and stream identifiers are opaque strings as far as the core
   is concerned.
 
 ### Feature layer (consumes core, does not bleed into it)
 
-- Repo inventory + aggregation: `server/repo-inventory.ts`, the repo-aware
-  endpoints currently inside `server/hub-node-router.ts` (see note below),
-  divergence summaries.
+- Repo inventory + aggregation: `server/repo-inventory.ts`,
+  `server/features/repo-router.ts` (the repo-aware HTTP endpoints extracted
+  from the router under #425), divergence summaries.
 - Worktree management: `server/watcher.ts`, `bin/relay-ide.ts` worktree
   subcommand.
 - Agent framework registry, framework-specific spawn defaults.
-- Workspace groupings (#103) when shipped.
+- Workspace[^workspace] groupings (#103) when shipped.
 - IDE-specific UI state under `frontend/`.
 
-### Mixed-responsibility module: `server/hub-node-router.ts`
+### Mixed-responsibility module: `server/hub-node-router.ts` (resolved)
 
-`server/hub-node-router.ts` currently combines two responsibilities: pure
-routing (core) and repo-aware HTTP endpoints (feature). This is intentional
-debt acknowledged by this ADR. The refactor that splits it lives in #425:
-the routing core stays in this module (or moves to a renamed
-`server/hub-router.ts`), and repo aggregation endpoints move into the repo
-feature module and are mounted by the hub composition root. Until then,
-PRs touching this file must be tagged with the responsibility they modify
-and must not deepen the coupling.
+`server/hub-node-router.ts` historically combined two responsibilities: pure
+routing (core) and repo-aware HTTP endpoints (feature). The split tracked in
+#425 (closed) has shipped: repo-aware HTTP endpoints were extracted to
+`server/features/repo-router.ts` and are mounted by the hub composition root,
+while `server/hub-node-router.ts` retains the routing core. The promised rename
+to `server/hub-router.ts` was not adopted; the module keeps its current name.
+New code touching the router must continue to route through
+`server/features/repo-router.ts` (or a new sibling feature module) for any
+repo/git semantics.
 
 ### Rules new code must follow
 
@@ -105,9 +111,10 @@ and must not deepen the coupling.
   cleaner because the integration contract does not assume repos.
 - **Positive.** Repo/git/workspace features evolve independently of the
   routing/PTY/RPC plumbing.
-- **Negative.** Existing modules need an audit and partial refactor (tracked
-  in #425). Several manifest fields move from "required" to "optional
-  feature payload."
+- **Negative.** Existing modules required an audit and partial refactor
+  (completed under #425; repo-aware endpoints now live in
+  `server/features/repo-router.ts`). Several manifest fields moved from
+  "required" to "optional feature payload."
 - **Negative.** Some routes that look natural to put in the core registry
   (e.g., a `/nodes/:id/repos` endpoint) now require explicit mounting from
   the feature layer. Slightly more wiring up front.
