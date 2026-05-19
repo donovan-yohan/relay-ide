@@ -800,6 +800,15 @@ function setupWebSocket(
     broadcastEvent('session-ended', { sessionId, cwd, branchName });
   });
 
+  sessions.onSessionDurabilityChanged((event) => {
+    broadcastEvent('session-durability-changed', {
+      sessionId: event.sessionId,
+      from: event.from,
+      to: event.to,
+      at: event.at,
+    });
+  });
+
   return { wss, broadcastEvent, broadcastBranchChanged };
 }
 

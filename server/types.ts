@@ -26,6 +26,7 @@ import type {
   ControlStateSummary,
 } from '../shared/control-state.js';
 import type { SessionEnvelope } from '../shared/session-envelope.js';
+import type { SessionDurabilityState } from '../shared/session-durability.js';
 
 export type AgentState =
   | 'initializing'
@@ -292,6 +293,7 @@ interface BaseSession {
   sessionEnvelope?: SessionEnvelope | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
   _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
+  _lastEmittedDurability?: SessionDurabilityState | undefined;
   lastAttentionNotifiedAt?: number | undefined;
 }
 
@@ -406,6 +408,12 @@ export interface SessionSummary {
   /** PTY sessions only */
   tmuxSessionName?: string;
   status: SessionStatus;
+  /**
+   * Derived durability state (#614). Coarse `status` stays for backward
+   * compatibility; consumers reasoning about reattach/process ownership
+   * should prefer `durability`.
+   */
+  durability?: SessionDurabilityState;
   needsBranchRename: boolean;
   agentState: AgentState;
   currentActivity?: { tool: string; detail?: string } | undefined;

@@ -58,6 +58,11 @@ import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
+  deriveSessionDurability,
+  type SessionDurabilityNodeStatus,
+  type SessionDurabilityState,
+} from '../shared/session-durability.js';
+import {
   isControlStateSummary,
   normalizeControlStateSummary,
   type ControlStateSummary,
@@ -455,6 +460,94 @@ function fireSessionEnd(
 
 export function fireStateChange(sessionId: string, state: AgentState): void {
   for (const cb of [...stateChangeCallbacks]) cb(sessionId, state);
+  // Push durability transitions through the live state-change channel so
+  // event-stream consumers see `permission-needed` / `error` / etc. without
+  // waiting for the next `list()` poll.
+  const session = sessions.get(sessionId);
+  if (session) emitDurabilityIfChanged(session);
+}
+
+type DurabilityChangeCallback = (event: {
+  sessionId: string;
+  from: SessionDurabilityState | undefined;
+  to: SessionDurabilityState;
+  at: string;
+}) => void;
+const durabilityChangeCallbacks: DurabilityChangeCallback[] = [];
+
+function onSessionDurabilityChanged(cb: DurabilityChangeCallback): () => void {
+  durabilityChangeCallbacks.push(cb);
+  return () => {
+    const idx = durabilityChangeCallbacks.indexOf(cb);
+    if (idx >= 0) durabilityChangeCallbacks.splice(idx, 1);
+  };
+}
+
+// Resolver for hub-side node link health. Composition root wires this to
+// `hubNodeRegistry`; defaults to `null` so unit tests and the local-only
+// path do not need to think about it. Returning `null` means "no hub-side
+// opinion" and trusts local signals.
+type SessionNodeStatusResolver = (
+  nodeId: string | undefined
+) => SessionDurabilityNodeStatus;
+let nodeStatusResolver: SessionNodeStatusResolver = () => null;
+
+function setSessionNodeStatusResolver(
+  resolver: SessionNodeStatusResolver | null
+): void {
+  nodeStatusResolver = resolver ?? (() => null);
+}
+
+function resolveNodeStatus(session: Session): SessionDurabilityNodeStatus {
+  try {
+    return nodeStatusResolver(session.nodeId ?? undefined);
+  } catch (err) {
+    logger.warn(
+      'session node status resolver threw; treating as no-opinion: %s',
+      err instanceof Error ? err.message : String(err)
+    );
+    return null;
+  }
+}
+
+function emitDurabilityIfChanged(session: Session): SessionDurabilityState {
+  const next = deriveSessionDurability({
+    status: session.status,
+    agentState: session.agentState,
+    idle: session.idle,
+    nodeStatus: resolveNodeStatus(session),
+    ...(session.mode === 'pty' && session.cleanedUp ? { cleanedUp: true } : {}),
+  });
+  const previous = session._lastEmittedDurability;
+  if (previous === next) return next;
+  session._lastEmittedDurability = next;
+  const event = {
+    sessionId: session.id,
+    from: previous,
+    to: next,
+    at: new Date().toISOString(),
+  };
+  for (const cb of [...durabilityChangeCallbacks]) {
+    try {
+      cb(event);
+    } catch (err) {
+      logger.error('durabilityChange callback error:', err);
+    }
+  }
+  return next;
+}
+
+/**
+ * Re-derive durability for the named sessions (or every session when no
+ * filter is given) and emit transitions. Use this when a non-agent signal
+ * changes — e.g. node link goes stale, attach socket count crosses zero.
+ */
+function refreshDurability(sessionIds?: Iterable<string>): void {
+  const ids = sessionIds ? Array.from(sessionIds) : Array.from(sessions.keys());
+  for (const id of ids) {
+    const session = sessions.get(id);
+    if (session) emitDurabilityIfChanged(session);
+  }
 }
 
 export function computeBackendState(session: {
@@ -511,6 +604,11 @@ export function fireBackendStateIfChanged(session: Session): void {
       logger.error('backendStateChange callback error:', err);
     }
   }
+  // Backend state + status are the only inputs to durability that can flip
+  // outside the `fireStateChange` path (e.g. the resume-failure setter
+  // mutates `status` + `agentState` directly). Re-derive here so consumers
+  // see the transition over the event stream immediately.
+  emitDurabilityIfChanged(session);
 }
 
 function create({
@@ -683,6 +781,7 @@ function renew(input: {
 function list(): SessionSummary[] {
   const summaries = Array.from(sessions.values())
     .map((s): SessionSummary => {
+      const durability = emitDurabilityIfChanged(s);
       const summary = withLocalIdentity({
         id: s.id,
         type: s.type,
@@ -701,6 +800,7 @@ function list(): SessionSummary[] {
         idle: s.idle,
         customCommand: s.customCommand,
         status: s.status,
+        durability,
         needsBranchRename: !!s.needsBranchRename,
         agentState: s.agentState,
         currentActivity: s.currentActivity,
@@ -2134,6 +2234,9 @@ export {
   onStateChange,
   onSessionCreate,
   onSessionEnd,
+  onSessionDurabilityChanged,
+  setSessionNodeStatusResolver,
+  refreshDurability,
   nextTerminalName,
   nextAgentName,
   serializeAll,
