@@ -1,0 +1,84 @@
+/* ===== FileBlock ===== */
+
+.block-file {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  font-family: var(--font-mono);
+}
+
+.block-file__header {
+  flex-shrink: 0;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.block-file__kind {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.block-file__name {
+  font-size: var(--font-size-base);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.block-file__ref {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.block-file__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.block-file__denied {
+  padding: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+}
+
+.block-file__placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  color: var(--text-muted);
+}
+
+.block-file__placeholder-label {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+.block-file__placeholder-detail {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.block-file__placeholder-ref {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
