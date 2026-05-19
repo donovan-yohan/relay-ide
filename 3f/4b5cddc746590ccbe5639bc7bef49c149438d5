@@ -1,0 +1,39 @@
+frontend/src/lib/ws.ts
+  s_3e9de69a56e5c0::t_722021b912e3e0 557-563
+  s_3e9de69a56e5c0::t_40162bddd2a2d8 270-272,299-305
+  s_3e9de69a56e5c0::t_31444a8271de3b 437,446-470
+  s_3e9de69a56e5c0::t_833f8504a86dad 521-523
+  s_3e9de69a56e5c0::t_c7b442fbe04ee0 823-863
+frontend/src/components/WorkspaceContentLayer.tsx
+  s_3e9de69a56e5c0::t_4db8331a2e3124 30
+  s_3e9de69a56e5c0::t_b4c0cf6d6f1bfb 91
+frontend/src/components/WorkspaceArea.tsx
+  s_3e9de69a56e5c0::t_c1941cf1114819 686,709
+  s_3e9de69a56e5c0::t_e1c7d6318f4b0d 214,222,240
+frontend/src/components/WorkspaceLayoutDemo.tsx
+  s_3e9de69a56e5c0::t_53d0c404ee1182 157
+frontend/src/components/Terminal.tsx
+  s_3e9de69a56e5c0::t_b272aba85fdd16 1116
+  s_3e9de69a56e5c0::t_3d6a64657f7bdc 1186-1187
+  s_3e9de69a56e5c0::t_98022cf258b4e7 59-66
+  s_3e9de69a56e5c0::t_d3614436535663 962-1000
+  s_3e9de69a56e5c0::t_d8fae0b8f8bad1 19-20
+test/pty-pause.test.ts
+  s_3e9de69a56e5c0::t_cc6288140f5003 1-282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "3f4b5cddc746590ccbe5639bc7bef49c149438d5",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
