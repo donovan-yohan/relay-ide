@@ -1,0 +1,24 @@
+shared/environment-option.ts
+  s_afc3e94f2d047a::t_8a9412c4d1fe46 1-295,309,316,322,329,332,334-335,339,345,348,357
+  s_afc3e94f2d047a::t_0d90706e0de2fb 296-308,310-315,317-321,323-328,330-331,333,336-338,340-344,346-347,349-356
+shared/index.ts
+  s_afc3e94f2d047a::t_9abc73fba5d31d 1-24
+test/shared/environment-option.test.ts
+  s_afc3e94f2d047a::t_e04156051b81b8 1-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "54150fc1befcbd994d7025532e1a607eaf93bda1",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
