@@ -441,25 +441,39 @@ export async function detectGitRepo(
   dirPath: string,
   execAsync: typeof execFileAsync = execFileAsync
 ): Promise<{ isGitRepo: boolean; defaultBranch: string | null }> {
+  // Check path exists before spawning git. ENOENT from spawn fires for BOTH
+  // a missing git binary AND a missing cwd, with no way to tell them apart
+  // from the error fields alone. Validate the cwd up front so any subsequent
+  // ENOENT unambiguously means the binary is missing.
+  try {
+    const stat = await fs.promises.stat(dirPath);
+    if (!stat.isDirectory()) {
+      return { isGitRepo: false, defaultBranch: null };
+    }
+  } catch (statErr: unknown) {
+    const e = statErr as NodeJS.ErrnoException;
+    if (e.code === 'ENOENT') {
+      // Path was removed since it was configured; treat as non-git-repo so
+      // bulk re-validation at startup doesn't crash on stale config entries.
+      return { isGitRepo: false, defaultBranch: null };
+    }
+    if (e.code === 'EACCES') {
+      throw new PathInaccessibleError(dirPath);
+    }
+    const message = statErr instanceof Error ? statErr.message : String(statErr);
+    logger.warn('detectGitRepo: stat failed for', dirPath, message);
+    throw new GitInfraError(message);
+  }
+
   try {
     await execAsync('git', ['rev-parse', '--git-dir'], { cwd: dirPath });
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException & { stderr?: string; code?: string | number };
 
-    // ENOENT can mean the git binary is missing OR the cwd path doesn't exist.
-    // Distinguish: if the error message/path references the git binary itself
-    // (spawn error with no stderr), it's a missing binary.
+    // ENOENT after the stat check above means the git binary itself is missing
+    // (the cwd was verified to exist as a directory).
     if (e.code === 'ENOENT') {
-      // A spawn failure for the binary has no stderr; a missing-directory
-      // failure from git has stderr containing "not a git repository" or
-      // similar. If there is no stderr at all, treat it as binary missing.
-      const hasStderr = typeof e.stderr === 'string' && e.stderr.trim().length > 0;
-      if (!hasStderr) {
-        throw new GitBinaryMissingError();
-      }
-      // cwd path does not exist — treat as not-a-git-repo (path existence
-      // validated upstream by validateWorkspacePath; here we return gracefully).
-      return { isGitRepo: false, defaultBranch: null };
+      throw new GitBinaryMissingError();
     }
 
     if (e.code === 'EACCES') {
