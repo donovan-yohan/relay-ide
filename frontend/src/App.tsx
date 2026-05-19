@@ -68,6 +68,7 @@ import ErrorToast from './components/ErrorToast.js';
 import NotificationStack from './components/NotificationStack.js';
 import ConfirmationPrompt from './components/ConfirmationPrompt.js';
 import InstallBanner from './components/InstallBanner.js';
+import { ProdTrustBanner } from './components/ProdTrustBanner.js';
 import CommandPalette from './components/CommandPalette.js';
 import OpenPicker from './components/OpenPicker.js';
 import FilePicker from './components/FilePicker.js';
@@ -1243,6 +1244,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <div className="main-app" ref={mainAppRef}>
         <BackendConnectionBanner status={backendConnectionStatus} />
+        <ProdTrustBanner />
         {/* Sidebar overlay (mobile) */}
         {sidebarOpen && (
           <div className="sidebar-overlay" onClick={closeSidebar} />

@@ -13,6 +13,7 @@ import { createHubNodeLinkManager, HubNodeLinkError } from '../server/hub-node-l
 import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
+import { SecurityAuditLog } from '../server/security-audit-log.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 
@@ -886,7 +887,12 @@ describe('hub node routes and link', () => {
         nodeLinks: nodeLinks as never,
         sessionEnvelopes,
         now: () => now,
-        auditSink: { append: (entry) => auditEntries.push(entry) },
+        auditSink: {
+          append: (entry) => auditEntries.push(entry),
+          listBefore: () => ({ rows: [], nextBeforeSequence: null }),
+          head: () => ({ latestSequence: 0, latestHash: null }),
+          verify: () => ({ ok: true as const, entriesVerified: 0, lastHash: null }),
+        },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
@@ -1276,7 +1282,12 @@ describe('hub node routes and link', () => {
     app.use(
       createHubNodeRouter({
         registry,
-        auditSink: { append: (entry) => auditEntries.push(entry) },
+        auditSink: {
+          append: (entry) => auditEntries.push(entry),
+          listBefore: () => ({ rows: [], nextBeforeSequence: null }),
+          head: () => ({ latestSequence: 0, latestHash: null }),
+          verify: () => ({ ok: true as const, entriesVerified: 0, lastHash: null }),
+        },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json({ error: 'Unauthorized' });
@@ -1762,4 +1773,345 @@ describe('hub node routes and link', () => {
     await vi.waitFor(() => expect(closeCalled).toBe(true));
   });
 
+});
+
+describe('GET /hub/audit/entries and /hub/audit/verify', () => {
+  const tmpRoots: string[] = [];
+  const cleanup: Array<() => Promise<void> | void> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) await cleanup.pop()?.();
+    for (const dir of tmpRoots.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function tmpDbPath(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-audit-routes-'));
+    tmpRoots.push(dir);
+    return path.join(dir, 'audit.db');
+  }
+
+  function sampleInput(overrides: { eventId?: string; correlationId?: string } = {}) {
+    return {
+      eventId: overrides.eventId,
+      eventType: 'grant' as const,
+      decision: 'allow' as const,
+      reasonCode: 'ACL_ALLOWED',
+      peer: { kind: 'node' as const, nodeId: 'node-1', credentialId: 'cred-secret-1' },
+      node: { nodeId: 'node-1', trustTier: 'dev' as const },
+      intent: { action: 'rpc.fs.read', target: '/repo/README.md' },
+      requiredBits: ['rpc:fs:read' as const],
+      grantedBits: ['rpc:fs:read' as const],
+      deniedBits: [] as const,
+      correlationId: overrides.correlationId ?? 'corr-1',
+    };
+  }
+
+  async function startServer(auditLog: SecurityAuditLog) {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        auditSink: auditLog,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    return { base: `http://127.0.0.1:${port}` };
+  }
+
+  it('returns paginated entries newest-first with correct nextBeforeSequence', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    for (let i = 1; i <= 5; i++) {
+      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+    }
+    const { base } = await startServer(auditLog);
+
+    // page 1: no beforeSequence → newest 3 entries (5, 4, 3 in DESC order)
+    const res = await fetch(`${base}/hub/audit/entries?limit=3`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { entries: Array<{ sequence: number }>; nextBeforeSequence: number | null; head: { latestSequence: number } };
+    expect(body.entries).toHaveLength(3);
+    expect(body.entries[0]!.sequence).toBe(5);
+    expect(body.entries[2]!.sequence).toBe(3);
+    expect(body.nextBeforeSequence).toBe(3);
+    expect(body.head.latestSequence).toBe(5);
+
+    // second page: beforeSequence=3 → sequences 2,1
+    const res2 = await fetch(`${base}/hub/audit/entries?beforeSequence=3&limit=50`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    const body2 = await res2.json() as { entries: Array<{ sequence: number }>; nextBeforeSequence: number | null };
+    expect(body2.entries).toHaveLength(2);
+    expect(body2.entries[0]!.sequence).toBe(2);
+    expect(body2.nextBeforeSequence).toBe(1);
+
+    // terminal page: beforeSequence=1 → empty + null
+    const res3 = await fetch(`${base}/hub/audit/entries?beforeSequence=1&limit=50`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    const body3 = await res3.json() as { entries: unknown[]; nextBeforeSequence: number | null };
+    expect(body3.entries).toHaveLength(0);
+    expect(body3.nextBeforeSequence).toBeNull();
+  });
+
+  it('does not expose credentialId in any response field', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    auditLog.append(sampleInput({ eventId: 'evt-cred-1' }));
+    const { base } = await startServer(auditLog);
+
+    const res = await fetch(`${base}/hub/audit/entries`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    const text = await res.text();
+    // Must not contain credentialId key or 'cred-secret-1' value; word-boundary
+    // guards on token/bearer/secret avoid false positives on legitimate field names
+    // that happen to contain those substrings (e.g. reasonCode values).
+    expect(text).not.toMatch(
+      /credentialId|credential_id|cred-secret-1|\btoken\b|\bbearer\b|\bsecret\b/i
+    );
+  });
+
+  it('GET /hub/audit/verify returns ok:true for a clean chain', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    auditLog.append(sampleInput({ eventId: 'evt-v1' }));
+    auditLog.append(sampleInput({ eventId: 'evt-v2', correlationId: 'c-2' }));
+    const { base } = await startServer(auditLog);
+
+    const res = await fetch(`${base}/hub/audit/verify`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; entriesVerified: number };
+    expect(body.ok).toBe(true);
+    expect(body.entriesVerified).toBe(2);
+  });
+
+  it('returns 503 when auditSink has no listBefore/head', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        auditSink: {
+          append: () => undefined,
+          // intentionally omit listBefore, head, verify
+        },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const res = await fetch(`${base}/hub/audit/entries`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('audit_sink_unavailable');
+  });
+
+  // GAP-1: negative-auth test
+  it('GAP-1: returns 401 for GET /hub/audit/entries without auth header', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    const { base } = await startServer(auditLog);
+
+    const res = await fetch(`${base}/hub/audit/entries`);
+    expect(res.status).toBe(401);
+  });
+
+  it('GAP-1: returns 401 for GET /hub/audit/verify without auth header', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    const { base } = await startServer(auditLog);
+
+    const res = await fetch(`${base}/hub/audit/verify`);
+    expect(res.status).toBe(401);
+  });
+
+  // GAP-2: route-level error simulation
+  it('GAP-2: returns 500 audit_read_failed when auditSink.listBefore throws', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        auditSink: {
+          append: () => undefined,
+          listBefore: () => { throw new Error('injected db error'); },
+          head: () => ({ latestSequence: 0, latestHash: null }),
+          verify: () => { throw new Error('injected verify error'); },
+        },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const res = await fetch(`${base}/hub/audit/entries`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('audit_read_failed');
+  });
+
+  it('GAP-2: returns 500 audit_verify_failed when auditSink.verify throws', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        auditSink: {
+          append: () => undefined,
+          listBefore: () => ({ rows: [], nextBeforeSequence: null }),
+          head: () => ({ latestSequence: 0, latestHash: null }),
+          verify: () => { throw new Error('injected verify error'); },
+        },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json({ error: 'Unauthorized' });
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const res = await fetch(`${base}/hub/audit/verify`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('audit_verify_failed');
+  });
+
+  // GAP-3: malformed query param tests
+  it('GAP-3: invalid beforeSequence values fall back to null (fetch from head)', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    for (let i = 1; i <= 3; i++) {
+      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+    }
+    const { base } = await startServer(auditLog);
+
+    // negative beforeSequence → clamped to null → returns all 3 entries from head
+    const resNeg = await fetch(`${base}/hub/audit/entries?beforeSequence=-1`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(resNeg.status).toBe(200);
+    const bodyNeg = await resNeg.json() as { entries: unknown[] };
+    expect(bodyNeg.entries).toHaveLength(3);
+
+    // non-numeric beforeSequence → clamped to null → returns all 3 entries from head
+    const resAlpha = await fetch(`${base}/hub/audit/entries?beforeSequence=abc`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(resAlpha.status).toBe(200);
+    const bodyAlpha = await resAlpha.json() as { entries: unknown[] };
+    expect(bodyAlpha.entries).toHaveLength(3);
+  });
+
+  it('GAP-3: limit=0 defaults to 50 and limit=99999 is capped at 200', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    for (let i = 1; i <= 5; i++) {
+      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+    }
+    const { base } = await startServer(auditLog);
+
+    // limit=0 → defaults to 50 → all 5 rows returned
+    const resZero = await fetch(`${base}/hub/audit/entries?limit=0`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(resZero.status).toBe(200);
+    const bodyZero = await resZero.json() as { entries: unknown[] };
+    expect(bodyZero.entries).toHaveLength(5);
+
+    // limit=99999 → capped at 200 → all 5 rows returned (no error)
+    const resHuge = await fetch(`${base}/hub/audit/entries?limit=99999`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(resHuge.status).toBe(200);
+    const bodyHuge = await resHuge.json() as { entries: unknown[] };
+    expect(bodyHuge.entries).toHaveLength(5);
+  });
+
+  it('GAP-3: limit=-5 defaults to 50', async () => {
+    const auditLog = new SecurityAuditLog(tmpDbPath());
+    cleanup.push(() => auditLog.close());
+    for (let i = 1; i <= 5; i++) {
+      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+    }
+    const { base } = await startServer(auditLog);
+
+    const res = await fetch(`${base}/hub/audit/entries?limit=-5`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { entries: unknown[] };
+    expect(body.entries).toHaveLength(5);
+  });
+
+  // GAP-4: verify ok:false over HTTP (tampered DB)
+  it('GAP-4: GET /hub/audit/verify returns ok:false with break info on tampered entry', async () => {
+    const dbPath = tmpDbPath();
+    const auditLog = new SecurityAuditLog(dbPath);
+    auditLog.append(sampleInput({ eventId: 'evt-t1' }));
+    auditLog.append(sampleInput({ eventId: 'evt-t2', correlationId: 'c-2' }));
+    auditLog.close();
+
+    // Tamper: drop the no-update trigger and corrupt an entry hash
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(dbPath);
+    db.exec('DROP TRIGGER security_audit_no_update');
+    db.prepare("UPDATE security_audit_log SET decision = 'deny' WHERE sequence = 2").run();
+    db.close();
+
+    // Re-open via new SecurityAuditLog so the route sees the tampered DB
+    const tamperedLog = new SecurityAuditLog(dbPath);
+    cleanup.push(() => tamperedLog.close());
+    const { base } = await startServer(tamperedLog);
+
+    const res = await fetch(`${base}/hub/audit/verify`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; break?: { sequence: number; reason: string } };
+    expect(body.ok).toBe(false);
+    expect(body.break).toBeDefined();
+    expect(body.break?.reason).toBe('entry_hash_mismatch');
+  });
 });

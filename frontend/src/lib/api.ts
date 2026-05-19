@@ -1865,3 +1865,69 @@ export async function fetchWorkspaceBranches(
     await fetch('/branches?path=' + encodeURIComponent(path))
   );
 }
+
+// ── Security audit log ────────────────────────────────────────────────────────
+
+export interface SecurityAuditEntryRow {
+  eventId: string;
+  timestamp: string;
+  sequence: number;
+  schemaVersion: number;
+  eventType: string;
+  decision: string;
+  reasonCode: string;
+  peer: {
+    kind: string;
+    nodeId?: string;
+    displayName?: string;
+    principalHash?: string;
+  };
+  node: { nodeId?: string; trustTier?: string };
+  sessionId?: string;
+  intent: { action: string; target?: string };
+  scopeHash: string;
+  paramsHash: string;
+  requiredBits: string[];
+  grantedBits: string[];
+  deniedBits: string[];
+  aclRef?: string;
+  policyVersion?: string;
+  correlationId: string;
+  prevHash: string | null;
+  entryHash: string;
+}
+
+export interface SecurityAuditEntriesResponse {
+  entries: SecurityAuditEntryRow[];
+  nextBeforeSequence: number | null;
+  head: { latestSequence: number; latestHash: string | null };
+}
+
+export interface SecurityAuditVerifyResponse {
+  ok: boolean;
+  entriesVerified: number;
+  lastHash: string | null;
+  break?: {
+    sequence: number;
+    eventId?: string;
+    reason: string;
+    expected?: string | number | null;
+    actual?: string | number | null;
+  };
+}
+
+export async function fetchSecurityAuditEntries(params?: {
+  beforeSequence?: number | null;
+  limit?: number;
+}): Promise<SecurityAuditEntriesResponse> {
+  const qs = new URLSearchParams();
+  if (params?.beforeSequence != null) qs.set('beforeSequence', String(params.beforeSequence));
+  if (params?.limit) qs.set('limit', String(params.limit));
+  return json<SecurityAuditEntriesResponse>(
+    await fetch(`/hub/audit/entries${qs.toString() ? '?' + qs.toString() : ''}`)
+  );
+}
+
+export async function fetchSecurityAuditVerify(): Promise<SecurityAuditVerifyResponse> {
+  return json<SecurityAuditVerifyResponse>(await fetch('/hub/audit/verify'));
+}
