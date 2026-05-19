@@ -96,6 +96,85 @@ const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
 const TMUX_COMMAND = 'tmux';
 
+// ── Global scrollback cap ──────────────────────────────────────────────────────
+
+/** Default global scrollback cap across all sessions: 4 MB. */
+const DEFAULT_GLOBAL_SCROLLBACK_CAP = 4 * 1024 * 1024;
+
+/** Module-level global cap, overridden by configure(). */
+let globalScrollbackCapBytes = DEFAULT_GLOBAL_SCROLLBACK_CAP;
+
+/**
+ * Running total of scrollback bytes across all PTY sessions.
+ * Updated incrementally on append (via onScrollbackAppend) and decremented
+ * when chunks are trimmed, so the enforcement hot-path can skip the O(N)
+ * full-walk when the total is under the cap.
+ */
+let globalScrollbackTotalBytes = 0;
+
+/**
+ * Enforce the global scrollback cap across all PTY sessions.
+ *
+ * - Uses the pre-computed running total (fast path: returns early when under cap).
+ * - If the total exceeds the cap, trims oldest scrollback from non-active
+ *   sessions first (sorted by lastActivity ascending).
+ * - Never trims the currently-focused (activeSessionId) session.
+ *
+ * @param activeSessionId - ID of the session currently being appended to (never trimmed).
+ * @param sessionProvider - Optional override for the sessions list; defaults to the
+ *   module-level `sessions` Map. Inject in tests to avoid spinning up live PTYs.
+ *
+ * Returns the number of bytes freed.
+ */
+function enforceGlobalScrollbackCap(
+  activeSessionId?: string | null,
+  sessionProvider?: () => PtySession[]
+): number {
+  const ptySessions = sessionProvider
+    ? sessionProvider()
+    : [...sessions.values()].filter((s): s is PtySession => s.mode === 'pty');
+
+  // Recompute the running total from the canonical session list so the local
+  // variable stays consistent with the actual scrollback state.
+  let total = ptySessions.reduce(
+    (sum, s) => sum + s.scrollback.reduce((b, chunk) => b + chunk.length, 0),
+    0
+  );
+  // Keep the module-level counter in sync.
+  globalScrollbackTotalBytes = total;
+
+  if (total <= globalScrollbackCapBytes) return 0;
+
+  // Sort non-active sessions oldest-activity-first.
+  const eligible = ptySessions
+    .filter((s) => s.id !== activeSessionId)
+    .sort((a, b) => a.lastActivity.localeCompare(b.lastActivity));
+
+  let freed = 0;
+  for (const session of eligible) {
+    if (total <= globalScrollbackCapBytes) break;
+    // Trim oldest chunks one-by-one until this session's scrollback is clear.
+    while (session.scrollback.length > 0 && total > globalScrollbackCapBytes) {
+      const chunk = session.scrollback.shift()!;
+      total -= chunk.length;
+      freed += chunk.length;
+    }
+  }
+
+  // Keep the running total in sync after trimming.
+  globalScrollbackTotalBytes = total;
+
+  if (freed > 0) {
+    logger.debug(
+      'global scrollback cap: freed %d bytes (cap=%d)',
+      freed,
+      globalScrollbackCapBytes
+    );
+  }
+
+  return freed;
+}
+
 interface SerializedPtySession {
   id: string;
   type: SessionType;
@@ -171,7 +250,10 @@ let defaultForceOutputParser: boolean | undefined;
 let defaultConfigDir: string | undefined;
 let defaultInterventionDebounceMs: number | undefined;
 let defaultCoDrivenAutoRevertMs: number | undefined;
-let defaultSecurityAuditSink: { append(input: SecurityAuditEntryInput): unknown } | undefined;
+let defaultSecurityAuditSink:
+  | { append(input: SecurityAuditEntryInput): unknown }
+  | undefined;
+let defaultMaxScrollbackPerSessionBytes: number | undefined;
 
 function configure(opts: {
   port?: number;
@@ -180,6 +262,10 @@ function configure(opts: {
   interventionDebounceMs?: number;
   coDrivenAutoRevertMs?: number;
   securityAuditSink?: { append(input: SecurityAuditEntryInput): unknown };
+  /** Global scrollback cap across all sessions in bytes. Default: 4 MB. */
+  maxScrollbackGlobalBytes?: number;
+  /** Per-session scrollback cap in bytes. Default: 256 KB. */
+  maxScrollbackPerSessionBytes?: number;
 }): void {
   defaultPort = opts.port;
   defaultForceOutputParser = opts.forceOutputParser;
@@ -187,6 +273,12 @@ function configure(opts: {
   defaultInterventionDebounceMs = opts.interventionDebounceMs;
   defaultCoDrivenAutoRevertMs = opts.coDrivenAutoRevertMs;
   defaultSecurityAuditSink = opts.securityAuditSink;
+  if (opts.maxScrollbackGlobalBytes !== undefined) {
+    globalScrollbackCapBytes = opts.maxScrollbackGlobalBytes;
+  }
+  if (opts.maxScrollbackPerSessionBytes !== undefined) {
+    defaultMaxScrollbackPerSessionBytes = opts.maxScrollbackPerSessionBytes;
+  }
 }
 
 function withLocalIdentity<T extends SessionSummary>(
@@ -252,7 +344,11 @@ function fireControlEvent(event: TabControlEvent): void {
     try {
       cb(event);
     } catch (err) {
-      logger.warn('control event listener failed for event %s: %s', event.eventId, err);
+      logger.warn(
+        'control event listener failed for event %s: %s',
+        event.eventId,
+        err
+      );
     }
   }
 }
@@ -260,9 +356,15 @@ function fireControlEvent(event: TabControlEvent): void {
 function auditControlEvent(event: TabControlEvent): void {
   if (!defaultSecurityAuditSink) return;
   try {
-    defaultSecurityAuditSink.append(securityAuditEntryForTabControlEvent(event));
+    defaultSecurityAuditSink.append(
+      securityAuditEntryForTabControlEvent(event)
+    );
   } catch (err) {
-    logger.warn('security audit append failed for control event %s: %s', event.eventId, err);
+    logger.warn(
+      'security audit append failed for control event %s: %s',
+      event.eventId,
+      err
+    );
   }
 }
 
@@ -439,6 +541,12 @@ function create({
     forceOutputParser: forceOutputParser ?? defaultForceOutputParser,
     configDir: rest.configDir ?? defaultConfigDir,
     frameworks,
+    // Per-session cap: params override config default; pty-handler uses its own default if undefined.
+    ...(rest.maxScrollbackBytes !== undefined
+      ? { maxScrollbackBytes: rest.maxScrollbackBytes }
+      : defaultMaxScrollbackPerSessionBytes !== undefined
+        ? { maxScrollbackBytes: defaultMaxScrollbackPerSessionBytes }
+        : {}),
   };
 
   const { session: ptySession, result } = createPtySession(
@@ -451,6 +559,20 @@ function create({
           (sessionId: string) => sessionEnvelopeRegistry.delete(sessionId),
         ],
         fireBackendStateIfChanged,
+        onScrollbackAppend: (
+          appendedSessionId: string,
+          appendedBytes: number
+        ) => {
+          // Maintain the running total incrementally so the O(N) enforcement
+          // walk is skipped entirely when we are still under the cap. This avoids
+          // summing all scrollback chunks on every PTY data chunk.
+          globalScrollbackTotalBytes += appendedBytes;
+          if (globalScrollbackTotalBytes <= globalScrollbackCapBytes) return;
+          // Cap exceeded — run the full enforcement. It recomputes the true total
+          // and updates globalScrollbackTotalBytes so subsequent fast-path checks
+          // reflect any chunks that were trimmed.
+          enforceGlobalScrollbackCap(appendedSessionId);
+        },
       },
     },
     sessions
@@ -485,7 +607,9 @@ function create({
   }
   fireSessionCreate(id, ptySession.cwd, ptySession.branchName);
   // Record session start for analytics
-  recordSessionEvent(buildSessionEvent(ptySession, { eventType: 'session_start' }));
+  recordSessionEvent(
+    buildSessionEvent(ptySession, { eventType: 'session_start' })
+  );
   upsertSessionRollup({
     sessionId: id,
     ...(ptySession.repoPath ? { repoPath: ptySession.repoPath } : {}),
@@ -769,7 +893,11 @@ function createRoutedPtyControlState(
   };
 }
 
-function ensureRoutedPtyControlState(session: Session, nodeId: string, sessionId: string): void {
+function ensureRoutedPtyControlState(
+  session: Session,
+  nodeId: string,
+  sessionId: string
+): void {
   if (isControlStateSummary(session.controlState)) return;
   session.controlState = createRoutedPtyControlState(nodeId, sessionId);
 }
@@ -820,13 +948,20 @@ function routedPtyControlSession(nodeId: string, sessionId: string): Session {
   return session;
 }
 
-function recordRoutedPtyInput(input: { nodeId: string; sessionId: string; data: string }): void {
+function recordRoutedPtyInput(input: {
+  nodeId: string;
+  sessionId: string;
+  data: string;
+}): void {
   const session = routedPtyControlSession(input.nodeId, input.sessionId);
   session.lastActivity = new Date().toISOString();
   recordHumanPtyInput(session, input.data, controlEngineOptions());
 }
 
-function controlAction(id: string, action: ControlModeAction): TabControlEvent[] {
+function controlAction(
+  id: string,
+  action: ControlModeAction
+): TabControlEvent[] {
   const session = sessions.get(id);
   if (!session) {
     throw new Error(`Session not found: ${id}`);
@@ -866,7 +1001,9 @@ function handBackToAgent(input: {
         ...normalizeControlStateSummary(session.controlState),
       }
     : undefined;
-  const scope = session ? interventionScopeForSession(session) : { sessionId: input.id };
+  const scope = session
+    ? interventionScopeForSession(session)
+    : { sessionId: input.id };
   const unackedHumanInterventions = listUnackedHumanInput(scope);
   const validation = validateAgentHandBackAck({
     session: summary,
@@ -876,7 +1013,10 @@ function handBackToAgent(input: {
     unackedHumanInterventions,
   });
   if (validation.ok === false) return { ok: false, error: validation.error };
-  const ackedHumanInterventions = acknowledgeInterventions(input.id, input.actor);
+  const ackedHumanInterventions = acknowledgeInterventions(
+    input.id,
+    input.actor
+  );
   const events = controlAction(input.id, 'hand-back');
   return { ok: true, events, ackedHumanInterventions };
 }
@@ -1944,5 +2084,8 @@ export {
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,
+  // onGlobalScrollbackTrim intentionally omitted: no WS consumer wired yet.
+  // Add back when the broadcast integration lands.
+  enforceGlobalScrollbackCap,
 };
 export type { CreateWebParams };

@@ -42,6 +42,7 @@ import {
 } from './lib/utility-terminals.js';
 import { deriveUtilityRailContext } from './lib/utility-rail-context.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
+import { startShikiGc } from './lib/stores/shiki-gc.js';
 import type { ActionContext } from './lib/actions/types.js';
 import { useEventSocket } from './hooks/useEventSocket.js';
 import { useVisibilityRefresh } from './hooks/useVisibilityRefresh.js';
@@ -1216,9 +1217,10 @@ export default function App() {
     actionContextRef,
   });
 
-  // ── Mount: analytics, boot, auth check ────────────────────────────────────
+  // ── Mount: analytics, boot, auth check, shiki GC ─────────────────────────
   useEffect(() => {
     initAnalytics(() => useSessionsStore.getState().activeSessionId);
+    startShikiGc();
     startBoot();
     checkExistingAuth();
     return () => {
