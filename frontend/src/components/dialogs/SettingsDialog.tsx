@@ -33,6 +33,9 @@ import {
   fetchClaudeFullscreen,
   fetchUpdateChannel,
   setUpdateChannel,
+  fetchRenamerTool,
+  setRenamerTool,
+  type RenamerTool,
 } from '../../lib/api.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import { useConfigStore } from '../../lib/stores/config.js';
@@ -55,6 +58,7 @@ interface ConfigState {
   defaultYolo: boolean;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
+  renamerTool: RenamerTool;
 }
 
 const DEFAULT_CONFIG: ConfigState = {
@@ -63,6 +67,7 @@ const DEFAULT_CONFIG: ConfigState = {
   defaultYolo: false,
   defaultNotifications: true,
   claudeFullscreen: true,
+  renamerTool: 'claude',
 };
 
 const TOC_SECTIONS = [
@@ -86,7 +91,16 @@ const TOC_SECTIONS = [
 ];
 
 const SECTION_KEYWORDS: Record<string, string[]> = {
-  general: ['default coding agent', 'continue', 'yolo', 'notifications'],
+  general: [
+    'default coding agent',
+    'continue',
+    'yolo',
+    'notifications',
+    'rename',
+    'renamer',
+    'branch name',
+    'session name',
+  ],
   agents: ['claude', 'claude code', 'fullscreen', 'no flicker'],
   integrations: [
     'github',
@@ -109,7 +123,7 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
 };
 
 async function loadConfig(): Promise<ConfigState> {
-  const [agent, cont, yolo, notif, fullscreen] = await Promise.all([
+  const [agent, cont, yolo, notif, fullscreen, renamer] = await Promise.all([
     fetchDefaultAgent().catch(() => DEFAULT_CONFIG.defaultAgent),
     fetchDefaultContinue().catch(() => DEFAULT_CONFIG.defaultContinue),
     fetchDefaultYolo().catch(() => DEFAULT_CONFIG.defaultYolo),
@@ -117,6 +131,9 @@ async function loadConfig(): Promise<ConfigState> {
       () => DEFAULT_CONFIG.defaultNotifications
     ),
     fetchClaudeFullscreen().catch(() => DEFAULT_CONFIG.claudeFullscreen),
+    fetchRenamerTool().catch(() => ({
+      renamerTool: DEFAULT_CONFIG.renamerTool as RenamerTool,
+    })),
   ]);
   return {
     defaultAgent: agent,
@@ -124,6 +141,7 @@ async function loadConfig(): Promise<ConfigState> {
     defaultYolo: yolo,
     defaultNotifications: notif,
     claudeFullscreen: fullscreen,
+    renamerTool: renamer.renamerTool,
   };
 }
 
@@ -221,12 +239,24 @@ function useConfigHandlers(
       setError('Failed to update Claude fullscreen setting.');
     }
   }
+  async function handleRenamerToolChange(v: RenamerTool) {
+    const prev = config.renamerTool;
+    setConfig((c) => ({ ...c, renamerTool: v }));
+    setError('');
+    try {
+      await setRenamerTool(v);
+    } catch {
+      setConfig((c) => ({ ...c, renamerTool: prev }));
+      setError('Failed to update renamer tool setting.');
+    }
+  }
   return {
     handleAgentChange,
     handleContinueChange,
     handleYoloChange,
     handleNotifChange,
     handleClaudeFullscreenChange,
+    handleRenamerToolChange,
   };
 }
 
@@ -521,6 +551,27 @@ function GeneralSection({
                 : ''}
             </option>
           ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        name="Session Renamer"
+        description="CLI tool used to suggest descriptive session and branch names"
+      >
+        <select
+          className="settings-dialog-select"
+          value={config.renamerTool}
+          onChange={(e) =>
+            void handlers.handleRenamerToolChange(
+              e.currentTarget.value as RenamerTool
+            )
+          }
+        >
+          <option value="claude">claude (default)</option>
+          <option value="codex">codex</option>
+          <option value="none">none (disable AI naming)</option>
+          <option value="custom-script">
+            custom-script (configured externally)
+          </option>
         </select>
       </SettingRow>
       <SettingRow
