@@ -18,11 +18,19 @@
   min-width: 0;
 }
 
-.tl::-webkit-scrollbar { width: 4px; }
-.tl::-webkit-scrollbar-thumb { background: var(--border); }
+.tl::-webkit-scrollbar {
+  width: 4px;
+}
+.tl::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
 
 /* turn — vertical stack of header, items, footer. Inter-turn separator on header. */
-.turn { display: flex; flex-direction: column; gap: 6px; }
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
 .turn + .turn .turn-header {
   border-top: 1px solid var(--border);
@@ -52,13 +60,30 @@
   margin-top: 2px;
 }
 
-.turn-footer .meta { margin-left: auto; }
-.turn-footer .stage { color: var(--text); }
-.turn-footer--running { color: var(--accent); opacity: 1; }
-.turn-footer--running .glyph { color: var(--accent); width: 0.7em; display: inline-block; }
+.turn-footer .meta {
+  margin-left: auto;
+}
+.turn-footer .stage {
+  color: var(--text);
+}
+.turn-footer--running {
+  color: var(--accent);
+  opacity: 1;
+}
+.turn-footer--running .glyph {
+  color: var(--accent);
+  width: 0.7em;
+  display: inline-block;
+}
 
-.turn-header .meta { margin-left: auto; opacity: 0.6; }
-.turn-header .lbl, .turn-footer .lbl { color: var(--text-muted); }
+.turn-header .meta {
+  margin-left: auto;
+  opacity: 0.6;
+}
+.turn-header .lbl,
+.turn-footer .lbl {
+  color: var(--text-muted);
+}
 
 /* tl-text — matches chat.html lines 161-168 */
 .tl-text {
@@ -104,7 +129,12 @@
 }
 
 /* inline code inside tl-text — chat.html line 243 */
-.tl-text code { border: none; background: transparent; padding: 0; color: var(--text); }
+.tl-text code {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+}
 
 /* queue — matches chat.html lines 190-243 */
 .queue {
@@ -123,7 +153,9 @@
   letter-spacing: 0.04em;
 }
 
-.queue__label .ct { color: var(--accent); }
+.queue__label .ct {
+  color: var(--accent);
+}
 
 .queue__item {
   align-self: flex-end;
@@ -171,7 +203,10 @@
   line-height: 1;
 }
 
-.queue__cancel:hover { color: var(--status-error); background: var(--surface-hover); }
+.queue__cancel:hover {
+  color: var(--status-error);
+  background: var(--surface-hover);
+}
 
 /* fc-row — matches chat.html lines 284-294 */
 .fc-row {
@@ -183,11 +218,32 @@
   font-size: 0.8125rem;
 }
 
-.fc-row__path { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fc-row__stats { display: flex; gap: 6px; font-size: 0.7rem; white-space: nowrap; }
-.fc-row__add { color: var(--status-success); }
-.fc-row__del { color: var(--status-error); }
-.fc-row__kind { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; min-width: 56px; text-align: right; }
+.fc-row__path {
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fc-row__stats {
+  display: flex;
+  gap: 6px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.fc-row__add {
+  color: var(--status-success);
+}
+.fc-row__del {
+  color: var(--status-error);
+}
+.fc-row__kind {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 56px;
+  text-align: right;
+}
 
 /* reasoning block — relay-specific, not in chat.html */
 .reasoning {
@@ -213,8 +269,12 @@
 }
 
 /* Remove default browser disclosure arrow */
-.provider-extension summary { list-style: none; }
-.provider-extension summary::-webkit-details-marker { display: none; }
+.provider-extension summary {
+  list-style: none;
+}
+.provider-extension summary::-webkit-details-marker {
+  display: none;
+}
 
 .provider-extension__h {
   padding: 6px 10px;
@@ -332,7 +392,10 @@
   font-size: 0.8125rem;
   cursor: pointer;
   text-transform: lowercase;
-  transition: border-style 0.1s, filter 0.1s, background 0.1s;
+  transition:
+    border-style 0.1s,
+    filter 0.1s,
+    background 0.1s;
 }
 
 .tl-resume-btn:hover {
@@ -341,6 +404,21 @@
   padding: 2px 8px;
   filter: brightness(1.3);
   background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+/* tl-session-break — context boundary divider rendered for sessionBreak items */
+.tl-session-break {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.tl-session-break__label {
+  white-space: nowrap;
 }
 
 @media (max-width: 767px) {

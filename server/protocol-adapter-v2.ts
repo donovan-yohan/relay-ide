@@ -61,6 +61,7 @@ export interface ProtocolAdapterV2 {
   respondToApproval(input: AgentApprovalResponseInputV2): Promise<void>;
   respondToInput(input: AgentInputResponseInputV2): Promise<void>;
   onPatch(handler: AgentPatchHandlerV2): () => void;
+  broadcastPatch(patch: AgentPatchV2): void;
   readonly capabilities: AgentCapabilitySetV2;
   readonly status: AdapterStatus;
   readonly runtimeOwnership: 'spawned' | 'attached';
@@ -100,6 +101,17 @@ export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {
     return () => {
       this.handlers.delete(handler);
     };
+  }
+
+  /**
+   * Broadcast a patch to all currently-registered onPatch handlers.
+   *
+   * Used by `continueHereWebSession` to emit the synthetic `sessionBreak`
+   * patch to all live listeners (session state reducer + per-WS forwarders)
+   * before `disconnect()` clears the handler set.
+   */
+  broadcastPatch(patch: AgentPatchV2): void {
+    this.emitPatch(patch);
   }
 
   protected emitPatch(patch: AgentPatchV2): void {

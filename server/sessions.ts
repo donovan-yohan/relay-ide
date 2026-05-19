@@ -2068,6 +2068,26 @@ async function continueHereWeb(sessionId: string): Promise<void> {
     );
   }
 
+  // Issue 6 fix: guard against spurious Continue Here on an active session.
+  // Only allow the recovery flow when the session is in a disconnected/failed
+  // state. An active or waiting session should not have its adapter torn down
+  // by a stale or unexpected client command.
+  const liveStatus = session.agentSessionV2.live.status;
+  const isDisconnected =
+    liveStatus === 'disconnected' ||
+    session.adapterV2.status === 'disconnected';
+  if (!isDisconnected) {
+    logger.warn(
+      'continue-here: ignoring request for non-disconnected session',
+      {
+        id: session.id,
+        liveStatus,
+        adapterStatus: session.adapterV2.status,
+      }
+    );
+    return;
+  }
+
   const config = {
     cwd: session.cwd,
     port: defaultPort ?? 3456,
@@ -2085,7 +2105,7 @@ async function continueHereWeb(sessionId: string): Promise<void> {
       : {}),
   };
 
-  await continueHereWebSession(session, config);
+  await continueHereWebSession(session, config, fireBackendStateIfChanged);
 }
 
 export {

@@ -162,7 +162,26 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 ? 'resume failed — retry or start a new context'
                 : 'session paused — resume where you left off'}
             </span>
-            {canResume && (
+            {resumeFailed ? (
+              <>
+                {/* Issue 3+4: resume-failed shows retry + continue here only */}
+                <button
+                  type="button"
+                  className="tl-resume-btn"
+                  onClick={handleResume}
+                >
+                  resume
+                </button>
+                <button
+                  type="button"
+                  className="tl-resume-btn"
+                  onClick={handleContinueHere}
+                >
+                  continue here
+                </button>
+              </>
+            ) : (
+              /* Normal paused state: standard resume only, no continue here */
               <button
                 type="button"
                 className="tl-resume-btn"
@@ -171,22 +190,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 resume session
               </button>
             )}
-            {resumeFailed && (
-              <button
-                type="button"
-                className="tl-resume-btn"
-                onClick={handleResume}
-              >
-                resume
-              </button>
-            )}
-            <button
-              type="button"
-              className="tl-resume-btn"
-              onClick={handleContinueHere}
-            >
-              continue here
-            </button>
           </div>
         )}
         {!session || session.turns.length === 0 ? (
