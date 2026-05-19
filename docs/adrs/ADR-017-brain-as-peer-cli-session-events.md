@@ -2,8 +2,21 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-16
-- **Refs:** #506, #429, #430, #426, #470, #493, #423, ADR-015, ADR-016
+- **Refs:** #506, #429, #430, #426, #470, #493, #423, #552, #569, ADR-015, ADR-016
 - **Supersedes:** none
+
+## Status update (2026-05-19)
+
+The schema foundations enumerated under "Minimum CLI JSON schema changes
+before #430" have largely shipped. The CLI gateway contract
+(`shared/cli-gateway-contract.ts`) carries agent-shaped session peer identity,
+`sessions.get`, control summary fields, `sessions.handBack` with
+`latestSeenInterventionEventId`, bounded `sessions.interventions` reads, and
+typed control-state errors (#511, #515, #527, #532, #516, #518, #520, #523,
+#536). Generated Hermes/Claude/Codex tool definitions and their adapter smokes
+landed in #527, #535, #546, and #549. Active Work (#552/#569) provides the
+bounded federated read model that adapters use instead of the still-deferred
+`events.*` channel.
 
 ## Context
 
@@ -159,6 +172,17 @@ Deferred event-subscription work must be explicit before adapters rely on it:
 Until that lands, #430 adapters should poll bounded session/control reads or
 consume only the PTY stream they explicitly attached to.
 
+**Active Work substitute (2026-05).** The deferred `events.*` channel has been
+intentionally replaced for adapter consumers by the Active Work bounded-read
+substrate (PR #569, see `docs/WORKBENCH_BOUNDARY.md`). Active Work exposes the
+federated read model — sessions, control summaries, intervention markers, and
+work-context envelopes — through bounded gateway verbs and the hub's federated
+surface. Adapters wanting to react to control-mode or intervention changes
+should poll Active Work and the bounded `sessions.interventions` / `sessions.get`
+reads rather than waiting on `events.*`. The `events.*` verbs remain
+deliberately deferred; Active Work covers the read-model use case that
+motivated them.
+
 ### How a peer brain discovers and acts on primitives
 
 The adapter flow is intentionally boring:
@@ -184,69 +208,76 @@ Important boundaries:
 - Internal WebSocket envelope names, stream ids, and routing details may change
   as long as the CLI JSON contract remains stable for the advertised major.
 
-## Minimum CLI JSON schema changes before #430
+## Minimum CLI JSON schema changes before #430 — shipped status
 
-Before Hermes/Claude/Codex adapter packages generate tool definitions, #429's
-schema must include these stable pieces:
+The minimum-schema items required before Hermes/Claude/Codex adapters could
+generate tool definitions have largely shipped under #423/#429. Status as of
+2026-05-19 (verify against `shared/cli-gateway-contract.ts` and
+`shared/session-envelope.ts`):
 
-1. **Agent-capable session peer identity.** Session descriptors returned by
-   `sessions create`, `sessions list`, and the required session-inspection verb
-   can represent `peerIdentity.kind: 'agent'` with adapter metadata.
-2. **Session inspection.** Add or reserve `relay-ide v1 sessions get --id
-<sessionId> --json` so adapters do not overload `sessions list` or parse
-   internal WebSocket state for one session.
-3. **Control summary fields.** Session descriptors include the #493 summary
-   fields: `controlMode`, `activeActors`, `activeWorker`,
-   `lastInterventionAt`, `lastInterventionBy`, `lastInterventionEventId`,
-   `controlFreshness`, and `controlReason`.
-4. **Initial control-mode request.** `sessions create` accepts an optional,
-   policy-gated `--control-mode agent-driven|human-driven` request, defaulting
-   safely when omitted. The hub may reject with a typed policy error.
-5. **Hand-back ack.** Add a control verb or a `sessions update-control` shape
-   that requires `--latest-intervention-event-id <id>` when resuming
-   `agent-driven` after human intervention.
-6. **Bounded intervention reads.** Add or reserve a bounded read shape for
-   recent intervention metadata with redaction fields. Do not expose raw
-   keylogs or full terminal transcripts.
-7. **Typed stale-state errors.** Extend the gateway error taxonomy for
-   `CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`,
-   and `CONTROL_STATE_UNKNOWN` (names may change during implementation, but the
-   cases must exist).
-8. **Event subscription explicitly absent or versioned.** Either omit event
-   subscription from the generated schema, or add the future `events subscribe`
-   verb with the full cursor/backpressure/redaction contract. Do not let
-   adapters scrape `/hub/node-link` event envelopes as a substitute.
+1. [x] **Agent-capable session peer identity.** `SessionPeerIdentity` carries
+   `kind: 'agent'` with adapter metadata
+   (`shared/session-envelope.ts:47`, PRs #511, #515).
+2. [x] **Session inspection.** `sessions.get` is a stable v1 verb
+   (`shared/cli-gateway-contract.ts:682`, PRs #527, #532).
+3. [x] **Control summary fields.** Session descriptors expose
+   `controlMode`, `activeActors`, `activeWorker`, `lastInterventionAt`,
+   `lastInterventionBy`, `lastInterventionEventId`, `controlFreshness`, and
+   `controlReason` (PRs #516, #518).
+4. [x] **Initial control-mode request.** `sessions create` accepts a
+   policy-gated initial control-mode request and rejects with a typed policy
+   error when denied (PRs #516, #518).
+5. [x] **Hand-back ack.** `sessions.handBack` requires
+   `latestSeenInterventionEventId` before resuming `agent-driven`
+   (`shared/cli-gateway-contract.ts:920`, PR #520).
+6. [x] **Bounded intervention reads.** `sessions.interventions` exposes
+   bounded intervention metadata and asserts `rawPayloadAvailable: false`
+   and `transcriptExportAvailable: false`
+   (`shared/cli-gateway-contract.ts:869`, PR #523). Per-field redaction
+   shapes on payload bodies remain open and will land as adapters surface
+   concrete needs.
+7. [x] **Typed stale-state errors.** Gateway error taxonomy carries
+   `CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`,
+   `INTERVENTION_ACK_STALE`, and `CONTROL_STATE_UNKNOWN`
+   (PRs #527, #532, #536).
+8. [ ] **Event subscription deliberately absent.** No `events.*` verb has
+   been added to the generated schema; adapters consume Active Work
+   (#552/#569) and bounded reads instead. This remains a hard boundary: no
+   hidden `/hub/node-link` WebSocket dependency.
 
-These are additive to the #423 MVP. The first seven are required before #430
-adapters can safely treat Relay as a peer workspace substrate. The eighth is a
-hard boundary: no hidden WebSocket dependency.
+These were additive to the #423 MVP. With items 1–7 in place, Hermes, Claude,
+and Codex adapter packages now generate tool definitions and run smoke tests
+through the CLI gateway (PRs #527, #535, #546, #549). Item 8 stays open by
+design; adapters reach for Active Work, not raw events.
 
 ## Adapter compatibility notes
 
 ### Hermes
 
-Hermes can be a first-class `agent` peer because it already has durable profile
-identity and Kanban/session concepts outside Relay. Its adapter should still be
-thin: translate Hermes tool calls to CLI invocations, parse JSON/NDJSON, and let
-Relay own session scope, control state, and hub policy. Hermes must not treat
-Relay Kanban task identity as Relay session identity; it can pass correlation
-metadata, but the Relay session envelope remains authoritative.
+Hermes is a first-class `agent` peer because it carries durable profile
+identity and Kanban/session concepts outside Relay. The Hermes adapter is
+thin: it translates Hermes tool calls to CLI invocations, parses JSON/NDJSON,
+and lets Relay own session scope, control state, and hub policy (smoke in
+PR #546; metadata event ingestion spike in PR #565). Hermes does not treat
+Hermes Kanban task identity as Relay session identity; it passes correlation
+metadata, and the Relay session envelope remains authoritative.
 
 ### Claude
 
-Claude adapters should generate tool-use definitions from the CLI JSON Schema.
-Claude hook telemetry and Relay's existing Claude PTY/session support are
-feature-layer integrations, not the brain-as-peer contract. A Claude adapter may
-own a Relay session as `peerIdentity.kind: 'agent'`, but it should not speak the
-hook HTTP API or node-link WebSocket as its primary control plane.
+Claude adapters generate tool-use definitions from the CLI JSON Schema bundle
+(PR #535). Claude hook telemetry and Relay's existing Claude PTY/session
+support are feature-layer integrations, not the brain-as-peer contract. A
+Claude adapter owns a Relay session as `peerIdentity.kind: 'agent'`; it does
+not speak the hook HTTP API or node-link WebSocket as its primary control
+plane.
 
 ### Codex
 
-Codex function schemas should be generated from the same JSON Schema bundle as
-Claude tools. Codex's local transcript/JSONL telemetry is an adapter/runtime
-concern; Relay control-mode and intervention state come from #493 session
-summaries and bounded reads. Codex must not infer hand-back safety from terminal
-output alone.
+Codex function schemas are generated from the same JSON Schema bundle as
+Claude tools (PR #549). Codex's local transcript/JSONL telemetry is an
+adapter/runtime concern; Relay control-mode and intervention state come from
+#493 session summaries and bounded reads. Codex does not infer hand-back
+safety from terminal output alone.
 
 ## Consequences
 
