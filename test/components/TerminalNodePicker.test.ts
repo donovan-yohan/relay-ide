@@ -69,17 +69,18 @@ describe('TerminalNodePicker buildChoices', () => {
       node({ nodeId: 'offline', displayName: 'offline', status: 'offline' }),
       node({ nodeId: 'revoked', displayName: 'revoked', status: 'revoked' }),
     ]);
+    // nodeShellBlockReason returns descriptive messages for non-online states
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'stale',
+      disabledReason: 'heartbeat is stale',
     });
     expect(choices[2]).toMatchObject({
       disabled: true,
-      disabledReason: 'offline',
+      disabledReason: 'node is offline',
     });
     expect(choices[3]).toMatchObject({
       disabled: true,
-      disabledReason: 'revoked',
+      disabledReason: 'node is revoked',
     });
   });
 
@@ -88,7 +89,10 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.label).toBe('m1');
   });
 
-  it('disables nodes with version skew even when online', () => {
+  it('blocks version-skew nodes even when shell+tmux are available', () => {
+    // nodeShellBlockReason checks version state before shell+tmux — a version-skew
+    // node is disabled pre-click so the user gets feedback before attempting to
+    // open a session.
     const choices = buildChoices([
       node({
         nodeId: 'skew',
@@ -102,11 +106,13 @@ describe('TerminalNodePicker buildChoices', () => {
     ]);
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'version skew',
+      disabledReason: 'node has version skew',
     });
   });
 
-  it('disables nodes with incompatible protocol versions', () => {
+  it('blocks incompatible-version nodes even when shell+tmux are available', () => {
+    // Same reasoning: incompatible protocol is infrastructure-level; the hub will
+    // reject a routed session anyway, so we block pre-click.
     const choices = buildChoices([
       node({
         nodeId: 'incompat',
@@ -120,7 +126,7 @@ describe('TerminalNodePicker buildChoices', () => {
     ]);
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'protocol incompatible',
+      disabledReason: 'node protocol is incompatible',
     });
   });
 
@@ -175,9 +181,27 @@ describe('TerminalNodePicker buildChoices', () => {
         },
       }),
     ]);
+    // nodeShellBlockReason returns "tmux <status> on <displayName>"
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'no tmux',
+      disabledReason: 'tmux unavailable on thin',
+    });
+  });
+
+  it('hermes unavailable does not block terminal node picker', () => {
+    // Terminal picker uses nodeShellBlockReason (shell+tmux only), not agent availability.
+    const choices = buildChoices([
+      node({
+        nodeId: 'hermes-absent',
+        displayName: 'hermes-absent',
+        capabilities: {
+          ...node().capabilities,
+          agents: {},
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: false,
     });
   });
 });

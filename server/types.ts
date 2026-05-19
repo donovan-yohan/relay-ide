@@ -818,6 +818,8 @@ export interface Repo {
   path: string;
   name: string;
   isGitRepo: boolean;
+  /** Derived from isGitRepo at projection time. 'repo' for git repos, 'directory' for non-git dirs. */
+  kind?: 'repo' | 'directory';
   defaultBranch: string | null;
   currentBranch: string | null;
   /** Node-local checkout path. Kept beside path for backward-compatible local mode consumers. */
