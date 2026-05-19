@@ -219,6 +219,60 @@ Devbox deploy evidence for <PR/issue>:
 - Redaction: no pair tokens, bearer tokens, cookies, node credentials, or auth-bearing URLs included
 ```
 
+## Recovery / verification — routed PTY hardening (May 2026)
+
+A series of routed-PTY fixes landed against the dogfood loop. After a hub redeploy on devbox (or a Mac node-link restart), re-run the matching checks to confirm none of these regressions returned. Run hub-side commands over `ssh dev`; run launchd/node-link commands on the Mac. Capture redacted evidence per the template above.
+
+### #583 series — routed Active Work live controls
+
+- Failure mode on devbox: mobile/desktop Active Work showed a routed session as live, but Attach silently did nothing and Send hit the wrong session. Routing went through unscoped session ids and never invalidated on `session`/`control`/`node` events, so already-mounted surfaces stayed stale after a routed create. Some Mac-node routed terminals also booted with `controlMode: unknown`, which downgraded controls to read-only. CI also lacked a default `tab-mode` capability in the legacy policy, so policy-evaluated routed creates flapped between agent and human control state.
+- Verification after hub redeploy:
+  - Create a routed terminal against `macbook-relay-node` from desktop and mobile; confirm both surface it as `controlFreshness: fresh` with `controlMode: human-driven` (terminal) or `agent-driven` (agent) — never `unknown`.
+  - From the mobile Active Work card, press Attach: the PTY should mount with the existing scrollback. Send a small input (`pwd`) and confirm it lands on the routed node.
+  - Trigger a `session`/`control` event (open a second tab on the same routed session) and confirm the first surface refreshes without a manual reload.
+- Mac node-link sequence: no node restart needed for the #583 fixes — they live on the hub. Only restart the node-link if `relay-ide hub nodes` reports `VERSION_SKEW` or `PROTOCOL_INCOMPATIBLE` against the redeployed hub.
+
+### #585 — routed terminal shell liveness (commit `7fdfc3b4`)
+
+- Failure mode on devbox: routed terminal creates from the browser arrived at the node-link RPC host without an explicit `command`. node-pty would spawn with no shell, exit immediately, and Active Work would fall back to last-known-only. Mobile users saw a dead tab almost instantly after creation.
+- Verification: create a routed terminal from the browser with no custom command; confirm `relay-ide hub nodes --json` still shows the session as live, and the PTY shows the user's shell prompt (or `/bin/sh` on hosts without `SHELL`). The session must stay `controlFreshness: fresh` after the first PTY frame.
+- Mac node-link sequence: this fix is hub-side parsing only; do not restart the node-link unless you actually changed node code. If you did, follow the standard launchd sequence:
+
+  ```bash
+  relay-ide node status
+  launchctl print gui/$(id -u)/com.relay-ide
+  launchctl kickstart -k gui/$(id -u)/com.relay-ide
+  relay-ide node logs
+  ```
+
+### #587 / #588 — routed agent runtime spawn (commits `d2ffe567`, `083ec3be`)
+
+- Failure mode on devbox: routed `type: agent` / `agent: codex|hermes|claude` sessions reported the right metadata in Active Work and the resume snapshot, but the attached PTY rendered the user's zsh startup (e.g. `[oh-my-zsh] Would you like to update?`) instead of the selected native runtime. A stray `command` from the browser was sneaking through node-link create, and the routed attach path was re-opening a fresh PTY instead of binding to the already-spawned native session.
+- Verification after hub redeploy:
+  - POST a routed agent create against `macbook-relay-node` (`type: agent`, `agent: codex` — substitute whichever agent `relay-ide hub doctor` reports as `available` for that node).
+  - Confirm Active Work shows `type: agent`, `controlMode: agent-driven`, `controlFreshness: fresh`, with a WorkContext linked.
+  - Attach from desktop AND mobile. The bounded PTY frame must be the agent runtime UI (Codex/Hermes/Claude banner), not a shell prompt. Re-attach from a second client and confirm both clients see the same live session — that exercises the `node-link-pty-host` "attach to live native sessions" path.
+- Mac node-link sequence: #587/#588 split between hub and node. `node-link-rpc-host` command suppression for agent creates lives on the hub; `node-link-pty-host` live-session attach lives on the node. If the Mac node is on an older nightly than the hub, the routed agent will spawn a shell again. Update and restart the node-link:
+
+  ```bash
+  npm install -g relay-ide@nightly   # or scripts/dev-resync.sh for source mode
+  relay-ide --version
+  launchctl kickstart -k gui/$(id -u)/com.relay-ide
+  relay-ide node doctor --hub <devbox-hub-url>
+  ```
+
+  Then re-run the routed agent create above and confirm Codex/Hermes/Claude UI in the bounded PTY frame before claiming the regression is gone.
+
+### Cross-fix invariants to re-prove
+
+When a regression looks routed-PTY shaped, these are the cheapest invariants to recheck before opening a new bug:
+
+1. Hub `/health` returns `{"status":"ok"}` and `relay-ide --version` on the devbox matches the SHA/package channel under test.
+2. `relay-ide hub nodes --json` shows the target node online, protocol-compatible, on the same channel/SHA.
+3. A routed terminal and a routed agent session both reach `controlFreshness: fresh` with the expected `controlMode`, and the bounded PTY frame matches the requested kind (shell prompt for terminal, runtime banner for agent).
+4. Re-attaching from a second client lands on the same live session, not a fresh PTY.
+5. No raw bytes, pair tokens, bearer tokens, or auth-bearing URLs appear in evidence — only ids, statuses, redacted summaries, screenshots, and artifact paths.
+
 ## See also
 
 - [`../FEDERATED_DEV.md`](../FEDERATED_DEV.md) — source dev across hub/node checkouts and protocol skew handling.
