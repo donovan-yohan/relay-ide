@@ -13,7 +13,7 @@
  * Runtime registry tests import only the pure registry module (no React/CSS).
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,61 +96,76 @@ describe('block-registry source structure', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Registry runtime tests — import only the pure registry module.
-// The registry module itself has no React/CSS imports; only initFirstPartyBlocks
-// does (via dynamic import). These tests exercise register/lookup directly.
+// Registry runtime tests — import the real block-registry module.
+// The registry module has no React/CSS imports (only initFirstPartyBlocks
+// uses dynamic import). vi.resetModules() gives each describe a fresh
+// singleton so tests do not leak state into each other.
 // ---------------------------------------------------------------------------
 
-// We construct a local mini-registry to test the logic without importing
-// the module-level singleton (which would have side effects on other tests).
-// The registry logic is straightforward; we test the logic pattern.
+// The registry module path is stored in a variable to prevent TypeScript from
+// statically resolving the dynamic import during `typecheck:test`. TypeScript
+// only follows string-literal dynamic imports; a computed path is opaque to it.
+// Vitest resolves it correctly at runtime via the Vite pipeline.
+const REGISTRY_MODULE = '../frontend/src/workbench/block-registry' + '.js';
 
-describe('registry logic (inline, no module import)', () => {
-  // Replicate the registry logic inline for isolated unit testing.
-  // This avoids transitive imports from block renderer modules (Terminal, etc.)
-  // that would pull in xterm/ws and fail in the test tsconfig context.
+type RegistryModule = {
+  registerBlockRenderer: (kind: string, renderer: unknown) => void;
+  getBlockRenderer: (kind: string) => unknown;
+  registeredKinds: () => ReadonlySet<string>;
+};
 
-  type AnyFn = (...args: unknown[]) => unknown;
-  const makeRegistry = () => new Map<string, AnyFn>();
+async function importRegistry(): Promise<RegistryModule> {
+  return import(/* @vite-ignore */ REGISTRY_MODULE) as Promise<RegistryModule>;
+}
 
-  it('register + lookup returns the same reference', () => {
-    const reg = makeRegistry();
-    const renderer = () => null;
-    reg.set('terminal', renderer);
-    expect(reg.get('terminal')).toBe(renderer);
+describe('registry runtime (real module)', () => {
+  beforeEach(() => {
+    vi.resetModules();
   });
 
-  it('get of unregistered kind returns undefined', () => {
-    const reg = makeRegistry();
-    expect(reg.get('unknown-kind')).toBeUndefined();
+  it('fresh import starts with an empty registry', async () => {
+    const { registeredKinds } = await importRegistry();
+    expect(registeredKinds().size).toBe(0);
   });
 
-  it('last writer wins on duplicate registration', () => {
-    const reg = makeRegistry();
+  it('registerBlockRenderer + getBlockRenderer returns the same reference', async () => {
+    const { registerBlockRenderer, getBlockRenderer } = await importRegistry();
+    const fakeRenderer = () => null;
+    registerBlockRenderer('markdown', fakeRenderer);
+    expect(getBlockRenderer('markdown')).toBe(fakeRenderer);
+  });
+
+  it('getBlockRenderer returns undefined for unregistered kinds', async () => {
+    const { getBlockRenderer } = await importRegistry();
+    expect(getBlockRenderer('terminal')).toBeUndefined();
+  });
+
+  it('last writer wins on duplicate registration (warns)', async () => {
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+    const { registerBlockRenderer, getBlockRenderer } = await importRegistry();
     const first = () => null;
     const second = () => null;
-    reg.set('artifact', first);
-    reg.set('artifact', second);
-    expect(reg.get('artifact')).toBe(second);
+    registerBlockRenderer('artifact', first);
+    registerBlockRenderer('artifact', second);
+    expect(getBlockRenderer('artifact')).toBe(second);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('duplicate registration')
+    );
+    warnSpy.mockRestore();
   });
 
-  it('registeredKinds reflects all registered entries', () => {
-    const reg = makeRegistry();
-    reg.set('terminal', () => null);
-    reg.set('agent', () => null);
-    reg.set('markdown', () => null);
-    const kinds = new Set(reg.keys());
+  it('registeredKinds reflects all registered entries', async () => {
+    const { registerBlockRenderer, registeredKinds } = await importRegistry();
+    registerBlockRenderer('terminal', () => null);
+    registerBlockRenderer('agent', () => null);
+    registerBlockRenderer('markdown', () => null);
+    const kinds = registeredKinds();
     expect(kinds.has('terminal')).toBe(true);
     expect(kinds.has('agent')).toBe(true);
     expect(kinds.has('markdown')).toBe(true);
     expect(kinds.size).toBe(3);
-  });
-
-  it('independent registries do not share state', () => {
-    const reg1 = makeRegistry();
-    const reg2 = makeRegistry();
-    reg1.set('file', () => null);
-    expect(reg2.has('file')).toBe(false);
   });
 });
 
@@ -253,25 +268,10 @@ import type {
   CapabilityGrantRef,
 } from '../shared/workbench-block-types.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
-
-function grantedBits(context: WorkbenchBlockContext): Set<string> {
-  const bits = new Set<string>();
-  for (const grant of context.capabilityGrants) {
-    if (grant.capability) bits.add(grant.capability);
-    if (grant.capabilities) {
-      for (const bit of grant.capabilities) bits.add(bit);
-    }
-  }
-  return bits;
-}
-
-function missingCapabilities(
-  descriptor: WorkbenchBlockDescriptor,
-  context: WorkbenchBlockContext
-): string[] {
-  const granted = grantedBits(context);
-  return descriptor.capabilityRequirements.filter((bit) => !granted.has(bit));
-}
+// Import the real helpers from shared/workbench-capability-utils (no React/CSS
+// — safe in node/vitest). Tests use the production implementation so regressions
+// are caught if logic drifts. The inline copies have been removed.
+import { missingCapabilities } from '../shared/workbench-capability-utils.js';
 
 function makePrivacy() {
   return {

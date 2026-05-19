@@ -47,9 +47,14 @@ export function registerBlockRenderer<K extends WorkbenchBlockKind>(
   kind: K,
   renderer: WorkbenchBlockRenderer<K>
 ): void {
-  // Last writer wins. Duplicate registration is intentionally allowed to
-  // support hot-reload in dev and test scenarios; callers must not rely on
-  // first-register precedence.
+  if (_registry.has(kind)) {
+    // Warn in development to surface accidental double-registration early.
+    // Last writer wins — this is intentional for hot-reload and test scenarios.
+    // eslint-disable-next-line no-console -- intentional: surface duplicate renderer registration in devtools
+    console.warn(
+      `[block-registry] duplicate registration for kind "${kind}" — last writer wins`
+    );
+  }
   _registry.set(kind, renderer);
 }
 

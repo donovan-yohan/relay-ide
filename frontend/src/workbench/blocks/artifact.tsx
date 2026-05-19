@@ -22,6 +22,19 @@ import type {
 
 import './artifact.css';
 
+const _fmt = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'short',
+  timeStyle: 'short',
+});
+
+function formatTimestamp(iso: string): string {
+  try {
+    return _fmt.format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
 /** Human-readable label for each artifact kind. */
 function artifactKindLabel(kind: ArtifactRef['kind']): string {
   switch (kind) {
@@ -41,6 +54,12 @@ function artifactKindLabel(kind: ArtifactRef['kind']): string {
       return 'command output';
     case 'external':
       return 'external';
+    default: {
+      // Exhaustiveness guard — if ArtifactRef['kind'] gains a new literal,
+      // TypeScript will flag this `kind satisfies never` line at compile time.
+      const _exhaustive: never = kind;
+      return String(_exhaustive);
+    }
   }
 }
 
@@ -117,7 +136,7 @@ export const ArtifactBlock: WorkbenchBlockRenderer<'artifact'> = ({
             <div className="block-artifact__meta-row">
               <span className="block-artifact__meta-key">produced</span>
               <span className="block-artifact__meta-value">
-                {artifactRef.producedAt}
+                {formatTimestamp(artifactRef.producedAt)}
               </span>
             </div>
           )}

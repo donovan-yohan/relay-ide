@@ -60,6 +60,13 @@ export interface ActorRef {
   id: string;
   /** Optional human-readable label for debugging / UI display. */
   displayName?: string;
+  /**
+   * The live session backing this actor, if one exists.
+   * AgentBlock uses sessionRef.sessionId (and sessionRef.globalSessionId when
+   * available) to connect ChatView to the correct WebSocket endpoint.
+   * Optional because not every actor has an attached live session at all times.
+   */
+  sessionRef?: SessionRef;
 }
 
 /**

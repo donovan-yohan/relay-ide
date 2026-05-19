@@ -15,7 +15,7 @@
  * is a pure render-a-block-given-its-descriptor component.
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 
 import type {
   WorkbenchBlockDescriptor,
@@ -23,41 +23,20 @@ import type {
 } from '../../../shared/workbench-block-types.js';
 import type { RelayCapabilityBit } from '../../../shared/security-policy.js';
 import { getBlockRenderer } from './block-registry.js';
+// Helpers live in shared/workbench-capability-utils.ts (no React/CSS) so
+// tests can import the real logic without pulling in the DOM frontend stack.
+import { missingCapabilities } from '../../../shared/workbench-capability-utils.js';
 import './block-host.css';
 
 // ---------------------------------------------------------------------------
-// Capability gating helpers
+// Capability gating helpers — re-exported from shared/workbench-capability-utils
+// so tests import the real implementation and regressions are caught.
 // ---------------------------------------------------------------------------
 
-/**
- * Derive the set of capability bits actually granted by context.capabilityGrants.
- * A CapabilityGrantRef can carry a single `.capability` or a list `.capabilities`.
- */
-function grantedBits(
-  context: WorkbenchBlockContext
-): ReadonlySet<RelayCapabilityBit> {
-  const bits = new Set<RelayCapabilityBit>();
-  for (const grant of context.capabilityGrants) {
-    if (grant.capability) bits.add(grant.capability);
-    if (grant.capabilities) {
-      for (const bit of grant.capabilities) {
-        bits.add(bit);
-      }
-    }
-  }
-  return bits;
-}
-
-/**
- * Return the capability requirements that are NOT satisfied by the context.
- */
-function missingCapabilities(
-  descriptor: WorkbenchBlockDescriptor,
-  context: WorkbenchBlockContext
-): readonly RelayCapabilityBit[] {
-  const granted = grantedBits(context);
-  return descriptor.capabilityRequirements.filter((bit) => !granted.has(bit));
-}
+export {
+  grantedBits,
+  missingCapabilities,
+} from '../../../shared/workbench-capability-utils.js';
 
 // ---------------------------------------------------------------------------
 // DeniedCard — rendered when capability requirements are not met
@@ -168,7 +147,11 @@ export class BlockErrorBoundary extends React.Component<
           </div>
           <div className="block-error__heading">renderer error</div>
           <div className="block-error__detail">{this.state.error.message}</div>
-          <button className="block-error__retry" onClick={this.handleRetry}>
+          <button
+            type="button"
+            className="block-error__retry"
+            onClick={this.handleRetry}
+          >
             retry
           </button>
         </div>
@@ -199,7 +182,10 @@ export function BlockHost({
   descriptor,
   context,
 }: BlockHostProps): React.ReactElement {
-  const missing = missingCapabilities(descriptor, context);
+  const missing = useMemo(
+    () => missingCapabilities(descriptor, context),
+    [descriptor, context]
+  );
 
   if (missing.length > 0) {
     return (

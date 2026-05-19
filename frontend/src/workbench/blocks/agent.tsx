@@ -3,13 +3,15 @@
  *
  * Shows one actor/runtime session and its latest bounded state.
  * Reuses the existing ChatView component (agent chat surface) keyed on the
- * actorRef's id. The actorRef.id is treated as the session id for the
- * ChatView; once ActorRef is promoted to shared/work-context.ts and the
- * actor persistence layer is wired (future slice), this mapping will be
- * formalised.
+ * session id from actorRef.sessionRef. ChatView connects to /ws/:sessionId;
+ * passing an actor identifier (actorRef.id) instead would route to a
+ * non-existent socket. actorRef.sessionRef carries the live Relay session
+ * that backs this actor.
  *
- * The session id used here is the actorRef id, which is the scoped identifier
- * within the owning WorkContext. No raw global paths escape this component.
+ * When actorRef.sessionRef is absent (actor has no attached live session),
+ * ChatView receives null and renders its disconnected state.
+ *
+ * No raw global paths escape this component.
  */
 
 import React from 'react';
@@ -24,6 +26,9 @@ export const AgentBlock: WorkbenchBlockRenderer<'agent'> = ({
   context: _context,
 }) => {
   const { actorRef } = descriptor.meta;
+  // Use the session id from the actor's live sessionRef for socket routing.
+  // actorRef.id is an actor identifier, not a Relay session id.
+  const sessionId = actorRef.sessionRef?.sessionId ?? null;
 
   return (
     <div className="block-agent" aria-label={`agent: ${descriptor.title}`}>
@@ -33,7 +38,7 @@ export const AgentBlock: WorkbenchBlockRenderer<'agent'> = ({
         </span>
       </div>
       <div className="block-agent__chat">
-        <ChatView sessionId={actorRef.id} />
+        <ChatView sessionId={sessionId} />
       </div>
     </div>
   );

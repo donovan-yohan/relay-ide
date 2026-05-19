@@ -13,18 +13,24 @@
 import React from 'react';
 
 import type { WorkbenchBlockRenderer } from '../../../../shared/workbench-block-types.js';
+import { createGlobalSessionId } from '../../../../shared/identity.js';
 import Terminal from '../../components/Terminal.js';
 
 import './terminal.css';
 
 /**
  * Derive a stable sessionKey from the SessionRef for PTY routing.
- * For local sessions: sessionId is the key.
- * For remote sessions: nodeId:sessionId.
+ * Prefers the pre-computed globalSessionId when present (already URI-encoded),
+ * otherwise constructs it via createGlobalSessionId (URI-encodes nodeId and
+ * sessionId so reserved characters are safe for parseGlobalSessionId).
  */
-function deriveSessionKey(nodeId: string, sessionId: string): string {
-  if (nodeId === 'local') return sessionId;
-  return `${nodeId}:${sessionId}`;
+function deriveSessionKey(
+  nodeId: string,
+  sessionId: string,
+  globalSessionId?: string
+): string {
+  if (globalSessionId) return globalSessionId;
+  return createGlobalSessionId(nodeId, sessionId);
 }
 
 export const TerminalBlock: WorkbenchBlockRenderer<'terminal'> = ({
@@ -32,7 +38,11 @@ export const TerminalBlock: WorkbenchBlockRenderer<'terminal'> = ({
   context: _context,
 }) => {
   const { sessionRef } = descriptor.meta;
-  const sessionKey = deriveSessionKey(sessionRef.nodeId, sessionRef.sessionId);
+  const sessionKey = deriveSessionKey(
+    sessionRef.nodeId,
+    sessionRef.sessionId,
+    sessionRef.globalSessionId
+  );
 
   return (
     <div

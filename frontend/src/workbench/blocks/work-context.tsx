@@ -21,7 +21,25 @@ import { fetchActiveWork } from '../../lib/api.js';
 
 import './work-context.css';
 
-/** Refetch interval — match the ActiveWorkSurface polling cadence. */
+const _fmt = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'short',
+  timeStyle: 'short',
+});
+
+function formatTimestamp(iso: string): string {
+  try {
+    return _fmt.format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Refetch interval — matches ActiveWorkSurface.tsx polling cadence.
+ * TODO: Replace with a server-push channel once WorkContext has a WebSocket
+ * or SSE event feed (no such channel exists yet). Precedent: ActiveWorkSurface.tsx
+ * also polls at 15 s. Track at: https://github.com/donovan-yohan/relay-ide
+ */
 const REFETCH_MS = 15_000;
 
 export const WorkContextBlock: WorkbenchBlockRenderer<'work-context'> = ({
@@ -152,7 +170,7 @@ export const WorkContextBlock: WorkbenchBlockRenderer<'work-context'> = ({
       <div className="block-work-context__section block-work-context__section--meta">
         <div className="block-work-context__detail">id: {workContext.id}</div>
         <div className="block-work-context__detail">
-          updated: {workContext.updatedAt}
+          updated: {formatTimestamp(workContext.updatedAt)}
         </div>
       </div>
     </div>
