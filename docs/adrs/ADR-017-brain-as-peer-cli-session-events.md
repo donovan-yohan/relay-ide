@@ -259,7 +259,7 @@ identity and Kanban/session concepts outside Relay. The Hermes adapter is
 thin: it translates Hermes tool calls to CLI invocations, parses JSON/NDJSON,
 and lets Relay own session scope, control state, and hub policy (smoke in
 PR #546; metadata event ingestion spike in PR #565). Hermes does not treat
-Relay Kanban task identity as Relay session identity; it passes correlation
+Hermes Kanban task identity as Relay session identity; it passes correlation
 metadata, and the Relay session envelope remains authoritative.
 
 ### Claude
