@@ -1,0 +1,58 @@
+frontend/src/lib/stores/shiki-gc.ts
+  s_3e9de69a56e5c0::t_6a795f6b088a05 1-177,179,181-251
+server/index.ts
+  s_3e9de69a56e5c0::t_b2b74835b31374 1022-1043,1045-1049
+  s_3e9de69a56e5c0::t_d7aa34a167c5b2 1608-1610
+frontend/src/components/DiffViewer.tsx
+  s_3e9de69a56e5c0::t_bf34ccccc1631c 9
+  s_3e9de69a56e5c0::t_65a988d806ee25 304-308,314-318,320-321,323,328-331,336-347,349-363,366-370,374-386
+  s_3e9de69a56e5c0::t_7e6f31bf412a89 400-405
+frontend/src/hooks/useShikiHighlight.ts
+  s_3e9de69a56e5c0::t_e0962a0b76b51e 1-44,46-47,49-89
+server/types.ts
+  s_3e9de69a56e5c0::t_1c79c6f6dbeba6 566-576
+frontend/src/App.tsx
+  s_3e9de69a56e5c0::t_edd4d3ef265edd 45
+  s_3e9de69a56e5c0::t_b6da8d8f6b85f8 1220,1223
+frontend/src/components/CodeBlock.tsx
+  s_3e9de69a56e5c0::t_69de8820b504ab 1,10,18,21-22,66
+server/sessions.ts
+  s_3e9de69a56e5c0::t_791475582f5a88 99-107,110,112-113,128-129,131-133,135-136,143-165,176-187
+  s_3e9de69a56e5c0::t_6502a07b4c32c7 134
+  s_3e9de69a56e5c0::t_571a75d0c326c4 266,275-278,286-291
+  s_3e9de69a56e5c0::t_a36fee855e9403 542-547,564
+  s_3e9de69a56e5c0::t_6d393717cf9335 2077
+server/pty-handler.ts
+  s_3e9de69a56e5c0::t_a39d4ac50fcce9 40-41
+  s_3e9de69a56e5c0::t_d1c112643ba240 410-411
+  s_3e9de69a56e5c0::t_b3f2f016dbdf03 914,926
+  s_3e9de69a56e5c0::t_0ed55795f27cd5 955,958-959
+  s_3e9de69a56e5c0::t_53c65470efab11 960
+  s_3e9de69a56e5c0::t_e9af2395a21c1b 1106-1109,1112
+test/components/CodeBlock.test.ts
+  s_3e9de69a56e5c0::t_d57578ce62ddd5 45,47-48,56,58
+  s_3e9de69a56e5c0::t_a0ddf79b3ad29e 59-60
+test/shiki-gc.test.ts
+  s_3e9de69a56e5c0::t_44d5e46d39de21 1-270
+server/config.ts
+  s_3e9de69a56e5c0::t_4d532e4eb2234e 28-33
+  s_3e9de69a56e5c0::t_8619c3db038335 51-52
+test/global-scrollback-cap.test.ts
+  s_3e9de69a56e5c0::t_c4e5ca8204232b 1-3,9-10,12-55,69-71,75-77,118,124-128,131,133-135,143,145,147-152,155-157,159-160,162,165,167,169-171,184-186,188-193,195-196,204-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "fd9d76e709d07f5942c172e54c504a9912ab6683",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}

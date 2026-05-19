@@ -1,0 +1,58 @@
+frontend/src/components/DiffViewer.tsx
+  s_3e9de69a56e5c0::t_bf34ccccc1631c 9
+  s_3e9de69a56e5c0::t_65a988d806ee25 304-308,314-318,322-323,325,330-333,338-349,351-365,368-372,376-388
+  s_3e9de69a56e5c0::t_7e6f31bf412a89 402-407
+  s_3e9de69a56e5c0::t_d9981a3644f994 319-321,324
+server/pty-handler.ts
+  s_3e9de69a56e5c0::t_a39d4ac50fcce9 40-41
+  s_3e9de69a56e5c0::t_d1c112643ba240 410-411
+  s_3e9de69a56e5c0::t_b3f2f016dbdf03 920,932
+  s_3e9de69a56e5c0::t_0ed55795f27cd5 961,964-965
+  s_3e9de69a56e5c0::t_53c65470efab11 966
+  s_3e9de69a56e5c0::t_e9af2395a21c1b 1112-1115,1118
+  s_3e9de69a56e5c0::t_ba714a544ad01c 419-424
+  s_3e9de69a56e5c0::t_21807cf3b75591 908,910
+  s_3e9de69a56e5c0::t_3f7fcf2d682d40 1119-1121
+test/global-scrollback-cap.test.ts
+  s_3e9de69a56e5c0::t_c4e5ca8204232b 1-3,7-8,10-53,58-60,64-66,73,76-80,83,85-87,94,96,98-101,103-104,107-109,111-113,115,117,119-121,133-135,137-140,143-144,146-147,155-156
+  s_3e9de69a56e5c0::t_8664c1b7702c99 4-6,9,54,56-57,61-63,68-72,74-75,81-82,84,88-91,93,95,97,102,105-106,110,114,116,118,122-127,129-132,136,141-142,145,149-154
+server/sessions.ts
+  s_3e9de69a56e5c0::t_791475582f5a88 99-107,112,116-117,119-121,127-128,139-142,145-163,166-177
+  s_3e9de69a56e5c0::t_6502a07b4c32c7 122,108-111,113,118,123-126,129-135,137-138,143-144,164-165
+  s_3e9de69a56e5c0::t_571a75d0c326c4 256,265-268,276-281
+  s_3e9de69a56e5c0::t_a36fee855e9403 532-537,563
+  s_3e9de69a56e5c0::t_6d393717cf9335 2077
+  s_3e9de69a56e5c0::t_3ea34180e4aaa1 550-557,559-561
+  s_3e9de69a56e5c0::t_8e672f13e9f887 558,562
+  s_3e9de69a56e5c0::t_152a68b593fa09 2075-2076
+test/components/CodeBlock.test.ts
+  s_3e9de69a56e5c0::t_d57578ce62ddd5 90,92-93,101,103
+  s_3e9de69a56e5c0::t_a0ddf79b3ad29e 104-105,19,28,32-33,37-38,44-45,52,54,106-113
+  s_3e9de69a56e5c0::t_a44c3e44465750 10-18,20-27,29-31,34-36,39-43,46-51,53
+frontend/src/lib/stores/shiki-gc.ts
+  s_3e9de69a56e5c0::t_6a795f6b088a05 1-177,179,181-251
+  s_3e9de69a56e5c0::t_672ffbeb555983 178
+  s_3e9de69a56e5c0::t_1f0ae532d778c9 180
+frontend/src/hooks/useShikiHighlight.ts
+  s_3e9de69a56e5c0::t_e0962a0b76b51e 1-44,48-49,51-91
+  s_3e9de69a56e5c0::t_282949be180061 45-47,50
+frontend/src/components/CodeBlock.tsx
+  s_3e9de69a56e5c0::t_69de8820b504ab 1,21,42,45-46,90
+  s_3e9de69a56e5c0::t_90925eb368d43d 9-20,24-36,44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "176a77b7908645733e6e56b038bbbfaf41890508",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
