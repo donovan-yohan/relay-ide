@@ -1,0 +1,37 @@
+test/hub-node-registry.test.ts
+  s_8e47e58ef792e1::t_9615249fadec38 1025-1142,1144-1149
+server/hub-node-registry.ts
+  s_8e47e58ef792e1::t_b71c8009e01309 121-127,149,152-157,180-185,304-306,450-452,459,465-483,486-487,491-495,510-514,596-598,782-784,802-807,824-829,854-856,874-877,901-907,923-929,933-935,952-955,958-964,967-974,987-990,1057-1079
+server/index.ts
+  s_8e47e58ef792e1::t_fc6aa669bb2e5d 1166-1171
+  s_8e47e58ef792e1::t_525e1389df3cbd 958-985
+  s_8e47e58ef792e1::t_b71c8009e01309 115-118,3335
+test/credential-rotation-scheduler.test.ts
+  s_8e47e58ef792e1::t_b71c8009e01309 1-279
+server/credential-rotation-scheduler.ts
+  s_8e47e58ef792e1::t_b71c8009e01309 1-285
+docs/federated-relay.md
+  s_8e47e58ef792e1::t_978d826d4fd6be 286-288
+  s_8e47e58ef792e1::t_8e08b8bb2a143c 40
+  s_8e47e58ef792e1::t_5419fa0a408721 317
+server/types.ts
+  s_8e47e58ef792e1::t_b71c8009e01309 576,602-608
+docs/SECURITY_POLICY.md
+  s_8e47e58ef792e1::t_17350cc691176d 47-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "b4a7df4d3c8907cad2ea653723d13c1a8cc7d6ed",
+  "prompts": {},
+  "sessions": {
+    "s_8e47e58ef792e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8c96e46-a41f-4160-8319-11ffa90ca8ee",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
