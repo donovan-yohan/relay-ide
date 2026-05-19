@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-import { tokenizeCode, type ThemedToken } from '../lib/shiki.js';
+import { useShikiHighlight } from '../hooks/useShikiHighlight.js';
 import './CodeBlock.css';
 
 export interface CodeBlockProps {
@@ -7,6 +6,32 @@ export interface CodeBlockProps {
   language?: string;
   showLineNumbers?: boolean;
   startLine?: number;
+  /**
+   * Stable key for GC cache tracking. Callers should provide an explicit,
+   * semantically meaningful key (e.g. `"${workspacePath}:${filePath}"`).
+   *
+   * When omitted, a DJB2 hash of the full code + language is used as the
+   * default. This avoids the collision risk of the first-64-char prefix for
+   * code blocks that share a common header (imports, boilerplate, etc.).
+   *
+   * Note: if two distinct code blocks hash to the same value, the second
+   * block will reuse the first's cached highlight output. Provide an explicit
+   * key to guarantee isolation.
+   */
+  cacheKey?: string;
+}
+
+/**
+ * DJB2 hash — fast, good distribution, no dependencies.
+ * Returns a hex string.
+ */
+function djb2Hash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+    hash = hash >>> 0; // keep as uint32
+  }
+  return hash.toString(16);
 }
 
 export function CodeBlock({
@@ -14,31 +39,11 @@ export function CodeBlock({
   language = 'text',
   showLineNumbers = true,
   startLine = 1,
+  cacheKey,
 }: CodeBlockProps) {
-  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setError(false);
-    setTokens(null);
-
-    tokenizeCode(code, language)
-      .then((t) => {
-        if (!cancelled) {
-          setTokens(t);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [code, language]);
+  const key = cacheKey ?? `${language}:${djb2Hash(language + ':' + code)}`;
+  const { tokens } = useShikiHighlight(key, code, language);
+  const error = false;
 
   if (tokens) {
     return (

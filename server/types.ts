@@ -586,6 +586,17 @@ export interface Config {
   vapidPrivateKey?: string | undefined;
   debugLog?: boolean | undefined;
   forceOutputParser?: boolean | undefined;
+  /**
+   * Per-session scrollback cap in bytes. Default: 256 KB.
+   * Config-file-only for this release; no settings UI surface yet.
+   */
+  maxScrollbackPerSessionBytes?: number | undefined;
+  /**
+   * Global scrollback cap across all sessions in bytes. Default: 4 MB.
+   * When exceeded, oldest scrollback from non-active sessions is trimmed first.
+   * Config-file-only for this release; no settings UI surface yet.
+   */
+  maxScrollbackGlobalBytes?: number | undefined;
   integrations?:
     | {
         jira?: {

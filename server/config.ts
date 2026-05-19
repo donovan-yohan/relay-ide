@@ -25,6 +25,12 @@ export const DEFAULT_PRESETS: FilterPreset[] = [
   },
 ];
 
+/** Default per-session scrollback cap: 256 KB. */
+export const DEFAULT_MAX_SCROLLBACK_PER_SESSION_BYTES = 256 * 1024;
+
+/** Default global scrollback cap across all sessions: 4 MB. */
+export const DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES = 4 * 1024 * 1024;
+
 export const DEFAULTS: Omit<
   Config,
   'pinHash' | 'rootDirs' | 'repoSettings' | 'vapidPublicKey' | 'vapidPrivateKey'
@@ -42,6 +48,8 @@ export const DEFAULTS: Omit<
   defaultNotifications: true,
   claudeFullscreen: true,
   updateChannel: 'stable',
+  maxScrollbackPerSessionBytes: DEFAULT_MAX_SCROLLBACK_PER_SESSION_BYTES,
+  maxScrollbackGlobalBytes: DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES,
 };
 
 export function loadConfig(configPath: string): Config {
