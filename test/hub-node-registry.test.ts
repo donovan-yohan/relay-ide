@@ -848,8 +848,12 @@ describe('hub node registry', () => {
           nextCredentialId: rotation.credential.credentialId,
         },
       });
-      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
-      expect(registry.authenticateCredential(rotation.credential.token)).toMatchObject({
+      expect(
+        registry.authenticateCredential(exchanged.credential.token)
+      ).toBeNull();
+      expect(
+        registry.authenticateCredential(rotation.credential.token)
+      ).toMatchObject({
         credentialId: rotation.credential.credentialId,
         credentialState: 'active',
       });
@@ -863,7 +867,10 @@ describe('hub node registry', () => {
           nodeId: exchanged.node.nodeId,
           credentialId: rotation.credential.credentialId,
         },
-        intent: { action: 'nodes.credential.rotate', target: exchanged.node.nodeId },
+        intent: {
+          action: 'nodes.credential.rotate',
+          target: exchanged.node.nodeId,
+        },
         material: {
           params: {
             rotationId: rotation.rotation.rotationId,
@@ -872,8 +879,12 @@ describe('hub node registry', () => {
           },
         },
       });
-      expect(JSON.stringify(auditEntries)).not.toContain(rotation.credential.token);
-      expect(JSON.stringify(auditEntries)).not.toContain(exchanged.credential.token);
+      expect(JSON.stringify(auditEntries)).not.toContain(
+        rotation.credential.token
+      );
+      expect(JSON.stringify(auditEntries)).not.toContain(
+        exchanged.credential.token
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -911,14 +922,18 @@ describe('hub node registry', () => {
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).toThrow(/ROTATION_IN_PROGRESS/);
 
-      const cleared = registry.clearCredentialRotationFailure(exchanged.node.nodeId);
+      const cleared = registry.clearCredentialRotationFailure(
+        exchanged.node.nodeId
+      );
 
       expect(cleared).toMatchObject({
         credentialState: 'active',
         credentialId: exchanged.credential.credentialId,
       });
       expect(cleared.credentialRotation).toBeUndefined();
-      expect(registry.authenticateCredential(rotation.credential.token)).toBeNull();
+      expect(
+        registry.authenticateCredential(rotation.credential.token)
+      ).toBeNull();
       expect(() =>
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).not.toThrow();
@@ -956,8 +971,12 @@ describe('hub node registry', () => {
           failureReason: 'delivery timeout after node write',
         },
       });
-      expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
-      expect(registry.authenticateCredential(rotation.credential.token)).toMatchObject({
+      expect(
+        registry.authenticateCredential(exchanged.credential.token)
+      ).toBeNull();
+      expect(
+        registry.authenticateCredential(rotation.credential.token)
+      ).toMatchObject({
         credentialId: rotation.credential.credentialId,
         credentialState: 'active',
       });
@@ -980,21 +999,152 @@ describe('hub node registry', () => {
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).toThrow(/ROTATION_IN_PROGRESS/);
 
-      const cleared = registry.clearCredentialRotationFailure(exchanged.node.nodeId);
+      const cleared = registry.clearCredentialRotationFailure(
+        exchanged.node.nodeId
+      );
 
       expect(cleared).toMatchObject({
         credentialState: 'active',
         credentialId: exchanged.credential.credentialId,
       });
       expect(cleared.credentialRotation).toBeUndefined();
-      expect(registry.authenticateCredential(exchanged.credential.token)).toMatchObject({
+      expect(
+        registry.authenticateCredential(exchanged.credential.token)
+      ).toMatchObject({
         credentialId: exchanged.credential.credentialId,
         credentialState: 'active',
       });
-      expect(registry.authenticateCredential(rotation.credential.token)).toBeNull();
+      expect(
+        registry.authenticateCredential(rotation.credential.token)
+      ).toBeNull();
       expect(() =>
         registry.beginCredentialRotation(exchanged.node.nodeId)
       ).not.toThrow();
+    });
+  });
+
+  describe('listScheduledRotationCandidates', () => {
+    it('returns nothing for a non-positive intervalMs', () => {
+      withTmpRegistry((registry) => {
+        const exchanged = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        expect(registry.listScheduledRotationCandidates(0)).toHaveLength(0);
+        expect(registry.listScheduledRotationCandidates(-1)).toHaveLength(0);
+        expect(exchanged.node.nodeId).toBeTruthy();
+      });
+    });
+
+    it('lists a paired node whose credential is older than the interval', () => {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'relay-hub-node-registry-')
+      );
+      try {
+        let currentNow = new Date('2026-01-02T00:00:00.000Z');
+        const registry = createHubNodeRegistry({
+          storagePath: path.join(tmpDir, 'nodes.json'),
+          now: () => currentNow,
+        });
+        const exchanged = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        expect(registry.listScheduledRotationCandidates(60_000)).toHaveLength(
+          0
+        );
+        currentNow = new Date('2026-01-02T00:02:00.000Z');
+        registry.setNowForTest(() => currentNow);
+        const candidates = registry.listScheduledRotationCandidates(60_000);
+        expect(candidates).toHaveLength(1);
+        expect(candidates[0]).toMatchObject({
+          nodeId: exchanged.node.nodeId,
+          credentialId: exchanged.credential.credentialId,
+        });
+        expect(candidates[0]!.ageMs).toBeGreaterThanOrEqual(60_000);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('skips revoked nodes and nodes mid-rotation', () => {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'relay-hub-node-registry-')
+      );
+      try {
+        let currentNow = new Date('2026-01-02T00:00:00.000Z');
+        const registry = createHubNodeRegistry({
+          storagePath: path.join(tmpDir, 'nodes.json'),
+          now: () => currentNow,
+        });
+        const stable = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        const revoked = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        const rotating = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        registry.revokeNode(revoked.node.nodeId);
+        registry.beginCredentialRotation(rotating.node.nodeId);
+        currentNow = new Date('2026-01-02T00:02:00.000Z');
+        registry.setNowForTest(() => currentNow);
+        const candidates = registry.listScheduledRotationCandidates(60_000);
+        const ids = candidates.map((c) => c.nodeId);
+        expect(ids).toEqual([stable.node.nodeId]);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('uses the last stable rotation timestamp as the credential age anchor', () => {
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'relay-hub-node-registry-')
+      );
+      try {
+        let currentNow = new Date('2026-01-02T00:00:00.000Z');
+        const registry = createHubNodeRegistry({
+          storagePath: path.join(tmpDir, 'nodes.json'),
+          now: () => currentNow,
+        });
+        const exchanged = registry.exchangePairToken({
+          pairToken: registry.createPairToken({}).pairToken,
+          manifest: manifest(),
+        });
+        // Age past interval, then rotate to reset the age clock.
+        currentNow = new Date('2026-01-02T00:02:00.000Z');
+        registry.setNowForTest(() => currentNow);
+        const rotation = registry.beginCredentialRotation(
+          exchanged.node.nodeId
+        );
+        registry.markCredentialRotationDelivered(
+          exchanged.node.nodeId,
+          rotation.rotation.rotationId
+        );
+        registry.recordHeartbeat({
+          nodeId: exchanged.node.nodeId,
+          protocolVersion: '1.0',
+          credentialId: rotation.credential.credentialId,
+          manifest: manifest(),
+        });
+        // Immediately after proof, the node should not be a candidate again.
+        expect(registry.listScheduledRotationCandidates(60_000)).toHaveLength(
+          0
+        );
+        // Age past the interval relative to the rotation's stableAt.
+        currentNow = new Date('2026-01-02T00:04:00.000Z');
+        registry.setNowForTest(() => currentNow);
+        const candidates = registry.listScheduledRotationCandidates(60_000);
+        expect(candidates.map((c) => c.nodeId)).toEqual([
+          exchanged.node.nodeId,
+        ]);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

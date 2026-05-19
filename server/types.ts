@@ -573,6 +573,7 @@ export interface Config {
     | undefined;
   automations?: AutomationSettings | undefined;
   control?: ControlSettings | undefined;
+  credentialRotation?: CredentialRotationSettings | undefined;
   filterPresets?: FilterPreset[] | undefined;
   github?:
     | {
@@ -597,6 +598,14 @@ export interface AutomationSettings {
 export interface ControlSettings {
   interventionDebounceMs?: number;
   coDrivenAutoRevertMs?: number;
+}
+
+export interface CredentialRotationSettings {
+  // Age threshold for the active credential before the scheduler rotates it.
+  // Omitted or non-positive disables scheduled rotation entirely.
+  intervalMs?: number;
+  // Cadence at which the scheduler scans paired nodes. Defaults to 60_000.
+  checkIntervalMs?: number;
 }
 
 export interface FilterPreset {
