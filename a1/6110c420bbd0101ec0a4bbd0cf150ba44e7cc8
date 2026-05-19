@@ -1,0 +1,21 @@
+docs/LEARNINGS.md
+  s_afc3e94f2d047a::t_d089ea5ea40898 527-543
+docs/references/devbox-hub-deploy.md
+  s_afc3e94f2d047a::t_e49a976ceae497 222-275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "a16110c420bbd0101ec0a4bbd0cf150ba44e7cc8",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
