@@ -1,0 +1,67 @@
+shared/project.ts
+  s_9eb1a81904495b::t_8e950b274fc237 83-99
+server/workspaces.ts
+  s_9eb1a81904495b::t_04e3422965cab2 431-438,446-478
+  s_9eb1a81904495b::t_70062a3f6e898c 577-585,590-618
+  s_9eb1a81904495b::t_ee7c72a9675180 64-86
+frontend/src/lib/api.ts
+  s_9eb1a81904495b::t_6bb57f1125b0d2 730-752
+test/view-spine-identity.test.ts
+  s_9eb1a81904495b::t_a597ffed6e916f 5
+  s_9eb1a81904495b::t_e15905b835a4d6 85-139
+frontend/src/components/RepoDashboard.css
+  s_9eb1a81904495b::t_6412aa67688f61 181-188
+test/components/TerminalNodePicker.test.ts
+  s_9eb1a81904495b::t_9639a94c6335f4 92-95,108-109,113-115,128-129
+test/sessions-create-validation.test.ts
+  s_9eb1a81904495b::t_078af006849a3d 155-171
+frontend/src/components/dialogs/AddWorkspaceDialog.tsx
+  s_9eb1a81904495b::t_d9a5283fa14e8b 176-185
+  s_9eb1a81904495b::t_83755d82197844 54-55
+  s_9eb1a81904495b::t_2b47890c0f6350 105-135,142-143
+  s_9eb1a81904495b::t_e6965346d233bf 161-169
+  s_9eb1a81904495b::t_617b44691e253b 8
+  s_9eb1a81904495b::t_2c72838f2f0c9e 70-71,74-84
+  s_9eb1a81904495b::t_54527a5f6f9474 312-325
+  s_9eb1a81904495b::t_61f925491635f2 41-42
+  s_9eb1a81904495b::t_6eecb37c5b0d12 252-254
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  s_9eb1a81904495b::t_307714a7176a17 292-294
+test/customize-session-dialog.test.ts
+  s_9eb1a81904495b::t_b101128b1e2361 705-730
+frontend/src/App.tsx
+  s_9eb1a81904495b::t_293557f1a2d979 759
+frontend/src/components/RepoItem.css
+  s_9eb1a81904495b::t_276dd97d10b846 424-436
+test/workspaces-routes.test.ts
+  s_9eb1a81904495b::t_8ead4b0f21778d 35-42,50,56,62
+  s_9eb1a81904495b::t_737d61525d3c85 191-241
+frontend/src/components/dialogs/AddWorkspaceDialog.css
+  s_9eb1a81904495b::t_a5ef041272ad49 78-92
+frontend/src/components/PrTopBar.tsx
+  s_9eb1a81904495b::t_9c971882b22801 8,10
+  s_9eb1a81904495b::t_ccf39b6507bace 34-35
+  s_9eb1a81904495b::t_b8a995d51847b0 608-618
+server/index.ts
+  s_9eb1a81904495b::t_53937960bb175c 851
+frontend/src/components/RepoDashboard.tsx
+  s_9eb1a81904495b::t_f5da127398d601 373-374
+  s_9eb1a81904495b::t_040358cabf6e56 410,412-414,418-426,430,433-435
+  s_9eb1a81904495b::t_23ac986c080f38 3-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6672bd1563fa613a7c29ed61efd5c96d5435ccce",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
