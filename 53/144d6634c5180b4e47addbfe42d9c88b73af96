@@ -1,0 +1,46 @@
+server/logger.ts
+  s_afc3e94f2d047a::t_e71761b372c27b 109-143
+  s_afc3e94f2d047a::t_92e6f58e0a87f4 170-176
+  s_afc3e94f2d047a::t_316c0c43ab5131 44-52
+  s_afc3e94f2d047a::t_3b3cae4e6b1b0b 4-7
+  s_afc3e94f2d047a::t_ea8f985c1677d5 72-83
+test/hub-node-routes.test.ts
+  s_afc3e94f2d047a::t_142594889520db 1662-1663
+  s_afc3e94f2d047a::t_3fffedb3cbe74d 1624-1625
+shared/security-policy.ts
+  s_afc3e94f2d047a::t_ef6e3e2e1287fc 46-49
+  s_afc3e94f2d047a::t_4739d444906f4b 22-26
+server/node-logs.ts
+  s_afc3e94f2d047a::t_1e5deafccfba77 1,11-17,23-26,37-44,72-97,108,113-123,125-127,165-233
+server/hub-node-router.ts
+  s_afc3e94f2d047a::t_26d01ff4fd9994 1781-1785,1787
+shared/log-event.ts
+  s_afc3e94f2d047a::t_6fcda32701d637 1-132
+test/server/logs-tail.test.ts
+  s_afc3e94f2d047a::t_59dc49f35f0941 1-282
+test/stores/node-dashboard.test.ts
+  s_afc3e94f2d047a::t_fc85aa6858c0aa 291-292,294-296
+server/log-events.ts
+  s_afc3e94f2d047a::t_928aa9d3224899 1-44,46-154
+  s_afc3e94f2d047a::t_4dea278d4dcdaa 45
+docs/cli-schema/logs.md
+  s_afc3e94f2d047a::t_1c5c6daaffd691 1-108
+server/hub-policy-evaluator.ts
+  s_afc3e94f2d047a::t_96fcbda4bee628 160-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "53144d6634c5180b4e47addbfe42d9c88b73af96",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
