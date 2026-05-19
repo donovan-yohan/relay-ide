@@ -17,6 +17,7 @@ relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --
 relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
+relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
 ```
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas.
@@ -252,6 +253,42 @@ The Codex-facing smoke in `shared/cli-gateway-codex-tools.ts` derives the same c
 
 These smoke runners are deliberately thin: generated definitions select stable v1 CLI commands, Relay's existing CLI gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, Codex runtime packaging, event subscriptions beyond PTY output, multi-session orchestration, File RPC write/delete/tail, arbitrary exec, stdin-backed adapter streaming, and private node-link shortcuts remain deferred.
 
+## Events subscription
+
+`relay-ide v1 events subscribe --topic <topic> --json` opens a long-lived authenticated NDJSON stream from the hub and emits one gateway envelope per event frame on stdout. Per ADR-017 and #596, this is intentionally narrow: read-only, capability-gated, no writes, no execs, no raw byte streams, no log tailing (that lives under #476).
+
+Topics:
+
+- `sessions` — session lifecycle (`session.started`, `session.ended`) and `tab.mode-changed` envelopes scoped to the current hub.
+- `nodes` — `node.online`, `node.offline`, `node.revoked` envelopes from the hub node registry (#586/`hub-node-registry`).
+- `audit` — redacted summaries of `tab.mode-changed` and `tab.intervention` envelopes (hash-chained at storage time per #470/#499). Raw intervention payloads, raw keylogs, and full terminal transcripts are never streamed through this gateway.
+
+Each frame is a `events.subscribe` success envelope whose `data` carries:
+
+```json
+{
+  "event": "open" | "event" | "closed",
+  "topic": "sessions" | "nodes" | "audit",
+  "sequence": 0,
+  "occurredAt": "2026-05-19T00:00:00.000Z",
+  "payload": { "type": "session.started", "sessionId": "..." }
+}
+```
+
+The first envelope is always `event: "open"`. The final envelope is always `event: "closed"` with a `frames` count and a `reason`. Caps stay conservative:
+
+- `--max-events N` detaches after N event frames (excluding `open`/`closed`).
+- `--idle-timeout-ms N` detaches after N ms without an event frame.
+- If stdout backpressure is observed, the CLI aborts the upstream stream and emits `closed` with `reason: "stdout backpressure"`.
+
+Capability gating fails closed: `sessions` and `nodes` require `session:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
+
+Smoke form:
+
+```bash
+relay-ide v1 events subscribe --topic sessions --max-events 1 --json
+```
+
 ## Deferred work
 
-Event subscription beyond PTY output, multi-session fan-out, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
+Event subscription beyond `events.subscribe` (multi-topic fan-out, cursor/resume, replay), multi-session fan-out, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.

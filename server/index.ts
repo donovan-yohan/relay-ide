@@ -117,6 +117,7 @@ import {
   type CredentialRotationScheduler,
 } from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
+import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
@@ -1407,6 +1408,17 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
+    })
+  );
+  app.use(
+    createCliGatewayEventsRouter(express, {
+      cliGatewayAuth: requireCliGatewayAuth,
+      hooks: {
+        onSessionCreate: (cb) => sessions.onSessionCreate(cb),
+        onSessionEnd: (cb) => sessions.onSessionEnd(cb),
+        onControlEvent: (cb) => sessions.onControlEvent(cb),
+        onNodeStatus: (cb) => hubNodeRegistry.onNodeStatus(cb),
+      },
     })
   );
 

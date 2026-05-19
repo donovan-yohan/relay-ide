@@ -10,6 +10,7 @@ import {
   readNodeLogTailSnapshot,
   type NodeLogFollower,
 } from './node-logs.js';
+import type { LogEventFilter } from '../shared/log-event.js';
 import type { Logger } from './logger.js';
 import { createLogger } from './logger.js';
 import type { CreateParams } from './sessions.js';
@@ -524,10 +525,28 @@ export function createNodeLinkRpcHost(
       );
       return;
     }
+    // If any structured filter field is set, automatically read the JSONL
+    // stream instead of plaintext — otherwise the filter would silently
+    // no-op and `logs.tail.result` would return raw `output` rather than
+    // the `events[]` shape documented in `docs/cli-schema/logs.md`.
+    // Surfaced by Copilot on PR #607.
+    const hasFilter =
+      parsed.level !== undefined ||
+      parsed.subsystem !== undefined ||
+      parsed.sinceTs !== undefined;
+    const filter: LogEventFilter | undefined = hasFilter
+      ? {
+          ...(parsed.level !== undefined ? { level: parsed.level } : {}),
+          ...(parsed.subsystem !== undefined ? { subsystem: parsed.subsystem } : {}),
+          ...(parsed.sinceTs !== undefined ? { sinceTs: parsed.sinceTs } : {}),
+        }
+      : undefined;
     const snapshot = readNodeLogTailSnapshot({
       configPath: logConfigPath,
       serviceLogDir: logDir,
       lines: parsed.lines,
+      ...(hasFilter ? { structured: true } : {}),
+      ...(filter ? { filter } : {}),
     });
     if ('code' in snapshot) {
       sendErrorEnvelope(ctx, envelope, snapshot);

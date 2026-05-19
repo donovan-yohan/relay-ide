@@ -157,6 +157,8 @@ export function requiredCapabilitiesForRpcIntent(action: string): string[] {
       return ['rpc:fs:write'];
     case 'rpc.fs.delete':
       return ['rpc:fs:delete'];
+    case 'logs.tail':
+      return ['logs:read'];
     case 'rpc.git.read':
       return ['rpc:git:read'];
     case 'rpc.git.write':

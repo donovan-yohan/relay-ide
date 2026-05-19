@@ -1778,9 +1778,13 @@ export function createHubNodeRouter(
       peer: { kind: 'hub' },
       node,
       nodeId,
-      intent: { action: 'rpc.fs.tail', target: nodeId },
+      // #597: route through the dedicated `logs.tail` action so the
+      // capability gate consults `logs:read` instead of piggybacking on
+      // `rpc:fs:tail`. Operators can grant/revoke log visibility without
+      // exposing arbitrary file-tail powers.
+      intent: { action: 'logs.tail', target: nodeId },
       scope: { kind: 'node', nodeId, cwd: '/' },
-      requiredCapabilities: requiredCapabilitiesForRpcIntent('rpc.fs.tail'),
+      requiredCapabilities: requiredCapabilitiesForRpcIntent('logs.tail'),
       params: requestPayload,
       now: now(),
     });
