@@ -36,9 +36,11 @@ import { parseCliNodeLogLineCount } from '../server/node-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
 import {
+  EVENTS_SUBSCRIBE_TOPICS,
   RELAY_CLI_GATEWAY_CONTRACT,
   gatewayError,
   gatewayOk,
+  type EventsSubscribeTopic,
   type RelayCliGatewayCommand,
   type RelayCliGatewayEnvelope,
   type RelayCliGatewayErrorCode,
@@ -386,7 +388,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1153,6 +1155,252 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
 
+function parseEventsSubscribeTopic(value: string | undefined): EventsSubscribeTopic {
+  if (!value || !EVENTS_SUBSCRIBE_TOPICS.includes(value as EventsSubscribeTopic)) {
+    printGatewayEnvelope(
+      gatewayError('events.subscribe', {
+        code: 'INVALID_ARGUMENT',
+        message: `--topic must be one of: ${EVENTS_SUBSCRIBE_TOPICS.join(', ')}`,
+        retryable: false,
+        details: {
+          field: 'topic',
+          ...(value !== undefined ? { value } : {}),
+          allowed: [...EVENTS_SUBSCRIBE_TOPICS],
+        },
+      }),
+      1
+    );
+  }
+  return value as EventsSubscribeTopic;
+}
+
+async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
+  const topic = parseEventsSubscribeTopic(gatewayArg(eventsArgs, '--topic'));
+  const maxEvents = gatewayOptionalPositiveInt(
+    'events.subscribe',
+    eventsArgs,
+    '--max-events',
+    10000
+  );
+  const idleTimeoutMs = gatewayOptionalPositiveInt(
+    'events.subscribe',
+    eventsArgs,
+    '--idle-timeout-ms',
+    300000
+  );
+
+  const token = gatewayRequiredToken('events.subscribe');
+  const port = gatewayWsPort();
+  const url = `http://127.0.0.1:${port}/events?topic=${encodeURIComponent(topic)}`;
+
+  // Use fetch with an AbortController; stream the body as NDJSON.
+  const controller = new AbortController();
+  const onSignal = (): void => {
+    controller.abort();
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-capabilities': 'session:read',
+        Accept: 'application/x-ndjson',
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError('events.subscribe', {
+        code: 'SERVER_UNAVAILABLE',
+        message: `could not connect to Relay hub on port ${port}: ${message}`,
+        retryable: true,
+        details: { topic },
+      }),
+      1
+    );
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let body: unknown;
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text };
+    }
+    const upstream =
+      typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : undefined;
+    printGatewayEnvelope(
+      gatewayError('events.subscribe', {
+        code: normalizeGatewayErrorCode(res.status, upstream),
+        message: gatewayErrorMessage(res.status, upstream),
+        retryable: gatewayErrorRetryable(res.status, upstream),
+        details: { ...sanitizedGatewayErrorDetails(res.status, upstream), topic },
+      }),
+      1
+    );
+  }
+
+  const body = res.body;
+  if (!body) {
+    printGatewayEnvelope(
+      gatewayError('events.subscribe', {
+        code: 'UPSTREAM_ERROR',
+        message: 'hub /events response had no body stream',
+        retryable: true,
+        details: { topic },
+      }),
+      1
+    );
+  }
+
+  let frames = 0;
+  let dataFrames = 0;
+  let sequence = 0;
+  let buffer = '';
+  let idleTimer: NodeJS.Timeout | undefined;
+  let settled = false;
+
+  const finalizeOk = (reason: string, closeCode = 1000): void => {
+    if (settled) return;
+    settled = true;
+    if (idleTimer) clearTimeout(idleTimer);
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    writeGatewayNdjson(
+      gatewayOk('events.subscribe', {
+        event: 'closed',
+        topic,
+        sequence: sequence++,
+        frames,
+        closeCode,
+        reason,
+      })
+    );
+  };
+
+  const refreshIdleTimer = (): void => {
+    if (!idleTimeoutMs) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* aborting */
+      }
+      finalizeOk('idle timeout', 1000);
+      process.exit(0);
+    }, idleTimeoutMs);
+    idleTimer.unref?.();
+  };
+  refreshIdleTimer();
+
+  const emitFrame = (line: string): boolean => {
+    if (!line) return true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      // Ignore malformed lines; hub-side bug would be visible in its own logs.
+      return true;
+    }
+    if (!parsed || typeof parsed !== 'object') return true;
+    const frame = parsed as Record<string, unknown>;
+    const eventType =
+      typeof frame['event'] === 'string' ? (frame['event'] as string) : 'event';
+    const frameTopic =
+      typeof frame['topic'] === 'string' ? (frame['topic'] as string) : topic;
+    const occurredAt =
+      typeof frame['occurredAt'] === 'string' ? (frame['occurredAt'] as string) : undefined;
+    const payload =
+      frame['payload'] && typeof frame['payload'] === 'object'
+        ? (frame['payload'] as Record<string, unknown>)
+        : undefined;
+
+    const envelope: Record<string, unknown> = {
+      event: eventType,
+      topic: frameTopic,
+      sequence: sequence++,
+      ...(occurredAt ? { occurredAt } : {}),
+      ...(payload ? { payload } : {}),
+    };
+
+    const ok = writeGatewayNdjson(gatewayOk('events.subscribe', envelope));
+    refreshIdleTimer();
+    if (!ok) {
+      try {
+        controller.abort();
+      } catch {
+        /* aborting */
+      }
+      finalizeOk('stdout backpressure', 1013);
+      process.exit(0);
+    }
+    if (eventType === 'event') {
+      frames += 1;
+      dataFrames += 1;
+      if (maxEvents !== undefined && dataFrames >= maxEvents) {
+        try {
+          controller.abort();
+        } catch {
+          /* aborting */
+        }
+        finalizeOk('maxEvents reached', 1000);
+        process.exit(0);
+      }
+    }
+    return true;
+  };
+
+  try {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder('utf-8');
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIdx = buffer.indexOf('\n');
+      while (newlineIdx >= 0) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        emitFrame(line);
+        newlineIdx = buffer.indexOf('\n');
+      }
+    }
+    if (buffer.trim().length > 0) emitFrame(buffer.trim());
+    finalizeOk('hub closed stream', 1000);
+    process.exit(0);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      finalizeOk('aborted', 1000);
+      process.exit(0);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError('events.subscribe', {
+        code: 'UPSTREAM_ERROR',
+        message: `events stream error: ${message}`,
+        retryable: true,
+        details: { topic, frames },
+      }),
+      1
+    );
+  }
+}
+
+async function runGatewayEvents(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'subscribe') return runGatewayEventsSubscribe(gatewayArgs.slice(2));
+  gatewayInvalid('events.subscribe', 'unknown events command', { args: gatewayArgs });
+}
+
 async function runGatewayV1(): Promise<never> {
   const gatewayArgs = args.slice(1);
   const json = gatewayArgs.includes('--json');
@@ -1174,6 +1422,7 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
   if (top === 'files') return runGatewayFiles(gatewayArgs);
+  if (top === 'events') return runGatewayEvents(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', { args: gatewayArgs });
 }
 

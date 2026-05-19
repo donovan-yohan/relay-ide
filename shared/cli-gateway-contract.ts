@@ -21,7 +21,8 @@ export type RelayCliGatewayCommand =
   | 'sessions.handBack'
   | 'files.list'
   | 'files.stat'
-  | 'files.read';
+  | 'files.read'
+  | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
   | 'UNAUTHORIZED'
@@ -593,6 +594,53 @@ const gatewayErrorSchema: RelayJsonSchema = {
   required: ['ok', 'contract', 'contractVersion', 'command', 'error'],
 };
 
+export const EVENTS_SUBSCRIBE_TOPICS = ['sessions', 'nodes', 'audit'] as const;
+export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
+
+const eventsSubscribeInputSchema: RelayJsonSchema = {
+  title: 'EventsSubscribeInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    topic: {
+      type: 'string',
+      enum: EVENTS_SUBSCRIBE_TOPICS,
+      description:
+        'Non-destructive event topic to subscribe to: sessions lifecycle/control, node link status, or redacted audit envelopes.',
+    },
+    maxEvents: {
+      type: 'number',
+      minimum: 1,
+      maximum: 10000,
+      description: 'Detach after N event frames (excluding open/closed envelopes).',
+    },
+    idleTimeoutMs: {
+      type: 'number',
+      minimum: 1,
+      maximum: 300000,
+      description: 'Detach after this many ms without an event frame.',
+    },
+  },
+  required: ['topic'],
+};
+
+const eventsSubscribeFrameSchema: RelayJsonSchema = {
+  title: 'EventsSubscribeFrame',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    event: { type: 'string', enum: ['open', 'event', 'closed'] },
+    topic: { type: 'string', enum: EVENTS_SUBSCRIBE_TOPICS },
+    sequence: { type: 'number', minimum: 0 },
+    occurredAt: { type: 'string', format: 'date-time' },
+    payload: { type: 'object', additionalProperties: true },
+    frames: { type: 'number', minimum: 0 },
+    closeCode: { type: 'number' },
+    reason: { type: 'string' },
+  },
+  required: ['event', 'topic', 'sequence'],
+};
+
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
   title,
   type: 'object',
@@ -1025,6 +1073,34 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'NODE_OFFLINE',
       'SERVER_UNAVAILABLE',
       'CONFIRMATION_REQUIRED',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'events.subscribe',
+    cli: [
+      'relay-ide',
+      'v1',
+      'events',
+      'subscribe',
+      '--topic',
+      '<topic>',
+      '--json',
+    ],
+    summary:
+      'Subscribe to a non-destructive hub event topic and emit newline-delimited gateway envelopes. Read-only.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: eventsSubscribeInputSchema,
+    outputSchema: okOutput('EventsSubscribeFrame', eventsSubscribeFrameSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
   },
