@@ -20,7 +20,7 @@ Each line conforms to `StructuredLogEvent` from `shared/log-event.ts`:
 | `ts`            | `string` (ISO-8601 UTC)       | yes      | Wall-clock timestamp at write time.                                    |
 | `level`         | `'trace' \| 'debug' \| 'info' \| 'warn' \| 'error'` | yes | Severity. `trace` is file-only (no console). |
 | `subsystem`     | `string`                      | yes      | Stable tag (e.g. `node-link`, `pty-host`, `policy`).                   |
-| `msg`           | `string`                      | yes      | Human-readable message. Already redacted before serialization.         |
+| `msg`           | `string`                      | yes      | Human-readable message. Producers MUST avoid raw secrets; redaction is enforced on egress, not at write time. |
 | `ctx`           | `Record<string, unknown>`     | no       | Free-form structured context. Subsystem-defined keys.                  |
 
 ### Producer rules
@@ -72,6 +72,10 @@ All filter fields are optional. Unknown fields are ignored. Malformed values ret
 
 - `events` is populated when the structured JSONL file is the source. `output` stays empty.
 - `events` is omitted in legacy plaintext mode.
+- The hub automatically switches the node to structured mode when any of `level`,
+  `subsystem`, or `sinceTs` is set on the request — those filters only apply to the JSONL
+  stream. With no filter set, the snapshot defaults to plaintext (`output`) for backwards
+  compatibility with existing operator tooling.
 
 ### Follow mode
 
@@ -105,4 +109,6 @@ reused so there is one place to maintain redaction rules:
 - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`)
 - URL credentials, cookie headers, secret-shaped assignments (`token=`, `pin=`, `password=`)
 
-The snapshot's `redacted: true` flag indicates at least one rule fired during this read.
+The snapshot's `redacted` flag is a boolean: `true` iff at least one redaction rule fired
+on the events (or plaintext output) returned in this read; otherwise `false`. It is always
+present.

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { format } from 'node:util';
 import {
   RELAY_LOG_EVENT_SCHEMA_VERSION,
+  serializeLogEvent,
   type StructuredLogEvent,
 } from '../shared/log-event.js';
 
@@ -120,14 +121,9 @@ function rotateStructuredIfNeeded(): void {
 
 function writeStructuredEvent(event: StructuredLogEvent): void {
   if (!structuredStream || !structuredFilePath) return;
-  const line = JSON.stringify({
-    schemaVersion: event.schemaVersion,
-    ts: event.ts,
-    level: event.level,
-    subsystem: event.subsystem,
-    msg: event.msg,
-    ...(event.ctx !== undefined ? { ctx: event.ctx } : {}),
-  });
+  // Reuse the shared serializer so producers and the reader agree on key
+  // ordering — keeps consumers that diff lines (or hash them) stable.
+  const line = serializeLogEvent(event);
   try {
     structuredStream.write(line + '\n');
     structuredLogSize += line.length + 1;

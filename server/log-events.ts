@@ -73,9 +73,18 @@ export interface ReadStructuredLogResult {
 }
 
 /**
- * Tail-read a JSON Lines log file from disk without loading the whole
- * file into memory. Reads in reverse chunks until we have enough matching
- * events or hit the start of the file.
+ * Tail-read a JSON Lines log file from disk and return at most `maxEvents`
+ * matching events (newest-first walk, then reversed to chronological).
+ *
+ * NOTE: the structured log is hard-capped at `MAX_STRUCTURED_LOG_SIZE`
+ * (5 MiB) with `.old` rotation, so this reader bounds its working set to
+ * that ceiling — the file is read into a single buffer (either one
+ * `readSync` for files ≤ 1 MiB or a series of reverse `TAIL_CHUNK_SIZE`
+ * reads that are concatenated before line-splitting). A true incremental
+ * reverse tail-read that stops as soon as enough newlines are found is
+ * tracked separately; this implementation is the minimum-viable backend
+ * for the `logs.tail` foundation PR (#597) and is safe at the current
+ * rotation cap. See bot review on PR #607.
  */
 export function readStructuredLogTail(options: ReadStructuredLogOptions): ReadStructuredLogResult {
   const { logFile, maxEvents, filter } = options;
@@ -116,12 +125,13 @@ export function readStructuredLogTail(options: ReadStructuredLogOptions): ReadSt
 }
 
 function readLinesFromTail(fd: number, size: number): string[] {
-  // Read the whole file when small; otherwise pull from the tail in
-  // reverse chunks until we have plenty of newlines or hit the start.
-  const buffer = Buffer.alloc(size);
-  // Single read for files <= 1MB keeps the common case branchless;
-  // larger logs still get streamed via the chunked reverse-tail loop.
+  // Working set is bounded by `MAX_STRUCTURED_LOG_SIZE` (5 MiB) — the
+  // producer rotates at that cap. Files ≤ 1 MiB get a single `readSync`;
+  // larger files are pulled in reverse `TAIL_CHUNK_SIZE` slices and
+  // concatenated. This is not yet an incremental reverse tail-read —
+  // see `readStructuredLogTail`'s docstring and the bot review on #607.
   if (size <= TAIL_CHUNK_SIZE * 16) {
+    const buffer = Buffer.alloc(size);
     fs.readSync(fd, buffer, 0, size, 0);
     return splitLines(buffer.toString('utf8'));
   }

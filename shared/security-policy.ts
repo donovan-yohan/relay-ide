@@ -45,7 +45,9 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'rpc:git:read',
   // #597: `logs:read` is operator-visible by default so existing
   // `relay-ide hub logs` workflows keep working without a manual ACL
-  // edit. Trust tier overlays can still strip it for `prod` nodes.
+  // edit. It is NOT in `HIGH_RISK_CAPABILITIES`, so the `prod` trust
+  // tier overlay (`applyTrustTierOverlay`) leaves it in the silent-allow
+  // set; operators can still revoke per-node by editing the ACL.
   'logs:read',
 ] as const satisfies readonly RelayCapabilityBit[];
 
