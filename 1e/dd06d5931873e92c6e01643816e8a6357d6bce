@@ -1,0 +1,27 @@
+bin/relay-ide.ts
+  s_afc3e94f2d047a::t_08ec72f1fcb7ca 1206-1210,1216
+  s_afc3e94f2d047a::t_b73db8864cfbe2 1382-1384
+test/cli-gateway/events.test.ts
+  s_afc3e94f2d047a::t_42602c66d6c97b 452-506
+server/cli-gateway-events.ts
+  s_afc3e94f2d047a::t_50c18fcf84597a 272
+  s_afc3e94f2d047a::t_8035bd91c6b066 179-194,206
+shared/cli-gateway-contract.ts
+  s_afc3e94f2d047a::t_7af5c299945fd0 1095-1100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "1edd06d5931873e92c6e01643816e8a6357d6bce",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
