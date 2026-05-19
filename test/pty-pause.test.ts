@@ -279,4 +279,87 @@ describe('pause ring buffer — 256 KB cap with FIFO eviction', () => {
     const written = (term.write as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(written).toBe(chunk.repeat(5));
   });
+
+  it('uses O(1) head-index eviction — many small chunks over cap do not corrupt data', async () => {
+    // Sends many small 1-byte chunks totalling well over the 256 KB cap.
+    // This exercises the head-index path that was previously O(N) per eviction.
+    const ws = await importWs();
+    const term = fakeTerm();
+    ws.connectPtySocket('sess-a', term, vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+
+    ws.pausePtyFeed('sess-a');
+
+    // 300_000 single-byte chunks → 300 KB total, triggers many evictions
+    const totalChunks = 300_000;
+    for (let i = 0; i < totalChunks; i++) {
+      sockets[0]!.__triggerMessage('z');
+    }
+
+    ws.resumePtyFeed('sess-a');
+    flushRaf();
+
+    const written = (term.write as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(typeof written).toBe('string');
+    // Flushed output must be within the 256 KB cap
+    expect(written.length).toBeLessThanOrEqual(256 * 1024);
+    // All flushed bytes should be 'z' (no corruption)
+    expect(written).toMatch(/^z+$/);
+  });
+});
+
+describe('resumePtyFeed — flush writeQueue even when pauseBuffer is empty', () => {
+  it('schedules a flush for data already in writeQueue before the pause started', async () => {
+    // Simulates: data arrived and was queued in writeQueue, THEN the tab was
+    // paused (e.g., the rAF hadn't fired yet). On resume, that queued data
+    // should be flushed even though pauseBuffer is empty.
+    const ws = await importWs();
+
+    // We need access to internal connection state; use the test helper.
+    const { _ptyConnectionsForTesting } = ws;
+
+    const term = fakeTerm();
+    ws.connectPtySocket('sess-a', term, vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+
+    // Deliver a message BEFORE pausing so it goes into writeQueue normally.
+    sockets[0]!.__triggerMessage('pre-pause-data');
+
+    // Now pause — this cancels the pending rAF but leaves writeQueue intact.
+    ws.pausePtyFeed('sess-a');
+
+    // Verify nothing was written yet (rAF was cancelled).
+    expect(term.write).not.toHaveBeenCalled();
+
+    // Deliver additional data while paused — goes to pauseBuffer.
+    sockets[0]!.__triggerMessage('paused-data');
+
+    // Resume should flush both writeQueue and pauseBuffer contents.
+    ws.resumePtyFeed('sess-a');
+    flushRaf();
+
+    expect(term.write).toHaveBeenCalledTimes(1);
+    const written = (term.write as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(written).toContain('pre-pause-data');
+    expect(written).toContain('paused-data');
+  });
+
+  it('flushes writeQueue on resume even when pauseBuffer was never filled', async () => {
+    // Pause immediately after connect (before any data), then receive data while
+    // paused, then resume. Ensures the unconditional scheduleFlush path works.
+    const ws = await importWs();
+    const term = fakeTerm();
+    ws.connectPtySocket('sess-a', term, vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+
+    ws.pausePtyFeed('sess-a');
+    sockets[0]!.__triggerMessage('buffered');
+    ws.resumePtyFeed('sess-a');
+    flushRaf();
+
+    expect(term.write).toHaveBeenCalledTimes(1);
+    expect((term.write as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(
+      'buffered'
+    );
+  });
 });

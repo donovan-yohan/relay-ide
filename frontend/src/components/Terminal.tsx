@@ -964,22 +964,28 @@ function useTerminalSetup(
 /**
  * Pauses xterm rendering while this terminal tab is inactive, buffering
  * incoming PTY bytes in a 256 KB ring buffer. On reactivation flushes the
- * buffer to xterm in the next animation frame and calls fit(). The PTY
- * WebSocket stays open throughout.
+ * buffer to xterm; the ResizeObserver in useTerminalSetup handles fit() once
+ * the container becomes visible again. The PTY WebSocket stays open throughout.
  */
 function usePtyPause(
   ptySessionKey: string | null,
   isActive: boolean,
-  fit: () => void,
   companionMode: boolean
 ): void {
-  const fitRef = useRef(fit);
-  fitRef.current = fit;
+  // Track any pending fit rAF handle so we can cancel it if the tab becomes
+  // inactive before the frame fires (would call fit() on a hidden terminal,
+  // potentially producing cols/rows=0).
+  const rafHandleRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!ptySessionKey || companionMode) return undefined;
 
     if (!isActive) {
+      // Cancel any pending fit rAF from a previous activation.
+      if (rafHandleRef.current !== null) {
+        cancelAnimationFrame(rafHandleRef.current);
+        rafHandleRef.current = null;
+      }
       pausePtyFeed(ptySessionKey);
       return () => {
         // On unmount while inactive, resume so the connection doesn't stay
@@ -988,13 +994,17 @@ function usePtyPause(
       };
     }
 
-    // Becoming active: flush buffered bytes and re-fit once painted.
+    // Becoming active: flush buffered bytes. The ResizeObserver in
+    // useTerminalSetup fires when the container becomes visible and handles
+    // fit() automatically; we do not call fit() here to avoid redundancy.
     resumePtyFeed(ptySessionKey);
-    requestAnimationFrame(() => {
-      fitRef.current();
-    });
 
-    return undefined;
+    return () => {
+      if (rafHandleRef.current !== null) {
+        cancelAnimationFrame(rafHandleRef.current);
+        rafHandleRef.current = null;
+      }
+    };
   }, [ptySessionKey, isActive, companionMode]);
 }
 
@@ -1183,7 +1193,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       handleDrop,
     } = useTerminalInteractions(termRef, applyZoom, handleImageUpload);
 
-    usePtyPause(ptySessionKey, isActive, fit, companionMode);
+    usePtyPause(ptySessionKey, isActive, companionMode);
 
     const handle = useMemo<TerminalHandle>(
       () => ({

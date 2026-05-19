@@ -267,7 +267,8 @@ function clearEventPongTimeout(): void {
 
 // ── Per-session PTY connection registry ──────────────────────────────────────
 
-// 256 KB ring buffer cap for inactive terminal tabs (matches scrollback cap).
+// 256 KiB UTF-16 code units cap for inactive terminal tabs (rough parity with
+// the largest scrollback we keep in xterm, which is measured in lines not bytes).
 const INACTIVE_BUFFER_CAP = 256 * 1024;
 
 interface PtyConnection {
@@ -301,7 +302,13 @@ interface PtyConnection {
   renderPaused: boolean;
   /** Ring buffer for bytes received while renderPaused is true. */
   pauseBuffer: string[];
-  /** Total byte count of pauseBuffer content. */
+  /**
+   * Logical head of the ring buffer. Eviction advances this index rather than
+   * shifting the array (O(1) vs O(N)); the array is compacted when head
+   * exceeds half its length.
+   */
+  pauseBufferHead: number;
+  /** Total UTF-16 code unit count of live pauseBuffer content. */
   pauseBufferSize: number;
 }
 
@@ -451,23 +458,30 @@ function appendToPauseBuffer(conn: PtyConnection, data: string): void {
   conn.pauseBuffer.push(data);
   conn.pauseBufferSize += data.length;
 
-  // Trim from the front until we're within the cap.
-  while (
-    conn.pauseBufferSize > INACTIVE_BUFFER_CAP &&
-    conn.pauseBuffer.length > 0
-  ) {
-    const oldest = conn.pauseBuffer[0]!;
+  // Evict oldest chunks using a head-index to avoid O(N) Array.shift() calls.
+  // Incrementing pauseBufferHead is O(1); the array is compacted once head
+  // exceeds half the array length to prevent unbounded memory growth.
+  while (conn.pauseBufferSize > INACTIVE_BUFFER_CAP) {
+    const oldest = conn.pauseBuffer[conn.pauseBufferHead];
+    if (oldest === undefined) break;
+
     if (conn.pauseBufferSize - oldest.length >= INACTIVE_BUFFER_CAP) {
-      // Drop entire chunk.
-      conn.pauseBuffer.shift();
+      // Drop entire chunk — advance head.
+      conn.pauseBufferHead++;
       conn.pauseBufferSize -= oldest.length;
     } else {
-      // Partially trim the oldest chunk.
+      // Partially trim the oldest chunk in-place.
       const excess = conn.pauseBufferSize - INACTIVE_BUFFER_CAP;
-      conn.pauseBuffer[0] = oldest.slice(excess);
+      conn.pauseBuffer[conn.pauseBufferHead] = oldest.slice(excess);
       conn.pauseBufferSize -= excess;
       break;
     }
+  }
+
+  // Compact: once the dead prefix is more than half the array, splice it away.
+  if (conn.pauseBufferHead > conn.pauseBuffer.length >> 1) {
+    conn.pauseBuffer = conn.pauseBuffer.slice(conn.pauseBufferHead);
+    conn.pauseBufferHead = 0;
   }
 }
 
@@ -520,6 +534,7 @@ export function connectPtySocket(
     bgTimer: null,
     renderPaused: false,
     pauseBuffer: [],
+    pauseBufferHead: 0,
     pauseBufferSize: 0,
   };
   ptyConnections.set(registryKey, conn);
@@ -850,15 +865,23 @@ export function resumePtyFeed(sessionId: string): void {
   if (!conn || !conn.renderPaused) return;
   conn.renderPaused = false;
 
-  if (conn.pauseBuffer.length > 0) {
-    const flushed = conn.pauseBuffer.join('');
-    conn.pauseBuffer = [];
-    conn.pauseBufferSize = 0;
-    // Push buffered data into the normal write queue and schedule a flush.
-    conn.writeQueue.push(flushed);
-    conn.queueSize += flushed.length;
-    if (!conn.paused) scheduleFlush(conn);
+  // Move all live pauseBuffer chunks into the write queue individually —
+  // no join() allocation since flushWriteQueue will join them anyway.
+  // Use concat() rather than push(...spread) to stay stack-safe with many chunks.
+  if (conn.pauseBufferSize > 0) {
+    conn.writeQueue = conn.writeQueue.concat(
+      conn.pauseBuffer.slice(conn.pauseBufferHead)
+    );
+    conn.queueSize += conn.pauseBufferSize;
   }
+  conn.pauseBuffer = [];
+  conn.pauseBufferHead = 0;
+  conn.pauseBufferSize = 0;
+
+  // Always schedule a flush if writeQueue has data and we are not
+  // flow-control paused — even when pauseBuffer was empty (fixes the case
+  // where data was already in writeQueue before the pause started).
+  if (!conn.paused && conn.writeQueue.length > 0) scheduleFlush(conn);
 }
 
 // ── Test-only helpers ────────────────────────────────────────────────────────
