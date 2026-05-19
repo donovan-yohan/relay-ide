@@ -5,7 +5,9 @@ import {
   fetchCiStatusOrNull,
   fetchCurrentBranch,
   renameBranch,
+  HttpError,
 } from '../lib/api.js';
+import { createLogger } from '../lib/logger.js';
 import { sendPtyData } from '../lib/ws.js';
 import {
   derivePrAction,
@@ -28,6 +30,8 @@ import { formatRelativeTime } from '../lib/utils.js';
 import RenameWarningModal from './dialogs/RenameWarningModal.js';
 import Tooltip from './Tooltip.js';
 import './PrTopBar.css';
+
+const logger = createLogger('pr-top-bar');
 
 export interface PrTopBarProps {
   workspacePath: string;
@@ -601,9 +605,17 @@ export function PrTopBar({
   }, [branchName]);
   useEffect(() => {
     if (!branchName && workspacePath) {
-      void fetchCurrentBranch(workspacePath).then((b) => {
-        if (b) setCurrentBranch(b);
-      });
+      void fetchCurrentBranch(workspacePath)
+        .then((b) => {
+          if (b) setCurrentBranch(b);
+        })
+        .catch((err: unknown) => {
+          if (err instanceof HttpError && err.code === 'NOT_GIT') {
+            // expected for non-git workspaces — silently ignore
+            return;
+          }
+          logger.warn('fetchCurrentBranch failed', err);
+        });
     }
   }, [branchName, workspacePath]);
 

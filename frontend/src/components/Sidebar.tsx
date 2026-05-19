@@ -588,7 +588,7 @@ export function Sidebar({
               )}
               {repos.length === 0 && (
                 <div className="sidebar-empty-state">
-                  <span>no repos</span>
+                  <span>no projects yet</span>
                 </div>
               )}
               {workspaceGroups.length === 0 &&
@@ -606,7 +606,7 @@ export function Sidebar({
               onClick={onAddWorkspace}
               style={{ flex: 1 }}
             >
-              + add repo
+              + add project
             </TuiButton>
             <button
               className={['sidebar-settings-icon-btn', analyticsView !== null && 'active']

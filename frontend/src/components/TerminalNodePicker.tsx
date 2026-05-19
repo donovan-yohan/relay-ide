@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchHubNodes } from '../lib/api.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
+import { nodeShellBlockReason } from './dialogs/CustomizeSessionDialog.js';
 import './TerminalNodePicker.css';
 
 export interface TerminalNodePickerProps {
@@ -44,25 +45,13 @@ export interface NodeChoice {
 }
 
 /**
- * Mirrors the hub-side preconditions documented in `docs/federated-relay.md`
- * §Session Routing: a node must be online, version-matched to the hub, and
- * advertise tmux capability. Anything else gets surfaced as a disabled
- * choice with the failing precondition as the tooltip reason — the user
- * never gets to click and then hit a typed error.
- *
- * #467 note: nodes advertising `sessionResume: 'none'` ship a working
- * raw-shell attachment backend, but the hub's `sessions.create`
- * preconditions still require tmux. The picker enforces the same
- * gate (`no tmux`) so users don't get a typed error after clicking.
- * Phase 2 will loosen this once non-resumable nodes have a routing
- * story.
+ * Determines whether a node can accept terminal sessions.
+ * Delegates to nodeShellBlockReason from CustomizeSessionDialog — shell + tmux
+ * availability is the sole gate. Agent availability is NOT checked here
+ * because this picker is terminal-only.
  */
-function nodeBlockReason(node: HubNodeSummary): string | null {
-  if (node.status !== 'online') return node.status;
-  if (node.version.state === 'incompatible') return 'protocol incompatible';
-  if (node.version.state === 'version-skew') return 'version skew';
-  if (node.capabilities.core.tmux !== 'available') return 'no tmux';
-  return null;
+function nodeBlockReasonForTerminal(node: HubNodeSummary): string | null {
+  return nodeShellBlockReason(node);
 }
 
 function isResumable(node: HubNodeSummary): boolean {
@@ -85,7 +74,7 @@ export function buildChoices(nodes: HubNodeSummary[]): NodeChoice[] {
     },
   ];
   for (const node of nodes) {
-    const reason = nodeBlockReason(node);
+    const reason = nodeBlockReasonForTerminal(node);
     choices.push({
       nodeId: node.nodeId,
       label: node.displayName || node.nodeId,

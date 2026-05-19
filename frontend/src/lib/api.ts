@@ -727,16 +727,29 @@ export async function fetchDashboard(repoPath: string): Promise<DashboardData> {
     branches: string[];
     activity: ActivityEntry[];
   }
-  const raw = await json<RawDashboard>(
-    await fetch('/workspaces/dashboard?path=' + encodeURIComponent(repoPath))
-  );
-  return {
-    prs: raw.pullRequests?.prs ?? [],
-    activity: raw.activity ?? [],
-    isGitRepo: true,
-    defaultBranch: null,
-    hasGhCli: !raw.pullRequests?.error,
-  };
+  try {
+    const raw = await json<RawDashboard>(
+      await fetch('/workspaces/dashboard?path=' + encodeURIComponent(repoPath))
+    );
+    return {
+      prs: raw.pullRequests?.prs ?? [],
+      activity: raw.activity ?? [],
+      isGitRepo: true,
+      defaultBranch: null,
+      hasGhCli: !raw.pullRequests?.error,
+    };
+  } catch (err) {
+    if (err instanceof HttpError && err.code === 'NOT_GIT') {
+      return {
+        isGitRepo: false,
+        prs: [],
+        activity: [],
+        hasGhCli: false,
+        defaultBranch: null,
+      };
+    }
+    throw err;
+  }
 }
 
 export async function fetchCiStatusOrNull(

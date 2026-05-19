@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createBenchId, parseBenchId } from '../shared/bench.js';
 import {
+  createDirectoryProjectId,
   createInstanceId,
   createProjectId,
   parseInstanceId,
@@ -79,6 +80,61 @@ describe('project id helpers', () => {
     expect(() => createProjectId({ kind: 'playbook', playbookId: '' })).toThrow(
       'identity.playbookId is required'
     );
+  });
+
+  it('round-trips directory identity (simple paths)', () => {
+    const id = createDirectoryProjectId('local-host', '/home/donovan');
+    expect(parseProjectId(id)).toEqual({
+      kind: 'directory',
+      nodeId: 'local-host',
+      localPath: '/home/donovan',
+    });
+  });
+
+  it('round-trips directory identity with colons in nodeId and localPath', () => {
+    const id = createDirectoryProjectId('node:with:colons', '/path/with:colons');
+    expect(parseProjectId(id)).toEqual({
+      kind: 'directory',
+      nodeId: 'node:with:colons',
+      localPath: '/path/with:colons',
+    });
+  });
+
+  it('round-trips directory identity with literal % in localPath', () => {
+    // localPath containing a literal % — encodeURIComponent encodes it to %25,
+    // decoding once must yield the original % back.
+    const id = createDirectoryProjectId('host', '/path/with%20space');
+    expect(parseProjectId(id)).toEqual({
+      kind: 'directory',
+      nodeId: 'host',
+      localPath: '/path/with%20space',
+    });
+  });
+
+  it('round-trips directory identity with literal %2F in localPath', () => {
+    const id = createDirectoryProjectId('host', '/x%2Fy');
+    expect(parseProjectId(id)).toEqual({
+      kind: 'directory',
+      nodeId: 'host',
+      localPath: '/x%2Fy',
+    });
+  });
+
+  it('returns null for malformed directory payload', () => {
+    // Only one segment after the kind tag — no inner colon separator
+    expect(parseProjectId('proj:directory:malformed')).toBeNull();
+  });
+
+  it('directory kind does not parse as node kind and vice versa', () => {
+    const dirId = createDirectoryProjectId('h', '/p');
+    const parsed = parseProjectId(dirId);
+    expect(parsed?.kind).toBe('directory');
+    expect(parsed?.kind).not.toBe('node');
+
+    const nodeId = createProjectId({ kind: 'node', nodeId: 'h' });
+    const parsedNode = parseProjectId(nodeId);
+    expect(parsedNode?.kind).toBe('node');
+    expect(parsedNode?.kind).not.toBe('directory');
   });
 
   it('compares identities by kind+payload', () => {

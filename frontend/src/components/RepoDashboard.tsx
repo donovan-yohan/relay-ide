@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
+import { createAgentSession } from '../lib/session-utils.js';
 import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
@@ -369,6 +370,8 @@ export function RepoDashboard({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [startWorkIssue, setStartWorkIssue] = useState<AnyIssue | null>(null);
+  const [creatingTerminal, setCreatingTerminal] = useState(false);
+  const [terminalError, setTerminalError] = useState<string | null>(null);
   const sortBy = 'age';
   const sortDir: 'asc' | 'desc' = 'desc';
   const { ref: prScrollRef, hasOverflow: prHasOverflow } = useScrollOverflow();
@@ -400,7 +403,36 @@ export function RepoDashboard({
       {hint && <div className="repo-dashboard__hint">{hint}</div>}
       {data && !data.isGitRepo ? (
         <div className="non-git-notice">
-          <span className="non-git-msg">Not a git repository</span>
+          <span className="non-git-msg">not a git repository</span>
+          <div className="cta-row">
+            <TuiButton
+              variant="primary"
+              disabled={creatingTerminal}
+              onClick={() => {
+                setTerminalError(null);
+                setCreatingTerminal(true);
+                void createAgentSession({
+                  type: 'terminal',
+                  repoPath,
+                  cwd: repoPath,
+                }).then(({ session, error }) => {
+                  setCreatingTerminal(false);
+                  if (error && !session) {
+                    setTerminalError(
+                      error instanceof Error ? error.message : 'failed to open terminal'
+                    );
+                  } else if (session) {
+                    onSessionCreated?.(session.id);
+                  }
+                });
+              }}
+            >
+              {creatingTerminal ? 'opening...' : '+ open terminal'}
+            </TuiButton>
+          </div>
+          {terminalError && (
+            <p className="non-git-error">{terminalError}</p>
+          )}
         </div>
       ) : (
         <>
