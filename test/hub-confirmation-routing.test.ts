@@ -127,6 +127,7 @@ describe('hub confirmation routing', () => {
       node?: HubNodeSummary;
       workContextStore?: WorkContextStore;
       sessionPayload?: unknown;
+      nodeLinkResponse?: (nodeId: string, type: string, payload: unknown) => unknown | Promise<unknown>;
     } = {}
   ) {
     const nodeLinks = {
@@ -134,6 +135,7 @@ describe('hub confirmation routing', () => {
       hasActiveNode: () => true,
       request: async (nodeId: string, type: string, payload: unknown): Promise<unknown> => {
         nodeLinks.requests.push({ nodeId, type, payload });
+        if (options.nodeLinkResponse) return options.nodeLinkResponse(nodeId, type, payload);
         return options.sessionPayload ?? sessionPayload();
       },
     };
@@ -456,6 +458,152 @@ describe('hub confirmation routing', () => {
       id: 'remote-session-1',
       nodeId: 'node_prod',
       live: true,
+    });
+  });
+
+  it('creates routed terminal sessions from node-local cwd without repo identity or agent capability', async () => {
+    const node = nodeSummary({
+      allowed: ['session:read', 'session:create:terminal'],
+      requiresConfirmation: [],
+    });
+    const payload = sessionPayload();
+    delete payload.session.repoPath;
+    delete payload.session.worktreePath;
+    payload.session.cwd = '/home/relay/scratch';
+    delete payload.session.repoName;
+    delete payload.session.branchName;
+    payload.session.displayName = 'scratch terminal';
+    const { base, nodeLinks } = await startHub({ node, sessionPayload: payload });
+    const body = { cwd: '/home/relay/scratch', type: 'terminal' };
+
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(201);
+    const session = await response.json();
+    expect(session).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node_prod',
+      cwd: '/home/relay/scratch',
+    });
+    expect(session.repoPath).toBeUndefined();
+    expect(session.worktreePath).toBeUndefined();
+    expect(session.repoName).toBeUndefined();
+    expect(session.branchName).toBeUndefined();
+    expect(session.repoInstanceId).toBeUndefined();
+    expect(session.worktreeInstanceId).toBeUndefined();
+    expect(session.sessionEnvelope.scope).toMatchObject({
+      kind: 'node-cwd',
+      nodeId: 'node_prod',
+      cwd: '/home/relay/scratch',
+    });
+    expect(nodeLinks.requests).toHaveLength(1);
+    expect(nodeLinks.requests[0]).toMatchObject({ type: 'sessions.create', payload: body });
+  });
+
+  it('denies routed terminal create when shell is unavailable even if an agent is available', async () => {
+    const node = {
+      ...nodeSummary({
+        allowed: ['session:read', 'session:create:terminal'],
+        requiresConfirmation: [],
+      }),
+      capabilities: {
+        ...nodeSummary().capabilities,
+        core: { ...nodeSummary().capabilities.core, shell: 'unavailable' as const },
+        agents: { claude: 'available' as const },
+      },
+    };
+    const { base, nodeLinks } = await startHub({ node });
+
+    const response = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify({ cwd: '/home/relay/scratch', type: 'terminal' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: 'NODE_UNSUPPORTED',
+        details: { reasonCode: 'NODE_TERMINAL_SHELL_UNAVAILABLE' },
+      },
+    });
+    expect(nodeLinks.requests).toHaveLength(0);
+  });
+
+  it('routes node-local cwd browse and validation through file RPC without repo metadata', async () => {
+    const node = {
+      ...nodeSummary({
+        allowed: ['session:read', 'rpc:fs:list', 'rpc:fs:read'],
+        requiresConfirmation: [],
+      }),
+      homeDir: '/home/relay',
+    };
+    const { base, nodeLinks } = await startHub({
+      node,
+      nodeLinkResponse: (_nodeId, type) =>
+        type === 'fs.list'
+          ? { operation: 'list', entries: [{ name: 'scratch', type: 'directory' }] }
+          : { operation: 'stat', stat: { path: '/home/relay/scratch', type: 'directory' } },
+    });
+
+    const browse = await fetch(`${base}/hub/nodes/node_prod/cwd/browse`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify({ cwd: '/home/relay', path: 'scratch' }),
+    });
+    expect(browse.status).toBe(200);
+    expect(await browse.json()).toMatchObject({
+      nodeId: 'node_prod',
+      cwd: '/home/relay',
+      operation: 'list',
+    });
+
+    const validate = await fetch(`${base}/hub/nodes/node_prod/cwd/validate`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify({ cwd: '/home/relay/scratch' }),
+    });
+    expect(validate.status).toBe(200);
+    expect(await validate.json()).toMatchObject({
+      nodeId: 'node_prod',
+      cwd: '/home/relay/scratch',
+      operation: 'stat',
+    });
+
+    expect(nodeLinks.requests).toHaveLength(2);
+    expect(nodeLinks.requests[0]).toMatchObject({
+      type: 'fs.list',
+      payload: {
+        sessionId: 'cwd-onboarding',
+        root: '/',
+        cwd: '/home/relay',
+        path: 'scratch',
+      },
+    });
+    expect(nodeLinks.requests[1]).toMatchObject({
+      type: 'fs.stat',
+      payload: {
+        sessionId: 'cwd-onboarding',
+        root: '/',
+        cwd: '/',
+        path: '/home/relay/scratch',
+      },
     });
   });
 

@@ -77,6 +77,7 @@ import {
   type ConfirmationDecision,
   type ConfirmationFailure,
 } from './confirmation-challenges.js';
+import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 
@@ -1377,6 +1378,82 @@ function protocolVersionRelayError(nodeProtocolVersion: string): RelayNodeError 
   );
 }
 
+function nodeTerminalUnsupportedError(
+  nodeId: string,
+  node: HubNodeSummary
+): RelayNodeError | null {
+  if (node.capabilities.core.shell !== 'available') {
+    return relayError(
+      'NODE_UNSUPPORTED',
+      `node ${nodeId} cannot host shell-backed terminal sessions`,
+      false,
+      {
+        reasonCode: 'NODE_TERMINAL_SHELL_UNAVAILABLE',
+        capability: 'shell',
+        status: node.capabilities.core.shell,
+      }
+    );
+  }
+  if (node.capabilities.core.tmux !== 'available') {
+    return relayError(
+      'NODE_UNSUPPORTED',
+      `node ${nodeId} cannot host tmux-backed PTY sessions`,
+      false,
+      {
+        reasonCode: 'NODE_TERMINAL_TMUX_UNAVAILABLE',
+        capability: 'tmux',
+        status: node.capabilities.core.tmux,
+      }
+    );
+  }
+  return null;
+}
+
+function cwdOnboardingRoot(node: HubNodeSummary, cwd: string): string {
+  if (node.platform === 'win32') {
+    const drive = cwd.match(/^[a-zA-Z]:[\\/]/)?.[0]?.slice(0, 2);
+    return drive ? `${drive}\\` : cwd;
+  }
+  return '/';
+}
+
+function nodeCwdOnboardingPayload(input: {
+  node: HubNodeSummary;
+  body: Record<string, unknown>;
+  operation: 'browse' | 'validate';
+}): { request: Record<string, unknown>; cwd: string; path: string } | RelayNodeError {
+  const cwd = stringField(input.body, 'cwd') ?? input.node.homeDir ?? '/';
+  if (cwd.includes('\0')) {
+    return relayError('INVALID_REQUEST', 'cwd must not contain NUL bytes', false, {
+      reasonCode: 'NODE_CWD_INVALID_REQUEST',
+      field: 'cwd',
+    });
+  }
+  const root = cwdOnboardingRoot(input.node, cwd);
+  const pathValue =
+    input.operation === 'validate'
+      ? cwd
+      : (stringField(input.body, 'path') ?? '.');
+  if (pathValue.includes('\0')) {
+    return relayError('INVALID_REQUEST', 'path must not contain NUL bytes', false, {
+      reasonCode: 'NODE_CWD_INVALID_REQUEST',
+      field: 'path',
+    });
+  }
+  const maxEntries = input.body['maxEntries'];
+  return {
+    cwd,
+    path: pathValue,
+    request: {
+      sessionId: 'cwd-onboarding',
+      root,
+      cwd: input.operation === 'validate' ? root : cwd,
+      path: pathValue,
+      ...(input.operation === 'browse' && maxEntries !== undefined ? { maxEntries } : {}),
+    },
+  };
+}
+
 function sessionCreatePolicyScope(
   nodeId: string,
   body: Record<string, unknown>
@@ -2174,6 +2251,89 @@ export function createHubNodeRouter(
     res.json({ session: summary });
   });
 
+  router.post('/hub/nodes/:nodeId/cwd/:operation', requireAuth, async (req, res) => {
+    const { nodeId, operation } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    if (operation !== 'browse' && operation !== 'validate') {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'cwd operation must be browse or validate')
+      );
+      return;
+    }
+    const node = registry
+      .listNodes()
+      .find((candidate) => candidate.nodeId === nodeId);
+    if (!node || node.status === 'revoked') {
+      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+      return;
+    }
+    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+      sendRelayError(res, protocolVersionRelayError(node.protocolVersion));
+      return;
+    }
+    const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
+    if (terminalUnsupported) {
+      sendRelayError(res, terminalUnsupported);
+      return;
+    }
+    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
+      sendRelayError(
+        res,
+        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+      );
+      return;
+    }
+
+    const body = bodyRecord(req);
+    const normalized = nodeCwdOnboardingPayload({ node, body, operation });
+    if ('code' in normalized) {
+      sendRelayError(res, normalized);
+      return;
+    }
+    const action = operation === 'browse' ? 'rpc.fs.list' : 'rpc.fs.stat';
+    const nowForPolicy = now();
+    const policyDecision = evaluateHubPolicy({
+      peer: { kind: 'hub' },
+      node,
+      nodeId,
+      intent: { action, target: nodeId },
+      scope: {
+        kind: 'node-cwd',
+        nodeId,
+        cwd: normalized.cwd,
+        path: normalized.path,
+      },
+      requiredCapabilities: requiredCapabilitiesForRpcIntent(action),
+      params: normalized.request,
+      now: nowForPolicy,
+    });
+    if (
+      sendPolicyDecision(options.auditSink, res, policyDecision, normalized.request, {
+        confirmations,
+        req,
+        canonicalParams: normalized.request,
+        now: nowForPolicy,
+      })
+    ) return;
+
+    try {
+      const rpcType = operation === 'browse' ? 'fs.list' : 'fs.stat';
+      const payload = await options.nodeLinks.request(nodeId, rpcType, normalized.request);
+      const responsePayload = isRecord(payload) ? payload : { payload };
+      res.json({ nodeId, cwd: normalized.cwd, ...responsePayload });
+    } catch (error) {
+      if (error instanceof HubNodeLinkError) {
+        sendRelayError(res, error.relayNodeError);
+        return;
+      }
+      sendRegistryError(registry, res, error);
+    }
+  });
+
   router.post('/hub/nodes/:nodeId/sessions', cliGatewayAuth, async (req, res) => {
     const { nodeId } = req.params;
     if (!nodeId) {
@@ -2210,14 +2370,9 @@ export function createHubNodeRouter(
       );
       return;
     }
-    if (node.capabilities.core.tmux !== 'available') {
-      sendRelayError(
-        res,
-        relayError(
-          'NODE_UNSUPPORTED',
-          `node ${nodeId} cannot host tmux-backed PTY sessions`
-        )
-      );
+    const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
+    if (terminalUnsupported) {
+      sendRelayError(res, terminalUnsupported);
       return;
     }
     if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {

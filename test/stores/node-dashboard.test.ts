@@ -20,14 +20,18 @@ const createdAt = '2026-01-02T03:00:00.000Z';
 function policy(
   nodeId: string,
   trustTier: RelayTrustTier = 'dev',
-  overrides: Partial<{ allowed: RelayCapabilityBit[]; requiresConfirmation: RelayCapabilityBit[] }> = {}
+  overrides: Partial<{
+    allowed: RelayCapabilityBit[];
+    requiresConfirmation: RelayCapabilityBit[];
+  }> = {}
 ) {
   const acl = createLegacyDefaultNodeAcl({ nodeId, trustTier, createdAt });
   return summarizeAcl({
     ...acl,
     grants: {
       allowed: overrides.allowed ?? acl.grants.allowed,
-      requiresConfirmation: overrides.requiresConfirmation ?? acl.grants.requiresConfirmation,
+      requiresConfirmation:
+        overrides.requiresConfirmation ?? acl.grants.requiresConfirmation,
     },
   });
 }
@@ -290,9 +294,13 @@ describe('hub node dashboard state', () => {
 
     // #597 added `logs:read` to the capability bit set; counts shift by 1
     // in every tier (denied in sandbox, allowed in dev, denied in prod).
-    expect(rows.map((row) => [row.security.trustTier, row.security.postureLabel])).toEqual([
+    // #592 added `session:control:kill` following the same tier pattern:
+    // allowed in dev, denied in sandbox + prod.
+    expect(
+      rows.map((row) => [row.security.trustTier, row.security.postureLabel])
+    ).toEqual([
       ['sandbox', 'allow 1 · challenge 0 · deny 16'],
-      ['dev', 'allow 10 · challenge 0 · deny 7'],
+      ['dev', 'allow 11 · challenge 0 · deny 6'],
       ['prod', 'allow 1 · challenge 2 · deny 14'],
     ]);
     expect(rows[2].security).toMatchObject({
@@ -320,7 +328,8 @@ describe('hub node dashboard state', () => {
       policyRef: null,
       postureLabel: 'policy unavailable · capability grants hidden',
       highRiskLabel: 'audit: cli only · relay-ide audit verify',
-      auditLabel: 'audit visibility: run relay-ide audit verify --db ~/.config/relay-ide/security-audit.db',
+      auditLabel:
+        'audit visibility: run relay-ide audit verify --db ~/.config/relay-ide/security-audit.db',
     });
   });
 
@@ -342,7 +351,10 @@ describe('hub node dashboard state', () => {
             state: 'trusted',
             level: 'dev',
             tier: 'dev',
-            policy: { ...policy('superseded-node'), supersededBy: 'acl:superseding:1.0' },
+            policy: {
+              ...policy('superseded-node'),
+              supersededBy: 'acl:superseding:1.0',
+            },
           },
         }),
       ],
@@ -358,7 +370,11 @@ describe('hub node dashboard state', () => {
       `policy superseded · deny ${RELAY_CAPABILITY_BITS.length}`,
     ]);
     expect(rows.map((row) => row.security.tone)).toEqual(['danger', 'danger']);
-    expect(rows.every((row) => row.security.denyBits.length === RELAY_CAPABILITY_BITS.length)).toBe(true);
+    expect(
+      rows.every(
+        (row) => row.security.denyBits.length === RELAY_CAPABILITY_BITS.length
+      )
+    ).toBe(true);
   });
 
   it('summarizes which machines can currently do work', () => {
