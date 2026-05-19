@@ -24,32 +24,39 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 
 ## Documentation Map
 
-| Category         | Path                                  | When to look here                                                           |
-| ---------------- | ------------------------------------- | --------------------------------------------------------------------------- |
-| Docs index       | `docs/README.md`                      | Current source-of-truth docs vs historical plans/spikes                     |
-| Architecture     | `docs/ARCHITECTURE.md`                | Module boundaries, data flow, API routes, ADR rules                         |
-| Workbench        | `docs/WORKBENCH_BOUNDARY.md`          | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance          |
-| Visual Design    | `DESIGN.md`                           | Product framing, TUI aesthetic, colors, spacing, buttons                    |
-| Design           | `docs/DESIGN.md`                      | Backend patterns, auth flow, PTY management, session types                  |
-| Frontend         | `docs/FRONTEND.md`                    | React 19 components, state management (Zustand + TanStack Query)            |
-| Quality          | `docs/QUALITY.md`                     | Test runner, test files, isolation patterns                                 |
-| Review           | `docs/REVIEW_GUIDANCE.md`             | Review agent config, question bank, escape log                              |
-| Deployment       | `docs/references/deployment.md`       | Publishing + branching (nightly/master + tags)                              |
-| Dogfood recovery | `docs/references/dogfood-recovery.md` | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate |
-| Self-hosting     | `docs/SELF_HOSTING.md`                | Build Relay with Relay using isolated dev config/ports/tmux                 |
-| Security policy  | `docs/SECURITY_POLICY.md`             | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary |
-| Hub/node pkg     | `docs/RELAY_HUB_NODE_PACKAGING.md`    | Hub vs node command shape, npm package decision, install/update commands    |
-| Node bootstrap   | `docs/RELAY_NODE_BOOTSTRAP.md`        | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics |
-| Federated dev    | `docs/FEDERATED_DEV.md`               | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew  |
-| Federated Relay  | `docs/federated-relay.md`             | Hub/node architecture, pairing, routing, ADRs                               |
-| CLI gateway      | `docs/CLI_GATEWAY.md`                 | Versioned `relay-ide v1 ... --json` contract for external agent adapters    |
-| Learnings        | `docs/LEARNINGS.md`                   | Persistent cross-session learnings                                          |
-| Project skills   | `.chalk/skills/<name>/SKILL.md`       | Repo-local skills (see §Skills)                                             |
-| Work tracking    | GitHub Issues                         | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                     |
+| Category         | Path                                   | When to look here                                                                              |
+| ---------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Docs index       | `docs/README.md`                       | Current source-of-truth docs vs historical plans/spikes                                        |
+| Architecture     | `docs/ARCHITECTURE.md`                 | Module boundaries, data flow, API routes, ADR rules                                            |
+| Workbench        | `docs/WORKBENCH_BOUNDARY.md`           | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance                             |
+| Visual Design    | `DESIGN.md`                            | Product framing, TUI aesthetic, colors, spacing, buttons                                       |
+| Design           | `docs/DESIGN.md`                       | Backend patterns, auth flow, PTY management, session types                                     |
+| Frontend         | `docs/FRONTEND.md`                     | React 19 components, state management (Zustand + TanStack Query)                               |
+| Quality          | `docs/QUALITY.md`                      | Test runner, test files, isolation patterns                                                    |
+| Review           | `docs/REVIEW_GUIDANCE.md`              | Review agent config, question bank, escape log                                                 |
+| Deployment       | `docs/references/deployment.md`        | Publishing + branching (nightly/master + tags)                                                 |
+| Devbox deploy    | `docs/references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene        |
+| Dogfood recovery | `docs/references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate                    |
+| Self-hosting     | `docs/SELF_HOSTING.md`                 | Build Relay with Relay using isolated dev config/ports/tmux                                    |
+| Security policy  | `docs/SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary                    |
+| Hub/node pkg     | `docs/RELAY_HUB_NODE_PACKAGING.md`     | Hub vs node command shape, npm package decision, install/update commands                       |
+| Node bootstrap   | `docs/RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics                    |
+| WSL2 nodes       | `docs/WSL2_RELAY_NODE_SUPPORT.md`      | Windows/WSL2 node bootstrap, service mode, known limits                                        |
+| Federated dev    | `docs/FEDERATED_DEV.md`                | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew                     |
+| Federated Relay  | `docs/federated-relay.md`              | Hub/node architecture, pairing, routing, ADRs                                                  |
+| CLI gateway      | `docs/CLI_GATEWAY.md`                  | Versioned `relay-ide v1 ... --json` contract for external agent adapters                       |
+| Web chat         | `docs/WEB_CHAT.md`                     | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)            |
+| Provider guide   | `docs/provider-guide.md`               | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)          |
+| ADRs             | `docs/adrs/`                           | Accepted ADRs (latest: ADR-015 core primitives, ADR-016 node isolation, ADR-017 brain-as-peer) |
+| Learnings        | `docs/LEARNINGS.md`                    | Persistent cross-session learnings                                                             |
+| Project skills   | `.chalk/skills/<name>/SKILL.md`        | Repo-local skills (see §Skills)                                                                |
+| Work tracking    | GitHub Issues                          | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                                        |
 
 ## Product Vocabulary
 
 Use the six-layer vocabulary when naming IA work: View → Workspace → Project → Instance → Bench → Tab. Current implementation is still incremental: a Workspace is a grouping/config layer (`workspaces`, repo membership, settings), not a synonym for a repo; repo/worktree bindings are optional session/tab context.
+
+Workbench nouns (per `docs/WORKBENCH_BOUNDARY.md`, epic #552) overlay this tree without replacing it: `WorkContext` is the durable envelope tying task/repo/worktree/session/artifacts together; `Actor`, `Session`, `Node`, `TaskRef`, `RepoInstance`, `WorktreeInstance`, `Artifact`, `AuditEvent`, and `CapabilityGrant` are the shared identity/control/audit primitives. `RepoInstance` is the git-specific Instance shape; `WorktreeInstance` is the git-specific Bench shape. `Session.controlMode` is `agent-driven | human-driven | co-driven` (#470/#493) with `ControlActor` identity; raw keystrokes/bytes never leave the source system. Active Work is the federated read model exposing these across nodes.
 
 ## Design System
 
@@ -66,7 +73,9 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 
 ## Key Patterns
 
-- Hub/node is the current architecture direction: the hub owns the web UI; nodes expose local capabilities and PTY/session execution through hub-mediated links.
+- Hub/node is the current architecture direction: the hub owns the web UI; nodes expose local capabilities and PTY/session execution through hub-mediated links. The local hub is itself a node (`server/local-node.ts`).
+- External agent brains (Hermes, Claude, Codex, custom) are hub-level session peers via the versioned CLI gateway (`relay-ide v1 ... --json`), not protocol clients on `/hub/node-link`. See ADR-017 and `docs/CLI_GATEWAY.md`.
+- Routed PTY sessions are scoped, revocable, and capability-gated (#426/#427). Mode changes and human interventions on `agent-driven` tabs emit hash-chained audit envelopes (#470/#499); raw bytes stay on the source system.
 - Agent frameworks are configurable; built-ins include Claude Code, Codex, OpenCode, and Hermes. Do not hard-code Claude-only assumptions in new docs or UI copy.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
