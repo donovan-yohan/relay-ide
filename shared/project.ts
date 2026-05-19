@@ -80,6 +80,23 @@ export function parseProjectId(id: ProjectId): ProjectIdentity | null {
   const sep = rest.indexOf(':');
   if (sep <= 0 || sep === rest.length - 1) return null;
   const kind = rest.slice(0, sep);
+
+  // directory kind has a two-part payload: <encoded-nodeId>:<encoded-localPath>
+  // Split on the raw (still-encoded) slice to avoid double-decoding either part.
+  if (kind === 'directory') {
+    const raw = rest.slice(sep + 1);
+    const innerSep = raw.indexOf(':');
+    if (innerSep <= 0 || innerSep === raw.length - 1) return null;
+    try {
+      const nodeId = decodeURIComponent(raw.slice(0, innerSep));
+      const localPath = decodeURIComponent(raw.slice(innerSep + 1));
+      if (!hasValue(nodeId) || !hasValue(localPath)) return null;
+      return { kind: 'directory', nodeId, localPath };
+    } catch {
+      return null;
+    }
+  }
+
   let payload: string;
   try {
     payload = decodeURIComponent(rest.slice(sep + 1));
@@ -90,19 +107,6 @@ export function parseProjectId(id: ProjectId): ProjectIdentity | null {
   switch (kind) {
     case 'repo':
       return { kind: 'repo', remote: payload };
-    case 'directory': {
-      // payload for directory is "<nodeId>:<localPath>" (both URI-encoded)
-      const innerSep = payload.indexOf(':');
-      if (innerSep <= 0 || innerSep === payload.length - 1) return null;
-      try {
-        const nodeId = decodeURIComponent(payload.slice(0, innerSep));
-        const localPath = decodeURIComponent(payload.slice(innerSep + 1));
-        if (!hasValue(nodeId) || !hasValue(localPath)) return null;
-        return { kind: 'directory', nodeId, localPath };
-      } catch {
-        return null;
-      }
-    }
     case 'node':
       return { kind: 'node', nodeId: payload };
     case 'agent':

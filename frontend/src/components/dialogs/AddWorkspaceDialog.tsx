@@ -5,6 +5,7 @@ import React, {
   useState,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { createLogger } from '../../lib/logger.js';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import FileBrowser, { type FileBrowserHandle } from '../FileBrowser.js';
@@ -37,6 +38,8 @@ interface Props {
 
 const LOCAL_NODE_VALUE = DEFAULT_LOCAL_NODE_ID;
 
+const logger = createLogger('add-workspace-dialog');
+
 const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
   function AddWorkspaceDialog({ onWorkspacesAdded, onClose }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
@@ -48,6 +51,8 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
     const [nodes, setNodes] = useState<HubNodeSummary[]>([]);
     const [selectedNodeId, setSelectedNodeId] = useState<string>(LOCAL_NODE_VALUE);
     const [remoteCwd, setRemoteCwd] = useState('');
+    const [fetchNodesError, setFetchNodesError] = useState<string | null>(null);
+    const [partialErrors, setPartialErrors] = useState<{ path: string; error: string }[]>([]);
 
     const isRemote = selectedNodeId !== LOCAL_NODE_VALUE;
     const selectedRemoteNode = isRemote
@@ -62,12 +67,21 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
         setSubmitting(false);
         setSelectedNodeId(LOCAL_NODE_VALUE);
         setRemoteCwd('');
+        setFetchNodesError(null);
+        setPartialErrors([]);
         fileBrowserRef.current?.reset();
         // Fetch nodes for the host picker
-        void fetchHubNodes().then((result) => {
-          queryClient.setQueryData(['hub-nodes'], result);
-          setNodes(result);
-        });
+        void fetchHubNodes()
+          .then((result) => {
+            queryClient.setQueryData(['hub-nodes'], result);
+            setNodes(result);
+          })
+          .catch((err: unknown) => {
+            logger.warn('fetchHubNodes failed', err);
+            setFetchNodesError(
+              'could not list remote hosts — only this host is available.'
+            );
+          });
         shellRef.current?.open();
       },
       close() {
@@ -88,41 +102,47 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
       }
     }
 
+    async function handleRemoteSubmit(): Promise<boolean> {
+      const cwd = cleanCwd(remoteCwd);
+      if (!cwd) {
+        setError('cwd is required for remote node sessions');
+        return false;
+      }
+      const { cols, rows } = estimateTerminalDimensions(
+        useUiStore.getState().terminalFontSize
+      );
+      const { session, error: sessionError } = await createAgentSession({
+        nodeId: selectedNodeId,
+        type: 'terminal',
+        mode: 'pty',
+        cwd,
+        sessionLane: 'remote-cwd',
+        cols,
+        rows,
+      });
+      if (sessionError && !session) {
+        setError(
+          sessionError instanceof Error
+            ? sessionError.message
+            : 'Failed to create remote terminal'
+        );
+        return false;
+      }
+      rememberRemoteCwd(selectedNodeId, cwd);
+      shellRef.current?.close();
+      return true;
+    }
+
     async function handleSubmit() {
       setSubmitting(true);
       setError('');
 
       try {
         if (isRemote) {
-          const cwd = cleanCwd(remoteCwd);
-          if (!cwd) {
-            setError('cwd is required for remote node sessions');
+          const ok = await handleRemoteSubmit();
+          if (!ok) {
             setSubmitting(false);
-            return;
           }
-          const { cols, rows } = estimateTerminalDimensions(
-            useUiStore.getState().terminalFontSize
-          );
-          const { session, error: sessionError } = await createAgentSession({
-            nodeId: selectedNodeId,
-            type: 'terminal',
-            mode: 'pty',
-            cwd,
-            sessionLane: 'remote-cwd',
-            cols,
-            rows,
-          });
-          if (sessionError && !session) {
-            setError(
-              sessionError instanceof Error
-                ? sessionError.message
-                : 'Failed to create remote terminal'
-            );
-            setSubmitting(false);
-            return;
-          }
-          rememberRemoteCwd(selectedNodeId, cwd);
-          shellRef.current?.close();
         } else {
           if (selectedPaths.length === 0) {
             setSubmitting(false);
@@ -138,14 +158,31 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             return;
           }
 
+          if (result.errors.length > 0 && result.added.length > 0) {
+            // partial success — notify about added paths but keep dialog open
+            // so the user can see and dismiss the failures
+            onWorkspacesAdded(result.added.map((a) => a.path));
+            setPartialErrors(result.errors);
+            setSubmitting(false);
+            return;
+          }
+
           if (result.added.length > 0) {
             onWorkspacesAdded(result.added.map((a) => a.path));
           }
 
           shellRef.current?.close();
         }
-      } catch {
-        setError(isRemote ? 'Failed to create remote terminal.' : 'Failed to add workspaces.');
+      } catch (err) {
+        logger.error(
+          isRemote ? 'failed to create remote terminal' : 'failed to add workspaces',
+          err
+        );
+        setError(
+          isRemote
+            ? `failed to create remote terminal: ${err instanceof Error ? err.message : String(err)}`
+            : `failed to add workspaces: ${err instanceof Error ? err.message : String(err)}`
+        );
       } finally {
         setSubmitting(false);
       }
@@ -212,6 +249,9 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
                 );
               })}
             </select>
+            {fetchNodesError && (
+              <p className="add-workspace-error-msg">{fetchNodesError}</p>
+            )}
           </div>
 
           {/* Block 2 — Path picker */}
@@ -269,6 +309,20 @@ const AddWorkspaceDialog = forwardRef<AddWorkspaceDialogHandle, Props>(
             </div>
           )}
 
+          {partialErrors.length > 0 && (
+            <div className="add-workspace-partial-errors">
+              <p className="add-workspace-error-msg">
+                some paths could not be added:
+              </p>
+              <ul className="add-workspace-partial-errors-list">
+                {partialErrors.map((e) => (
+                  <li key={e.path} className="add-workspace-error-msg">
+                    {e.path}: {e.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {error && <p className="add-workspace-error-msg">{error}</p>}
         </div>
       </DialogShell>

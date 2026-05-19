@@ -853,7 +853,7 @@ export function validateSessionCreateRequest(
   } else {
     const anchor = repoPath ?? cwd ?? '';
     if (!configured.has(anchor)) {
-      res.status(400).json({ error: 'terminal cwd must be a configured project path' });
+      res.status(400).json({ error: 'terminal sessions require a cwd that is a configured project path' });
       return false;
     }
   }

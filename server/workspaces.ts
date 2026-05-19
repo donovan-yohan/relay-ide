@@ -61,6 +61,29 @@ import {
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
 
+// ── Typed git infrastructure errors ──────────────────────────────────────────
+
+export class GitBinaryMissingError extends Error {
+  constructor() {
+    super('git binary not found');
+    this.name = 'GitBinaryMissingError';
+  }
+}
+
+export class PathInaccessibleError extends Error {
+  constructor(dirPath: string) {
+    super(`path inaccessible: ${dirPath}`);
+    this.name = 'PathInaccessibleError';
+  }
+}
+
+export class GitInfraError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GitInfraError';
+  }
+}
+
 const GIT_SYMBOLIC_REF = 'symbolic-ref';
 const ERR_ON_WORKSPACES_CHANGED = 'onWorkspacesChanged failed:';
 const ERR_PATH_REQUIRED = 'path query parameter is required';
@@ -405,6 +428,14 @@ export async function validateWorkspacePath(rawPath: string): Promise<string> {
 /**
  * Detects whether a directory is the root of a git repository and, if so,
  * what the default branch name is.
+ *
+ * Throws typed errors for infrastructure failures:
+ *   - GitBinaryMissingError  — git binary not found (ENOENT on the binary itself)
+ *   - PathInaccessibleError  — directory cannot be read (EACCES)
+ *   - GitInfraError          — unexpected OS-level failure
+ *
+ * Returns { isGitRepo: false, defaultBranch: null } only for legit
+ * "not a git repository" exits (git exit 128 with the expected stderr).
  */
 export async function detectGitRepo(
   dirPath: string,
@@ -412,8 +443,39 @@ export async function detectGitRepo(
 ): Promise<{ isGitRepo: boolean; defaultBranch: string | null }> {
   try {
     await execAsync('git', ['rev-parse', '--git-dir'], { cwd: dirPath });
-  } catch {
-    return { isGitRepo: false, defaultBranch: null };
+  } catch (err: unknown) {
+    const e = err as NodeJS.ErrnoException & { stderr?: string; code?: string | number };
+
+    // ENOENT can mean the git binary is missing OR the cwd path doesn't exist.
+    // Distinguish: if the error message/path references the git binary itself
+    // (spawn error with no stderr), it's a missing binary.
+    if (e.code === 'ENOENT') {
+      // A spawn failure for the binary has no stderr; a missing-directory
+      // failure from git has stderr containing "not a git repository" or
+      // similar. If there is no stderr at all, treat it as binary missing.
+      const hasStderr = typeof e.stderr === 'string' && e.stderr.trim().length > 0;
+      if (!hasStderr) {
+        throw new GitBinaryMissingError();
+      }
+      // cwd path does not exist — treat as not-a-git-repo (path existence
+      // validated upstream by validateWorkspacePath; here we return gracefully).
+      return { isGitRepo: false, defaultBranch: null };
+    }
+
+    if (e.code === 'EACCES') {
+      throw new PathInaccessibleError(dirPath);
+    }
+
+    // "not a git repository" → git exits with code 128 and writes to stderr.
+    // The spawned-process error has a numeric `code` of 128 (exit status).
+    if (typeof e.code === 'number' && e.code === 128) {
+      return { isGitRepo: false, defaultBranch: null };
+    }
+
+    // For any other non-zero exit or OS error, surface as GitInfraError.
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn('detectGitRepo: unexpected error for', dirPath, message);
+    throw new GitInfraError(message);
   }
 
   // Attempt to determine the default branch from remote HEAD
@@ -512,14 +574,48 @@ function expandTilde(p: string): string {
 
 /**
  * Checks whether a resolved path is a git repository.
- * Returns { ok: true } if it is, or { ok: false, status: 400, body } if not.
- * Call at the top of any route handler that requires a git repo.
+ * Returns { ok: true } if it is.
+ * Returns { ok: false, status, body } for any failure — callers must check
+ * `ok` and forward the status + body to the HTTP response.
+ *
+ * Status mapping:
+ *   400 NOT_GIT            — valid directory, not a git repo
+ *   403 PATH_DENIED        — EACCES on the path
+ *   500 GIT_UNAVAILABLE    — git binary missing
+ *   500 GIT_ERROR          — unexpected infrastructure error
  */
 export async function requireGitRepo(
   resolvedPath: string,
   execAsync: typeof execFileAsync = execFileAsync
-): Promise<{ ok: true } | { ok: false; status: 400; body: { error: string; code: string } }> {
-  const { isGitRepo } = await detectGitRepo(resolvedPath, execAsync);
+): Promise<
+  | { ok: true }
+  | { ok: false; status: 400 | 403 | 500; body: { error: string; code: string; message?: string } }
+> {
+  let isGitRepo: boolean;
+  try {
+    ({ isGitRepo } = await detectGitRepo(resolvedPath, execAsync));
+  } catch (err: unknown) {
+    if (err instanceof GitBinaryMissingError) {
+      return {
+        ok: false,
+        status: 500,
+        body: { error: 'git unavailable', code: 'GIT_UNAVAILABLE' },
+      };
+    }
+    if (err instanceof PathInaccessibleError) {
+      return {
+        ok: false,
+        status: 403,
+        body: { error: 'path inaccessible', code: 'PATH_DENIED' },
+      };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 500,
+      body: { error: 'git error', code: 'GIT_ERROR', message },
+    };
+  }
   if (!isGitRepo) {
     return {
       ok: false,

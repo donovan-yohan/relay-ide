@@ -89,9 +89,10 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.label).toBe('m1');
   });
 
-  it('allows version-skew nodes for terminal sessions (shell+tmux are the only gates)', () => {
-    // nodeShellBlockReason does not check protocol version — a version-skew node
-    // that has shell+tmux available can still host a terminal session.
+  it('blocks version-skew nodes even when shell+tmux are available', () => {
+    // nodeShellBlockReason checks version state before shell+tmux — a version-skew
+    // node is disabled pre-click so the user gets feedback before attempting to
+    // open a session.
     const choices = buildChoices([
       node({
         nodeId: 'skew',
@@ -104,12 +105,14 @@ describe('TerminalNodePicker buildChoices', () => {
       }),
     ]);
     expect(choices[1]).toMatchObject({
-      disabled: false,
+      disabled: true,
+      disabledReason: 'node has version skew',
     });
   });
 
-  it('allows incompatible-version nodes for terminal sessions when shell+tmux are available', () => {
-    // Same reasoning: terminal sessions only require shell+tmux, not version parity.
+  it('blocks incompatible-version nodes even when shell+tmux are available', () => {
+    // Same reasoning: incompatible protocol is infrastructure-level; the hub will
+    // reject a routed session anyway, so we block pre-click.
     const choices = buildChoices([
       node({
         nodeId: 'incompat',
@@ -122,7 +125,8 @@ describe('TerminalNodePicker buildChoices', () => {
       }),
     ]);
     expect(choices[1]).toMatchObject({
-      disabled: false,
+      disabled: true,
+      disabledReason: 'node protocol is incompatible',
     });
   });
 

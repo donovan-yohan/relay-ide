@@ -32,6 +32,14 @@ afterAll(() => {
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+/** Simulate a git exit-128 "not a git repository" error, as node's execFile produces. */
+function makeGitExit128Error(): Error & { code: number; stderr: string } {
+  const err = new Error('not a git repository') as Error & { code: number; stderr: string };
+  err.code = 128;
+  err.stderr = 'fatal: not a git repository (or any of the parent directories): .git';
+  return err;
+}
+
 function makeExec(gitDir: string): ExecFn {
   // Simulates: git rev-parse --git-dir succeeds for gitDir, fails for others
   return async (file: string, args: string[], opts?: { cwd?: string }) => {
@@ -39,19 +47,19 @@ function makeExec(gitDir: string): ExecFn {
       if (opts?.cwd === gitDir) {
         return { stdout: '.git', stderr: '' } as ExecResult;
       }
-      throw new Error('not a git repository');
+      throw makeGitExit128Error();
     }
     if (file === 'git' && args[0] === 'symbolic-ref') {
       if (opts?.cwd === gitDir) {
         return { stdout: 'main\n', stderr: '' } as ExecResult;
       }
-      throw new Error('not a git repository');
+      throw makeGitExit128Error();
     }
     if (file === 'git' && args[0] === 'remote') {
       if (opts?.cwd === gitDir) {
         return { stdout: '', stderr: '' } as ExecResult;
       }
-      throw new Error('not a git repository');
+      throw makeGitExit128Error();
     }
     return { stdout: '', stderr: '' } as ExecResult;
   };
@@ -172,6 +180,57 @@ describe('GET /workspaces/current-branch — NOT_GIT guard', () => {
     try {
       const params = new URLSearchParams({ path: nonGitPath });
       const res = await fetch(`${server.url}/workspaces/current-branch?${params}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe('NOT_GIT');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('GET /workspaces/divergence — NOT_GIT guard', () => {
+  it('returns 400 with code NOT_GIT for a non-git configured path', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: nonGitPath });
+      const res = await fetch(`${server.url}/workspaces/divergence?${params}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe('NOT_GIT');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('GET /workspaces/changed-files — NOT_GIT guard', () => {
+  it('returns 400 with code NOT_GIT for a non-git configured path', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: nonGitPath });
+      const res = await fetch(`${server.url}/workspaces/changed-files?${params}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe('NOT_GIT');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('GET /workspaces/file-diff — NOT_GIT guard', () => {
+  it('returns 400 with code NOT_GIT for a non-git configured path', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: nonGitPath, file: 'README.md' });
+      const res = await fetch(`${server.url}/workspaces/file-diff?${params}`);
       expect(res.status).toBe(400);
       const body = (await res.json()) as { code: string };
       expect(body.code).toBe('NOT_GIT');

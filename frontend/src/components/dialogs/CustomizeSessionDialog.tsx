@@ -289,6 +289,9 @@ export function nodeShellBlockReason(
   if (node.status === 'offline') return 'node is offline';
   if (node.status === 'stale') return 'heartbeat is stale';
   if (node.status === 'revoked') return 'node is revoked';
+  const versionState = node.version?.state;
+  if (versionState === 'incompatible') return 'node protocol is incompatible';
+  if (versionState === 'version-skew') return 'node has version skew';
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
   const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');

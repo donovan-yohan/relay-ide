@@ -757,7 +757,7 @@ function TerminalAreaContent({
         <>
           {activeRepoPath &&
             activeSession?.repoPath === activeRepoPath &&
-            activeWorkspace?.kind !== 'directory' && (
+            activeWorkspace?.kind === 'repo' && (
             <PrTopBar
               workspacePath={activeRepoPath}
               utilityRailWorkspacePath={utilityRailStateKey}

@@ -75,6 +75,21 @@
   margin: 0;
 }
 
+.add-workspace-partial-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-workspace-partial-errors-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .add-workspace-save-row {
   display: flex;
   align-items: center;

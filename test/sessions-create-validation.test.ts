@@ -152,7 +152,23 @@ describe('validateSessionCreateRequest', () => {
     );
     expect(result).toBe(false);
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: expect.stringContaining('configured') });
+    expect(res.body).toMatchObject({ error: 'terminal sessions require a cwd that is a configured project path' });
+  });
+
+  it('returns false with 400 for terminal session with all paths undefined (fail-closed)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      undefined,
+      'terminal',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: 'terminal sessions require a cwd that is a configured project path' });
   });
 
   it('defaults to agent type when type is undefined (requires repoPath)', () => {

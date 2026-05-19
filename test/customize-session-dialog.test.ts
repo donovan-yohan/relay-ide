@@ -702,6 +702,32 @@ describe('terminal vs agent node eligibility', () => {
     expect(nodeShellBlockReason(offlineNode)).toBe('node is offline');
     expect(nodeAgentBlockReason(offlineNode, 'hermes')).toBe('node is offline');
   });
+
+  it('blocks version-skew node in both terminal and agent mode', () => {
+    const skewNode = remoteNode({
+      version: {
+        state: 'version-skew',
+        nodeProtocolVersion: '1.1',
+        hubProtocolVersion: '1.0',
+      },
+    });
+
+    expect(nodeShellBlockReason(skewNode)).toBe('node has version skew');
+    expect(nodeAgentBlockReason(skewNode, 'hermes')).toBe('node has version skew');
+  });
+
+  it('blocks incompatible node in both terminal and agent mode', () => {
+    const incompatNode = remoteNode({
+      version: {
+        state: 'incompatible',
+        nodeProtocolVersion: '2.0',
+        hubProtocolVersion: '1.0',
+      },
+    });
+
+    expect(nodeShellBlockReason(incompatNode)).toBe('node protocol is incompatible');
+    expect(nodeAgentBlockReason(incompatNode, 'hermes')).toBe('node protocol is incompatible');
+  });
 });
 
 describe('directory-kind workspace support', () => {
