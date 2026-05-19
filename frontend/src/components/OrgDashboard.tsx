@@ -16,6 +16,7 @@ import type {
 } from '../lib/types.js';
 import TicketsPanel from './TicketsPanel.js';
 import ActiveWorkSurface from './ActiveWorkSurface.js';
+import SecurityAuditPanel from './SecurityAuditPanel.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { TuiButton } from './TuiButton.js';
 import { PrRow } from './PrRow.js';
@@ -28,7 +29,7 @@ export interface OrgDashboardProps {
   onPrAction: (pr: PullRequest) => void;
 }
 
-type ActiveTab = 'active-work' | 'prs' | 'tickets';
+type ActiveTab = 'active-work' | 'prs' | 'tickets' | 'audit';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -436,12 +437,24 @@ export function OrgDashboard({
         >
           tickets
         </button>
+        <button
+          className={[
+            'tab-btn',
+            activeTab === 'audit' ? 'tab-btn--active' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => setActiveTab('audit')}
+        >
+          audit
+        </button>
       </div>
       {activeTab === 'active-work' && <ActiveWorkSurface />}
       {activeTab === 'prs' && (
         <PrsTab onOpenPrSession={onOpenPrSession} onPrAction={onPrAction} />
       )}
       {activeTab === 'tickets' && <TicketsPanel />}
+      {activeTab === 'audit' && <SecurityAuditPanel />}
     </div>
   );
 }

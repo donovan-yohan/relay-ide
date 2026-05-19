@@ -10,6 +10,7 @@ import {
 import {
   deriveHubNodeDashboardRows,
   hubNodeDashboardSummary,
+  selectProdTierNodes,
 } from '../../frontend/src/lib/state/node-dashboard.js';
 import { deriveConfirmationSecurityVisibility } from '../../frontend/src/lib/state/security-visibility.js';
 import type { ConfirmationChallenge } from '../../frontend/src/lib/api.js';
@@ -327,9 +328,8 @@ describe('hub node dashboard state', () => {
       trustTier: 'unknown',
       policyRef: null,
       postureLabel: 'policy unavailable · capability grants hidden',
-      highRiskLabel: 'audit: cli only · relay-ide audit verify',
-      auditLabel:
-        'audit visibility: run relay-ide audit verify --db ~/.config/relay-ide/security-audit.db',
+      highRiskLabel: 'audit: open audit tab',
+      auditLabel: 'audit visibility: open audit tab',
     });
   });
 
@@ -396,6 +396,102 @@ describe('hub node dashboard state', () => {
     expect(summary).toBe(
       '1/3 nodes ready · 1 blocked by capabilities · 1 offline/stale · 0 policy unavailable · 0 prod high-risk'
     );
+  });
+});
+
+describe('selectProdTierNodes', () => {
+  it('returns empty array for empty input', () => {
+    expect(selectProdTierNodes([])).toEqual([]);
+  });
+
+  it('returns empty array when the only node is dev-tier', () => {
+    const devNode = node({
+      trust: { state: 'trusted', level: 'dev', tier: 'dev', policy: policy('node-1', 'dev') },
+    });
+    expect(selectProdTierNodes([devNode])).toEqual([]);
+  });
+
+  it('returns a prod-tier online node', () => {
+    const prodNode = node({
+      nodeId: 'prod-1',
+      status: 'online',
+      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-1', 'prod') },
+    });
+    expect(selectProdTierNodes([prodNode])).toEqual([prodNode]);
+  });
+
+  it('excludes revoked prod-tier nodes', () => {
+    const revokedProd = node({
+      nodeId: 'prod-revoked',
+      status: 'revoked',
+      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-revoked', 'prod') },
+    });
+    expect(selectProdTierNodes([revokedProd])).toEqual([]);
+  });
+
+  it('returns only live prod nodes from a mixed set', () => {
+    const devNode = node({
+      nodeId: 'dev-1',
+      status: 'online',
+      trust: { state: 'trusted', level: 'dev', tier: 'dev', policy: policy('dev-1', 'dev') },
+    });
+    const prodNode = node({
+      nodeId: 'prod-1',
+      status: 'online',
+      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-1', 'prod') },
+    });
+    const revokedProd = node({
+      nodeId: 'prod-revoked',
+      status: 'revoked',
+      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-revoked', 'prod') },
+    });
+    const result = selectProdTierNodes([devNode, prodNode, revokedProd]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.nodeId).toBe('prod-1');
+  });
+
+  it('matches prod nodes via trust.policy.trustTier fallback when trust.tier is absent', () => {
+    const noTierNode = node({
+      nodeId: 'prod-fallback',
+      status: 'online',
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        // intentionally no `tier` field — only policy carries it
+        policy: policy('prod-fallback', 'prod'),
+      },
+    });
+    // Strip out `tier` so the fallback path is exercised
+    delete (noTierNode.trust as Record<string, unknown>)['tier'];
+    expect(selectProdTierNodes([noTierNode])).toEqual([noTierNode]);
+  });
+
+  it('excludes prod node with policy.revokedAt set (revoked policy)', () => {
+    const revokedPolicyNode = node({
+      nodeId: 'prod-revoked-policy',
+      status: 'online',
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: { ...policy('prod-revoked-policy', 'prod'), revokedAt: createdAt },
+      },
+    });
+    expect(selectProdTierNodes([revokedPolicyNode])).toEqual([]);
+  });
+
+  it('excludes prod node with policy.supersededBy set', () => {
+    const supersededNode = node({
+      nodeId: 'prod-superseded',
+      status: 'online',
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: { ...policy('prod-superseded', 'prod'), supersededBy: 'acl:replacement:1.0' },
+      },
+    });
+    expect(selectProdTierNodes([supersededNode])).toEqual([]);
   });
 });
 

@@ -7,9 +7,11 @@ import {
   classifySecurityAuditWriteFailure,
   hashAuditMaterial,
   redactAuditValue,
+  redactPeerForBrowser,
   securityAuditEntryForTabControlEvent,
   SECURITY_AUDIT_EVENT_TYPES,
   type SecurityAuditEntryInput,
+  type SecurityAuditPeerIdentity,
 } from '../shared/security-audit.js';
 import {
   SecurityAuditLog,
@@ -412,6 +414,97 @@ describe('security audit primitives', () => {
     });
   });
 
+  describe('listBefore', () => {
+    it('returns empty rows and null nextBeforeSequence for an empty db', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      const result = log.listBefore(null, 50);
+      expect(result.rows).toEqual([]);
+      expect(result.nextBeforeSequence).toBeNull();
+      log.close();
+    });
+
+    it('returns newest N rows first when called with null (from head)', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      for (let i = 1; i <= 5; i++) {
+        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+      }
+      const result = log.listBefore(null, 3);
+      expect(result.rows).toHaveLength(3);
+      // newest-first: sequences 5, 4, 3
+      expect(result.rows[0].sequence).toBe(5);
+      expect(result.rows[2].sequence).toBe(3);
+      expect(result.nextBeforeSequence).toBe(3);
+      log.close();
+    });
+
+    it('paginates correctly: listBefore(3, 100) returns rows 2,1 with nextBeforeSequence:1; listBefore(1,100) returns empty+null', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      for (let i = 1; i <= 5; i++) {
+        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+      }
+      const result = log.listBefore(3, 100);
+      expect(result.rows).toHaveLength(2);
+      // DESC: sequences 2, 1
+      expect(result.rows[0].sequence).toBe(2);
+      expect(result.rows[1].sequence).toBe(1);
+      expect(result.nextBeforeSequence).toBe(1);
+
+      // fetching before sequence 1 returns empty + null (terminal page)
+      const terminal = log.listBefore(1, 100);
+      expect(terminal.rows).toHaveLength(0);
+      expect(terminal.nextBeforeSequence).toBeNull();
+      log.close();
+    });
+
+    it('caps limit at 200 when limit > 200 is requested', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      for (let i = 1; i <= 5; i++) {
+        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+      }
+      // Should not throw; limit capped at 200 internally
+      const result = log.listBefore(null, 9999);
+      expect(result.rows).toHaveLength(5);
+      log.close();
+    });
+
+    it('throws for negative beforeSequence', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      expect(() => log.listBefore(-1, 50)).toThrow(
+        /beforeSequence must be a non-negative finite number or null/
+      );
+      log.close();
+    });
+
+    it('throws for non-finite beforeSequence', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      expect(() => log.listBefore(Infinity, 50)).toThrow(
+        /beforeSequence must be a non-negative finite number or null/
+      );
+      log.close();
+    });
+  });
+
+  describe('head', () => {
+    it('returns latestSequence 0 and null latestHash for an empty db', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      const h = log.head();
+      expect(h).toEqual({ latestSequence: 0, latestHash: null });
+      log.close();
+    });
+
+    it('returns the checkpoint values matching verify().lastHash after appends', () => {
+      const log = new SecurityAuditLog(tmpDbPath());
+      log.append(sampleEvent({ eventId: 'evt-1' }));
+      const second = log.append(sampleEvent({ eventId: 'evt-2', correlationId: 'corr-2' }));
+      const h = log.head();
+      const v = log.verify();
+      expect(h.latestSequence).toBe(2);
+      expect(h.latestHash).toBe(second.entryHash);
+      expect(h.latestHash).toBe(v.lastHash);
+      log.close();
+    });
+  });
+
   it('classifies audit write failures as closed for prod/destructive and degraded for low-tier reads', () => {
     expect(
       classifySecurityAuditWriteFailure({
@@ -431,5 +524,45 @@ describe('security audit primitives', () => {
         requiredBits: ['rpc:fs:read'],
       })
     ).toMatchObject({ mode: 'degraded' });
+  });
+});
+
+describe('redactPeerForBrowser', () => {
+  it('removes credentialId from a peer object', () => {
+    const peer: SecurityAuditPeerIdentity = {
+      kind: 'node',
+      nodeId: 'node-1',
+      credentialId: 'cred-secret-xyz',
+      displayName: 'Test Node',
+    };
+    const result = redactPeerForBrowser(peer);
+    expect(result).not.toHaveProperty('credentialId');
+    expect(result.nodeId).toBe('node-1');
+    expect(result.displayName).toBe('Test Node');
+    expect(result.kind).toBe('node');
+  });
+
+  it('does not mutate the original peer object (pure function)', () => {
+    const peer: SecurityAuditPeerIdentity = {
+      kind: 'node',
+      nodeId: 'node-2',
+      credentialId: 'cred-should-remain',
+    };
+    redactPeerForBrowser(peer);
+    expect(peer.credentialId).toBeDefined();
+    expect(peer.credentialId).toBe('cred-should-remain');
+  });
+
+  it('is idempotent: passing an already-redacted peer returns an equivalent object without credentialId', () => {
+    const peer: SecurityAuditPeerIdentity = {
+      kind: 'node',
+      nodeId: 'node-3',
+      displayName: 'already clean',
+    };
+    const once = redactPeerForBrowser(peer);
+    const twice = redactPeerForBrowser(once);
+    expect(twice).not.toHaveProperty('credentialId');
+    expect(twice.nodeId).toBe('node-3');
+    expect(twice.displayName).toBe('already clean');
   });
 });

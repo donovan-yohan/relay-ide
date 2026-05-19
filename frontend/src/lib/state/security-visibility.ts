@@ -87,9 +87,9 @@ export function deriveNodeSecurityVisibility(node: HubNodeSummary): NodeSecurity
       challengeBits: [],
       denyBits: [],
       postureLabel: 'policy unavailable · capability grants hidden',
-      highRiskLabel: 'audit: cli only · relay-ide audit verify',
+      highRiskLabel: 'audit: open audit tab',
       tone: trustTier === 'prod' ? 'danger' : 'muted',
-      auditLabel: 'audit visibility: run relay-ide audit verify --db ~/.config/relay-ide/security-audit.db',
+      auditLabel: 'audit visibility: open audit tab',
     };
   }
 
@@ -107,7 +107,7 @@ export function deriveNodeSecurityVisibility(node: HubNodeSummary): NodeSecurity
       postureLabel: `${lifecycleDenyLabel} · deny ${RELAY_CAPABILITY_BITS.length}`,
       highRiskLabel: `${lifecycleDenyLabel}: backend denies all capabilities`,
       tone: 'danger',
-      auditLabel: 'audit visibility: cli only · relay-ide audit verify',
+      auditLabel: 'audit visibility: open audit tab',
     };
   }
   const handled = new Set<string>([...allowedBits, ...challengeBits]);
@@ -138,7 +138,7 @@ export function deriveNodeSecurityVisibility(node: HubNodeSummary): NodeSecurity
     postureLabel: `allow ${allowedBits.length} · challenge ${challengeBits.length} · deny ${denyBits.length}`,
     highRiskLabel,
     tone,
-    auditLabel: 'audit visibility: cli only · relay-ide audit verify',
+    auditLabel: 'audit visibility: open audit tab',
   };
 }
 
