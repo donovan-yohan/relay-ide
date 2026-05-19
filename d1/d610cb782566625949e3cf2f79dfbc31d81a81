@@ -1,0 +1,47 @@
+frontend/src/lib/api.ts
+  s_3e9de69a56e5c0::t_76c4f26145e8d3 1146-1175
+docs/DESIGN.md
+  s_3e9de69a56e5c0::t_b76fde633f76fc 102-109
+server/session-rename-resolver.ts
+  s_3e9de69a56e5c0::t_5a86bf6443969d 256-260,264,266
+  s_3e9de69a56e5c0::t_e746858b240832 1-17,19-24,53-233,255,261-263,265,267-403
+  s_3e9de69a56e5c0::t_4fc6f9993deed7 234-254
+  s_3e9de69a56e5c0::t_e27bde6803bbdc 18,25-52
+test/session-rename-resolver.test.ts
+  s_3e9de69a56e5c0::t_d7b5a11209eed3 21-23
+  s_3e9de69a56e5c0::t_c2d446a3e1db86 11-12,18-19,24-32,53,64
+  s_3e9de69a56e5c0::t_e6ebb3ebb6b001 1-10,13-17,20,55-61,81-85,98-103,105-123,126-134,136-174,177-185,187-218,220-227,229-230,232-239,244-246,248-257,259-268,270-279,281-296,298-299,301,309-311,313-327,329-336,338-346,348-354,356-363,367-369,371,380-382,397-413,415-424,426-433,435-436,438-520,522-530,532-541,543-545,547-572,673
+  s_3e9de69a56e5c0::t_bb7b2cd71ba20a 33-52,54,62-63,65-80,86-97,104,124-125,135,175-176,186,219,228,231,240-243,247,258,269,280,297,300,302-304,306-308,312,328,337,347,355,364-366,370,372-375,377-379,383-396,414,425,434,437,521,531,542,546,573-672
+server/types.ts
+  s_3e9de69a56e5c0::t_406ab5f7375662 544-554,569-580
+frontend/src/components/dialogs/SettingsDialog.tsx
+  s_3e9de69a56e5c0::t_d66c596a718912 36-38
+  s_3e9de69a56e5c0::t_11dd946fa95dd0 61,70
+  s_3e9de69a56e5c0::t_6b11f5235aded0 94-101,103
+  s_3e9de69a56e5c0::t_c137ab0fcf48d7 242-252,259
+  s_3e9de69a56e5c0::t_0bc1414871f401 557-573
+  s_3e9de69a56e5c0::t_a09b58315a71ba 126,134,136,144
+server/hooks.ts
+  s_3e9de69a56e5c0::t_5b83f489126abc 237-250,265-269,275,279-280
+  s_3e9de69a56e5c0::t_930c376983a740 9,11,20-23,51-54
+server/index.ts
+  s_3e9de69a56e5c0::t_ccc738ab55f9e9 2538-2560,2562-2574,2576-2578,2580-2601
+  s_3e9de69a56e5c0::t_c99f41a1110724 1567-1572
+  s_3e9de69a56e5c0::t_0581313ef235a2 2579
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "d1d610cb782566625949e3cf2f79dfbc31d81a81",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
