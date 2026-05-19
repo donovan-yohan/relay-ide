@@ -28,7 +28,7 @@ describe('security policy schema', () => {
     });
     expect(resolveAclCapability(acl, 'session:control:kill')).toMatchObject({
       known: true,
-      decision: 'deny',
+      decision: 'allow',
     });
   });
 

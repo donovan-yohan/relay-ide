@@ -168,6 +168,21 @@ describe('hub policy evaluator', () => {
         })
       )
     ).toMatchObject({
+      decision: 'allow',
+      reasonCode: 'POLICY_ALLOWED',
+      grantedBits: ['session:control:kill'],
+    });
+
+    const attachOnlyNode = nodeSummary({ allowed: ['session:read', 'session:attach'] });
+    expect(
+      evaluateHubPolicy(
+        baseInput({
+          node: attachOnlyNode,
+          intent: { action: 'sessions.kill', target: 'node_a' },
+          requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.kill'),
+        })
+      )
+    ).toMatchObject({
       decision: 'deny',
       reasonCode: 'POLICY_CAPABILITY_DENIED',
       deniedBits: ['session:control:kill'],
