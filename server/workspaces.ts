@@ -510,6 +510,26 @@ function expandTilde(p: string): string {
   return p;
 }
 
+/**
+ * Checks whether a resolved path is a git repository.
+ * Returns { ok: true } if it is, or { ok: false, status: 400, body } if not.
+ * Call at the top of any route handler that requires a git repo.
+ */
+export async function requireGitRepo(
+  resolvedPath: string,
+  execAsync: typeof execFileAsync = execFileAsync
+): Promise<{ ok: true } | { ok: false; status: 400; body: { error: string; code: string } }> {
+  const { isGitRepo } = await detectGitRepo(resolvedPath, execAsync);
+  if (!isGitRepo) {
+    return {
+      ok: false,
+      status: 400,
+      body: { error: 'not_git_repo', code: 'NOT_GIT' },
+    };
+  }
+  return { ok: true };
+}
+
 // Router factory
 
 /**
@@ -592,6 +612,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           path: p,
           name,
           isGitRepo,
+          kind: isGitRepo ? ('repo' as const) : ('directory' as const),
           defaultBranch,
           currentBranch,
           ...identityFields,
@@ -679,6 +700,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       path: resolved,
       name: path.basename(resolved),
       isGitRepo,
+      kind: isGitRepo ? 'repo' : 'directory',
       defaultBranch,
       currentBranch,
       ...identityFields,
@@ -822,6 +844,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           path: p,
           name,
           isGitRepo,
+          kind: isGitRepo ? ('repo' as const) : ('directory' as const),
           defaultBranch,
           currentBranch,
           ...identityFields,
@@ -907,6 +930,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         path: resolved,
         name: path.basename(resolved),
         isGitRepo,
+        kind: isGitRepo ? 'repo' : 'directory',
         defaultBranch,
         currentBranch,
         ...identityFields,
@@ -943,6 +967,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     if (!repoPath) {
       res.status(400).json({ error: ERR_PATH_REQUIRED });
+      return;
+    }
+
+    const gitCheck = await requireGitRepo(path.resolve(repoPath), exec);
+    if (!gitCheck.ok) {
+      res.status(gitCheck.status).json(gitCheck.body);
       return;
     }
 
@@ -1110,6 +1140,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
 
     if (!repoPath) {
       res.status(400).json({ error: ERR_PATH_REQUIRED });
+      return;
+    }
+
+    const gitCheck = await requireGitRepo(path.resolve(repoPath), exec);
+    if (!gitCheck.ok) {
+      res.status(gitCheck.status).json(gitCheck.body);
       return;
     }
 
@@ -1293,6 +1329,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
+    const gitCheck = await requireGitRepo(path.resolve(repoPath), exec);
+    if (!gitCheck.ok) {
+      res.status(gitCheck.status).json(gitCheck.body);
+      return;
+    }
+
     const existingBranch =
       typeof req.body?.branch === 'string' ? req.body.branch : undefined;
 
@@ -1359,6 +1401,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!repoPath) {
       res.status(400).json({ error: ERR_PATH_REQUIRED });
+      return;
+    }
+    const gitCheck = await requireGitRepo(path.resolve(repoPath), exec);
+    if (!gitCheck.ok) {
+      res.status(gitCheck.status).json(gitCheck.body);
       return;
     }
     const branch = await getCurrentBranch(path.resolve(repoPath));
@@ -1685,6 +1732,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       return;
     }
 
+    const divergenceGitCheck = await requireGitRepo(resolvedRepo, exec);
+    if (!divergenceGitCheck.ok) {
+      res.status(divergenceGitCheck.status).json(divergenceGitCheck.body);
+      return;
+    }
+
     const base =
       typeof req.query.base === 'string' ? req.query.base : undefined;
     const options = base === undefined ? { exec } : { base, exec };
@@ -1716,6 +1769,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
         aggregate: { additions: 0, deletions: 0, fileCount: 0 },
         error: ERR_PATH_NOT_IN_WORKSPACES,
       });
+      return;
+    }
+
+    const changedFilesGitCheck = await requireGitRepo(resolvedRepo, exec);
+    if (!changedFilesGitCheck.ok) {
+      res.status(changedFilesGitCheck.status).json(changedFilesGitCheck.body);
       return;
     }
 
@@ -1831,6 +1890,12 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const resolvedRepo = validateWorkspaceAccess(req.query.path);
     if (!resolvedRepo) {
       res.status(403).json({ diff: '', error: ERR_PATH_NOT_IN_WORKSPACES });
+      return;
+    }
+
+    const fileDiffGitCheck = await requireGitRepo(resolvedRepo, exec);
+    if (!fileDiffGitCheck.ok) {
+      res.status(fileDiffGitCheck.status).json(fileDiffGitCheck.body);
       return;
     }
 

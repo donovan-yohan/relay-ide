@@ -614,6 +614,9 @@ export function RepoItem({
           <span className="repo-name">
             <MarqueeText>{repo.name}</MarqueeText>
           </span>
+          {repo.kind === 'directory' || (!repo.isGitRepo && repo.kind == null) ? (
+            <span className="repo-kind-chip">dir</span>
+          ) : null}
           {highestState && attentionCount > 0 ? (
             <span className="repo-attention-badge">
               <SessionIndicator state={highestState} />
@@ -647,7 +650,10 @@ export function RepoItem({
             const rep = sorted[0];
             const isRepoRoot = groupPath === repo.path;
             if (rep) {
-              const matchedPr = findPr(groupSessions[0]?.branchName ?? '');
+              const isDirectory = repo.kind === 'directory' || repo.isGitRepo === false;
+              const matchedPr = isDirectory
+                ? undefined
+                : findPr(groupSessions[0]?.branchName ?? '');
               const isSelected =
                 activeSessionId !== null &&
                 groupSessions.some((s) => sessionKeyMatches(s, activeSessionId));
@@ -775,7 +781,7 @@ export function RepoItem({
           })}
         </ul>
       ) : null}
-      {!collapsed ? (
+      {!collapsed && repo.isGitRepo !== false ? (
         <div
           className={['add-worktree-row', creatingWorktree && 'disabled']
             .filter(Boolean)

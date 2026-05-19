@@ -55,6 +55,10 @@ async function fetchDashboard(
 
 function makeDashboardExec(counter: { prListCalls: number }): ExecFn {
   return async (file, args) => {
+    // requireGitRepo uses detectGitRepo which calls git rev-parse --git-dir
+    if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+      return { stdout: '.git', stderr: '' };
+    }
     if (file === 'gh' && args[0] === 'api' && args[1] === 'user') {
       return { stdout: 'me\n', stderr: '' };
     }
@@ -124,6 +128,10 @@ describe('/workspaces/dashboard PR cache', () => {
     const prListResolvers: Array<(value: ExecResult) => void> = [];
     let prListCalls = 0;
     const exec: ExecFn = async (file, args) => {
+      // requireGitRepo needs git rev-parse --git-dir to succeed
+      if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+        return { stdout: '.git', stderr: '' };
+      }
       if (file === 'gh' && args[0] === 'api' && args[1] === 'user') {
         return { stdout: 'me\n', stderr: '' };
       }

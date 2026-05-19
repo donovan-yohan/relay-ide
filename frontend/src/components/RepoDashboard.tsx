@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchDashboard } from '../lib/api.js';
+import { fetchDashboard, createSession } from '../lib/api.js';
 import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
@@ -400,7 +400,21 @@ export function RepoDashboard({
       {hint && <div className="repo-dashboard__hint">{hint}</div>}
       {data && !data.isGitRepo ? (
         <div className="non-git-notice">
-          <span className="non-git-msg">Not a git repository</span>
+          <span className="non-git-msg">not a git repository</span>
+          <div className="cta-row">
+            <TuiButton
+              variant="primary"
+              onClick={() => {
+                void createSession({
+                  type: 'terminal',
+                  repoPath,
+                  cwd: repoPath,
+                });
+              }}
+            >
+              + open terminal
+            </TuiButton>
+          </div>
         </div>
       ) : (
         <>

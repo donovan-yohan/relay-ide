@@ -4,8 +4,11 @@ import {
   buildEnvironmentPickerModel,
   defaultSessionModeForAgent,
   getSessionModeOptions,
+  getSessionModeOptionsForType,
   isFrameworkAvailable,
   isFrameworkWebAvailable,
+  nodeAgentBlockReason,
+  nodeShellBlockReason,
   selectLaunchAgent,
 } from '../frontend/src/components/dialogs/CustomizeSessionDialog.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
@@ -583,4 +586,262 @@ describe('CustomizeSessionDialog environment picker model', () => {
       expect(model.resolved.nodeId).toBe('local');
     }
   );
+});
+
+describe('terminal vs agent node eligibility', () => {
+  function remoteNode(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
+    return node({
+      nodeId: 'remote',
+      displayName: 'remote server',
+      capabilities: {
+        ...node().capabilities,
+        agents: {},
+      },
+      ...overrides,
+    });
+  }
+
+  it('nodeAgentBlockReason returns reason for missing agent; nodeShellBlockReason returns null when shell+tmux are available', () => {
+    const hermesMissingNode = remoteNode();
+
+    expect(nodeShellBlockReason(hermesMissingNode)).toBeNull();
+    expect(nodeAgentBlockReason(hermesMissingNode, 'hermes')).toBe(
+      'hermes capability unknown on remote server'
+    );
+  });
+
+  it('buildEnvironmentPickerModel enables node in terminal mode when agent is missing but shell+tmux are available', () => {
+    const hermesMissingNode = remoteNode();
+    const repoInventory = inventory();
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[0]!,
+        identityDebug: {
+          ...repoInventory.groups[0]!.identityDebug,
+          instanceCount: 2,
+          nodeIds: ['local', 'remote'],
+        },
+        instances: [
+          { ...repoInventory.groups[0]!.instances[1]!, worktrees: [] },
+          {
+            repoInstanceId: 'remote:%2Fsrv%2Frelay-ide',
+            nodeId: 'remote',
+            localPath: '/srv/relay-ide',
+            name: 'relay-ide',
+            isGitRepo: true,
+            defaultBranch: 'nightly',
+            currentBranch: 'nightly',
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            selectedRemote: null,
+            remotes: [],
+            repoIdentityWarnings: [],
+            worktrees: [],
+            reportedAt: '2026-05-12T00:00:00.000Z',
+          },
+        ],
+      },
+    ];
+
+    const agentModel = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node(), hermesMissingNode],
+      selectedAgent: 'hermes',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'remote',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+      sessionType: 'agent',
+    });
+
+    const terminalModel = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node(), hermesMissingNode],
+      selectedAgent: 'hermes',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'remote',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+      sessionType: 'terminal',
+    });
+
+    expect(
+      agentModel.nodeChoices.find((c) => c.value === 'remote')
+    ).toMatchObject({ disabled: true, reason: 'hermes capability unknown on remote server' });
+
+    const terminalRemoteChoice = terminalModel.nodeChoices.find(
+      (c) => c.value === 'remote'
+    );
+    expect(terminalRemoteChoice?.disabled).toBeUndefined();
+    expect(terminalRemoteChoice?.reason).toBeUndefined();
+  });
+
+  it('disables node in both modes when tmux is degraded', () => {
+    const tmuxDegradedNode = remoteNode({
+      capabilities: {
+        ...remoteNode().capabilities,
+        core: {
+          ...remoteNode().capabilities.core,
+          tmux: 'degraded',
+        },
+      },
+    });
+
+    expect(nodeShellBlockReason(tmuxDegradedNode)).toBe(
+      'tmux degraded on remote server'
+    );
+    expect(nodeAgentBlockReason(tmuxDegradedNode, 'hermes')).toBe(
+      'tmux degraded on remote server'
+    );
+  });
+
+  it('disables node in both modes when node is offline', () => {
+    const offlineNode = remoteNode({ status: 'offline' });
+
+    expect(nodeShellBlockReason(offlineNode)).toBe('node is offline');
+    expect(nodeAgentBlockReason(offlineNode, 'hermes')).toBe('node is offline');
+  });
+});
+
+describe('directory-kind workspace support', () => {
+  it('fallback group for non-git workspace has isGitRepo: false and no worktrees', () => {
+    const model = buildEnvironmentPickerModel({
+      inventory: null,
+      nodes: [],
+      selectedAgent: 'claude',
+      selectedGroupId: null,
+      selectedNodeId: null,
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'my-project', path: '/home/user/my-project', isGitRepo: false },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.showPicker).toBe(false);
+    // The group's single instance should reflect isGitRepo: false
+    const groups = model.repoChoices;
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toContain('non-git directory');
+  });
+
+  it('repoChoices labels include "non-git directory" for directory-kind workspace', () => {
+    const model = buildEnvironmentPickerModel({
+      inventory: null,
+      nodes: [],
+      selectedAgent: 'claude',
+      selectedGroupId: null,
+      selectedNodeId: null,
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'scripts', path: '/home/user/scripts', isGitRepo: false },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.repoChoices[0]?.label).toBe('scripts — non-git directory');
+  });
+
+  it('repoChoices labels show "unidentified repo" for git workspace without identity', () => {
+    const model = buildEnvironmentPickerModel({
+      inventory: null,
+      nodes: [],
+      selectedAgent: 'claude',
+      selectedGroupId: null,
+      selectedNodeId: null,
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide', isGitRepo: true },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.repoChoices[0]?.label).toBe('relay-ide — unidentified repo');
+  });
+
+  it('synthetic fallback row for git workspace without isGitRepo field defaults to "unidentified repo"', () => {
+    // Backward-compat: callers that don't pass isGitRepo should get old behavior
+    const model = buildEnvironmentPickerModel({
+      inventory: null,
+      nodes: [],
+      selectedAgent: 'claude',
+      selectedGroupId: null,
+      selectedNodeId: null,
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+    });
+
+    expect(model.repoChoices[0]?.label).toBe('relay-ide — unidentified repo');
+  });
+});
+
+describe('agent/terminal mode toggle', () => {
+  it('terminal mode forces session mode to pty/shell only', () => {
+    const hermesFrameworks = [framework('hermes')];
+    const options = getSessionModeOptionsForType(hermesFrameworks, 'hermes', 'terminal');
+
+    expect(options).toHaveLength(1);
+    expect(options[0]).toMatchObject({ value: 'pty', label: 'shell' });
+  });
+
+  it('agent mode returns normal session mode options', () => {
+    const hermesFrameworks = [framework('hermes')];
+    const options = getSessionModeOptionsForType(hermesFrameworks, 'hermes', 'agent');
+
+    expect(options.length).toBeGreaterThan(1);
+    expect(options.some((o) => o.value === 'web')).toBe(true);
+  });
+
+  it('terminal mode does not block nodes missing agent capability (buildEnvironmentPickerModel)', () => {
+    const repoInventory = inventory();
+    const noAgentNode = node({
+      nodeId: 'no-agent',
+      displayName: 'no-agent server',
+      capabilities: {
+        ...node().capabilities,
+        agents: {},
+      },
+    });
+    repoInventory.groups = [
+      {
+        ...repoInventory.groups[0]!,
+        identityDebug: {
+          ...repoInventory.groups[0]!.identityDebug,
+          instanceCount: 2,
+          nodeIds: ['local', 'no-agent'],
+        },
+        instances: [
+          { ...repoInventory.groups[0]!.instances[1]!, worktrees: [] },
+          {
+            repoInstanceId: 'no-agent:%2Fsrv%2Frelay-ide',
+            nodeId: 'no-agent',
+            localPath: '/srv/relay-ide',
+            name: 'relay-ide',
+            isGitRepo: true,
+            defaultBranch: 'nightly',
+            currentBranch: 'nightly',
+            repoIdentity: 'github.com/donovan-yohan/relay-ide',
+            selectedRemote: null,
+            remotes: [],
+            repoIdentityWarnings: [],
+            worktrees: [],
+            reportedAt: '2026-05-12T00:00:00.000Z',
+          },
+        ],
+      },
+    ];
+
+    const terminalModel = buildEnvironmentPickerModel({
+      inventory: repoInventory,
+      nodes: [node(), noAgentNode],
+      selectedAgent: 'claude',
+      selectedGroupId: 'github.com/donovan-yohan/relay-ide',
+      selectedNodeId: 'no-agent',
+      selectedCheckoutId: null,
+      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
+      fallbackWorktreePath: null,
+      sessionType: 'terminal',
+    });
+
+    const noAgentChoice = terminalModel.nodeChoices.find((c) => c.value === 'no-agent');
+    expect(noAgentChoice).toBeDefined();
+    expect(noAgentChoice?.disabled).toBeUndefined();
+    expect(noAgentChoice?.reason).toBeUndefined();
+  });
 });

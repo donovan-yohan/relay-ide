@@ -9,6 +9,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
 import type {
+  Repo,
   WorkContextActiveGroup,
   WorkContextSessionSummary,
 } from '../lib/types.js';
@@ -139,12 +140,34 @@ function latestStatus(group: WorkContextActiveGroup): string {
     : 'session has no work context yet';
 }
 
-function repoBindingLabel(
+export function repoKind(
+  session: WorkContextSessionSummary,
+  repos: Repo[]
+): 'repo' | 'directory' | null {
+  if (!session.repoPath) return null;
+  const match = repos.find((r) => r.path === session.repoPath);
+  if (!match) return null;
+  return match.kind ?? (match.isGitRepo ? 'repo' : 'directory');
+}
+
+export function repoBindingLabel(
   group: WorkContextActiveGroup,
-  session: WorkContextSessionSummary
+  session: WorkContextSessionSummary,
+  repos: Repo[]
 ): string | null {
-  const repo = session.repoName ?? group.context?.anchors?.repo?.ownerRepo;
+  const kind = repoKind(session, repos);
   const repoPath = session.repoPath ?? group.context?.anchors?.repo?.localPath;
+
+  if (kind === 'directory') {
+    const nodeLabel =
+      session.nodeId && session.nodeId !== DEFAULT_LOCAL_NODE_ID
+        ? session.nodeId
+        : 'local';
+    const cwd = session.cwd || repoPath || '';
+    return `${nodeLabel} · ${cwd} · directory`;
+  }
+
+  const repo = session.repoName ?? group.context?.anchors?.repo?.ownerRepo;
   if (!repo && !repoPath) return null;
   const branch = session.branchName ?? group.context?.anchors?.repo?.branchName;
   return [repo ?? repoPath, branch].filter(Boolean).join(' · ');
@@ -152,7 +175,8 @@ function repoBindingLabel(
 
 function sessionMeta(
   group: WorkContextActiveGroup,
-  session: WorkContextSessionSummary
+  session: WorkContextSessionSummary,
+  repos: Repo[]
 ): string[] {
   const meta = [
     session.tabKind,
@@ -163,9 +187,16 @@ function sessionMeta(
       ? `control ${session.controlFreshness}`
       : undefined,
   ].filter(Boolean) as string[];
-  const repo = repoBindingLabel(group, session);
-  if (repo) meta.push(`repo ${repo}`);
-  else meta.push('no repo binding');
+  const kind = repoKind(session, repos);
+  const binding = repoBindingLabel(group, session, repos);
+  if (kind === 'directory') {
+    // directory-kind: hide git-only meta (branch, PR chips handled at card level)
+    if (binding) meta.push(binding);
+  } else if (binding) {
+    meta.push(`repo ${binding}`);
+  } else {
+    meta.push('no repo binding');
+  }
   return meta;
 }
 
@@ -174,6 +205,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const refreshAll = useSessionsStore((s) => s.refreshAll);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const setActiveRepoPath = useUiStore((s) => s.setActiveRepoPath);
+  const repos = useSessionsStore((s) => s.repos);
   const [inputValue, setInputValue] = useState('');
   const [inputStatus, setInputStatus] = useState<string | null>(null);
   const [isSubmittingInput, setIsSubmittingInput] = useState(false);
@@ -292,7 +324,19 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
           <div>
             <span className="active-work-label">anchor</span>
             <span>
-              {group.node.kind ?? 'remote'} · {primarySession?.cwd ?? 'no cwd'}
+              {(() => {
+                const nodeLabel = group.node.displayName ?? group.node.nodeId;
+                const cwd = primarySession?.cwd ?? 'no cwd';
+                if (primarySession) {
+                  const kind = repoKind(primarySession, repos);
+                  if (kind === 'directory') {
+                    return `${nodeLabel} · ${cwd} · directory`;
+                  }
+                  const repoLabel = repoBindingLabel(group, primarySession, repos);
+                  if (repoLabel) return `repo ${repoLabel}`;
+                }
+                return `${group.node.kind ?? 'remote'} · ${cwd}`;
+              })()}
             </span>
           </div>
           <div>
@@ -338,7 +382,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
               </div>
               <div className="active-work-session__cwd">{session.cwd}</div>
               <div className="active-work-session__meta">
-                {sessionMeta(group, session).map((item) => (
+                {sessionMeta(group, session, repos).map((item) => (
                   <span key={item}>{item}</span>
                 ))}
               </div>

@@ -69,17 +69,18 @@ describe('TerminalNodePicker buildChoices', () => {
       node({ nodeId: 'offline', displayName: 'offline', status: 'offline' }),
       node({ nodeId: 'revoked', displayName: 'revoked', status: 'revoked' }),
     ]);
+    // nodeShellBlockReason returns descriptive messages for non-online states
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'stale',
+      disabledReason: 'heartbeat is stale',
     });
     expect(choices[2]).toMatchObject({
       disabled: true,
-      disabledReason: 'offline',
+      disabledReason: 'node is offline',
     });
     expect(choices[3]).toMatchObject({
       disabled: true,
-      disabledReason: 'revoked',
+      disabledReason: 'node is revoked',
     });
   });
 
@@ -88,7 +89,9 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.label).toBe('m1');
   });
 
-  it('disables nodes with version skew even when online', () => {
+  it('allows version-skew nodes for terminal sessions (shell+tmux are the only gates)', () => {
+    // nodeShellBlockReason does not check protocol version — a version-skew node
+    // that has shell+tmux available can still host a terminal session.
     const choices = buildChoices([
       node({
         nodeId: 'skew',
@@ -101,12 +104,12 @@ describe('TerminalNodePicker buildChoices', () => {
       }),
     ]);
     expect(choices[1]).toMatchObject({
-      disabled: true,
-      disabledReason: 'version skew',
+      disabled: false,
     });
   });
 
-  it('disables nodes with incompatible protocol versions', () => {
+  it('allows incompatible-version nodes for terminal sessions when shell+tmux are available', () => {
+    // Same reasoning: terminal sessions only require shell+tmux, not version parity.
     const choices = buildChoices([
       node({
         nodeId: 'incompat',
@@ -119,8 +122,7 @@ describe('TerminalNodePicker buildChoices', () => {
       }),
     ]);
     expect(choices[1]).toMatchObject({
-      disabled: true,
-      disabledReason: 'protocol incompatible',
+      disabled: false,
     });
   });
 
@@ -175,9 +177,27 @@ describe('TerminalNodePicker buildChoices', () => {
         },
       }),
     ]);
+    // nodeShellBlockReason returns "tmux <status> on <displayName>"
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'no tmux',
+      disabledReason: 'tmux unavailable on thin',
+    });
+  });
+
+  it('hermes unavailable does not block terminal node picker', () => {
+    // Terminal picker uses nodeShellBlockReason (shell+tmux only), not agent availability.
+    const choices = buildChoices([
+      node({
+        nodeId: 'hermes-absent',
+        displayName: 'hermes-absent',
+        capabilities: {
+          ...node().capabilities,
+          agents: {},
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: false,
     });
   });
 });

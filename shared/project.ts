@@ -9,6 +9,7 @@ export type InstanceId = string;
 
 export type ProjectIdentity =
   | { kind: 'repo'; remote: RepoIdentity }
+  | { kind: 'directory'; nodeId: NodeId; localPath: string } // non-git directory project
   | { kind: 'node'; nodeId: NodeId }
   | { kind: 'agent'; providerId: string }
   | { kind: 'playbook'; playbookId: string };
@@ -48,6 +49,12 @@ function encodeIdentity(identity: ProjectIdentity): string {
       if (!hasValue(identity.remote))
         throw new Error('identity.remote is required');
       return `repo:${encodeURIComponent(identity.remote)}`;
+    case 'directory':
+      if (!hasValue(identity.nodeId))
+        throw new Error('identity.nodeId is required');
+      if (!hasValue(identity.localPath))
+        throw new Error('identity.localPath is required');
+      return `directory:${encodeURIComponent(identity.nodeId)}:${encodeURIComponent(identity.localPath)}`;
     case 'node':
       if (!hasValue(identity.nodeId))
         throw new Error('identity.nodeId is required');
@@ -83,6 +90,19 @@ export function parseProjectId(id: ProjectId): ProjectIdentity | null {
   switch (kind) {
     case 'repo':
       return { kind: 'repo', remote: payload };
+    case 'directory': {
+      // payload for directory is "<nodeId>:<localPath>" (both URI-encoded)
+      const innerSep = payload.indexOf(':');
+      if (innerSep <= 0 || innerSep === payload.length - 1) return null;
+      try {
+        const nodeId = decodeURIComponent(payload.slice(0, innerSep));
+        const localPath = decodeURIComponent(payload.slice(innerSep + 1));
+        if (!hasValue(nodeId) || !hasValue(localPath)) return null;
+        return { kind: 'directory', nodeId, localPath };
+      } catch {
+        return null;
+      }
+    }
     case 'node':
       return { kind: 'node', nodeId: payload };
     case 'agent':
@@ -104,6 +124,10 @@ export function projectIdentityEquals(
       return (
         a.remote === (b as Extract<ProjectIdentity, { kind: 'repo' }>).remote
       );
+    case 'directory': {
+      const bd = b as Extract<ProjectIdentity, { kind: 'directory' }>;
+      return a.nodeId === bd.nodeId && a.localPath === bd.localPath;
+    }
     case 'node':
       return (
         a.nodeId === (b as Extract<ProjectIdentity, { kind: 'node' }>).nodeId
@@ -145,4 +169,27 @@ export function parseInstanceId(
   } catch {
     return null;
   }
+}
+
+/**
+ * Creates a stable ProjectId for a non-git directory project.
+ * Format: proj:directory:<nodeId>:<localPath> (both URI-encoded)
+ */
+export function createDirectoryProjectId(
+  nodeId: NodeId,
+  localPath: string
+): ProjectId {
+  return createProjectId({ kind: 'directory', nodeId, localPath });
+}
+
+/**
+ * Parses a directory-kind ProjectId back to its components, or returns null
+ * if the id is not a valid directory project id.
+ */
+export function parseDirectoryProjectId(
+  id: ProjectId
+): { nodeId: NodeId; localPath: string } | null {
+  const identity = parseProjectId(id);
+  if (!identity || identity.kind !== 'directory') return null;
+  return { nodeId: identity.nodeId, localPath: identity.localPath };
 }
