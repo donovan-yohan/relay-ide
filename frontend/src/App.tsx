@@ -704,14 +704,14 @@ function TerminalAreaContent({
 
       {viewMode === 'empty' && (
         <EmptyState
-          heading="add a repo to get started"
-          description="point to any folder on your machine. git repos get pr tracking and branch management."
-          actionLabel="+ add repo"
+          heading="open a working directory"
+          description="start from any project folder. git repos still get pr tracking and branch management when available."
+          actionLabel="open project"
           onAction={onAddWorkspace}
           hint={
             onboardingHints.showNoReposHint ? (
               <Hint id={HINT_NO_REPOS} variant="inline-text">
-                relay-ide manages claude code sessions across your repos.
+                relay-ide opens terminal and agent tabs across your projects.
               </Hint>
             ) : undefined
           }

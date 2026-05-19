@@ -1,6 +1,7 @@
 /* eslint-disable sonarjs/no-duplicate-string */
 import React, { useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CustomizeSessionDialog, {
   type CustomizeSessionDialogHandle,
 } from './components/dialogs/CustomizeSessionDialog.js';
@@ -386,6 +387,10 @@ useConfigStore.setState({
   frameworks: [framework('claude'), framework('codex'), framework('hermes')],
 });
 
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+});
+
 function Harness() {
   const dialogRef = useRef<CustomizeSessionDialogHandle>(null);
   const [createdSession, setCreatedSession] = useState('');
@@ -463,6 +468,8 @@ function Harness() {
 
 ReactDOM.createRoot(document.getElementById('app')!).render(
   <React.StrictMode>
-    <Harness />
+    <QueryClientProvider client={queryClient}>
+      <Harness />
+    </QueryClientProvider>
   </React.StrictMode>
 );

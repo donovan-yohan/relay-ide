@@ -146,11 +146,11 @@ describe('summaryForTab — session kind', () => {
     }
   });
 
-  it('builds meta string from agent and state', () => {
+  it('builds meta string from agent, cwd, repo, and state', () => {
     const s = summaryForTab(sessionTab('s1'), {
       findSession: () => session({ agent: 'claude', agentState: 'processing' }),
     });
-    expect(s.meta).toBe('claude · processing');
+    expect(s.meta).toBe('claude · relay-ide · processing');
   });
 
   it('appends cwd basename for terminal sessions', () => {
@@ -159,10 +159,36 @@ describe('summaryForTab — session kind', () => {
         session({
           type: 'terminal',
           agent: 'bash',
+          repoName: null,
           cwd: '/Users/alice/code/relay-ide',
         }),
     });
     expect(s.meta).toContain('relay-ide');
+  });
+
+  it('shows cwd and optional repo identity for active agent work', () => {
+    const s = summaryForTab(sessionTab('s1'), {
+      findSession: () =>
+        session({
+          agent: 'claude',
+          repoName: 'relay-ide',
+          cwd: '/Users/alice/code/relay-ide/frontend',
+        }),
+    });
+    expect(s.meta).toBe('claude · frontend · relay-ide');
+  });
+
+  it('does not duplicate repo identity when cwd already names the repo', () => {
+    const s = summaryForTab(sessionTab('s1', 'terminal'), {
+      findSession: () =>
+        session({
+          type: 'terminal',
+          agent: 'bash',
+          repoName: 'relay-ide',
+          cwd: '/Users/alice/code/relay-ide',
+        }),
+    });
+    expect(s.meta).toBe('bash · relay-ide');
   });
 
   it('returns no meta when session is missing', () => {

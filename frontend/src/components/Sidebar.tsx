@@ -606,7 +606,7 @@ export function Sidebar({
               onClick={onAddWorkspace}
               style={{ flex: 1 }}
             >
-              + add repo
+              open project
             </TuiButton>
             <button
               className={['sidebar-settings-icon-btn', analyticsView !== null && 'active']

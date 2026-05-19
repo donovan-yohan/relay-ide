@@ -344,7 +344,7 @@ describe('CustomizeSessionDialog open races', () => {
     );
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (el.querySelector('[data-track="dialog.customize-session.start-agent"]') as HTMLButtonElement).click();
     });
     await flush();
 
@@ -375,7 +375,7 @@ describe('CustomizeSessionDialog open races', () => {
     await flush();
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (el.querySelector('[data-track="dialog.customize-session.open-terminal"]') as HTMLButtonElement).click();
     });
     await flush();
 
@@ -406,7 +406,7 @@ describe('CustomizeSessionDialog open races', () => {
     await flush();
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.start-in-home"]') as HTMLButtonElement).click();
+      (el.querySelector('[data-track="dialog.customize-session.open-home-terminal"]') as HTMLButtonElement).click();
     });
     await flush();
 
@@ -437,7 +437,7 @@ describe('CustomizeSessionDialog open races', () => {
     expect(cwdInput.value).toBe('/home/relay');
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (el.querySelector('[data-track="dialog.customize-session.open-terminal"]') as HTMLButtonElement).click();
     });
     await flush();
 
@@ -477,7 +477,7 @@ describe('CustomizeSessionDialog open races', () => {
     expect(cwdInput.value).toBe('/home/relay');
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (el.querySelector('[data-track="dialog.customize-session.open-terminal"]') as HTMLButtonElement).click();
     });
     await flush();
 
@@ -491,7 +491,7 @@ describe('CustomizeSessionDialog open races', () => {
     expect(payload).not.toHaveProperty('worktreePath');
   });
 
-  it('disables Start in Home for a blocked selected remote node', async () => {
+  it('disables open home terminal for a blocked selected remote node', async () => {
     const el = await renderAndOpen(
       { name: 'remote-only', path: '/srv/remote-only' },
       remoteOnlyInventory(),
@@ -508,7 +508,7 @@ describe('CustomizeSessionDialog open races', () => {
     await flush();
 
     const startInHome = el.querySelector(
-      '[data-track="dialog.customize-session.start-in-home"]'
+      '[data-track="dialog.customize-session.open-home-terminal"]'
     ) as HTMLButtonElement;
     expect(startInHome.disabled).toBe(true);
 

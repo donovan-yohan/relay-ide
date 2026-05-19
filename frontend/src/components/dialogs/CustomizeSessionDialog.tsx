@@ -131,7 +131,10 @@ export interface EnvironmentPickerModel {
   selectedGroupId: string | null;
   selectedNodeId: NodeId;
   selectedCheckoutId: string | null;
+  /** Blocks terminal/session creation on this node. Does not include agent availability. */
   selectedNodeReason: string | null;
+  /** Blocks only agent launch. Plain terminal creation intentionally ignores this. */
+  selectedAgentReason: string | null;
   resolved: {
     nodeId: NodeId;
     repoPath: string;
@@ -274,10 +277,7 @@ function capabilityProblem(
   return `${name} ${capability}`;
 }
 
-function nodeBlockReason(
-  node: HubNodeSummary | null,
-  selectedAgent: AgentType
-): string | null {
+function nodeTerminalBlockReason(node: HubNodeSummary | null): string | null {
   if (!node) return 'node availability unknown';
   if (node.status === 'offline') return 'node is offline';
   if (node.status === 'stale') return 'heartbeat is stale';
@@ -286,6 +286,14 @@ function nodeBlockReason(
   if (shellProblem) return shellProblem;
   const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');
   if (tmuxProblem) return `${tmuxProblem} on ${node.displayName}`;
+  return null;
+}
+
+function nodeAgentBlockReason(
+  node: HubNodeSummary | null,
+  selectedAgent: AgentType
+): string | null {
+  if (!node || nodeTerminalBlockReason(node)) return null;
   const agentProblem = capabilityProblem(
     node.capabilities.agents[selectedAgent],
     selectedAgent
@@ -391,7 +399,7 @@ function nodeChoicesFor(
     if (seenNodeChoices.has(nodeId)) return [];
     seenNodeChoices.add(nodeId);
     const node = nodeById.get(nodeId) ?? null;
-    const reason = nodeBlockReason(node, input.selectedAgent);
+    const reason = nodeTerminalBlockReason(node);
     return [
       {
         value: nodeId,
@@ -488,6 +496,10 @@ export function buildEnvironmentPickerModel(
   );
   const selectedNodeId = selectedNodeChoice?.value ?? DEFAULT_LOCAL_NODE_ID;
   const selectedNodeReason = selectedNodeChoice?.reason ?? null;
+  const selectedAgentReason = nodeAgentBlockReason(
+    nodeById.get(selectedNodeId) ?? null,
+    input.selectedAgent
+  );
   const selectedNodeInstances = selectedGroup.instances.filter(
     (instance) => instance.nodeId === selectedNodeId
   );
@@ -514,6 +526,7 @@ export function buildEnvironmentPickerModel(
     selectedNodeId,
     selectedCheckoutId: selectedCheckout?.value ?? null,
     selectedNodeReason,
+    selectedAgentReason,
     resolved: resolveEnvironment(selectedNodeId, selectedCheckout, input),
   };
 }
@@ -575,6 +588,42 @@ async function createSessionFromForm(
   });
 }
 
+function agentLaunchBlockReason(
+  environmentModel: EnvironmentPickerModel
+): string | null {
+  return environmentModel.selectedNodeReason ?? environmentModel.selectedAgentReason;
+}
+
+async function createTerminalFromEnvironment(
+  environment: EnvironmentPickerModel['resolved'],
+  sessionLane: SessionLane,
+  remoteCwd?: string
+) {
+  const remoteNodeSelected = environment.nodeId !== DEFAULT_LOCAL_NODE_ID;
+  const { cols, rows } = estimateTerminalDimensions(
+    useUiStore.getState().terminalFontSize
+  );
+  if (remoteNodeSelected) {
+    return createAgentSession({
+      nodeId: environment.nodeId,
+      type: 'terminal',
+      cwd: cleanCwd(remoteCwd),
+      sessionLane,
+      cols,
+      rows,
+    });
+  }
+  return createAgentSession({
+    nodeId: environment.nodeId,
+    type: 'terminal',
+    repoPath: environment.repoPath,
+    worktreePath: environment.worktreePath,
+    sessionLane,
+    cols,
+    rows,
+  });
+}
+
 interface BodyProps {
   workspaceName: string;
   form: FormState;
@@ -590,6 +639,65 @@ interface EnvironmentSelection {
   selectedGroupId: string | null;
   selectedNodeId: NodeId | null;
   selectedCheckoutId: string | null;
+}
+
+interface AgentRuntimeFieldProps {
+  form: FormState;
+  environmentModel: EnvironmentPickerModel;
+  frameworkOptions: FrameworkInfo[];
+  selectedFramework: FrameworkInfo | undefined;
+  selectedUnavailable: boolean | undefined;
+  onFormChange: (patch: Partial<FormState>) => void;
+}
+
+function AgentRuntimeField({
+  form,
+  environmentModel,
+  frameworkOptions,
+  selectedFramework,
+  selectedUnavailable,
+  onFormChange,
+}: AgentRuntimeFieldProps) {
+  const note = selectedUnavailable
+    ? (selectedFramework?.availability?.reason ??
+      `${selectedFramework?.displayName ?? form.selectedAgent} is not installed`)
+    : environmentModel.selectedAgentReason;
+
+  return (
+    <div className="customize-session-dialog-field">
+      <label className="customize-session-dialog-label" htmlFor="cs-agent">
+        agent runtime (optional)
+      </label>
+      <select
+        id="cs-agent"
+        className="customize-session-dialog-select"
+        data-track="dialog.customize-session.agent"
+        value={form.selectedAgent}
+        onChange={(e) => {
+          const selectedAgent = e.currentTarget.value as AgentType;
+          onFormChange({
+            selectedAgent,
+            sessionMode: defaultSessionModeForAgent(
+              frameworkOptions,
+              selectedAgent
+            ),
+          });
+        }}
+      >
+        {frameworkOptions.map((framework) => (
+          <option
+            key={framework.id}
+            value={framework.id}
+            disabled={!isFrameworkAvailable(framework)}
+          >
+            {framework.displayName}
+            {!isFrameworkAvailable(framework) ? ' (not installed)' : ''}
+          </option>
+        ))}
+      </select>
+      {note && <div className="customize-session-field-note">{note}</div>}
+    </div>
+  );
 }
 
 function CustomizeSessionBody({
@@ -651,8 +759,9 @@ function CustomizeSessionBody({
           aria-label="environment picker"
         >
           <div className="customize-session-environment-copy">
-            choose repo identity, execution node, then node-local checkout. no
-            live cross-host pty migration or automatic filesystem sync.
+            choose an execution node and working directory first. open a plain
+            terminal tab from any online shell-capable node; agent launch stays
+            optional and uses node-specific agent availability.
           </div>
           {environmentModel.repoChoices.length > 1 && (
             <div className="customize-session-dialog-field">
@@ -660,7 +769,7 @@ function CustomizeSessionBody({
                 className="customize-session-dialog-label"
                 htmlFor="cs-repo"
               >
-                repo identity
+                git project identity
               </label>
               <select
                 id="cs-repo"
@@ -728,20 +837,20 @@ function CustomizeSessionBody({
                 className="customize-session-dialog-label"
                 htmlFor="cs-remote-cwd"
               >
-                cwd on {remoteNodeLabel}
+                working directory on {remoteNodeLabel}
               </label>
               <input
                 id="cs-remote-cwd"
                 type="text"
                 className="customize-session-dialog-input"
                 data-track="dialog.customize-session.remote-cwd"
-                placeholder={remoteHomeDir || 'absolute path on remote node'}
+                placeholder={remoteHomeDir || 'absolute path on node'}
                 value={remoteCwd}
                 onChange={(e) => onRemoteCwdChange(e.currentTarget.value)}
                 autoComplete="off"
               />
               <div className="customize-session-field-note">
-                remote sessions start directly in this node-local directory.
+                terminal tabs start directly in this node-local directory.
               </div>
             </div>
           )}
@@ -752,7 +861,7 @@ function CustomizeSessionBody({
                   className="customize-session-dialog-label"
                   htmlFor="cs-checkout"
                 >
-                  node-local checkout
+                  git checkout / worktree
                 </label>
                 <select
                   id="cs-checkout"
@@ -780,44 +889,14 @@ function CustomizeSessionBody({
             )}
         </section>
       )}
-      <div className="customize-session-dialog-field">
-        <label className="customize-session-dialog-label" htmlFor="cs-agent">
-          coding agent
-        </label>
-        <select
-          id="cs-agent"
-          className="customize-session-dialog-select"
-          data-track="dialog.customize-session.agent"
-          value={form.selectedAgent}
-          onChange={(e) => {
-            const selectedAgent = e.currentTarget.value as AgentType;
-            onFormChange({
-              selectedAgent,
-              sessionMode: defaultSessionModeForAgent(
-                frameworkOptions,
-                selectedAgent
-              ),
-            });
-          }}
-        >
-          {frameworkOptions.map((framework) => (
-            <option
-              key={framework.id}
-              value={framework.id}
-              disabled={!isFrameworkAvailable(framework)}
-            >
-              {framework.displayName}
-              {!isFrameworkAvailable(framework) ? ' (not installed)' : ''}
-            </option>
-          ))}
-        </select>
-        {selectedUnavailable && (
-          <div className="customize-session-field-note">
-            {selectedFramework.availability?.reason ??
-              `${selectedFramework.displayName} is not installed`}
-          </div>
-        )}
-      </div>
+      <AgentRuntimeField
+        form={form}
+        environmentModel={environmentModel}
+        frameworkOptions={frameworkOptions}
+        selectedFramework={selectedFramework}
+        selectedUnavailable={selectedUnavailable}
+        onFormChange={onFormChange}
+      />
       {modeOptions.length > 1 && (
         <div className="customize-session-dialog-field">
           <label className="customize-session-dialog-label" htmlFor="cs-mode">
@@ -1047,8 +1126,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         );
         return;
       }
-      if (environmentModel.selectedNodeReason) {
-        setError(environmentModel.selectedNodeReason);
+      const blockReason = agentLaunchBlockReason(environmentModel);
+      if (blockReason) {
+        setError(blockReason);
         return;
       }
       const cwdForRemote = remoteNodeSelected
@@ -1090,6 +1170,53 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       }
     }
 
+    async function handleTerminalSubmit(
+      remoteCwdOverride?: string,
+      rememberCwd = true
+    ) {
+      if (!workspacePath || creating) return;
+      if (environmentModel.selectedNodeReason) {
+        setError(environmentModel.selectedNodeReason);
+        return;
+      }
+      const cwdForRemote = remoteNodeSelected
+        ? cleanCwd(remoteCwdOverride ?? remoteCwd)
+        : undefined;
+      if (remoteNodeSelected && !cwdForRemote) {
+        setError('working directory is required for remote terminal tabs');
+        return;
+      }
+      setCreating(true);
+      setError(null);
+      const sessionLane: SessionLane = remoteNodeSelected
+        ? rememberCwd
+          ? 'remote-cwd'
+          : 'remote-home'
+        : 'local-repo';
+      try {
+        const { session, error: submitError } = await createTerminalFromEnvironment(
+          environmentModel.resolved,
+          sessionLane,
+          cwdForRemote
+        );
+        if (submitError && !session) {
+          setError(
+            submitError instanceof Error
+              ? submitError.message
+              : 'Failed to create terminal tab'
+          );
+          return;
+        }
+        if (remoteNodeSelected && cwdForRemote && rememberCwd) {
+          rememberRemoteCwd(environmentModel.selectedNodeId, cwdForRemote);
+        }
+        shellRef.current?.close();
+        if (session?.id) onSessionCreated?.(session.id);
+      } finally {
+        setCreating(false);
+      }
+    }
+
     const footer = (
       <div className="customize-session-footer-row">
         <TuiButton
@@ -1097,13 +1224,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           onClick={() => shellRef.current?.close()}
           disabled={creating}
         >
-          Cancel
+          cancel
         </TuiButton>
         {remoteNodeSelected && (
           <TuiButton
             variant="ghost"
-            data-track="dialog.customize-session.start-in-home"
-            onClick={() => void handleSubmit(selectedRemoteHome, false)}
+            data-track="dialog.customize-session.open-home-terminal"
+            onClick={() => void handleTerminalSubmit(selectedRemoteHome, false)}
             disabled={
               !workspacePath ||
               !selectedRemoteHome ||
@@ -1111,16 +1238,17 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
               creating
             }
           >
-            Start in Home
+            open home terminal
           </TuiButton>
         )}
         <TuiButton
-          variant="primary"
-          data-track="dialog.customize-session.create"
+          variant="ghost"
+          data-track="dialog.customize-session.start-agent"
           onClick={() => void handleSubmit()}
           disabled={
             !workspacePath ||
             Boolean(environmentModel.selectedNodeReason) ||
+            Boolean(environmentModel.selectedAgentReason) ||
             (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
             creating ||
             frameworks.some(
@@ -1132,7 +1260,20 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             )
           }
         >
-          {creating ? 'Creating...' : 'Start Session'}
+          {creating ? 'starting...' : 'start agent tab'}
+        </TuiButton>
+        <TuiButton
+          variant="primary"
+          data-track="dialog.customize-session.open-terminal"
+          onClick={() => void handleTerminalSubmit()}
+          disabled={
+            !workspacePath ||
+            Boolean(environmentModel.selectedNodeReason) ||
+            (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
+            creating
+          }
+        >
+          {creating ? 'opening...' : 'open terminal tab'}
         </TuiButton>
       </div>
     );
@@ -1141,7 +1282,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       <DialogShell
         ref={shellRef}
         width="480px"
-        title="Customize Session"
+        title="open working directory"
         footer={footer}
       >
         {error && (

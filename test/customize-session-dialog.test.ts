@@ -366,7 +366,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
     expect(model.resolved.nodeId).toBe('local');
   });
 
-  it('disables nodes missing the selected agent capability', () => {
+  it('keeps terminal-capable nodes selectable when the selected agent is unavailable', () => {
     const model = buildEnvironmentPickerModel({
       inventory: inventory(),
       nodes: [
@@ -388,13 +388,12 @@ describe('CustomizeSessionDialog environment picker model', () => {
       fallbackWorktreePath: null,
     });
 
-    expect(
-      model.nodeChoices.find((choice) => choice.value === 'linux')
-    ).toMatchObject({
-      disabled: true,
-      reason: 'claude unavailable on linux lab',
-    });
-    expect(model.resolved.nodeId).toBe('local');
+    const linuxChoice = model.nodeChoices.find((choice) => choice.value === 'linux');
+    expect(linuxChoice?.disabled).toBeUndefined();
+    expect(linuxChoice?.reason).toBeUndefined();
+    expect(model.selectedNodeReason).toBeNull();
+    expect(model.selectedAgentReason).toBe('claude unavailable on linux lab');
+    expect(model.resolved.nodeId).toBe('linux');
   });
 
   it('includes a paired node without repo inventory as a remote target', () => {

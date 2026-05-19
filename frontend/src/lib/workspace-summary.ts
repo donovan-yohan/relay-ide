@@ -110,7 +110,7 @@ function summaryForSessionTab(
     session?.branchName ||
     (isTerminal ? 'terminal' : 'session');
   const dot = sessionDot(session?.agentState, session?.idle);
-  const meta = sessionMeta(session, isTerminal);
+  const meta = sessionMeta(session);
   const nodeBadge = nodeBadgeFor(tab.nodeId ?? session?.nodeId, ctx);
   return {
     icon,
@@ -157,16 +157,16 @@ function sessionDot(state?: AgentState, idle?: boolean): SummaryDot {
   return null;
 }
 
-function sessionMeta(
-  session: SessionSummary | undefined,
-  isTerminal: boolean
-): string | undefined {
+function sessionMeta(session: SessionSummary | undefined): string | undefined {
   if (!session) return undefined;
   const parts: string[] = [];
   if (session.agent) parts.push(session.agent);
-  if (isTerminal && session.cwd) {
+  if (session.cwd) {
     const last = session.cwd.split('/').filter(Boolean).pop();
     if (last) parts.push(last);
+  }
+  if (session.repoName && !parts.includes(session.repoName)) {
+    parts.push(session.repoName);
   }
   if (session.agentState) parts.push(session.agentState);
   return parts.length > 0 ? parts.join(' · ') : undefined;

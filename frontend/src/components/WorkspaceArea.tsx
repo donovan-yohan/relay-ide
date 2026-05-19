@@ -291,7 +291,7 @@ function RemoteTerminalCwdDialog({
         onClick={() => onSubmit(homeDir, 'remote-home')}
         disabled={!homeDir || creating}
       >
-        start in home
+        open home terminal
       </TuiButton>
       <TuiButton
         variant="primary"
@@ -299,7 +299,7 @@ function RemoteTerminalCwdDialog({
         onClick={() => onSubmit(cwd, 'remote-cwd')}
         disabled={!cleanCwd(cwd) || creating}
       >
-        {creating ? 'starting...' : 'start terminal'}
+        {creating ? 'opening...' : 'open terminal tab'}
       </TuiButton>
     </div>
   );
@@ -308,7 +308,7 @@ function RemoteTerminalCwdDialog({
     <DialogShell
       ref={shellRef}
       width="460px"
-      title="remote terminal cwd"
+      title="open terminal tab"
       footer={footer}
       onClose={onClose}
     >
@@ -319,26 +319,26 @@ function RemoteTerminalCwdDialog({
           </div>
         )}
         <div className="ws-remote-terminal-copy">
-          choose the node-local directory before creating a terminal on{' '}
+          choose the node-local working directory before creating a terminal on{' '}
           {nodeLabel}.
         </div>
         <div className="ws-remote-terminal-field">
           <label className="ws-remote-terminal-label" htmlFor="ws-remote-cwd">
-            cwd on {nodeLabel}
+            working directory on {nodeLabel}
           </label>
           <input
             id="ws-remote-cwd"
             type="text"
             className="ws-remote-terminal-input"
             data-track="workspace.remote-terminal.cwd"
-            placeholder={homeDir || 'absolute path on remote node'}
+            placeholder={homeDir || 'absolute path on node'}
             value={cwd}
             onChange={(event) => setCwd(event.currentTarget.value)}
             autoComplete="off"
           />
           <div className="ws-remote-terminal-note">
-            remote terminals start directly in this directory. use start in home
-            to skip remembering a cwd.
+            terminal tabs start directly in this directory. use open home
+            terminal to skip remembering a cwd.
           </div>
         </div>
       </div>

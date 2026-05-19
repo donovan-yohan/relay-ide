@@ -11,13 +11,13 @@ test.describe('CustomizeSessionDialog', () => {
     await page.getByText('open customize session').click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(
-      page.getByRole('heading', { name: 'Customize Session' })
+      page.getByRole('heading', { name: 'open working directory' })
     ).toBeVisible();
-    await expect(page.getByLabel('repo identity')).toBeVisible();
+    await expect(page.getByLabel('git project identity')).toBeVisible();
     await expect(page.getByLabel('execution node')).toBeVisible();
-    await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(page.getByLabel('cwd on linux lab')).toBeVisible();
-    await expect(page.getByLabel('coding agent')).toBeVisible();
+    await expect(page.getByLabel('git checkout / worktree')).toHaveCount(0);
+    await expect(page.getByLabel('working directory on linux lab')).toBeVisible();
+    await expect(page.getByLabel('agent runtime (optional)')).toBeVisible();
     await expect(page.getByText('continue existing session')).toBeVisible();
     await expect(page.getByText('yolo mode')).toBeVisible();
     await expect(page.getByText('Launch in tmux')).toHaveCount(0);
@@ -27,7 +27,7 @@ test.describe('CustomizeSessionDialog', () => {
     page,
   }) => {
     await page.getByText('open single-node customize session').click();
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByRole('button', { name: 'start agent tab' }).click();
 
     await expect(page.getByTestId('created-session')).toHaveText(
       'local-session'
@@ -44,9 +44,9 @@ test.describe('CustomizeSessionDialog', () => {
     page,
   }) => {
     await page.getByText('open local web-capable customize session').click();
-    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('agent runtime (optional)')).toHaveValue('hermes');
     await expect(page.getByLabel('interface')).toHaveValue('web');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByRole('button', { name: 'start agent tab' }).click();
 
     await expect(page.getByTestId('last-create-request')).toContainText(
       '/sessions'
@@ -67,12 +67,12 @@ test.describe('CustomizeSessionDialog', () => {
   }) => {
     await page.getByText('open customize session').click();
     await page.getByLabel('execution node').selectOption('linux');
-    await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(page.getByLabel('cwd on linux lab')).toHaveValue(
+    await expect(page.getByLabel('git checkout / worktree')).toHaveCount(0);
+    await expect(page.getByLabel('working directory on linux lab')).toHaveValue(
       '/home/linux'
     );
-    await page.getByLabel('cwd on linux lab').fill('/srv/manual-cwd');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByLabel('working directory on linux lab').fill('/srv/manual-cwd');
+    await page.getByRole('button', { name: 'open terminal tab' }).click();
 
     await expect(page.getByTestId('created-session')).toHaveText(
       'remote-session'
@@ -96,10 +96,10 @@ test.describe('CustomizeSessionDialog', () => {
   }) => {
     await page.getByText('open web-capable remote customize session').click();
     await page.getByLabel('execution node').selectOption('linux');
-    await expect(page.getByLabel('coding agent')).toHaveValue('hermes');
+    await expect(page.getByLabel('agent runtime (optional)')).toHaveValue('hermes');
     await expect(page.getByLabel('interface')).toHaveCount(0);
-    await page.getByLabel('cwd on linux lab').fill('/srv/hermes-cwd');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByLabel('working directory on linux lab').fill('/srv/hermes-cwd');
+    await page.getByRole('button', { name: 'start agent tab' }).click();
 
     await expect(page.getByTestId('last-create-request')).toContainText(
       '/hub/nodes/linux/sessions'
@@ -123,18 +123,18 @@ test.describe('CustomizeSessionDialog', () => {
   }) => {
     await page.getByText('open customize session').click();
     await page.getByLabel('execution node').selectOption('linux');
-    await page.getByLabel('cwd on linux lab').fill('/opt/remember-me');
-    await page.getByRole('button', { name: 'Start Session' }).click();
+    await page.getByLabel('working directory on linux lab').fill('/opt/remember-me');
+    await page.getByRole('button', { name: 'open terminal tab' }).click();
     await expect(page.getByTestId('last-create-request')).toContainText(
       '"cwd":"/opt/remember-me"'
     );
 
     await page.getByText('open customize session').click();
     await page.getByLabel('execution node').selectOption('linux');
-    await expect(page.getByLabel('cwd on linux lab')).toHaveValue(
+    await expect(page.getByLabel('working directory on linux lab')).toHaveValue(
       '/opt/remember-me'
     );
-    await page.getByRole('button', { name: 'Start in Home' }).click();
+    await page.getByRole('button', { name: 'open home terminal' }).click();
     await expect(page.getByTestId('created-session')).toHaveText(
       'remote-home-session'
     );
@@ -143,7 +143,7 @@ test.describe('CustomizeSessionDialog', () => {
     );
   });
 
-  test('shows disabled reasons for offline and capability-blocked nodes', async ({
+  test('keeps agent-blocked terminal nodes selectable while disabling offline/tmux nodes', async ({
     page,
   }) => {
     await page.getByText('open customize session').click();
@@ -155,10 +155,7 @@ test.describe('CustomizeSessionDialog', () => {
     );
     await expect(
       nodeOptions.filter({ hasText: 'no claude box' })
-    ).toBeDisabled();
-    await expect(
-      nodeOptions.filter({ hasText: 'no claude box' })
-    ).toContainText('claude unavailable on no claude box');
+    ).not.toBeDisabled();
     await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toBeDisabled();
     await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toContainText(
       'tmux unavailable on no tmux box'
@@ -168,10 +165,10 @@ test.describe('CustomizeSessionDialog', () => {
   test('keeps the single-node local path low-friction', async ({ page }) => {
     await page.getByText('open single-node customize session').click();
     await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page.getByLabel('repo identity')).toHaveCount(0);
+    await expect(page.getByLabel('git project identity')).toHaveCount(0);
     await expect(page.getByLabel('execution node')).toHaveCount(0);
-    await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
-    await expect(page.getByLabel('coding agent')).toBeVisible();
+    await expect(page.getByLabel('git checkout / worktree')).toHaveCount(0);
+    await expect(page.getByLabel('agent runtime (optional)')).toBeVisible();
   });
 
   test('shows the disabled-node reason when the single-node picker is otherwise hidden', async ({
@@ -179,23 +176,26 @@ test.describe('CustomizeSessionDialog', () => {
   }) => {
     await page.getByText('open single disabled-node customize session').click();
     await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page.getByLabel('repo identity')).toHaveCount(0);
+    await expect(page.getByLabel('git project identity')).toHaveCount(0);
     await expect(page.getByLabel('execution node')).toBeVisible();
     await expect(
       page.getByText('node is offline', { exact: true })
     ).toBeVisible();
-    await expect(page.getByLabel('node-local checkout')).toHaveCount(0);
+    await expect(page.getByLabel('git checkout / worktree')).toHaveCount(0);
     await expect(
-      page.getByRole('button', { name: 'Start Session' })
+      page.getByRole('button', { name: 'start agent tab' })
     ).toBeDisabled();
   });
 
-  test('has Start Session and Cancel buttons', async ({ page }) => {
+  test('has terminal, agent, and cancel buttons', async ({ page }) => {
     await page.getByText('open customize session').click();
     await expect(
-      page.getByRole('button', { name: 'Start Session' })
+      page.getByRole('button', { name: 'start agent tab' })
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'open terminal tab' })
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'cancel' })).toBeVisible();
   });
 
   test('screenshot', async ({ page }) => {
