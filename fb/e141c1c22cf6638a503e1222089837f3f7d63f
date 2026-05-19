@@ -1,0 +1,32 @@
+docs/cli-schema/logs.md
+  s_afc3e94f2d047a::t_8715d3ed9d48e2 23
+  s_afc3e94f2d047a::t_fc9dbee3ff6571 75-78
+  s_afc3e94f2d047a::t_335aa5f8361418 112-114
+server/logger.ts
+  s_afc3e94f2d047a::t_dd3b3bbf0c4ebe 124-126
+  s_afc3e94f2d047a::t_35226567d8facd 6
+server/node-link-rpc-host.ts
+  s_afc3e94f2d047a::t_eadf4a39e8eeac 13
+  s_afc3e94f2d047a::t_d5bd0f04eac850 528-543,548-549
+shared/security-policy.ts
+  s_afc3e94f2d047a::t_51fb6684153934 48-50
+server/log-events.ts
+  s_afc3e94f2d047a::t_a6d62f49c17309 76-87
+  s_afc3e94f2d047a::t_07aa47a1683066 128-132,134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "fbe141c1c22cf6638a503e1222089837f3f7d63f",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
