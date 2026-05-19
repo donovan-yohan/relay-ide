@@ -31,7 +31,6 @@ const logger = createLogger('hooks');
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const AGENT_STATE_PERMISSION_PROMPT = 'permission-prompt';
-const RENAME_RETRY_DELAY_MS = 5000;
 const BRANCH_CHECK_DEBOUNCE_MS = 1000;
 
 // ---------------------------------------------------------------------------
@@ -234,6 +233,17 @@ async function spawnBranchRename(
   promptText: string,
   deps: HookDeps
 ): Promise<void> {
+  // When the user has explicitly disabled AI naming, do not rename at all.
+  // The heuristic fallback is also skipped — 'none' means "no renaming from
+  // this hook path". The branch stays as the mountain-name placeholder.
+  if ((deps.renamerTool ?? 'claude') === 'none') {
+    logger.debug(
+      '[rename] renamerTool=none — skipping rename for session %s',
+      session.id
+    );
+    return;
+  }
+
   const renamerConfig: RenamerConfig = {
     tool: deps.renamerTool ?? 'claude',
     customScript: deps.renamerCustomScript,
@@ -249,57 +259,47 @@ async function spawnBranchRename(
     createdAt: session.createdAt,
   };
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    // Check session still exists before attempting
+  // Check session still exists before attempting
+  if (!deps.getSession(session.id)) return;
+
+  try {
+    const resolved = await resolveSessionRename(
+      undefined, // userSetName — not applicable here; hooks path has no explicit user name
+      undefined, // pinnedName  — meta lookup happens at session-create time; hooks path uses resolver for agent-suggested tier only
+      input,
+      renamerConfig
+    );
+
+    // Check session still exists before renaming
     if (!deps.getSession(session.id)) return;
 
-    if (attempt > 0) {
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, RENAME_RETRY_DELAY_MS)
-      );
-      // Re-check after delay
-      if (!deps.getSession(session.id)) return;
-    }
+    await execFileAsync('git', ['branch', '-m', resolved.branchName], {
+      cwd: session.cwd,
+    });
 
-    try {
-      const resolved = await resolveSessionRename(
-        undefined, // userSetName — not applicable here; hooks path has no explicit user name
-        undefined, // pinnedName  — meta lookup happens at session-create time; hooks path uses resolver for agent-suggested tier only
-        input,
-        renamerConfig
-      );
+    session.branchName = resolved.branchName;
+    session.displayName = resolved.displayName;
+    deps.broadcastEvent('session-renamed', {
+      sessionId: session.id,
+      branchName: session.branchName,
+      displayName: session.displayName,
+    });
 
-      // Check session still exists before renaming
-      if (!deps.getSession(session.id)) return;
-
-      await execFileAsync('git', ['branch', '-m', resolved.branchName], {
-        cwd: session.cwd,
-      });
-
-      session.branchName = resolved.branchName;
-      session.displayName = resolved.displayName;
-      deps.broadcastEvent('session-renamed', {
-        sessionId: session.id,
-        branchName: session.branchName,
+    if (deps.configPath) {
+      writeMeta(deps.configPath, {
+        worktreePath: session.cwd,
         displayName: session.displayName,
+        lastActivity: session.lastActivity,
+        branchName: session.branchName,
       });
-
-      if (deps.configPath) {
-        writeMeta(deps.configPath, {
-          worktreePath: session.cwd,
-          displayName: session.displayName,
-          lastActivity: session.lastActivity,
-          branchName: session.branchName,
-        });
-      }
-
-      return; // success
-    } catch (err) {
-      if (attempt === 1) {
-        logger.error('branch rename failed after 2 attempts:', err);
-        session.needsBranchRename = true;
-      }
     }
+  } catch (err) {
+    // The resolver always returns a result (agent failures fall through to
+    // heuristic/default), so this catch only fires when `git branch -m` itself
+    // fails (e.g. detached HEAD, read-only fs).  Mark needsBranchRename so a
+    // later hook or restart can retry.
+    logger.error('git branch rename failed:', err);
+    session.needsBranchRename = true;
   }
 }
 

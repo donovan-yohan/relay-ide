@@ -56,6 +56,7 @@ import {
   resolveSessionRename,
   buildHeuristicName,
   buildDefaultName,
+  safeBranchName,
   type RenamerConfig,
   type RenameInput,
 } from '../server/session-rename-resolver.js';
@@ -669,5 +670,76 @@ describe('branch name derivation', () => {
     );
     expect(result.displayName).toBe('Improve Performance');
     expect(result.branchName).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safeBranchName helper
+// ---------------------------------------------------------------------------
+
+describe('safeBranchName (unit)', () => {
+  const CREATED_AT = '2026-05-19T14:30:00.000Z';
+
+  it('returns the slugified form when phraseToBranchName yields a non-empty string', () => {
+    // The mock slugifies to kebab-case lowercase
+    const result = safeBranchName('Fix Login Bug', CREATED_AT);
+    expect(result).toBe('fix-login-bug');
+  });
+
+  it('falls back to session-<timestamp> for symbol-only input', () => {
+    // The mock strips non-alphanumeric chars, so "!!!" → ""
+    const result = safeBranchName('!!!', CREATED_AT);
+    expect(result).toMatch(/^session-2026-05-19-14-30$/);
+  });
+
+  it('falls back to session-<timestamp> for empty string', () => {
+    const result = safeBranchName('', CREATED_AT);
+    expect(result).toMatch(/^session-/);
+    expect(result).not.toBe('');
+  });
+
+  it('falls back to session-<timestamp> for whitespace-only input', () => {
+    // The mock trims, so whitespace-only → ""
+    const result = safeBranchName('   ', CREATED_AT);
+    expect(result).toMatch(/^session-/);
+    expect(result).not.toBe('');
+  });
+
+  it('fallback slug contains no colons or T separators', () => {
+    const result = safeBranchName('###', CREATED_AT);
+    expect(result).not.toContain(':');
+    expect(result).not.toContain('T');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSessionRename — symbol-only prompt inputs always produce valid branch names
+// ---------------------------------------------------------------------------
+
+describe('resolveSessionRename — symbol-only inputs produce valid branch names', () => {
+  beforeEach(() => mockExecFileImpl.mockReset());
+
+  it('heuristic branch: symbol-only repoName/branchName yields a valid branch name', async () => {
+    const result = await resolveSessionRename(
+      undefined,
+      undefined,
+      { ...BASE_INPUT, repoName: '!!!', branchName: '???', cwd: '/' },
+      NONE_CONFIG
+    );
+    // source should be heuristic (repoName/branchName are truthy as strings, even if symbols)
+    // branchName must never be empty
+    expect(result.branchName).toBeTruthy();
+    expect(result.branchName).toMatch(/^session-/); // safeBranchName fallback
+  });
+
+  it('default branch: symbol-only cwd basename yields a valid branch name', async () => {
+    const result = await resolveSessionRename(
+      undefined,
+      undefined,
+      { ...BASE_INPUT, repoName: undefined, branchName: undefined, cwd: '/' },
+      NONE_CONFIG
+    );
+    expect(result.branchName).toBeTruthy();
+    expect(result.branchName).not.toBe('');
   });
 });

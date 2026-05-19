@@ -569,6 +569,9 @@ function GeneralSection({
           <option value="claude">claude (default)</option>
           <option value="codex">codex</option>
           <option value="none">none (disable AI naming)</option>
+          <option value="custom-script">
+            custom-script (configured externally)
+          </option>
         </select>
       </SettingRow>
       <SettingRow

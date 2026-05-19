@@ -269,6 +269,22 @@ async function runCustomScriptRenamer(
 }
 
 // ---------------------------------------------------------------------------
+// Safe branch name helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Slugify `candidate` via phraseToBranchName.  If slugification returns an
+ * empty string (e.g. symbol-only or whitespace-only input), fall back to a
+ * timestamp-derived slug so the returned value is always a valid branch name.
+ */
+export function safeBranchName(candidate: string, createdAt: string): string {
+  const slug = phraseToBranchName(candidate);
+  if (slug) return slug;
+  // e.g. "2026-05-19T14:30:00.000Z" → "session-2026-05-19-14-30"
+  return `session-${createdAt.slice(0, 16).replace(/[:T]/g, '-').toLowerCase()}`;
+}
+
+// ---------------------------------------------------------------------------
 // Heuristic name
 // ---------------------------------------------------------------------------
 
@@ -333,7 +349,7 @@ export async function resolveSessionRename(
     logger.info('[rename] source=explicit-user displayName="%s"', trimmed);
     return {
       displayName: trimmed,
-      branchName: phraseToBranchName(trimmed) || trimmed,
+      branchName: safeBranchName(trimmed, input.createdAt),
       source: 'explicit-user',
     };
   }
@@ -344,7 +360,7 @@ export async function resolveSessionRename(
     logger.info('[rename] source=pinned displayName="%s"', trimmed);
     return {
       displayName: trimmed,
-      branchName: phraseToBranchName(trimmed) || trimmed,
+      branchName: safeBranchName(trimmed, input.createdAt),
       source: 'pinned',
     };
   }
@@ -390,14 +406,14 @@ export async function resolveSessionRename(
     input.branchName
   );
   if (heuristic) {
-    const branchName = phraseToBranchName(heuristic) || heuristic;
+    const branchName = safeBranchName(heuristic, input.createdAt);
     logger.info('[rename] source=heuristic displayName="%s"', heuristic);
     return { displayName: heuristic, branchName, source: 'heuristic' };
   }
 
   // 5. Default: timestamp + repo
   const fallback = buildDefaultName(input.createdAt, input.cwd, input.repoName);
-  const branchName = phraseToBranchName(fallback) || fallback;
+  const branchName = safeBranchName(fallback, input.createdAt);
   logger.info('[rename] source=default displayName="%s"', fallback);
   return { displayName: fallback, branchName, source: 'default' };
 }

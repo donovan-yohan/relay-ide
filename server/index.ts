@@ -2554,12 +2554,9 @@ async function main(): Promise<void> {
     };
     const validTools = ['claude', 'codex', 'none', 'custom-script'];
     if (!renamerTool || !validTools.includes(renamerTool)) {
-      res
-        .status(400)
-        .json({
-          error:
-            'renamerTool must be one of: claude, codex, none, custom-script',
-        });
+      res.status(400).json({
+        error: 'renamerTool must be one of: claude, codex, none, custom-script',
+      });
       return;
     }
     if (renamerTool === 'custom-script') {
@@ -2568,12 +2565,10 @@ async function main(): Promise<void> {
         typeof renamerCustomScript !== 'string' ||
         !renamerCustomScript.trim()
       ) {
-        res
-          .status(400)
-          .json({
-            error:
-              'renamerCustomScript is required when renamerTool is custom-script',
-          });
+        res.status(400).json({
+          error:
+            'renamerCustomScript is required when renamerTool is custom-script',
+        });
         return;
       }
       if (!path.isAbsolute(renamerCustomScript)) {
@@ -2582,14 +2577,31 @@ async function main(): Promise<void> {
           .json({ error: 'renamerCustomScript must be an absolute path' });
         return;
       }
+      const scriptPath = renamerCustomScript.trim();
+      if (!fs.existsSync(scriptPath)) {
+        res
+          .status(400)
+          .json({ error: 'renamerCustomScript path does not exist' });
+        return;
+      }
+      try {
+        fs.accessSync(scriptPath, fs.constants.X_OK);
+      } catch {
+        res
+          .status(400)
+          .json({ error: 'renamerCustomScript is not executable' });
+        return;
+      }
     }
     const c = getConfig();
     c.renamerTool = renamerTool as import('./types.js').RenamerTool;
     if (renamerTool === 'custom-script' && renamerCustomScript) {
+      // Only update renamerCustomScript when explicitly provided for custom-script tool.
       c.renamerCustomScript = renamerCustomScript.trim();
-    } else {
-      delete c.renamerCustomScript;
     }
+    // Do NOT clear renamerCustomScript when switching away from custom-script —
+    // keep it so switching back does not lose the configured path.
+    // Users clear it by setting it to empty string via a dedicated param.
     saveConfig(CONFIG_PATH, c);
     res.json({
       renamerTool: c.renamerTool,
