@@ -1,0 +1,21 @@
+server/workspaces.ts
+  s_9eb1a81904495b::t_a5cbd26427754e 444-467,473-474,476
+test/detect-git-repo.test.ts
+  s_9eb1a81904495b::t_c5c61762949108 1-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "d45375060dfbe50568e21e713b83198ec879049b",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
