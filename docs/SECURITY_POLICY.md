@@ -23,6 +23,8 @@ Default legacy grants are intentionally boring:
 
 `session:control:kill` is intentionally separate from `session:attach`: attaching or streaming a session is not authority to terminate it. Pause/retry controls are not routed in this slice; when added, they need explicit high-risk control bits instead of reusing attach.
 
+`rpc:fs:write` is now shipped (#428). The node executor writes via atomic rename (write-to-temp + `fs.rename`). Prod-tier nodes gate writes behind the two-token confirmation challenge — the hub returns `CONFIRMATION_REQUIRED` on the first POST; the caller must obtain an approved `confirmationToken` and re-POST with it. The CLI enforces a 1 MiB cap on base64-decoded content before the HTTP call.
+
 The schema exists before the full policy evaluator. Current routed surfaces still have their existing route-level checks; this slice adds the policy authority data model and legacy defaults so later gates have a safe source of truth.
 
 ## Hash-chained security audit sink

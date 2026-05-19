@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   canonicalConfirmationParams,
@@ -368,6 +369,66 @@ describe('confirmation challenge store', () => {
       second.challengeId,
       third.challengeId,
     ]);
+  });
+});
+
+describe('canonicalConfirmationParams rpc.fs.write (CRIT-1 security regression)', () => {
+  it('reads contentBase64 field and decodes correctly: size and sha256 match the decoded bytes', () => {
+    const hello = Buffer.from('hello');
+    const contentBase64 = hello.toString('base64');
+    const params = canonicalConfirmationParams('rpc.fs.write', {
+      contentBase64,
+      mode: 'create',
+      path: '/x',
+    });
+
+    expect(params.size).toBe(5);
+    expect(params.path).toBe('/x');
+    expect(params.mode).toBe('create');
+    // sha256 of 'hello'
+    const expectedSha = createHash('sha256').update(hello).digest('hex');
+    expect(params.sha256).toBe(expectedSha);
+    expect(JSON.stringify(params)).not.toContain('aGVsbG8='); // raw base64 must not leak
+  });
+
+  it('two calls with different contentBase64 produce different canonical params', () => {
+    const paramsA = canonicalConfirmationParams('rpc.fs.write', {
+      contentBase64: Buffer.from('hello').toString('base64'),
+      mode: 'create',
+      path: '/x',
+    });
+    const paramsB = canonicalConfirmationParams('rpc.fs.write', {
+      contentBase64: Buffer.from('hello world, much longer content!').toString('base64'),
+      mode: 'create',
+      path: '/x',
+    });
+    expect(paramsA.sha256).not.toBe(paramsB.sha256);
+    expect(paramsA.size).not.toBe(paramsB.size);
+  });
+
+  it('empty contentBase64 produces size=0 and sha256 of empty buffer', () => {
+    const emptyHash = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+    const params = canonicalConfirmationParams('rpc.fs.write', {
+      contentBase64: '',
+      mode: 'create',
+      path: '/empty',
+    });
+    expect(params.size).toBe(0);
+    expect(params.sha256).toBe(emptyHash);
+  });
+
+  it('canonical shape includes path, mode, expectedHash, size, sha256 — not raw content', () => {
+    const params = canonicalConfirmationParams('rpc.fs.write', {
+      contentBase64: Buffer.from('data').toString('base64'),
+      mode: 'overwrite',
+      path: '/some/file.ts',
+      expectedHash: 'abc123',
+    });
+    expect(Object.keys(params).sort()).toEqual(
+      expect.arrayContaining(['action', 'path', 'mode', 'expectedHash', 'size', 'sha256'])
+    );
+    expect(params).not.toHaveProperty('contentBase64');
+    expect(params).not.toHaveProperty('cwd');
   });
 });
 

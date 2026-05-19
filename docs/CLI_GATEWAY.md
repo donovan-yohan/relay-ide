@@ -17,6 +17,7 @@ relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --
 relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
+relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
 ```
 
@@ -162,6 +163,8 @@ The `files.*` commands route through the existing scoped #505 File RPC surface:
 relay-ide v1 files list --session-id remote-session-1 --path . --max-entries 100 --json
 relay-ide v1 files stat --session-id remote-session-1 --path package.json --json
 relay-ide v1 files read --session-id remote-session-1 --path package.json --max-bytes 32768 --max-lines 200 --json
+relay-ide v1 files write --session-id remote-session-1 --path src/foo.ts --mode create --file ./src/foo.ts --json
+relay-ide v1 files write --session-id remote-session-1 --path src/bar.ts --mode overwrite --file - --json  # read from stdin
 ```
 
 The CLI first resolves the session through `sessions get` unless `--node-id` is supplied. It then calls:
@@ -175,12 +178,14 @@ Only these operations are stable in v1:
 - `files.list` maps to `fs.list` and requires `session:read` + `rpc:fs:list`.
 - `files.stat` maps to `fs.stat` and requires `session:read` + `rpc:fs:read`.
 - `files.read` maps to `fs.read` and requires `session:read` + `rpc:fs:read`.
+- `files.write` maps to `fs.write` and requires `session:read` + `rpc:fs:write`. Capability is off by default; operators must grant `rpc:fs:write` per node. Uses atomic-rename on the node executor. Prod-tier nodes gate writes behind a confirmation challenge.
 
 Caps are enforced by the existing File RPC layer and reflected in the contract:
 
 - list: default 100 entries, max 500 entries
 - read: default 32 KiB, max 64 KiB
 - read line cap: optional, max 2000 lines
+- write: max 1 MiB base64-decoded; enforced at CLI before HTTP
 
 List example:
 

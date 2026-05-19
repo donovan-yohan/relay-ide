@@ -36,8 +36,8 @@ import type { SessionSummary } from './types.js';
 // envelope on the same `requestId`.
 //
 // Wired today: `sessions.create` (#425.7), `sessions.list` (#465),
-// `sessions.kill` (#478), and read-only File RPC `fs.list` / `fs.stat` /
-// `fs.read` (#505).
+// `sessions.kill` (#478), read-only File RPC `fs.list` / `fs.stat` /
+// `fs.read` / `fs.tail` (#505), and `fs.write` (#428).
 // Other RPC types fall through to an INVALID_REQUEST response so
 // misrouted envelopes don't silently hang the hub-side pending
 // request.
@@ -425,7 +425,7 @@ export function createNodeLinkRpcHost(
   }
 
   async function handleFileRpc(
-    operation: 'list' | 'stat' | 'read' | 'tail',
+    operation: 'list' | 'stat' | 'read' | 'tail' | 'write',
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
   ): Promise<void> {

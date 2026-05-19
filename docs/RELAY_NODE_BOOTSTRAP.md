@@ -392,6 +392,14 @@ If you see `NODE_CREDENTIAL_REJECTED`:
 
 Legacy paired nodes receive a default `dev` ACL on upgrade. Session/read-safe bits are allowed; file write/delete, git write, arbitrary exec, and preview/port-forward remain off unless explicitly granted. Node manifest capabilities are availability probes only, not grants. See `docs/SECURITY_POLICY.md`.
 
+To grant `rpc:fs:write` on a paired node (e.g. for an agent brain that needs to write files):
+
+```bash
+relay-ide hub node acl --node-id <node-id> --grant rpc:fs:write
+```
+
+Prod-tier nodes additionally require a human-approved confirmation challenge on each write request; dev/sandbox-tier nodes execute immediately once the capability is granted.
+
 This is a privileged local-user blast radius. Do not pair nodes you do not control.
 
 ### Transport security
