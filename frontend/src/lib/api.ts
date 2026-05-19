@@ -485,14 +485,11 @@ export async function sendSessionInput(
     return sendRoutedSessionInput(nodeId, sessionId, data);
   }
 
-  const res = await fetch(
-    `/sessions/${encodeURIComponent(sessionId)}/input`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data }),
-    }
-  );
+  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
   if (!res.ok) {
     throw await httpErrorFromResponse(res, 'Failed to send session input');
   }
@@ -1145,6 +1142,36 @@ export const setDefaultNotifications = (v: boolean) =>
 export const fetchClaudeFullscreen = () => fetchConfigBool('claudeFullscreen');
 export const setClaudeFullscreen = (v: boolean) =>
   setConfigBool('claudeFullscreen', v);
+
+export type RenamerTool = 'claude' | 'codex' | 'none' | 'custom-script';
+
+export interface RenamerToolConfig {
+  renamerTool: RenamerTool;
+  renamerCustomScript?: string;
+}
+
+export async function fetchRenamerTool(): Promise<RenamerToolConfig> {
+  const data = await json<RenamerToolConfig>(
+    await fetch('/config/renamerTool')
+  );
+  return data;
+}
+
+export async function setRenamerTool(
+  renamerTool: RenamerTool,
+  renamerCustomScript?: string
+): Promise<void> {
+  const body: Record<string, string> = { renamerTool };
+  if (renamerTool === 'custom-script' && renamerCustomScript) {
+    body['renamerCustomScript'] = renamerCustomScript;
+  }
+  const res = await fetch('/config/renamerTool', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error('Failed to update renamer tool');
+}
 
 export async function fetchVapidKey(): Promise<string | null> {
   try {

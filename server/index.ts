@@ -859,8 +859,13 @@ function associateSessionWithWorkContext(
     store.associateSession(workContextId, { session });
     return null;
   } catch (err) {
-    const code = err instanceof Error ? err.message : 'work_context_association_failed';
-    logger.warn('[sessions] failed to associate session with work context %s: %s', workContextId, err);
+    const code =
+      err instanceof Error ? err.message : 'work_context_association_failed';
+    logger.warn(
+      '[sessions] failed to associate session with work context %s: %s',
+      workContextId,
+      err
+    );
     return code || 'work_context_association_failed';
   }
 }
@@ -879,12 +884,16 @@ function sendSessionCreateSuccess(
   associationError: string | null,
   workContextId?: string
 ): void {
-  const responseSession = workContextId ? { ...session, workContextId } : session;
-  res.status(201).json(
-    associationError
-      ? { ...responseSession, workContextAssociationError: associationError }
-      : responseSession
-  );
+  const responseSession = workContextId
+    ? { ...session, workContextId }
+    : session;
+  res
+    .status(201)
+    .json(
+      associationError
+        ? { ...responseSession, workContextAssociationError: associationError }
+        : responseSession
+    );
 }
 
 function sessionCreateFailureMessage(err: unknown): string {
@@ -1211,7 +1220,10 @@ async function main(): Promise<void> {
     const token = req.cookies && req.cookies.token;
     if (!token) return false;
     const config = getConfig();
-    return authenticatedTokens.has(token) || auth.verifyCookieToken(token, config.pinHash);
+    return (
+      authenticatedTokens.has(token) ||
+      auth.verifyCookieToken(token, config.pinHash)
+    );
   }
 
   function bearerScopedToken(req: express.Request): string {
@@ -1533,10 +1545,12 @@ async function main(): Promise<void> {
     configDir,
   };
   if (startupConfig.control?.interventionDebounceMs !== undefined) {
-    sessionConfig.interventionDebounceMs = startupConfig.control.interventionDebounceMs;
+    sessionConfig.interventionDebounceMs =
+      startupConfig.control.interventionDebounceMs;
   }
   if (startupConfig.control?.coDrivenAutoRevertMs !== undefined) {
-    sessionConfig.coDrivenAutoRevertMs = startupConfig.control.coDrivenAutoRevertMs;
+    sessionConfig.coDrivenAutoRevertMs =
+      startupConfig.control.coDrivenAutoRevertMs;
   }
   if (securityAuditLog) {
     sessionConfig.securityAuditSink = securityAuditLog;
@@ -1550,6 +1564,12 @@ async function main(): Promise<void> {
     fireBackendStateIfChanged: sessions.fireBackendStateIfChanged,
     notifySessionAttention: push.notifySessionAttention,
     configPath: CONFIG_PATH,
+    get renamerTool() {
+      return getConfig().renamerTool;
+    },
+    get renamerCustomScript() {
+      return getConfig().renamerCustomScript;
+    },
   });
   app.use('/hooks', hooksRouter);
 
@@ -1671,10 +1691,11 @@ async function main(): Promise<void> {
       getSessions: async () => {
         const [localSessions, remoteSessions] = await Promise.all([
           Promise.resolve(
-            localRelayNode
-              .sessions
+            localRelayNode.sessions
               .list()
-              .map((session) => withWorkContextMetadata(workContextStore, session))
+              .map((session) =>
+                withWorkContextMetadata(workContextStore, session)
+              )
           ),
           aggregateRemoteSessions({
             registry: hubNodeRegistry,
@@ -2089,8 +2110,7 @@ async function main(): Promise<void> {
   app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
       Promise.resolve(
-        localRelayNode
-          .sessions
+        localRelayNode.sessions
           .list()
           .map((session) => withWorkContextMetadata(workContextStore, session))
       ),
@@ -2147,7 +2167,10 @@ async function main(): Promise<void> {
   });
 
   app.get('/sessions/:id', requireScopedSessionAuth, async (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_READ_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_READ_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
@@ -2156,7 +2179,9 @@ async function main(): Promise<void> {
     const id = req.params['id'] as string;
     const local = localRelayNode.sessions.get(id);
     if (local) {
-      const session = localRelayNode.sessions.list().find((candidate) => candidate.id === id);
+      const session = localRelayNode.sessions
+        .list()
+        .find((candidate) => candidate.id === id);
       if (!session) {
         res.status(404).json({
           error: {
@@ -2196,74 +2221,87 @@ async function main(): Promise<void> {
     res.json(remote);
   });
 
-  app.get('/sessions/:id/interventions', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilitiesDecisionFromRequest(req, [
-      CONTROL_READ_CAPABILITY,
-      INTERVENTION_READ_CAPABILITY,
-    ]);
-    if (decision.decision !== 'allow') {
-      const error = capabilityError(decision);
-      res.status(sessionControlErrorStatus(error)).json({ error });
-      return;
+  app.get(
+    '/sessions/:id/interventions',
+    requireScopedSessionAuth,
+    (req, res) => {
+      const decision = capabilitiesDecisionFromRequest(req, [
+        CONTROL_READ_CAPABILITY,
+        INTERVENTION_READ_CAPABILITY,
+      ]);
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const id = req.params['id'] as string;
+      if (!localRelayNode.sessions.get(id)) {
+        res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            reasonCode: 'SESSION_NOT_FOUND',
+            message: 'session was not found or is not locally readable',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      const limit = clampInterventionLimit(
+        typeof req.query.limit === 'string' ? req.query.limit : undefined
+      );
+      const records = localRelayNode.sessions.getInterventions(id, { limit });
+      res.json(toInterventionReadResponse({ records, limit }));
     }
-    const id = req.params['id'] as string;
-    if (!localRelayNode.sessions.get(id)) {
-      res.status(404).json({
-        error: {
-          code: 'NOT_FOUND',
-          reasonCode: 'SESSION_NOT_FOUND',
-          message: 'session was not found or is not locally readable',
-          retryable: false,
-        },
-      });
-      return;
-    }
-    const limit = clampInterventionLimit(
-      typeof req.query.limit === 'string' ? req.query.limit : undefined
-    );
-    const records = localRelayNode.sessions.getInterventions(
-      id,
-      { limit }
-    );
-    res.json(
-      toInterventionReadResponse(
-        { records, limit }
-      )
-    );
-  });
+  );
 
-  app.post('/sessions/:id/control/hand-back', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilitiesDecisionFromRequest(req, [
-      CONTROL_SESSION_CAPABILITY,
-      CONTROL_WRITE_CAPABILITY,
-    ]);
-    if (decision.decision !== 'allow') {
-      const error = capabilityError(decision);
-      res.status(sessionControlErrorStatus(error)).json({ error });
-      return;
+  app.post(
+    '/sessions/:id/control/hand-back',
+    requireScopedSessionAuth,
+    (req, res) => {
+      const decision = capabilitiesDecisionFromRequest(req, [
+        CONTROL_SESSION_CAPABILITY,
+        CONTROL_WRITE_CAPABILITY,
+      ]);
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const body =
+        typeof req.body === 'object' && req.body !== null
+          ? (req.body as Record<string, unknown>)
+          : {};
+      const latestSeenInterventionEventId =
+        typeof body['latestSeenInterventionEventId'] === 'string'
+          ? body['latestSeenInterventionEventId']
+          : undefined;
+      const actor = actorFromRequestBody(body['actor']);
+      const result = localRelayNode.sessions.handBackToAgent({
+        id: req.params['id'] as string,
+        ...(latestSeenInterventionEventId === undefined
+          ? {}
+          : { latestSeenInterventionEventId }),
+        ...(actor === undefined ? {} : { actor }),
+      });
+      if (result.ok === false) {
+        res
+          .status(sessionControlErrorStatus(result.error))
+          .json({ error: result.error });
+        return;
+      }
+      res.json({
+        ok: true,
+        events: result.events,
+        ackedHumanInterventions: result.ackedHumanInterventions,
+      });
     }
-    const body = typeof req.body === 'object' && req.body !== null ? req.body as Record<string, unknown> : {};
-    const latestSeenInterventionEventId =
-      typeof body['latestSeenInterventionEventId'] === 'string'
-        ? body['latestSeenInterventionEventId']
-        : undefined;
-    const actor = actorFromRequestBody(body['actor']);
-    const result = localRelayNode.sessions.handBackToAgent({
-      id: req.params['id'] as string,
-      ...(latestSeenInterventionEventId === undefined
-        ? {}
-        : { latestSeenInterventionEventId }),
-      ...(actor === undefined ? {} : { actor }),
-    });
-    if (result.ok === false) {
-      res.status(sessionControlErrorStatus(result.error)).json({ error: result.error });
-      return;
-    }
-    res.json({ ok: true, events: result.events, ackedHumanInterventions: result.ackedHumanInterventions });
-  });
+  );
 
   app.post('/sessions/:id/input', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_SESSION_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_SESSION_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
@@ -2281,7 +2319,9 @@ async function main(): Promise<void> {
       return;
     }
     if (data.length > 1000) {
-      res.status(413).json({ error: 'small input is limited to 1000 characters' });
+      res
+        .status(413)
+        .json({ error: 'small input is limited to 1000 characters' });
       return;
     }
 
@@ -2494,6 +2534,70 @@ async function main(): Promise<void> {
   boolConfigEndpoints('defaultNotifications', true);
   boolConfigEndpoints('claudeFullscreen', true);
   boolConfigEndpoints('autoProvision', false);
+
+  // GET /config/renamerTool — get the active renamer tool setting
+  app.get('/config/renamerTool', requireAuth, (_req, res) => {
+    const c = getConfig();
+    res.json({
+      renamerTool: c.renamerTool ?? 'claude',
+      ...(c.renamerCustomScript !== undefined
+        ? { renamerCustomScript: c.renamerCustomScript }
+        : {}),
+    });
+  });
+
+  // PATCH /config/renamerTool — set the renamer tool (and optional custom script path)
+  app.patch('/config/renamerTool', requireAuth, (req, res) => {
+    const { renamerTool, renamerCustomScript } = req.body as {
+      renamerTool?: string;
+      renamerCustomScript?: string;
+    };
+    const validTools = ['claude', 'codex', 'none', 'custom-script'];
+    if (!renamerTool || !validTools.includes(renamerTool)) {
+      res
+        .status(400)
+        .json({
+          error:
+            'renamerTool must be one of: claude, codex, none, custom-script',
+        });
+      return;
+    }
+    if (renamerTool === 'custom-script') {
+      if (
+        !renamerCustomScript ||
+        typeof renamerCustomScript !== 'string' ||
+        !renamerCustomScript.trim()
+      ) {
+        res
+          .status(400)
+          .json({
+            error:
+              'renamerCustomScript is required when renamerTool is custom-script',
+          });
+        return;
+      }
+      if (!path.isAbsolute(renamerCustomScript)) {
+        res
+          .status(400)
+          .json({ error: 'renamerCustomScript must be an absolute path' });
+        return;
+      }
+    }
+    const c = getConfig();
+    c.renamerTool = renamerTool as import('./types.js').RenamerTool;
+    if (renamerTool === 'custom-script' && renamerCustomScript) {
+      c.renamerCustomScript = renamerCustomScript.trim();
+    } else {
+      delete c.renamerCustomScript;
+    }
+    saveConfig(CONFIG_PATH, c);
+    res.json({
+      renamerTool: c.renamerTool,
+      ...(c.renamerCustomScript !== undefined
+        ? { renamerCustomScript: c.renamerCustomScript }
+        : {}),
+    });
+  });
 
   // GET /config/automations — get automation settings
   app.get(
