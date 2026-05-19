@@ -1,0 +1,46 @@
+test/fixtures/redaction/sensitive-json-key.json
+  s_afc3e94f2d047a::t_6b8bbbc0080d5e 1-22
+test/fixtures/redaction/private-key-block.txt
+  s_afc3e94f2d047a::t_f4fdac10b72d4e 1-14
+test/fixtures/redaction/bootstrap-node-credential.txt
+  s_afc3e94f2d047a::t_b10b3287f63c73 1-12
+test/fixtures/redaction/bootstrap-json-secret-key.txt
+  s_afc3e94f2d047a::t_7d77111fdf526d 1-9
+test/fixtures/redaction/authorization-header.txt
+  s_afc3e94f2d047a::t_d980d8355dfc23 1-14
+test/fixtures/redaction/bootstrap-bearer-header.txt
+  s_afc3e94f2d047a::t_ac92dcdcd23682 1-12
+test/fixtures/redaction/bearer-token.txt
+  s_afc3e94f2d047a::t_68b0f5a14956e8 1-11
+test/fixtures/redaction/secret-assignment.txt
+  s_afc3e94f2d047a::t_cb23a9eb242623 1-15
+test/fixtures/redaction/github-token.txt
+  s_afc3e94f2d047a::t_6a26763d4edc77 1-11
+test/fixtures/redaction/cookie-header.txt
+  s_afc3e94f2d047a::t_981976c03aaa7c 1-11
+test/shared/redaction-coverage.test.ts
+  s_afc3e94f2d047a::t_132ba164248216 1-249,251,253-257,274-299
+  s_afc3e94f2d047a::t_109e7466733882 250,252,258-273
+test/fixtures/redaction/bootstrap-secret-assignment.txt
+  s_afc3e94f2d047a::t_cbd4e5a86f9a5c 1-9
+test/fixtures/redaction/url-credential.txt
+  s_afc3e94f2d047a::t_4f4ab8fc22a2c8 1-10
+test/fixtures/redaction/bootstrap-pair-token.txt
+  s_afc3e94f2d047a::t_24bedda76b77d8 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "f5489ae5f49b24535ef57a95a2d1c74d11c34342",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
