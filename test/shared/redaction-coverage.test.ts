@@ -78,13 +78,18 @@ function loadFixtures(): Fixture[] {
 }
 
 function parseTxtFixture(file: string, body: string): Fixture {
-  const metaMatch = body.match(/## meta\n([\s\S]*?)\n## input\n([\s\S]*)$/);
+  // CRLF-tolerant: fixtures are checked in with LF endings, but a Windows
+  // checkout (or an editor that converts line endings on save) shouldn't
+  // break the parser. Per Gemini PR #606 feedback.
+  const metaMatch = body.match(
+    /## meta\r?\n([\s\S]*?)\r?\n## input\r?\n([\s\S]*)$/
+  );
   if (!metaMatch) {
     throw new Error(
       `fixture ${file} must have a '## meta' block followed by '## input'`
     );
   }
-  const metaLines = metaMatch[1]!.split('\n');
+  const metaLines = metaMatch[1]!.split(/\r?\n/);
   const meta: Record<string, string> = {};
   for (const line of metaLines) {
     const trimmed = line.trim();
@@ -93,7 +98,7 @@ function parseTxtFixture(file: string, body: string): Fixture {
     if (idx === -1) throw new Error(`fixture ${file} meta line missing colon: ${line}`);
     meta[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
   }
-  const input = metaMatch[2]!.replace(/\n+$/, '');
+  const input = metaMatch[2]!.replace(/[\r\n]+$/, '');
   return {
     file,
     rule: requireMeta(file, meta, 'rule'),
