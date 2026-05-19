@@ -1,0 +1,114 @@
+/* ===== WorkContextBlock ===== */
+
+.block-work-context {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+.block-work-context--loading,
+.block-work-context--error,
+.block-work-context--empty {
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  color: var(--text-muted);
+}
+
+.block-work-context__spinner {
+  font-size: var(--font-size-lg);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.block-work-context__header {
+  flex-shrink: 0;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.block-work-context__kind {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.block-work-context__title {
+  font-size: var(--font-size-base);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.block-work-context__section {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.block-work-context__section--meta {
+  margin-top: auto;
+  border-bottom: none;
+}
+
+.block-work-context__label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.block-work-context__value {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+.block-work-context__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.block-work-context__list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-xs);
+}
+
+.block-work-context__actor-kind,
+.block-work-context__artifact-kind {
+  color: var(--text-muted);
+  min-width: 60px;
+}
+
+.block-work-context__actor-name,
+.block-work-context__artifact-title {
+  color: var(--text);
+}
+
+.block-work-context__heading {
+  font-size: var(--font-size-base);
+  color: var(--text);
+}
+
+.block-work-context__detail,
+.block-work-context__status {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
