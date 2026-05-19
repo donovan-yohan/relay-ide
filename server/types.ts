@@ -541,6 +541,17 @@ export const MOUNTAIN_NAMES = [
   'hood',
 ] as const;
 
+/**
+ * Which CLI tool is used for the agent-suggested-name branch of the rename
+ * resolver.  See `server/session-rename-resolver.ts` for full precedence docs.
+ *
+ *  - `'claude'`        — `claude -p --model haiku` (default when installed)
+ *  - `'codex'`         — `codex --quiet -p`
+ *  - `'none'`          — skip the agent-suggested-name branch entirely
+ *  - `'custom-script'` — run `renamerCustomScript`; first trimmed stdout line is the name
+ */
+export type RenamerTool = 'claude' | 'codex' | 'none' | 'custom-script';
+
 export interface Config {
   host: string;
   port: number;
@@ -555,6 +566,18 @@ export interface Config {
   launchInTmux: boolean;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
+  /**
+   * Which CLI tool to use for AI-suggested session/branch names.
+   * Defaults to 'claude'. See RenamerTool for all options.
+   */
+  renamerTool?: RenamerTool | undefined;
+  /**
+   * Absolute path to a custom binary that produces a session name.
+   * Required when renamerTool === 'custom-script'.
+   * The binary receives the rename prompt in RELAY_RENAME_PROMPT env var;
+   * the first trimmed line of stdout is used as the display name.
+   */
+  renamerCustomScript?: string | undefined;
   pinHash?: string | undefined;
   rootDirs?: string[] | undefined;
   workspaces?: Workspace[] | undefined;

@@ -6,10 +6,9 @@ import { Router } from 'express';
 import express from 'express';
 import type { Request, Response } from 'express';
 
-import type { Session } from './types.js';
+import type { Session, RenamerTool } from './types.js';
 import type { AgentState } from './output-parsers/index.js';
-import { stripAnsi, cleanEnv } from './utils.js';
-import { phraseToBranchName } from './git.js';
+import { stripAnsi } from './utils.js';
 import { writeMeta } from './config.js';
 import { recordSessionEvent } from './analytics.js';
 import {
@@ -18,6 +17,10 @@ import {
 } from './session-attribution.js';
 import { forwardHookEvent } from './telemetry.js';
 import { createLogger } from './logger.js';
+import {
+  resolveSessionRename,
+  type RenamerConfig,
+} from './session-rename-resolver.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('hooks');
@@ -28,16 +31,6 @@ const logger = createLogger('hooks');
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const AGENT_STATE_PERMISSION_PROMPT = 'permission-prompt';
-const DEFAULT_RENAME_PROMPT = `Output two lines (no explanation, no backticks, no quotes):
-Line 1: A short descriptive phrase (3-8 words) summarizing this task
-Line 2: A kebab-case git branch name for the same task
-
-Example:
-Fix sidebar disappearing on mobile
-fix-sidebar-disappearing-on-mobile
-
-Task:`;
-const RENAME_RETRY_DELAY_MS = 5000;
 const BRANCH_CHECK_DEBOUNCE_MS = 1000;
 
 // ---------------------------------------------------------------------------
@@ -54,6 +47,10 @@ export interface HookDeps {
   ) => void;
   configPath?: string;
   executeBranchRename?: (session: Session, promptText: string) => Promise<void>;
+  /** Which renamer tool to use for the agent-suggested-name branch. Defaults to 'claude'. */
+  renamerTool?: RenamerTool | undefined;
+  /** Absolute path to custom renamer script when renamerTool === 'custom-script'. */
+  renamerCustomScript?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,80 +233,73 @@ async function spawnBranchRename(
   promptText: string,
   deps: HookDeps
 ): Promise<void> {
-  const cleanedPrompt = stripAnsi(promptText).slice(0, 500);
-  const renamePrompt =
-    (session.mode === 'pty' ? session.branchRenamePrompt : undefined) ??
-    DEFAULT_RENAME_PROMPT;
-  const fullPrompt = renamePrompt + '\n\n' + cleanedPrompt;
-  const env = cleanEnv();
+  // When the user has explicitly disabled AI naming, do not rename at all.
+  // The heuristic fallback is also skipped — 'none' means "no renaming from
+  // this hook path". The branch stays as the mountain-name placeholder.
+  if ((deps.renamerTool ?? 'claude') === 'none') {
+    logger.debug(
+      '[rename] renamerTool=none — skipping rename for session %s',
+      session.id
+    );
+    return;
+  }
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    // Check session still exists before attempting
+  const renamerConfig: RenamerConfig = {
+    tool: deps.renamerTool ?? 'claude',
+    customScript: deps.renamerCustomScript,
+  };
+
+  const input = {
+    promptText: stripAnsi(promptText),
+    cwd: session.cwd,
+    customRenamePrompt:
+      session.mode === 'pty' ? session.branchRenamePrompt : undefined,
+    repoName: session.repoName,
+    branchName: session.branchName,
+    createdAt: session.createdAt,
+  };
+
+  // Check session still exists before attempting
+  if (!deps.getSession(session.id)) return;
+
+  try {
+    const resolved = await resolveSessionRename(
+      undefined, // userSetName — not applicable here; hooks path has no explicit user name
+      undefined, // pinnedName  — meta lookup happens at session-create time; hooks path uses resolver for agent-suggested tier only
+      input,
+      renamerConfig
+    );
+
+    // Check session still exists before renaming
     if (!deps.getSession(session.id)) return;
 
-    if (attempt > 0) {
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, RENAME_RETRY_DELAY_MS)
-      );
-      // Re-check after delay
-      if (!deps.getSession(session.id)) return;
-    }
+    await execFileAsync('git', ['branch', '-m', resolved.branchName], {
+      cwd: session.cwd,
+    });
 
-    try {
-      const { stdout } = await execFileAsync(
-        'claude',
-        ['-p', '--model', 'haiku', fullPrompt],
-        { cwd: session.cwd, timeout: 30000, env }
-      );
+    session.branchName = resolved.branchName;
+    session.displayName = resolved.displayName;
+    deps.broadcastEvent('session-renamed', {
+      sessionId: session.id,
+      branchName: session.branchName,
+      displayName: session.displayName,
+    });
 
-      // Parse two-line response: display name + branch name
-      const lines = stdout
-        .replace(/`/g, '')
-        .replace(/["']/g, '')
-        .trim()
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-
-      if (!lines.length) continue;
-
-      const raw = lines[0]!.slice(0, 80);
-      const displayName = raw.charAt(0).toUpperCase() + raw.slice(1);
-
-      const branchName = phraseToBranchName(lines[1] ?? displayName);
-      if (!branchName) continue;
-
-      // Check session still exists before renaming
-      if (!deps.getSession(session.id)) return;
-
-      await execFileAsync('git', ['branch', '-m', branchName], {
-        cwd: session.cwd,
-      });
-
-      session.branchName = branchName;
-      session.displayName = displayName;
-      deps.broadcastEvent('session-renamed', {
-        sessionId: session.id,
-        branchName: session.branchName,
+    if (deps.configPath) {
+      writeMeta(deps.configPath, {
+        worktreePath: session.cwd,
         displayName: session.displayName,
+        lastActivity: session.lastActivity,
+        branchName: session.branchName,
       });
-
-      if (deps.configPath) {
-        writeMeta(deps.configPath, {
-          worktreePath: session.cwd,
-          displayName: session.displayName,
-          lastActivity: session.lastActivity,
-          branchName: session.branchName,
-        });
-      }
-
-      return; // success
-    } catch (err) {
-      if (attempt === 1) {
-        logger.error('branch rename failed after 2 attempts:', err);
-        session.needsBranchRename = true;
-      }
     }
+  } catch (err) {
+    // The resolver always returns a result (agent failures fall through to
+    // heuristic/default), so this catch only fires when `git branch -m` itself
+    // fails (e.g. detached HEAD, read-only fs).  Mark needsBranchRename so a
+    // later hook or restart can retry.
+    logger.error('git branch rename failed:', err);
+    session.needsBranchRename = true;
   }
 }
 
@@ -420,7 +410,9 @@ export function createHooksRouter(deps: HookDeps): Router {
       ._hookSession as Session;
     setAgentState(session, 'processing', deps);
 
-    recordSessionEvent(buildSessionEvent(session, { eventType: 'user_prompt' }));
+    recordSessionEvent(
+      buildSessionEvent(session, { eventType: 'user_prompt' })
+    );
 
     if (session.needsBranchRename === true) {
       session.needsBranchRename = false;
@@ -445,7 +437,9 @@ export function createHooksRouter(deps: HookDeps): Router {
   router.post('/session-end', (req: Request, res: Response) => {
     const session = (req as unknown as Record<string, unknown>)
       ._hookSession as Session;
-    recordSessionEvent(buildSessionEvent(session, { eventType: 'session_end' }));
+    recordSessionEvent(
+      buildSessionEvent(session, { eventType: 'session_end' })
+    );
     // Acknowledge hook — PTY onExit owns actual cleanup and cleanedUp flag
     res.json({ ok: true });
   });
@@ -482,7 +476,9 @@ export function createHooksRouter(deps: HookDeps): Router {
     if (session.agentState === AGENT_STATE_PERMISSION_PROMPT) {
       setAgentState(session, 'processing', deps);
     }
-    recordSessionEvent(buildSessionEvent(session, { eventType: 'tool_complete' }));
+    recordSessionEvent(
+      buildSessionEvent(session, { eventType: 'tool_complete' })
+    );
     // Debounced branch check — catches git checkout/switch during tool execution
     scheduleBranchCheck(session, deps);
     res.json({ ok: true });
