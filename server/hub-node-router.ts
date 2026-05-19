@@ -983,6 +983,54 @@ function appendRoutedSessionAudit(
   }
 }
 
+function appendFsWriteCompletionAudit(
+  sink: RoutedSessionAuditSink | undefined,
+  opts: {
+    success: true;
+    peer: SecurityAuditEntryInput['peer'];
+    nodeId: string;
+    sessionId: string;
+    policyScope: unknown;
+    payload: unknown;
+    correlationId?: string;
+  } | {
+    success: false;
+    peer: SecurityAuditEntryInput['peer'];
+    nodeId: string;
+    sessionId: string;
+    policyScope: unknown;
+    errorCode: string;
+    correlationId?: string;
+  }
+): void {
+  appendRoutedSessionAudit(sink, opts.success ? {
+    eventType: 'grant',
+    decision: 'allow',
+    reasonCode: 'POLICY_ALLOW',
+    peer: opts.peer,
+    node: { nodeId: opts.nodeId },
+    sessionId: opts.sessionId,
+    intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
+    material: {
+      scope: opts.policyScope,
+      params: typeof opts.payload === 'object' && opts.payload !== null
+        ? (opts.payload as Record<string, unknown>)
+        : { payload: opts.payload },
+    },
+    ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
+  } : {
+    eventType: 'denial',
+    decision: 'failed',
+    reasonCode: opts.errorCode,
+    peer: opts.peer,
+    node: { nodeId: opts.nodeId },
+    sessionId: opts.sessionId,
+    intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
+    material: { scope: opts.policyScope, params: { error: opts.errorCode } },
+    ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
+  });
+}
+
 function auditLifecycleDenial(
   sink: RoutedSessionAuditSink | undefined,
   validation: Exclude<ReturnType<InMemorySessionEnvelopeRegistry['validate']>, { ok: true }>,
@@ -2594,7 +2642,7 @@ export function createHubNodeRouter(
       if (!isFileRpcOperation(operation)) {
         sendRelayError(
           res,
-          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, read, or tail', false, {
+          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, read, tail, or write', false, {
             reasonCode: 'FILE_RPC_INVALID_REQUEST',
             operation,
           })
@@ -2724,9 +2772,32 @@ export function createHubNodeRouter(
           `fs.${operation}`,
           normalized.value.request
         );
+        // Post-write completion audit: record the node response for forensic completeness.
+        if (operation === 'write') {
+          appendFsWriteCompletionAudit(options.auditSink, {
+            success: true,
+            peer: auditPeerForSummary(lifecycle.summary),
+            nodeId,
+            sessionId,
+            policyScope: normalized.value.policyScope,
+            payload,
+            ...(lifecycle.summary.correlationId ? { correlationId: lifecycle.summary.correlationId } : {}),
+          });
+        }
         res.json(payload);
       } catch (error) {
         if (error instanceof HubNodeLinkError) {
+          if (operation === 'write') {
+            appendFsWriteCompletionAudit(options.auditSink, {
+              success: false,
+              peer: auditPeerForSummary(lifecycle.summary),
+              nodeId,
+              sessionId,
+              policyScope: normalized.value.policyScope,
+              errorCode: String(error.relayNodeError.details?.['reasonCode'] ?? error.relayNodeError.code),
+              ...(lifecycle.summary.correlationId ? { correlationId: lifecycle.summary.correlationId } : {}),
+            });
+          }
           sendRelayError(res, error.relayNodeError);
           return;
         }

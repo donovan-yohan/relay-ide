@@ -22,6 +22,7 @@ export type RelayCliGatewayCommand =
   | 'files.list'
   | 'files.stat'
   | 'files.read'
+  | 'files.write'
   | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
@@ -366,6 +367,36 @@ const fileRpcReadOutputSchema: RelayJsonSchema = {
     'truncatedLines',
     'maxBytes',
   ],
+};
+
+const fileRpcWriteInputSchema: RelayJsonSchema = {
+  ...fileRpcBaseInputSchema,
+  title: 'FileRpcWriteGatewayInput',
+  properties: {
+    ...(fileRpcBaseInputSchema.properties ?? {}),
+    mode: { type: 'string', enum: ['create', 'overwrite', 'append'] },
+    contentBase64: stringSchema,
+    expectedHash: stringSchema,
+    permissions: { type: 'number', minimum: 0, maximum: 511 },
+  },
+  required: [...(fileRpcBaseInputSchema.required ?? []), 'mode', 'contentBase64'],
+};
+
+const fileRpcWriteOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation: { const: 'write' },
+    root: stringSchema,
+    cwd: stringSchema,
+    path: stringSchema,
+    mode: { type: 'string', enum: ['create', 'overwrite', 'append'] },
+    bytesWritten: { type: 'number' },
+    newHash: stringSchema,
+    newMtime: stringSchema,
+    created: booleanSchema,
+  },
+  required: ['operation', 'root', 'cwd', 'path', 'mode', 'bytesWritten', 'newHash', 'newMtime', 'created'],
 };
 
 const attachOutputSchema: RelayJsonSchema = {
@@ -1065,6 +1096,41 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read', 'rpc:fs:read'],
     inputSchema: fileRpcReadInputSchema,
     outputSchema: okOutput('FilesReadOutput', fileRpcReadOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'files.write',
+    cli: [
+      'relay-ide',
+      'v1',
+      'files',
+      'write',
+      '--session-id',
+      '<session-id>',
+      '--path',
+      '<path>',
+      '--mode',
+      '<create|overwrite|append>',
+      '--file',
+      '<local-path|->',
+      '--json',
+    ],
+    summary: 'Write file content through scoped File RPC with atomic-rename semantics and capability gate.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:write'],
+    inputSchema: fileRpcWriteInputSchema,
+    outputSchema: okOutput('FilesWriteOutput', fileRpcWriteOutputSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

@@ -476,8 +476,9 @@ export function canonicalConfirmationParams(
       const bytes = bytesFromFileWrite(record);
       return stripUndefined({
         action,
-        cwd: stringField(record, 'cwd'),
         path: stringField(record, 'path'),
+        mode: stringField(record, 'mode'),
+        expectedHash: stringField(record, 'expectedHash'),
         size: bytes.length,
         sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
       });
@@ -712,6 +713,12 @@ function hashOptional(value: unknown): string | undefined {
 }
 
 function bytesFromFileWrite(record: Record<string, unknown> | undefined): Buffer {
+  // Primary: fs.write payload uses contentBase64
+  const contentBase64 = record?.['contentBase64'];
+  if (typeof contentBase64 === 'string') {
+    return Buffer.from(contentBase64, 'base64');
+  }
+  // Backward-compat fallback for other call sites that may pass raw content
   const content = record?.['content'] ?? record?.['bytes'] ?? record?.['data'];
   if (Buffer.isBuffer(content)) return content;
   if (content instanceof Uint8Array) return Buffer.from(content);

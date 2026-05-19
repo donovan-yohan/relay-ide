@@ -1,4 +1,7 @@
+import * as crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
 import type { Stats } from 'node:fs';
 import type {
@@ -13,6 +16,9 @@ import type {
   FileRpcTailChunk,
   FileRpcTailRequest,
   FileRpcTailResponse,
+  FileRpcWriteMode,
+  FileRpcWriteRequest,
+  FileRpcWriteResponse,
 } from '../shared/file-rpc.js';
 import {
   FILE_RPC_DEFAULT_FOLLOW_CHUNK_BYTES,
@@ -25,6 +31,7 @@ import {
   FILE_RPC_MAX_READ_LINES,
   FILE_RPC_MAX_TAIL_BYTES,
   FILE_RPC_MAX_TAIL_LINES,
+  FILE_RPC_MAX_WRITE_BYTES,
 } from '../shared/file-rpc.js';
 import type { RelayNodeError } from '../shared/relay-node-protocol.js';
 import type { ScopedSessionSummary } from './session-envelope-registry.js';
@@ -171,6 +178,7 @@ function buildOperationRequest(
   if (operation === 'list') return buildListRequest(base, fields);
   if (operation === 'read') return buildReadRequest(base, fields);
   if (operation === 'tail') return buildTailRequest(base, fields);
+  if (operation === 'write') return buildWriteRequest(base, fields);
   return base;
 }
 
@@ -233,6 +241,82 @@ function buildTailRequest(
     follow,
     maxFollowChunkBytes,
   };
+}
+
+function buildWriteRequest(
+  base: FileRpcRequest,
+  fields: Record<string, unknown>
+): FileRpcRequest | RelayNodeError {
+  const modeRaw = fields['mode'];
+  if (modeRaw !== 'create' && modeRaw !== 'overwrite' && modeRaw !== 'append') {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'mode must be "create", "overwrite", or "append"', {
+      field: 'mode',
+    });
+  }
+  const mode = modeRaw as FileRpcWriteMode;
+
+  const contentBase64 = fields['contentBase64'];
+  if (typeof contentBase64 !== 'string') {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'contentBase64 must be a string', {
+      field: 'contentBase64',
+    });
+  }
+
+  // Validate base64 before decoding: Buffer.from(garbage, 'base64') silently
+  // returns an empty buffer rather than throwing, so we must pre-validate.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4 !== 0) {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is malformed base64', {
+      field: 'contentBase64',
+      reason: 'malformed_base64',
+    });
+  }
+
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(contentBase64, 'base64');
+  } catch {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is not valid base64', {
+      field: 'contentBase64',
+      reason: 'malformed_base64',
+    });
+  }
+
+  if (buf.length > FILE_RPC_MAX_WRITE_BYTES) {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SIZE_EXCEEDED', 'write content exceeds 1 MB limit', {
+      bytesDecoded: buf.length,
+      maxBytes: FILE_RPC_MAX_WRITE_BYTES,
+    });
+  }
+
+  if (mode === 'overwrite') {
+    const expectedHash = fields['expectedHash'];
+    if (!expectedHash || typeof expectedHash !== 'string' || expectedHash.trim() === '') {
+      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_EXPECTED_HASH_REQUIRED', 'expectedHash is required when mode is "overwrite"', {
+        field: 'expectedHash',
+      });
+    }
+  }
+
+  const permissions = fields['permissions'];
+  if (permissions !== undefined && permissions !== null) {
+    if (!Number.isInteger(permissions) || typeof permissions !== 'number' || permissions < 0) {
+      return invalidRequest('FILE_RPC_INVALID_REQUEST', 'permissions must be a non-negative integer when set', {
+        field: 'permissions',
+      });
+    }
+  }
+
+  const req: FileRpcWriteRequest = {
+    ...base,
+    operation: 'write',
+    mode,
+    contentBase64,
+    ...(mode === 'overwrite' && fields['expectedHash']
+      ? { expectedHash: fields['expectedHash'] as string }
+      : {}),
+    ...(permissions !== undefined && permissions !== null ? { permissions: permissions as number } : {}),
+  };
+  return req;
 }
 
 export function normalizeHubFileRpcRequest(input: {
@@ -381,6 +465,21 @@ async function normalizeNodeRequest(raw: unknown, operation: FileRpcOperation): 
   }
   const realRoot = await realpathOrError(root, 'FILE_RPC_ROOT_UNAVAILABLE');
   if (typeof realRoot !== 'string') return realRoot;
+  if (operation === 'write') {
+    // Target may not yet exist (mode='create'). Realpath the parent directory
+    // instead to prevent directory traversal. executeWrite re-validates via
+    // post-write symlink check.
+    const parentDir = path.dirname(target);
+    const realParent = await realpathOrError(parentDir, 'FILE_RPC_NOT_FOUND');
+    if (typeof realParent !== 'string') return realParent;
+    if (!pathInside(realRoot, realParent, path)) {
+      return invalidRequest('FILE_RPC_ROOT_ESCAPE', 'resolved parent dir escapes the scoped filesystem root', {
+        root: realRoot,
+        path: realParent,
+      });
+    }
+    return { ...parsed, root, cwd, path: target };
+  }
   const realTarget = await realpathOrError(target, 'FILE_RPC_NOT_FOUND');
   if (typeof realTarget !== 'string') return realTarget;
   if (!pathInside(realRoot, realTarget, path)) {
@@ -731,6 +830,274 @@ export function createFileRpcFollower(options: {
   };
 }
 
+function sha256Hex(buf: Buffer): string {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+// 100 MB: files larger than this will not be read into memory for hashing.
+const FILE_RPC_MAX_SOURCE_READ_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Hash a file via streaming so arbitrarily large source files do not OOM the
+ * process. Returns the hex digest, or a RelayNodeError if the file is too
+ * large (> 100 MB) or cannot be opened/read.
+ */
+async function streamHash(filePath: string): Promise<{ hex: string } | RelayNodeError> {
+  let stat: Stats;
+  try {
+    stat = await fs.stat(filePath);
+  } catch (err) {
+    return mapWriteErrno(err);
+  }
+  if (stat.size > FILE_RPC_MAX_SOURCE_READ_BYTES) {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SOURCE_TOO_LARGE',
+      `source file exceeds ${FILE_RPC_MAX_SOURCE_READ_BYTES} byte hash limit`, {
+        size: stat.size,
+        max: FILE_RPC_MAX_SOURCE_READ_BYTES,
+        path: filePath,
+      });
+  }
+  return new Promise((resolve) => {
+    const hash = crypto.createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve({ hex: hash.digest('hex') }));
+    stream.on('error', (err) => resolve(mapWriteErrno(err)));
+  });
+}
+
+function mapWriteErrno(err: unknown): RelayNodeError {
+  const code = nodeErrorCode(err);
+  const message = err instanceof Error ? err.message : String(err ?? 'unknown');
+  const errno = code;
+  if (code === 'EACCES' || code === 'EROFS' || code === 'EPERM') {
+    return fileRpcError('FORBIDDEN', 'FILE_RPC_WRITE_PERMISSION_DENIED', `write permission denied: ${message}`, { errno });
+  }
+  if (code === 'EXDEV') {
+    return fileRpcError('INTERNAL', 'FILE_RPC_WRITE_CROSS_DEVICE', `cross-device rename: ${message}`, { errno });
+  }
+  if (code === 'ENOSPC') {
+    return { code: 'INTERNAL', message: `no space left on device: ${message}`, retryable: true, details: { reasonCode: 'FILE_RPC_WRITE_NO_SPACE', errno } };
+  }
+  if (code === 'EBUSY' || code === 'EAGAIN' || code === 'ETIMEDOUT') {
+    return { code: 'INTERNAL', message, retryable: true, details: { reasonCode: 'FILE_RPC_INVALID_REQUEST', errno } };
+  }
+  return { code: 'INTERNAL', message, retryable: false, details: { errno } };
+}
+
+function isWriteRequest(request: FileRpcRequest): request is FileRpcWriteRequest {
+  return 'operation' in request && (request as FileRpcWriteRequest).operation === 'write';
+}
+
+async function executeWriteAppend(
+  request: FileRpcWriteRequest,
+  buf: Buffer,
+  perms: number,
+  realRoot: string,
+  existed: boolean
+): Promise<FileRpcWriteResponse | RelayNodeError> {
+  let handle: import('node:fs/promises').FileHandle | undefined;
+  let appendErr: unknown;
+  try {
+    // O_NOFOLLOW | O_APPEND | O_WRONLY | O_CREAT — fails with ELOOP if path is a symlink.
+    const flags = fsConstants.O_NOFOLLOW | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_CREAT;
+    handle = await fs.open(request.path, flags, perms);
+    await handle.write(buf);
+    await handle.sync();
+  } catch (err) {
+    appendErr = err;
+  } finally {
+    // Close the handle without letting a close error replace the write error.
+    await handle?.close().catch((closeErr: unknown) => { void closeErr; });
+  }
+  if (appendErr !== undefined) {
+    const errCode = nodeErrorCode(appendErr);
+    if (errCode === 'ELOOP' || errCode === 'ENOTDIR') {
+      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'refusing to append through a symlink', {
+        path: request.path,
+        errno: errCode,
+      });
+    }
+    return mapWriteErrno(appendErr);
+  }
+
+  // Post-write symlink escape check
+  try {
+    const realTarget = await fs.realpath(request.path);
+    if (!pathInside(realRoot, realTarget, path)) {
+      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'write target resolved outside the scoped filesystem root', {
+        root: realRoot,
+        resolvedPath: realTarget,
+      });
+    }
+  } catch {
+    // If realpath fails after write, the file likely vanished — treat as success
+  }
+
+  // Stream the post-write hash to avoid reading arbitrarily large files into memory
+  const postHash = await streamHash(request.path);
+  if ('code' in postHash) return postHash;
+  let postStat: Stats;
+  try {
+    postStat = await fs.stat(request.path);
+  } catch (err) {
+    return mapWriteErrno(err);
+  }
+  return {
+    operation: 'write',
+    root: request.root,
+    cwd: request.cwd,
+    path: request.path,
+    mode: request.mode,
+    bytesWritten: buf.length,
+    newHash: postHash.hex,
+    newMtime: new Date(postStat.mtimeMs).toISOString(),
+    created: !existed,
+  };
+}
+
+async function executeWrite(request: FileRpcRequest): Promise<FileRpcWriteResponse | RelayNodeError> {
+  if (!isWriteRequest(request)) {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'write request is malformed');
+  }
+
+  // Defense-in-depth: re-validate base64 at the executor boundary (buildWriteRequest
+  // already validates, but this catches any path that bypasses buildWriteRequest).
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(request.contentBase64) || request.contentBase64.length % 4 !== 0) {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_INVALID_REQUEST', 'contentBase64 is malformed base64', {
+      field: 'contentBase64',
+      reason: 'malformed_base64',
+    });
+  }
+  const buf = Buffer.from(request.contentBase64, 'base64');
+  const perms = request.permissions !== undefined ? (request.permissions & 0o777) : 0o666;
+
+  // Realpath root for post-write symlink escape checks (handles /tmp -> /private/tmp on macOS).
+  // If root realpath fails (e.g. the scoped root directory itself is gone), refuse the write
+  // rather than silently comparing unresolved-root vs resolved-target — that could either
+  // trigger a false-positive escape that rolls back a valid write, or miss a real escape.
+  let realRoot: string;
+  try {
+    realRoot = await fs.realpath(request.root);
+  } catch (rootErr) {
+    return fileRpcError(
+      'INTERNAL',
+      'FILE_RPC_ROOT_UNAVAILABLE',
+      `scoped filesystem root is unavailable: ${rootErr instanceof Error ? rootErr.message : String(rootErr ?? 'unknown')}`,
+      { root: request.root, errno: nodeErrorCode(rootErr) }
+    );
+  }
+
+  let st: import('node:fs').Stats | null = null;
+  try {
+    st = await fs.lstat(request.path);
+  } catch (err) {
+    if (nodeErrorCode(err) === 'ENOENT') {
+      // Expected: file does not exist; st remains null
+    } else {
+      return mapWriteErrno(err);
+    }
+  }
+
+  const existed = st !== null;
+
+  if (st && !st.isFile() && !st.isSymbolicLink()) {
+    return invalidRequest('FILE_RPC_NOT_FILE', 'path exists but is not a regular file or symlink', {
+      path: request.path,
+    });
+  }
+
+  // Refuse to overwrite a symlink: rename(tmp, symlink) would replace the
+  // directory entry, destroying the symlink and losing the original target.
+  if (st && st.isSymbolicLink() && (request.mode === 'create' || request.mode === 'overwrite')) {
+    return fileRpcError(
+      'INVALID_REQUEST',
+      'FILE_RPC_WRITE_THROUGH_SYMLINK',
+      'refusing to overwrite a symlink; remove and recreate the file explicitly',
+      { path: request.path }
+    );
+  }
+
+  if (request.mode === 'create' && existed) {
+    return fileRpcError('INVALID_REQUEST', 'FILE_RPC_OVERWRITE_REQUIRED', 'file already exists; use mode "overwrite" to replace it', {
+      path: request.path,
+    });
+  }
+
+  if (request.mode === 'overwrite' && existed) {
+    // Stream-hash the existing content to avoid reading arbitrarily large files into memory.
+    const currentHashResult = await streamHash(request.path);
+    if ('code' in currentHashResult) return currentHashResult;
+    const currentHash = currentHashResult.hex;
+    if (currentHash !== request.expectedHash) {
+      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_EXPECTED_HASH_MISMATCH', 'file content has changed since the expectedHash was computed', {
+        expectedHash: request.expectedHash,
+        actualHash: currentHash,
+        path: request.path,
+      });
+    }
+  }
+
+  // append: open with O_NOFOLLOW so a symlink at request.path cannot redirect
+  // bytes to an out-of-scope target before the post-write escape check fires.
+  if (request.mode === 'append') {
+    return executeWriteAppend(request, buf, perms, realRoot, existed);
+  }
+
+  // create / overwrite: atomic rename via tmp file in same directory
+  const tmpPath = path.join(
+    path.dirname(request.path),
+    '.relay-fs-write-' + crypto.randomBytes(4).toString('hex') + '.tmp'
+  );
+
+  let handle: import('node:fs/promises').FileHandle | undefined;
+  try {
+    handle = await fs.open(tmpPath, 'wx', perms);
+    await handle.write(buf);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fs.rename(tmpPath, request.path);
+  } catch (err) {
+    await handle?.close().catch(() => {});
+    await fs.unlink(tmpPath).catch(() => {});
+    return mapWriteErrno(err);
+  }
+
+  // Post-write symlink escape check
+  try {
+    const realTarget = await fs.realpath(request.path);
+    if (!pathInside(realRoot, realTarget, path)) {
+      // Rollback: if we just created the file, remove it
+      if (!existed) await fs.unlink(request.path).catch(() => {});
+      return fileRpcError('INVALID_REQUEST', 'FILE_RPC_WRITE_SYMLINK_ESCAPE', 'write target resolved outside the scoped filesystem root', {
+        root: realRoot,
+        resolvedPath: realTarget,
+      });
+    }
+  } catch {
+    // realpath failure after write — treat as success
+  }
+
+  let postStat: Stats;
+  try {
+    postStat = await fs.stat(request.path);
+  } catch (err) {
+    return mapWriteErrno(err);
+  }
+  return {
+    operation: 'write',
+    root: request.root,
+    cwd: request.cwd,
+    path: request.path,
+    mode: request.mode,
+    bytesWritten: buf.length,
+    newHash: sha256Hex(buf),
+    newMtime: new Date(postStat.mtimeMs).toISOString(),
+    created: !existed,
+  };
+}
+
 export async function executeLocalFileRpc(
   operation: FileRpcOperation,
   raw: unknown
@@ -740,5 +1107,6 @@ export async function executeLocalFileRpc(
   if (operation === 'list') return await executeList(request);
   if (operation === 'stat') return await executeStat(request);
   if (operation === 'tail') return await executeTail(request);
+  if (operation === 'write') return await executeWrite(request);
   return await executeRead(request);
 }
