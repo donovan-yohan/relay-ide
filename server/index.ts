@@ -1019,6 +1019,34 @@ function shutdownAfterListenFailure(
   void gracefulShutdown();
 }
 
+function buildSessionConfig(
+  startupConfig: Config,
+  configDir: string,
+  securityAuditLog: { append(input: unknown): unknown } | undefined
+): Parameters<typeof sessions.configure>[0] {
+  return {
+    port: startupConfig.port,
+    forceOutputParser: startupConfig.forceOutputParser ?? false,
+    configDir,
+    ...(startupConfig.control?.interventionDebounceMs !== undefined
+      ? { interventionDebounceMs: startupConfig.control.interventionDebounceMs }
+      : {}),
+    ...(startupConfig.control?.coDrivenAutoRevertMs !== undefined
+      ? { coDrivenAutoRevertMs: startupConfig.control.coDrivenAutoRevertMs }
+      : {}),
+    ...(securityAuditLog ? { securityAuditSink: securityAuditLog } : {}),
+    ...(startupConfig.maxScrollbackGlobalBytes !== undefined
+      ? { maxScrollbackGlobalBytes: startupConfig.maxScrollbackGlobalBytes }
+      : {}),
+    ...(startupConfig.maxScrollbackPerSessionBytes !== undefined
+      ? {
+          maxScrollbackPerSessionBytes:
+            startupConfig.maxScrollbackPerSessionBytes,
+        }
+      : {}),
+  };
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
   // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
@@ -1577,23 +1605,9 @@ async function main(): Promise<void> {
   sessions.onSessionEnd(() => rebuildRefWatcher());
 
   // Configure session defaults for hooks injection (startup-only — changing these requires restart)
-  const sessionConfig: Parameters<typeof sessions.configure>[0] = {
-    port: startupConfig.port,
-    forceOutputParser: startupConfig.forceOutputParser ?? false,
-    configDir,
-  };
-  if (startupConfig.control?.interventionDebounceMs !== undefined) {
-    sessionConfig.interventionDebounceMs =
-      startupConfig.control.interventionDebounceMs;
-  }
-  if (startupConfig.control?.coDrivenAutoRevertMs !== undefined) {
-    sessionConfig.coDrivenAutoRevertMs =
-      startupConfig.control.coDrivenAutoRevertMs;
-  }
-  if (securityAuditLog) {
-    sessionConfig.securityAuditSink = securityAuditLog;
-  }
-  sessions.configure(sessionConfig);
+  sessions.configure(
+    buildSessionConfig(startupConfig, configDir, securityAuditLog)
+  );
 
   // Mount hooks router BEFORE auth middleware — hook callbacks come from localhost Claude Code
   const hooksRouter = createHooksRouter({

@@ -37,7 +37,8 @@ import {
 } from '../shared/control-state.js';
 
 const IDLE_TIMEOUT_MS = 5000;
-const MAX_SCROLLBACK = 256 * 1024; // 256KB max
+/** Default per-session scrollback cap. Overridable via createPtySession options. */
+const DEFAULT_MAX_SCROLLBACK_PER_SESSION = 256 * 1024; // 256KB
 const logger = createLogger('pty');
 
 function normalizeTmuxPrefix(prefix: string | undefined): string | null {
@@ -406,6 +407,8 @@ export type CreatePtyParams = {
   portVariables?: string[] | undefined;
   /** Optional port allocator instance (uses default if not provided) */
   portAllocator?: PortAllocator | undefined;
+  /** Per-session scrollback cap in bytes. Defaults to 256 KB. */
+  maxScrollbackBytes?: number | undefined;
   callbacks?:
     | {
         onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
@@ -413,6 +416,8 @@ export type CreatePtyParams = {
           (sessionId: string, cwd: string, branchName?: string) => void
         >;
         fireBackendStateIfChanged?: (session: Session) => void;
+        /** Called after each scrollback append so the global cap can be enforced. */
+        onScrollbackAppend?: () => void;
       }
     | undefined;
 };
@@ -896,6 +901,7 @@ type ResolvedPtyCallbacks = {
     (sessionId: string, cwd: string, branchName?: string) => void
   >;
   fireBackendStateIfChanged: ((session: Session) => void) | undefined;
+  onScrollbackAppend: (() => void) | undefined;
 };
 
 function resolveCallbacks(
@@ -905,6 +911,7 @@ function resolveCallbacks(
     stateChangeCallbacks: callbacks?.onStateChange ?? [],
     sessionEndCallbacks: callbacks?.onSessionEnd ?? [],
     fireBackendStateIfChanged: callbacks?.fireBackendStateIfChanged,
+    onScrollbackAppend: callbacks?.onScrollbackAppend,
   };
 }
 
@@ -916,6 +923,7 @@ export function createPtySession(
     stateChangeCallbacks,
     sessionEndCallbacks,
     fireBackendStateIfChanged,
+    onScrollbackAppend,
   } = resolveCallbacks(params.callbacks);
   const {
     id,
@@ -944,7 +952,11 @@ export function createPtySession(
     claudeFullscreen: paramClaudeFullscreen,
     portVariables,
     portAllocator,
+    maxScrollbackBytes: paramMaxScrollbackBytes,
   } = params;
+
+  const maxScrollbackPerSession =
+    paramMaxScrollbackBytes ?? DEFAULT_MAX_SCROLLBACK_PER_SESSION;
 
   const createdAt = new Date().toISOString();
 
@@ -1091,9 +1103,14 @@ export function createPtySession(
       scrollback.push(data);
       scrollbackRef.bytes += data.length;
       // Trim oldest entries if over limit
-      while (scrollbackRef.bytes > MAX_SCROLLBACK && scrollback.length > 1) {
+      while (
+        scrollbackRef.bytes > maxScrollbackPerSession &&
+        scrollback.length > 1
+      ) {
         scrollbackRef.bytes -= (scrollback.shift() as string).length;
       }
+      // Notify sessions layer so global cap can be enforced.
+      onScrollbackAppend?.();
       if (configPath && worktreePath && !metaFlushTimer) {
         metaFlushTimer = setTimeout(() => {
           metaFlushTimer = null;

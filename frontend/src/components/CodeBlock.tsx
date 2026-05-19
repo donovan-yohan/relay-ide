@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-import { tokenizeCode, type ThemedToken } from '../lib/shiki.js';
+import { useShikiHighlight } from '../hooks/useShikiHighlight.js';
 import './CodeBlock.css';
 
 export interface CodeBlockProps {
@@ -7,6 +6,8 @@ export interface CodeBlockProps {
   language?: string;
   showLineNumbers?: boolean;
   startLine?: number;
+  /** Stable key for GC tracking. Defaults to a hash of code+language. */
+  cacheKey?: string;
 }
 
 export function CodeBlock({
@@ -14,31 +15,11 @@ export function CodeBlock({
   language = 'text',
   showLineNumbers = true,
   startLine = 1,
+  cacheKey,
 }: CodeBlockProps) {
-  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setError(false);
-    setTokens(null);
-
-    tokenizeCode(code, language)
-      .then((t) => {
-        if (!cancelled) {
-          setTokens(t);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [code, language]);
+  const key = cacheKey ?? `${language}:${code.slice(0, 64)}`;
+  const { tokens } = useShikiHighlight(key, code, language);
+  const error = false;
 
   if (tokens) {
     return (

@@ -42,10 +42,10 @@ describe('CodeBlock', () => {
     expect(content).toContain('startLine?:');
   });
 
-  it('imports tokenizeCode from shiki', () => {
+  it('imports useShikiHighlight for GC-aware caching', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    expect(content).toContain("from '../lib/shiki.js'");
-    expect(content).toContain('tokenizeCode');
+    expect(content).toContain("from '../hooks/useShikiHighlight.js'");
+    expect(content).toContain('useShikiHighlight');
   });
 
   it('imports CSS', () => {
@@ -53,10 +53,9 @@ describe('CodeBlock', () => {
     expect(content).toContain("import './CodeBlock.css'");
   });
 
-  it('uses React hooks', () => {
+  it('accepts a cacheKey prop for GC tracking', () => {
     const content = readFileSync(componentPath, 'utf-8');
-    expect(content).toContain('useState');
-    expect(content).toContain('useEffect');
+    expect(content).toContain('cacheKey?:');
   });
 
   it('CSS has required classes', () => {
