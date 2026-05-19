@@ -1,0 +1,19 @@
+test/stores/node-dashboard.test.ts
+  s_9eb1a81904495b::t_6456a2cf3744be 297-301,303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "31643612a02262810bd80e565679c2bfc7b57ef8",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <donovanyohan@gmail.com>"
+    }
+  }
+}
