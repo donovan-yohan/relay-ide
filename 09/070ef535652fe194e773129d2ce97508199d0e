@@ -1,0 +1,30 @@
+frontend/src/lib/ws.ts
+  s_3e9de69a56e5c0::t_f8acf772bb9e95 305-311
+  s_3e9de69a56e5c0::t_b76ab88ef1a904 870-874
+  s_3e9de69a56e5c0::t_7d9d43ab1c052c 461-467,469-470,473,475,480-484
+  s_3e9de69a56e5c0::t_990e50983f05bf 868-869,875,877-884
+  s_3e9de69a56e5c0::t_2162b3c58e1976 537
+  s_3e9de69a56e5c0::t_f404f02969f9a9 270-271
+frontend/src/components/Terminal.tsx
+  s_3e9de69a56e5c0::t_57d51a145dcd4d 967-968,975-977
+  s_3e9de69a56e5c0::t_2ca3a0c4b9b593 978,984-988,997-999,1002-1007
+  s_3e9de69a56e5c0::t_32bb4b300f6b03 1196
+test/pty-pause.test.ts
+  s_3e9de69a56e5c0::t_98911f562f668d 282-364
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "09070ef535652fe194e773129d2ce97508199d0e",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
