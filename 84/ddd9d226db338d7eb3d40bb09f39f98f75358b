@@ -1,0 +1,28 @@
+AGENTS.md
+  s_9eb1a81904495b::t_063210d27dd2b0 76-78
+  s_9eb1a81904495b::t_8ec20a44745668 27-53
+  s_9eb1a81904495b::t_07629c60531497 59-60
+docs/ARCHITECTURE.md
+  s_9eb1a81904495b::t_7c468f750a1459 8
+  s_9eb1a81904495b::t_eb8cf1592d0dc9 247
+.gitignore
+  s_9eb1a81904495b::t_1dddac4769f530 41
+eslint.config.js
+  s_9eb1a81904495b::t_88360b64c4c1b5 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "84ddd9d226db338d7eb3d40bb09f39f98f75358b",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
