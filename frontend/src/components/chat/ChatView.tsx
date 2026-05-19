@@ -6,7 +6,11 @@ import { QueueChips } from './QueueChips.js';
 import { Turn, type EventVerbosity } from './Turn.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 
-const VERBOSITY_LEVELS: readonly EventVerbosity[] = ['normal', 'debug', 'trace'];
+const VERBOSITY_LEVELS: readonly EventVerbosity[] = [
+  'normal',
+  'debug',
+  'trace',
+];
 
 const RELAY_CLIENT_COMMANDS: AgentSlashCommandV2[] = [
   {
@@ -27,8 +31,15 @@ interface ChatViewProps {
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
-  const { session, sendMessage, interrupt, approve, resume, pushClientError } =
-    useAgentChatSocket(sessionId);
+  const {
+    session,
+    sendMessage,
+    interrupt,
+    approve,
+    resume,
+    continueHere,
+    pushClientError,
+  } = useAgentChatSocket(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [eventVerbosity, setEventVerbosity] =
@@ -87,9 +98,25 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     [session]
   );
 
+  /**
+   * A session is in "resume failed" state when the live status is disconnected
+   * AND live.error indicates the resume attempt failed. Both Resume (retry) and
+   * Continue here (force-new) are offered in this state.
+   */
+  const resumeFailed = useMemo(
+    () =>
+      session?.live.status === 'disconnected' &&
+      session.live.error === 'resume failed',
+    [session]
+  );
+
   const handleResume = useCallback(() => {
     resume();
   }, [resume]);
+
+  const handleContinueHere = useCallback(() => {
+    continueHere();
+  }, [continueHere]);
 
   const clientHandlers = useMemo<Record<string, ClientCommandHandler>>(
     () => ({
@@ -128,16 +155,41 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         aria-live="polite"
         aria-label="message timeline"
       >
-        {canResume && (
+        {(canResume || resumeFailed) && (
           <div className="tl-resume-banner">
-            <span className="tl-resume-hint">session paused — resume where you left off</span>
-            <button
-              type="button"
-              className="tl-resume-btn"
-              onClick={handleResume}
-            >
-              resume session
-            </button>
+            <span className="tl-resume-hint">
+              {resumeFailed
+                ? 'resume failed — retry or start a new context'
+                : 'session paused — resume where you left off'}
+            </span>
+            {resumeFailed ? (
+              <>
+                {/* Issue 3+4: resume-failed shows retry + continue here only */}
+                <button
+                  type="button"
+                  className="tl-resume-btn"
+                  onClick={handleResume}
+                >
+                  resume
+                </button>
+                <button
+                  type="button"
+                  className="tl-resume-btn"
+                  onClick={handleContinueHere}
+                >
+                  continue here
+                </button>
+              </>
+            ) : (
+              /* Normal paused state: standard resume only, no continue here */
+              <button
+                type="button"
+                className="tl-resume-btn"
+                onClick={handleResume}
+              >
+                resume session
+              </button>
+            )}
           </div>
         )}
         {!session || session.turns.length === 0 ? (

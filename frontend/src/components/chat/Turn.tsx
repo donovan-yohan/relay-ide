@@ -34,15 +34,26 @@ const EVENT_VERBOSITY_RANK: Record<EventVerbosity, number> = {
 
 function itemEventVisibility(item: AgentItemV2): EventVerbosity {
   const visibility = item.metadata?.eventVisibility;
-  return visibility === 'debug' || visibility === 'trace' ? visibility : 'normal';
+  return visibility === 'debug' || visibility === 'trace'
+    ? visibility
+    : 'normal';
 }
 
-function shouldRenderItem(item: AgentItemV2, verbosity: EventVerbosity): boolean {
+function shouldRenderItem(
+  item: AgentItemV2,
+  verbosity: EventVerbosity
+): boolean {
   if (item.type !== 'providerExtension') return true;
-  return EVENT_VERBOSITY_RANK[itemEventVisibility(item)] <= EVENT_VERBOSITY_RANK[verbosity];
+  return (
+    EVENT_VERBOSITY_RANK[itemEventVisibility(item)] <=
+    EVENT_VERBOSITY_RANK[verbosity]
+  );
 }
 
-function renderUserMessage(text: string, commandIndex: Set<string>): React.ReactNode {
+function renderUserMessage(
+  text: string,
+  commandIndex: Set<string>
+): React.ReactNode {
   if (commandIndex.size === 0) {
     return <pre className="tl-text tl-text--user">{text}</pre>;
   }
@@ -101,6 +112,18 @@ function renderItem(
       return <pre className="tl-text">{item.text}</pre>;
     case 'compaction':
       return <pre className="tl-text">{item.summary}</pre>;
+    case 'sessionBreak':
+      return (
+        <div
+          className="tl-session-break"
+          role="separator"
+          aria-label="context boundary"
+        >
+          <span className="tl-session-break__label">
+            — continued without prior context —
+          </span>
+        </div>
+      );
     case 'webSearch':
       return <pre className="tl-text">{item.query}</pre>;
     case 'imageView':
@@ -147,7 +170,9 @@ export const Turn: React.FC<TurnProps> = ({
   onApprove,
   slashCommands,
 }) => {
-  const commandIndex = slashCommands ? buildCommandIndex(slashCommands) : new Set<string>();
+  const commandIndex = slashCommands
+    ? buildCommandIndex(slashCommands)
+    : new Set<string>();
 
   return (
     <div className="turn" role="group" aria-label={`turn ${index + 1}`}>

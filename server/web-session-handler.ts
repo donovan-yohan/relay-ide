@@ -4,7 +4,10 @@ import type { AgentType } from './types.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 import { createAdapterV2 } from './protocol-adapters/index.js';
 import type { AdapterConfig, ProtocolAdapter } from './protocol-adapter.js';
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentPatchV2,
+  AgentSessionBreakItemV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import { createLogger } from './logger.js';
 import {
   applyWebSessionPatchV2,
@@ -244,6 +247,126 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
     );
     await adapterV2.reconnect();
   }
+}
+
+/**
+ * "Continue here" recovery: force-start a fresh adapter session without resume.
+ *
+ * Steps:
+ * 1. Emit a synthetic `sessionBreak` divider patch BEFORE disconnecting so
+ *    all currently-registered onPatch listeners (session state reducer +
+ *    per-WebSocket forwarders) receive and forward it to connected clients.
+ * 2. Disconnect the current adapter (clears the handler set).
+ * 3. Clear the stored vendor session ID from the in-memory session so that
+ *    a subsequent `reconnectWebSession` (or any DB read) sees no stale ID.
+ * 4. Re-register the session-level state reducer/persistence handler so new
+ *    patches from the fresh connection are processed correctly.
+ * 5. Call `adapter.connect()` with the same config but no resume argument.
+ *
+ * The Relay session ID (`session.id`) is never changed — all URLs and
+ * external refs remain stable.
+ */
+export async function continueHereWebSession(
+  session: WebSession,
+  config: AdapterConfig,
+  onBackendStateChanged: (session: Session) => void
+): Promise<boolean> {
+  const adapterV2 = session.adapterV2;
+
+  // Issue 6 fix: guard against accidental teardown of an active session.
+  // Only proceed when the session live state is disconnected or the adapter
+  // itself reports disconnected. An active/waiting session must not be torn
+  // down by a stale or unexpected client command.
+  const liveStatus = session.agentSessionV2.live.status;
+  const isDisconnected =
+    liveStatus === 'disconnected' || adapterV2.status === 'disconnected';
+  if (!isDisconnected) {
+    logger.warn(
+      'continue-here: ignoring request for non-disconnected session (skipping)',
+      {
+        id: session.id,
+        liveStatus,
+        adapterStatus: adapterV2.status,
+      }
+    );
+    return false;
+  }
+
+  // Bug 2 fix: emit the synthetic sessionBreak BEFORE disconnect so that all
+  // currently-registered onPatch handlers (session state reducer AND any live
+  // per-WS forwarders) receive and forward it immediately. After disconnect()
+  // those handlers are cleared, so emitting after would reach no one.
+  const timestamp = new Date().toISOString();
+  const breakItem: AgentSessionBreakItemV2 = {
+    type: 'sessionBreak',
+    id: `session-break-${timestamp}`,
+    reason: 'continue-here',
+    startedAt: timestamp,
+    completedAt: timestamp,
+    status: 'completed',
+  };
+
+  const turns = session.agentSessionV2.turns;
+  const lastTurn = turns[turns.length - 1];
+
+  if (lastTurn) {
+    // Append the divider to the last existing turn so it renders at the bottom
+    // of the transcript, clearly separating old and new model context.
+    const itemPatch: AgentPatchV2 = {
+      type: 'agent-item-started-v2',
+      sessionId: session.id,
+      timestamp,
+      turnId: lastTurn.id,
+      item: breakItem,
+    };
+    // Apply to session state and push to agentPatchesV2 for reconnect replay.
+    applyWebSessionPatchV2(session, itemPatch);
+    // Broadcast to all live onPatch listeners (session reducer + WS forwarders).
+    adapterV2.broadcastPatch(itemPatch);
+  }
+
+  logger.info('continue-here: disconnecting current adapter', {
+    id: session.id,
+    agentType: session.adapterType,
+  });
+
+  await adapterV2.disconnect().catch((err: unknown) => {
+    // Non-fatal: adapter may already be in a bad state after resume failure.
+    logger.warn('continue-here: disconnect error (continuing anyway)', {
+      id: session.id,
+      err: String(err),
+    });
+  });
+
+  // Clear vendor session ID so no stale resume ID remains in memory.
+  if (session.agentSessionV2.providerSession !== undefined) {
+    session.agentSessionV2 = {
+      ...session.agentSessionV2,
+      providerSession: {},
+    };
+  }
+
+  // Bug 1 fix: re-register the session-level state reducer/persistence handler.
+  // disconnect() clears all handlers registered via onPatch, including the one
+  // set up at session-create time in createWebSession. Without re-registering,
+  // patches from the fresh connect are not applied to session state and not
+  // persisted to the DB.
+  adapterV2.onPatch((patch) => {
+    handleAgentPatchV2(session, patch, onBackendStateChanged);
+  });
+
+  logger.info('continue-here: connecting fresh adapter session', {
+    id: session.id,
+    agentType: session.adapterType,
+  });
+
+  await adapterV2.connect(config);
+
+  // Persist: fresh connect may assign a new vendor session ID; the debounced
+  // upsert in the adapter's patch handler will capture it. Persist now to
+  // ensure the cleared vendor ID hits the DB before the new one arrives.
+  upsertWebSessionNow(session);
+  return true;
 }
 
 function createV2OnlyLegacyAdapter(

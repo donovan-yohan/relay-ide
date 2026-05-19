@@ -290,6 +290,18 @@ export interface AgentCompactionItemV2 extends AgentItemBaseV2 {
   tokensAfter?: number;
 }
 
+/**
+ * Synthetic divider emitted at the recovery point when a user triggers
+ * "Continue here" after a resume failure. Marks the boundary between
+ * turns that had model-side context and turns that start with an empty
+ * model context (fresh adapter session). All prior turns remain visible
+ * in the Relay-owned transcript above this item.
+ */
+export interface AgentSessionBreakItemV2 extends AgentItemBaseV2 {
+  type: 'sessionBreak';
+  reason: 'continue-here';
+}
+
 export interface AgentWebSearchItemV2 extends AgentItemBaseV2 {
   type: 'webSearch';
   query: string;
@@ -344,6 +356,7 @@ export type AgentItemV2 =
   | AgentApprovalItemV2
   | AgentQuestionItemV2
   | AgentCompactionItemV2
+  | AgentSessionBreakItemV2
   | AgentWebSearchItemV2
   | AgentImageViewItemV2
   | AgentImageGenerationItemV2
@@ -462,6 +475,7 @@ export type AgentCommandV2 =
       response?: string;
     }
   | { type: 'agent-resume-v2'; sessionId: string; providerSessionId?: string }
+  | { type: 'agent-continue-here-v2'; sessionId: string }
   | { type: 'agent-fork-v2'; sessionId: string; turnId?: string }
   | { type: 'agent-rollback-v2'; sessionId: string; turnId: string };
 
@@ -920,6 +934,7 @@ const ITEM_VALIDATORS: Record<string, ItemValidator> = {
   question: (v) =>
     typeof v.requestId === 'string' && typeof v.question === 'string',
   compaction: (v) => typeof v.summary === 'string',
+  sessionBreak: (v) => v.reason === 'continue-here',
   webSearch: (v) => typeof v.query === 'string',
   imageView: (v) => typeof v.source === 'string',
   imageGeneration: (v) => typeof v.prompt === 'string',

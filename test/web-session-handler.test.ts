@@ -3,13 +3,18 @@ import {
   pushToBuffer,
   createWebSession,
   reconnectWebSession,
+  continueHereWebSession,
 } from '../server/web-session-handler.js';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { Session, WebSession } from '../server/types.js';
 import type { ChatEvent, ApprovalRequestEvent } from '../shared/chat-events.js';
-import type { AgentCapabilitySetV2, AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type {
+  AgentCapabilitySetV2,
+  AgentSessionV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
+import type { AdapterConfig } from '../server/protocol-adapter.js';
 import {
   makeWebSession,
   makeBaseEvent,
@@ -524,14 +529,436 @@ describe('reconnectWebSession', () => {
 
   it('falls back to reconnect() when adapterType has no known providerSession key', async () => {
     const { session, resumeSessionSpy, reconnectSpy } =
-      makeWebSessionWithV2Adapter(
-        { resume: true },
-        { someOtherId: 'value' }
-      );
+      makeWebSessionWithV2Adapter({ resume: true }, { someOtherId: 'value' });
     // 'mock' is not in the known key lookup table
     await reconnectWebSession(session);
 
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
     expect(resumeSessionSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── continueHereWebSession ────────────────────────────────────────────────────
+
+/**
+ * Build a minimal WebSession with a MockProtocolAdapterV2 whose resumeSession
+ * rejects (simulating an expired vendor session). Used to verify the
+ * "Continue here" recovery path.
+ */
+function makeWebSessionForContinueHere(opts: {
+  providerSession?: Record<string, string>;
+  priorTurns?: boolean;
+}): {
+  session: WebSession;
+  adapter: MockProtocolAdapterV2;
+  connectSpy: ReturnType<typeof vi.fn>;
+  disconnectSpy: ReturnType<typeof vi.fn>;
+  onBackendStateChanged: ReturnType<typeof vi.fn>;
+} {
+  const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+
+  // Override resumeSession to reject so the "resume failed" path is exercised
+  const resumeSessionSpy = vi
+    .fn()
+    .mockRejectedValue(new Error('vendor session expired'));
+  (adapter as unknown as Record<string, unknown>)['resumeSession'] =
+    resumeSessionSpy;
+
+  // Spy on connect and disconnect
+  const connectSpy = vi.fn().mockResolvedValue(undefined);
+  const disconnectSpy = vi.fn().mockResolvedValue(undefined);
+  (adapter as unknown as Record<string, unknown>)['connect'] = connectSpy;
+  (adapter as unknown as Record<string, unknown>)['disconnect'] = disconnectSpy;
+
+  const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+    id: 'sess-continue',
+    provider: 'mock',
+    cwd: '/repo',
+    capabilities: adapter.capabilities,
+    ...(opts.providerSession !== undefined
+      ? { providerSession: opts.providerSession }
+      : {}),
+  });
+  // Resume-failed sessions have live.status === 'disconnected' with error set.
+  agentSessionV2.live = {
+    ...agentSessionV2.live,
+    status: 'disconnected',
+    error: 'resume failed',
+  };
+
+  // Optionally add a prior turn to the transcript
+  if (opts.priorTurns) {
+    const now = new Date().toISOString();
+    agentSessionV2.turns = [
+      {
+        id: 'turn-old-1',
+        status: 'completed',
+        inputMessageId: 'msg-1',
+        items: [
+          {
+            type: 'userMessage',
+            id: 'item-old-1',
+            text: 'hello',
+            status: 'completed',
+            startedAt: now,
+            completedAt: now,
+          },
+        ],
+        startedAt: now,
+        completedAt: now,
+      },
+    ];
+  }
+
+  const session = makeWebSession({
+    id: 'sess-continue',
+    adapterType: 'mock',
+    adapterV2: adapter,
+    agentSessionV2,
+    agentPatchesV2: [],
+    runtimeOwnership: 'spawned',
+    hookToken: 'tok',
+    hooksActive: true,
+    protocolVersion: 2,
+  });
+
+  const onBackendStateChanged = vi.fn() as unknown as ReturnType<typeof vi.fn>;
+
+  return { session, adapter, connectSpy, disconnectSpy, onBackendStateChanged };
+}
+
+const CONTINUE_HERE_CONFIG: AdapterConfig = {
+  cwd: '/repo',
+  port: 3000,
+  sessionId: 'sess-continue',
+  hookToken: 'tok',
+  configDir: '/config',
+};
+
+describe('continueHereWebSession', () => {
+  it('disconnects the current adapter', async () => {
+    const { session, disconnectSpy, onBackendStateChanged } =
+      makeWebSessionForContinueHere({});
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls connect() fresh (no resume arg)', async () => {
+    const { session, connectSpy, onBackendStateChanged } =
+      makeWebSessionForContinueHere({});
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(connectSpy).toHaveBeenCalledWith(CONTINUE_HERE_CONFIG);
+  });
+
+  it('clears the stored vendor session ID before reconnecting', async () => {
+    const { session, onBackendStateChanged } = makeWebSessionForContinueHere({
+      providerSession: { claudeSessionId: 'stale-vendor-id' },
+    });
+
+    expect(session.agentSessionV2.providerSession).toEqual({
+      claudeSessionId: 'stale-vendor-id',
+    });
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    // After continueHere the stale vendor ID must be cleared
+    expect(session.agentSessionV2.providerSession).toEqual({});
+  });
+
+  it('appends a sessionBreak divider item to the last turn', async () => {
+    const { session, onBackendStateChanged } = makeWebSessionForContinueHere({
+      priorTurns: true,
+    });
+
+    const turnsBefore = session.agentSessionV2.turns.length;
+    expect(turnsBefore).toBe(1);
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    // Turns count unchanged — divider appended inside the last turn
+    const turns = session.agentSessionV2.turns;
+    expect(turns.length).toBe(1);
+
+    const lastTurnItems = turns[turns.length - 1]!.items;
+    const breakItem = lastTurnItems.find(
+      (item) => item.type === 'sessionBreak'
+    );
+    expect(breakItem).toBeDefined();
+    expect(breakItem?.type).toBe('sessionBreak');
+    if (breakItem?.type === 'sessionBreak') {
+      expect(breakItem.reason).toBe('continue-here');
+    }
+  });
+
+  it('preserves all prior turns in the transcript', async () => {
+    const { session, onBackendStateChanged } = makeWebSessionForContinueHere({
+      priorTurns: true,
+    });
+
+    const priorTurnIds = session.agentSessionV2.turns.map((t) => t.id);
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    const turnIds = session.agentSessionV2.turns.map((t) => t.id);
+    expect(turnIds).toEqual(priorTurnIds);
+  });
+
+  it('proceeds even if disconnect throws (adapter already dead)', async () => {
+    const { session, connectSpy, disconnectSpy, onBackendStateChanged } =
+      makeWebSessionForContinueHere({});
+    disconnectSpy.mockRejectedValue(new Error('already disconnected'));
+
+    // Should not throw — disconnect errors are non-fatal; returns true (completed).
+    await expect(
+      continueHereWebSession(
+        session,
+        CONTINUE_HERE_CONFIG,
+        onBackendStateChanged
+      )
+    ).resolves.toBe(true);
+
+    // connect() still called after disconnect error
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not append a sessionBreak when there are no prior turns', async () => {
+    // No priorTurns — empty transcript
+    const { session, onBackendStateChanged } = makeWebSessionForContinueHere(
+      {}
+    );
+
+    await continueHereWebSession(
+      session,
+      CONTINUE_HERE_CONFIG,
+      onBackendStateChanged
+    );
+
+    // No turn created — transcript stays empty
+    expect(session.agentSessionV2.turns.length).toBe(0);
+  });
+
+  // ── Issue 6: active session guard ─────────────────────────────────────────────
+
+  it('Issue 6: no-op when session live status is not disconnected', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+    const connectSpy = vi.fn().mockResolvedValue(undefined);
+    const disconnectSpy = vi.fn().mockResolvedValue(undefined);
+    (adapter as unknown as Record<string, unknown>)['connect'] = connectSpy;
+    (adapter as unknown as Record<string, unknown>)['disconnect'] =
+      disconnectSpy;
+    // Simulate a connected, active adapter (not disconnected).
+    (adapter as unknown as Record<string, unknown>)['_status'] = 'connected';
+
+    const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+      id: 'sess-active',
+      provider: 'mock',
+      cwd: '/repo',
+      capabilities: adapter.capabilities,
+    });
+    // Force a non-disconnected live status (working = active session).
+    agentSessionV2.live = {
+      ...agentSessionV2.live,
+      status: 'working',
+      activeTurnId: 'turn-active-1',
+    };
+
+    const session = makeWebSession({
+      id: 'sess-active',
+      adapterType: 'mock',
+      adapterV2: adapter,
+      agentSessionV2,
+      agentPatchesV2: [],
+      runtimeOwnership: 'spawned',
+      hookToken: 'tok',
+      hooksActive: true,
+      protocolVersion: 2,
+    });
+
+    const onBackendStateChanged = vi.fn() as unknown as (s: Session) => void;
+
+    const config: AdapterConfig = {
+      cwd: '/repo',
+      port: 3000,
+      sessionId: 'sess-active',
+      hookToken: 'tok',
+      configDir: '/config',
+    };
+
+    const result = await continueHereWebSession(
+      session,
+      config,
+      onBackendStateChanged
+    );
+
+    // Should return false (no-op) and never call disconnect or connect.
+    expect(result).toBe(false);
+    expect(disconnectSpy).not.toHaveBeenCalled();
+    expect(connectSpy).not.toHaveBeenCalled();
+  });
+
+  // ── Bug 1: patch handlers re-registered after Continue Here ──────────────────
+
+  it('Bug 1: patch handlers continue receiving patches after Continue Here', async () => {
+    // Use real disconnect so handlers.clear() is actually called, then verify
+    // that the re-registered handler in continueHereWebSession receives patches.
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+    const connectSpy = vi.fn().mockResolvedValue(undefined);
+    (adapter as unknown as Record<string, unknown>)['connect'] = connectSpy;
+
+    const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+      id: 'sess-patch-test',
+      provider: 'mock',
+      cwd: '/repo',
+      capabilities: adapter.capabilities,
+    });
+    // Set disconnected so the guard passes.
+    agentSessionV2.live = {
+      ...agentSessionV2.live,
+      status: 'disconnected',
+      error: 'resume failed',
+    };
+
+    const session = makeWebSession({
+      id: 'sess-patch-test',
+      adapterType: 'mock',
+      adapterV2: adapter,
+      agentSessionV2,
+      agentPatchesV2: [],
+      runtimeOwnership: 'spawned',
+      hookToken: 'tok',
+      hooksActive: true,
+      protocolVersion: 2,
+    });
+
+    const onBackendStateChanged = vi.fn() as unknown as (s: Session) => void;
+
+    // Run continueHereWebSession with real disconnect (no spy override).
+    // disconnect() will call handlers.clear() via BaseProtocolAdapterV2.
+    const config: AdapterConfig = {
+      ...CONTINUE_HERE_CONFIG,
+      sessionId: 'sess-patch-test',
+    };
+    await continueHereWebSession(session, config, onBackendStateChanged);
+
+    // After continue-here, broadcast a patch via the adapter to simulate the
+    // fresh connection emitting state. The re-registered onBackendStateChanged
+    // handler should receive and process it.
+    const testPatch: import('../shared/agent-chat-protocol-v2.js').AgentPatchV2 =
+      {
+        type: 'agent-live-state-updated-v2',
+        sessionId: 'sess-patch-test',
+        timestamp: new Date().toISOString(),
+        live: {
+          status: 'idle',
+          activeTurnId: null,
+          waitingOn: null,
+          activeRequestIds: [],
+          proposedPlanItemId: null,
+          queueLength: 0,
+          fastModeAvailable: false,
+          error: null,
+        },
+      };
+    adapter.broadcastPatch(testPatch);
+
+    // onBackendStateChanged must have been called via the re-registered handler.
+    expect(onBackendStateChanged).toHaveBeenCalled();
+  });
+
+  // ── Bug 2: synthetic sessionBreak patch broadcast to WS listeners ─────────────
+
+  it('Bug 2: synthetic sessionBreak patch is broadcast to onPatch listeners before disconnect', async () => {
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+    const connectSpy = vi.fn().mockResolvedValue(undefined);
+    (adapter as unknown as Record<string, unknown>)['connect'] = connectSpy;
+
+    // Pre-populate a turn so the break item will be emitted.
+    const now = new Date().toISOString();
+    const agentSessionV2: AgentSessionV2 = emptyAgentSessionV2({
+      id: 'sess-break-broadcast',
+      provider: 'mock',
+      cwd: '/repo',
+      capabilities: adapter.capabilities,
+    });
+    agentSessionV2.live = {
+      ...agentSessionV2.live,
+      status: 'disconnected',
+      error: 'resume failed',
+    };
+    agentSessionV2.turns = [
+      {
+        id: 'turn-old-1',
+        status: 'completed',
+        inputMessageId: 'msg-1',
+        items: [],
+        startedAt: now,
+        completedAt: now,
+      },
+    ];
+
+    const session = makeWebSession({
+      id: 'sess-break-broadcast',
+      adapterType: 'mock',
+      adapterV2: adapter,
+      agentSessionV2,
+      agentPatchesV2: [],
+      runtimeOwnership: 'spawned',
+      hookToken: 'tok',
+      hooksActive: true,
+      protocolVersion: 2,
+    });
+
+    const onBackendStateChanged = vi.fn() as unknown as (s: Session) => void;
+
+    // Simulate a WS forwarder — registered BEFORE continue-here is called,
+    // exactly as ws.ts does on connection. This handler must receive the
+    // sessionBreak patch since it is emitted before disconnect clears handlers.
+    const wsReceivedPatches: import('../shared/agent-chat-protocol-v2.js').AgentPatchV2[] =
+      [];
+    adapter.onPatch((patch) => {
+      wsReceivedPatches.push(patch);
+    });
+
+    const config: AdapterConfig = {
+      ...CONTINUE_HERE_CONFIG,
+      sessionId: 'sess-break-broadcast',
+    };
+    await continueHereWebSession(session, config, onBackendStateChanged);
+
+    // The WS forwarder must have received the sessionBreak patch
+    // (emitted via broadcastPatch before disconnect clears handlers).
+    const breakPatch = wsReceivedPatches.find(
+      (p) =>
+        p.type === 'agent-item-started-v2' && p.item.type === 'sessionBreak'
+    );
+    expect(breakPatch).toBeDefined();
+    if (breakPatch?.type === 'agent-item-started-v2') {
+      expect(breakPatch.item.type).toBe('sessionBreak');
+    }
   });
 });

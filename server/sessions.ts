@@ -32,6 +32,7 @@ import type { CreatePtyParams } from './pty-handler.js';
 import {
   createWebSession,
   reconnectWebSession,
+  continueHereWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
 import {
@@ -2050,6 +2051,63 @@ async function createWeb(
   return result;
 }
 
+/**
+ * Initiate a "continue here" recovery for a web session whose resume failed.
+ *
+ * Disconnects the existing adapter, clears the stale vendor session ID, and
+ * starts a fresh provider session (no resume). Uses the module-level defaults
+ * for port and configDir so callers (e.g. ws.ts) do not need to carry them.
+ *
+ * Throws if the session is not found or is not a web session.
+ */
+async function continueHereWeb(sessionId: string): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session || session.mode !== 'web') {
+    throw new Error(
+      `continue-here: session ${sessionId} not found or not a web session`
+    );
+  }
+
+  // Issue 6 fix: guard against spurious Continue Here on an active session.
+  // Only allow the recovery flow when the session is in a disconnected/failed
+  // state. An active or waiting session should not have its adapter torn down
+  // by a stale or unexpected client command.
+  const liveStatus = session.agentSessionV2.live.status;
+  const isDisconnected =
+    liveStatus === 'disconnected' ||
+    session.adapterV2.status === 'disconnected';
+  if (!isDisconnected) {
+    logger.warn(
+      'continue-here: ignoring request for non-disconnected session',
+      {
+        id: session.id,
+        liveStatus,
+        adapterStatus: session.adapterV2.status,
+      }
+    );
+    return;
+  }
+
+  const config = {
+    cwd: session.cwd,
+    port: defaultPort ?? 3456,
+    sessionId: session.id,
+    hookToken: session.hookToken,
+    configDir: defaultConfigDir ?? '',
+    ...(session.agentSessionV2.config.permissionMode !== undefined
+      ? { permissionMode: session.agentSessionV2.config.permissionMode }
+      : {}),
+    ...(session.agentSessionV2.config.model !== undefined
+      ? { model: session.agentSessionV2.config.model }
+      : {}),
+    ...(session.agentSessionV2.config.providerOptions !== undefined
+      ? { extra: session.agentSessionV2.config.providerOptions }
+      : {}),
+  };
+
+  await continueHereWebSession(session, config, fireBackendStateIfChanged);
+}
+
 export {
   configure,
   create,
@@ -2087,5 +2145,6 @@ export {
   // onGlobalScrollbackTrim intentionally omitted: no WS consumer wired yet.
   // Add back when the broadcast integration lands.
   enforceGlobalScrollbackCap,
+  continueHereWeb,
 };
 export type { CreateWebParams };

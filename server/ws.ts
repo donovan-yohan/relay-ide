@@ -164,6 +164,9 @@ function handleAgentCommandV2(
     case 'agent-resume-v2':
       resumeAgentV2(ws, session, parsed);
       break;
+    case 'agent-continue-here-v2':
+      continueHereAgentV2(ws, session);
+      break;
   }
 }
 
@@ -327,6 +330,16 @@ function resumeAgentV2(
   });
 }
 
+function continueHereAgentV2(
+  ws: WebSocket,
+  session: Extract<Session, { mode: 'web' }>
+): void {
+  sessions.continueHereWeb(session.id).catch((err: unknown) => {
+    logger.error('v2 continueHere error:', err);
+    sendAgentErrorV2(ws, session.id, 'v2 continue-here failed', err);
+  });
+}
+
 function handleWebSessionMessage(
   ws: WebSocket,
   session: Extract<Session, { mode: 'web' }>,
@@ -414,9 +427,12 @@ function setupWebSocket(
     if (!localNode) return data;
 
     const input = data ?? {};
-    const nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : localNode.nodeId;
+    const nodeId =
+      typeof input['nodeId'] === 'string' ? input['nodeId'] : localNode.nodeId;
     const environmentId =
-      typeof input['environmentId'] === 'string' ? input['environmentId'] : localNode.environmentId;
+      typeof input['environmentId'] === 'string'
+        ? input['environmentId']
+        : localNode.environmentId;
     const payload: Record<string, unknown> = {
       ...input,
       nodeId,
@@ -428,19 +444,25 @@ function setupWebSocket(
         ? payload['localSessionId']
         : payload['sessionId'];
     if (typeof sessionId === 'string') {
-      Object.assign(payload, createNodeScopedSessionEvent(sessionId, { nodeId, environmentId }));
+      Object.assign(
+        payload,
+        createNodeScopedSessionEvent(sessionId, { nodeId, environmentId })
+      );
     }
 
     const workspacePath = payload['workspacePath'];
     if (typeof workspacePath === 'string') {
-      Object.assign(payload, createNodeScopedFileEvent({
-        workspacePath,
-        ...(typeof payload['worktreePath'] === 'string'
-          ? { worktreePath: payload['worktreePath'] }
-          : {}),
-        nodeId,
-        environmentId,
-      }));
+      Object.assign(
+        payload,
+        createNodeScopedFileEvent({
+          workspacePath,
+          ...(typeof payload['worktreePath'] === 'string'
+            ? { worktreePath: payload['worktreePath'] }
+            : {}),
+          nodeId,
+          environmentId,
+        })
+      );
     }
 
     return payload;
@@ -574,7 +596,9 @@ function setupWebSocket(
         requiredCapabilities: ['session:attach'],
         sessionId,
         expiresAt: validation.summary.expiresAt,
-        ...(validation.summary.revokedAt ? { revokedAt: validation.summary.revokedAt } : {}),
+        ...(validation.summary.revokedAt
+          ? { revokedAt: validation.summary.revokedAt }
+          : {}),
         ...(validation.summary.correlationId
           ? { correlationId: validation.summary.correlationId }
           : {}),
@@ -582,7 +606,9 @@ function setupWebSocket(
       const auditedDecision = appendPolicyAudit(auditSink, policyDecision);
       if (auditedDecision.decision !== 'allow') {
         const error = policyDecisionToRelayError(auditedDecision);
-        socket.write(`HTTP/1.1 ${routedPolicyStatus(error.code)} ${error.code}\r\n\r\n`);
+        socket.write(
+          `HTTP/1.1 ${routedPolicyStatus(error.code)} ${error.code}\r\n\r\n`
+        );
         socket.destroy();
         return;
       }
