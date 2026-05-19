@@ -62,6 +62,11 @@ interface StoredNodeRecord {
   nodeId: string;
   credentialId: string;
   credentialHash: string;
+  // Timestamp of the currently-active credential. Set on pair and updated
+  // when a rotation proves. Optional for backward compatibility with
+  // registry files written before this field existed; consumers fall back
+  // to derived logic when missing.
+  credentialIssuedAt?: string;
   displayName: string;
   hostname: string;
   homeDir?: string;
@@ -463,9 +468,11 @@ function credentialState(node: StoredNodeRecord): HubNodeCredentialState {
 }
 
 function activeCredentialIssuedAt(node: StoredNodeRecord): string {
-  // The active credential was either issued at pair time, or replaced by
-  // the most recently stable rotation. Use whichever is later so a node
-  // that has rotated does not look "old" because of its original pairing.
+  // Prefer the persisted credentialIssuedAt so the value survives in-flight
+  // rotation windows where `credentialRotation` is overwritten before proof.
+  // Fall back to derived logic for legacy records that predate the field
+  // (pair time, or the most recent stable rotation if later).
+  if (node.credentialIssuedAt) return node.credentialIssuedAt;
   const pairedMs = Date.parse(node.pairedAt);
   const rotation = node.credentialRotation;
   if (!rotation || rotation.state !== 'stable' || !rotation.stableAt) {
@@ -713,6 +720,7 @@ export class HubNodeRegistry {
         ),
         createdAt: timestamp,
       }),
+      credentialIssuedAt: timestamp,
       createdAt: timestamp,
       pairedAt: timestamp,
       lastSeenAt: timestamp,
@@ -993,6 +1001,7 @@ export class HubNodeRegistry {
     rotation.provedAt = now;
     node.credentialId = rotation.nextCredentialId;
     node.credentialHash = rotation.nextCredentialHash;
+    node.credentialIssuedAt = now;
     updateAclCredential(node, rotation.nextCredentialId, now);
     delete rotation.nextCredentialHash;
     rotation.state = 'stable';

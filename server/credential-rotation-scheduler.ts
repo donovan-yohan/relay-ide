@@ -117,13 +117,10 @@ export function createCredentialRotationScheduler(
   ): Promise<void> {
     const { nodeId } = candidate;
     if (!options.nodeLinks.hasActiveNode(nodeId)) {
-      audit(
-        nodeId,
-        'recorded',
-        'CREDENTIAL_ROTATION_SCHEDULED_SKIPPED',
-        { reason: 'NODE_OFFLINE', ageMs: candidate.ageMs },
-        candidate.credentialId
-      );
+      // Offline nodes are intentionally NOT audited every tick: a node that
+      // stays offline would otherwise emit `CREDENTIAL_ROTATION_SCHEDULED_SKIPPED`
+      // once per `checkIntervalMs` indefinitely, flooding the audit log.
+      // The next tick after the node reconnects naturally re-evaluates.
       result.skipped.push({ nodeId, reasonCode: 'NODE_OFFLINE' });
       return;
     }
@@ -187,6 +184,10 @@ export function createCredentialRotationScheduler(
       });
       return;
     }
+    // Audit DELIVERED only after the registry transition succeeds so the
+    // audit log stays consistent with persisted rotation state. A failure
+    // here leaves the rotation in `delivered` -> `issuing` mismatch territory
+    // and we surface that as a failure rather than a misleading success.
     try {
       options.registry.markCredentialRotationDelivered(
         nodeId,
@@ -199,6 +200,21 @@ export function createCredentialRotationScheduler(
         nodeId,
         message
       );
+      audit(
+        nodeId,
+        'failed',
+        'CREDENTIAL_ROTATION_SCHEDULED_FAILED',
+        { message, ageMs: candidate.ageMs, stage: 'mark-delivered' },
+        started.rotation.previousCredentialId,
+        started.rotation.rotationId
+      );
+      result.failed.push({
+        nodeId,
+        reasonCode: 'CREDENTIAL_ROTATION_SCHEDULED_FAILED',
+        message,
+        rotationId: started.rotation.rotationId,
+      });
+      return;
     }
     audit(
       nodeId,

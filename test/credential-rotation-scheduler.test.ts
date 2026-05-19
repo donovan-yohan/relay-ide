@@ -162,14 +162,16 @@ describe('credential rotation scheduler', () => {
       ]);
       expect(links.calls).toHaveLength(0);
 
-      const skipped = audits.find(
-        (entry) => entry.reasonCode === 'CREDENTIAL_ROTATION_SCHEDULED_SKIPPED'
+      // Offline-node skips are intentionally silent in the audit log so a
+      // long-offline node does not flood the audit DB once per tick.
+      const offlineAudits = audits.filter(
+        (entry) =>
+          entry.reasonCode === 'CREDENTIAL_ROTATION_SCHEDULED_SKIPPED' &&
+          (entry.material?.params as Record<string, unknown> | undefined)?.[
+            'reason'
+          ] === 'NODE_OFFLINE'
       );
-      expect(skipped).toBeDefined();
-      const params =
-        (skipped?.material?.params as Record<string, unknown> | undefined) ??
-        {};
-      expect(params['reason']).toBe('NODE_OFFLINE');
+      expect(offlineAudits).toHaveLength(0);
     });
   });
 
@@ -239,6 +241,36 @@ describe('credential rotation scheduler', () => {
         .listNodes()
         .find((n) => n.nodeId === exchanged.node.nodeId);
       expect(node?.credentialRotation?.state).toBe('failed');
+    });
+  });
+
+  it('audits failure (not delivered) when markCredentialRotationDelivered throws', async () => {
+    await withHarness(async ({ registry, audits, setNow }) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const links = fakeNodeLinks(new Set([exchanged.node.nodeId]));
+      vi.spyOn(registry, 'markCredentialRotationDelivered').mockImplementation(
+        () => {
+          throw new Error('persist failed');
+        }
+      );
+      const scheduler = createCredentialRotationScheduler({
+        registry,
+        nodeLinks: links,
+        auditSink: { append: (entry) => audits.push(entry) },
+        intervalMs: 60_000,
+        now: () => new Date(),
+      });
+      setNow(new Date('2026-01-02T00:02:00.000Z'));
+      const result = await scheduler.runOnce();
+      expect(result.failed).toHaveLength(1);
+      const reasonCodes = audits.map((entry) => entry.reasonCode);
+      expect(reasonCodes).toContain('CREDENTIAL_ROTATION_SCHEDULED_FAILED');
+      expect(reasonCodes).not.toContain(
+        'CREDENTIAL_ROTATION_SCHEDULED_DELIVERED'
+      );
     });
   });
 
