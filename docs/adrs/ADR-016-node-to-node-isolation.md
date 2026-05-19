@@ -47,7 +47,7 @@ request execution on behalf of another.
 2. The hub never proxies a request from node A so that node B sees node A
    as the requester. Hub-side authorization always identifies the requester
    as a hub-level peer (a browser session, a CLI-gateway invocation, an
-   agent adapter), never as another relay-node.
+   agent adapter) (see ADR-017 §Brain identity), never as another relay-node.
 3. Aggregation verbs that touch multiple nodes (search, list, dispatch) run
    as hub-mediated fan-out. The hub authorizes each per-node leg
    independently with hub-level credentials. Per-node legs cannot reference
