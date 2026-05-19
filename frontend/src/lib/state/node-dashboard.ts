@@ -198,6 +198,20 @@ export function deriveHubNodeDashboardRows(
   });
 }
 
+/**
+ * Returns nodes where trust tier is 'prod' and the node is not revoked.
+ * Used by ProdTrustBanner to determine whether the hub-wide warning should show.
+ */
+export function selectProdTierNodes(nodes: HubNodeSummary[]): HubNodeSummary[] {
+  return nodes.filter(
+    (n) =>
+      (n.trust?.tier ?? n.trust?.policy?.trustTier) === 'prod' &&
+      n.status !== 'revoked' &&
+      !n.trust?.policy?.revokedAt &&
+      !n.trust?.policy?.supersededBy
+  );
+}
+
 export function hubNodeDashboardSummary(
   nodes: HubNodeSummary[],
   options: DeriveOptions = {}

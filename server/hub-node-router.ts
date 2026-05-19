@@ -13,8 +13,11 @@ import type {
 } from '../shared/repo-inventory.js';
 import {
   classifySecurityAuditWriteFailure,
+  redactPeerForBrowser,
+  type NormalizedSecurityAuditEntry,
   type SecurityAuditEntryInput,
 } from '../shared/security-audit.js';
+import type { SecurityAuditVerificationResult } from './security-audit-log.js';
 import {
   HubNodeRegistryError,
   type HubNodeRegistry,
@@ -105,6 +108,12 @@ interface RoutedSessionReadModelCache {
 
 export interface RoutedSessionAuditSink {
   append(input: SecurityAuditEntryInput): unknown;
+  listBefore?(
+    beforeSequence: number | null,
+    limit: number
+  ): { rows: NormalizedSecurityAuditEntry[]; nextBeforeSequence: number | null };
+  head?(): { latestSequence: number; latestHash: string | null };
+  verify?(): SecurityAuditVerificationResult;
 }
 
 interface HubNodeRouterOptions {
@@ -1818,6 +1827,51 @@ export function createHubNodeRouter(
 
   router.get('/nodes', cliGatewayAuth, (_req, res) => {
     res.json({ nodes: registry.listNodes() });
+  });
+
+  router.get('/hub/audit/entries', cliGatewayAuth, async (req, res) => {
+    if (!options.auditSink?.listBefore || !options.auditSink.head) {
+      res.status(503).json({ error: 'audit_sink_unavailable' });
+      return;
+    }
+    const rawBefore = req.query['beforeSequence'];
+    const beforeSequence =
+      rawBefore === undefined || rawBefore === ''
+        ? null
+        : (() => {
+            const n = Number.parseInt(String(rawBefore), 10);
+            return Number.isFinite(n) && n >= 0 ? n : null;
+          })();
+    const limitRaw = Number.parseInt(String(req.query['limit'] ?? '50'), 10);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 50;
+    try {
+      const result = options.auditSink.listBefore(beforeSequence, limit);
+      const entries = result.rows.map((row) => ({
+        ...row,
+        peer: redactPeerForBrowser(row.peer),
+      }));
+      const head = options.auditSink.head();
+      res.json({ entries, nextBeforeSequence: result.nextBeforeSequence, head });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[hub-node-router] audit entries read failed', error);
+      res.status(500).json({ error: 'audit_read_failed' });
+    }
+  });
+
+  router.get('/hub/audit/verify', cliGatewayAuth, async (_req, res) => {
+    if (!options.auditSink?.verify) {
+      res.status(503).json({ error: 'audit_sink_unavailable' });
+      return;
+    }
+    try {
+      const result = options.auditSink.verify();
+      res.json(result);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[hub-node-router] audit verify failed', error);
+      res.status(500).json({ error: 'audit_verify_failed' });
+    }
   });
 
   router.get('/hub/nodes/:nodeId/logs', cliGatewayAuth, async (req, res) => {

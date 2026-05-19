@@ -137,6 +137,51 @@ export class SecurityAuditLog {
     ensureSecurityAuditCheckpoint(this.db);
   }
 
+  listBefore(
+    beforeSequence: number | null,
+    limit: number
+  ): { rows: NormalizedSecurityAuditEntry[]; nextBeforeSequence: number | null } {
+    const cappedLimit = Math.max(1, Math.min(!limit ? 50 : limit, 200));
+    let rawRows: AuditRow[];
+    if (beforeSequence === null || beforeSequence === 0) {
+      rawRows = this.db
+        .prepare('SELECT * FROM security_audit_log ORDER BY sequence DESC LIMIT ?')
+        .all(cappedLimit) as AuditRow[];
+    } else {
+      if (!Number.isFinite(beforeSequence) || beforeSequence < 0) {
+        throw new Error(
+          `listBefore: beforeSequence must be a non-negative finite number or null, got ${beforeSequence}`
+        );
+      }
+      rawRows = this.db
+        .prepare(
+          'SELECT * FROM security_audit_log WHERE sequence < ? ORDER BY sequence DESC LIMIT ?'
+        )
+        .all(beforeSequence, cappedLimit) as AuditRow[];
+    }
+    const rows: NormalizedSecurityAuditEntry[] = [];
+    for (const row of rawRows) {
+      const entry = rowToEntry(row);
+      if (entry) rows.push(entry);
+    }
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : undefined;
+    const nextBeforeSequence = lastRow ? lastRow.sequence : null;
+    return { rows, nextBeforeSequence };
+  }
+
+  head(): { latestSequence: number; latestHash: string | null } {
+    const checkpoint = this.db
+      .prepare(
+        'SELECT latest_sequence, latest_hash FROM security_audit_checkpoint WHERE id = 1'
+      )
+      .get() as AuditCheckpointRow | undefined;
+    if (!checkpoint) return { latestSequence: 0, latestHash: null };
+    return {
+      latestSequence: checkpoint.latest_sequence,
+      latestHash: checkpoint.latest_hash,
+    };
+  }
+
   append(input: SecurityAuditEntryInput): NormalizedSecurityAuditEntry {
     return this.db.transaction(() => {
       const last = this.db

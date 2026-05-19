@@ -285,6 +285,17 @@ function controlEventRequiredBits(event: TabControlEvent): RelayCapabilityBit[] 
   return modeAfter === 'agent-driven' ? ['tab:mode:set-agent'] : [];
 }
 
+/**
+ * drop credentialId before exposing audit rows to browser clients;
+ * credentialId is a stable handle to a paired-credential row and is hub-internal.
+ */
+export function redactPeerForBrowser(
+  peer: SecurityAuditPeerIdentity
+): SecurityAuditPeerIdentity {
+  const { credentialId: _dropped, ...rest } = peer;
+  return rest;
+}
+
 export function redactAuditValue(value: unknown): unknown {
   return redactAuditValueInner(value, undefined, new WeakSet<object>());
 }
