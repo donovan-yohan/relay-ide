@@ -1,0 +1,19 @@
+docs/adrs/ADR-017-brain-as-peer-cli-session-events.md
+  s_afc3e94f2d047a::t_06f72789532f20 262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "02881a0430ed749cbfbe42f2d66d2ab629fc2858",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
