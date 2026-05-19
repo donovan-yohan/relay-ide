@@ -37,7 +37,7 @@ Planned/deferred:
 
 - #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) is not implemented in source; current mentions live in spikes/design docs.
 - #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
-- #427 policy schema/default ACLs, policy evaluator gates, two-token confirmation, audit sink/verifier, and manual/online credential rotation are implemented. Scheduled/default credential rotation and external audit shipping remain configurable/deferred.
+- #427 policy schema/default ACLs, policy evaluator gates, two-token confirmation, audit sink/verifier, manual/online credential rotation, and an opt-in scheduled credential rotation loop are implemented. External audit shipping and a default rotation cadence in shipped config remain deferred.
 - #444 six-layer IA is product direction, not the persisted backend model in this doc.
 
 ## Hub/Node/Client Terminology
@@ -283,7 +283,9 @@ Cookie: token={auth-cookie}
 
 The clear route is an operator recovery hatch for failed or otherwise non-stable rotations. It preserves the hub's current credential, removes the unproved next credential, and allows another rotation. Do not clear a failed/delivered rotation while the node may already have written the next credential: reconnecting with that next credential can still prove possession until clear explicitly invalidates it.
 
-ACL/policy changes are independent of credential rotation: hub-owned ACL policy is evaluated on each routed decision and applies immediately without waiting for credentials to rotate. Scheduled/default rotation is not currently automatic; callers must invoke the operator route when they want a rotation.
+ACL/policy changes are independent of credential rotation: hub-owned ACL policy is evaluated on each routed decision and applies immediately without waiting for credentials to rotate.
+
+Scheduled rotation is opt-in. When `credentialRotation.intervalMs` is set on the hub config to a positive value, an in-process scheduler scans paired nodes on each tick (default 60s, configurable via `credentialRotation.checkIntervalMs`) and triggers online rotation for every node whose active credential is older than `intervalMs`. The scheduler reuses the same `begin → deliver → prove` state machine and audit pipeline as the operator route. Offline nodes and nodes mid-rotation are skipped without throwing and surface as `CREDENTIAL_ROTATION_SCHEDULED_SKIPPED` audit rows. Delivery failures fail the rotation, leaving the previous credential active, and surface as `CREDENTIAL_ROTATION_SCHEDULED_FAILED`. Successful triggers/deliveries surface as `CREDENTIAL_ROTATION_SCHEDULED_TRIGGERED` and `CREDENTIAL_ROTATION_SCHEDULED_DELIVERED`. ACL evaluation is unchanged: rotation is hygiene, not policy.
 
 ### Revocation
 
@@ -303,17 +305,18 @@ The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) wit
 
 ### Security Properties
 
-| Property                             | Implementation                                                    |
-| ------------------------------------ | ----------------------------------------------------------------- |
-| Pair token storage (hub)             | SHA256 hash only; raw token is never stored                       |
-| Node credential storage (hub)        | SHA256 hash only; raw `token` is never stored                     |
-| Node credential storage (node-local) | Raw token in `<configDir>/node-credential.json`; file mode `0600` |
-| Comparison                           | `crypto.timingSafeEqual` on hex buffers                           |
-| Pair token lifetime                  | Default 10 minutes; single-use; consumed on exchange              |
-| Registry file                        | Written with `0600` mode; atomic write via temp+rename            |
-| Rotation audit                       | Proof writes `rotation` / `rotated` with credential IDs only      |
-| ACL policy updates                   | Hub policy decisions apply immediately; no rotation wait          |
-| Revocation                           | Immediate; active links are killed; no grace period               |
+| Property                             | Implementation                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------- |
+| Pair token storage (hub)             | SHA256 hash only; raw token is never stored                                              |
+| Node credential storage (hub)        | SHA256 hash only; raw `token` is never stored                                            |
+| Node credential storage (node-local) | Raw token in `<configDir>/node-credential.json`; file mode `0600`                        |
+| Comparison                           | `crypto.timingSafeEqual` on hex buffers                                                  |
+| Pair token lifetime                  | Default 10 minutes; single-use; consumed on exchange                                     |
+| Registry file                        | Written with `0600` mode; atomic write via temp+rename                                   |
+| Rotation audit                       | Proof writes `rotation` / `rotated` with credential IDs only                             |
+| Scheduled rotation                   | Opt-in via `credentialRotation.intervalMs`; reuses state machine + audit; off by default |
+| ACL policy updates                   | Hub policy decisions apply immediately; no rotation wait                                 |
+| Revocation                           | Immediate; active links are killed; no grace period                                      |
 
 This table is the implemented security boundary. Control-state fields from #490 are renderable state only; they are not policy decisions and do not imply additional capability gates beyond the hub policy evaluator, trust-tier overrides outside the ACL schema, or raw/control payload duplication into hash-chained audit logging.
 

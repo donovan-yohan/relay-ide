@@ -112,7 +112,12 @@ import {
 } from './frameworks.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
+import {
+  createCredentialRotationScheduler,
+  type CredentialRotationScheduler,
+} from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
+import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
@@ -951,6 +956,34 @@ function initializeRuntimeDirectories(configDir: string): void {
   }
 }
 
+function startCredentialRotationScheduler(input: {
+  config: Config;
+  registry: ReturnType<typeof createHubNodeRegistry>;
+  nodeLinks: ReturnType<typeof createHubNodeLinkManager>;
+  auditSink: ReturnType<typeof createSecurityAuditLog> | undefined;
+}): CredentialRotationScheduler | null {
+  const cfg = input.config.credentialRotation;
+  const intervalMs = cfg?.intervalMs ?? 0;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return null;
+  try {
+    const scheduler = createCredentialRotationScheduler({
+      registry: input.registry,
+      nodeLinks: input.nodeLinks,
+      auditSink: input.auditSink,
+      intervalMs,
+      ...(cfg?.checkIntervalMs ? { checkIntervalMs: cfg.checkIntervalMs } : {}),
+    });
+    scheduler.start();
+    return scheduler;
+  } catch (err) {
+    logger.warn(
+      'Credential rotation scheduler disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function createAuditedHubNodeRegistry(
   configDir: string,
   auditSink: ReturnType<typeof createSecurityAuditLog> | undefined
@@ -1131,6 +1164,12 @@ async function main(): Promise<void> {
     ptyInputRecorder: sessions.recordRoutedPtyInput,
   });
   const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
+  const credentialRotationScheduler = startCredentialRotationScheduler({
+    config: startupConfig,
+    registry: hubNodeRegistry,
+    nodeLinks: hubNodeLinks,
+    auditSink: securityAuditLog,
+  });
 
   async function flushHubNodeHeartbeatsBestEffort(
     context: string
@@ -1341,6 +1380,17 @@ async function main(): Promise<void> {
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
+    })
+  );
+  app.use(
+    createCliGatewayEventsRouter(express, {
+      cliGatewayAuth: requireCliGatewayAuth,
+      hooks: {
+        onSessionCreate: (cb) => sessions.onSessionCreate(cb),
+        onSessionEnd: (cb) => sessions.onSessionEnd(cb),
+        onControlEvent: (cb) => sessions.onControlEvent(cb),
+        onNodeStatus: (cb) => hubNodeRegistry.onNodeStatus(cb),
+      },
     })
   );
 
@@ -3376,6 +3426,7 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
+    credentialRotationScheduler?.stop();
     await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.

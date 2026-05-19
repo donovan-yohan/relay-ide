@@ -19,6 +19,11 @@ export const RELAY_CAPABILITY_BITS = [
   'rpc:git:write',
   'pty:exec:arbitrary',
   'preview:port-forward',
+  // #597: dedicated read bit for the `logs.tail` RPC backbone. Separate
+  // from `rpc:fs:tail` so operator-only log visibility can be granted
+  // without exposing arbitrary file tail to peers. Always redacted via
+  // the diagnostics-bundle pipeline before crossing the wire.
+  'logs:read',
 ] as const;
 
 export type RelayCapabilityBit = (typeof RELAY_CAPABILITY_BITS)[number];
@@ -38,6 +43,12 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'rpc:fs:read',
   'rpc:fs:tail',
   'rpc:git:read',
+  // #597: `logs:read` is operator-visible by default so existing
+  // `relay-ide hub logs` workflows keep working without a manual ACL
+  // edit. It is NOT in `HIGH_RISK_CAPABILITIES`, so the `prod` trust
+  // tier overlay (`applyTrustTierOverlay`) leaves it in the silent-allow
+  // set; operators can still revoke per-node by editing the ACL.
+  'logs:read',
 ] as const satisfies readonly RelayCapabilityBit[];
 
 export const HIGH_RISK_CAPABILITIES = [

@@ -239,8 +239,12 @@ const stateChangeCallbacks: StateChangeCallback[] = [];
 type ControlEventCallback = (event: TabControlEvent) => void;
 const controlEventCallbacks: ControlEventCallback[] = [];
 
-function onControlEvent(cb: ControlEventCallback): void {
+function onControlEvent(cb: ControlEventCallback): () => void {
   controlEventCallbacks.push(cb);
+  return () => {
+    const idx = controlEventCallbacks.indexOf(cb);
+    if (idx >= 0) controlEventCallbacks.splice(idx, 1);
+  };
 }
 
 function fireControlEvent(event: TabControlEvent): void {
@@ -295,8 +299,12 @@ type SessionCreateCallback = (
 ) => void;
 const sessionCreateCallbacks: SessionCreateCallback[] = [];
 
-function onSessionCreate(cb: SessionCreateCallback): void {
+function onSessionCreate(cb: SessionCreateCallback): () => void {
   sessionCreateCallbacks.push(cb);
+  return () => {
+    const idx = sessionCreateCallbacks.indexOf(cb);
+    if (idx >= 0) sessionCreateCallbacks.splice(idx, 1);
+  };
 }
 
 function fireSessionCreate(
@@ -320,8 +328,12 @@ type SessionEndCallback = (
 ) => void;
 const sessionEndCallbacks: SessionEndCallback[] = [];
 
-function onSessionEnd(cb: SessionEndCallback): void {
+function onSessionEnd(cb: SessionEndCallback): () => void {
   sessionEndCallbacks.push(cb);
+  return () => {
+    const idx = sessionEndCallbacks.indexOf(cb);
+    if (idx >= 0) sessionEndCallbacks.splice(idx, 1);
+  };
 }
 
 function fireSessionEnd(
