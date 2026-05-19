@@ -1,0 +1,12 @@
+## meta
+rule: bootstrap-bearer-header
+module: bootstrap-diagnostics
+redactor: redactBootstrapSecrets
+description: Authorization: Bearer values and standalone Bearer tokens get scrubbed in bootstrap diagnostics text
+secrets: tok_FAKE_BOOTSTRAP_BEARER_aaaaaaaa,tok_FAKE_STANDALONE_BEARER_bbbbbbbb
+preserves: bootstrap response,GET /hub/node-link
+## input
+bootstrap response
+GET /hub/node-link
+Authorization: Bearer tok_FAKE_BOOTSTRAP_BEARER_aaaaaaaa
+fallback header Bearer tok_FAKE_STANDALONE_BEARER_bbbbbbbb logged on retry
