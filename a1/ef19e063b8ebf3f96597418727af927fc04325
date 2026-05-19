@@ -1,0 +1,19 @@
+test/shared/redaction-coverage.test.ts
+  s_afc3e94f2d047a::t_7fee213e519a18 81-86,92,101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "a1ef19e063b8ebf3f96597418727af927fc04325",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
