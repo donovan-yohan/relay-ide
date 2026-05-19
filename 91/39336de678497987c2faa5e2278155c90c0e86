@@ -1,0 +1,33 @@
+server/session-rename-resolver.ts
+  s_3e9de69a56e5c0::t_60cf8bfb3f219f 409,416
+  s_3e9de69a56e5c0::t_944008246eb1e0 352,363
+  s_3e9de69a56e5c0::t_f9f463baecdaa2 272-279,281-286
+  s_3e9de69a56e5c0::t_2cbc2dd399de92 280
+frontend/src/components/dialogs/SettingsDialog.tsx
+  s_3e9de69a56e5c0::t_a89e6908f735aa 572-574
+server/index.ts
+  s_3e9de69a56e5c0::t_30ed197957644d 2580-2594,2599,2602-2604
+docs/DESIGN.md
+  s_3e9de69a56e5c0::t_41a6192ace1309 29
+test/session-rename-resolver.test.ts
+  s_3e9de69a56e5c0::t_61d5b41b15abdf 675-745
+  s_3e9de69a56e5c0::t_4143a4d2e6250d 59
+server/hooks.ts
+  s_3e9de69a56e5c0::t_cab853ff0e6ffc 236-246,262-263,265-271,273-274,276-278,280-286,288-290,292-293,296-302
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "9139336de678497987c2faa5e2278155c90c0e86",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
