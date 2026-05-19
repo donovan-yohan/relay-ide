@@ -27,7 +27,7 @@ interface TabPlacement {
 }
 
 export interface WorkspaceContentLayerProps {
-  renderTab: (tab: WorkspaceTab) => React.ReactNode;
+  renderTab: (tab: WorkspaceTab, isActive: boolean) => React.ReactNode;
 }
 
 export function WorkspaceContentLayer({
@@ -88,7 +88,7 @@ export function WorkspaceContentLayer({
             data-ws-tab={tabId}
             data-ws-active={isActive ? 'true' : 'false'}
           >
-            {renderTab(tab)}
+            {renderTab(tab, isActive)}
           </div>,
           target,
           tabId

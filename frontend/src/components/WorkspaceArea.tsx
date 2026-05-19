@@ -211,6 +211,7 @@ function FileTabContentBridge({
 
 interface SessionContentMountProps {
   session: SessionSummary;
+  isActive: boolean;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onCopyModeChange: (active: boolean) => void;
   onFilePathClick: (path: string) => void;
@@ -218,6 +219,7 @@ interface SessionContentMountProps {
 
 function SessionContentMount({
   session,
+  isActive,
   onImageUpload,
   onCopyModeChange,
   onFilePathClick,
@@ -235,6 +237,7 @@ function SessionContentMount({
         sessionId={session.id}
         sessionKey={scopedSessionKey(session)}
         useTmux={session.useTmux !== false}
+        isActive={isActive}
         onImageUpload={onImageUpload}
         onCopyModeChange={onCopyModeChange}
         onFilePathClick={onFilePathClick}
@@ -680,7 +683,7 @@ export function WorkspaceArea({
   );
 
   const renderTab = useCallback(
-    (tab: WorkspaceTab) => {
+    (tab: WorkspaceTab, isActive: boolean) => {
       if (tab.kind === 'file') {
         return (
           <FileTabContentBridge
@@ -703,6 +706,7 @@ export function WorkspaceArea({
       return (
         <SessionContentMount
           session={session}
+          isActive={isActive}
           onImageUpload={onImageUpload}
           onCopyModeChange={onCopyModeChange}
           onFilePathClick={onFilePathClick}
