@@ -239,7 +239,7 @@ function isEnvironmentRepoInstanceSummary(
   return (
     hasString(value.repoInstanceId) &&
     hasString(value.localPath) &&
-    isOptionalStringOrNull(value.repoIdentity) &&
+    (typeof value.repoIdentity === 'string' || value.repoIdentity === null) &&
     isOptionalString(value.name) &&
     isOptionalStringOrNull(value.currentBranch) &&
     isOptionalStringOrNull(value.defaultBranch)
@@ -265,15 +265,15 @@ function isCwdMode(value: unknown): value is EnvironmentCwdMode {
 }
 
 /**
- * Determines whether `cwd` is inside the given `repoLocalPath`. Treats
- * path-separator boundaries to avoid `/repos/relay` matching `/repos/relay-ide`.
+ * Determines whether `cwd` is inside the given `repoLocalPath`. Normalises a
+ * trailing slash onto both inputs so `("/foo", "/foo/")` and `("/foo/", "/foo")`
+ * both match, while preserving the path-separator boundary that prevents
+ * `/repos/relay` from matching `/repos/relay-ide`.
  */
 function isCwdInsideRepo(cwd: string, repoLocalPath: string): boolean {
-  if (cwd === repoLocalPath) return true;
-  const withSep = repoLocalPath.endsWith('/')
-    ? repoLocalPath
-    : `${repoLocalPath}/`;
-  return cwd.startsWith(withSep);
+  const r = repoLocalPath.endsWith('/') ? repoLocalPath : `${repoLocalPath}/`;
+  const c = cwd.endsWith('/') ? cwd : `${cwd}/`;
+  return c.startsWith(r);
 }
 
 export function hasRepoInstance(

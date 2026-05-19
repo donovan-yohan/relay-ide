@@ -135,6 +135,45 @@ describe('environment-option type guards', () => {
     });
     expect(isEnvironmentOption(option)).toBe(true);
   });
+
+  it('accepts cwd containment regardless of trailing-slash differences', () => {
+    // Regression: previous isCwdInsideRepo failed when repoLocalPath had a
+    // trailing slash but cwd did not (PR #634 / Gemini review).
+    const repo = baseRepoInstance('/repos/relay-ide/');
+    const option = baseOption({
+      cwd: '/repos/relay-ide',
+      cwdMode: 'repo',
+      repoInstance: repo,
+    });
+    expect(isEnvironmentOption(option)).toBe(true);
+
+    const optionInverse = baseOption({
+      cwd: '/repos/relay-ide/',
+      cwdMode: 'repo',
+      repoInstance: baseRepoInstance('/repos/relay-ide'),
+    });
+    expect(isEnvironmentOption(optionInverse)).toBe(true);
+  });
+
+  it('rejects sibling path that shares a prefix with repoLocalPath', () => {
+    const option = baseOption({
+      cwd: '/repos/relay-ide-other/src',
+      cwdMode: 'repo',
+      repoInstance: baseRepoInstance('/repos/relay-ide'),
+    });
+    expect(isEnvironmentOption(option)).toBe(false);
+  });
+
+  it('rejects repoInstance missing required repoIdentity field', () => {
+    // Regression: isOptionalStringOrNull previously accepted undefined where
+    // the interface requires string | null (PR #634 / Gemini review).
+    const repo = baseRepoInstance() as Record<string, unknown>;
+    delete repo.repoIdentity;
+    const option = baseOption({
+      repoInstance: repo as unknown as ReturnType<typeof baseRepoInstance>,
+    });
+    expect(isEnvironmentOption(option)).toBe(false);
+  });
 });
 
 describe('environment-option freshness + degraded reasons', () => {
