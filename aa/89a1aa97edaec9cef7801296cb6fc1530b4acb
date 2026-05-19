@@ -1,0 +1,40 @@
+test/components/CodeBlock.test.ts
+  s_3e9de69a56e5c0::t_a0ddf79b3ad29e 106-113
+  s_3e9de69a56e5c0::t_a44c3e44465750 10-54
+server/sessions.ts
+  s_3e9de69a56e5c0::t_3ea34180e4aaa1 550-557,559-561
+  s_3e9de69a56e5c0::t_6502a07b4c32c7 108-111,113,118,123-126,129-135,137-138,143-144,164-165
+  s_3e9de69a56e5c0::t_8e672f13e9f887 558,562
+  s_3e9de69a56e5c0::t_152a68b593fa09 2075-2076
+frontend/src/lib/stores/shiki-gc.ts
+  s_3e9de69a56e5c0::t_672ffbeb555983 178
+  s_3e9de69a56e5c0::t_1f0ae532d778c9 180
+frontend/src/components/CodeBlock.tsx
+  s_3e9de69a56e5c0::t_90925eb368d43d 9-20,24-36,44
+server/pty-handler.ts
+  s_3e9de69a56e5c0::t_ba714a544ad01c 419-424
+  s_3e9de69a56e5c0::t_21807cf3b75591 908,910
+  s_3e9de69a56e5c0::t_3f7fcf2d682d40 1119-1121
+test/global-scrollback-cap.test.ts
+  s_3e9de69a56e5c0::t_8664c1b7702c99 4-6,9,54,56-57,61-63,68-72,74-75,81-82,84,88-91,93,95,97,102,105-106,110,114,116,118,122-127,129-132,136,141-142,145,149-154
+frontend/src/components/DiffViewer.tsx
+  s_3e9de69a56e5c0::t_d9981a3644f994 319-321,324
+frontend/src/hooks/useShikiHighlight.ts
+  s_3e9de69a56e5c0::t_282949be180061 45-47,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "aa89a1aa97edaec9cef7801296cb6fc1530b4acb",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
