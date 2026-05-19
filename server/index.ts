@@ -112,6 +112,10 @@ import {
 } from './frameworks.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
+import {
+  createCredentialRotationScheduler,
+  type CredentialRotationScheduler,
+} from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
@@ -859,8 +863,13 @@ function associateSessionWithWorkContext(
     store.associateSession(workContextId, { session });
     return null;
   } catch (err) {
-    const code = err instanceof Error ? err.message : 'work_context_association_failed';
-    logger.warn('[sessions] failed to associate session with work context %s: %s', workContextId, err);
+    const code =
+      err instanceof Error ? err.message : 'work_context_association_failed';
+    logger.warn(
+      '[sessions] failed to associate session with work context %s: %s',
+      workContextId,
+      err
+    );
     return code || 'work_context_association_failed';
   }
 }
@@ -879,12 +888,16 @@ function sendSessionCreateSuccess(
   associationError: string | null,
   workContextId?: string
 ): void {
-  const responseSession = workContextId ? { ...session, workContextId } : session;
-  res.status(201).json(
-    associationError
-      ? { ...responseSession, workContextAssociationError: associationError }
-      : responseSession
-  );
+  const responseSession = workContextId
+    ? { ...session, workContextId }
+    : session;
+  res
+    .status(201)
+    .json(
+      associationError
+        ? { ...responseSession, workContextAssociationError: associationError }
+        : responseSession
+    );
 }
 
 function sessionCreateFailureMessage(err: unknown): string {
@@ -939,6 +952,34 @@ function initializeRuntimeDirectories(configDir: string): void {
     fs.mkdirSync(path.join(configDir, 'telemetry'), { recursive: true });
   } catch (err) {
     logStartupWarning('Telemetry directory creation failed:', err);
+  }
+}
+
+function startCredentialRotationScheduler(input: {
+  config: Config;
+  registry: ReturnType<typeof createHubNodeRegistry>;
+  nodeLinks: ReturnType<typeof createHubNodeLinkManager>;
+  auditSink: ReturnType<typeof createSecurityAuditLog> | undefined;
+}): CredentialRotationScheduler | null {
+  const cfg = input.config.credentialRotation;
+  const intervalMs = cfg?.intervalMs ?? 0;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return null;
+  try {
+    const scheduler = createCredentialRotationScheduler({
+      registry: input.registry,
+      nodeLinks: input.nodeLinks,
+      auditSink: input.auditSink,
+      intervalMs,
+      ...(cfg?.checkIntervalMs ? { checkIntervalMs: cfg.checkIntervalMs } : {}),
+    });
+    scheduler.start();
+    return scheduler;
+  } catch (err) {
+    logger.warn(
+      'Credential rotation scheduler disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
   }
 }
 
@@ -1122,6 +1163,12 @@ async function main(): Promise<void> {
     ptyInputRecorder: sessions.recordRoutedPtyInput,
   });
   const remoteSessionReadModelCache = createRemoteSessionReadModelCache();
+  const credentialRotationScheduler = startCredentialRotationScheduler({
+    config: startupConfig,
+    registry: hubNodeRegistry,
+    nodeLinks: hubNodeLinks,
+    auditSink: securityAuditLog,
+  });
 
   async function flushHubNodeHeartbeatsBestEffort(
     context: string
@@ -1211,7 +1258,10 @@ async function main(): Promise<void> {
     const token = req.cookies && req.cookies.token;
     if (!token) return false;
     const config = getConfig();
-    return authenticatedTokens.has(token) || auth.verifyCookieToken(token, config.pinHash);
+    return (
+      authenticatedTokens.has(token) ||
+      auth.verifyCookieToken(token, config.pinHash)
+    );
   }
 
   function bearerScopedToken(req: express.Request): string {
@@ -1533,10 +1583,12 @@ async function main(): Promise<void> {
     configDir,
   };
   if (startupConfig.control?.interventionDebounceMs !== undefined) {
-    sessionConfig.interventionDebounceMs = startupConfig.control.interventionDebounceMs;
+    sessionConfig.interventionDebounceMs =
+      startupConfig.control.interventionDebounceMs;
   }
   if (startupConfig.control?.coDrivenAutoRevertMs !== undefined) {
-    sessionConfig.coDrivenAutoRevertMs = startupConfig.control.coDrivenAutoRevertMs;
+    sessionConfig.coDrivenAutoRevertMs =
+      startupConfig.control.coDrivenAutoRevertMs;
   }
   if (securityAuditLog) {
     sessionConfig.securityAuditSink = securityAuditLog;
@@ -1671,10 +1723,11 @@ async function main(): Promise<void> {
       getSessions: async () => {
         const [localSessions, remoteSessions] = await Promise.all([
           Promise.resolve(
-            localRelayNode
-              .sessions
+            localRelayNode.sessions
               .list()
-              .map((session) => withWorkContextMetadata(workContextStore, session))
+              .map((session) =>
+                withWorkContextMetadata(workContextStore, session)
+              )
           ),
           aggregateRemoteSessions({
             registry: hubNodeRegistry,
@@ -2089,8 +2142,7 @@ async function main(): Promise<void> {
   app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
       Promise.resolve(
-        localRelayNode
-          .sessions
+        localRelayNode.sessions
           .list()
           .map((session) => withWorkContextMetadata(workContextStore, session))
       ),
@@ -2147,7 +2199,10 @@ async function main(): Promise<void> {
   });
 
   app.get('/sessions/:id', requireScopedSessionAuth, async (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_READ_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_READ_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
@@ -2156,7 +2211,9 @@ async function main(): Promise<void> {
     const id = req.params['id'] as string;
     const local = localRelayNode.sessions.get(id);
     if (local) {
-      const session = localRelayNode.sessions.list().find((candidate) => candidate.id === id);
+      const session = localRelayNode.sessions
+        .list()
+        .find((candidate) => candidate.id === id);
       if (!session) {
         res.status(404).json({
           error: {
@@ -2196,74 +2253,87 @@ async function main(): Promise<void> {
     res.json(remote);
   });
 
-  app.get('/sessions/:id/interventions', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilitiesDecisionFromRequest(req, [
-      CONTROL_READ_CAPABILITY,
-      INTERVENTION_READ_CAPABILITY,
-    ]);
-    if (decision.decision !== 'allow') {
-      const error = capabilityError(decision);
-      res.status(sessionControlErrorStatus(error)).json({ error });
-      return;
+  app.get(
+    '/sessions/:id/interventions',
+    requireScopedSessionAuth,
+    (req, res) => {
+      const decision = capabilitiesDecisionFromRequest(req, [
+        CONTROL_READ_CAPABILITY,
+        INTERVENTION_READ_CAPABILITY,
+      ]);
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const id = req.params['id'] as string;
+      if (!localRelayNode.sessions.get(id)) {
+        res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            reasonCode: 'SESSION_NOT_FOUND',
+            message: 'session was not found or is not locally readable',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      const limit = clampInterventionLimit(
+        typeof req.query.limit === 'string' ? req.query.limit : undefined
+      );
+      const records = localRelayNode.sessions.getInterventions(id, { limit });
+      res.json(toInterventionReadResponse({ records, limit }));
     }
-    const id = req.params['id'] as string;
-    if (!localRelayNode.sessions.get(id)) {
-      res.status(404).json({
-        error: {
-          code: 'NOT_FOUND',
-          reasonCode: 'SESSION_NOT_FOUND',
-          message: 'session was not found or is not locally readable',
-          retryable: false,
-        },
-      });
-      return;
-    }
-    const limit = clampInterventionLimit(
-      typeof req.query.limit === 'string' ? req.query.limit : undefined
-    );
-    const records = localRelayNode.sessions.getInterventions(
-      id,
-      { limit }
-    );
-    res.json(
-      toInterventionReadResponse(
-        { records, limit }
-      )
-    );
-  });
+  );
 
-  app.post('/sessions/:id/control/hand-back', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilitiesDecisionFromRequest(req, [
-      CONTROL_SESSION_CAPABILITY,
-      CONTROL_WRITE_CAPABILITY,
-    ]);
-    if (decision.decision !== 'allow') {
-      const error = capabilityError(decision);
-      res.status(sessionControlErrorStatus(error)).json({ error });
-      return;
+  app.post(
+    '/sessions/:id/control/hand-back',
+    requireScopedSessionAuth,
+    (req, res) => {
+      const decision = capabilitiesDecisionFromRequest(req, [
+        CONTROL_SESSION_CAPABILITY,
+        CONTROL_WRITE_CAPABILITY,
+      ]);
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const body =
+        typeof req.body === 'object' && req.body !== null
+          ? (req.body as Record<string, unknown>)
+          : {};
+      const latestSeenInterventionEventId =
+        typeof body['latestSeenInterventionEventId'] === 'string'
+          ? body['latestSeenInterventionEventId']
+          : undefined;
+      const actor = actorFromRequestBody(body['actor']);
+      const result = localRelayNode.sessions.handBackToAgent({
+        id: req.params['id'] as string,
+        ...(latestSeenInterventionEventId === undefined
+          ? {}
+          : { latestSeenInterventionEventId }),
+        ...(actor === undefined ? {} : { actor }),
+      });
+      if (result.ok === false) {
+        res
+          .status(sessionControlErrorStatus(result.error))
+          .json({ error: result.error });
+        return;
+      }
+      res.json({
+        ok: true,
+        events: result.events,
+        ackedHumanInterventions: result.ackedHumanInterventions,
+      });
     }
-    const body = typeof req.body === 'object' && req.body !== null ? req.body as Record<string, unknown> : {};
-    const latestSeenInterventionEventId =
-      typeof body['latestSeenInterventionEventId'] === 'string'
-        ? body['latestSeenInterventionEventId']
-        : undefined;
-    const actor = actorFromRequestBody(body['actor']);
-    const result = localRelayNode.sessions.handBackToAgent({
-      id: req.params['id'] as string,
-      ...(latestSeenInterventionEventId === undefined
-        ? {}
-        : { latestSeenInterventionEventId }),
-      ...(actor === undefined ? {} : { actor }),
-    });
-    if (result.ok === false) {
-      res.status(sessionControlErrorStatus(result.error)).json({ error: result.error });
-      return;
-    }
-    res.json({ ok: true, events: result.events, ackedHumanInterventions: result.ackedHumanInterventions });
-  });
+  );
 
   app.post('/sessions/:id/input', requireScopedSessionAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_SESSION_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_SESSION_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
@@ -2281,7 +2351,9 @@ async function main(): Promise<void> {
       return;
     }
     if (data.length > 1000) {
-      res.status(413).json({ error: 'small input is limited to 1000 characters' });
+      res
+        .status(413)
+        .json({ error: 'small input is limited to 1000 characters' });
       return;
     }
 
@@ -3260,6 +3332,7 @@ async function main(): Promise<void> {
     refWatcher.close();
     gitWatcher.close();
     server.close();
+    credentialRotationScheduler?.stop();
     await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
     // Serialize sessions before detaching the node-pty tmux clients. The tmux
     // sessions themselves must survive so startup can reattach to them.

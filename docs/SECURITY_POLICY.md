@@ -6,11 +6,11 @@ Relay separates node capability discovery from hub-granted policy. A node manife
 
 Trust tiers describe blast radius. They are not marketing labels and they do not imply safety by themselves.
 
-| Tier | Blast radius |
-| ---- | ------------ |
-| `sandbox` | Experimental or constrained node. Route only narrow read/session-safe operations unless an operator grants more. |
-| `dev` | Default legacy/private-infra node. Read/session-safe operations are allowed by default; destructive file/git/exec/preview surfaces stay off unless granted. |
-| `prod` | Production or sensitive node. A prod overlay may make an otherwise-allowed high-risk bit require confirmation, but it must never turn an off bit or confirmation-required bit into silent allow. |
+| Tier      | Blast radius                                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sandbox` | Experimental or constrained node. Route only narrow read/session-safe operations unless an operator grants more.                                                                                 |
+| `dev`     | Default legacy/private-infra node. Read/session-safe operations are allowed by default; destructive file/git/exec/preview surfaces stay off unless granted.                                      |
+| `prod`    | Production or sensitive node. A prod overlay may make an otherwise-allowed high-risk bit require confirmation, but it must never turn an off bit or confirmation-required bit into silent allow. |
 
 ## Capability bits
 
@@ -43,6 +43,14 @@ The verifier replays rows in sequence order and recomputes `prevHash` / `entryHa
 Audit storage is intentionally unbounded in this slice: Relay does not yet enforce retention, rotation, or a maximum `security-audit.db` size. Operators must provision and monitor the config-directory storage accordingly; manual pruning or rotation will break the contiguous sequence/hash chain unless a future retention design preserves verifier semantics.
 
 Audit write failure policy is fail-closed for prod trust tier or destructive/high-risk capability scope. Low-tier read-only degradation is allowed only as an explicit visible degraded state; silent audit bypasses are not acceptable.
+
+## Scheduled credential rotation
+
+Scheduled rotation is opt-in hygiene that reuses the rotation state machine and audit pipeline; it is not a policy enforcement source. When `credentialRotation.intervalMs` is set on the hub config to a positive value, an in-process scheduler scans paired nodes on each tick (default 60s, configurable via `credentialRotation.checkIntervalMs`) and triggers online rotation for every paired, non-revoked, currently-stable node whose active credential has been in use longer than `intervalMs`.
+
+Offline nodes are skipped without throwing and audited with `CREDENTIAL_ROTATION_SCHEDULED_SKIPPED` (`reason: NODE_OFFLINE`). Nodes already mid-rotation are filtered before audit so the scheduler does not collide with operator-initiated rotations. Delivery failures call `failCredentialRotation`, keeping the previous credential active, and audit `CREDENTIAL_ROTATION_SCHEDULED_FAILED`. Successful triggers/deliveries audit `CREDENTIAL_ROTATION_SCHEDULED_TRIGGERED` and `CREDENTIAL_ROTATION_SCHEDULED_DELIVERED`. ACL/policy changes still apply immediately and do not wait for credentials to rotate.
+
+A default cadence is intentionally not shipped; operators opt in by setting `credentialRotation.intervalMs` themselves. The scheduler is process-local: it stops on hub shutdown and does not persist tick state.
 
 ## Operator visibility
 
