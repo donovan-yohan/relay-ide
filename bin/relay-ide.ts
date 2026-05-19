@@ -1203,12 +1203,17 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
 
   let res: Response;
   try {
+    // `audit` topic requires `tab:intervention:read` in addition to
+    // `session:read` (enforced by the hub router). Other topics only need
+    // `session:read`.
+    const capabilities =
+      topic === 'audit' ? 'session:read,tab:intervention:read' : 'session:read';
     res = await fetch(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'x-relay-cli-gateway': 'v1',
-        'x-relay-capabilities': 'session:read',
+        'x-relay-capabilities': capabilities,
         Accept: 'application/x-ndjson',
       },
       signal: controller.signal,
@@ -1374,6 +1379,9 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
         newlineIdx = buffer.indexOf('\n');
       }
     }
+    // Flush any remaining bytes the streaming decoder is holding so a
+    // trailing partial multi-byte char doesn't get dropped.
+    buffer += decoder.decode();
     if (buffer.trim().length > 0) emitFrame(buffer.trim());
     finalizeOk('hub closed stream', 1000);
     process.exit(0);

@@ -449,4 +449,59 @@ describe('CLI gateway events.subscribe runtime', () => {
     );
     expect(closed).toBeDefined();
   });
+
+  it('subscribes to the audit topic with the union of required capabilities', async () => {
+    // PR #608 / Copilot+Gemini regression guard: the `audit` topic needs both
+    // `session:read` and `tab:intervention:read` on the hub side. The CLI
+    // must send both so the hub doesn't return FORBIDDEN, and the redacted
+    // audit payload shape must round-trip cleanly through the gateway envelope.
+    hub = await startFakeHub();
+
+    const runPromise = runCli(
+      ['v1', 'events', 'subscribe', '--topic', 'audit', '--max-events', '1', '--json'],
+      {
+        RELAY_IDE_PORT: String(hub.port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+      { timeoutMs: 5000 }
+    );
+
+    const streamRes = await hub.whenSubscribed();
+    ndjsonWrite(streamRes, { event: 'open', topic: 'audit', sequence: 0 });
+    ndjsonWrite(streamRes, {
+      event: 'event',
+      topic: 'audit',
+      sequence: 1,
+      occurredAt: '2026-05-19T00:00:00.000Z',
+      payload: {
+        type: 'audit.event',
+        kind: 'tab.mode-changed',
+        sessionId: 's1',
+        // Redaction envelope: raw control bytes are never forwarded.
+        redacted: true,
+      },
+    });
+
+    const result = await runPromise;
+    expect(result.exitCode).toBe(0);
+
+    const captured = hub.captured.find((entry) => entry.url?.startsWith('/events'));
+    expect(captured?.url).toContain('topic=audit');
+    expect(captured?.capabilities).toContain('session:read');
+    expect(captured?.capabilities).toContain('tab:intervention:read');
+
+    const events = result.envelopes.filter(
+      (e) => e.ok === true && e.command === 'events.subscribe'
+    );
+    const dataFrames = events.filter(
+      (e) => e.ok && (e.data as { event: string }).event === 'event'
+    );
+    expect(dataFrames).toHaveLength(1);
+    const frame = dataFrames[0];
+    if (!frame || !frame.ok) throw new Error('expected ok frame');
+    const data = frame.data as { topic: string; payload: { redacted?: boolean; kind?: string } };
+    expect(data.topic).toBe('audit');
+    expect(data.payload.kind).toBe('tab.mode-changed');
+    expect(data.payload.redacted).toBe(true);
+  });
 });

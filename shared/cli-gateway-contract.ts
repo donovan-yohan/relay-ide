@@ -1092,7 +1092,12 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['session:read'],
+    // Union of capabilities across all topics: `sessions` and `nodes` need
+    // `session:read`; `audit` additionally needs `tab:intervention:read`
+    // (enforced by the hub router on the `audit` topic). Generators that
+    // surface this verb should request the superset so a single tool
+    // definition covers every topic.
+    capabilityHints: ['session:read', 'tab:intervention:read'],
     inputSchema: eventsSubscribeInputSchema,
     outputSchema: okOutput('EventsSubscribeFrame', eventsSubscribeFrameSchema),
     errorCodes: [

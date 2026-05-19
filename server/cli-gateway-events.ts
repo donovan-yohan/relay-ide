@@ -176,6 +176,22 @@ export function createCliGatewayEventsRouter(
       occurredAt: now().toISOString(),
     });
 
+    // Subscriber bookkeeping is declared before `emit` so the backpressure
+    // path doesn't depend on the `handle` binding (which is initialized
+    // further down). A hook that fires synchronously on registration would
+    // otherwise hit a TDZ ReferenceError.
+    const subs: Array<() => void> = [];
+    const unsubscribeAll = (): void => {
+      while (subs.length) {
+        const fn = subs.pop();
+        try {
+          fn?.();
+        } catch {
+          /* swallow individual listener cleanup errors */
+        }
+      }
+    };
+
     const emit = (payload: Record<string, unknown>): void => {
       const ok = writeNdjson(res, {
         event: 'event',
@@ -187,7 +203,7 @@ export function createCliGatewayEventsRouter(
       if (!ok) {
         // Backpressure — drop subscriber.
         try {
-          handle.unsubscribe();
+          unsubscribeAll();
         } catch {
           /* unsubscribing */
         }
@@ -199,7 +215,6 @@ export function createCliGatewayEventsRouter(
       }
     };
 
-    const subs: Array<() => void> = [];
     if (topic === 'sessions') {
       subs.push(
         options.hooks.onSessionCreate((sessionId, cwd, branchName) => {
@@ -254,16 +269,7 @@ export function createCliGatewayEventsRouter(
     const handle: SubscriberHandle = {
       res,
       topic,
-      unsubscribe: () => {
-        while (subs.length) {
-          const fn = subs.pop();
-          try {
-            fn?.();
-          } catch {
-            /* swallow individual listener cleanup errors */
-          }
-        }
-      },
+      unsubscribe: unsubscribeAll,
     };
 
     req.on('close', () => {
