@@ -1,0 +1,21 @@
+shared/workbench-block-types.ts
+  s_3e9de69a56e5c0::t_257fe9dce7183a 1-44,46-347,349
+test/workbench-block-types.test.ts
+  s_3e9de69a56e5c0::t_13cb2ef3b72a5b 1-382,384-450,452-460
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "97c12354d2650eb9605c95a6a3747cc5f026ac51",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
