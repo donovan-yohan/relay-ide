@@ -1,0 +1,33 @@
+docs/adrs/ADR-016-node-to-node-isolation.md
+  s_afc3e94f2d047a::t_487d53de77b780 50
+docs/adrs/ADR-017-brain-as-peer-cli-session-events.md
+  s_afc3e94f2d047a::t_1bc16fbc4c64d3 211-251
+  s_afc3e94f2d047a::t_026ebb0e8b8f54 257-263,267-272,276-280
+  s_afc3e94f2d047a::t_473f481a69a6de 175-185
+  s_afc3e94f2d047a::t_09996b3b1baf0e 5,8-19
+docs/adrs/ADR-015-core-primitives-domain-agnostic.md
+  s_afc3e94f2d047a::t_a97857bd713778 5
+  s_afc3e94f2d047a::t_ceb2a049442a10 62
+  s_afc3e94f2d047a::t_bbeb4dd33f5d6f 68-70
+  s_afc3e94f2d047a::t_d9ca00bc47bad9 21-22
+  s_afc3e94f2d047a::t_ce488e9bd0ce5b 33-40
+  s_afc3e94f2d047a::t_120a815819584e 74
+  s_afc3e94f2d047a::t_88f81990a8752b 114-117
+  s_afc3e94f2d047a::t_8f494d08d4dd9e 77,79-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "28f04ec51b894c67815ab23314469547f2ca47e2",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
