@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { format } from 'node:util';
+import {
+  RELAY_LOG_EVENT_SCHEMA_VERSION,
+  type StructuredLogEvent,
+} from '../shared/log-event.js';
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -37,6 +41,15 @@ let logStream: fs.WriteStream | null = null;
 let logFilePath: string | null = null;
 let currentLogSize = 0;
 
+// #597: structured JSON Lines companion stream. Writes the same events
+// as the plaintext log, one JSON object per line. Failures are
+// swallowed — structured logging is best-effort and must never crash
+// the caller's hot path.
+let structuredStream: fs.WriteStream | null = null;
+let structuredFilePath: string | null = null;
+let structuredLogSize = 0;
+const STRUCTURED_LOG_FILE = 'relay-ide.jsonl';
+
 /**
  * Initialize file-based logging. Call once at server startup after config dir
  * is resolved. Logs are written to `<logDir>/relay-ide.log` and rotated to
@@ -56,6 +69,18 @@ export function initFileLogging(logDir: string): void {
 
   rotateIfNeeded();
   logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
+  // #597: open the structured JSONL companion alongside plaintext. Both
+  // streams rotate independently at 5MB so an oversized event burst on
+  // one stream doesn't drop unrelated history on the other.
+  structuredFilePath = path.join(logDir, STRUCTURED_LOG_FILE);
+  try {
+    structuredLogSize = fs.statSync(structuredFilePath).size;
+  } catch {
+    structuredLogSize = 0;
+  }
+  rotateStructuredIfNeeded();
+  structuredStream = fs.createWriteStream(structuredFilePath, { flags: 'a' });
 }
 
 function rotateIfNeeded(): void {
@@ -78,6 +103,41 @@ function writeToFile(line: string): void {
     logStream.end();
     rotateIfNeeded();
     logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+  }
+}
+
+function rotateStructuredIfNeeded(): void {
+  if (!structuredFilePath || structuredLogSize < MAX_LOG_SIZE) return;
+  const oldPath = structuredFilePath + '.old';
+  try {
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    if (fs.existsSync(structuredFilePath)) fs.renameSync(structuredFilePath, oldPath);
+  } catch {
+    /* best effort */
+  }
+  structuredLogSize = 0;
+}
+
+function writeStructuredEvent(event: StructuredLogEvent): void {
+  if (!structuredStream || !structuredFilePath) return;
+  const line = JSON.stringify({
+    schemaVersion: event.schemaVersion,
+    ts: event.ts,
+    level: event.level,
+    subsystem: event.subsystem,
+    msg: event.msg,
+    ...(event.ctx !== undefined ? { ctx: event.ctx } : {}),
+  });
+  try {
+    structuredStream.write(line + '\n');
+    structuredLogSize += line.length + 1;
+    if (structuredLogSize >= MAX_LOG_SIZE) {
+      structuredStream.end();
+      rotateStructuredIfNeeded();
+      structuredStream = fs.createWriteStream(structuredFilePath, { flags: 'a' });
+    }
+  } catch {
+    /* best effort */
   }
 }
 
@@ -107,6 +167,13 @@ export function createLogger(namespace: string): Logger {
     writeToFile(
       `${timestamp} ${level.toUpperCase().padEnd(5)} ${prefix} ${formatted}`
     );
+    writeStructuredEvent({
+      schemaVersion: RELAY_LOG_EVENT_SCHEMA_VERSION,
+      ts: timestamp,
+      level,
+      subsystem: namespace,
+      msg: formatted,
+    });
   };
 
   return {
