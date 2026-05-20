@@ -60,7 +60,12 @@ export interface RelayNodeCredential {
   issuedAt: string;
 }
 
-export type HubNodeStatus = 'online' | 'stale' | 'offline' | 'revoked';
+export type HubNodeStatus =
+  | 'online'
+  | 'stale'
+  | 'offline'
+  | 'revoked'
+  | 'updating';
 export type HubNodeCredentialRotationState =
   | 'issuing'
   | 'delivered'
@@ -94,6 +99,26 @@ export type HubNodeVersionState =
   | 'compatible'
   | 'version-skew'
   | 'incompatible';
+
+/**
+ * Hub↔node helper-version (binary) skew categories.
+ * Distinct from the node-link protocol version check:
+ *   - `compatible`       — helperVersion matches hub version or is within 2 minor versions
+ *   - `minor-skew-warn`  — same major, minor gap > 0 but sessions are allowed
+ *   - `major-skew-error` — different major; new session-create blocked (HTTP 503)
+ */
+export type HubNodeHelperSkewCategory =
+  | 'compatible'
+  | 'minor-skew-warn'
+  | 'major-skew-error';
+
+export interface HubNodeHelperSkewSummary {
+  category: HubNodeHelperSkewCategory;
+  helperVersion: string;
+  hubVersion: string;
+  message: string;
+  remediationHint?: string;
+}
 
 export type NodeCapabilityStatus =
   | 'available'
@@ -180,6 +205,8 @@ export interface HubNodeSummary {
     nodeProtocolVersion: string;
     hubProtocolVersion: typeof RELAY_NODE_LINK_PROTOCOL_VERSION;
   };
+  /** Helper-binary version skew summary. Present when the node has reported helperVersion. */
+  helperSkew?: HubNodeHelperSkewSummary;
   capabilities: NodeCapabilityManifestSummary;
   /**
    * Whether File RPC is available on this node. Populated from
