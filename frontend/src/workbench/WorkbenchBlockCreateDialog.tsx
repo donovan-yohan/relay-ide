@@ -76,6 +76,13 @@ export interface WorkbenchBlockCreateDialogProps {
   history?: readonly EnvironmentHistoryEntry[];
   /** Capability bits the block kind requires; forwarded to the picker filter. */
   requiredCapabilities?: readonly RelayCapabilityBit[];
+  /**
+   * Whether File RPC is available on the selected node. When explicitly `false`,
+   * file and artifact kinds are hidden from the kind picker so users don't
+   * select a block that will immediately render a degraded card (#654).
+   * `undefined` means unknown — all kinds are shown (optimistic default).
+   */
+  nodeFileRpcAvailable?: boolean;
   /** Fired on confirm. */
   onCreate: (req: WorkbenchBlockCreateRequest) => void;
   /** Fired on cancel / escape. */
@@ -96,7 +103,7 @@ export interface WorkbenchBlockCreateDialogProps {
 // Copy
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_KINDS: WorkbenchBlockDescriptor['kind'][] = [
+const ALL_SUPPORTED_KINDS: WorkbenchBlockDescriptor['kind'][] = [
   'terminal',
   'agent',
   'file',
@@ -105,6 +112,14 @@ const SUPPORTED_KINDS: WorkbenchBlockDescriptor['kind'][] = [
   'artifact',
   'custom',
 ];
+
+/**
+ * Kinds that require File RPC. Hidden from the picker when the active node
+ * explicitly reports file RPC as unavailable so users never pick a kind that
+ * will immediately render a degraded card (#654 terminal-only fallback).
+ */
+const FILE_RPC_REQUIRED_KINDS: ReadonlySet<WorkbenchBlockDescriptor['kind']> =
+  new Set(['file', 'artifact']);
 
 function describeDefaultError(
   reason: PickDefaultEnvironmentErrorReason
@@ -134,11 +149,23 @@ export function WorkbenchBlockCreateDialog({
   activeTab = null,
   history = [],
   requiredCapabilities,
+  nodeFileRpcAvailable,
   onCreate,
   onCancel,
   nowIso,
   defaultKind = 'terminal',
 }: WorkbenchBlockCreateDialogProps): React.ReactElement {
+  // Derive which block kinds to offer. When the node explicitly lacks file RPC,
+  // hide file-rpc-requiring kinds so users can't select them — they'd immediately
+  // hit a NodeDegradedCard. Terminal, agent, markdown, etc. always show.
+  const supportedKinds = useMemo(
+    () =>
+      nodeFileRpcAvailable === false
+        ? ALL_SUPPORTED_KINDS.filter((k) => !FILE_RPC_REQUIRED_KINDS.has(k))
+        : ALL_SUPPORTED_KINDS,
+    [nodeFileRpcAvailable]
+  );
+
   // Default-selection result. Recomputed when inputs change so the typed
   // error message stays accurate as candidates load / nodes come online.
   const defaultResult = useMemo(
@@ -268,12 +295,21 @@ export function WorkbenchBlockCreateDialog({
             setKind(e.currentTarget.value as WorkbenchBlockDescriptor['kind'])
           }
         >
-          {SUPPORTED_KINDS.map((k) => (
+          {supportedKinds.map((k) => (
             <option key={k} value={k}>
               {k}
             </option>
           ))}
         </select>
+        {nodeFileRpcAvailable === false && (
+          <div
+            className="workbench-block-create-dialog__file-rpc-note"
+            role="note"
+            data-testid="workbench-block-create-file-rpc-note"
+          >
+            file and artifact blocks hidden — file rpc unavailable on this node
+          </div>
+        )}
       </label>
 
       <div className="workbench-block-create-dialog__picker-section">

@@ -4,6 +4,7 @@ import {
   type HubNodeSummary,
   type NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
+import type { NodeManifestDegradedReason } from '../../../../shared/node-manifest.js';
 import {
   deriveNodeSecurityVisibility,
   type NodeSecurityVisibility,
@@ -27,6 +28,8 @@ export interface HubNodeDashboardRow {
   routeLabel: string;
   lastSeenLabel: string;
   relayVersion: string;
+  /** Canonical helper binary version. Absent on pre-#651 nodes. */
+  helperVersion: string | null;
   protocolVersion: string;
   versionWarning: string | null;
   capabilityHints: HubNodeCapabilityHint[];
@@ -34,6 +37,10 @@ export interface HubNodeDashboardRow {
   attachable: boolean;
   workReadiness: string;
   disabledReason: string | null;
+  /** Whether File RPC is available on this node. `null` = unknown (pre-#651 node). */
+  fileRpcAvailable: boolean | null;
+  /** Structured degraded reasons from the manifest. Empty on healthy nodes. */
+  degradedReasons: NodeManifestDegradedReason[];
 }
 
 interface DeriveOptions {
@@ -94,7 +101,8 @@ function disabledReason(
   if (node.status === 'offline') return 'not attachable: node is offline';
   if (node.status === 'stale') return 'not attachable: heartbeat is stale';
   if (node.trust?.policy?.revokedAt) return 'work disabled: policy revoked';
-  if (node.trust?.policy?.supersededBy) return 'work disabled: policy superseded';
+  if (node.trust?.policy?.supersededBy)
+    return 'work disabled: policy superseded';
 
   const blockers = readinessCapabilities.flatMap((key) => {
     const hint = capabilityHints.find((candidate) => candidate.key === key);
@@ -187,6 +195,7 @@ export function deriveHubNodeDashboardRows(
       routeLabel: `${route} · ${routeStatus}`,
       lastSeenLabel: formatRelativeTime(node.lastSeenAt, now),
       relayVersion: node.relayVersion,
+      helperVersion: node.helperVersion ?? null,
       protocolVersion: node.protocolVersion,
       versionWarning,
       capabilityHints: hints,
@@ -194,6 +203,8 @@ export function deriveHubNodeDashboardRows(
       attachable: reason === null,
       workReadiness: reason === null ? 'ready to work' : 'blocked',
       disabledReason: reason,
+      fileRpcAvailable: node.fileRpcAvailable ?? null,
+      degradedReasons: node.degradedReasons ?? [],
     };
   });
 }
@@ -227,7 +238,9 @@ export function hubNodeDashboardSummary(
   const blockedByCapabilities = rows.filter(
     (row) => !row.attachable && row.disabledReason?.startsWith('work disabled:')
   ).length;
-  const policyUnavailable = rows.filter((row) => row.security.policyRef === null).length;
+  const policyUnavailable = rows.filter(
+    (row) => row.security.policyRef === null
+  ).length;
   const prodHighRisk = rows.filter(
     (row) => row.security.trustTier === 'prod' && row.security.tone === 'danger'
   ).length;

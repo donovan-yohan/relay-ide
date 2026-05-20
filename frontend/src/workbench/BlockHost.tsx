@@ -72,6 +72,45 @@ function DeniedCard({ kind, title, missing }: DeniedCardProps) {
 }
 
 // ---------------------------------------------------------------------------
+// NodeDegradedCard — rendered when node helper cannot satisfy file RPC
+// ---------------------------------------------------------------------------
+
+/**
+ * Kinds that require File RPC to function. When `context.nodeFileRpcAvailable`
+ * is explicitly `false`, BlockHost renders a NodeDegradedCard instead of
+ * attempting to mount the renderer (which would fail at the node level).
+ *
+ * Distinct from DeniedCard (capability-grant denied by policy) — this card
+ * tells the user it's a *node-helper* issue, not a permission issue.
+ */
+const FILE_RPC_KINDS: ReadonlySet<string> = new Set(['file', 'artifact']);
+
+interface NodeDegradedCardProps {
+  kind: string;
+  title: string;
+}
+
+function NodeDegradedCard({ kind, title }: NodeDegradedCardProps) {
+  return (
+    <div
+      className="block-card block-node-degraded"
+      role="alert"
+      aria-label={`node helper unavailable: ${title}`}
+    >
+      <div className="block-card__kind">{kind}</div>
+      <div className="block-card__title">{title}</div>
+      <div className="block-node-degraded__heading">
+        file rpc unavailable on this node
+      </div>
+      <div className="block-node-degraded__detail">
+        the relay helper on this node does not support file rpc — check the
+        node&apos;s helper version and degraded reasons in the nodes panel
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // UnknownKindCard — rendered when no renderer is found for the descriptor kind
 // ---------------------------------------------------------------------------
 
@@ -174,18 +213,37 @@ export interface BlockHostProps {
  * BlockHost renders one Workbench block given its descriptor and context.
  *
  * Rendering pipeline (in order):
- *   1. Capability gate — missing requirements → DeniedCard.
- *   2. Registry lookup — unknown kind → UnknownKindCard.
- *   3. Renderer wrapped in BlockErrorBoundary.
+ *   1. Node-degraded gate — if the node explicitly reports file RPC unavailable
+ *      AND the block kind requires file RPC → NodeDegradedCard. This is checked
+ *      BEFORE the capability gate so the user sees a node-helper message, not a
+ *      generic capability-denied message.
+ *   2. Capability gate — missing requirements → DeniedCard.
+ *   3. Registry lookup — unknown kind → UnknownKindCard.
+ *   4. Renderer wrapped in BlockErrorBoundary.
  */
 export function BlockHost({
   descriptor,
   context,
 }: BlockHostProps): React.ReactElement {
+  // Always call hooks before any conditional return (Rules of Hooks).
   const missing = useMemo(
     () => missingCapabilities(descriptor, context),
     [descriptor, context]
   );
+
+  // Step 1: node-degraded gate (file RPC unavailable on the helper side).
+  // Checked before capability gate so the user sees a node-helper message
+  // rather than a generic capability-denied message.
+  if (
+    context.nodeFileRpcAvailable === false &&
+    FILE_RPC_KINDS.has(descriptor.kind)
+  ) {
+    return (
+      <div className="block-host">
+        <NodeDegradedCard kind={descriptor.kind} title={descriptor.title} />
+      </div>
+    );
+  }
 
   if (missing.length > 0) {
     return (

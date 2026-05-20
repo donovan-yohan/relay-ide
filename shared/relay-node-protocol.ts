@@ -1,4 +1,5 @@
 import type { RelayAclSummary, RelayTrustTier } from './security-policy.js';
+import type { NodeManifestDegradedReason } from './node-manifest.js';
 
 export const RELAY_NODE_LINK_PROTOCOL = 'relay-node-link' as const;
 export const RELAY_NODE_LINK_PROTOCOL_VERSION = '1.0' as const;
@@ -85,7 +86,10 @@ export interface HubNodeCredentialRotationSummary {
   failureReason?: string;
 }
 export type HubNodeTrustState = 'active' | 'trusted' | 'paired' | 'revoked';
-export type HubNodeTrustLevel = RelayTrustTier | 'privileged-local-user' | 'standard';
+export type HubNodeTrustLevel =
+  | RelayTrustTier
+  | 'privileged-local-user'
+  | 'standard';
 export type HubNodeVersionState =
   | 'compatible'
   | 'version-skew'
@@ -154,6 +158,11 @@ export interface HubNodeSummary {
   platform: string;
   arch: string;
   relayVersion: string;
+  /**
+   * Canonical helper binary version. Populated from `NodeManifest.helperVersion`
+   * on heartbeat; absent on pre-#651 nodes that did not publish it.
+   */
+  helperVersion?: string;
   protocolVersion: string;
   status: HubNodeStatus;
   connection: HubNodeConnectionSummary;
@@ -172,6 +181,17 @@ export interface HubNodeSummary {
     hubProtocolVersion: typeof RELAY_NODE_LINK_PROTOCOL_VERSION;
   };
   capabilities: NodeCapabilityManifestSummary;
+  /**
+   * Whether File RPC is available on this node. Populated from
+   * `NodeManifest.fileRpc.available` on heartbeat; absent on pre-#651 nodes.
+   * Consumers should treat `undefined` as unknown (not explicitly unavailable).
+   */
+  fileRpcAvailable?: boolean;
+  /**
+   * Structured degraded reasons from the node manifest. Populated on heartbeat
+   * when the manifest includes `degradedReasons[]`. Empty on healthy nodes.
+   */
+  degradedReasons?: NodeManifestDegradedReason[];
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;

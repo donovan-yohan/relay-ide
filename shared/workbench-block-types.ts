@@ -336,6 +336,16 @@ export interface WorkbenchBlockContext {
    */
   node?: NodeRef;
   /**
+   * Whether File RPC is available on the node this block runs on.
+   * `undefined` means the host has not supplied manifest data (pre-#651 node
+   * or an unhydrated context). Consumers should treat `undefined` as unknown,
+   * NOT as unavailable — only explicit `false` means degraded.
+   *
+   * Used by BlockHost to render a distinct "node-degraded" card for file/artifact
+   * blocks when the helper can't satisfy file-rpc requests (#654).
+   */
+  nodeFileRpcAvailable?: boolean;
+  /**
    * The primary artifact produced or consumed by this block, if any.
    * Reuses `ArtifactRef` from shared/work-context.ts.
    */
